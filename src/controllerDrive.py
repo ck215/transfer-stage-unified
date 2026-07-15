@@ -29,6 +29,8 @@ class ControllerPoller:
         self._initialize_pygame_joystick(controllerID)
     
     def get_physical_controllers(self):
+        try: pygame.init()
+        except: pass
         try:
             # Ensure the joystick module is alive before scanning
             if not pygame.joystick.get_init():

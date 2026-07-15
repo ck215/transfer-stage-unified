@@ -225,20 +225,24 @@ class SetupWindow(tk.Tk):
                 p = multiprocessing.Process(target=DC_frame.main, args=(port,controllerID, self.active_claims, "DC Probe"))
             elif device == "Chuck":
                 p = multiprocessing.Process(target=chuck_frame.main, args=(port,controllerID, self.active_claims, "Chuck"))
-    
+
+            self.spawned_processes.append(p)
+
             p.start()
 
         closing_thread = threading.Thread(target=self.close)
+        closing_thread.start()
+        closing_thread.join()
+        self.destroy()
     
     def close(self):
+        print("1!")
         for p in self.spawned_processes:
             p.join()
             try:
                 self.manager.shutdown()
             except Exception:
                 pass
-        
-        self.destroy()
 
 
 if __name__ == "__main__":

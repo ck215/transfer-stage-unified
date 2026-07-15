@@ -242,7 +242,7 @@ class StepperFrame:
 
 
         # Create the window and text widget
-        self.controller_log_window = tk.Tk(self.root)
+        self.controller_log_window = tk.Toplevel(self.root)
         self.controller_log_window.title("Controller Log")
         self.controller_log_text = tk.Text(self.controller_log_window, height=15, width=50, state='disabled', wrap='word')
         self.controller_log_text.pack(padx=5, pady=5)
@@ -328,9 +328,6 @@ class AppLogic:
         self.active_claims = active_claims
         self.process_name = process_name
 
-        self.gui.controller_dropdown.bind("<<ComboboxSelected>>", self.on_controller_dropdown_selected)
-
-
         # Initalize mode flags
         self.autonFlag: bool = False
         self.manualFlag: bool = False
@@ -347,6 +344,7 @@ class AppLogic:
         self.gui.connect_controller_button.config(command=self.connect_controller_button)
         self.gui.controller_log_button.config(command=self.open_controller_log_window)
         self.gui.serial_reconnect_button.config(command=self.serial_reconnect_button)
+        self.gui.controller_dropdown.bind("<<ComboboxSelected>>", self.on_controller_dropdown_selected)
         
         # Protocal for window closing
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -381,7 +379,7 @@ class AppLogic:
     def on_controller_dropdown_selected(self, event):
         selected = self.gui.controller_var.get()
 
-        success = self.cotroller.change_controller(selected)
+        success = self.controller.change_controller(selected)
 
         if not success or "None" in selected:
             self.active_claims[self.process_name] = "None Detected"
@@ -627,9 +625,6 @@ def main(port, controllerID, active_claims, process_name):
     # Connect Arudino via serial
     print("[main] Initializing arduino connection...")
     serial = serialDrive.SerialArduino(port=serial_port)
-
-    # Pass IPC arguments down
-    controller = controllerDrive.ControllerPoller(controllerID, active_claims, process_name)
 
     # Setup controller class
     print("[main] Initializing controller polling class...")
