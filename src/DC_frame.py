@@ -106,9 +106,10 @@ class DCFrame:
         # INPUT FIELDS
         tk.Label(self.root, text="--- Connections ---", font=('Arial', 10, 'bold')).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
 
+        tk.Label(self.root,text="Controller:").grid(row=row_counter,column=0,padx=5,pady=2,sticky='w')
         self.controller_var = tk.StringVar(value="None Detected")
         self.controller_dropdown = ttk.Combobox(self.root, textvariable = self.controller_var, state = "readonly")
-        self.controller_dropdown.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        self.controller_dropdown.grid(row=row_counter, column=1, columnspan=1, padx=5, pady=5, sticky="ew")
         row_counter+=1
         
         tk.Label(self.root, text="Serial Port:").grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
