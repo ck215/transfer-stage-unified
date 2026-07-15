@@ -8,7 +8,7 @@ class ControllerPoller:
     # Poll 50 times per second (1000ms / 20ms = 50Hz)
     POLL_INTERVAL = 5
 
-    def __init__(self, controllerID):
+    def __init__(self, controllerID, active_claims, process_name):
         # Polling control flag
         self.is_polling = False
 
@@ -22,7 +22,32 @@ class ControllerPoller:
         self.prev_button_states = {}
         self.prev_hat_states = {}
 
+        self.active_claims = active_claims
+        self.process_name = process_name
+        self.joystick = None
+
         self._initialize_pygame_joystick(controllerID)
+    
+    def get_physical_controllers(self):
+        try:
+            # Ensure the joystick module is alive before scanning
+            if not pygame.joystick.get_init():
+                pygame.joystick.init()
+                
+            pygame.event.pump()
+            hardware_controllers = []
+            
+            for i in range(pygame.joystick.get_count()):
+                try:
+                    js = pygame.joystick.Joystick(i)
+                    hardware_controllers.append(f"ID {i}: {js.get_name()}")
+                except Exception:
+                    pass
+            return hardware_controllers
+            
+        except Exception as e:
+            print(f"[{self.process_name}] Error scanning physical controllers: {e}")
+            return []
 
     def connect_controller(self):
         # Restart Pygame to attempt reconnection
@@ -33,6 +58,14 @@ class ControllerPoller:
 
     # Initalizes Pygame instance, ONCE PER APPLICATION START
     def _initialize_pygame_joystick(self, controllerID):
+        self.stop_polling()
+
+        if not controllerID or "None" in controllerID or "Virtual" in controllerID:
+            print(f"[{self.process_name}] Joystick set to None.")
+            self.joystick = None
+            self.active_claims[self.process_name] = "None Detected"
+            return False
+
         try:
             pygame.init()
             pygame.joystick.init()
@@ -40,8 +73,12 @@ class ControllerPoller:
             try:
                 # Initialize the chosen joystick
                 controller_number = int(controllerID[3:4])
+
                 self.joystick = pygame.joystick.Joystick(controller_number)
                 self.joystick.init()
+
+                self.active_claims[self.process_name] = controllerID
+
                 print(f"\n[controllerDrive] Initialized Joystick: {self.joystick.get_name()}")
                 print(f"  Axes: {self.joystick.get_numaxes()}")
                 print(f"  Buttons: {self.joystick.get_numbuttons()}")
@@ -57,6 +94,8 @@ class ControllerPoller:
                 return True
             except:
                 print("[controllerDrive] No joystick found.")
+                self.joystick = None
+                self.active_claims[self.process_name] = "None Detected"
                 pygame.quit()
                 return False
                 
@@ -64,6 +103,11 @@ class ControllerPoller:
             print(f"[controllerDrive] Error initializing pygame: {e}")
             return False
 
+    def change_controller(self, new_controller_id):
+        print(f"[{self.process_name}] Hot-swapping to: {new_controller_id}")
+        try: pygame.quit()
+        except: pass
+        return self._initialize_pygame_joystick(new_controller_id)
 
     def start_polling(self, gui, log_updater):
         

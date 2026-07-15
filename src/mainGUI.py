@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import sys
 import multiprocessing
+from multiprocessing import Manager
+import threading
 
 # Import your external device modules
 import stepper_frame
@@ -53,6 +55,11 @@ class SetupWindow(tk.Tk):
         self.get_available_ports()
         self.get_available_controllers()
         self.create_widgets()
+
+        # Initialize multiprocess manager
+        self.manager = Manager()
+        self.active_claims = self.manager.dict()
+
         
     def get_available_ports(self):
         if SERIAL_AVAILABLE:
@@ -159,6 +166,8 @@ class SetupWindow(tk.Tk):
         
         launch_btn = ttk.Button(btn_frame, text="🚀 Launch Controllers", command=self.launch_modules)
         launch_btn.pack(side="left", padx=10)
+
+
         
     def launch_modules(self):
         active_configs = []
@@ -199,28 +208,37 @@ class SetupWindow(tk.Tk):
         # Clear any old references
         self.spawned_processes = []
         
+        self.active_claims.clear()
+
         # Call the respective main(port, controller) functions directly, store references
         for config in active_configs:
             device = config["device"]
             port = config["port"]
             controllerID = config["controller"]
+
+            self.active_claims[device] = controller
             
             p = None
             if device == "Stepper Probe":
-                p = multiprocessing.Process(target=stepper_frame.main, args=(port,controllerID))
+                p = multiprocessing.Process(target=stepper_frame.main, args=(port,controllerID, self.active_claims, "Stepper Probe"))
             elif device == "DC Probe":
-                p = multiprocessing.Process(target=DC_frame.main, args=(port,controllerID))
+                p = multiprocessing.Process(target=DC_frame.main, args=(port,controllerID, self.active_claims, "DC Probe"))
             elif device == "Chuck":
-                p = multiprocessing.Process(target=chuck_frame.main, args=(port,controllerID))
+                p = multiprocessing.Process(target=chuck_frame.main, args=(port,controllerID, self.active_claims, "Chuck"))
     
             p.start()
 
+        closing_thread = threading.Thread(target=self.close)
+    
+    def close(self):
         for p in self.spawned_processes:
             p.join()
+            try:
+                self.manager.shutdown()
+            except Exception:
+                pass
         
         self.destroy()
-        
-    
 
 
 if __name__ == "__main__":

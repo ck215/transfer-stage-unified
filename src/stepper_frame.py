@@ -8,6 +8,7 @@ import serial.tools.list_ports
 
 # GUI library
 import tkinter as tk
+from tkinter import ttk
 
 # Timings library
 import time 
@@ -116,8 +117,13 @@ class StepperFrame:
         # END NEW
 
         # INPUT FIELDS
-        tk.Label(self.root, text="--- Serial Port ---", font=('Arial', 10, 'bold'), bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
+        tk.Label(self.root, text="--- Connections ---", font=('Arial', 10, 'bold'), bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
         
+        self.controller_var = tk.StringVar(value="None Detected")
+        self.controller_dropdown = ttk.Combobox(self.root, textvariable = self.controller_var, state = "readonly")
+        self.controller_dropdown.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        row_counter+=1
+
         tk.Label(self.root, text="Serial Port:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         self.entry_serial_port = tk.Entry(self.root); self.entry_serial_port.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_serial_port.insert(0, "/dev/ttys00X"); row_counter += 1
 
@@ -201,7 +207,7 @@ class StepperFrame:
         bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
         self.color_test_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         row_counter += 1
-        
+
         # Connect Controller Button
         self.connect_controller_button = tk.Button(self.root, text="Connect Controller",
         bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
@@ -312,13 +318,18 @@ class AppLogic:
 
     system_enabled = False
 
-    def __init__(self, root: tk.Tk, gui: StepperFrame, controller: controllerDrive.ControllerPoller, serial: serialDrive.SerialArduino):
+    def __init__(self, root: tk.Tk, gui: StepperFrame, controller: controllerDrive.ControllerPoller, serial: serialDrive.SerialArduino, active_claims, process_name):
         
         # Initialize members
         self.root = root
         self.gui = gui
         self.controller = controller
         self.serial = serial
+        self.active_claims = active_claims
+        self.process_name = process_name
+
+        self.gui.controller_dropdown.bind("<<ComboboxSelected>>", self.on_controller_dropdown_selected)
+
 
         # Initalize mode flags
         self.autonFlag: bool = False
@@ -342,6 +353,43 @@ class AppLogic:
 
         # NEW: Start the global position polling loop (runs in all modes)
         self._poll_position()
+        self._update_controller_dropdown_loop()
+
+    def _update_controller_dropdown_loop(self):
+        if not self._running:
+            return
+
+        hardware_controllers = self.controller.get_physical_controllers()
+
+        other_claims = {
+            id_str for proc, id_str in self.active_claims.items()
+            if proc != self.process_name
+        }
+
+        available_options = ["None Detected"]
+        for ctrl in hardware_controllers:
+            if ctrl not in other_claims:
+                available_options.append(ctrl)
+
+        self.gui.controller_dropdown['values'] = available_options
+
+        current_selection = self.active_claims.get(self.process_name, "None Detected")
+        self.gui.controller_var.set(current_selection)
+
+        self.root.after(500, self._update_controller_dropdown_loop)
+    
+    def on_controller_dropdown_selected(self, event):
+        selected = self.gui.controller_var.get()
+
+        success = self.cotroller.change_controller(selected)
+
+        if not success or "None" in selected:
+            self.active_claims[self.process_name] = "None Detected"
+            if self.manualFlag:
+                self.full_stop_button()
+        else:
+            self.active_claims[self.process_name] = selected
+            print(f"[{self.process_name}] Successfully mapped to {selected}")
 
     # NEW: Periodically reads position from firmware and updates the GUI display.
     #      Self-scheduling via root.after(), runs regardless of mode (manual, auton, idle).
@@ -465,7 +513,6 @@ class AppLogic:
                 self.serial.send_autonomous_command(params)
             except Exception as e:
                 print(f"[AppLogic] Error sending stop command on controller disconnect: {e}")
-                
             return
         
         # Exits manual loop when flag is unset
@@ -565,7 +612,7 @@ class AppLogic:
 
 # ---------------- MAIN LOOP ---------------------
 
-def main(port, controllerID):
+def main(port, controllerID, active_claims, process_name):
 
     print("[main] Starting main loop")
 
@@ -581,13 +628,16 @@ def main(port, controllerID):
     print("[main] Initializing arduino connection...")
     serial = serialDrive.SerialArduino(port=serial_port)
 
+    # Pass IPC arguments down
+    controller = controllerDrive.ControllerPoller(controllerID, active_claims, process_name)
+
     # Setup controller class
     print("[main] Initializing controller polling class...")
-    controller = controllerDrive.ControllerPoller(controllerID)
+    controller = controllerDrive.ControllerPoller(controllerID, active_claims, process_name)
     
     # Setup Logic class
     print("[main] Initializing App Logic...")
-    gui_logic = AppLogic(root, gui, controller, serial)
+    gui_logic = AppLogic(root, gui, controller, serial, active_claims, process_name)
 
     # Run the GUI application
     print("[main] Launching GUI...")
