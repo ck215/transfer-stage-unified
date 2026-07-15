@@ -195,35 +195,32 @@ class SetupWindow(tk.Tk):
             
         # Hide the setup window launcher panel
         self.withdraw()
+
+        # Clear any old references
+        self.spawned_processes = []
         
-        # Call the respective main(port, controller) functions directly
+        # Call the respective main(port, controller) functions directly, store references
         for config in active_configs:
             device = config["device"]
             port = config["port"]
             controllerID = config["controller"]
             
+            p = None
             if device == "Stepper Probe":
-                stepper_process = multiprocessing.Process(target=stepper_frame.main, args=(port,controllerID))
-                stepper_process.start()
+                p = multiprocessing.Process(target=stepper_frame.main, args=(port,controllerID))
             elif device == "DC Probe":
-                DC_process = multiprocessing.Process(target=DC_frame.main, args=(port,controllerID))
-                DC_process.start()
+                p = multiprocessing.Process(target=DC_frame.main, args=(port,controllerID))
             elif device == "Chuck":
-                chuck_process = multiprocessing.Process(target=chuck_frame.main, args=(port,controllerID))
-                chuck_process.start()
+                p = multiprocessing.Process(target=chuck_frame.main, args=(port,controllerID))
+    
+            p.start()
+
+        for p in self.spawned_processes:
+            p.join()
         
-        try:
-            stepper_process.join()
-        except:
-            None
-        try:
-            DC_process.join()
-        except:
-            None
-        try:
-            chuck_process.join()
-        except:
-            None
+        self.destroy()
+        
+    
 
 
 if __name__ == "__main__":
