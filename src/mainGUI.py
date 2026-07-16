@@ -4,14 +4,14 @@ import sys
 import multiprocessing
 from multiprocessing import Manager
 import threading
+import configparser
+import os
 
 # Import your external device modules
 import stepper_frame
 import DC_frame
 import chuck_frame
 import temp_control
-
-# create and start threads
 
 # Try to import pyserial for real hardware detection.
 try:
@@ -29,6 +29,39 @@ try:
 except ImportError:
     PYGAME_AVAILABLE = False
 
+# Fuction to read config file
+def get_config():
+    config = configparser.ConfigParser()
+
+    # Create file if none exists
+    if not os.path.exists("config.ini"):
+        print(f"Configuration file not found. Creating a default config.ini")
+
+        config["COM Ports"] = {
+            "Stepper Probe":"COM1",
+            "DC Probe":"COM2",
+            "Chuck Positioner":"COM3",
+            "Temperature Controller":"COM4",
+        }
+
+        with open("config.ini", "w", encoding="utf-8") as f:
+            config.write(f)
+    
+    else:
+        print(f"Loading config.ini...")
+        config.read("config.ini", encoding = 'utf-8')
+    
+    return config
+
+def write_config(header, device, port):
+    config = configparser.ConfigParser()
+    config.read("config.ini", encoding = 'utf-8')
+
+    config.set(header, device, port)
+
+    with open ("config.ini", "w", encoding="utf-8") as f:
+        config.write(f)
+        
 
 # ==========================================
 # THE SETUP / ASSIGNMENT WINDOW
@@ -136,6 +169,8 @@ class SetupWindow(tk.Tk):
         grid_frame.columnconfigure(1, weight=1)
         grid_frame.columnconfigure(2, weight=1)
         
+        default_configuration = get_config()
+
         for idx, device in enumerate(self.devices):
             check_var = tk.BooleanVar(value=False)
             self.device_vars[device] = check_var
@@ -144,10 +179,18 @@ class SetupWindow(tk.Tk):
                                   command=lambda d=device: self.toggle_dropdown_state(d))
             chk.grid(row=idx+1, column=0, padx=10, pady=10, sticky="w")
             
-            port_var = tk.StringVar(value=self.detected_ports[0])
+            # Check for pre-existing configuration to populate port
+            try:
+                if (default_configuration.get("COM Ports", device) in self.detected_ports):
+                    port_var = tk.StringVar(value=default_configuration.get("COM Ports", device))
+                else:
+                    raise Exception
+            except:
+                port_var = tk.StringVar(value=self.detected_ports[0])
             self.port_vars[device] = port_var
             
-            dropdown = ttk.OptionMenu(grid_frame, port_var, self.detected_ports[0], *self.detected_ports)
+            
+            dropdown = ttk.OptionMenu(grid_frame, port_var, self.detected_ports[self.detected_ports.index(port_var.get())], *self.detected_ports)
             dropdown.grid(row=idx+1, column=1, padx=10, pady=10, sticky="ew")
             dropdown.state(["disabled"])
             self.dropdown_widgets[device] = dropdown
@@ -181,6 +224,9 @@ class SetupWindow(tk.Tk):
                 port = self.port_vars[device].get()
                 controller = self.controller_vars[device].get()
                 
+                # Store configuration in config.ini
+                write_config("COM Ports", device, port)
+
                 active_configs.append({
                     "device": device, 
                     "port": port, 
