@@ -44,8 +44,8 @@ boolean problem = false;
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 void setup() {
-  Serial.begin(9600);                           // put your setup code here, to run once:
-                                                // initialize serial communication at 9600 bits per second:
+  Serial.begin(115200);                           // put your setup code here, to run once:
+                                                // initialize serial communication at 115200 bits per second:
   delay(500);                                   // give the MAX a little time to settle
 
   lcd.begin(20,4);                            // initialize lcd
