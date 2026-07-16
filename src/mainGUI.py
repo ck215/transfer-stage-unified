@@ -106,7 +106,7 @@ class SetupWindow(tk.Tk):
             self.detected_ports = ["COM1", "COM2", "COM3", "COM4"]
 
     def get_available_controllers(self):
-        self.detected_controllers = ["None Detected"]
+        self.detected_controllers = ["None"]
         if PYGAME_AVAILABLE:
             pygame.event.pump()
             joystick_count = pygame.joystick.get_count()

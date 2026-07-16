@@ -51,7 +51,7 @@ class ChuckFrame:
         
         # Initialize root window
         self.root = root
-        self.root.title("Chuck Movement Controller")
+        self.root.title("Chuck Positioner")
 
         # Initialize vars for controller log window
         self.controller_log_window: tk.Toplevel | None = None
@@ -120,7 +120,7 @@ class ChuckFrame:
         tk.Label(self.root, text="--- Connections ---", font=('Arial', 10, 'bold'), bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
         
         tk.Label(self.root,text="Controller:", bg=bg_main, fg=fg_accent).grid(row=row_counter,column=0,padx=5,pady=2,sticky='w')
-        self.controller_var = tk.StringVar(value="None Detected")
+        self.controller_var = tk.StringVar(value="None")
         self.controller_dropdown = ttk.Combobox(self.root, textvariable = self.controller_var, state = "readonly")
         self.controller_dropdown.grid(row=row_counter, column=1, columnspan=1, padx=5, pady=5, sticky="ew")
         row_counter+=1
@@ -365,14 +365,14 @@ class AppLogic:
             if proc != self.process_name
         }
 
-        available_options = ["None Detected"]
+        available_options = ["None"]
         for ctrl in hardware_controllers:
             if ctrl not in other_claims:
                 available_options.append(ctrl)
 
         self.gui.controller_dropdown['values'] = available_options
 
-        current_selection = self.active_claims.get(self.process_name, "None Detected")
+        current_selection = self.active_claims.get(self.process_name, "None")
         self.gui.controller_var.set(current_selection)
 
         self.root.after(500, self._update_controller_dropdown_loop)
@@ -383,7 +383,7 @@ class AppLogic:
         success = self.controller.change_controller(selected)
 
         if not success or "None" in selected:
-            self.active_claims[self.process_name] = "None Detected"
+            self.active_claims[self.process_name] = "None"
             if self.manualFlag:
                 self.full_stop_button()
         else:
