@@ -505,11 +505,9 @@ class AppLogic:
         if self.controller.joystick is None:
             print("[AppLogic] No controller connected. Please connect a controller before entering MANUAL MODE.")
             self.manualFlag = False
-            return
         
             try:
-                params = self.gui.get_gui_params(manual_flag=False, auton_flag=False)
-                self.serial.send_autonomous_command(params)
+                self.full_stop_button()
             except Exception as e:
                 print(f"[AppLogic] Error sending stop command on controller disconnect: {e}")
             return
