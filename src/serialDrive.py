@@ -136,6 +136,19 @@ class SerialArduino:
             COMMAND_CODE_MANUAL = 1
             empty_data = "0"  # Placeholder for unused fields
 
+            # Build data for z direction triggers
+            
+            # Get raw trigger values (assuming idle is -1)
+            z_trigger_l_raw = params.get('z_axisStatusL', -1.0)
+            z_trigger_r_raw = params.get('z_axisStatusR', -1.0)
+
+            # Remap from [-1, 1] to [0, 1] 
+            z_up_value = (z_trigger_l_raw + 1.0) / 2.0
+            z_down_value = (z_trigger_r_raw + 1.0) / 2.0
+
+            # Combine the values. UP (L) is positive, DOWN (R) is negative.
+            combined_z_axis_status = z_up_value - z_down_value
+
             # FIX #8: Removed errant spaces after commas in fields 3-4 that produced
             #         values like " 0" and " 120" instead of "0" and "120"
             packet = struct.pack(
@@ -144,7 +157,7 @@ class SerialArduino:
                 1,
                 float(params['x_axisStatus']),
                 float(params['y_axisStatus']),
-                float(params['z_axisStatus']),
+                combined_z_axis_status,
                 float(params['manual_jog_speed']),
                 float(params['dpad_left']),
                 float(params['dpad_right']),

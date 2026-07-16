@@ -304,7 +304,7 @@ void parseHybridSerial() {
             }
         }
 
-        // --- OPTION B: TOGGLE ENABLE
+        // ---OPTION B: TOGGLE ENABLE
         else if (peekChar == 0x74) {
             Serial.read(); // <-- CRITICAL FIX: Consume the 't' so it leaves the buffer!
 
