@@ -67,6 +67,7 @@ class ControllerPoller:
     def _initialize_pygame_joystick(self, controllerID):
         self.stop_polling()
         self.xbox_controller = False
+        self.T160000M = False
 
         if not controllerID or "None" in controllerID or "Virtual" in controllerID:
             print(f"[{self.process_name}] Joystick set to None.")
@@ -104,7 +105,7 @@ class ControllerPoller:
                         raise ValueError("Controller not recognized!")
                 
                 # Initialize previous state dictionaries
-                for i in range(self.controller_binds):
+                for i in self.controller_binds:
                     self.prev_axis_states[i] = 0.0
                 for i in range(self.joystick.get_numbuttons()):
                     self.prev_button_states[i] = 0
