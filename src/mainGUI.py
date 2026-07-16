@@ -9,6 +9,7 @@ import threading
 import stepper_frame
 import DC_frame
 import chuck_frame
+import temp_control
 
 # create and start threads
 
@@ -41,7 +42,7 @@ class SetupWindow(tk.Tk):
         self.geometry("750x420")
         self.resizable(False, False)
         
-        self.devices = ["Stepper Probe", "DC Probe", "Chuck"]
+        self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller"]
         self.device_vars = {}        
         self.port_vars = {}          
         self.controller_vars = {}    
@@ -114,8 +115,9 @@ class SetupWindow(tk.Tk):
         ctrl_widget = self.controller_widgets[device]
         
         if is_checked:
+            if (device != "Temperature Controller"):
+                ctrl_widget.state(["!disabled"])
             serial_widget.state(["!disabled"])
-            ctrl_widget.state(["!disabled"])
         else:
             serial_widget.state(["disabled"])
             ctrl_widget.state(["disabled"])
@@ -223,8 +225,10 @@ class SetupWindow(tk.Tk):
                 p = multiprocessing.Process(target=stepper_frame.main, args=(port,controllerID, self.active_claims, "Stepper Probe"))
             elif device == "DC Probe":
                 p = multiprocessing.Process(target=DC_frame.main, args=(port,controllerID, self.active_claims, "DC Probe"))
-            elif device == "Chuck":
-                p = multiprocessing.Process(target=chuck_frame.main, args=(port,controllerID, self.active_claims, "Chuck"))
+            elif device == "Chuck Positioner":
+                p = multiprocessing.Process(target=chuck_frame.main, args=(port,controllerID, self.active_claims, "Chuck Positioner"))
+            elif device == "Temperature Controller":
+                p = multiprocessing.Process(target=temp_control.main, args=(port,))
 
             self.spawned_processes.append(p)
 
@@ -236,7 +240,6 @@ class SetupWindow(tk.Tk):
         self.destroy()
     
     def close(self):
-        print("1!")
         for p in self.spawned_processes:
             p.join()
             try:
