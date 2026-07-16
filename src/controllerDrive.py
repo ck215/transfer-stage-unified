@@ -223,7 +223,7 @@ class ControllerPoller:
             elif (self.T160000M):
                 self.prev_axis_states['z'] = self.joystick.get_button(3)-self.joystick.get_button(4)
             else:
-                print("[ControllerDrive] Unsupported controller detected!")
+                print([ControllerDrive] Unsupported controller detected!)
 
             # Check Buttons
             for i in range(self.joystick.get_numbuttons()): # type: ignore
