@@ -119,7 +119,7 @@ class SetupWindow(tk.Tk):
                     pass
                     
         if not self.detected_controllers:
-            self.detected_controllers = ["None Detected", "Virtual Controller A", "Virtual Controller B"]
+            self.detected_controllers = ["None", "Virtual Controller A", "Virtual Controller B"]
 
     def refresh_devices(self):
         self.get_available_ports()
@@ -234,7 +234,7 @@ class SetupWindow(tk.Tk):
                 })
                 assigned_ports.add(port)
                 
-                if "None Detected" not in controller and "Virtual" not in controller:
+                if "None" not in controller and "Virtual" not in controller:
                     assigned_controllers.add(controller)
                 
         if not active_configs:
@@ -245,7 +245,7 @@ class SetupWindow(tk.Tk):
             messagebox.showerror("Port Collision", "Error: You cannot assign the same COM port to multiple active devices!")
             return
             
-        physical_configs = [c for c in active_configs if "None Detected" not in c["controller"] and "Virtual" not in c["controller"]]
+        physical_configs = [c for c in active_configs if "None" not in c["controller"] and "Virtual" not in c["controller"]]
         if len(assigned_controllers) < len(physical_configs):
             messagebox.showerror("Controller Collision", "Error: You cannot map the same physical controller to multiple active devices!")
             return
