@@ -97,10 +97,10 @@ class ControllerPoller:
 
                 match self.joystick.get_name():
                     case "Xbox Series X Controller":
-                        self.controller_binds = [0,3]
+                        self.controller_binds = [0,3,4]
                         self.xbox_controller = True
                     case "T.16000M":
-                        self.controller_binds = [0,1]
+                        self.controller_binds = [0,1,2]
                     case _:
                         raise ValueError("Controller not recognized!")
                 
@@ -222,8 +222,6 @@ class ControllerPoller:
                 self.prev_axis_states['z'] = z_up_value - z_down_value
             elif (self.T160000M):
                 self.prev_axis_states['z'] = self.joystick.get_button(3)-self.joystick.get_button(4)
-            else:
-                print([ControllerDrive] Unsupported controller detected!)
 
             # Check Buttons
             for i in range(self.joystick.get_numbuttons()): # type: ignore
