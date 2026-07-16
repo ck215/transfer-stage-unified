@@ -519,10 +519,10 @@ class AppLogic:
     # Added dpad states
     def get_controller_params(self):
         return {
-            "x_axisStatus": self.controller.prev_axis_states.get(0, 0.0),    
-            "y_axisStatus": self.controller.prev_axis_states.get(3, 0.0),    
-            "z_axisStatusR": self.controller.prev_axis_states.get(4, -1.0),   
-            "z_axisStatusL": self.controller.prev_axis_states.get(5, -1.0),  
+            "x_axisStatus": self.controller.prev_axis_states.get(self.controller.controller_binds[0], 0.0),    
+            "y_axisStatus": self.controller.prev_axis_states.get(self.controller.controller_binds[1], 0.0),    
+            "z_axisStatusR": self.controller.prev_axis_states.get(self.controller.controller_binds[2], -1.0),   
+            "z_axisStatusL": self.controller.prev_axis_states.get(self.controller.controller_binds[3], -1.0),  
             "dpad_left": self.controller.prev_hat_states.get(0, (0, 0))[0],
             "dpad_right": self.controller.prev_hat_states.get(0, (0, 0))[0],
             "dpad_up": self.controller.prev_hat_states.get(0, (0, 0))[1],

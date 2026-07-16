@@ -573,10 +573,10 @@ class AppLogic:
     # Passes controller axis states to a dictionary for serialDrive to send to arduino
     def get_controller_params(self):
         return {
-            "x_axisStatus": self.controller.prev_axis_states.get(0, 0.0),     # FIX #4: Added default 0.0 (was None)
-            "y_axisStatus": self.controller.prev_axis_states.get(3, 0.0),     # FIX #4: Added default 0.0 (was None)
-            "z_axisStatusR": self.controller.prev_axis_states.get(4, -1.0),   # FIX #4: Added default -1.0 idle trigger (was None)
-            "z_axisStatusL": self.controller.prev_axis_states.get(5, -1.0),   # FIX #4: Added default -1.0 idle trigger (was None)
+            "x_axisStatus": self.controller.prev_axis_states.get(self.controller.controller_binds[0], 0.0),     # FIX #4: Added default 0.0 (was None)
+            "y_axisStatus": self.controller.prev_axis_states.get(self.controller.controller_binds[1], 0.0),     # FIX #4: Added default 0.0 (was None)
+            "z_axisStatusR": self.controller.prev_axis_states.get(self.controller.controller_binds[2], -1.0),   # FIX #4: Added default -1.0 idle trigger (was None)
+            "z_axisStatusL": self.controller.prev_axis_states.get(self.controller.controller_binds[3], -1.0),   # FIX #4: Added default -1.0 idle trigger (was None)
             "dpad_left": self.controller.prev_hat_states.get(0, (0, 0))[0],
             "dpad_right": self.controller.prev_hat_states.get(0, (0, 0))[0],
             "dpad_up": self.controller.prev_hat_states.get(0, (0, 0))[1],

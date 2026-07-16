@@ -8,6 +8,8 @@ class ControllerPoller:
     # Poll 50 times per second (1000ms / 20ms = 50Hz)
     POLL_INTERVAL = 5
 
+    controller_binds = []
+
     def __init__(self, controllerID, active_claims, process_name):
         # Polling control flag
         self.is_polling = False
@@ -86,6 +88,11 @@ class ControllerPoller:
                 print(f"  Buttons: {self.joystick.get_numbuttons()}")
                 print(f"  Hats: {self.joystick.get_numhats()}")
                 
+                match self.joystick.get_name():
+                    case "Xbox Series X Controller": self.controller_binds = [0,3,4,5]
+                    case "T.160000M": self.controller_binds = [0,1,9,10] # 9 and 10 will be buttons simulated to be axes
+                    case _: raise ValueError("Unsupported joystick detected! Add axis binds in controllerDrive.py!")
+
                 # Initialize previous state dictionaries
                 for i in range(self.joystick.get_numaxes()):
                     self.prev_axis_states[i] = 0.0
@@ -182,7 +189,11 @@ class ControllerPoller:
                     _log(f"Axis {i} changed: {current_val:.2f}") # <--- REPLACED print()
                     self.prev_axis_states[i] = current_val
                     activity_detected = True 
-                    
+            
+            # Override for T.160000M Z Axis
+            if (self.joystick.get_name() == "T.160000M"):
+                self.prev_axis_states[9] = self.joystick.get_button(3)
+                self.prev_axis_states[10] = self.joystick.get_button(4)
 
             # Check Buttons
             for i in range(self.joystick.get_numbuttons()): # type: ignore
