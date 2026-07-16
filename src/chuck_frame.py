@@ -508,6 +508,8 @@ class AppLogic:
         
             try:
                 self.full_stop_button()
+                if (self.system_enabled):
+                    self.enable_button()
             except Exception as e:
                 print(f"[AppLogic] Error sending stop command on controller disconnect: {e}")
             return

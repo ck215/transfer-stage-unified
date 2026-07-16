@@ -183,7 +183,7 @@ class SerialArduino:
 
     def disable(self):
         if not self._verify_serial():
-            raise ValueError("[SerialDrive] Arduino not detected. Cannot enable system.")
+            raise ValueError("[SerialDrive] Arduino not detected. Cannot disable system.")
         self.ser.write("t".encode('utf-8'))
 
     # Closes serial connection
