@@ -8,6 +8,11 @@ class ControllerPoller:
     # Poll 50 times per second (1000ms / 20ms = 50Hz)
     POLL_INTERVAL = 5
 
+    # Controller binds, format [x,y,+z,-z]
+    controller_binds = []
+    xbox_controller = False
+    T160000M = False
+
     def __init__(self, controllerID, active_claims, process_name):
         # Polling control flag
         self.is_polling = False
@@ -61,11 +66,12 @@ class ControllerPoller:
     # Initalizes Pygame instance, ONCE PER APPLICATION START
     def _initialize_pygame_joystick(self, controllerID):
         self.stop_polling()
+        self.xbox_controller = False
 
         if not controllerID or "None" in controllerID or "Virtual" in controllerID:
             print(f"[{self.process_name}] Joystick set to None.")
             self.joystick = None
-            self.active_claims[self.process_name] = "None Detected"
+            self.active_claims[self.process_name] = "None"
             return False
 
         try:
@@ -85,9 +91,20 @@ class ControllerPoller:
                 print(f"  Axes: {self.joystick.get_numaxes()}")
                 print(f"  Buttons: {self.joystick.get_numbuttons()}")
                 print(f"  Hats: {self.joystick.get_numhats()}")
+
+                # Controller binds -- add more for new controllers!
+
+                match self.joystick.get_name():
+                    case "Xbox Series X Controller":
+                        self.controller_binds = [0,3,4]
+                        self.xbox_controller = True
+                    case "T.16000M":
+                        self.controller_binds = [0,1,2]
+                    case _:
+                        raise ValueError("Controller not recognized!")
                 
                 # Initialize previous state dictionaries
-                for i in range(self.joystick.get_numaxes()):
+                for i in range(self.controller_binds):
                     self.prev_axis_states[i] = 0.0
                 for i in range(self.joystick.get_numbuttons()):
                     self.prev_button_states[i] = 0
@@ -97,7 +114,7 @@ class ControllerPoller:
             except:
                 print("[controllerDrive] No joystick found.")
                 self.joystick = None
-                self.active_claims[self.process_name] = "None Detected"
+                self.active_claims[self.process_name] = "None"
                 pygame.quit()
                 return False
                 
@@ -171,18 +188,39 @@ class ControllerPoller:
 
         try:
             # Check Axes
-            for i in range(self.joystick.get_numaxes()): # type: ignore
+            index = 'x' # track which axis
+            for i in self.controller_binds: # type: ignore
                 current_val = self.joystick.get_axis(i)  # type: ignore
                 
                 # Original polling logic (with smaller deadzone)
                 if abs(current_val) < 0.1: 
                     current_val = 0.0
-                
+
                 if round(current_val, 2) != round(self.prev_axis_states.get(i, 0.0), 2):
                     _log(f"Axis {i} changed: {current_val:.2f}") # <--- REPLACED print()
-                    self.prev_axis_states[i] = current_val
+                    self.prev_axis_states[index] = current_val
                     activity_detected = True 
-                    
+                
+                match index:
+                    case 'x': index = 'y',
+                    case 'y': index = 'z'
+                
+            
+            # If Xbox, add together Z axis commands
+
+            if (self.xbox_controller):
+                # Get raw trigger values (assuming idle is -1)
+                z_trigger_l_raw = self.prev_axis_states.get(5, -1.0)
+                z_trigger_r_raw = self.prev_axis_states.get(4, -1.0)
+
+                # Remap from [-1, 1] to [0, 1] 
+                z_up_value = (z_trigger_l_raw + 1.0) / 2.0
+                z_down_value = (z_trigger_r_raw + 1.0) / 2.0
+
+                # Combine the values. UP (L) is positive, DOWN (R) is negative.
+                self.prev_axis_states['z'] = z_up_value - z_down_value
+            elif (self.T160000M):
+                self.prev_axis_states['z'] = self.joystick.get_button(3)-self.joystick.get_button(4)
 
             # Check Buttons
             for i in range(self.joystick.get_numbuttons()): # type: ignore
