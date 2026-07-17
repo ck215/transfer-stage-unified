@@ -192,8 +192,8 @@ class ControllerPoller:
             
             # Override for T.16000M Z Axis
             if (self.joystick.get_name() == "T.16000M"):
-                self.prev_axis_states[9] = self.joystick.get_button(3)
-                self.prev_axis_states[10] = self.joystick.get_button(4)
+                self.prev_axis_states[9] = self.joystick.get_button(2)
+                self.prev_axis_states[10] = self.joystick.get_button(3)
 
             # Check Buttons
             for i in range(self.joystick.get_numbuttons()): # type: ignore
