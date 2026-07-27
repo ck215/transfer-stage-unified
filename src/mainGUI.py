@@ -170,10 +170,11 @@ class SetupWindow(tk.Tk):
                                 found_devices[device_type] = port
                         time.sleep(0.05)
                     if not device_found:
-                        print(f"[mainGUI] No devices found at abud rate 500000, checking 115200")
+                        print(f"[mainGUI] No devices found at baud rate 500000, checking 115200")
                         raise Exception
             except:
                 try: # check at baud rate 2
+                    print("checking baud rate 2")
                     with serial.Serial(port, baudrate=115200, timeout=2.5) as ser:
                         time.sleep(2.0)
                         ser.reset_input_buffer()
@@ -194,7 +195,7 @@ class SetupWindow(tk.Tk):
                                     found_devices[device_type] = port
                             time.sleep(0.05)
                         if not device_found:
-                            print(f"[mainGUI] No devices found at abud rate 500000, checking 115200")
+                            print(f"[mainGUI] No devices found at baud rate 115200, checking next port")
                             raise Exception
                 except:
                     pass
