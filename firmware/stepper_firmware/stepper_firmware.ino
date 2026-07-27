@@ -306,7 +306,7 @@ void parseHybridSerial() {
 
         // ---OPTION B: TOGGLE ENABLE
         else if (peekChar == 0x74) {
-            Serial.read(); // <-- CRITICAL FIX: Consume the 't' so it leaves the buffer!
+            Serial.read();
 
             if (system_enabled) {
                 system_enabled = false;
@@ -327,6 +327,12 @@ void parseHybridSerial() {
                 zUART.toff(4);
                 delay(30); // Gives drivers a clean 30ms window to power up cleanly
             }
+        }
+
+        else if (peekChar == 0x73) // 's' {
+            Serial.read();
+
+            setup();
         }
 
         // --- OPTION C: AUTONOMOUS TEXT STRING ---
@@ -421,6 +427,8 @@ void setup() {
   Serial.setTimeout(2);
   // Serial2.begin(230400);
   // Serial2.println("\nStarting 3-Axis Controller. Waiting for Python command...");
+
+  Serial.print("DEV: s")
 
   // configure pins
   pinMode(xEN, OUTPUT);

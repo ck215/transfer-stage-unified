@@ -4,8 +4,10 @@ import sys
 import multiprocessing
 from multiprocessing import Manager
 import threading
-import configparser
 import os
+import serial
+import re
+import time
 
 # Import your external device modules
 import stepper_frame
@@ -28,39 +30,6 @@ try:
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
-
-# Fuction to read config file
-def get_config():
-    config = configparser.ConfigParser()
-
-    # Create file if none exists
-    if not os.path.exists("config.ini"):
-        print(f"Configuration file not found. Creating a default config.ini")
-
-        config["COM Ports"] = {
-            "Stepper Probe":"COM1",
-            "DC Probe":"COM2",
-            "Chuck Positioner":"COM3",
-            "Temperature Controller":"COM4",
-        }
-
-        with open("config.ini", "w", encoding="utf-8") as f:
-            config.write(f)
-    
-    else:
-        print(f"Loading config.ini...")
-        config.read("config.ini", encoding = 'utf-8')
-    
-    return config
-
-def write_config(header, device, port):
-    config = configparser.ConfigParser()
-    config.read("config.ini", encoding = 'utf-8')
-
-    config.set(header, device, port)
-
-    with open ("config.ini", "w", encoding="utf-8") as f:
-        config.write(f)
         
 
 # ==========================================
@@ -168,8 +137,63 @@ class SetupWindow(tk.Tk):
         
         grid_frame.columnconfigure(1, weight=1)
         grid_frame.columnconfigure(2, weight=1)
-        
-        default_configuration = get_config()
+
+        # Detect and populate active ports
+        found_devices = {}
+        DEVICE_MAP = {
+            's': "Stepper Probe",
+            'd': "DC Probe",
+            'c': "Chuck Positioner",
+            't': "Temperature Controller"
+        }
+        DEV_PATTERN = re.compile(r"DEV:\s*([sdct])")
+        for port in self.detected_ports:
+
+            try: # check at baud rate 1
+                with serial.Serial(port, baudrate=500000, timeout=100000) as ser:
+                    ser.reset_input_buffer()
+                    ser.reset_output_buffer()
+                    time.sleep(0.1)
+                    ser.write(b's')
+                    response_bytes = ser.readline()
+                    if not response_bytes:
+                        raise Exception
+                    response_str = response_bytes.decode('utf-8', errors='ignore')
+
+                    match = DEV_PATTERN.search(response_str)
+                    if match:
+                        code = match.group(1)
+                        device_type = DEVICE_MAP.get(code, "unknown")
+                        if (device_type != "unknown"):
+                            found_devices[device_type] = port
+                        else:
+                            raise Exception
+                    else:
+                        raise Exception
+            except:
+                try: # check at baud rate 2
+                    with serial.Serial(port, baudrate=115200, timeout=100000) as ser:
+                        ser.reset_input_buffer()
+                        ser.reset_output_buffer()
+                        time.sleep(0.1)
+                        ser.write(b's')
+                        response_bytes = ser.readline()
+                        if not response_bytes:
+                            raise Exception
+                        response_str = response_bytes.decode('utf-8', errors='ignore')
+
+                        match = DEV_PATTERN.search(response_str)
+                        if match:
+                            code = match.group(1)
+                            device_type = DEVICE_MAP.get(code, "unknown")
+                            if (device_type != "unknown"):
+                                found_devices[device_type] = port
+                            else:
+                                raise Exception
+                        else:
+                            raise Exception
+                except:
+                    pass
 
         for idx, device in enumerate(self.devices):
             check_var = tk.BooleanVar(value=False)
@@ -178,16 +202,17 @@ class SetupWindow(tk.Tk):
             chk = ttk.Checkbutton(grid_frame, text=device, variable=check_var, 
                                   command=lambda d=device: self.toggle_dropdown_state(d))
             chk.grid(row=idx+1, column=0, padx=10, pady=10, sticky="w")
+
             
-            # Check for pre-existing configuration to populate port
+            # load detected arduinos
             try:
-                if (default_configuration.get("COM Ports", device) in self.detected_ports):
-                    port_var = tk.StringVar(value=default_configuration.get("COM Ports", device))
+                if (found_devices.get(device)):
+                    port_var = tk.StringVar(value=found_devices.get(device))
                 else:
                     raise Exception
-            except:
+            except: # use dummy vars
                 port_var = tk.StringVar(value=self.detected_ports[0])
-            self.port_vars[device] = port_var
+                self.port_vars[device] = port_var
             
             
             dropdown = ttk.OptionMenu(grid_frame, port_var, self.detected_ports[self.detected_ports.index(port_var.get())], *self.detected_ports)

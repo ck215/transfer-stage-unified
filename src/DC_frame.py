@@ -80,8 +80,6 @@ class DCFrame:
         self.start_stepping_button: tk.Button
         self.full_stop_button: tk.Button
         self.color_test_button: tk.Button
-        self.connect_controller_button: tk.Button
-        self.controller_log_button: tk.Button
 
         # Call the main window setup function that formats using outline below
         self._main_window()
@@ -186,23 +184,11 @@ class DCFrame:
         self.color_test_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         row_counter += 1
         
-        # Connect Controller Button
-        self.connect_controller_button = tk.Button(self.root, text="Connect Controller",
-        bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
-        self.connect_controller_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
-        row_counter += 1
-
         # Serial Reconnect Button
         self.serial_reconnect_button = tk.Button(self.root, text="Serial Reconnect",
         bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
         self.serial_reconnect_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         row_counter += 1
-
-        # Debug header
-        tk.Label(self.root, text="--- Debug or Unfinished ---", font=('Arial', 10, 'bold')).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
-        self.controller_log_button = tk.Button(self.root, text="Controller Log Window",
-        bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
-        self.controller_log_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         
     # Function to initialize the controller log window
     def open_controller_log_window(self, is_controller_connected: bool):
@@ -314,8 +300,6 @@ class AppLogic:
         self.gui.manual_mode_button.config(command=self.enter_manual_mode_button)
         self.gui.start_stepping_button.config(command=self.start_stepping_button)
         self.gui.full_stop_button.config(command=self.full_stop_button)
-        self.gui.connect_controller_button.config(command=self.connect_controller_button)
-        self.gui.controller_log_button.config(command=self.open_controller_log_window)
         self.gui.serial_reconnect_button.config(command=self.serial_reconnect_button)
         self.gui.controller_dropdown.bind("<<ComboboxSelected>>", self.on_controller_dropdown_selected)
         
@@ -505,15 +489,6 @@ class AppLogic:
         
         # Begin manual loop
         self._manual_mode_loop()
-    
-    # Connects to controller when button clicked in GUI      
-    def connect_controller_button(self):
-        print("\n[AppLogic] CONNECT CONTROLLER button clicked.")
-        success = self.controller.connect_controller()
-        if success:
-            print("[AppLogic] Controller connected successfully.")
-        else:
-            print("[AppLogic] Failed to connect controller.")
             
     # Passes controller axis states to a dictionary for serialDrive to send to arduino
     # Added dpad states
