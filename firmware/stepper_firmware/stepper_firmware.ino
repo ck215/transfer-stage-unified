@@ -484,7 +484,7 @@ void setup() {
     z_axis.setMaxSpeed(800);
   }
 
-  delay(5); // TODO: don't know why this is here but might be important so I'm keeping it
+  delay(1500); // TODO: don't know why this is here but might be important so I'm keeping it
 }
 
 void status_update_print_serial() 
