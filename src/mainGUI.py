@@ -172,7 +172,7 @@ class SetupWindow(tk.Tk):
                         raise Exception
             except:
                 try: # check at baud rate 2
-                    with serial.Serial(port, baudrate=115200, timeout=100) as ser:
+                    with serial.Serial(port, baudrate=115200, timeout=.1) as ser:
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
                         time.sleep(0.1)
@@ -248,9 +248,6 @@ class SetupWindow(tk.Tk):
             if self.device_vars[device].get():
                 port = self.port_vars[device].get()
                 controller = self.controller_vars[device].get()
-                
-                # Store configuration in config.ini
-                write_config("COM Ports", device, port)
 
                 active_configs.append({
                     "device": device, 
@@ -289,7 +286,7 @@ class SetupWindow(tk.Tk):
             port = config["port"]
             controllerID = config["controller"]
 
-            self.active_claims[device] = controller
+            self.active_claims[device] = controllerID
             
             p = None
             if device == "Stepper Probe":
