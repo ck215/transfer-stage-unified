@@ -191,10 +191,10 @@ class SetupWindow(tk.Tk):
                                 found_devices[device_type] = port
                                 print(f"[mainGUI] Device detected: {device_type}")
                             else:
+                                print("[mainGUI] No devices found at baud rate 115200, moving to next port")
                                 raise Exception
                         else:
-                            print("[mainGUI] No devices found at baud rate 115200, moving to next port")
-                            raise Exception
+                            print("[mainGUI] No match on ports")
                 except:
                     pass
 
