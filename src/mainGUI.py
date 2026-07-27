@@ -157,7 +157,7 @@ class SetupWindow(tk.Tk):
                     ser.write(b"s\n")
                     start_time = time.time()
                     device_found = False
-                    while (time.time() - start_time < 1.5):
+                    while ((time.time() - start_time < 1.5) and not device_found):
                         if ser.in_waiting > 0: 
                             response_bytes = ser.read(ser.in_waiting)
                         else:
