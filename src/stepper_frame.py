@@ -9,9 +9,14 @@ import serial.tools.list_ports
 # GUI library
 import tkinter as tk
 from tkinter import ttk
+from tkinter import filedialog
+from pathlib import Path
 
 # Timings library
-import time 
+import time
+
+# GCode parse
+from gcodeparser import parse_gcode_lines
 
 # Arduino search function
 def get_arduino_port():
@@ -48,7 +53,6 @@ class StepperFrame:
 
     # Member funct. to initialize the GUI
     def __init__(self, root: tk.Tk):
-        
         # Initialize root window
         self.root = root
         self.root.title("Stepper Probe Controller")
@@ -70,8 +74,6 @@ class StepperFrame:
         self.entry_y_dist: tk.Entry
         self.entry_z_dist: tk.Entry
         self.entry_full_speed: tk.Entry
-        self.entry_enable: tk.Entry
-        self.entry_brake_distance: tk.Entry
         self.entry_man_full_speed: tk.Entry
 
         # Button Widgets
@@ -81,8 +83,7 @@ class StepperFrame:
         self.start_stepping_button: tk.Button
         self.full_stop_button: tk.Button
         self.color_test_button: tk.Button
-        self.connect_controller_button: tk.Button
-        self.controller_log_button: tk.Button
+        self.run_script_button: tk.Button
 
         # Call the main window setup function that formats using outline below
         self._main_window()
@@ -107,13 +108,13 @@ class StepperFrame:
         tk.Label(self.root, text="MUST be 0 at startup, if 2 then error", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=0); row_counter+=1
 
         tk.Label(self.root, text="X Position:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Label(self.root, textvariable=self.pos_x_var, font=('Arial', 10, 'bold'), fg='blue').grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
+        tk.Label(self.root, textvariable=self.pos_x_var, font=('Arial', 10, 'bold'), fg='red',bg=bg_main).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
 
         tk.Label(self.root, text="Y Position:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Label(self.root, textvariable=self.pos_y_var, font=('Arial', 10, 'bold'), fg='blue').grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
+        tk.Label(self.root, textvariable=self.pos_y_var, font=('Arial', 10, 'bold'), fg='red', bg=bg_main).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
 
         tk.Label(self.root, text="Z Position:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Label(self.root, textvariable=self.pos_z_var, font=('Arial', 10, 'bold'), fg='blue').grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
+        tk.Label(self.root, textvariable=self.pos_z_var, font=('Arial', 10, 'bold'), fg='red', bg=bg_main).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
         # END NEW
 
         # INPUT FIELDS
@@ -156,6 +157,16 @@ class StepperFrame:
         tk.Label(self.root, text="Z Steps:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         self.entry_z_dist = tk.Entry(self.root); self.entry_z_dist.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_z_dist.insert(0, "0"); row_counter += 1
 
+        # Import script button
+        self.file_frame = tk.Frame(self.root)
+        self.file_frame.configure(bg=bg_main)
+        self.file_frame.grid(row=row_counter,column=1, padx=5, pady=3, sticky='w')
+        tk.Label(self.root, text="Script", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        self.select_script_button = tk.Button(self.file_frame, text="Select", width=5)
+        self.select_script_button.grid(row=0, column=0, padx=(13,0), pady=2); row_counter+=1
+        self.selected_script_label = tk.Label(self.file_frame, text="None", width=10, bg=bg_main, fg='white')
+        self.selected_script_label.grid(row=0, column=1, padx=2, pady=2, sticky='w')
+
         tk.Label(self.root, text="--- Velocity Control ---", font=('Arial', 10, 'bold'), bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
         
         tk.Label(self.root, text="<= 1600", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=0); row_counter+=1
@@ -165,13 +176,6 @@ class StepperFrame:
         
         tk.Label(self.root, text="Manual Mode Max Speed (Microsteps/Sec):", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         self.entry_man_full_speed = tk.Entry(self.root); self.entry_man_full_speed.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_man_full_speed.insert(0, "400"); row_counter += 1
-
-        
-        tk.Label(self.root, text="Enable System (1/0)", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        self.entry_enable = tk.Entry(self.root); self.entry_enable.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_enable.insert(0, "1"); row_counter += 1
-        
-        tk.Label(self.root, text="Brake Distance (Counts):", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        self.entry_brake_distance = tk.Entry(self.root); self.entry_brake_distance.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_brake_distance.insert(0, "0"); row_counter += 1
 
         # BUTTONS HEADER
         tk.Label(self.root, text="--- Motor Commands ---", bg=bg_main, fg=fg_accent, font=('Arial', 10, 'bold')).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
@@ -195,7 +199,13 @@ class StepperFrame:
         self.start_stepping_button = tk.Button(self.root, text="Start Stepping",
         bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
         self.start_stepping_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew'); row_counter += 1
+
+        # Run Script Button
+        self.run_script_button = tk.Button(self.root, text="Run Script",
+        bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
+        self.run_script_button.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew'); row_counter += 1
         
+        # Full Stop Button
         self.full_stop_button = tk.Button(self.root, text="Full Stop",
         bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
         self.full_stop_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew'); row_counter += 1
@@ -209,23 +219,11 @@ class StepperFrame:
         self.color_test_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         row_counter += 1
 
-        # Connect Controller Button
-        self.connect_controller_button = tk.Button(self.root, text="Connect Controller",
-        bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
-        self.connect_controller_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
-        row_counter += 1
-
         # Serial Reconnect Button
         self.serial_reconnect_button = tk.Button(self.root, text="Serial Reconnect",
         bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
         self.serial_reconnect_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         row_counter += 1
-
-        # Debug header
-        tk.Label(self.root, text="--- Debug or Unfinished ---", font=('Arial', 10, 'bold'), bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
-        self.controller_log_button = tk.Button(self.root, text="Controller Log Window",
-        bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
-        self.controller_log_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         
     # Function to initialize the controller log window
     def open_controller_log_window(self, is_controller_connected: bool):
@@ -286,8 +284,8 @@ class StepperFrame:
             "y_step_size": self.entry_y_step.get(),              
             "z_step_size": self.entry_z_step.get(),              
             "full_speed": self.entry_full_speed.get(),           
-            "slow_speed": self.entry_enable.get(),           
-            "brake_distance": self.entry_brake_distance.get(),   
+            "slow_speed": 0,           
+            "brake_distance": 0,   
             "x_dist": self.entry_x_dist.get(),                   
             "y_dist": self.entry_y_dist.get(),                   
             "z_dist": self.entry_z_dist.get(),  
@@ -318,6 +316,7 @@ class StepperFrame:
 class AppLogic:
 
     system_enabled = False
+    open_script = ''
 
     def __init__(self, root: tk.Tk, gui: StepperFrame, controller: controllerDrive.ControllerPoller, serial: serialDrive.SerialArduino, active_claims, process_name):
         
@@ -342,10 +341,10 @@ class AppLogic:
         self.gui.enable_button.config(command=self.enable_button)
         self.gui.start_stepping_button.config(command=self.start_stepping_button)
         self.gui.full_stop_button.config(command=self.full_stop_button)
-        self.gui.connect_controller_button.config(command=self.connect_controller_button)
-        self.gui.controller_log_button.config(command=self.open_controller_log_window)
         self.gui.serial_reconnect_button.config(command=self.serial_reconnect_button)
         self.gui.controller_dropdown.bind("<<ComboboxSelected>>", self.on_controller_dropdown_selected)
+        self.gui.select_script_button.config(command=self.select_script_button)
+        self.gui.run_script_button.config(command=self.run_script_button)
         
         # Protocal for window closing
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -450,6 +449,16 @@ class AppLogic:
         except Exception as e:
             print(f"[AppLogic] Error sending stop on mode switch: {e}")
 
+    def select_script_button(self):
+        filepath = filedialog.askopenfilename(
+        title="Select a File",
+        filetypes=[("All Files", "*.*"), ("Text Files", "*.txt")]
+        )
+        if filepath:
+            # Display just the filename (or use filepath for full path)
+            self.gui.selected_script_label.config(text=Path(filepath).name)
+            self.open_script = Path(filepath).name
+
     # Enables or disables controllers, i.e. power to motors
     def enable_button(self):
         print("\n[AppLogic] ENABLE/DISABLE button clicked.")
@@ -468,7 +477,6 @@ class AppLogic:
                 bg='darkred', fg='black', font=('Arial', 10, 'bold'))
             except ValueError as e:
                 print(e)
-
 
     # Sends command using current GUI parameters over serial
     def start_stepping_button(self):
@@ -499,6 +507,18 @@ class AppLogic:
             
         except Exception as e:
             print(f"[AppLogic] Error in stopping stepping: {e}")
+    
+    def run_script_button(self):
+        print("[AppLogic] RUN SCRIPT button clicked.")
+        try:
+            with open(self.open_script, 'r') as f:
+                print("1!")
+                for line in parse_gcode_lines(f, include_comments=False):
+                    print("2!")
+                    print(line)
+        except:
+            print("[AppLogic] Script parse failed. Perhaps selected file is not gcode.")
+        
 
     # Manual mode loop, polls controller and sends commands
     def _manual_mode_loop(self):
@@ -560,15 +580,6 @@ class AppLogic:
         
         # Begin manual loop
         self._manual_mode_loop()
-    
-    # Connects to controller when button clicked in GUI      
-    def connect_controller_button(self):
-        print("\n[AppLogic] CONNECT CONTROLLER button clicked.")
-        success = self.controller.connect_controller()
-        if success:
-            print("[AppLogic] Controller connected successfully.")
-        else:
-            print("[AppLogic] Failed to connect controller.")
             
     # Passes controller axis states to a dictionary for serialDrive to send to arduino
     def get_controller_params(self):

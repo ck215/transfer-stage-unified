@@ -70,8 +70,6 @@ class ChuckFrame:
         self.entry_y_dist: tk.Entry
         self.entry_z_dist: tk.Entry
         self.entry_full_speed: tk.Entry
-        self.entry_enable: tk.Entry
-        self.entry_brake_distance: tk.Entry
         self.entry_man_full_speed: tk.Entry
 
         # Button Widgets
@@ -81,8 +79,6 @@ class ChuckFrame:
         self.start_stepping_button: tk.Button
         self.full_stop_button: tk.Button
         self.color_test_button: tk.Button
-        self.connect_controller_button: tk.Button
-        self.controller_log_button: tk.Button
 
         # Call the main window setup function that formats using outline below
         self._main_window()
@@ -107,13 +103,13 @@ class ChuckFrame:
         tk.Label(self.root, text="MUST be 0 at startup, if 2 then error", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=0); row_counter+=1
 
         tk.Label(self.root, text="X Position:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Label(self.root, textvariable=self.pos_x_var, font=('Arial', 10, 'bold'), fg='blue').grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
+        tk.Label(self.root, textvariable=self.pos_x_var, font=('Arial', 10, 'bold'), fg='red', bg=bg_main).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
 
         tk.Label(self.root, text="Y Position:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Label(self.root, textvariable=self.pos_y_var, font=('Arial', 10, 'bold'), fg='blue').grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
+        tk.Label(self.root, textvariable=self.pos_y_var, font=('Arial', 10, 'bold'), fg='red', bg=bg_main).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
 
         tk.Label(self.root, text="Z Position:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Label(self.root, textvariable=self.pos_z_var, font=('Arial', 10, 'bold'), fg='blue').grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
+        tk.Label(self.root, textvariable=self.pos_z_var, font=('Arial', 10, 'bold'), fg='red', bg=bg_main).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
         # END NEW
 
         # INPUT FIELDS
@@ -166,13 +162,6 @@ class ChuckFrame:
         tk.Label(self.root, text="Manual Mode Max Speed (Microsteps/Sec):", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         self.entry_man_full_speed = tk.Entry(self.root); self.entry_man_full_speed.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_man_full_speed.insert(0, "400"); row_counter += 1
 
-        
-        tk.Label(self.root, text="Enable System (1/0)", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        self.entry_enable = tk.Entry(self.root); self.entry_enable.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_enable.insert(0, "1"); row_counter += 1
-        
-        tk.Label(self.root, text="Brake Distance (Counts):", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        self.entry_brake_distance = tk.Entry(self.root); self.entry_brake_distance.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_brake_distance.insert(0, "0"); row_counter += 1
-
         # BUTTONS HEADER
         tk.Label(self.root, text="--- Motor Commands ---", bg=bg_main, fg=fg_accent, font=('Arial', 10, 'bold')).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
 
@@ -209,23 +198,11 @@ class ChuckFrame:
         self.color_test_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         row_counter += 1
 
-        # Connect Controller Button
-        self.connect_controller_button = tk.Button(self.root, text="Connect Controller",
-        bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
-        self.connect_controller_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
-        row_counter += 1
-
         # Serial Reconnect Button
         self.serial_reconnect_button = tk.Button(self.root, text="Serial Reconnect",
         bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
         self.serial_reconnect_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         row_counter += 1
-
-        # Debug header
-        tk.Label(self.root, text="--- Debug or Unfinished ---", font=('Arial', 10, 'bold'), bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
-        self.controller_log_button = tk.Button(self.root, text="Controller Log Window",
-        bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
-        self.controller_log_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew')
         
     # Function to initialize the controller log window
     def open_controller_log_window(self, is_controller_connected: bool):
@@ -286,8 +263,8 @@ class ChuckFrame:
             "y_step_size": self.entry_y_step.get(),              
             "z_step_size": self.entry_z_step.get(),              
             "full_speed": self.entry_full_speed.get(),           
-            "slow_speed": self.entry_enable.get(),           
-            "brake_distance": self.entry_brake_distance.get(),   
+            "slow_speed": 0,           
+            "brake_distance": 0,   
             "x_dist": self.entry_x_dist.get(),                   
             "y_dist": self.entry_y_dist.get(),                   
             "z_dist": self.entry_z_dist.get(),  
@@ -342,8 +319,6 @@ class AppLogic:
         self.gui.enable_button.config(command=self.enable_button)
         self.gui.start_stepping_button.config(command=self.start_stepping_button)
         self.gui.full_stop_button.config(command=self.full_stop_button)
-        self.gui.connect_controller_button.config(command=self.connect_controller_button)
-        self.gui.controller_log_button.config(command=self.open_controller_log_window)
         self.gui.serial_reconnect_button.config(command=self.serial_reconnect_button)
         self.gui.controller_dropdown.bind("<<ComboboxSelected>>", self.on_controller_dropdown_selected)
         
@@ -560,15 +535,6 @@ class AppLogic:
         
         # Begin manual loop
         self._manual_mode_loop()
-    
-    # Connects to controller when button clicked in GUI      
-    def connect_controller_button(self):
-        print("\n[AppLogic] CONNECT CONTROLLER button clicked.")
-        success = self.controller.connect_controller()
-        if success:
-            print("[AppLogic] Controller connected successfully.")
-        else:
-            print("[AppLogic] Failed to connect controller.")
             
     # Passes controller axis states to a dictionary for serialDrive to send to arduino
     def get_controller_params(self):
