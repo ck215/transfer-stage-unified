@@ -150,11 +150,11 @@ class SetupWindow(tk.Tk):
         for port in self.detected_ports:
             print(f"[mainGUI] Scanning for devices on {port}...")
             try: # check at baud rate 1
-                with serial.Serial(port, baudrate=500000, timeout=.1) as ser:
+                with serial.Serial(port, baudrate=500000, timeout=.1, write_timeout=.2) as ser:
                     time.sleep(2.0)
                     ser.reset_input_buffer()
                     ser.reset_output_buffer()
-                    ser.write(b"s\n", write_timeout=0.2)
+                    ser.write(b"s\n")
                     start_time = time.time()
                     device_found = False
                     while (time.time() - start_time < 1.5):
@@ -172,7 +172,7 @@ class SetupWindow(tk.Tk):
                             if (device_type != "unknown"):
                                 found_devices[device_type] = port
                                 device_found = True
-                                print(f"[mainGUI] Device {device} detected on {port}")
+                                print(f"[mainGUI] Device {device_type} detected on {port}")
                             else:
                                 print("[mainGUI] Device identification failed")
                         time.sleep(0.05)
@@ -181,11 +181,11 @@ class SetupWindow(tk.Tk):
                         raise Exception
             except:
                 try: # check at baud rate 2
-                    with serial.Serial(port, baudrate=115200, timeout=.1) as ser:
+                    with serial.Serial(port, baudrate=115200, timeout=.1, write_timeout=.2) as ser:
                         time.sleep(2.0)
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
-                        ser.write(b"s\n", write_timeout = 0.2)
+                        ser.write(b"s\n")
                         start_time = time.time()
                         device_found = False
                         while (time.time() - start_time < 1.5):
@@ -203,7 +203,7 @@ class SetupWindow(tk.Tk):
                                 if (device_type != "unknown"):
                                     found_devices[device_type] = port
                                     device_found = True
-                                    print(f"[mainGUI] Device {device} detected on {port}")
+                                    print(f"[mainGUI] Device {device_type} detected on {port}")
                                 else:
                                     print("[mainGUI] Device identification failed")
                             time.sleep(0.05)
