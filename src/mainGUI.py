@@ -162,6 +162,7 @@ class SetupWindow(tk.Tk):
 
                     match = DEV_PATTERN.search(response_str)
                     if match:
+                        print("[mainGUI] Match on port")
                         code = match.group(1)
                         device_type = DEVICE_MAP.get(code, "unknown")
                         if (device_type != "unknown"):
@@ -170,8 +171,7 @@ class SetupWindow(tk.Tk):
                             print("[mainGUI] No devices found at baud rate 500000, checking 115200")
                             raise Exception
                     else:
-                        print("[mainGUI] No math on ports")
-
+                        print("[mainGUI] No match on ports")
             except:
                 try: # check at baud rate 2
                     with serial.Serial(port, baudrate=115200, timeout=.1) as ser:
@@ -186,6 +186,7 @@ class SetupWindow(tk.Tk):
 
                         match = DEV_PATTERN.search(response_str)
                         if match:
+                            print("[mainGUI] Match on port")
                             code = match.group(1)
                             device_type = DEVICE_MAP.get(code, "unknown")
                             if (device_type != "unknown"):
