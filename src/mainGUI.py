@@ -173,6 +173,8 @@ class SetupWindow(tk.Tk):
                                 found_devices[device_type] = port
                                 device_found = True
                                 print(f"[mainGUI] Device {device} detected on {port}")
+                            else:
+                                print("[mainGUI] Device identification failed")
                         time.sleep(0.05)
                     if not device_found:
                         print(f"[mainGUI] No devices found at baud rate 500000, checking 115200")
@@ -202,6 +204,8 @@ class SetupWindow(tk.Tk):
                                     found_devices[device_type] = port
                                     device_found = True
                                     print(f"[mainGUI] Device {device} detected on {port}")
+                                else:
+                                    print("[mainGUI] Device identification failed")
                             time.sleep(0.05)
                         if not device_found:
                             print(f"[mainGUI] No devices found at baud rate 115200, checking next port")
