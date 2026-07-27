@@ -166,12 +166,13 @@ class SetupWindow(tk.Tk):
 
                         match = DEV_PATTERN.search(response_str)
                         if match:
-                            print("[mainGUI] Match on port")
+                            print("[mainGUI] Device detected, identifying")
                             code = match.group(1)
                             device_type = DEVICE_MAP.get(code, "unknown")
                             if (device_type != "unknown"):
                                 found_devices[device_type] = port
                                 device_found = True
+                                print(f"[mainGUI] Device {device} detected on {port}")
                         time.sleep(0.05)
                     if not device_found:
                         print(f"[mainGUI] No devices found at baud rate 500000, checking 115200")
@@ -194,11 +195,13 @@ class SetupWindow(tk.Tk):
 
                             match = DEV_PATTERN.search(response_str)
                             if match:
-                                print("[mainGUI] Match on port")
+                                print("[mainGUI] Device detected, identifying")
                                 code = match.group(1)
                                 device_type = DEVICE_MAP.get(code, "unknown")
                                 if (device_type != "unknown"):
                                     found_devices[device_type] = port
+                                    device_found = True
+                                    print(f"[mainGUI] Device {device} detected on {port}")
                             time.sleep(0.05)
                         if not device_found:
                             print(f"[mainGUI] No devices found at baud rate 115200, checking next port")
