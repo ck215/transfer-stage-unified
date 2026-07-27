@@ -212,7 +212,7 @@ class SetupWindow(tk.Tk):
                     raise Exception
             except: # use dummy vars
                 port_var = tk.StringVar(value=self.detected_ports[0])
-                self.port_vars[device] = port_var
+            self.port_vars[device] = port_var
             
             
             dropdown = ttk.OptionMenu(grid_frame, port_var, self.detected_ports[self.detected_ports.index(port_var.get())], *self.detected_ports)
