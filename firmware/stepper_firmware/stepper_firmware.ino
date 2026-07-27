@@ -422,6 +422,7 @@ void setup() {
   // Serial2.begin(230400);
   // Serial2.println("\nStarting 3-Axis Controller. Waiting for Python command...");
 
+  delay(10)
   Serial.print("DEV: s\n");
 
   // configure pins
@@ -484,7 +485,7 @@ void setup() {
     z_axis.setMaxSpeed(800);
   }
 
-  delay(1500); // TODO: don't know why this is here but might be important so I'm keeping it
+  delay(5); // TODO: don't know why this is here but might be important so I'm keeping it
 }
 
 void status_update_print_serial() 

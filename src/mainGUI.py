@@ -175,10 +175,10 @@ class SetupWindow(tk.Tk):
             except:
                 try: # check at baud rate 2
                     with serial.Serial(port, baudrate=115200, timeout=.1) as ser:
+                        ser.reset_input_buffer()
                         ser.reset_output_buffer()
                         time.sleep(1.5)
                         response_bytes = ser.readline()
-                        ser.reset_input_buffer()
                         if not response_bytes:
                             print("[mainGUI] No devices found at baud rate 115200, moving to next port")
                             raise Exception
