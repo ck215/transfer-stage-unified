@@ -329,7 +329,7 @@ void parseHybridSerial() {
             }
         }
 
-        else if (peekChar == 0x73) // 's' {
+        else if (peekChar == 0x73) { // 's'
             Serial.read();
             setup();
         }
@@ -427,7 +427,7 @@ void setup() {
   // Serial2.begin(230400);
   // Serial2.println("\nStarting 3-Axis Controller. Waiting for Python command...");
 
-  Serial.print("DEV: s\n")
+  Serial.print("DEV: s\n");
 
   // configure pins
   pinMode(xEN, OUTPUT);
