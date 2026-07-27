@@ -329,7 +329,12 @@ void parseHybridSerial() {
             }
         }
 
-        // --- OPTION C: AUTONOMOUS TEXT STRING ---
+        else if (peekChar == 0x73) { // --- OPTION C: IDENTITY QUERY ---
+            Serial.read();
+            Serial.println("DEV: s");
+        }
+        
+        // --- OPTION D: AUTONOMOUS TEXT STRING ---
         else {
             parseSerialAuto(); // Uses your original text string logic
         }
@@ -421,9 +426,6 @@ void setup() {
   Serial.setTimeout(2);
   // Serial2.begin(230400);
   // Serial2.println("\nStarting 3-Axis Controller. Waiting for Python command...");
-
-  delay(10);
-  Serial.print("DEV: s\n");
 
   // configure pins
   pinMode(xEN, OUTPUT);

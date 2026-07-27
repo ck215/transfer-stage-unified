@@ -151,36 +151,15 @@ class SetupWindow(tk.Tk):
             print(f"[mainGUI] Scanning for devices on {port}...")
             try: # check at baud rate 1
                 with serial.Serial(port, baudrate=500000, timeout=2.5) as ser:
+                    time.sleep(2.0)
                     ser.reset_input_buffer()
                     ser.reset_output_buffer()
-                    response_bytes = ser.readline()
-                    if not response_bytes:
-                        print("[mainGUI] No devices found at baud rate 500000, checking 115200")
-                        raise Exception
-                    response_str = response_bytes.decode('utf-8', errors='ignore')
-
-                    match = DEV_PATTERN.search(response_str)
-                    if match:
-                        print("[mainGUI] Match on port")
-                        code = match.group(1)
-                        device_type = DEVICE_MAP.get(code, "unknown")
-                        if (device_type != "unknown"):
-                            found_devices[device_type] = port
-                        else:
-                            print("[mainGUI] No devices found at baud rate 500000, checking 115200")
-                            raise Exception
-                    else:
-                        print("[mainGUI] No match on ports")
-            except:
-                try: # check at baud rate 2
-                    with serial.Serial(port, baudrate=115200, timeout=2.5) as ser:
-                        ser.reset_input_buffer()
-                        ser.reset_output_buffer()
+                    ser.write(b"s\n")
+                    start_time = time.time()
+                    device_found = False
+                    while (time.time() - start_time < 1.5):
                         response_bytes = ser.readline()
-                        if not response_bytes:
-                            print("[mainGUI] No devices found at baud rate 115200, moving to next port")
-                            raise Exception
-                        response_str = response_bytes.decode('utf-8', errors='ignore')
+                        response_str = response_bytes.decode('utf-8', errors='ignore').strip()
 
                         match = DEV_PATTERN.search(response_str)
                         if match:
@@ -189,12 +168,34 @@ class SetupWindow(tk.Tk):
                             device_type = DEVICE_MAP.get(code, "unknown")
                             if (device_type != "unknown"):
                                 found_devices[device_type] = port
-                                print(f"[mainGUI] Device detected: {device_type}")
-                            else:
-                                print("[mainGUI] No devices found at baud rate 115200, moving to next port")
-                                raise Exception
-                        else:
-                            print("[mainGUI] No match on ports")
+                        time.sleep(0.05)
+                    if not device_found:
+                        print(f"[mainGUI] No devices found at abud rate 500000, checking 115200")
+                        raise Exception
+            except:
+                try: # check at baud rate 2
+                    with serial.Serial(port, baudrate=115200, timeout=2.5) as ser:
+                        time.sleep(2.0)
+                        ser.reset_input_buffer()
+                        ser.reset_output_buffer()
+                        ser.write(b"s\n")
+                        start_time = time.time()
+                        device_found = False
+                        while (time.time() - start_time < 1.5):
+                            response_bytes = ser.readline()
+                            response_str = response_bytes.decode('utf-8', errors='ignore').strip()
+
+                            match = DEV_PATTERN.search(response_str)
+                            if match:
+                                print("[mainGUI] Match on port")
+                                code = match.group(1)
+                                device_type = DEVICE_MAP.get(code, "unknown")
+                                if (device_type != "unknown"):
+                                    found_devices[device_type] = port
+                            time.sleep(0.05)
+                        if not device_found:
+                            print(f"[mainGUI] No devices found at abud rate 500000, checking 115200")
+                            raise Exception
                 except:
                     pass
 
