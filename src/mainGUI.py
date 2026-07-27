@@ -188,6 +188,7 @@ class SetupWindow(tk.Tk):
                             device_type = DEVICE_MAP.get(code, "unknown")
                             if (device_type != "unknown"):
                                 found_devices[device_type] = port
+                                print(f"[mainGUI] Device detected: {device_type}")
                             else:
                                 raise Exception
                         else:
