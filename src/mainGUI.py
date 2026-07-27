@@ -177,41 +177,11 @@ class SetupWindow(tk.Tk):
                                 print("[mainGUI] Device identification failed")
                         time.sleep(0.05)
                     if not device_found:
-                        print(f"[mainGUI] No devices found at baud rate 500000, checking 115200")
+                        print(f"[mainGUI] No devices found")
                         raise Exception
             except:
-                try: # check at baud rate 2
-                    with serial.Serial(port, baudrate=115200, timeout=.1, write_timeout=.2) as ser:
-                        ser.reset_input_buffer()
-                        ser.reset_output_buffer()
-                        time.sleep(0.05)
-                        ser.write(b"s\n")
-                        start_time = time.time()
-                        device_found = False
-                        while (time.time() - start_time < 1.5):
-                            if ser.in_waiting > 0:
-                                response_bytes = ser.read(ser.in_waiting)
-                            else:
-                                continue
-                            response_str = response_bytes.decode('utf-8', errors='ignore').strip()
-
-                            match = DEV_PATTERN.search(response_str)
-                            if match:
-                                print("[mainGUI] Device detected, identifying")
-                                code = match.group(1)
-                                device_type = DEVICE_MAP.get(code, "unknown")
-                                if (device_type != "unknown"):
-                                    found_devices[device_type] = port
-                                    device_found = True
-                                    print(f"[mainGUI] Device {device_type} detected on {port}")
-                                else:
-                                    print("[mainGUI] Device identification failed")
-                            time.sleep(0.05)
-                        if not device_found:
-                            print(f"[mainGUI] No devices found at baud rate 115200, checking next port")
-                            raise Exception
-                except:
-                    pass
+                print("[mainGUI] No devices found")
+                pass
 
         for idx, device in enumerate(self.devices):
             check_var = tk.BooleanVar(value=False)
