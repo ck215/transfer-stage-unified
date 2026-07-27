@@ -61,9 +61,9 @@ void setup() {
   setpoint = ktc.readCelsius() + offset;          // initial setpoint
   endpoint = 0;                                   // final desired temperature, set to zero 
   spdelay = 5;                                      // set setpoint delay in seconds (amount of time it takes to increase setpoint)
-  kp = 1;                                           // Proportion constant
-  ki = 0.6;                                           // Diff constant
-  kd = 0;                                           // Int constant
+  kp = 2.0;                                           // Proportion constant
+  ki = 0.5;                                           // Diff constant
+  kd = 0.1;                                           // Int constant
   starttime = millis();
 }
 
