@@ -290,7 +290,7 @@ void parseHybridSerial() {
                         current_state = IDLE;
                     }
                     FULL_SPEED = (int)incomingPacket.manual_jog_speed;
-                    manual_x_value = incomingPacket.x_axisStatus;
+                    manual_x_value = -1*incomingPacket.x_axisStatus;
                     manual_y_value = incomingPacket.y_axisStatus;
                     manual_z_value = incomingPacket.z_axisStatus;
                 }
