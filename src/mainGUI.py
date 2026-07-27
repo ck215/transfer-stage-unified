@@ -150,10 +150,9 @@ class SetupWindow(tk.Tk):
         for port in self.detected_ports:
             print(f"[mainGUI] Scanning for devices on {port}...")
             try: # check at baud rate 1
-                with serial.Serial(port, baudrate=500000, timeout=.1) as ser:
+                with serial.Serial(port, baudrate=500000, timeout=2.5) as ser:
                     ser.reset_input_buffer()
                     ser.reset_output_buffer()
-                    time.sleep(2.0)
                     response_bytes = ser.readline()
                     if not response_bytes:
                         print("[mainGUI] No devices found at baud rate 500000, checking 115200")
@@ -174,10 +173,9 @@ class SetupWindow(tk.Tk):
                         print("[mainGUI] No match on ports")
             except:
                 try: # check at baud rate 2
-                    with serial.Serial(port, baudrate=115200, timeout=.1) as ser:
+                    with serial.Serial(port, baudrate=115200, timeout=2.5) as ser:
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
-                        time.sleep(1.5)
                         response_bytes = ser.readline()
                         if not response_bytes:
                             print("[mainGUI] No devices found at baud rate 115200, moving to next port")
