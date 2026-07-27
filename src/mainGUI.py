@@ -154,12 +154,12 @@ class SetupWindow(tk.Tk):
                     time.sleep(2.0)
                     ser.reset_input_buffer()
                     ser.reset_output_buffer()
-                    ser.write(b"s\n")
+                    ser.write(b"s\n", write_timeout=0.2)
                     start_time = time.time()
                     device_found = False
                     while (time.time() - start_time < 1.5):
                         if ser.in_waiting > 0: 
-                            response_bytes = ser.readline()
+                            response_bytes = ser.read(ser.in_waiting)
                         else:
                             continue
                         response_str = response_bytes.decode('utf-8', errors='ignore').strip()
@@ -185,12 +185,12 @@ class SetupWindow(tk.Tk):
                         time.sleep(2.0)
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
-                        ser.write(b"s\n")
+                        ser.write(b"s\n", write_timeout = 0.2)
                         start_time = time.time()
                         device_found = False
                         while (time.time() - start_time < 1.5):
                             if ser.in_waiting > 0:
-                                response_bytes = ser.readline()
+                                response_bytes = ser.read(ser.in_waiting)
                             else:
                                 continue
                             response_str = response_bytes.decode('utf-8', errors='ignore').strip()
