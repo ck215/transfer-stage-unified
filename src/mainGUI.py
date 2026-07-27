@@ -148,7 +148,7 @@ class SetupWindow(tk.Tk):
         }
         DEV_PATTERN = re.compile(r"DEV:\s*([sdct])")
         for port in self.detected_ports:
-
+            print(f"[mainGUI] Scanning for devices on {port}...")
             try: # check at baud rate 1
                 with serial.Serial(port, baudrate=500000, timeout=.1) as ser:
                     ser.reset_input_buffer()
@@ -169,6 +169,7 @@ class SetupWindow(tk.Tk):
                         else:
                             raise Exception
                     else:
+                        print("[mainGUI] No devices found at baud rate 500000, checking 115200")
                         raise Exception
             except:
                 try: # check at baud rate 2
@@ -192,6 +193,7 @@ class SetupWindow(tk.Tk):
                             else:
                                 raise Exception
                         else:
+                            print("[mainGUI] No devices found at baud rate 115200, moving to next port")
                             raise Exception
                 except:
                     pass
