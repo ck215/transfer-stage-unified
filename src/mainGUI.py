@@ -153,7 +153,7 @@ class SetupWindow(tk.Tk):
                 with serial.Serial(port, baudrate=500000, timeout=.1) as ser:
                     ser.reset_input_buffer()
                     ser.reset_output_buffer()
-                    time.sleep(1.5)
+                    time.sleep(2.0)
                     response_bytes = ser.readline()
                     if not response_bytes:
                         print("[mainGUI] No devices found at baud rate 500000, checking 115200")

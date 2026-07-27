@@ -422,7 +422,7 @@ void setup() {
   // Serial2.begin(230400);
   // Serial2.println("\nStarting 3-Axis Controller. Waiting for Python command...");
 
-  delay(10)
+  delay(10);
   Serial.print("DEV: s\n");
 
   // configure pins
