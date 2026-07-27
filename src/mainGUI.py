@@ -167,10 +167,11 @@ class SetupWindow(tk.Tk):
                         if (device_type != "unknown"):
                             found_devices[device_type] = port
                         else:
+                            print("[mainGUI] No devices found at baud rate 500000, checking 115200")
                             raise Exception
                     else:
-                        print("[mainGUI] No devices found at baud rate 500000, checking 115200")
-                        raise Exception
+                        print("[mainGUI] No math on ports")
+
             except:
                 try: # check at baud rate 2
                     with serial.Serial(port, baudrate=115200, timeout=.1) as ser:
