@@ -46,7 +46,7 @@ class App:
 
         # Entry Boxes
         self.entries = {}
-        defaults = ["0", "10", "1.0", "0.6", "0", "0"]
+        defaults = ["0", "10", "2.0", "0.5", ".1", "0"]
         for i, val in enumerate(defaults, start=1):
             entry = Entry(master)
             entry.grid(row=i, column=1, padx=5, pady=2)
