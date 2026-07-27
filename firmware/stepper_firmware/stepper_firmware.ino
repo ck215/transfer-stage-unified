@@ -329,11 +329,6 @@ void parseHybridSerial() {
             }
         }
 
-        else if (peekChar == 0x73) { // 's'
-            Serial.read();
-            setup();
-        }
-
         // --- OPTION C: AUTONOMOUS TEXT STRING ---
         else {
             parseSerialAuto(); // Uses your original text string logic
