@@ -150,7 +150,7 @@ class SetupWindow(tk.Tk):
         for port in self.detected_ports:
 
             try: # check at baud rate 1
-                with serial.Serial(port, baudrate=500000, timeout=100000) as ser:
+                with serial.Serial(port, baudrate=500000, timeout=100) as ser:
                     ser.reset_input_buffer()
                     ser.reset_output_buffer()
                     time.sleep(0.1)
@@ -172,7 +172,7 @@ class SetupWindow(tk.Tk):
                         raise Exception
             except:
                 try: # check at baud rate 2
-                    with serial.Serial(port, baudrate=115200, timeout=100000) as ser:
+                    with serial.Serial(port, baudrate=115200, timeout=100) as ser:
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
                         time.sleep(0.1)
