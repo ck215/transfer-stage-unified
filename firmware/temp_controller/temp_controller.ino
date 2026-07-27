@@ -196,6 +196,11 @@ void recvWithStartEndMarkers() {
     char rc;
  
     while (Serial.available() > 0 && newData == false) {
+        peekChar = serial.peek();
+        if (peekChar == 0x73) {
+          Serial.println("DEV: t");
+          continue;
+        }
         rc = Serial.read();
         if (recvInProgress == true) {
             if (rc != endMarker) {

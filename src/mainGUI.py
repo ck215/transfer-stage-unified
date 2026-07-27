@@ -182,9 +182,9 @@ class SetupWindow(tk.Tk):
             except:
                 try: # check at baud rate 2
                     with serial.Serial(port, baudrate=115200, timeout=.1, write_timeout=.2) as ser:
-                        time.sleep(2.0)
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
+                        time.sleep(0.05)
                         ser.write(b"s\n")
                         start_time = time.time()
                         device_found = False

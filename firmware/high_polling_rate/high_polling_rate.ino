@@ -319,7 +319,11 @@ void parseHybridSerial() {
             }
         }
         
-        // --- OPTION B: AUTONOMOUS TEXT STRING ---
+        else if (peekChar == 0x73) { // --- OPTION B: IDENTITY QUERY ---
+            Serial.read();
+            Serial.println("DEV: d");
+        }
+        // --- OPTION C: AUTONOMOUS TEXT STRING ---
         else {
             parseSerialAuto(); 
         }
