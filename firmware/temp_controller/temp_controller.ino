@@ -199,6 +199,7 @@ void recvWithStartEndMarkers() {
         char peekChar = Serial.peek();
         if (peekChar == 0x73) {
           Serial.println("DEV: t");
+          Serial.read();
           continue;
         }
         rc = Serial.read();

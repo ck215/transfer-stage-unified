@@ -177,7 +177,6 @@ class SetupWindow(tk.Tk):
                                 print("[mainGUI] Device identification failed")
                         time.sleep(0.05)
                     if not device_found:
-                        print(f"[mainGUI] No devices found")
                         raise Exception
             except:
                 print("[mainGUI] No devices found")
