@@ -158,7 +158,10 @@ class SetupWindow(tk.Tk):
                     start_time = time.time()
                     device_found = False
                     while (time.time() - start_time < 1.5):
-                        response_bytes = ser.readline()
+                        if ser.in_waiting > 0: 
+                            response_bytes = ser.readline()
+                        else:
+                            continue
                         response_str = response_bytes.decode('utf-8', errors='ignore').strip()
 
                         match = DEV_PATTERN.search(response_str)
@@ -168,13 +171,13 @@ class SetupWindow(tk.Tk):
                             device_type = DEVICE_MAP.get(code, "unknown")
                             if (device_type != "unknown"):
                                 found_devices[device_type] = port
+                                device_found = True
                         time.sleep(0.05)
                     if not device_found:
                         print(f"[mainGUI] No devices found at baud rate 500000, checking 115200")
                         raise Exception
             except:
                 try: # check at baud rate 2
-                    print("checking baud rate 2")
                     with serial.Serial(port, baudrate=115200, timeout=2.5) as ser:
                         time.sleep(2.0)
                         ser.reset_input_buffer()
@@ -183,7 +186,10 @@ class SetupWindow(tk.Tk):
                         start_time = time.time()
                         device_found = False
                         while (time.time() - start_time < 1.5):
-                            response_bytes = ser.readline()
+                            if ser.in_waiting > 0:
+                                response_bytes = ser.readline()
+                            else:
+                                continue
                             response_str = response_bytes.decode('utf-8', errors='ignore').strip()
 
                             match = DEV_PATTERN.search(response_str)
