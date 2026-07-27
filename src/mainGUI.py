@@ -157,6 +157,7 @@ class SetupWindow(tk.Tk):
                     ser.write(b's')
                     response_bytes = ser.readline()
                     if not response_bytes:
+                        print("[mainGUI] No devices found at baud rate 500000, checking 115200")
                         raise Exception
                     response_str = response_bytes.decode('utf-8', errors='ignore')
 
@@ -181,6 +182,7 @@ class SetupWindow(tk.Tk):
                         ser.write(b's')
                         response_bytes = ser.readline()
                         if not response_bytes:
+                            print("[mainGUI] No devices found at baud rate 115200, moving to next port")
                             raise Exception
                         response_str = response_bytes.decode('utf-8', errors='ignore')
 
