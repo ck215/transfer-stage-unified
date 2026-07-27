@@ -150,7 +150,7 @@ class SetupWindow(tk.Tk):
         for port in self.detected_ports:
             print(f"[mainGUI] Scanning for devices on {port}...")
             try: # check at baud rate 1
-                with serial.Serial(port, baudrate=500000, timeout=2.5) as ser:
+                with serial.Serial(port, baudrate=500000, timeout=.1) as ser:
                     time.sleep(2.0)
                     ser.reset_input_buffer()
                     ser.reset_output_buffer()
@@ -179,7 +179,7 @@ class SetupWindow(tk.Tk):
                         raise Exception
             except:
                 try: # check at baud rate 2
-                    with serial.Serial(port, baudrate=115200, timeout=2.5) as ser:
+                    with serial.Serial(port, baudrate=115200, timeout=.1) as ser:
                         time.sleep(2.0)
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
