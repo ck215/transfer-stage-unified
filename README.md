@@ -2,7 +2,7 @@
 
 This document acts as a manual for the operation of transfer stage devices.
 
-## Everyday Operation
+## Launching the Software
 
 ### Connecting the Xbox Controller
 
@@ -40,14 +40,14 @@ Autonomous mode is designed for moving in fixed step sizes.
 > Also note commands can be interrupted, and if I send a pulse to move 100 steps twice, the probe may move anywhere between 100 to 200 steps, depending on when the second command was sent. For back to back commands, ensure the probe has come to a stop completely before proceding with a successive command.
 
 - **Full Speed** is the field used to determine the speed the probe will use while stepping during an autonomous command. There is negligible acceleration time on the stepper variant.
+- 
+- Once the parameters in all the aforementioned fields are set as desired, use **Start Stepping** to send the autonomous command to the probe.
 
-- The Brake Speed and Brake Distance fields are currently **depreciated** and should not be used. They are set to zero by default, and should not change any command paramaters internally, but until removed it is best practice to NOT change the values in these fields.
-
-- Once the paramaters in all the aformentioned fields are set as desired, use **Start Stepping** to send the autonomous command to the probe.
-
-> Once a command is sent, its paramaters are fixed for that iteration of autonomous command. During motion, any command can be stopped at any time by using the Full Stop button. Commands can NOT be updated by sending another command; this will simply begin a NEW command with the new paramaters, and may result in unexpected behavior. If a command is sent on accident, it is best practice to Full Stop the existing command, then re-enter autonomous mode and send a NEW command with the remedied paramaters.
+> Once a command is sent, its parameters are fixed for that iteration of autonomous command. During motion, any command can be stopped at any time by using the Full Stop button. Commands can NOT be updated by sending another command; this will simply begin a NEW command with the new parameters, and may result in unexpected behavior. If a command is sent on accident, it is best practice to Full Stop the existing command, then re-enter autonomous mode and send a NEW command with the remedied paramaters.
 
 ### Manual
+
+First, ensure an active controller is connected.
 
 ## Troubleshooting Steps
 
