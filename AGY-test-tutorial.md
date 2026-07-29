@@ -52,18 +52,16 @@ Prior to opening the software, the Xbox controller must be connected to the PC.
 
 The system operates in two main modes: **Autonomous** and **Manual**. Both modes include a **FULL STOP** emergency override button that halts all motion. Use this button immediately if a command is sent in error. 
 
-To begin using the system in any operational mode, the **Enable System** button must be clicked first to establish active control.
+To begin using the system in any operational mode, the **Enable System** button must be clicked first to establish active control. The controller may be changed at any time using the controller dropdown. **Absolute Position** represents the probe's current coordinates relative to its position when the software was initialized. It is used to track overall movement during a session.
 
 > ![GUI Disabled](./images/GUI_disabled.png)
 > *Figure 5a: Main control window (System Disabled).*
 > ![GUI Enabled](./images/GUI_enabled.png)
 > *Figure 5b: Main control window (System Enabled).*
 
-- **Absolute Position**: This value represents the probe's current coordinates relative to its position when the software was initialized. It is used to track overall movement during a session.
-
 #### Autonomous
 
-This mode is used to move the probe by fixed, precise step amounts.
+This mode is used to move the probe by fixed, precise step amounts. Ensure **Enable System** has been clicked prior to attempting stepping.
 
 - **Step Sizes**: This applies a multiplier to the input. The minimum verified step size for each system is as follows:
   > - **Stepper**: `4` (approximately 1.25 micrometers). For example, with a step size of 5, an input of 100 steps will move the probe 500 counts. (A full step of 16 *microsteps* corresponds to exactly 5 microns).
@@ -72,15 +70,15 @@ This mode is used to move the probe by fixed, precise step amounts.
 - **Relative Step Counts**: Enter the desired X, Y, and Z step increments. The probe will move to the resulting coordinate. 
   > **Note**: Diagonal (multi-axis) movement is unverified. Restrict movement to a single axis at a time.
 - **Full Speed**: Sets the constant speed of the probe during movement.
-- **Execution**: Click **Start Stepping** to send the command.
+- **Execution**: Click **Start Stepping** to send the command. The probe will move first in the x, then y, then z directions in successive order. If a field is left at zero, no steps will occur in that direction. 
 
 > **Important**: Once a command is sent, it cannot be updated. To correct a mistake, click **FULL STOP**, wait for the probe to stop completely, and send a new command.
 
 #### Manual
 
-Manual mode allows for real-time movement of the stages using the Xbox controller. Ensure **Enable System** has been clicked prior to attempting joystick inputs.
+Manual mode allows for real-time movement of the stages using the Xbox controller or Thrustmaster Joystick. Ensure **Enable System** has been clicked prior to attempting joystick inputs.
 
-- **Input Controls**: Use the analog thumbsticks to move along the X and Y axes. Use the analog triggers to move along the Z axis. The D-pad can also be used for discrete directional inputs.
+- **Input Controls**: Use the analog thumbsticks to move along the X (left thumbstick) and Y (right thumbstick) axes. Use the analog triggers to move along the Z axis; left trigger to raise, right trigger to lower the probe. The D-pad and bummpers an also be used for discrete directional inputs in the x/y and z directions, respectively.
 - **Speed Limits**: The maximum speed during manual operation is determined by the 'Manual Mode Max Speed' field. For Stepper and Chuck controllers, this is set in Microsteps/Sec. For DC controllers, this sets the maximum *PWM* signal on a scale from 30 to 255. Lower values may be possible, but are not officially supported on the DC probe and may result in stalling.
 - **Stopping**: To halt continuous movement from the controller, click the **Full Stop** button. This will stop the system from reading controller inputs and halt the motors safely.
 
@@ -124,7 +122,7 @@ If the physical setup is correct, check the terminal window or logs for the foll
 
 - **`serial.SerialException`: Error establishing serial connection**
   - **Meaning:** The system cannot open the specified *COM port*. The device is disconnected, off, or the port is in use by another program.
-  - **Resolution:** Verify the USB connection. Close any other software using the *COM port* and restart the application.
+  - **Resolution:** Verify the USB connection. Close any other software using the *COM port* and restart the application. The program should identify necessary devices by itself, so 
 
 - **`ValueError`: Arduino not detected. Cannot enable/disable system.**
   - **Meaning:** A command to enable or disable the system (such as clicking **Enable System**) was issued, but the *serial connection* to the Arduino was lost or not established.
