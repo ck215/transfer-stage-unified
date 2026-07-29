@@ -106,9 +106,6 @@ The Temperature Controller module provides a dedicated interface for *PID* therm
 
 Perform these preliminary physical checks before reviewing software logs:
 
-> ![Internal Wiring](./images/IMG_0609.png)
-> *Figure 7: Control box internal wiring highlighting the Arduino Mega, USB cables, and Jumper cables.*
-
 1. **Connection Integrity**: Verify the *USB-A to USB-B cable* is securely connected from the internal *Arduino Mega* to the back of the PC. Each cutting box corresponds to one motion controller OR the temperature controller, and each should be clearly labeled on the front.
 2. **Check the Jumpers**: Ensure all *Jumper cables* are firmly connected to the Arduino, the serial connector, and the power supply unit (PSU).
 3. **Electrical Safety**: If any wires are loose or disconnected, do not touch them. Immediately unplug the PSU from the wall and disconnect the USB cable from the PC. Contact Carter or Ian.
