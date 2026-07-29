@@ -6,7 +6,7 @@ This document outlines the standard procedures for system initialization, contro
 
 Upon powering on the PC, a *GRUB bootloader* menu will appear to select between Windows and Linux Mint.
 
-> 📷 **Image Needed:** Photograph of the PC monitor showing the GRUB bootloader menu with Linux Mint and Windows options.
+> ![GRUB Bootloader Menu](./images/GRUB_zoomed.png)
 
 - **Default Operating System**: If no selection is made, the system automatically boots into Linux Mint. This is the standard operating environment for the transfer stage.
 - **Alternative Operating System**: To boot into Windows, use the arrow keys to select "Windows Boot Loader" and press Enter.
@@ -18,7 +18,7 @@ The password for both operating systems is located on the monitor attached to th
 
 Prior to opening the software, the Xbox controller must be connected to the PC.
 
-> 📷 **Image Needed:** Photograph of the Xbox controller showing the central Xbox logo button and the pairing button on the top edge.
+> ![Xbox Controller Diagram](./images/xbox_controller_diagram.png)
 
 - **Wired Operation**: Connect the controller using the USB cable. Verify that the central Xbox logo is illuminated.
 - **Wireless Operation (Bluetooth)**:
@@ -27,7 +27,8 @@ Prior to opening the software, the Xbox controller must be connected to the PC.
   3. Hold the pairing button on the top edge of the controller until the Xbox button flashes rapidly.
   4. Select the controller in the PC's Bluetooth menu and ensure its status is 'connected'.
 
-> 📷 **Image Needed:** Screenshot of the desktop showing the Bluetooth Manager icon and the pairing menu.
+> ![Linux Bluetooth Taskbar](./images/bluetooth_taskbar_linux.png)
+> ![Linux Bluetooth Menu](./images/bluetooth_menu_linux.png)
 
 ### Software Initialization
 
@@ -35,7 +36,7 @@ Prior to opening the software, the Xbox controller must be connected to the PC.
 2. A configuration GUI will open and automatically populate the available *COM ports*.
 3. Use the drop-down menus on the right to assign the Xbox controller to each device.
 
-> 📷 **Image Needed:** Screenshot of the configuration GUI showing the COM port drop-down menus.
+> ![Configuration GUI](./images/GUI_chose_ports_controllers.png)
 
 4. If the controller is not listed, verify the Bluetooth connection and click **Refresh Devices** to re-poll the connection list.
 5. Click **Launch Controllers** to open the individual control windows.
@@ -48,7 +49,8 @@ The system operates in two main modes: **Autonomous** and **Manual**. Both modes
 
 To begin using the system in any operational mode, the **Enable System** button must be clicked first to establish active control.
 
-> 📷 **Image Needed:** Screenshot of the main control window highlighting the Enable System button, Autonomous tab, Manual tab, and the large FULL STOP button.
+> ![GUI Disabled](./images/GUI_disabled.png)
+> ![GUI Enabled](./images/GUI_enabled.png)
 
 - **Absolute Position**: This value represents the probe's current coordinates relative to its position when the software was initialized. It is used to track overall movement during a session.
 
@@ -79,7 +81,7 @@ Manual mode allows for real-time movement of the stages using the Xbox controlle
 
 The Temperature Controller module provides a dedicated interface for *PID* thermal management.
 
-> 📷 **Image Needed:** Screenshot of the Temperature Controller window showing the input fields and the live temperature graph.
+> ![Temperature GUI](./images/Temperature_GUI.png)
 
 - **Thermal Parameters**: Set the six required variables prior to execution:
   - **Set Temperature**: The target temperature you want the stage to reach and hold.
@@ -98,7 +100,7 @@ The Temperature Controller module provides a dedicated interface for *PID* therm
 
 Perform these preliminary physical checks before reviewing software logs:
 
-> 📷 **Image Needed:** Photograph of the control box's internal wiring, clearly labeling the Arduino Mega, USB cables, and Jumper cables.
+> ![Internal Wiring](./images/IMG_0609.png)
 
 1. **Connection Integrity**: Verify the *USB-A to USB-B cable* is securely connected from the internal *Arduino Mega* to the back of the PC. Each cutting box corresponds to one motion controller OR the temperature controller, and each should be clearly labeled on the front.
 2. **Check the Jumpers**: Ensure all *Jumper cables* are firmly connected to the Arduino, the serial connector, and the power supply unit (PSU).
