@@ -132,12 +132,7 @@ class SerialArduino:
         if not self._verify_serial():
             return
         try:
-            COMMAND_CODE_AUTON = 0
-            COMMAND_CODE_MANUAL = 1
-            empty_data = "0"  # Placeholder for unused fields
-
             # Build data for z direction triggers
-            
             # Get raw trigger values (assuming idle is -1)
             z_trigger_l_raw = params.get('z_axisStatusL', -1.0)
             z_trigger_r_raw = params.get('z_axisStatusR', -1.0)
@@ -158,11 +153,12 @@ class SerialArduino:
                 float(params['x_axisStatus']),
                 float(params['y_axisStatus']),
                 combined_z_axis_status,
+                float(params['x_stepSize']),
+                float(params['y_stepSize']),
+                float(params['z_stepSize']),
+                float(params['dpad_LR']),
+                float(params['dpad_UD']),
                 float(params['manual_jog_speed']),
-                float(params['dpad_left']),
-                float(params['dpad_right']),
-                float(params['dpad_up']),
-                float(params['dpad_down']),
             )
 
             print(f"[SerialDrive] Sending 12-Field MANUAL State: {packet}")

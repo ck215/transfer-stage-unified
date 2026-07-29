@@ -53,6 +53,7 @@ int SLOW_SPEED = 10;
 long BRAKE_DISTANCE = 0;
 bool AUTONOMOUS_ON = true;
 bool MANUAL_ON = false;
+bool DPAD_STEP = false;
 
 // Holds the current manual command as a float (-1.0 to 1.0)
 float manual_x_value = 0.0;
@@ -83,11 +84,13 @@ struct __attribute__((packed)) ManualControlPacket {
     float x_axisStatus;         // X axis status
     float y_axisStatus;         // Y axis status
     float z_axisStatus;         // Z axis status
+    float x_stepSize;           // X step size
+    float y_stepSize;           // Y step size
+    float z_stepSize;           // Z step size
+    float dpad_LR;              // D-pad left-right value
+    float dpad_UD;              // D-pad up-down value
+    float bumpers;              // Bumper combined value
     float manual_jog_speed;     // Manual jog speed
-    float dpad_left;            // D-pad left value
-    float dpad_right;           // D-pad right value
-    float dpad_up;              // D-pad up value
-    float dpad_down;            // D-pad down value
 };
 
 const size_t BINARY_PACKET_SIZE = sizeof(ManualControlPacket);
@@ -293,6 +296,12 @@ void parseHybridSerial() {
                     manual_x_value = -1*incomingPacket.x_axisStatus;
                     manual_y_value = incomingPacket.y_axisStatus;
                     manual_z_value = incomingPacket.z_axisStatus;
+                    dpad_LR = incomingPacket.dpad_LR;
+                    dpad_UD = incomingPacket.dpad_UD;
+                    bumpers = incomingPacket.bumpers;
+                    x_step_size = incomingPacket.x_stepSize;
+                    y_step_size = incomingPacket.y_stepSize;
+                    z_stepSize = incomingPacket.z_stepSize;
                 }
 
                 // Binary Mode 0: Explicit Stop
@@ -380,6 +389,29 @@ void runAutoMode()
     }
 }
 
+// DPad step handler
+void runDpadStep()
+{
+    x_axis.runSpeedToPosition();
+    y_axis.runSpeedToPosition();
+    z_axis.runSpeedToPosition();
+    if (x_axis.distanceToGo() == 0 && y_axis.distanceToGo() == 0 && z_axis.distanceToGo() == 0)
+    {
+        if (!ALL_AXES_DONE) {
+            // Serial2.println("------------------------------------------");
+            // Serial2.println("SEQUENCE COMPLETE. All Axes Halted.");
+            // Serial2.println("------------------------------------------");
+
+            x_axis.setSpeed(0);
+            y_axis.setSpeed(0);
+            z_axis.setSpeed(0);
+
+            MANUAL_ON = true;
+            DPAD_STEP = false;
+        }
+    }
+}
+
 
 // Manual control handler
 void runManualMode() 
@@ -401,21 +433,32 @@ void runManualMode()
     }
     else // move to nearest step size increment before stopping -- may create unintended movement (direction) for user
     {
-        if (x_axis.currentPosition() % XAXIS_SIZE == 0)
+        if (x_axis.currentPosition() % x_stepSize == 0)
         {
             x_axis.setSpeed(0);
         }
-        if (y_axis.currentPosition() % YAXIS_SIZE == 0)
+        if (y_axis.currentPosition() % y_stepSize == 0)
         {
             y_axis.setSpeed(0);
         }
-        if (z_axis.currentPosition() % ZAXIS_SIZE == 0)
+        if (z_axis.currentPosition() % z_stepSize == 0)
         {
             z_axis.setSpeed(0);
         }
         x_axis.runSpeed();
         y_axis.runSpeed();
         z_axis.runSpeed();
+    }
+    if (bumpers || dpad_LR || dpad_UD) {
+        DPAD_STEP = true;
+        MANUAL_ON = false;
+        x_axis.move(dpad_LR*x_stepSize);
+        y_axis.move(dpad_UD*y_stepSize);
+        z_axis.move(bumpers*z_stepSize);
+        x_axis.setSpeed(FULL_SPEED);
+        y_axis.setSpeed(FULL_SPEED);
+        z_axis.setSpeed(FULL_SPEED);
+        
     }
 }
 
@@ -516,7 +559,7 @@ void status_update_print_serial()
         Serial.println(current_z_count);
 
         // // Debug output to Serial2 (only during active modes)
-        // if (AUTONOMOUS_ON || MANUAL_ON)
+        // if (AUTONOMOUS_ON || ON)
         // {
         //     if (AUTONOMOUS_ON)
         //     {
@@ -544,6 +587,8 @@ void loop() {
   if (MANUAL_ON) runManualMode();
 
   if (AUTONOMOUS_ON) runAutoMode();
+
+  if (DPAD_STEP) runDpadStep();
 
   status_update_print_serial();
 }

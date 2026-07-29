@@ -107,11 +107,13 @@ struct __attribute__((packed)) ManualControlPacket {
     float x_axisStatus;         // X axis status
     float y_axisStatus;         // Y axis status
     float z_axisStatus;         // Z axis status
+    float x_stepSize;           // X step size
+    float y_stepSize;           // Y step size
+    float z_stepSize;           // Z step size
+    float dpad_LR;              // DPAD left-right value
+    float dpad_UD;              // DPAD up-down value
+    float bumpers;
     float manual_jog_speed;     // Manual jog speed
-    float dpad_left;            // D-pad left value
-    float dpad_right;           // D-pad right value
-    float dpad_up;              // D-pad up value
-    float dpad_down;            // D-pad down value
 };
 
 const size_t BINARY_PACKET_SIZE = sizeof(ManualControlPacket);
