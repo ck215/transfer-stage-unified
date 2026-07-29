@@ -135,6 +135,17 @@ If the physical setup is correct, check the terminal window or logs for the foll
   - **Meaning:** If the absolute position stops updating without an error crashing the program, the serial data is likely being corrupted by electrical noise.
   - **Resolution:** Check that the *baud rate* is set to 500000. Ensure the USB cables are physically routed away from high-voltage power lines to minimize interference.
 
+- **Xbox Controller Bluetooth Connection Loop (Dual-Boot Bug)**
+  - **Meaning:** If the Xbox controller connects and disconnects rapidly in a loop within Linux, this is a known issue caused by conflicting Bluetooth pairing keys between the dual-boot Windows and Linux environments sharing the same Bluetooth *MAC address*. When the controller pairs with one OS, the other OS's key becomes invalid, leading to a connection loop.
+  - **Resolution:** To resolve the synchronization conflict, follow this strict sequence:
+    1. Reboot the PC into Windows.
+    2. Open Windows Bluetooth settings and click **Forget Device** for the Xbox controller.
+    3. Re-pair the controller to Windows, establishing a new connection to the network/Bluetooth adapter.
+    4. Reboot the PC into Linux Mint.
+    5. Open the Linux Bluetooth Manager, find the controller, and click **Forget Device**.
+    6. Re-pair the controller in Linux as outlined in the *Connecting the Xbox Controller* section.
+    *Note: This process resets the pairing keys on each end, allowing the Linux driver to properly negotiate the connection.*
+
 For persistent issues, contact Carter or Ian via the lab Slack.
 
 ## Appendix
@@ -146,6 +157,7 @@ For persistent issues, contact Carter or Ian via the lab Slack.
 - **COM ports**: Communication ports. These are the digital channels on the PC used to establish a serial connection to the Arduino and other USB peripherals.
 - **GRUB bootloader**: A small program that runs right when the computer turns on, presenting a menu to let you choose which operating system to load (Linux vs. Windows).
 - **Jumper cables**: The small, colorful wires used inside the control box to connect the electronic components together.
+- **MAC address**: A unique identifier assigned to a network interface controller (like a Bluetooth adapter) for communications.
 - **Microsteps**: A technique used to move a stepper motor by a fraction of a full step, allowing for extremely precise, microscopic movements.
 - **PID (Proportional-Integral-Derivative)**: A control loop feedback mechanism widely used in industrial control systems. In this context, it constantly calculates the error between the desired temperature and the actual temperature to smoothly apply heat without overshooting.
 - **PWM (Pulse Width Modulation)**: A method of controlling the amount of power sent to a motor by rapidly turning the power on and off. A higher PWM threshold means the motor can receive more average power and spin faster.
