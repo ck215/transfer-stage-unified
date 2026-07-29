@@ -81,7 +81,7 @@ This mode is used to move the probe by fixed, precise step amounts.
 Manual mode allows for real-time movement of the stages using the Xbox controller. Ensure **Enable System** has been clicked prior to attempting joystick inputs.
 
 - **Input Controls**: Use the analog thumbsticks to move along the X and Y axes. Use the analog triggers to move along the Z axis. The D-pad can also be used for discrete directional inputs.
-- **Speed Limits**: The maximum speed during manual operation is determined by the 'Manual Mode Max Speed' field. For Stepper and Chuck controllers, this is set in Microsteps/Sec. For DC controllers, this sets the maximum *PWM* signal.
+- **Speed Limits**: The maximum speed during manual operation is determined by the 'Manual Mode Max Speed' field. For Stepper and Chuck controllers, this is set in Microsteps/Sec. For DC controllers, this sets the maximum *PWM* signal on a scale from 30 to 255. Lower values may be possible, but are not officially supported on the DC probe and may result in stalling.
 - **Stopping**: To halt continuous movement from the controller, click the **Full Stop** button. This will stop the system from reading controller inputs and halt the motors safely.
 
 ## Temperature Controller
