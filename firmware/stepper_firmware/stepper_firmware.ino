@@ -59,6 +59,12 @@ bool DPAD_STEP = false;
 float manual_x_value = 0.0;
 float manual_y_value = 0.0;
 float manual_z_value = 0.0;
+int dpad_LR = 0;
+int dpad_UD = 0;
+int bumpers = 0;
+int x_step_size = 0;
+int y_step_size = 0;
+int z_step_size = 0;
 
 // Possible states of the motors in autonomous mode
 bool ALL_AXES_DONE = true; 
@@ -301,7 +307,7 @@ void parseHybridSerial() {
                     bumpers = incomingPacket.bumpers;
                     x_step_size = incomingPacket.x_stepSize;
                     y_step_size = incomingPacket.y_stepSize;
-                    z_stepSize = incomingPacket.z_stepSize;
+                    z_step_size = incomingPacket.z_stepSize;
                 }
 
                 // Binary Mode 0: Explicit Stop
@@ -433,15 +439,15 @@ void runManualMode()
     }
     else // move to nearest step size increment before stopping -- may create unintended movement (direction) for user
     {
-        if (x_axis.currentPosition() % x_stepSize == 0)
+        if (x_axis.currentPosition() % x_step_size == 0)
         {
             x_axis.setSpeed(0);
         }
-        if (y_axis.currentPosition() % y_stepSize == 0)
+        if (y_axis.currentPosition() % y_step_size == 0)
         {
             y_axis.setSpeed(0);
         }
-        if (z_axis.currentPosition() % z_stepSize == 0)
+        if (z_axis.currentPosition() % z_step_size == 0)
         {
             z_axis.setSpeed(0);
         }
@@ -452,9 +458,9 @@ void runManualMode()
     if (bumpers || dpad_LR || dpad_UD) {
         DPAD_STEP = true;
         MANUAL_ON = false;
-        x_axis.move(dpad_LR*x_stepSize);
-        y_axis.move(dpad_UD*y_stepSize);
-        z_axis.move(bumpers*z_stepSize);
+        x_axis.move(dpad_LR*x_step_size);
+        y_axis.move(dpad_UD*y_step_size);
+        z_axis.move(bumpers*z_step_size);
         x_axis.setSpeed(FULL_SPEED);
         y_axis.setSpeed(FULL_SPEED);
         z_axis.setSpeed(FULL_SPEED);
