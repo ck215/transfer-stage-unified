@@ -159,7 +159,7 @@ class SerialArduino:
                 int(params['z_stepSize']),
                 int(params['dpad_LR']),
                 int(params['dpad_UD']),
-                (combined_bumpers)
+                (combined_bumpers),
                 float(params['manual_jog_speed']),
             )
 
