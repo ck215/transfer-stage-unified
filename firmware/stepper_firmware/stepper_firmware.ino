@@ -292,13 +292,13 @@ void parseHybridSerial() {
 
                 // Binary mode 1: Engage Manual
                 if (incomingPacket.mode == 1) {
-                    if (!MANUAL_ON) {
+                    if (!MANUAL_ON && !DPAD_STEP) {
                         Serial2.println("MANUAL MODE ENGAGED - Halting Autonomous.");
                         AUTONOMOUS_ON = false;
                         MANUAL_ON = true;
                         current_state = IDLE;
                     }
-                    FULL_SPEED = (int)incomingPacket.manual_jog_speed;
+                    FULL_SPEED = incomingPacket.manual_jog_speed;
                     manual_x_value = -1*incomingPacket.x_axisStatus;
                     manual_y_value = incomingPacket.y_axisStatus;
                     manual_z_value = incomingPacket.z_axisStatus;
@@ -403,18 +403,16 @@ void runDpadStep()
     z_axis.runSpeedToPosition();
     if (x_axis.distanceToGo() == 0 && y_axis.distanceToGo() == 0 && z_axis.distanceToGo() == 0)
     {
-        if (!ALL_AXES_DONE) {
-            // Serial2.println("------------------------------------------");
-            // Serial2.println("SEQUENCE COMPLETE. All Axes Halted.");
-            // Serial2.println("------------------------------------------");
+        // Serial2.println("------------------------------------------");
+        // Serial2.println("SEQUENCE COMPLETE. All Axes Halted.");
+        // Serial2.println("------------------------------------------");
 
-            x_axis.setSpeed(0);
-            y_axis.setSpeed(0);
-            z_axis.setSpeed(0);
+        x_axis.setSpeed(0);
+        y_axis.setSpeed(0);
+        z_axis.setSpeed(0);
 
-            MANUAL_ON = true;
-            DPAD_STEP = false;
-        }
+        MANUAL_ON = true;
+        DPAD_STEP = false;
     }
 }
 

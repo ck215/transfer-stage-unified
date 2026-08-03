@@ -4,7 +4,7 @@ import time
 import sys
 import struct
 
-PACKET_FORMAT = '<BBffffffff'
+PACKET_FORMAT = '<BBfffiiiiiii'
 START_MARKER = 0xAA
 
 # ------ Serial Simulation Setup --------
@@ -160,7 +160,7 @@ class SerialArduino:
                 int(params['dpad_LR']),
                 int(params['dpad_UD']),
                 (combined_bumpers),
-                float(params['manual_jog_speed']),
+                int(params['manual_jog_speed']),
             )
 
             print(f"[SerialDrive] Sending 12-Field MANUAL State: {packet}")

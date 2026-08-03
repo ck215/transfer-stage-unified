@@ -89,7 +89,7 @@ class ControllerPoller:
                 print(f"  Hats: {self.joystick.get_numhats()}")
                 
                 match self.joystick.get_name():
-                    case "Xbox Series X Controller": self.controller_binds = [0,3,4,5]
+                    case "Xbox Series X Controller": self.controller_binds = [0,3,4,5,6,7]
                     case "T.16000M": self.controller_binds = [0,1,9,10] # 9 and 10 will be buttons simulated to be axes
                     case _: raise ValueError("Unsupported joystick detected! Add axis binds in controllerDrive.py!")
 

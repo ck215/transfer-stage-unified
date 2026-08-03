@@ -588,10 +588,13 @@ class AppLogic:
             "y_axisStatus": self.controller.prev_axis_states.get(self.controller.controller_binds[1], 0.0),     # FIX #4: Added default 0.0 (was None)
             "z_axisStatusR": self.controller.prev_axis_states.get(self.controller.controller_binds[2], -1.0),   # FIX #4: Added default -1.0 idle trigger (was None)
             "z_axisStatusL": self.controller.prev_axis_states.get(self.controller.controller_binds[3], -1.0),   # FIX #4: Added default -1.0 idle trigger (was None)
-            "dpad_left": self.controller.prev_hat_states.get(0, (0, 0))[0],
-            "dpad_right": self.controller.prev_hat_states.get(0, (0, 0))[0],
-            "dpad_up": self.controller.prev_hat_states.get(0, (0, 0))[1],
-            "dpad_down": self.controller.prev_hat_states.get(0, (0, 0))[1],
+            "x_stepSize": self.gui.entry_x_step.get(),
+            "y_stepSize": self.gui.entry_y_step.get(),
+            "z_stepSize": self.gui.entry_z_step.get(),
+            "dpad_LR": self.controller.prev_hat_states.get(0, (0, 0))[0],
+            "dpad_UD": self.controller.prev_hat_states.get(0, (0,0))[1],
+            "LBumper": self.controller.prev_button_states.get(self.controller.controller_binds[4], 0),
+            "RBumper": self.controller.prev_button_states.get(self.controller.controller_binds[5], 0),
             "manual_jog_speed": self.gui.entry_man_full_speed.get()                             
         }
     
