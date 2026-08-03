@@ -62,9 +62,9 @@ float manual_z_value = 0.0;
 int dpad_LR = 0;
 int dpad_UD = 0;
 int bumpers = 0;
-int x_step_size = 0;
-int y_step_size = 0;
-int z_step_size = 0;
+int x_step_size = 16;
+int y_step_size = 16;
+int z_step_size = 16;
 
 // Possible states of the motors in autonomous mode
 bool ALL_AXES_DONE = true; 
@@ -90,13 +90,13 @@ struct __attribute__((packed)) ManualControlPacket {
     float x_axisStatus;         // X axis status
     float y_axisStatus;         // Y axis status
     float z_axisStatus;         // Z axis status
-    float x_stepSize;           // X step size
-    float y_stepSize;           // Y step size
-    float z_stepSize;           // Z step size
-    float dpad_LR;              // D-pad left-right value
-    float dpad_UD;              // D-pad up-down value
-    float bumpers;              // Bumper combined value
-    float manual_jog_speed;     // Manual jog speed
+    int x_stepSize;           // X step size
+    int y_stepSize;           // Y step size
+    int z_stepSize;           // Z step size
+    int dpad_LR;              // D-pad left-right value
+    int dpad_UD;              // D-pad up-down value
+    int bumpers;              // Bumper combined value
+    int manual_jog_speed;     // Manual jog speed
 };
 
 const size_t BINARY_PACKET_SIZE = sizeof(ManualControlPacket);

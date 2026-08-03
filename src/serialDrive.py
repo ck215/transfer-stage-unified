@@ -143,6 +143,7 @@ class SerialArduino:
 
             # Combine the values. UP (L) is positive, DOWN (R) is negative.
             combined_z_axis_status = z_up_value - z_down_value
+            combined_bumpers = int(params.get('LBumper')) - int(params.get('RBumper'))
 
             # FIX #8: Removed errant spaces after commas in fields 3-4 that produced
             #         values like " 0" and " 120" instead of "0" and "120"
@@ -153,11 +154,12 @@ class SerialArduino:
                 float(params['x_axisStatus']),
                 float(params['y_axisStatus']),
                 combined_z_axis_status,
-                float(params['x_stepSize']),
-                float(params['y_stepSize']),
-                float(params['z_stepSize']),
-                float(params['dpad_LR']),
-                float(params['dpad_UD']),
+                int(params['x_stepSize']),
+                int(params['y_stepSize']),
+                int(params['z_stepSize']),
+                int(params['dpad_LR']),
+                int(params['dpad_UD']),
+                (combined_bumpers)
                 float(params['manual_jog_speed']),
             )
 

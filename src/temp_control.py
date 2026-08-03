@@ -152,6 +152,17 @@ class App:
                 self.ser.close()
             except Exception:
                 pass
+
+        # Pasted command code to set temp to 0
+        vals = [0,10,2.0,0.5,.1,0]
+        print(f"Sending: Setpoint={vals[0]}C, Ramp={vals[1]}s/C, P={vals[2]}, I={vals[3]}, D={vals[4]}, Offset={vals[5]}")
+        
+        input_string = f"<{','.join(vals)}>"
+        try:
+            self.ser.write(input_string.encode())
+        except Exception as e:
+            print(f"Error writing to serial: {e}")
+
         self.root.destroy()
 
 def main(port):
