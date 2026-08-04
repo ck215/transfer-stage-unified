@@ -2,6 +2,28 @@
 import pygame
 import time
 import os
+import sys
+import ctypes
+from ctypes import wintypes
+
+# Windows API structure for polling raw joystick status
+if sys.platform == "win32":
+    class JOYINFOEX(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("dwXpos", wintypes.DWORD),
+            ("dwYpos", wintypes.DWORD),
+            ("dwZpos", wintypes.DWORD),
+            ("dwRpos", wintypes.DWORD),
+            ("dwUpos", wintypes.DWORD),
+            ("dwVpos", wintypes.DWORD),
+            ("dwButtons", wintypes.DWORD),
+            ("dwButtonNumber", wintypes.DWORD),
+            ("dwPOV", wintypes.DWORD),
+            ("dwReserved1", wintypes.DWORD),
+            ("dwReserved2", wintypes.DWORD),
+        ]
 
 class ControllerPoller:
     
@@ -15,6 +37,7 @@ class ControllerPoller:
         self.is_polling = False
 
         self.controllerID = controllerID
+        self.controller_index = None # Stores integer ID for OS queries
 
         # Will store the reference to the tkinter root window
         self.gui_root = None  
@@ -29,6 +52,28 @@ class ControllerPoller:
         self.joystick = None
 
         self._initialize_pygame_joystick(controllerID)
+
+    def _is_os_connected(self): # OS check for controller
+        if self.controller_index is None:
+            return False
+        if sys.platform.startswith("Linux"):
+            return os.path.exists(f"/dev/input/js{self.controller_index}")
+        elif sys.platform == "win32":
+            info = JOYINFOEX()
+            info.dwSize = ctypes.sizeof(JOYINFOEX)
+            info.dwFlags = 255
+            return ctypes.windll.winmm.joyGetPosEx(self.controller_index, ctypes.byref(info)) == 0
+
+        return True
+
+    def _handle_disconnect(self):
+        print(f"[controllerDrive] Controller disconnected.")
+        self.joystick = None
+        self.active_claims[self.process_name] = "None Detected"
+        self.prev_axis_states.clear()
+        self.prev_button_states.clear()
+        self.prev_hat_states.clear()
+        self.stop_polling()
     
     def get_physical_controllers(self):
         try: pygame.init()
@@ -56,7 +101,8 @@ class ControllerPoller:
     def connect_controller(self):
         # Restart Pygame to attempt reconnection
         print("[controllerDrive] Restarting pygame...")
-        pygame.quit()  
+        try: pygame.quit()
+        except: pass
         self._initialize_pygame_joystick(self.controllerID)
         return True if self.joystick else False
 
@@ -77,6 +123,11 @@ class ControllerPoller:
             try:
                 # Initialize the chosen joystick
                 controller_number = int(controllerID[3:4])
+                self.controller_index = controller_number
+
+                # Check if OS is connected
+                if not self._is_os_connected():
+                    raise RuntimeError("Device not physically present at OS level.")
 
                 self.joystick = pygame.joystick.Joystick(controller_number)
                 self.joystick.init()
@@ -103,7 +154,7 @@ class ControllerPoller:
                 return True
             except:
                 print("[controllerDrive] No joystick found.")
-                self.joystick = None
+                self._handle_disconnect()
                 self.active_claims[self.process_name] = "None Detected"
                 pygame.quit()
                 return False
@@ -137,7 +188,7 @@ class ControllerPoller:
         self.log_updater = log_updater
         self.activity_callback = activity_callback
 
-        self._poll_loop()
+        self._poll_loop() 
 
 
     def stop_polling(self):
@@ -173,6 +224,10 @@ class ControllerPoller:
             else:
                 # Fallback to standard print if no log updater is set
                 print(f"[controllerDrive] {message}")
+
+        if not self._is_os_connected():
+            self._handle_disconnect()
+            return
         
         # Send Pygame event queue to update joystick states
         pygame.event.get() 
@@ -188,13 +243,13 @@ class ControllerPoller:
                 
                 if round(current_val, 2) != round(self.prev_axis_states.get(i, 0.0), 2):
                     _log(f"Axis {i} changed: {current_val:.2f}") # <--- REPLACED print()
-                    
+
                     # Detect "hard snaps" to absolute values to ignore crash/sleep states
                     prev_val = self.prev_axis_states.get(i, 0.0)
                     is_hard_snap = (abs(current_val) >= 1.0) and (abs(current_val - prev_val) > 0.5)
                     if not is_hard_snap and self.activity_callback:
                         self.activity_callback()
-                        
+
                     self.prev_axis_states[i] = current_val
                     activity_detected = True 
             
@@ -227,11 +282,7 @@ class ControllerPoller:
         # Exception handling for disconnected joystick      
         except pygame.error as e:
             print(f"[controllerDrive] Pygame error during polling (joystick disconnected?): {e}")
-            self.joystick = None 
-            self.prev_axis_states.clear()
-            self.prev_button_states.clear()
-            self.prev_hat_states.clear()
-            self.stop_polling()
+            self._handle_disconnect()
             return
         
         # Reschedule this function to run again after POLL_INTERVAL milliseconds

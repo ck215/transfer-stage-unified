@@ -498,8 +498,13 @@ class AppLogic:
             "y_axisStatus": self.controller.prev_axis_states.get(self.controller.controller_binds[1], 0.0),    
             "z_axisStatusR": self.controller.prev_axis_states.get(self.controller.controller_binds[2], -1.0),   
             "z_axisStatusL": self.controller.prev_axis_states.get(self.controller.controller_binds[3], -1.0),  
+            "x_stepSize": self.gui.entry_x_step.get(),
+            "y_stepSize": self.gui.entry_y_step.get(),
+            "z_stepSize": self.gui.entry_z_step.get(),
             "dpad_LR": self.controller.prev_hat_states.get(0, (0, 0))[0],
             "dpad_UD": self.controller.prev_hat_states.get(0, (0, 0))[1],
+            "RBumper": self.controller.prev_button_states.get(self.controller.controller_binds(5)),
+            "LBumper": self.controller.prev_button_states.get(self.controller.controller_binds(4)),
             "manual_jog_speed": self.gui.entry_man_full_speed.get()                             
         }
     
