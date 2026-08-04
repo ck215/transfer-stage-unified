@@ -313,6 +313,9 @@ class AppLogic:
         # NEW: Flag to cleanly stop the position polling loop on shutdown
         self._running: bool = True
 
+        # Timer ID for the 5-minute auto-disable timeout
+        self.disable_timer_id = None
+
         # Bind buttons from GUI class to logic functions
         self.gui.auton_mode_button.config(command=self.enter_autonomous_mode_button)
         self.gui.manual_mode_button.config(command=self.enter_manual_mode_button)
@@ -435,14 +438,32 @@ class AppLogic:
             self.gui.enable_button.config(text="Enable System",
             bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
 
+            # Cancel the timeout timer if it exists
+            if self.disable_timer_id:
+                self.root.after_cancel(self.disable_timer_id)
+                self.disable_timer_id = None
+
         else:
             try:
                 self.serial.enable()
                 self.system_enabled = True
                 self.gui.enable_button.config(text="Disable System",
                 bg='darkred', fg='black', font=('Arial', 10, 'bold'))
+                
+                # Start the 5 minute disable timeout timer (300,000 ms)
+                self.disable_timer_id = self.root.after(300000, self.auto_disable)
             except ValueError as e:
                 print(e)
+
+    def reset_disable_timer(self):
+        if self.system_enabled and self.disable_timer_id:
+            self.root.after_cancel(self.disable_timer_id)
+            self.disable_timer_id = self.root.after(300000, self.auto_disable)
+            
+    def auto_disable(self):
+        print("\n[AppLogic] 5-minute timeout reached due to inactivity. Auto-disabling system.")
+        if self.system_enabled:
+            self.enable_button()
 
 
     # Sends command using current GUI parameters over serial
@@ -450,6 +471,8 @@ class AppLogic:
         if not (self.system_enabled):
             print("\n[AppLogic] System is not enabled. Command not sent.")
             return
+            
+        self.reset_disable_timer()
         if self.autonFlag and not self.manualFlag:
             print("\n[AppLogic] START STEPPING button clicked.")
             try:
@@ -528,7 +551,7 @@ class AppLogic:
         self.autonFlag = False
 
         # Start monitoring controller input
-        self.controller.start_polling(gui=self.root, log_updater=self.gui.controller_log_print)
+        self.controller.start_polling(gui=self.root, log_updater=self.gui.controller_log_print, activity_callback=self.reset_disable_timer)
 
         # Open controller log window if not already open
         self.open_controller_log_window()

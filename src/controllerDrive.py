@@ -118,7 +118,7 @@ class ControllerPoller:
         except: pass
         return self._initialize_pygame_joystick(new_controller_id)
 
-    def start_polling(self, gui, log_updater):
+    def start_polling(self, gui, log_updater, activity_callback=None):
         
         # Do nothing if already polling
         if self.is_polling:
@@ -135,8 +135,9 @@ class ControllerPoller:
         self.is_polling = True
         self.gui_root = gui 
         self.log_updater = log_updater
+        self.activity_callback = activity_callback
 
-        self._poll_loop() 
+        self._poll_loop()
 
 
     def stop_polling(self):
@@ -187,6 +188,13 @@ class ControllerPoller:
                 
                 if round(current_val, 2) != round(self.prev_axis_states.get(i, 0.0), 2):
                     _log(f"Axis {i} changed: {current_val:.2f}") # <--- REPLACED print()
+                    
+                    # Detect "hard snaps" to absolute values to ignore crash/sleep states
+                    prev_val = self.prev_axis_states.get(i, 0.0)
+                    is_hard_snap = (abs(current_val) >= 1.0) and (abs(current_val - prev_val) > 0.5)
+                    if not is_hard_snap and self.activity_callback:
+                        self.activity_callback()
+                        
                     self.prev_axis_states[i] = current_val
                     activity_detected = True 
             
@@ -202,6 +210,8 @@ class ControllerPoller:
                 # Compare to previous state, print changed state
                 if current_val != self.prev_button_states.get(i, 0):
                     _log(f"Button {i} {'pressed' if current_val else 'released'}") # <--- REPLACED print()
+                    if self.activity_callback:
+                        self.activity_callback()
                     self.prev_button_states[i] = current_val
 
             # Check Hats (DPad)
@@ -210,6 +220,8 @@ class ControllerPoller:
                 # Same as button but four dimensions for the hat
                 if current_val != self.prev_hat_states.get(i, (0, 0)):
                     _log(f"Hat {i} (DPad) changed: {current_val}") # <--- REPLACED print()
+                    if self.activity_callback:
+                        self.activity_callback()
                     self.prev_hat_states[i] = current_val
 
         # Exception handling for disconnected joystick      
