@@ -350,8 +350,13 @@ void parseHybridSerial() {
         }
         
         // --- OPTION D: AUTONOMOUS TEXT STRING ---
+        else if (peekChar == '-' || (peekChar >= '0' && peekChar <= '9')) {
+            parseSerialAuto(); // Uses original text string logic
+        }
+
+        // clear buffer
         else {
-            parseSerialAuto(); // Uses your original text string logic
+            Serial.read();
         }
     }
 }
