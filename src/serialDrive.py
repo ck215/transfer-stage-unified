@@ -4,7 +4,7 @@ import time
 import sys
 import struct
 
-PACKET_FORMAT = '<BBfffiiiiiii'
+PACKET_FORMAT = '<BBfffhhhhhhh'
 START_MARKER = 0xAA
 
 # ------ Serial Simulation Setup --------

@@ -14,6 +14,7 @@ import stepper_frame
 import DC_frame
 import chuck_frame
 import temp_control
+import rotator
 
 # Try to import pyserial for real hardware detection.
 try:
@@ -41,10 +42,10 @@ class SetupWindow(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Device Configuration Setup")
-        self.geometry("750x420")
+        self.geometry("750x440")
         self.resizable(False, False)
         
-        self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller"]
+        self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller", "SMC100 Rotator"]
         self.device_vars = {}        
         self.port_vars = {}          
         self.controller_vars = {}    
@@ -117,7 +118,7 @@ class SetupWindow(tk.Tk):
         ctrl_widget = self.controller_widgets[device]
         
         if is_checked:
-            if (device != "Temperature Controller"):
+            if ((device != "Temperature Controller") | (device != "SMC100 Rotator")):
                 ctrl_widget.state(["!disabled"])
             serial_widget.state(["!disabled"])
         else:
@@ -132,8 +133,8 @@ class SetupWindow(tk.Tk):
         grid_frame.pack(fill="x", padx=20, pady=5)
         
         ttk.Label(grid_frame, text="Active Device", font=("Helvetica", 10, "bold")).grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        ttk.Label(grid_frame, text="Serial COM Assignment", font=("Helvetica", 10, "bold")).grid(row=0, column=1, padx=10, pady=5, sticky="w")
-        ttk.Label(grid_frame, text="Joystick / Gamepad Controller", font=("Helvetica", 10, "bold")).grid(row=0, column=2, padx=10, pady=5, sticky="w")
+        ttk.Label(grid_frame, text="Port Assignment", font=("Helvetica", 10, "bold")).grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        ttk.Label(grid_frame, text="Controller", font=("Helvetica", 10, "bold")).grid(row=0, column=2, padx=10, pady=5, sticky="w")
         
         grid_frame.columnconfigure(1, weight=1)
         grid_frame.columnconfigure(2, weight=1)
@@ -179,8 +180,39 @@ class SetupWindow(tk.Tk):
                     if not device_found:
                         raise Exception
             except:
-                print("[mainGUI] No devices found")
-                pass
+                print("[mainGUI] No devices found at baud rate 500000, checking baud rate 57600")
+                try:
+                    with serial.Serial(
+                        port,
+                        baudrate=57600,
+                        timeout=0.2,
+                        write_timeout=0.2,
+                        xonxoff=True,  # SMC100 uses software flow control
+                    ) as ser:
+                        ser.reset_input_buffer()
+                        ser.reset_output_buffer()
+
+                        # Send Stage Identification request[cite: 1]
+                        ser.write(b"1ID?\r\n")
+                        time.sleep(0.1)
+
+                        response = ser.read_all().decode("utf-8", errors="ignore").strip()
+
+                        # If stage ID didn't answer, try querying status
+                        if not response:
+                            ser.write(b"1TS?\r\n")
+                            time.sleep(0.1)
+                            response = (
+                                ser.read_all().decode("utf-8", errors="ignore").strip()
+                            )
+
+                        # SMC100 responses echo the ID and command prefix (e.g., "1IDTRB25CC" or "1TS000032")[cite: 1]
+                        if response.startswith("1ID") or response.startswith("1TS"):
+                            print(f"[mainGUI] Device SMC100 Controller found on {port}")
+                            found_devices["SMC100 Rotator"] = port
+                            continue
+                except:
+                    print("[mainGUI] No devices found. Checking next port")
 
         for idx, device in enumerate(self.devices):
             check_var = tk.BooleanVar(value=False)
@@ -284,6 +316,8 @@ class SetupWindow(tk.Tk):
                 p = multiprocessing.Process(target=chuck_frame.main, args=(port,controllerID, self.active_claims, "Chuck Positioner"))
             elif device == "Temperature Controller":
                 p = multiprocessing.Process(target=temp_control.main, args=(port,))
+            elif device == "SMC100 Rotator":
+                p = multiprocessing.Process(target=rotator.main, args=(port,))
 
             self.spawned_processes.append(p)
 
