@@ -118,7 +118,7 @@ class SetupWindow(tk.Tk):
         ctrl_widget = self.controller_widgets[device]
         
         if is_checked:
-            if ((device != "Temperature Controller") | (device != "SMC100 Rotator")):
+            if ((device != "Temperature Controller") & (device != "SMC100 Rotator")):
                 ctrl_widget.state(["!disabled"])
             serial_widget.state(["!disabled"])
         else:
