@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import serial
 import time
-
+import threading
 from math import floor
 
 # never wait for more than this e.g. during wait_states
@@ -96,6 +96,7 @@ class SMC100(object):
     """
 
     self.printed_moving = False
+    self._serial_lock = threading.Lock()
 
     super(SMC100, self).__init__()
 
@@ -382,45 +383,46 @@ class SMC100(object):
     if command in no_retry_commands:
       retry = False
 
-    while self._port is not None:
-      if expect_response:
-        self._port.flushInput()
+    with self._serial_lock:
+      while self._port is not None:
+        if expect_response:
+          self._port.flushInput()
 
-      self._port.flushOutput()
+        self._port.flushOutput()
 
-      # Replace self._port.write(tosend) and self._port.write('\r\n') with:
-      self._port.write(tosend.encode('ascii'))
-      self._port.write(b'\r\n')
+        # Replace self._port.write(tosend) and self._port.write('\r\n') with:
+        self._port.write(tosend.encode('ascii'))
+        self._port.write(b'\r\n')
 
-      self._port.flush()
+        self._port.flush()
 
-      if not self._silent:
-        self._emit('sent', tosend)
+        if not self._silent:
+          self._emit('sent', tosend)
 
-      if expect_response:
-        try:
-          response = self._readline()
-          if response.startswith(prefix):
-            return response[len(prefix):]
-          else:
-            raise SMC100InvalidResponseException(command, response)
-        except (Exception, ValueError):
-          if not retry or retry <=0:
-            raise ValueError("ex")
-          else:
-            if type(retry) == int:
-              retry -= 1
-            continue
-      else:
-        # we only need to delay when we are not waiting for a response
-        now = time.time()
-        dt = now - self._last_sendcmd_time
-        dt = COMMAND_WAIT_TIME_SEC - dt
-        if dt > 0:
-          self._sleepfunc(dt)
-        
-        self._last_sendcmd_time = now
-        return None
+        if expect_response:
+          try:
+            response = self._readline()
+            if response.startswith(prefix):
+              return response[len(prefix):]
+            else:
+              raise SMC100InvalidResponseException(command, response)
+          except (Exception, ValueError):
+            if not retry or retry <=0:
+              raise ValueError("ex")
+            else:
+              if type(retry) == int:
+                retry -= 1
+              continue
+        else:
+          # we only need to delay when we are not waiting for a response
+          now = time.time()
+          dt = now - self._last_sendcmd_time
+          dt = COMMAND_WAIT_TIME_SEC - dt
+          if dt > 0:
+            self._sleepfunc(dt)
+          
+          self._last_sendcmd_time = now
+          return None
 
   def _readline(self):
     """
