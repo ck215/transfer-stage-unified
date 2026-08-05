@@ -42,7 +42,7 @@ class SetupWindow(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Device Configuration Setup")
-        self.geometry("750x440")
+        self.geometry("750x460")
         self.resizable(False, False)
         
         self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller", "SMC100 Rotator"]

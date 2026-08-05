@@ -95,6 +95,8 @@ class SMC100(object):
     new controller, call reset_and_configure().
     """
 
+    self.printed_moving = False
+
     super(SMC100, self).__init__()
 
     assert smcID is not None
@@ -171,9 +173,9 @@ class SMC100(object):
       # wait for the controller to be ready
       st = self.wait_states((STATE_READY_FROM_HOMING, STATE_READY_FROM_MOVING))
       if st == STATE_READY_FROM_MOVING:
-        self.move_absolute_um(0, waitStop=True)
+        self.move_absolute_mdeg(0, waitStop=True)
     else:
-      self.move_absolute_um(0, waitStop=False)
+      self.move_absolute_mdeg(0, waitStop=False)
 
   def stop(self):
     self.sendcmd('ST')
@@ -191,65 +193,69 @@ class SMC100(object):
     assert len(state) == 2
     
     if not silent:
-      print('status:')
       if state == '0A':
-        print('  state: NOT REFERENCED from reset')
+        print('[rotator] NOT REFERENCED from reset')
       elif state == '0B':
-        print('  state: NOT REFERENCED from HOMING')
+        print('[rotator] NOT REFERENCED from HOMING')
       elif state == '0C':
-        print('  state: NOT REFERENCED from CONFIGURATION')
+        print('[rotator] NOT REFERENCED from CONFIGURATION')
       elif state == '0D':
-        print('  state: NOT REFERENCED from DISABLE')
+        print('[rotator] NOT REFERENCED from DISABLE')
       elif state == '0E':
-        print('  state: NOT REFERENCED from READY')
+        print('[rotator] NOT REFERENCED from READY')
       elif state == '0F':
-        print('  state: NOT REFERENCED from MOVING')
+        print('[rotator] NOT REFERENCED from MOVING')
+        self.printed_moving = False
       elif state == '10':
-        print('  state: NOT REFERENCED ESP stage error')
+        print('[rotator] NOT REFERENCED ESP stage error')
       elif state == '11':
-        print('  state: NOT REFERENCED from JOGGING')
+        print('[rotator] NOT REFERENCED from JOGGING')
       elif state == '14':
-        print('  state: CONFIGURATION')
+        print('[rotator] CONFIGURATION')
       elif state == '1E':
-        print('  state: HOMING commanded from RS-232-C')
+        print('[rotator] HOMING commanded from RS-232-C')
       elif state == '1F':
-        print('  state: HOMING commanded by SMC-RC')
+        print('[rotator] HOMING commanded by SMC-RC')
       elif state == '28':
-        print('  state: MOVING')
+        if (self.printed_moving == False):
+          print('[rotator] MOVING')
+          self.printed_moving = True
       elif state == '32':
-        print('  state: READY from HOMING')
+        print('[rotator] READY from HOMING')
       elif state == '33':
-        print('  state: READY from MOVING')
+        print('[rotator] READY from MOVING')
+        self.printed_moving = False
       elif state == '34':
-        print('  state: READY from DISABLE')
+        print('[rotator] READY from DISABLE')
       elif state == '35':
-        print('  state: READY from JOGGING')
+        print('[rotator] READY from JOGGING')
       elif state == '3C':
-        print('  state: DISABLE from READY')
+        print('[rotator] DISABLE from READY')
       elif state == '3D':
-        print('  state: DISABLE from MOVING')
+        print('[rotator] DISABLE from MOVING')
+        self.printed_moving = False
       elif state == '3E':
-        print('  state: DISABLE from JOGGING')
+        print('[rotator] DISABLE from JOGGING')
       elif state == '46':
-        print('  state: JOGGING from READY')
+        print('[rotator] JOGGING from READY')
       elif state == '47':
-        print('  state: JOGGING from DISABLE')
+        print('[rotator] JOGGING from DISABLE')
     return errors, state
 
-  def get_position_mm(self):
-    dist_mm = float(self.sendcmd('TP', '?', expect_response=True, retry=10))
-    return dist_mm
+  def get_position_deg(self):
+    dist_deg = float(self.sendcmd('TP', '?', expect_response=True, retry=10))
+    return dist_deg
 
-  def get_position_um(self):
-    return int(self.get_position_mm()*1000)
+  def get_position_mdeg(self):
+    return int(self.get_position_deg()*1000)
 
-  def move_relative_mm(self, dist_mm, waitStop=True):
+  def move_relative_deg(self, dist_deg, waitStop=True):
     """
-    Moves the stage relatively to the current position by the given distance given in mm
+    Moves the stage relatively to the current position by the given distance given in deg
 
     If waitStop is True then this method returns when the move is completed.
     """
-    self.sendcmd('PR', dist_mm)
+    self.sendcmd('PR', dist_deg)
     if waitStop:
       # If we were previously homed, then something like PR0 will have no
       # effect and we end up waiting forever for ready from moving because
@@ -258,23 +264,23 @@ class SMC100(object):
       self.wait_states((STATE_READY_FROM_MOVING, STATE_READY_FROM_HOMING))
 
 
-  def move_relative_um(self, dist_um, **kwargs):
+  def move_relative_mdeg(self, dist_mdeg, **kwargs):
     """
     Moves the stage relatively to the current position by the given distance given in um. The
     given distance is first converted to an integer.
 
     If waitStop is True then this method returns when the move is completed.
     """
-    dist_mm = int(dist_um)/1000
-    self.move_relative_mm(dist_mm, **kwargs)
+    dist_deg = int(dist_mdeg)/1000
+    self.move_relative_deg(dist_deg, **kwargs)
 
-  def move_absolute_mm(self, position_mm, waitStop=True):
+  def move_absolute_deg(self, position_deg, waitStop=True):
     """
     Moves the stage to the given absolute position given in mm.
 
     If waitStop is True then this method returns when the move is completed.
     """
-    self.sendcmd('PA', position_mm)
+    self.sendcmd('PA', position_deg)
     if waitStop:
       # If we were previously homed, then something like PR0 will have no
       # effect and we end up waiting forever for ready from moving because
@@ -282,15 +288,15 @@ class SMC100(object):
       # is included.
       self.wait_states((STATE_READY_FROM_MOVING, STATE_READY_FROM_HOMING))
 
-  def move_absolute_um(self, position_um, **kwargs):
+  def move_absolute_mdeg(self, position_mdeg, **kwargs):
     """
     Moves the stage to the given absolute position given in um. Note that the
     position specified will be floor'd first before conversion to mm.
 
     If waitStop is True then this method returns when the move is completed.
     """
-    pos_mm = floor(position_um)/1000
-    return self.move_absolute_mm(pos_mm, **kwargs)
+    pos_deg = floor(position_mdeg)/1000
+    return self.move_absolute_deg(pos_deg, **kwargs)
 
   def wait_states(self, targetstates, ignore_disabled_states=False):
     """
@@ -483,23 +489,23 @@ def test_configure():
 
 def test_general():
   smc100 = SMC100(1, '/dev/ttyS5', silent=False)
-  print(smc100.get_position_mm())
+  print(smc100.get_position_deg())
 
   smc100.home()
 
   # make sure there are no errors
   assert smc100.get_status()[0] == 0
 
-  smc100.move_relative_um(5*1000)
-  smc100.move_relative_mm(5)
+  smc100.move_relative_mdeg(5*1000)
+  smc100.move_relative_deg(5)
 
   assert smc100.get_status()[0] == 0
 
-  pos = smc100.get_position_mm()
+  pos = smc100.get_position_deg()
 
   assert abs(pos-10)<0.001
 
-  smc100.move_relative_mm(-pos)
+  smc100.move_relative_deg(-pos)
 
   assert smc100.get_status()[0] == 0
 

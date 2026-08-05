@@ -55,7 +55,7 @@ class SMC100GUI:
         ).grid(row=0, column=0, sticky="w")
         self.lbl_position = ttk.Label(
             status_frame,
-            text="--.-- mm",
+            text="--.-- deg",
             font=("Helvetica", 12, "bold"),
             foreground="blue",
         )
@@ -100,7 +100,7 @@ class SMC100GUI:
         )
         abs_frame.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(abs_frame, text="Target (mm):").grid(
+        ttk.Label(abs_frame, text="Target (deg):").grid(
             row=0, column=0, sticky="w"
         )
         self.abs_entry = ttk.Entry(abs_frame, width=12)
@@ -118,7 +118,7 @@ class SMC100GUI:
         )
         rel_frame.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(rel_frame, text="Step (mm):").grid(row=0, column=0, sticky="w")
+        ttk.Label(rel_frame, text="Step (deg):").grid(row=0, column=0, sticky="w")
         self.rel_entry = ttk.Entry(rel_frame, width=12)
         self.rel_entry.insert(0, "1.0")
         self.rel_entry.grid(row=0, column=1, padx=5)
@@ -169,7 +169,7 @@ class SMC100GUI:
         self.btn_connect.config(text="Connect")
         self.port_entry.config(state="normal")
         self.id_entry.config(state="normal")
-        self.lbl_position.config(text="--.-- mm")
+        self.lbl_position.config(text="--.-- deg")
         self.lbl_state.config(text="Disconnected")
         self.lbl_error.config(text="0")
         self._set_controls_state("disabled")
@@ -196,8 +196,8 @@ class SMC100GUI:
         except Exception as e:
             self.root.after(
                 0,
-                lambda: messagebox.showerror(
-                    "Controller Error", f"Action failed:\n{e}"
+                lambda err=e: messagebox.showerror(
+                    "Controller Error", f"Action failed:\n{err}"
                 ),
             )
 
@@ -217,8 +217,8 @@ class SMC100GUI:
 
     def cmd_move_absolute(self):
         try:
-            target_mm = float(self.abs_entry.get().strip())
-            self.run_async(self.smc.move_absolute_mm, target_mm)
+            target_deg = float(self.abs_entry.get().strip())
+            self.run_async(self.smc.move_absolute_deg, target_deg)
         except ValueError:
             messagebox.showwarning(
                 "Invalid Input", "Please enter a valid numeric value for target."
@@ -226,8 +226,8 @@ class SMC100GUI:
 
     def cmd_move_relative(self, direction):
         try:
-            step_mm = float(self.rel_entry.get().strip()) * direction
-            self.run_async(self.smc.move_relative_mm, step_mm)
+            step_deg = float(self.rel_entry.get().strip()) * direction
+            self.run_async(self.smc.move_relative_deg, step_deg)
         except ValueError:
             messagebox.showwarning(
                 "Invalid Input", "Please enter a valid numeric value for step."
@@ -237,10 +237,10 @@ class SMC100GUI:
     def _poll_status(self):
         if self.is_connected and self.smc:
             try:
-                pos = self.smc.get_position_mm()
+                pos = self.smc.get_position_deg()
                 err, state = self.smc.get_status(silent=True)
 
-                self.lbl_position.config(text=f"{pos:.4f} mm")
+                self.lbl_position.config(text=f"{pos:.4f} deg")
                 self.lbl_state.config(text=state)
                 self.lbl_error.config(text=str(err))
             except Exception:
