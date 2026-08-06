@@ -2,17 +2,17 @@
 #include <TMCStepper.h>
 
 // define pins
-#define yStep 22
-#define yDir 23
-#define yEN 24
+#define zStep 22
+#define zDir 23
+#define zEN 24
 
-#define xStep 32
-#define xDir 33
-#define xEN 34
+#define yStep 32
+#define yDir 33
+#define yEN 34
 
-#define zStep 42
-#define zDir 43
-#define zEN 44
+#define xStep 42
+#define xDir 43
+#define xEN 44
 
 // define UART parameters
 #define DRIVER_ADDRESS   0b00  
@@ -27,9 +27,9 @@ AccelStepper z_axis(1, zStep, zDir);
 
 TMC2209Stepper xUART(&Serial2, R_SENSE, DRIVER_ADDRESS);
 
-TMC2209Stepper yUART(&Serial1, R_SENSE, DRIVER_ADDRESS);
+TMC2209Stepper yUART(&Serial3, R_SENSE, DRIVER_ADDRESS);
 
-TMC2209Stepper zUART(&Serial3, R_SENSE, DRIVER_ADDRESS);
+TMC2209Stepper zUART(&Serial1, R_SENSE, DRIVER_ADDRESS);
 
 // DEAD ZONE for manual control
 #define MANUAL_DEAD_ZONE 0.05
@@ -53,11 +53,18 @@ int SLOW_SPEED = 10;
 long BRAKE_DISTANCE = 0;
 bool AUTONOMOUS_ON = true;
 bool MANUAL_ON = false;
+bool DPAD_STEP = false;
 
 // Holds the current manual command as a float (-1.0 to 1.0)
 float manual_x_value = 0.0;
 float manual_y_value = 0.0;
 float manual_z_value = 0.0;
+int dpad_LR = 0;
+int dpad_UD = 0;
+int bumpers = 0;
+int x_step_size = 16;
+int y_step_size = 16;
+int z_step_size = 16;
 
 // Possible states of the motors in autonomous mode
 bool ALL_AXES_DONE = true; 
@@ -83,11 +90,13 @@ struct __attribute__((packed)) ManualControlPacket {
     float x_axisStatus;         // X axis status
     float y_axisStatus;         // Y axis status
     float z_axisStatus;         // Z axis status
-    float manual_jog_speed;     // Manual jog speed
-    float dpad_left;            // D-pad left value
-    float dpad_right;           // D-pad right value
-    float dpad_up;              // D-pad up value
-    float dpad_down;            // D-pad down value
+    int x_stepSize;           // X step size
+    int y_stepSize;           // Y step size
+    int z_stepSize;           // Z step size
+    int dpad_LR;              // D-pad left-right value
+    int dpad_UD;              // D-pad up-down value
+    int bumpers;              // Bumper combined value
+    int manual_jog_speed;     // Manual jog speed
 };
 
 const size_t BINARY_PACKET_SIZE = sizeof(ManualControlPacket);
@@ -283,16 +292,22 @@ void parseHybridSerial() {
 
                 // Binary mode 1: Engage Manual
                 if (incomingPacket.mode == 1) {
-                    if (!MANUAL_ON) {
+                    if (!MANUAL_ON && !DPAD_STEP) {
                         Serial2.println("MANUAL MODE ENGAGED - Halting Autonomous.");
                         AUTONOMOUS_ON = false;
                         MANUAL_ON = true;
                         current_state = IDLE;
                     }
-                    FULL_SPEED = (int)incomingPacket.manual_jog_speed;
-                    manual_x_value = incomingPacket.x_axisStatus;
-                    manual_y_value = incomingPacket.y_axisStatus;
+                    FULL_SPEED = incomingPacket.manual_jog_speed;
+                    manual_x_value = -1*incomingPacket.x_axisStatus;
+                    manual_y_value = -1*incomingPacket.y_axisStatus;
                     manual_z_value = incomingPacket.z_axisStatus;
+                    dpad_LR = incomingPacket.dpad_LR;
+                    dpad_UD = incomingPacket.dpad_UD;
+                    bumpers = incomingPacket.bumpers;
+                    x_step_size = incomingPacket.x_stepSize;
+                    y_step_size = incomingPacket.y_stepSize;
+                    z_step_size = incomingPacket.z_stepSize;
                 }
 
                 // Binary Mode 0: Explicit Stop
@@ -306,7 +321,7 @@ void parseHybridSerial() {
 
         // ---OPTION B: TOGGLE ENABLE
         else if (peekChar == 0x74) {
-            Serial.read(); // <-- CRITICAL FIX: Consume the 't' so it leaves the buffer!
+            Serial.read();
 
             if (system_enabled) {
                 system_enabled = false;
@@ -329,9 +344,19 @@ void parseHybridSerial() {
             }
         }
 
-        // --- OPTION C: AUTONOMOUS TEXT STRING ---
+        else if (peekChar == 0x73) { // --- OPTION C: IDENTITY QUERY ---
+            Serial.read();
+            Serial.println("DEV: c");
+        }
+        
+        // --- OPTION D: AUTONOMOUS TEXT STRING ---
+        else if (peekChar == '-' || (peekChar >= '0' && peekChar <= '9')) {
+            parseSerialAuto(); // Uses original text string logic
+        }
+
+        // clear buffer
         else {
-            parseSerialAuto(); // Uses your original text string logic
+            Serial.read();
         }
     }
 }
@@ -375,6 +400,27 @@ void runAutoMode()
     }
 }
 
+// DPad step handler
+void runDpadStep()
+{
+    x_axis.runSpeedToPosition();
+    y_axis.runSpeedToPosition();
+    z_axis.runSpeedToPosition();
+    if (x_axis.distanceToGo() == 0 && y_axis.distanceToGo() == 0 && z_axis.distanceToGo() == 0)
+    {
+        // Serial2.println("------------------------------------------");
+        // Serial2.println("SEQUENCE COMPLETE. All Axes Halted.");
+        // Serial2.println("------------------------------------------");
+
+        x_axis.setSpeed(0);
+        y_axis.setSpeed(0);
+        z_axis.setSpeed(0);
+
+        MANUAL_ON = true;
+        DPAD_STEP = false;
+    }
+}
+
 
 // Manual control handler
 void runManualMode() 
@@ -396,21 +442,32 @@ void runManualMode()
     }
     else // move to nearest step size increment before stopping -- may create unintended movement (direction) for user
     {
-        if (x_axis.currentPosition() % XAXIS_SIZE == 0)
+        if (x_axis.currentPosition() % x_step_size == 0)
         {
             x_axis.setSpeed(0);
         }
-        if (y_axis.currentPosition() % YAXIS_SIZE == 0)
+        if (y_axis.currentPosition() % y_step_size == 0)
         {
             y_axis.setSpeed(0);
         }
-        if (z_axis.currentPosition() % ZAXIS_SIZE == 0)
+        if (z_axis.currentPosition() % z_step_size == 0)
         {
             z_axis.setSpeed(0);
         }
         x_axis.runSpeed();
         y_axis.runSpeed();
         z_axis.runSpeed();
+    }
+    if (bumpers || dpad_LR || dpad_UD) {
+        DPAD_STEP = true;
+        MANUAL_ON = false;
+        x_axis.move(dpad_LR*x_step_size);
+        y_axis.move(dpad_UD*y_step_size);
+        z_axis.move(bumpers*z_step_size);
+        x_axis.setSpeed(FULL_SPEED);
+        y_axis.setSpeed(FULL_SPEED);
+        z_axis.setSpeed(FULL_SPEED);
+        
     }
 }
 
@@ -435,7 +492,7 @@ void setup() {
   Serial2.begin(115200);
   Serial3.begin(115200);
 
-  int microstepMode = 8; // default for step size considerations is 2 for 1/2 microsteps, which should be smallest unit of reliable distance
+  int microstepMode = 2; // default for step size considerations is 2 for 1/2 microsteps, which should be smallest unit of reliable distance
 
   // configure drivers
 
@@ -511,7 +568,7 @@ void status_update_print_serial()
         Serial.println(current_z_count);
 
         // // Debug output to Serial2 (only during active modes)
-        // if (AUTONOMOUS_ON || MANUAL_ON)
+        // if (AUTONOMOUS_ON || ON)
         // {
         //     if (AUTONOMOUS_ON)
         //     {
@@ -539,6 +596,8 @@ void loop() {
   if (MANUAL_ON) runManualMode();
 
   if (AUTONOMOUS_ON) runAutoMode();
+
+  if (DPAD_STEP) runDpadStep();
 
   status_update_print_serial();
 }

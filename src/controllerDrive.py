@@ -141,7 +141,8 @@ class ControllerPoller:
                 
                 match self.joystick.get_name():
                     case "Xbox Series X Controller": self.controller_binds = [0,3,4,5,6,7]
-                    case "T.16000M": self.controller_binds = [0,1,9,10] # 9 and 10 will be buttons simulated to be axes
+                    case "T.16000M": self.controller_binds = [0,1,9,10,9,10] # WINDOWS name; 9 and 10 will be buttons simulated to be axes
+                    case "Thrustmaster T.16000M": self.controller_binds = [0,1,2,3,2,3] # MINT name; 2 and 3 will be buttons simulated to be axes
                     case _: raise ValueError("Unsupported joystick detected! Add axis binds in controllerDrive.py!")
 
                 # Initialize previous state dictionaries
@@ -254,7 +255,7 @@ class ControllerPoller:
                     activity_detected = True 
             
             # Override for T.16000M Z Axis
-            if (self.joystick.get_name() == "T.16000M"):
+            if ((self.joystick.get_name() == "T.16000M") | (self.joystick.get_name() == "Thrustmaster T.16000M")):
                 self.prev_axis_states[9] = self.joystick.get_button(2)
                 self.prev_axis_states[10] = self.joystick.get_button(3)
 

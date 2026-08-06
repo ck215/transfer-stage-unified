@@ -9,9 +9,14 @@ import serial.tools.list_ports
 # GUI library
 import tkinter as tk
 from tkinter import ttk
+from tkinter import filedialog
+from pathlib import Path
 
 # Timings library
-import time 
+import time
+
+# GCode parse
+from gcodeparser import parse_gcode_lines
 
 # Arduino search function
 def get_arduino_port():
@@ -48,10 +53,9 @@ class ChuckFrame:
 
     # Member funct. to initialize the GUI
     def __init__(self, root: tk.Tk):
-        
         # Initialize root window
         self.root = root
-        self.root.title("Chuck Positioner")
+        self.root.title("Chuck Controller")
 
         # Initialize vars for controller log window
         self.controller_log_window: tk.Toplevel | None = None
@@ -79,6 +83,7 @@ class ChuckFrame:
         self.start_stepping_button: tk.Button
         self.full_stop_button: tk.Button
         self.color_test_button: tk.Button
+        self.run_script_button: tk.Button
 
         # Call the main window setup function that formats using outline below
         self._main_window()
@@ -103,7 +108,7 @@ class ChuckFrame:
         tk.Label(self.root, text="MUST be 0 at startup, if 2 then error", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=0); row_counter+=1
 
         tk.Label(self.root, text="X Position:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Label(self.root, textvariable=self.pos_x_var, font=('Arial', 10, 'bold'), fg='red', bg=bg_main).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
+        tk.Label(self.root, textvariable=self.pos_x_var, font=('Arial', 10, 'bold'), fg='red',bg=bg_main).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
 
         tk.Label(self.root, text="Y Position:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         tk.Label(self.root, textvariable=self.pos_y_var, font=('Arial', 10, 'bold'), fg='red', bg=bg_main).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
@@ -152,6 +157,16 @@ class ChuckFrame:
         tk.Label(self.root, text="Z Steps:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         self.entry_z_dist = tk.Entry(self.root); self.entry_z_dist.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_z_dist.insert(0, "0"); row_counter += 1
 
+        # Import script button
+        self.file_frame = tk.Frame(self.root)
+        self.file_frame.configure(bg=bg_main)
+        self.file_frame.grid(row=row_counter,column=1, padx=5, pady=3, sticky='w')
+        tk.Label(self.root, text="Script", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        self.select_script_button = tk.Button(self.file_frame, text="Select", width=5)
+        self.select_script_button.grid(row=0, column=0, padx=(13,0), pady=2); row_counter+=1
+        self.selected_script_label = tk.Label(self.file_frame, text="None", width=10, bg=bg_main, fg='white')
+        self.selected_script_label.grid(row=0, column=1, padx=2, pady=2, sticky='w')
+
         tk.Label(self.root, text="--- Velocity Control ---", font=('Arial', 10, 'bold'), bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
         
         tk.Label(self.root, text="<= 1600", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=0); row_counter+=1
@@ -184,7 +199,13 @@ class ChuckFrame:
         self.start_stepping_button = tk.Button(self.root, text="Start Stepping",
         bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
         self.start_stepping_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew'); row_counter += 1
+
+        # Run Script Button
+        self.run_script_button = tk.Button(self.root, text="Run Script",
+        bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
+        self.run_script_button.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew'); row_counter += 1
         
+        # Full Stop Button
         self.full_stop_button = tk.Button(self.root, text="Full Stop",
         bg='darkgreen', fg='black', font=('Arial', 10, 'bold'))
         self.full_stop_button.grid(row=row_counter, column=0, columnspan=2,padx=5, pady=5, sticky='ew'); row_counter += 1
@@ -295,6 +316,7 @@ class ChuckFrame:
 class AppLogic:
 
     system_enabled = False
+    open_script = ''
 
     def __init__(self, root: tk.Tk, gui: ChuckFrame, controller: controllerDrive.ControllerPoller, serial: serialDrive.SerialArduino, active_claims, process_name):
         
@@ -324,6 +346,8 @@ class AppLogic:
         self.gui.full_stop_button.config(command=self.full_stop_button)
         self.gui.serial_reconnect_button.config(command=self.serial_reconnect_button)
         self.gui.controller_dropdown.bind("<<ComboboxSelected>>", self.on_controller_dropdown_selected)
+        self.gui.select_script_button.config(command=self.select_script_button)
+        self.gui.run_script_button.config(command=self.run_script_button)
         
         # Protocal for window closing
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -428,6 +452,16 @@ class AppLogic:
         except Exception as e:
             print(f"[AppLogic] Error sending stop on mode switch: {e}")
 
+    def select_script_button(self):
+        filepath = filedialog.askopenfilename(
+        title="Select a File",
+        filetypes=[("All Files", "*.*"), ("Text Files", "*.txt")]
+        )
+        if filepath:
+            # Display just the filename (or use filepath for full path)
+            self.gui.selected_script_label.config(text=Path(filepath).name)
+            self.open_script = Path(filepath).name
+
     # Enables or disables controllers, i.e. power to motors
     def enable_button(self):
         print("\n[AppLogic] ENABLE/DISABLE button clicked.")
@@ -454,7 +488,7 @@ class AppLogic:
                 self.disable_timer_id = self.root.after(300000, self.auto_disable)
             except ValueError as e:
                 print(e)
-
+                
     def reset_disable_timer(self):
         if self.system_enabled and self.disable_timer_id:
             self.root.after_cancel(self.disable_timer_id)
@@ -464,7 +498,6 @@ class AppLogic:
         print("\n[AppLogic] 5-minute timeout reached due to inactivity. Auto-disabling system.")
         if self.system_enabled:
             self.enable_button()
-
 
     # Sends command using current GUI parameters over serial
     def start_stepping_button(self):
@@ -497,6 +530,18 @@ class AppLogic:
             
         except Exception as e:
             print(f"[AppLogic] Error in stopping stepping: {e}")
+    
+    def run_script_button(self):
+        print("[AppLogic] RUN SCRIPT button clicked.")
+        try:
+            with open(self.open_script, 'r') as f:
+                print("1!")
+                for line in parse_gcode_lines(f, include_comments=False):
+                    print("2!")
+                    print(line)
+        except:
+            print("[AppLogic] Script parse failed. Perhaps selected file is not gcode.")
+        
 
     # Manual mode loop, polls controller and sends commands
     def _manual_mode_loop(self):
@@ -566,10 +611,13 @@ class AppLogic:
             "y_axisStatus": self.controller.prev_axis_states.get(self.controller.controller_binds[1], 0.0),     # FIX #4: Added default 0.0 (was None)
             "z_axisStatusR": self.controller.prev_axis_states.get(self.controller.controller_binds[2], -1.0),   # FIX #4: Added default -1.0 idle trigger (was None)
             "z_axisStatusL": self.controller.prev_axis_states.get(self.controller.controller_binds[3], -1.0),   # FIX #4: Added default -1.0 idle trigger (was None)
-            "dpad_left": self.controller.prev_hat_states.get(0, (0, 0))[0],
-            "dpad_right": self.controller.prev_hat_states.get(0, (0, 0))[0],
-            "dpad_up": self.controller.prev_hat_states.get(0, (0, 0))[1],
-            "dpad_down": self.controller.prev_hat_states.get(0, (0, 0))[1],
+            "x_stepSize": self.gui.entry_x_step.get(),
+            "y_stepSize": self.gui.entry_y_step.get(),
+            "z_stepSize": self.gui.entry_z_step.get(),
+            "dpad_LR": self.controller.prev_hat_states.get(0, (0, 0))[0],
+            "dpad_UD": self.controller.prev_hat_states.get(0, (0,0))[1],
+            "LBumper": self.controller.prev_button_states.get(self.controller.controller_binds[4], 0),
+            "RBumper": self.controller.prev_button_states.get(self.controller.controller_binds[5], 0),
             "manual_jog_speed": self.gui.entry_man_full_speed.get()                             
         }
     
