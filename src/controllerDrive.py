@@ -152,7 +152,6 @@ class ControllerPoller:
                                 case '3': # USB
                                     self.controller_binds = STANDARD_CONTROLLER_BINDS
                                 case '5': # BLUETOOTH
-                                    print("Bluetooth")
                                     self.controller_binds = [0,3,4,5,6,7]
                                 case _:
                                     raise ValueError("Error connecting Xbox Controller: Connection bus not recognized!")
