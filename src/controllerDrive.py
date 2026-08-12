@@ -140,25 +140,31 @@ class ControllerPoller:
                 print(f"  Hats: {self.joystick.get_numhats()}")
 
                 # BINDS FORMAT: X, Y, Z+, Z-, Z+step, Z-step
-                STANDARD_CONTROLLER_BINDS = [0,4,5,2,4,5]
+                if sys.platform.startswith("linux"):
+                    STANDARD_CONTROLLER_BINDS = [0,4,5,2,4,5]
+                elif sys.platform.startswith("win32"):
+                    STANDARD_CONTROLLER_BINDS = [0,3,5,4,4,5]
                 
-                match self.joystick.get_name():
-                    case "Xbox Series X Controller":
-                        if sys.platform.startswith("win32"):
-                            self.controller_binds = STANDARD_CONTROLLER_BINDS
-                        elif sys.platform.startswith("linux"):
-                            print(self.joystick.get_guid())
-                            match self.joystick.get_guid()[1:2]: # DETECT USB VS BLUETOOTH
-                                case '3': # USB
-                                    self.controller_binds = STANDARD_CONTROLLER_BINDS
-                                case '5': # BLUETOOTH
-                                    self.controller_binds = [0,3,4,5,6,7]
-                                case _:
-                                    raise ValueError("Error connecting Xbox Controller: Connection bus not recognized!")
-                    case "T.16000M": self.controller_binds = [0,1,9,10,7,9] # WINDOWS name; 9 and 10 will be buttons simulated to be axes
-                    case "Thrustmaster T.16000M": self.controller_binds = [0,1,10,9,7,9] # MINT name; 2 and 3 will be buttons simulated to be axes
-                    case "Logitech Gamepad F310": self.controller_binds = STANDARD_CONTROLLER_BINDS
-                    case _: raise ValueError("Unsupported joystick detected! Add axis binds in controllerDrive.py!")
+                if (sys.platform.startswith("win32")) and self.joystick.get_name().startswith("Controller"):
+                    self.controller_binds = STANDARD_CONTROLLER_BINDS
+                else:
+                    match self.joystick.get_name():
+                        case "Xbox Series X Controller":
+                            if sys.platform.startswith("win32"):
+                                self.controller_binds = STANDARD_CONTROLLER_BINDS
+                            elif sys.platform.startswith("linux"):
+                                print(self.joystick.get_guid())
+                                match self.joystick.get_guid()[1:2]: # DETECT USB VS BLUETOOTH
+                                    case '3': # USB
+                                        self.controller_binds = STANDARD_CONTROLLER_BINDS
+                                    case '5': # BLUETOOTH
+                                        self.controller_binds = [0,3,4,5,6,7]
+                                    case _:
+                                        raise ValueError("Error connecting Xbox Controller: Connection bus not recognized!")
+                        case "T.16000M": self.controller_binds = [0,1,9,10,7,9] # WINDOWS name; 9 and 10 will be buttons simulated to be axes
+                        case "Thrustmaster T.16000M": self.controller_binds = [0,1,10,9,7,9] # MINT name; 2 and 3 will be buttons simulated to be axes
+                        case "Logitech Gamepad F310": self.controller_binds = STANDARD_CONTROLLER_BINDS
+                        case _: raise ValueError("Unsupported joystick detected! Add axis binds in controllerDrive.py!")
 
                 self.prev_axis_states.clear()
                 self.prev_button_states.clear()
