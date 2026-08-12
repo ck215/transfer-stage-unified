@@ -56,7 +56,7 @@ class ControllerPoller:
     def _is_os_connected(self): # OS check for controller
         if self.controller_index is None:
             return False
-        if sys.platform.startswith("Linux"):
+        if sys.platform.startswith("linux"):
             return os.path.exists(f"/dev/input/js{self.controller_index}")
         elif sys.platform == "win32":
             info = JOYINFOEX()
@@ -134,30 +134,52 @@ class ControllerPoller:
 
                 self.active_claims[self.process_name] = controllerID
 
-                print(f"\n[controllerDrive] Initialized Joystick: {self.joystick.get_name()}")
+                print(f"\n[controllerDrive] Attempting to initialize joystick: {self.joystick.get_name()}")
                 print(f"  Axes: {self.joystick.get_numaxes()}")
                 print(f"  Buttons: {self.joystick.get_numbuttons()}")
                 print(f"  Hats: {self.joystick.get_numhats()}")
+
+                # BINDS FORMAT: X, Y, Z+, Z-, Z+step, Z-step
+                STANDARD_CONTROLLER_BINDS = [0,4,5,2,4,5]
                 
                 match self.joystick.get_name():
-                    case "Xbox Series X Controller": self.controller_binds = [0,3,4,5,6,7]
+                    case "Xbox Series X Controller":
+                        if sys.platform.startswith("win32"):
+                            self.controller_binds = STANDARD_CONTROLLER_BINDS
+                        elif sys.platform.startswith("linux"):
+                            print(self.joystick.get_guid())
+                            match self.joystick.get_guid()[1:2]: # DETECT USB VS BLUETOOTH
+                                case '3': # USB
+                                    self.controller_binds = STANDARD_CONTROLLER_BINDS
+                                case '5': # BLUETOOTH
+                                    print("Bluetooth")
+                                    self.controller_binds = [0,3,4,5,6,7]
                     case "T.16000M": self.controller_binds = [0,1,9,10,7,9] # WINDOWS name; 9 and 10 will be buttons simulated to be axes
                     case "Thrustmaster T.16000M": self.controller_binds = [0,1,10,9,7,9] # MINT name; 2 and 3 will be buttons simulated to be axes
-                    case "Logitech Gamepad F310": self.controller_binds = [0,4,5,2,4,5]
+                    case "Logitech Gamepad F310": self.controller_binds = STANDARD_CONTROLLER_BINDS
                     case _: raise ValueError("Unsupported joystick detected! Add axis binds in controllerDrive.py!")
+
+                self.prev_axis_states.clear()
+                self.prev_button_states.clear()
+                self.prev_hat_states.clear()
 
                 # Initialize previous state dictionaries
                 for i in range(self.joystick.get_numaxes()):
                     self.prev_axis_states[i] = 0.0
+                    print("axes")
                 for i in range(self.joystick.get_numbuttons()):
                     self.prev_button_states[i] = 0
+                    print("buttons")
                 for i in range(self.joystick.get_numhats()):
                     self.prev_hat_states[i] = (0, 0)
+                    print("hats")
+
+                print(f"[controllerDrive] Joystick initialization succesful: {self.joystick.get_name()}")
                 return True
             except:
                 print("[controllerDrive] No joystick found.")
                 self._handle_disconnect()
-                self.active_claims[self.process_name] = "None Detected"
+                self.active_claims[self.process_name] = "None"
                 pygame.quit()
                 return False
                 

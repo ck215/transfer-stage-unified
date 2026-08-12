@@ -131,16 +131,16 @@ class ChuckFrame:
 
         tk.Label(self.root, text="--- Step Sizes ---", font=('Arial', 10, 'bold'), bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
 
-        tk.Label(self.root, text="Powers of 2; 8 or 16 recommended", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=0); row_counter+=1
+        tk.Label(self.root, text="Powers of 2; 1 or 2 recommended", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=0); row_counter+=1
 
         tk.Label(self.root, text="X Step Size:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        self.entry_x_step = tk.Entry(self.root); self.entry_x_step.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_x_step.insert(0, "16"); row_counter += 1
+        self.entry_x_step = tk.Entry(self.root); self.entry_x_step.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_x_step.insert(0, "2"); row_counter += 1
         
         tk.Label(self.root, text="Y Step Size:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        self.entry_y_step = tk.Entry(self.root); self.entry_y_step.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_y_step.insert(0, "16"); row_counter += 1
+        self.entry_y_step = tk.Entry(self.root); self.entry_y_step.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_y_step.insert(0, "2"); row_counter += 1
         
         tk.Label(self.root, text="Z Step Size:", bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        self.entry_z_step = tk.Entry(self.root); self.entry_z_step.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_z_step.insert(0, "16"); row_counter += 1
+        self.entry_z_step = tk.Entry(self.root); self.entry_z_step.grid(row=row_counter, column=1, padx=5, pady=2); self.entry_z_step.insert(0, "2"); row_counter += 1
 
         # CHANGED: Section header and labels renamed for relative stepping clarity
         tk.Label(self.root, text="--- Relative Step Counts ---", font=('Arial', 10, 'bold'), bg=bg_main, fg=fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
