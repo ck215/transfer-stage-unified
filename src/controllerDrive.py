@@ -154,6 +154,8 @@ class ControllerPoller:
                                 case '5': # BLUETOOTH
                                     print("Bluetooth")
                                     self.controller_binds = [0,3,4,5,6,7]
+                                case _:
+                                    raise ValueError("Error connecting Xbox Controller: Connection bus not recognized!")
                     case "T.16000M": self.controller_binds = [0,1,9,10,7,9] # WINDOWS name; 9 and 10 will be buttons simulated to be axes
                     case "Thrustmaster T.16000M": self.controller_binds = [0,1,10,9,7,9] # MINT name; 2 and 3 will be buttons simulated to be axes
                     case "Logitech Gamepad F310": self.controller_binds = STANDARD_CONTROLLER_BINDS
