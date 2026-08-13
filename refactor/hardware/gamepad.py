@@ -25,31 +25,135 @@ if sys.platform == "win32":
             ("dwReserved2", wintypes.DWORD),
         ]
 
+class BaseGamepad:
+    """Base class for all physical gamepads, providing standard mappings."""
+    def __init__(self, joystick):
+        self.joystick = joystick
+        self.prev_axis_states = {}
+        self.prev_button_states = {}
+        self.prev_hat_states = {}
+        
+        # Initialize previous state dictionaries
+        for i in range(self.joystick.get_numaxes()):
+            self.prev_axis_states[i] = 0.0
+        for i in range(self.joystick.get_numbuttons()):
+            self.prev_button_states[i] = 0
+        for i in range(self.joystick.get_numhats()):
+            self.prev_hat_states[i] = (0, 0)
+            
+    def get_mapped_state(self):
+        """Must return a dict of standardized hardware-agnostic inputs."""
+        return {
+            "x_axisStatus": 0.0,
+            "y_axisStatus": 0.0,
+            "z_axisStatusL": -1.0,
+            "z_axisStatusR": -1.0,
+            "dpad_LR": 0,
+            "dpad_UD": 0,
+            "LBumper": 0,
+            "RBumper": 0,
+        }
+        
+    def update_overrides(self):
+        """Allows specific controllers to override state before mapping."""
+        pass
+
+
+class XboxGamepad(BaseGamepad):
+    def get_mapped_state(self):
+        # Default Xbox mappings
+        # Win32 vs Linux axis indexes differ slightly, but we will assume standard layout here
+        # or use the provided binds.
+        
+        # Standard:
+        # 0: Left Stick X
+        # 1: Left Stick Y
+        # 4: Left Trigger (Linux: 2)
+        # 5: Right Trigger (Linux: 5)
+        # Bumper L: 4, Bumper R: 5
+        
+        if sys.platform.startswith("linux"):
+            z_left_axis = 2
+            z_right_axis = 5
+        else:
+            z_left_axis = 4
+            z_right_axis = 5
+
+        return {
+            "x_axisStatus": self.prev_axis_states.get(0, 0.0),
+            "y_axisStatus": self.prev_axis_states.get(1, 0.0),
+            "z_axisStatusL": self.prev_axis_states.get(z_left_axis, -1.0),
+            "z_axisStatusR": self.prev_axis_states.get(z_right_axis, -1.0),
+            "dpad_LR": self.prev_hat_states.get(0, (0,0))[0],
+            "dpad_UD": self.prev_hat_states.get(0, (0,0))[1],
+            "LBumper": self.prev_button_states.get(4, 0),
+            "RBumper": self.prev_button_states.get(5, 0),
+        }
+
+class BluetoothXboxGamepad(XboxGamepad):
+    def get_mapped_state(self):
+        # Bluetooth mappings differ on linux
+        if sys.platform.startswith("linux"):
+            return {
+                "x_axisStatus": self.prev_axis_states.get(0, 0.0),
+                "y_axisStatus": self.prev_axis_states.get(1, 0.0),
+                "z_axisStatusL": self.prev_axis_states.get(4, -1.0), # Differ
+                "z_axisStatusR": self.prev_axis_states.get(5, -1.0), # Differ
+                "dpad_LR": self.prev_hat_states.get(0, (0,0))[0],
+                "dpad_UD": self.prev_hat_states.get(0, (0,0))[1],
+                "LBumper": self.prev_button_states.get(6, 0), # Differ
+                "RBumper": self.prev_button_states.get(7, 0), # Differ
+            }
+        return super().get_mapped_state()
+
+class T16000MGamepad(BaseGamepad):
+    def update_overrides(self):
+        # Override for T.16000M Z Axis using buttons
+        self.prev_axis_states[9] = self.joystick.get_button(2)
+        self.prev_axis_states[10] = self.joystick.get_button(3)
+        
+    def get_mapped_state(self):
+        return {
+            "x_axisStatus": self.prev_axis_states.get(0, 0.0),
+            "y_axisStatus": self.prev_axis_states.get(1, 0.0),
+            "z_axisStatusL": self.prev_axis_states.get(9, 0.0) * 2.0 - 1.0, # Remap to [-1, 1] range
+            "z_axisStatusR": self.prev_axis_states.get(10, 0.0) * 2.0 - 1.0, # Remap to [-1, 1] range
+            "dpad_LR": self.prev_hat_states.get(0, (0,0))[0],
+            "dpad_UD": self.prev_hat_states.get(0, (0,0))[1],
+            "LBumper": self.prev_button_states.get(7, 0),
+            "RBumper": self.prev_button_states.get(9, 0),
+        }
+
+def get_gamepad_wrapper(joystick):
+    """Factory to return the correctly mapped BaseGamepad subclass."""
+    name = joystick.get_name()
+    if name.startswith("Controller"):
+        return XboxGamepad(joystick)
+    if name == "Xbox Series X Controller":
+        if sys.platform.startswith("linux") and joystick.get_guid()[1:2] == '5':
+            return BluetoothXboxGamepad(joystick)
+        return XboxGamepad(joystick)
+    if name == "T.16000M" or name == "Thrustmaster T.16000M":
+        return T16000MGamepad(joystick)
+    if name == "Logitech Gamepad F310":
+        return XboxGamepad(joystick)
+    # Default fallback
+    return XboxGamepad(joystick)
+
 class ControllerPoller:
     
     # Poll 50 times per second (1000ms / 20ms = 50Hz)
     POLL_INTERVAL = 5
 
-    controller_binds = []
-
     def __init__(self, controllerID, active_claims, process_name):
         # Polling control flag
         self.is_polling = False
-
         self.controllerID = controllerID
         self.controller_index = None # Stores integer ID for OS queries
-
-        # Will store the reference to the tkinter root window
         self.gui_root = None  
-
-        # Dictionaries to store the previous state
-        self.prev_axis_states = {}
-        self.prev_button_states = {}
-        self.prev_hat_states = {}
-
         self.active_claims = active_claims
         self.process_name = process_name
-        self.joystick = None
+        self.gamepad = None
 
         self._initialize_pygame_joystick(controllerID)
 
@@ -63,29 +167,22 @@ class ControllerPoller:
             info.dwSize = ctypes.sizeof(JOYINFOEX)
             info.dwFlags = 255
             return ctypes.windll.winmm.joyGetPosEx(self.controller_index, ctypes.byref(info)) == 0
-
         return True
 
     def _handle_disconnect(self):
         print(f"[controllerDrive] Controller disconnected.")
-        self.joystick = None
+        self.gamepad = None
         self.active_claims[self.process_name] = "None Detected"
-        self.prev_axis_states.clear()
-        self.prev_button_states.clear()
-        self.prev_hat_states.clear()
         self.stop_polling()
     
     def get_physical_controllers(self):
         try: pygame.init()
         except: pass
         try:
-            # Ensure the joystick module is alive before scanning
             if not pygame.joystick.get_init():
                 pygame.joystick.init()
-                
             pygame.event.pump()
             hardware_controllers = []
-            
             for i in range(pygame.joystick.get_count()):
                 try:
                     js = pygame.joystick.Joystick(i)
@@ -93,26 +190,23 @@ class ControllerPoller:
                 except Exception:
                     pass
             return hardware_controllers
-            
         except Exception as e:
             print(f"[{self.process_name}] Error scanning physical controllers: {e}")
             return []
 
     def connect_controller(self):
-        # Restart Pygame to attempt reconnection
         print("[controllerDrive] Restarting pygame...")
         try: pygame.quit()
         except: pass
         self._initialize_pygame_joystick(self.controllerID)
-        return True if self.joystick else False
+        return True if self.gamepad else False
 
-    # Initalizes Pygame instance, ONCE PER APPLICATION START
     def _initialize_pygame_joystick(self, controllerID):
         self.stop_polling()
 
         if not controllerID or "None" in controllerID or "Virtual" in controllerID:
             print(f"[{self.process_name}] Joystick set to None.")
-            self.joystick = None
+            self.gamepad = None
             self.active_claims[self.process_name] = "None Detected"
             return False
 
@@ -121,67 +215,21 @@ class ControllerPoller:
             pygame.joystick.init()
         
             try:
-                # Initialize the chosen joystick
                 controller_number = int(controllerID[3:4])
                 self.controller_index = controller_number
 
-                # Check if OS is connected
                 if not self._is_os_connected():
                     raise RuntimeError("Device not physically present at OS level.")
 
-                self.joystick = pygame.joystick.Joystick(controller_number)
-                self.joystick.init()
+                joystick = pygame.joystick.Joystick(controller_number)
+                joystick.init()
 
                 self.active_claims[self.process_name] = controllerID
-
-                print(f"\n[controllerDrive] Attempting to initialize joystick: {self.joystick.get_name()}")
-                print(f"  Axes: {self.joystick.get_numaxes()}")
-                print(f"  Buttons: {self.joystick.get_numbuttons()}")
-                print(f"  Hats: {self.joystick.get_numhats()}")
-
-                # BINDS FORMAT: X, Y, Z+, Z-, Z+step, Z-step
-                if sys.platform.startswith("linux"):
-                    STANDARD_CONTROLLER_BINDS = [0,4,5,2,4,5]
-                elif sys.platform.startswith("win32"):
-                    STANDARD_CONTROLLER_BINDS = [0,3,5,4,4,5]
+                print(f"\n[controllerDrive] Attempting to initialize joystick: {joystick.get_name()}")
                 
-                if (sys.platform.startswith("win32")) and self.joystick.get_name().startswith("Controller"):
-                    self.controller_binds = STANDARD_CONTROLLER_BINDS
-                else:
-                    match self.joystick.get_name():
-                        case "Xbox Series X Controller":
-                            if sys.platform.startswith("win32"):
-                                self.controller_binds = STANDARD_CONTROLLER_BINDS
-                            elif sys.platform.startswith("linux"):
-                                print(self.joystick.get_guid())
-                                match self.joystick.get_guid()[1:2]: # DETECT USB VS BLUETOOTH
-                                    case '3': # USB
-                                        self.controller_binds = STANDARD_CONTROLLER_BINDS
-                                    case '5': # BLUETOOTH
-                                        self.controller_binds = [0,3,4,5,6,7]
-                                    case _:
-                                        raise ValueError("Error connecting Xbox Controller: Connection bus not recognized!")
-                        case "T.16000M": self.controller_binds = [0,1,9,10,7,9] # WINDOWS name; 9 and 10 will be buttons simulated to be axes
-                        case "Thrustmaster T.16000M": self.controller_binds = [0,1,10,9,7,9] # MINT name; 2 and 3 will be buttons simulated to be axes
-                        case "Logitech Gamepad F310": self.controller_binds = STANDARD_CONTROLLER_BINDS
-                        case _: raise ValueError("Unsupported joystick detected! Add axis binds in controllerDrive.py!")
-
-                self.prev_axis_states.clear()
-                self.prev_button_states.clear()
-                self.prev_hat_states.clear()
-
-                # Initialize previous state dictionaries
-                for i in range(self.joystick.get_numaxes()):
-                    self.prev_axis_states[i] = 0.0
-                    print("axes")
-                for i in range(self.joystick.get_numbuttons()):
-                    self.prev_button_states[i] = 0
-                    print("buttons")
-                for i in range(self.joystick.get_numhats()):
-                    self.prev_hat_states[i] = (0, 0)
-                    print("hats")
-
-                print(f"[controllerDrive] Joystick initialization succesful: {self.joystick.get_name()}")
+                # Setup polymorphic wrapper
+                self.gamepad = get_gamepad_wrapper(joystick)
+                print(f"[controllerDrive] Joystick initialization succesful: {joystick.get_name()}")
                 return True
             except:
                 print("[controllerDrive] No joystick found.")
@@ -201,18 +249,9 @@ class ControllerPoller:
         return self._initialize_pygame_joystick(new_controller_id)
 
     def start_polling(self, gui, log_updater, activity_callback=None):
-        
-        # Do nothing if already polling
-        if self.is_polling:
-            print("[controllerDrive] Went to enable controller polling, but it is already active.")
-            return
+        if self.is_polling: return
+        if not self.gamepad: return
 
-        # Do nothing if joystick is not initialized 
-        if not self.joystick:
-            print("[controllerDrive] Cannot start polling: Joystick not initialized. Please connect a controller.")
-            return
-
-        # Start polling loop by setting flag and passing root, log windows
         print("[controllerDrive] Starting controller polling...")
         self.is_polling = True
         self.gui_root = gui 
@@ -221,105 +260,78 @@ class ControllerPoller:
 
         self._poll_loop() 
 
-
     def stop_polling(self):
-        
-        # If actively polling, stop it
         if self.is_polling:
-            print("[controllerDrive] Stopping controller polling.")
             self.is_polling = False
 
-        # If not polling, do nothing
-        else:
-            print("[controllerDrive] Went to stop controller polling, but it is not active.")
-
-
     def close(self):
-        # Closes the full Pygame instance, ONCE PER APPLICATION EXIT
-        print("[controllerDrive] Quitting Pygame.")
         pygame.joystick.quit()
         pygame.quit()
 
-    # Loop for when polling is live
-    def _poll_loop(self):
+    def get_mapped_state(self):
+        """Returns the universally mapped input dictionary from the current gamepad."""
+        if self.gamepad:
+            return self.gamepad.get_mapped_state()
+        return {}
 
-        # End loop if flag is set to off
-        if not self.is_polling:
-            return
+    def _poll_loop(self):
+        if not self.is_polling: return
         
-        # Helper function to send messages to the GUI log or the terminal
         def _log(message):
-            if self.log_updater:
-                # If a log updater function was provided, use it
-                self.log_updater(message)
-            else:
-                # Fallback to standard print if no log updater is set
-                print(f"[controllerDrive] {message}")
+            if self.log_updater: self.log_updater(message)
+            else: print(f"[controllerDrive] {message}")
 
         if not self._is_os_connected():
             self._handle_disconnect()
             return
         
-        # Send Pygame event queue to update joystick states
         pygame.event.get() 
 
         try:
             # Check Axes
-            for i in range(self.joystick.get_numaxes()): # type: ignore
-                current_val = self.joystick.get_axis(i)  # type: ignore
+            for i in range(self.gamepad.joystick.get_numaxes()): # type: ignore
+                current_val = self.gamepad.joystick.get_axis(i)  # type: ignore
                 
-                # Original polling logic (with smaller deadzone)
                 if abs(current_val) < 0.1: 
                     current_val = 0.0
                 
-                if round(current_val, 2) != round(self.prev_axis_states.get(i, 0.0), 2):
-                    _log(f"Axis {i} changed: {current_val:.2f}") # <--- REPLACED print()
+                if round(current_val, 2) != round(self.gamepad.prev_axis_states.get(i, 0.0), 2):
+                    _log(f"Axis {i} changed: {current_val:.2f}")
 
-                    # Detect "hard snaps" to absolute values to ignore crash/sleep states
-                    prev_val = self.prev_axis_states.get(i, 0.0)
+                    prev_val = self.gamepad.prev_axis_states.get(i, 0.0)
                     is_hard_snap = (abs(current_val) >= 1.0) and (abs(current_val - prev_val) > 0.5)
                     if not is_hard_snap and self.activity_callback:
                         self.activity_callback()
 
-                    self.prev_axis_states[i] = current_val
-                    activity_detected = True 
+                    self.gamepad.prev_axis_states[i] = current_val
             
-            # Override for T.16000M Z Axis
-            if ((self.joystick.get_name() == "T.16000M") | (self.joystick.get_name() == "Thrustmaster T.16000M")):
-                self.prev_axis_states[9] = self.joystick.get_button(2)
-                self.prev_axis_states[10] = self.joystick.get_button(3)
+            # Apply controller-specific overrides (like T16000M buttons mapped as axes)
+            self.gamepad.update_overrides()
 
             # Check Buttons
-            for i in range(self.joystick.get_numbuttons()): # type: ignore
-                current_val = self.joystick.get_button(i)   # type: ignore
-
-                # Compare to previous state, print changed state
-                if current_val != self.prev_button_states.get(i, 0):
-                    _log(f"Button {i} {'pressed' if current_val else 'released'}") # <--- REPLACED print()
+            for i in range(self.gamepad.joystick.get_numbuttons()): # type: ignore
+                current_val = self.gamepad.joystick.get_button(i)   # type: ignore
+                if current_val != self.gamepad.prev_button_states.get(i, 0):
+                    _log(f"Button {i} {'pressed' if current_val else 'released'}")
                     if self.activity_callback:
                         self.activity_callback()
-                    self.prev_button_states[i] = current_val
+                    self.gamepad.prev_button_states[i] = current_val
 
             # Check Hats (DPad)
-            for i in range(self.joystick.get_numhats()):   # type: ignore
-                current_val = self.joystick.get_hat(i)     # type: ignore
-                # Same as button but four dimensions for the hat
-                if current_val != self.prev_hat_states.get(i, (0, 0)):
-                    _log(f"Hat {i} (DPad) changed: {current_val}") # <--- REPLACED print()
+            for i in range(self.gamepad.joystick.get_numhats()):   # type: ignore
+                current_val = self.gamepad.joystick.get_hat(i)     # type: ignore
+                if current_val != self.gamepad.prev_hat_states.get(i, (0, 0)):
+                    _log(f"Hat {i} (DPad) changed: {current_val}")
                     if self.activity_callback:
                         self.activity_callback()
-                    self.prev_hat_states[i] = current_val
+                    self.gamepad.prev_hat_states[i] = current_val
 
-        # Exception handling for disconnected joystick      
         except pygame.error as e:
-            print(f"[controllerDrive] Pygame error during polling (joystick disconnected?): {e}")
+            print(f"[controllerDrive] Pygame error during polling: {e}")
             self._handle_disconnect()
             return
         
-        # Reschedule this function to run again after POLL_INTERVAL milliseconds
-        # Make sure it can find the root window to schedule with
         if self.gui_root:
             self.gui_root.after(self.POLL_INTERVAL, self._poll_loop)
         else:
-            print("[controllerDrive] Error: tkinter root window not found. Stopping poll.")
             self.stop_polling()

@@ -278,16 +278,7 @@ class SetupWindow(tk.Tk):
                 # Let's write a generic loop to route controller state into the model
                 def _route_input(m=model, p=poller):
                     if hasattr(m, 'send_manual_mode_command') and m.manual_flag:
-                        controller_params = {
-                            "x_axisStatus": p.prev_axis_states.get(0, 0.0),
-                            "y_axisStatus": p.prev_axis_states.get(1, 0.0),
-                            "z_axisStatusL": p.prev_axis_states.get(4, -1.0),
-                            "z_axisStatusR": p.prev_axis_states.get(5, -1.0),
-                            "dpad_LR": p.prev_hat_states.get(0, (0,0))[0],
-                            "dpad_UD": p.prev_hat_states.get(0, (0,0))[1],
-                            "LBumper": p.prev_button_states.get(4, 0),
-                            "RBumper": p.prev_button_states.get(5, 0),
-                        }
+                        controller_params = p.get_mapped_state()
                         m.send_manual_mode_command(controller_params)
                     self.dashboard_window.after(50, _route_input)
                 self.dashboard_window.after(50, _route_input)
