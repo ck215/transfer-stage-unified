@@ -16,10 +16,13 @@ class ProbeView(tk.Frame):
         self.pos_x = tk.StringVar(value=self.model.pos_x)
         self.pos_y = tk.StringVar(value=self.model.pos_y)
         self.pos_z = tk.StringVar(value=self.model.pos_z)
-        
         self.x_step = tk.StringVar(value=self.model.x_step)
         self.y_step = tk.StringVar(value=self.model.y_step)
         self.z_step = tk.StringVar(value=self.model.z_step)
+        
+        self.x_dist = tk.StringVar(value=self.model.x_dist)
+        self.y_dist = tk.StringVar(value=self.model.y_dist)
+        self.z_dist = tk.StringVar(value=self.model.z_dist)
         
         self.full_speed = tk.StringVar(value=self.model.full_speed)
         self.man_full_speed = tk.StringVar(value=self.model.man_full_speed)
@@ -42,28 +45,44 @@ class ProbeView(tk.Frame):
         
         # Positions
         tk.Label(self, text="X Position:", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Entry(self, textvariable=self.pos_x, state='readonly').grid(row=row_counter, column=1, padx=5, pady=2); row_counter += 1
+        tk.Label(self, textvariable=self.pos_x, bg=self.bg_main, fg='lightgreen', font=('Arial', 10, 'bold')).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
         
         tk.Label(self, text="Y Position:", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Entry(self, textvariable=self.pos_y, state='readonly').grid(row=row_counter, column=1, padx=5, pady=2); row_counter += 1
+        tk.Label(self, textvariable=self.pos_y, bg=self.bg_main, fg='lightgreen', font=('Arial', 10, 'bold')).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
         
         tk.Label(self, text="Z Position:", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        tk.Entry(self, textvariable=self.pos_z, state='readonly').grid(row=row_counter, column=1, padx=5, pady=2); row_counter += 1
+        tk.Label(self, textvariable=self.pos_z, bg=self.bg_main, fg='lightgreen', font=('Arial', 10, 'bold')).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w'); row_counter += 1
         
-        # Steps
-        tk.Label(self, text="X Steps:", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        # Step Sizes
+        tk.Label(self, text="X Step Size (Microsteps):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         tk.Entry(self, textvariable=self.x_step).grid(row=row_counter, column=1, padx=5, pady=2)
         self.x_step.trace_add("write", lambda *args: setattr(self.model, 'x_step', self.x_step.get()))
         row_counter += 1
         
-        tk.Label(self, text="Y Steps:", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        tk.Label(self, text="Y Step Size (Microsteps):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         tk.Entry(self, textvariable=self.y_step).grid(row=row_counter, column=1, padx=5, pady=2)
         self.y_step.trace_add("write", lambda *args: setattr(self.model, 'y_step', self.y_step.get()))
         row_counter += 1
         
-        tk.Label(self, text="Z Steps:", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        tk.Label(self, text="Z Step Size (Microsteps):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         tk.Entry(self, textvariable=self.z_step).grid(row=row_counter, column=1, padx=5, pady=2)
         self.z_step.trace_add("write", lambda *args: setattr(self.model, 'z_step', self.z_step.get()))
+        row_counter += 1
+        
+        # Distances
+        tk.Label(self, text="X Steps (Distance):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        tk.Entry(self, textvariable=self.x_dist).grid(row=row_counter, column=1, padx=5, pady=2)
+        self.x_dist.trace_add("write", lambda *args: setattr(self.model, 'x_dist', self.x_dist.get()))
+        row_counter += 1
+        
+        tk.Label(self, text="Y Steps (Distance):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        tk.Entry(self, textvariable=self.y_dist).grid(row=row_counter, column=1, padx=5, pady=2)
+        self.y_dist.trace_add("write", lambda *args: setattr(self.model, 'y_dist', self.y_dist.get()))
+        row_counter += 1
+        
+        tk.Label(self, text="Z Steps (Distance):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        tk.Entry(self, textvariable=self.z_dist).grid(row=row_counter, column=1, padx=5, pady=2)
+        self.z_dist.trace_add("write", lambda *args: setattr(self.model, 'z_dist', self.z_dist.get()))
         row_counter += 1
         
         # Script

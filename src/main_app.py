@@ -253,7 +253,6 @@ class SetupWindow(tk.Tk):
         # Create a unified Dashboard Notebook
         self.dashboard_window = tk.Toplevel(self)
         self.dashboard_window.title("Transfer Stage Unified Control")
-        self.dashboard_window.geometry("800x600")
         self.dashboard_window.protocol("WM_DELETE_WINDOW", self.shutdown)
 
         self.notebook = ttk.Notebook(self.dashboard_window)
