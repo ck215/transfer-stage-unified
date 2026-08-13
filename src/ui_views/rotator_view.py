@@ -2,14 +2,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from domain_models.rotator_system import RotatorSystem
 
-class RotatorView(tk.Toplevel):
+class RotatorView(tk.Frame):
     def __init__(self, master, system: RotatorSystem):
         super().__init__(master)
         self.system = system
-        
-        self.title("Newport SMC100 Controller")
-        self.geometry("420x520")
-        self.resizable(False, False)
         
         self.port_var = tk.StringVar(value=self.system.port)
         self.id_var = tk.StringVar(value=str(self.system.smc_id))

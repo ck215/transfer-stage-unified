@@ -19,8 +19,17 @@ class TempView(tk.Frame):
         self._poll_model()
         
     def _build_ui(self):
-        Label(self, text="Controls:").grid(row=0, column=0, columnspan=2, pady=5)
-        Label(self, text="Current Temperature:").grid(row=7, column=0, sticky="W", padx=5)
+        # Center the content horizontally and vertically by giving weight to outer edges
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(3, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(9, weight=1)
+        
+        inner_frame = tk.Frame(self)
+        inner_frame.grid(row=1, column=1, pady=20, padx=20)
+        
+        Label(inner_frame, text="--- Controls ---", font=('Arial', 10, 'bold')).grid(row=0, column=0, columnspan=2, pady=(0, 10))
+        Label(inner_frame, text="Current Temperature:").grid(row=7, column=0, sticky="W", padx=5, pady=(10, 0))
         
         fields = [
             ("Set Temperature", self.setpoint_var),
@@ -32,18 +41,21 @@ class TempView(tk.Frame):
         ]
         
         for i, (text, var) in enumerate(fields, start=1):
-            Label(self, text=text).grid(row=i, column=0, sticky="W", padx=5)
-            entry = Entry(self, textvariable=var)
+            Label(inner_frame, text=text).grid(row=i, column=0, sticky="W", padx=5)
+            entry = Entry(inner_frame, textvariable=var)
             entry.grid(row=i, column=1, padx=5, pady=2)
             
-        self.temp_display_label = Label(self, textvariable=self.current_temp_var, font=("Arial", 10, "bold"))
-        self.temp_display_label.grid(row=7, column=1, sticky="W", padx=5)
+        self.temp_display_label = Label(inner_frame, textvariable=self.current_temp_var, font=("Arial", 12, "bold"), fg="darkred")
+        self.temp_display_label.grid(row=7, column=1, sticky="W", padx=5, pady=(10, 0))
         
-        self.btn_enter = Button(self, text='Enter', command=self.on_enter, width=10)
-        self.btn_enter.grid(row=8, column=0, pady=10)
+        btn_frame = tk.Frame(inner_frame)
+        btn_frame.grid(row=8, column=0, columnspan=2, pady=15)
         
-        self.btn_quit = Button(self, text='Quit', command=self.on_quit, width=10)
-        self.btn_quit.grid(row=8, column=1, pady=10)
+        self.btn_enter = Button(btn_frame, text='Enter', command=self.on_enter, width=10, bg='darkgreen', fg='black')
+        self.btn_enter.pack(side='left', padx=10)
+        
+        self.btn_quit = Button(btn_frame, text='Stop System', command=self.on_quit, width=10, bg='darkred', fg='black')
+        self.btn_quit.pack(side='left', padx=10)
         
     def on_enter(self):
         self.model.send_settings(
