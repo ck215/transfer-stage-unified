@@ -19,9 +19,9 @@ from ui_views.temp_view import TempView
 from ui_views.rotator_view import RotatorView
 from ui_views.redpercent_view import RedPercentView
 
-# Try to import pyserial for real hardware detection.
 try:
     import serial.tools.list_ports
+    import serial
     SERIAL_AVAILABLE = True
 except ImportError:
     SERIAL_AVAILABLE = False
@@ -135,16 +135,55 @@ class SetupWindow(tk.Tk):
         grid_frame.columnconfigure(1, weight=1)
         grid_frame.columnconfigure(2, weight=1)
 
+        found_devices = {}
+        if SERIAL_AVAILABLE:
+            DEVICE_MAP = {
+                's': "Stepper Probe",
+                'd': "DC Probe",
+                'c': "Chuck Positioner",
+                't': "Temperature Controller"
+            }
+            DEV_PATTERN = re.compile(r"DEV:\s*([sdct])", re.IGNORECASE)
+            for port in self.detected_ports:
+                print(f"[main_app] Scanning for devices on {port}...")
+                try: 
+                    with serial.Serial(port, baudrate=500000, timeout=.1, write_timeout=.2) as ser:
+                        time.sleep(1.5)
+                        ser.reset_input_buffer()
+                        ser.reset_output_buffer()
+                        ser.write(b"s\n")
+                        start_time = time.time()
+                        device_found = False
+                        while ((time.time() - start_time < 1.0) and not device_found):
+                            if ser.in_waiting > 0: 
+                                response_bytes = ser.read(ser.in_waiting)
+                            else:
+                                continue
+                            response_str = response_bytes.decode('utf-8', errors='ignore').strip()
+                            match = DEV_PATTERN.search(response_str)
+                            if match:
+                                dev_char = match.group(1).lower()
+                                if dev_char in DEVICE_MAP:
+                                    device_name = DEVICE_MAP[dev_char]
+                                    found_devices[device_name] = port
+                                    print(f"[main_app] Auto-detected {device_name} on {port}")
+                                device_found = True
+                except Exception as e:
+                    pass
+
         for idx, device in enumerate(self.devices):
             check_var = tk.BooleanVar(value=False)
             self.device_vars[device] = check_var
             
+            port_var = tk.StringVar(value=self.detected_ports[0] if self.detected_ports else "None")
+            if device in found_devices:
+                check_var.set(True)
+                port_var.set(found_devices[device])
+            self.port_vars[device] = port_var
+            
             chk = ttk.Checkbutton(grid_frame, text=device, variable=check_var, 
                                   command=lambda d=device: self.toggle_dropdown_state(d))
             chk.grid(row=idx+1, column=0, padx=10, pady=10, sticky="w")
-
-            port_var = tk.StringVar(value=self.detected_ports[0] if self.detected_ports else "COM1")
-            self.port_vars[device] = port_var
             
             dropdown = ttk.OptionMenu(grid_frame, port_var, port_var.get(), *self.detected_ports if self.detected_ports else ["COM1"])
             dropdown.grid(row=idx+1, column=1, padx=10, pady=10, sticky="ew")
@@ -274,7 +313,23 @@ class SetupWindow(tk.Tk):
             # ControllerDrive historically calls callback to push updates.
             if poller:
                 # Provide dummy log updater to avoid crash
-                poller.start_polling(self.dashboard_window, log_updater=print, activity_callback=None)
+                m.last_activity_time = time.time()
+                m.disable_timer_id = None
+                
+                def _reset_disable_timer(model_ref=m):
+                    model_ref.last_activity_time = time.time()
+                    if hasattr(model_ref, 'disable_timer_id') and model_ref.disable_timer_id:
+                        self.dashboard_window.after_cancel(model_ref.disable_timer_id)
+                        model_ref.disable_timer_id = None
+                        
+                    if hasattr(model_ref, 'system_enabled') and model_ref.system_enabled:
+                        model_ref.disable_timer_id = self.dashboard_window.after(300000, lambda: _auto_disable(model_ref))
+                        
+                def _auto_disable(model_ref):
+                    print(f"[Timeout] 5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}")
+                    model_ref.disable()
+                    
+                poller.start_polling(self.dashboard_window, log_updater=print, activity_callback=_reset_disable_timer)
                 # Let's write a generic loop to route controller state into the model
                 def _route_input(m=model, p=poller):
                     if hasattr(m, 'send_manual_mode_command') and m.manual_flag:
