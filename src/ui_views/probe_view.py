@@ -76,20 +76,22 @@ class ProbeView(tk.Frame):
         row_counter += 1
 
         # Velocity Control
+        speed_label = "PWM (0-255)" if self.model.__class__.__name__ == 'DCProbe' else "Microsteps/Sec"
+        
         tk.Label(self, text="--- Velocity Control ---", font=('Arial', 10, 'bold'), bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, columnspan=2, pady=5); row_counter += 1
         
-        tk.Label(self, text="Full Speed (Microsteps/Sec):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        tk.Label(self, text=f"Full Speed ({speed_label}):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         tk.Entry(self, textvariable=self.full_speed).grid(row=row_counter, column=1, padx=5, pady=2)
         self.full_speed.trace_add("write", lambda *args: setattr(self.model, 'full_speed', self.full_speed.get()))
         row_counter += 1
         
-        tk.Label(self, text="Manual Mode Max Speed (Microsteps/Sec):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        tk.Label(self, text=f"Manual Mode Max Speed ({speed_label}):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
         tk.Entry(self, textvariable=self.man_full_speed).grid(row=row_counter, column=1, padx=5, pady=2)
         self.man_full_speed.trace_add("write", lambda *args: setattr(self.model, 'man_full_speed', self.man_full_speed.get()))
         row_counter += 1
 
         if self.slow_speed and self.brake_distance:
-            tk.Label(self, text="Slow Speed (Microsteps/Sec):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+            tk.Label(self, text=f"Slow Speed ({speed_label}):", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
             tk.Entry(self, textvariable=self.slow_speed).grid(row=row_counter, column=1, padx=5, pady=2)
             self.slow_speed.trace_add("write", lambda *args: setattr(self.model, 'slow_speed', self.slow_speed.get()))
             row_counter += 1
