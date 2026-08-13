@@ -2,15 +2,11 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from domain_models.redpercent_system import RedPercentSystem
 
-class RedPercentView(tk.Toplevel):
+class RedPercentView(tk.Frame):
     def __init__(self, master=None, system=None):
         super().__init__(master)
         self.system = system or RedPercentSystem()
-        
-        self.title("Screen Color Detector (Red Only)")
-        self.geometry("350x250")
-        
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
 
         # GUI Setup
         control_frame = ttk.Frame(self)
@@ -56,9 +52,8 @@ class RedPercentView(tk.Toplevel):
         self.poll_display()
 
     def select_focus_area(self):
-        self.withdraw()
-
-        selection_window = tk.Toplevel(self)
+        # Create a borderless, transparent, fullscreen overlay window
+        selection_window = tk.Toplevel(self.winfo_toplevel())
         selection_window.attributes('-fullscreen', True)
         selection_window.attributes('-alpha', 0.3)
         selection_window.configure(bg='gray10')
@@ -112,14 +107,12 @@ class RedPercentView(tk.Toplevel):
                     }
 
                     selection_window.destroy()
-                    self.deiconify()
 
                     self.area_label.config(text=f"{width}x{height} at ({left},{top})")
                     self.start_btn.config(state=tk.NORMAL)
 
         def cancel_selection(event):
             selection_window.destroy()
-            self.deiconify()
 
         canvas.bind('<Button-1>', start_selection)
         canvas.bind('<B1-Motion>', update_selection)
@@ -184,8 +177,8 @@ class RedPercentView(tk.Toplevel):
         
         self.after(100, self.poll_display)
 
-    def on_close(self):
-        print("[color_test] Cleaning up and closing window...")
+    def destroy(self):
+        print("[color_test] Cleaning up and closing RedPercentView...")
         self.system.stop_monitoring()
-        self.destroy()
+        super().destroy()
         print("[color_test] Cleanup complete.")

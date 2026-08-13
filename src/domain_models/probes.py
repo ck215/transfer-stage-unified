@@ -29,6 +29,9 @@ class BaseProbe:
         self.system_enabled = False
         self.auton_flag = False
         self.manual_flag = False
+    
+    def run_script(self, script_path=None):
+        print(f"[BaseProbe] Running script not fully implemented. Path: {script_path}")
         
         self.active_claims = {}
 
