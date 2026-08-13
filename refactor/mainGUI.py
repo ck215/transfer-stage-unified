@@ -9,13 +9,32 @@ import serial
 import re
 import time
 
-# Import your external device modules
-import stepper_frame
-import DC_frame
-import chuck_frame
-import temp_control
-import rotator
-import redpercent
+import serialDrive
+import controllerDrive
+
+# Models
+from models.stepper_model import StepperModel
+from models.DC_model import DCModel
+from models.chuck_model import ChuckModel
+from models.temp_model import TempModel
+from models.rotator_model import RotatorModel
+from models.redpercent_model import RedPercentModel
+
+# Views
+from views.stepper_view import StepperView
+from views.DC_view import DCView
+from views.chuck_view import ChuckView
+from views.temp_view import TempView
+from views.rotator_view import RotatorView
+from views.redpercent_view import RedPercentView
+
+# Controllers
+from controllers.stepper_controller import StepperController
+from controllers.DC_controller import DCController
+from controllers.chuck_controller import ChuckController
+from controllers.temp_controller import TempController
+from controllers.rotator_controller import RotatorController
+from controllers.redpercent_controller import RedPercentController
 
 # Try to import pyserial for real hardware detection.
 try:
@@ -32,7 +51,64 @@ try:
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
-        
+
+# Launcher functions that replace the old shell files
+def launch_stepper(port, controllerID, active_claims, process_name):
+    if not port:
+        port = "/dev/ttys00X"
+    root = tk.Tk()
+    model = StepperModel()
+    model.serial_port.set(port)
+    hw_serial = serialDrive.SerialArduino(port=port)
+    hw_controller = controllerDrive.ControllerPoller(controllerID, active_claims, process_name)
+    app_controller = StepperController(root, model, hw_controller, hw_serial, active_claims, process_name)
+    view = StepperView(root, model, app_controller)
+    app_controller.set_view(view)
+    root.mainloop()
+
+def launch_dc(port, controllerID, active_claims, process_name):
+    root = tk.Tk()
+    hw_serial = serialDrive.SerialArduino(port=port)
+    hw_controller = controllerDrive.ControllerPoller(controllerID, active_claims, process_name)
+    model = DCModel()
+    model.active_claims = active_claims
+    model.serial_port.set(port)
+    app_controller = DCController(root, model, hw_controller, hw_serial, process_name)
+    view = DCView(root, model, app_controller)
+    app_controller.set_view(view)
+    root.mainloop()
+
+def launch_chuck(port, controllerID, active_claims, process_name):
+    root = tk.Tk()
+    model = ChuckModel()
+    model.serial_port.set(port)
+    hw_serial = serialDrive.SerialArduino(port=port)
+    hw_controller = controllerDrive.ControllerPoller(controllerID, active_claims, process_name)
+    controller = ChuckController(root, model, hw_controller, hw_serial, active_claims, process_name)
+    view = ChuckView(root, model, controller)
+    controller.set_view(view)
+    controller.start()
+    root.mainloop()
+
+def launch_temp(port):
+    root = tk.Tk()
+    app = TempController(root, port)
+    root.mainloop()
+
+def launch_rotator(port):
+    root = tk.Tk()
+    model = RotatorModel(default_port=port)
+    controller = RotatorController(model)
+    view = RotatorView(root, model, controller)
+    controller.set_view(view, root)
+    root.mainloop()
+
+def launch_redpercent():
+    root = tk.Tk()
+    model = RedPercentModel()
+    view = RedPercentView(root)
+    controller = RedPercentController(model, view)
+    root.mainloop()
 
 # ==========================================
 # THE SETUP / ASSIGNMENT WINDOW
@@ -313,17 +389,17 @@ class SetupWindow(tk.Tk):
             
             p = None
             if device == "Stepper Probe":
-                p = multiprocessing.Process(target=stepper_frame.main, args=(port,controllerID, self.active_claims, "Stepper Probe"))
+                p = multiprocessing.Process(target=launch_stepper, args=(port,controllerID, self.active_claims, "Stepper Probe"))
             elif device == "DC Probe":
-                p = multiprocessing.Process(target=DC_frame.main, args=(port,controllerID, self.active_claims, "DC Probe"))
+                p = multiprocessing.Process(target=launch_dc, args=(port,controllerID, self.active_claims, "DC Probe"))
             elif device == "Chuck Positioner":
-                p = multiprocessing.Process(target=chuck_frame.main, args=(port,controllerID, self.active_claims, "Chuck Positioner"))
+                p = multiprocessing.Process(target=launch_chuck, args=(port,controllerID, self.active_claims, "Chuck Positioner"))
             elif device == "Temperature Controller":
-                p = multiprocessing.Process(target=temp_control.main, args=(port,))
+                p = multiprocessing.Process(target=launch_temp, args=(port,))
             elif device == "SMC100 Rotator":
-                p = multiprocessing.Process(target=rotator.main, args=(port,))
+                p = multiprocessing.Process(target=launch_rotator, args=(port,))
             elif device == "Red Percent Window":
-                p = multiprocessing.Process(target=redpercent.main)
+                p = multiprocessing.Process(target=launch_redpercent)
 
             self.spawned_processes.append(p)
 
