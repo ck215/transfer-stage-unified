@@ -85,14 +85,14 @@ class ProbeView(tk.Frame):
         self.z_dist.trace_add("write", lambda *args: setattr(self.model, 'z_dist', self.z_dist.get()))
         row_counter += 1
         
-        # Script
-        tk.Label(self, text="Script:", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-        file_frame = tk.Frame(self, bg=self.bg_main)
-        file_frame.grid(row=row_counter, column=1, padx=5, pady=3, sticky='w')
-        tk.Button(file_frame, text="Select", width=5, command=self.select_script).grid(row=0, column=0, padx=(13,0), pady=2)
-        self.selected_script_label = tk.Label(file_frame, text="None", width=10, bg=self.bg_main, fg='white')
-        self.selected_script_label.grid(row=0, column=1, padx=2, pady=2, sticky='w')
-        row_counter += 1
+        # TODO: Implement gcode script parsing feature
+        # tk.Label(self, text="Script:", bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+        # file_frame = tk.Frame(self, bg=self.bg_main)
+        # file_frame.grid(row=row_counter, column=1, padx=5, pady=3, sticky='w')
+        # tk.Button(file_frame, text="Select", width=5, command=self.select_script).grid(row=0, column=0, padx=(13,0), pady=2)
+        # self.selected_script_label = tk.Label(file_frame, text="None", width=10, bg=self.bg_main, fg='white')
+        # self.selected_script_label.grid(row=0, column=1, padx=2, pady=2, sticky='w')
+        # row_counter += 1
 
         # Velocity Control
         speed_label = "PWM (0-255)" if self.model.__class__.__name__ == 'DCProbe' else "Microsteps/Sec"
@@ -131,7 +131,8 @@ class ProbeView(tk.Frame):
         
         tk.Button(self, text="Start Stepping", bg='darkgreen', fg='black', font=('Arial', 10, 'bold'), command=self.start_stepping).grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew'); row_counter += 1
         
-        tk.Button(self, text="Run Script", bg='darkgreen', fg='black', font=('Arial', 10, 'bold'), command=self.run_script).grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew'); row_counter += 1
+        # TODO: Re-enable when script parsing feature is built
+        # tk.Button(self, text="Run Script", bg='darkgreen', fg='black', font=('Arial', 10, 'bold'), command=self.run_script).grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew'); row_counter += 1
         
         tk.Button(self, text="Full Stop", bg='darkgreen', fg='black', font=('Arial', 10, 'bold'), command=self.model.full_stop).grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew'); row_counter += 1
         
