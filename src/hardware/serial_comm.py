@@ -1,5 +1,8 @@
 # --------- Necessary Libraries ----------
-import serial
+try:
+    import serial
+except ImportError:
+    serial = None
 import time
 import sys
 import struct

@@ -1,6 +1,9 @@
 import threading
 import time
-from lib import smc100
+try:
+    from lib import smc100
+except ImportError:
+    smc100 = None
 
 class RotatorSystem:
     def __init__(self, default_port="COM1"):

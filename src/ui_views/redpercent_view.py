@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
-from refactor.domain_models.redpercent_system import RedPercentSystem
+from domain_models.redpercent_system import RedPercentSystem
 
 class RedPercentView(tk.Toplevel):
     def __init__(self, master=None, system=None):

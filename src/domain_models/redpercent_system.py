@@ -1,8 +1,13 @@
 import threading
 import time
-from PIL import Image
-import mss
-import numpy as np
+try:
+    from PIL import Image
+    import mss
+    import numpy as np
+except ImportError:
+    Image = None
+    mss = None
+    np = None
 import typing
 
 class RedPercentSystem:

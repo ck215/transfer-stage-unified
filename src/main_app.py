@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import sys
 import os
-import serial
+
 import re
 import time
 
