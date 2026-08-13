@@ -29,8 +29,6 @@ except ImportError:
 # Try to import pygame for physical joystick/gamepad detection.
 try:
     import pygame
-    pygame.init()
-    pygame.joystick.init()
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
@@ -73,6 +71,8 @@ class SetupWindow(tk.Tk):
     def get_available_controllers(self):
         self.detected_controllers = ["None"]
         if PYGAME_AVAILABLE:
+            pygame.init()
+            pygame.joystick.init()
             pygame.event.pump()
             joystick_count = pygame.joystick.get_count()
             for i in range(joystick_count):
