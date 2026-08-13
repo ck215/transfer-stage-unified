@@ -15,6 +15,7 @@ import DC_frame
 import chuck_frame
 import temp_control
 import rotator
+import lib.redpercent as redpercent
 
 # Try to import pyserial for real hardware detection.
 try:
@@ -42,10 +43,10 @@ class SetupWindow(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Device Configuration Setup")
-        self.geometry("750x460")
+        self.geometry("750x520")
         self.resizable(False, False)
         
-        self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller", "SMC100 Rotator"]
+        self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller", "SMC100 Rotator", "Red Percent Window"]
         self.device_vars = {}        
         self.port_vars = {}          
         self.controller_vars = {}    
@@ -118,9 +119,10 @@ class SetupWindow(tk.Tk):
         ctrl_widget = self.controller_widgets[device]
         
         if is_checked:
-            if ((device != "Temperature Controller") & (device != "SMC100 Rotator")):
+            if ((device != "Temperature Controller") & (device != "SMC100 Rotator") & (device != "Red Percent Window")):
                 ctrl_widget.state(["!disabled"])
-            serial_widget.state(["!disabled"])
+            if device != "Red Percent Window":
+                serial_widget.state(["!disabled"])
         else:
             serial_widget.state(["disabled"])
             ctrl_widget.state(["disabled"])
@@ -273,20 +275,22 @@ class SetupWindow(tk.Tk):
                     "port": port, 
                     "controller": controller
                 })
-                assigned_ports.add(port)
+                if device != "Red Percent Window":
+                    assigned_ports.add(port)
                 
-                if "None" not in controller and "Virtual" not in controller:
+                if "None" not in controller and "Virtual" not in controller and device != "Red Percent Window":
                     assigned_controllers.add(controller)
                 
         if not active_configs:
             messagebox.showwarning("No Devices Selected", "Please select at least one device to launch.")
             return
             
-        if len(assigned_ports) < len(active_configs):
+        devices_needing_ports = [c for c in active_configs if c["device"] != "Red Percent Window"]
+        if len(assigned_ports) < len(devices_needing_ports):
             messagebox.showerror("Port Collision", "Error: You cannot assign the same COM port to multiple active devices!")
             return
             
-        physical_configs = [c for c in active_configs if "None" not in c["controller"] and "Virtual" not in c["controller"]]
+        physical_configs = [c for c in active_configs if "None" not in c["controller"] and "Virtual" not in c["controller"] and c["device"] != "Red Percent Window"]
         if len(assigned_controllers) < len(physical_configs):
             messagebox.showerror("Controller Collision", "Error: You cannot map the same physical controller to multiple active devices!")
             return
@@ -318,6 +322,8 @@ class SetupWindow(tk.Tk):
                 p = multiprocessing.Process(target=temp_control.main, args=(port,))
             elif device == "SMC100 Rotator":
                 p = multiprocessing.Process(target=rotator.main, args=(port,))
+            elif device == "Red Percent Window":
+                p = multiprocessing.Process(target=redpercent.main)
 
             self.spawned_processes.append(p)
 
