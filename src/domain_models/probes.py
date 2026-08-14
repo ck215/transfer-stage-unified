@@ -1,6 +1,7 @@
 class BaseProbe:
     def __init__(self, serial_comm):
         self.serial_comm = serial_comm
+        self.packet_format = '<BBfffhhhhhhh'  # Default 28-byte format
         
         # Position variables
         self.pos_x = "0"
@@ -68,7 +69,8 @@ class BaseProbe:
                 "dpad_UD": controller_params.get("dpad_UD", 0),
                 "LBumper": controller_params.get("LBumper", 0),
                 "RBumper": controller_params.get("RBumper", 0),
-                "manual_jog_speed": self.man_full_speed
+                "manual_jog_speed": self.man_full_speed,
+                "packet_format": self.packet_format
             }
             self.serial_comm.send_manual_mode_command(params)
 
@@ -102,6 +104,7 @@ class StepperProbe(BaseProbe):
 class DCProbe(BaseProbe):
     def __init__(self, serial_comm):
         super().__init__(serial_comm)
+        self.packet_format = '<BBffffffffff'  # Override with 42-byte float format
         self.x_step = "1"
         self.y_step = "1"
         self.z_step = "1"

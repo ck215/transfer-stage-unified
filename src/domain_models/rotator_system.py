@@ -10,9 +10,34 @@ class RotatorSystem:
         self.port = default_port
         self.smc_id = 1
         
-        self.position = None
-        self.state = "Disconnected"
-        self.error = "0"
+        self._lock = threading.Lock()
+        self._position = None
+        self._state = "Disconnected"
+        self._error = "0"
+        
+    @property
+    def position(self):
+        with self._lock: return self._position
+        
+    @position.setter
+    def position(self, value):
+        with self._lock: self._position = value
+
+    @property
+    def state(self):
+        with self._lock: return self._state
+        
+    @state.setter
+    def state(self, value):
+        with self._lock: self._state = value
+
+    @property
+    def error(self):
+        with self._lock: return self._error
+        
+    @error.setter
+    def error(self, value):
+        with self._lock: self._error = value
         
         self.smc = None
         self.is_connected = False

@@ -18,6 +18,14 @@ class TemperatureSystem:
         
     def send_settings(self, setpoint, ramp_rate, p_term, i_term, d_term, offset):
         self.setpoint = str(setpoint)
+        
+        # Calculate spdelay (seconds per 1 degree step) assuming ramp_rate is degrees/minute
+        try:
+            rate_float = float(ramp_rate)
+        except ValueError:
+            rate_float = 0.0
+        spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
+
         self.ramp_rate = str(ramp_rate)
         self.p_term = str(p_term)
         self.i_term = str(i_term)
@@ -25,7 +33,7 @@ class TemperatureSystem:
         self.offset = str(offset)
         
         if self.serial_conn and self.serial_conn.is_open:
-            input_string = f"<{self.setpoint},{self.ramp_rate},{self.p_term},{self.i_term},{self.d_term},{self.offset}>"
+            input_string = f"<{self.setpoint},{spdelay},{self.p_term},{self.i_term},{self.d_term},{self.offset}>"
             try:
                 self.serial_conn.write(input_string.encode())
             except Exception as e:
@@ -58,7 +66,7 @@ class TemperatureSystem:
 
     def stop(self):
         if self.serial_conn and self.serial_conn.is_open:
-            vals = ['0','10','2.0','0.5','.1','0']
+            vals = ['0', self.ramp_rate, self.p_term, self.i_term, self.d_term, self.offset]
             input_string = f"<{','.join(vals)}>"
             try:
                 self.serial_conn.write(input_string.encode())
