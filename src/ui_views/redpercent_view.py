@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
 from domain_models.redpercent_system import RedPercentSystem
 
 class RedPercentView(tk.Frame):
@@ -41,26 +41,49 @@ class RedPercentView(tk.Frame):
 
         self.reset_btn = ttk.Button(color_frame, text="Reset Baseline", state=tk.DISABLED, command=self.reset_baseline)
         self.reset_btn.grid(row=2, column=0, columnspan=2, pady=5)
+        
+        self.sync_x_var = tk.BooleanVar(value=False)
+        self.sync_x_chk = ttk.Checkbutton(color_frame, text="Sync Stepper X Location", variable=self.sync_x_var, command=self._toggle_sync)
+        self.sync_x_chk.grid(row=3, column=0, columnspan=2, pady=5, sticky=tk.W)
 
-        self.save_btn = ttk.Button(color_frame, text="Save Log", command=self.save_log_to_file)
-        self.save_btn.grid(row=3, column=0, columnspan=2, pady=5)
-
-        info_frame = ttk.LabelFrame(self, text="Serial Output")
-        info_frame.pack(pady=5, padx=10, fill=tk.X)
-        ttk.Label(info_frame, text="Red % values are printed to console", font=('Arial', 8)).pack()
+    def _toggle_sync(self):
+        self.system.sync_x_location = self.sync_x_var.get()
         
         self.poll_display()
 
     def select_focus_area(self):
-        # Create a borderless, transparent, fullscreen overlay window
+        try:
+            from PIL import ImageGrab, ImageTk
+        except ImportError:
+            print("Pillow is required for screenshot selection.")
+            return
+            
+        # Add a 500ms delay before taking the screenshot so window movement/animations can settle
+        self.after(500, lambda: self._perform_screenshot_selection(ImageGrab, ImageTk))
+
+    def _perform_screenshot_selection(self, ImageGrab, ImageTk):
+
         selection_window = tk.Toplevel(self.winfo_toplevel())
         selection_window.attributes('-fullscreen', True)
-        selection_window.attributes('-alpha', 0.3)
-        selection_window.configure(bg='gray10')
         selection_window.attributes('-topmost', True)
+        
+        # Optional Mac compatibility to remove window headers
+        try:
+            selection_window.overrideredirect(True)
+        except Exception:
+            pass
 
         screen_width = selection_window.winfo_screenwidth()
         screen_height = selection_window.winfo_screenheight()
+        
+        # Take a screenshot of the current screen to freeze the display
+        screenshot = ImageGrab.grab(all_screens=True)
+        
+        # Handle macOS Retina scaling by forcing the screenshot to match Tkinter's logical screen dimensions
+        if screenshot.width != screen_width or screenshot.height != screen_height:
+            screenshot = screenshot.resize((screen_width, screen_height))
+            
+        self._screenshot_img = ImageTk.PhotoImage(screenshot)
 
         self.start_x = None
         self.start_y = None
@@ -68,8 +91,11 @@ class RedPercentView(tk.Frame):
         self.dragging = False
 
         canvas = tk.Canvas(selection_window, highlightthickness=0,
-                           width=screen_width, height=screen_height)
+                           width=screen_width, height=screen_height, cursor="crosshair")
         canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Draw the frozen screenshot
+        canvas.create_image(0, 0, image=self._screenshot_img, anchor="nw")
 
         def start_selection(event):
             self.start_x = event.x
@@ -99,16 +125,17 @@ class RedPercentView(tk.Frame):
                 height = abs(end_y - self.start_y)
 
                 if width > 10 and height > 10:
+                    # Explicitly cast to int to prevent mss from failing with float coordinates
                     self.system.focus_area = {
-                        'left': left,
-                        'top': top,
-                        'width': width,
-                        'height': height
+                        'left': int(left),
+                        'top': int(top),
+                        'width': int(width),
+                        'height': int(height)
                     }
 
                     selection_window.destroy()
 
-                    self.area_label.config(text=f"{width}x{height} at ({left},{top})")
+                    self.area_label.config(text=f"{int(width)}x{int(height)} at ({int(left)},{int(top)})")
                     self.start_btn.config(state=tk.NORMAL)
 
         def cancel_selection(event):
@@ -121,8 +148,8 @@ class RedPercentView(tk.Frame):
         selection_window.bind('<Escape>', cancel_selection)
 
         instruction = tk.Label(selection_window,
-                               text="Click and drag to select focus area",
-                               fg='red', bg='gray10', font=('Arial', 30))
+                               text="Click and drag to select focus area. Press ESC to cancel.",
+                               fg='red', bg='black', font=('Arial', 24, 'bold'))
         instruction.place(relx=0.5, rely=0.05, anchor=tk.CENTER)
 
         canvas.focus_set()
@@ -137,27 +164,28 @@ class RedPercentView(tk.Frame):
         self.system.stop_monitoring()
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
+        
+        if self.system.data_log and self.system.data_log.red_values:
+            if messagebox.askyesno("Save Log", "Monitoring stopped. Would you like to save the data to a CSV?"):
+                self.save_log_to_file()
 
     def reset_baseline(self):
         self.system.reset_baseline()
 
     def save_log_to_file(self):
-        log_data = self.system.get_log_data()
-        if not log_data:
+        if not self.system.data_log or not self.system.data_log.red_values:
             print("[color_test] No data to save.")
             return
 
         file_path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text Files", "*.txt")],
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv")],
             title="Save Red Detection Log"
         )
 
         if file_path:
             try:
-                with open(file_path, "w") as f:
-                    for line in log_data:
-                        f.write(line + "\n")
+                self.system.data_log.save_to_csv(file_path)
                 print(f"[color_test] Log saved to: {file_path}")
             except Exception as e:
                 print(f"[color_test] Error saving file: {e}")

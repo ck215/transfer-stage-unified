@@ -9,6 +9,30 @@ except ImportError:
     mss = None
     np = None
 import typing
+import csv
+
+class RedPercentDataLog:
+    def __init__(self, use_x_sync=False):
+        self.use_x_sync = use_x_sync
+        self.red_values = []
+        self.x_values = []
+        
+    def add_entry(self, red_pct, x_loc=None):
+        self.red_values.append(red_pct)
+        if self.use_x_sync:
+            self.x_values.append(x_loc if x_loc is not None else 0.0)
+            
+    def save_to_csv(self, filepath):
+        with open(filepath, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            if self.use_x_sync:
+                writer.writerow(["Red Percent", "Stepper X Location"])
+                for r, x in zip(self.red_values, self.x_values):
+                    writer.writerow([r, x])
+            else:
+                writer.writerow(["Red Percent"])
+                for r in self.red_values:
+                    writer.writerow([r])
 
 class RedPercentSystem:
     def __init__(self):
@@ -16,13 +40,12 @@ class RedPercentSystem:
         self.focus_area: typing.Optional[dict] = None
         self.baseline_red = 0.0
         self.current_red = 0.0
-        self.last_printed_red = -1.0
-        self.log_data = []
-        self._monitor_thread = None
         self.red_change = 0.0
-
-    def add_log(self, entry):
-        self.log_data.append(entry)
+        self._monitor_thread = None
+        
+        self.stepper_model = None
+        self.sync_x_location = False
+        self.data_log = None
 
     def capture_focus_area(self, sct):
         if not self.focus_area:
@@ -52,20 +75,16 @@ class RedPercentSystem:
         if self.monitoring:
             return
         self.monitoring = True
-        print("=== MONITORING STARTED ===")
+        self.data_log = RedPercentDataLog(self.sync_x_location)
         self._monitor_thread = threading.Thread(target=self._monitor_colors)
         self._monitor_thread.daemon = True
         self._monitor_thread.start()
 
     def stop_monitoring(self):
         self.monitoring = False
-        print("=== MONITORING STOPPED ===")
 
     def reset_baseline(self):
         self.baseline_red = self.current_red
-        log_entry = f"BASELINE RESET - Red: {self.baseline_red:.1f}%"
-        print(log_entry)
-        self.add_log(log_entry)
 
     def _monitor_colors(self):
         first_reading = True
@@ -77,20 +96,12 @@ class RedPercentSystem:
                     if first_reading:
                         self.baseline_red = red_pct
                         first_reading = False
-                        log_entry = f"BASELINE SET - Red: {red_pct:.1f}%"
-                        print(log_entry)
-                        self.add_log(log_entry)
                     
                     self.current_red = red_pct
-                    rounded_red = round(red_pct, 1)
-                    if abs(rounded_red - self.last_printed_red) >= 0.1:
-                        log_entry = f"RED: {rounded_red:.1f}%"
-                        print(log_entry)
-                        self.add_log(log_entry)
-                        self.last_printed_red = rounded_red
-                    
                     self.red_change = ((red_pct - self.baseline_red) / max(self.baseline_red, 0.1)) * 100
+                    
+                    if self.data_log:
+                        x_loc = self.stepper_model.pos_x if (self.sync_x_location and self.stepper_model) else None
+                        self.data_log.add_entry(red_pct, x_loc)
+                        
                 time.sleep(0.1)
-
-    def get_log_data(self):
-        return self.log_data

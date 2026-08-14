@@ -530,8 +530,6 @@ class SetupWindow(tk.Tk):
             timers = []
 
             # If the device has a controller, hook up the manual polling loop
-            # Note: For strict OOP, the poller logic can either push to the model, or the model can poll. 
-            # ControllerDrive historically calls callback to push updates.
             if poller:
                 # Provide dummy log updater to avoid crash
                 model.last_activity_time = time.time()
@@ -572,13 +570,24 @@ class SetupWindow(tk.Tk):
                 timers.append(timer_id)
                 
             # Register in metadata for cleanup
-            frame_id = str(frame)
-            self.tab_metadata[frame_id] = {
+            self.tab_metadata[str(frame)] = {
                 'model': model,
+                'view': view,
                 'poller': poller,
                 'serial_conn': serial_conn,
                 'timers': timers
             }
+
+        # Link RedPercentSystem to StepperProbe for X-coordinate syncing
+        stepper_model = None
+        red_model = None
+        for tab_id, meta in self.tab_metadata.items():
+            if meta['model'].__class__.__name__ == 'StepperProbe':
+                stepper_model = meta['model']
+            if meta['model'].__class__.__name__ == 'RedPercentSystem':
+                red_model = meta['model']
+        if red_model and stepper_model:
+            red_model.stepper_model = stepper_model
 
     def shutdown(self):
         for poller in self.pollers:
