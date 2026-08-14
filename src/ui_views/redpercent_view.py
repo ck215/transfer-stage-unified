@@ -54,7 +54,11 @@ class RedPercentView(tk.Frame):
     def select_focus_area(self):
         # Create a borderless, transparent, fullscreen overlay window
         selection_window = tk.Toplevel(self.winfo_toplevel())
-        selection_window.attributes('-fullscreen', True)
+        
+        screen_width = selection_window.winfo_screenwidth()
+        screen_height = selection_window.winfo_screenheight()
+        
+        selection_window.geometry(f"{screen_width}x{screen_height}+0+0")
         selection_window.attributes('-alpha', 0.3)
         selection_window.configure(bg='gray10')
         selection_window.attributes('-topmost', True)
@@ -63,9 +67,6 @@ class RedPercentView(tk.Frame):
             selection_window.overrideredirect(True)
         except Exception:
             pass
-
-        screen_width = selection_window.winfo_screenwidth()
-        screen_height = selection_window.winfo_screenheight()
 
         self.start_x = None
         self.start_y = None
