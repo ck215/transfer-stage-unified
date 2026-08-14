@@ -377,6 +377,7 @@ class SetupWindow(tk.Tk):
         self.status_label.pack_forget()
         self.launch_btn.config(state=tk.NORMAL)
         self.refresh_btn.config(state=tk.NORMAL)
+        self.update_idletasks()
 
     def launch_unified(self):
         if getattr(self, 'is_scanning', False):
