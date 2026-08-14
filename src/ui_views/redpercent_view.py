@@ -3,6 +3,7 @@ from tkinter import ttk, filedialog, messagebox
 import csv
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.colors import LinearSegmentedColormap
 from domain_models.redpercent_system import RedPercentSystem
 
 class RedPercentView(tk.Frame):
@@ -279,13 +280,16 @@ class RedPercentView(tk.Frame):
                 ttk.Label(dialog, text="Select the type of plot:").pack(pady=10)
                 
                 plot_type_var = tk.StringVar()
-                if len(dims_found) >= 2:
+                if len(dims_found) >= 3:
+                    plot_type_var.set("3D")
+                elif len(dims_found) >= 2:
                     plot_type_var.set("2D")
                 else:
                     plot_type_var.set("1D")
                     
                 dim1_var = tk.StringVar(value=dims_found[0])
                 dim2_var = tk.StringVar(value=dims_found[1] if len(dims_found) > 1 else dims_found[0])
+                dim3_var = tk.StringVar(value=dims_found[2] if len(dims_found) > 2 else dims_found[0])
                 
                 rb_frame = ttk.Frame(dialog)
                 rb_frame.pack(anchor=tk.W, padx=20)
@@ -294,22 +298,29 @@ class RedPercentView(tk.Frame):
                 ttk.Radiobutton(rb_frame, text="1D (Single Dimension)", variable=plot_type_var, value="1D").pack(anchor=tk.W, pady=2)
                 if len(dims_found) >= 2:
                     ttk.Radiobutton(rb_frame, text="2D (Two Dimensions)", variable=plot_type_var, value="2D").pack(anchor=tk.W, pady=2)
+                if len(dims_found) >= 3:
+                    ttk.Radiobutton(rb_frame, text="3D (Three Dimensions)", variable=plot_type_var, value="3D").pack(anchor=tk.W, pady=2)
                     
                 opt_frame = ttk.Frame(dialog)
                 opt_frame.pack(pady=15)
                 
-                ttk.Label(opt_frame, text="Dim 1 (1D/2D):").grid(row=0, column=0, sticky=tk.E, padx=5, pady=2)
+                ttk.Label(opt_frame, text="Dim 1 (1D/2D/3D):").grid(row=0, column=0, sticky=tk.E, padx=5, pady=2)
                 ttk.OptionMenu(opt_frame, dim1_var, dim1_var.get(), *dims_found).grid(row=0, column=1, sticky=tk.W, pady=2)
                 
                 if len(dims_found) >= 2:
-                    ttk.Label(opt_frame, text="Dim 2 (2D):").grid(row=1, column=0, sticky=tk.E, padx=5, pady=2)
+                    ttk.Label(opt_frame, text="Dim 2 (2D/3D):").grid(row=1, column=0, sticky=tk.E, padx=5, pady=2)
                     ttk.OptionMenu(opt_frame, dim2_var, dim2_var.get(), *dims_found).grid(row=1, column=1, sticky=tk.W, pady=2)
+                    
+                if len(dims_found) >= 3:
+                    ttk.Label(opt_frame, text="Dim 3 (3D):").grid(row=2, column=0, sticky=tk.E, padx=5, pady=2)
+                    ttk.OptionMenu(opt_frame, dim3_var, dim3_var.get(), *dims_found).grid(row=2, column=1, sticky=tk.W, pady=2)
                     
                 result = {}
                 def on_ok():
                     result['type'] = plot_type_var.get()
                     result['dim1'] = dim1_var.get()
                     result['dim2'] = dim2_var.get()
+                    result['dim3'] = dim3_var.get()
                     dialog.destroy()
                     
                 ttk.Button(dialog, text="Plot Data", command=on_ok).pack(pady=10)
@@ -328,10 +339,12 @@ class RedPercentView(tk.Frame):
                 selected_plot_type = result['type']
                 dim1_sel = result['dim1']
                 dim2_sel = result['dim2']
+                dim3_sel = result['dim3']
             else:
                 selected_plot_type = "0D"
                 dim1_sel = None
                 dim2_sel = None
+                dim3_sel = None
 
             for widget in plot_frame.winfo_children():
                 widget.destroy()
@@ -371,6 +384,22 @@ class RedPercentView(tk.Frame):
                     ax.set_ylabel(f'Stepper {dim2_sel} Location')
                     ax.set_zlabel('Red Percent')
                     ax.set_title(f'Red Percent vs {dim1_sel} and {dim2_sel}')
+                    fig.colorbar(scatter, ax=ax, label='Red Percent')
+                else:
+                    ax.text2D(0.5, 0.5, "Data mismatch error", transform=ax.transAxes)
+            elif selected_plot_type == "3D":
+                ax = fig.add_subplot(111, projection='3d')
+                x = dim_data[dim1_sel]
+                y = dim_data[dim2_sel]
+                z = dim_data[dim3_sel]
+                c = red_percents
+                
+                if len(x) == len(c) and len(y) == len(c) and len(z) == len(c):
+                    scatter = ax.scatter(x, y, z, c=c, cmap='coolwarm', marker='o')
+                    ax.set_xlabel(f'Stepper {dim1_sel} Location')
+                    ax.set_ylabel(f'Stepper {dim2_sel} Location')
+                    ax.set_zlabel(f'Stepper {dim3_sel} Location')
+                    ax.set_title(f'Red Percent over {dim1_sel}, {dim2_sel}, {dim3_sel}')
                     fig.colorbar(scatter, ax=ax, label='Red Percent')
                 else:
                     ax.text2D(0.5, 0.5, "Data mismatch error", transform=ax.transAxes)
