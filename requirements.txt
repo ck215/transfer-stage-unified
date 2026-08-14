@@ -3,3 +3,4 @@ pygame
 mss
 Pillow
 numpy
+matplotlib
