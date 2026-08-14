@@ -126,8 +126,9 @@ class ProbeView(tk.Frame):
         tk.Button(self, text="ENTER AUTONOMOUS MODE", bg='darkgreen', fg='black', font=('Arial', 10, 'bold'), command=self.enter_auton).grid(row=row_counter, column=0, padx=5, pady=5, sticky='ew')
         tk.Button(self, text="ENTER MANUAL MODE", bg='blue', fg='black', font=('Arial', 10, 'bold'), command=self.enter_manual).grid(row=row_counter, column=1, padx=5, pady=5, sticky='ew'); row_counter += 1
 
-        tk.Button(self, text="Enable System", bg='darkgreen', fg='black', font=('Arial', 10, 'bold'), command=self.model.enable).grid(row=row_counter, column=0, padx=5, pady=5, sticky='ew')
-        tk.Button(self, text="Disable System", bg='darkred', fg='black', font=('Arial', 10, 'bold'), command=self.model.disable).grid(row=row_counter, column=1, padx=5, pady=5, sticky='ew'); row_counter += 1
+        self.toggle_enable_btn = tk.Label(self, text="System Disabled (Click to Enable)", bg='darkred', fg='white', font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5, cursor="hand2")
+        self.toggle_enable_btn.bind("<Button-1>", lambda e: self.toggle_enable())
+        self.toggle_enable_btn.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew'); row_counter += 1
         
         tk.Button(self, text="Start Stepping", bg='darkgreen', fg='black', font=('Arial', 10, 'bold'), command=self.start_stepping).grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew'); row_counter += 1
         
@@ -144,6 +145,12 @@ class ProbeView(tk.Frame):
             self.selected_script_label.config(text=filename)
             if hasattr(self.model, 'read_script'):
                 self.model.read_script(self.selected_script)
+
+    def toggle_enable(self):
+        if self.model.system_enabled:
+            self.model.disable()
+        else:
+            self.model.enable()
 
     def enter_auton(self):
         self.model.auton_flag = True
@@ -170,5 +177,12 @@ class ProbeView(tk.Frame):
             self.pos_y.set(str(self.model.pos_y))
         if self.pos_z.get() != str(self.model.pos_z):
             self.pos_z.set(str(self.model.pos_z))
+            
+        if self.model.system_enabled:
+            if self.toggle_enable_btn['text'] != "System Enabled (Click to Disable)":
+                self.toggle_enable_btn.config(text="System Enabled (Click to Disable)", bg='darkgreen', fg='black')
+        else:
+            if self.toggle_enable_btn['text'] != "System Disabled (Click to Enable)":
+                self.toggle_enable_btn.config(text="System Disabled (Click to Enable)", bg='darkred', fg='white')
         
         self.after(100, self._poll_model)

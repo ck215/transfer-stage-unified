@@ -116,11 +116,12 @@ class SetupWindow(tk.Tk):
         self.get_available_controllers()
         
         self.is_scanning = False
+        self.autodetected_devices = set()
+        self.status_labels = {}
         self.gui_queue = queue.Queue()
         self.create_widgets()
         
         self.after(200, self.start_autodetect)
-        self.after(2000, self.auto_refresh_loop)
         self.after(50, self.check_queue)
 
     def check_queue(self):
@@ -140,33 +141,6 @@ class SetupWindow(tk.Tk):
             pass
         self.after(50, self.check_queue)
 
-    def auto_refresh_loop(self):
-        if SERIAL_AVAILABLE:
-            current_ports = sorted([port.device for port in serial.tools.list_ports.comports()])
-        else:
-            current_ports = []
-            
-        if not current_ports:
-            current_ports = ["COM1", "COM2", "COM3", "COM4"]
-            
-        if current_ports != self.detected_ports:
-            self.detected_ports = current_ports
-            
-            for device in self.devices:
-                menu = self.dropdown_widgets[device]["menu"]
-                menu.delete(0, "end")
-                for port in self.detected_ports:
-                    menu.add_command(label=port, command=lambda p=port, d=device: self.port_vars[d].set(p))
-                    
-                if self.port_vars[device].get() not in self.detected_ports:
-                    self.port_vars[device].set(self.detected_ports[0] if self.detected_ports else "None")
-                    if self.device_vars[device].get():
-                        self.device_vars[device].set(False)
-                        self.toggle_dropdown_state(device)
-            
-            self.start_autodetect()
-            
-        self.after(2000, self.auto_refresh_loop)
 
     def get_available_ports(self):
         if SERIAL_AVAILABLE:
@@ -231,7 +205,8 @@ class SetupWindow(tk.Tk):
             if ((device != "Temperature Controller") & (device != "SMC100 Rotator") & (device != "Red Percent Window")):
                 ctrl_widget.state(["!disabled"])
             if device != "Red Percent Window":
-                serial_widget.state(["!disabled"])
+                if device not in self.autodetected_devices:
+                    serial_widget.state(["!disabled"])
         else:
             serial_widget.state(["disabled"])
             ctrl_widget.state(["disabled"])
@@ -257,9 +232,11 @@ class SetupWindow(tk.Tk):
         ttk.Label(grid_frame, text="Active Device", font=("Helvetica", 10, "bold")).grid(row=0, column=0, padx=10, pady=5, sticky="w")
         ttk.Label(grid_frame, text="Port Assignment", font=("Helvetica", 10, "bold")).grid(row=0, column=1, padx=10, pady=5, sticky="w")
         ttk.Label(grid_frame, text="Controller", font=("Helvetica", 10, "bold")).grid(row=0, column=2, padx=10, pady=5, sticky="w")
+        ttk.Label(grid_frame, text="Status", font=("Helvetica", 10, "bold")).grid(row=0, column=3, padx=10, pady=5, sticky="w")
         
         grid_frame.columnconfigure(1, weight=1)
         grid_frame.columnconfigure(2, weight=1)
+        grid_frame.columnconfigure(3, weight=1)
 
         for idx, device in enumerate(self.devices):
             check_var = tk.BooleanVar(value=False)
@@ -285,6 +262,10 @@ class SetupWindow(tk.Tk):
             ctrl_dropdown.state(["disabled"])
             self.controller_widgets[device] = ctrl_dropdown
             
+            lbl = tk.Label(grid_frame, text="", font=("Helvetica", 10, "bold"))
+            lbl.grid(row=idx+1, column=3, padx=10, pady=10, sticky="w")
+            self.status_labels[device] = lbl
+            
         btn_frame = ttk.Frame(self)
         btn_frame.pack(pady=20)
         
@@ -295,6 +276,9 @@ class SetupWindow(tk.Tk):
         self.launch_btn.pack(side="left", padx=10)
 
     def start_autodetect(self, force=False):
+        if getattr(self, 'is_scanning', False):
+            return
+            
         if not SERIAL_AVAILABLE or not self.detected_ports:
             self.status_var.set("No serial ports detected.")
             self.progress_bar.pack_forget()
@@ -302,8 +286,11 @@ class SetupWindow(tk.Tk):
             return
             
         if force:
+            self.autodetected_devices.clear()
             for device in self.devices:
                 self.device_vars[device].set(False)
+                if hasattr(self, 'status_labels') and device in self.status_labels:
+                    self.status_labels[device].config(text="")
                 self.toggle_dropdown_state(device)
             
         self.is_scanning = True
@@ -377,8 +364,10 @@ class SetupWindow(tk.Tk):
 
     def _update_device_ui(self, device_name, port):
         if device_name in self.device_vars:
+            self.autodetected_devices.add(device_name)
             self.device_vars[device_name].set(True)
             self.port_vars[device_name].set(port)
+            self.status_labels[device_name].config(text="✓ Auto-Verified", fg="green")
             self.toggle_dropdown_state(device_name)
 
     def _scan_complete(self):
