@@ -53,15 +53,16 @@ class RedPercentView(tk.Frame):
 
     def select_focus_area(self):
         try:
-            from PIL import ImageGrab, ImageTk
+            from PIL import Image, ImageTk
+            import mss
         except ImportError:
-            print("Pillow is required for screenshot selection.")
+            print("Pillow and mss are required for screenshot selection.")
             return
             
         # Add a 500ms delay before taking the screenshot so window movement/animations can settle
-        self.after(500, lambda: self._perform_screenshot_selection(ImageGrab, ImageTk))
+        self.after(500, lambda: self._perform_screenshot_selection(Image, ImageTk, mss))
 
-    def _perform_screenshot_selection(self, ImageGrab, ImageTk):
+    def _perform_screenshot_selection(self, Image, ImageTk, mss):
 
         selection_window = tk.Toplevel(self.winfo_toplevel())
         selection_window.attributes('-fullscreen', True)
@@ -76,8 +77,11 @@ class RedPercentView(tk.Frame):
         screen_width = selection_window.winfo_screenwidth()
         screen_height = selection_window.winfo_screenheight()
         
-        # Take a screenshot of the primary screen to freeze the display
-        screenshot = ImageGrab.grab()
+        # Take a screenshot of the primary screen to freeze the display using mss to avoid macOS PIL bugs
+        with mss.mss() as sct:
+            monitor = sct.monitors[1]
+            sct_img = sct.grab(monitor)
+            screenshot = Image.frombytes('RGB', sct_img.size, sct_img.bgra, 'raw', 'BGRX')
         
         # Handle macOS Retina scaling by forcing the screenshot to match Tkinter's logical screen dimensions
         if screenshot.width != screen_width or screenshot.height != screen_height:
