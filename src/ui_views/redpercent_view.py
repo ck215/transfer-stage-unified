@@ -76,8 +76,8 @@ class RedPercentView(tk.Frame):
         screen_width = selection_window.winfo_screenwidth()
         screen_height = selection_window.winfo_screenheight()
         
-        # Take a screenshot of the current screen to freeze the display
-        screenshot = ImageGrab.grab(all_screens=True)
+        # Take a screenshot of the primary screen to freeze the display
+        screenshot = ImageGrab.grab()
         
         # Handle macOS Retina scaling by forcing the screenshot to match Tkinter's logical screen dimensions
         if screenshot.width != screen_width or screenshot.height != screen_height:
