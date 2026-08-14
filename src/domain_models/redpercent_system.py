@@ -90,6 +90,9 @@ class RedPercentSystem:
 
     def _monitor_colors(self):
         first_reading = True
+        self.last_logged_red = -1.0
+        self.last_logged_x = None
+        
         with mss.mss() as sct:
             while self.monitoring:
                 image = self.capture_focus_area(sct)
@@ -103,7 +106,15 @@ class RedPercentSystem:
                     self.red_change = ((red_pct - self.baseline_red) / max(self.baseline_red, 0.1)) * 100
                     
                     if self.data_log:
+                        rounded_red = round(red_pct, 1)
                         x_loc = self.stepper_model.pos_x if (self.sync_x_location and self.stepper_model) else None
-                        self.data_log.add_entry(red_pct, x_loc)
+                        
+                        red_changed = abs(rounded_red - self.last_logged_red) >= 0.1
+                        x_changed = self.sync_x_location and x_loc is not None and (self.last_logged_x is None or abs(x_loc - self.last_logged_x) >= 0.001)
+                        
+                        if red_changed or x_changed:
+                            self.data_log.add_entry(rounded_red, x_loc)
+                            self.last_logged_red = rounded_red
+                            self.last_logged_x = x_loc
                         
                 time.sleep(0.1)
