@@ -1,5 +1,8 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import csv
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from domain_models.redpercent_system import RedPercentSystem
 
 class RedPercentView(tk.Frame):
@@ -20,6 +23,9 @@ class RedPercentView(tk.Frame):
 
         self.stop_btn = ttk.Button(control_frame, text="Stop Monitoring", state=tk.DISABLED, command=self.stop_monitoring)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
+
+        self.plot_btn = ttk.Button(control_frame, text="Plot CSV", command=self.open_plot_window)
+        self.plot_btn.pack(side=tk.LEFT, padx=5)
 
         status_frame = ttk.Frame(self)
         status_frame.pack(pady=10)
@@ -184,6 +190,97 @@ class RedPercentView(tk.Frame):
         self.red_change_label.config(text=f"{red_change:+.1f}%", fg=color)
         
         self.after(100, self.poll_display)
+
+    def open_plot_window(self):
+        plot_win = tk.Toplevel(self)
+        plot_win.title("Plot CSV Data")
+        plot_win.geometry("800x600")
+
+        top_frame = ttk.Frame(plot_win)
+        top_frame.pack(side=tk.TOP, fill=tk.X, pady=10)
+
+        plot_frame = ttk.Frame(plot_win)
+        plot_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+
+        def load_csv():
+            filepath = filedialog.askopenfilename(
+                title="Select CSV",
+                filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+                parent=plot_win
+            )
+            if not filepath:
+                return
+            
+            red_percents = []
+            stepper_xs = []
+            
+            try:
+                with open(filepath, 'r', newline='') as f:
+                    reader = csv.reader(f)
+                    try:
+                        headers = next(reader)
+                    except StopIteration:
+                        messagebox.showerror("Error", "CSV file is empty.", parent=plot_win)
+                        return
+                    
+                    red_idx = 0
+                    stepper_idx = -1
+                    
+                    for i, h in enumerate(headers):
+                        h_lower = h.strip().lower()
+                        if "red" in h_lower:
+                            red_idx = i
+                        elif "stepper" in h_lower or "location" in h_lower or "x" in h_lower:
+                            stepper_idx = i
+                            
+                    if red_idx == 0 and stepper_idx == -1 and len(headers) >= 2:
+                        if "x" in headers[0].lower() or "stepper" in headers[0].lower():
+                            stepper_idx = 0
+                            red_idx = 1
+                        else:
+                            stepper_idx = 1
+                            
+                    for row in reader:
+                        if not row:
+                            continue
+                        try:
+                            r_val = float(row[red_idx])
+                            red_percents.append(r_val)
+                            if stepper_idx != -1 and len(row) > stepper_idx:
+                                stepper_xs.append(float(row[stepper_idx]))
+                        except ValueError:
+                            continue
+                            
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load CSV:\n{e}", parent=plot_win)
+                return
+                
+            for widget in plot_frame.winfo_children():
+                widget.destroy()
+                
+            fig = Figure(figsize=(8, 6), dpi=100)
+            ax = fig.add_subplot(111)
+            
+            if stepper_xs and len(stepper_xs) == len(red_percents):
+                paired = sorted(zip(stepper_xs, red_percents))
+                sorted_xs = [p[0] for p in paired]
+                sorted_rs = [p[1] for p in paired]
+                ax.plot(sorted_xs, sorted_rs, marker='o', linestyle='-', color='b')
+                ax.set_xlabel('Stepper X Location')
+            else:
+                ax.plot(red_percents, marker='o', linestyle='-', color='b')
+                ax.set_xlabel('Index (Time / Samples)')
+                
+            ax.set_ylabel('Red Percent')
+            ax.set_title('Red Percent Data')
+            ax.grid(True)
+            
+            canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        load_btn = ttk.Button(top_frame, text="Select & Load CSV File", command=load_csv)
+        load_btn.pack(side=tk.LEFT, padx=10)
 
     def destroy(self):
         print("[color_test] Cleaning up and closing RedPercentView...")
