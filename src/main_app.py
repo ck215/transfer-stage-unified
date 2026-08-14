@@ -372,12 +372,13 @@ class SetupWindow(tk.Tk):
 
     def _scan_complete(self):
         self.is_scanning = False
-        self.status_var.set("Scan complete.")
         self.progress_bar.pack_forget()
         self.status_label.pack_forget()
+        self.update()
+        
+        self.status_var.set("Scan complete.")
         self.launch_btn.config(state=tk.NORMAL)
         self.refresh_btn.config(state=tk.NORMAL)
-        self.update_idletasks()
 
     def launch_unified(self):
         if getattr(self, 'is_scanning', False):
