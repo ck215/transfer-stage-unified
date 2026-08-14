@@ -371,12 +371,18 @@ class SetupWindow(tk.Tk):
             self.toggle_dropdown_state(device_name)
 
     def _scan_complete(self):
+        self.progress_var.set(100)
+        self.status_var.set("Scan complete.")
+        self.update()
+        # Hold the completed state for 1 second so the user can visually register it before it vanishes
+        self.after(1000, self._cleanup_scan_ui)
+
+    def _cleanup_scan_ui(self):
         self.is_scanning = False
         self.progress_bar.pack_forget()
         self.status_label.pack_forget()
         self.update()
         
-        self.status_var.set("Scan complete.")
         self.launch_btn.config(state=tk.NORMAL)
         self.refresh_btn.config(state=tk.NORMAL)
 

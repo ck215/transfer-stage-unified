@@ -52,23 +52,13 @@ class RedPercentView(tk.Frame):
         self.poll_display()
 
     def select_focus_area(self):
-        try:
-            from PIL import Image, ImageTk
-            import subprocess
-        except ImportError:
-            print("Pillow is required for screenshot selection.")
-            return
-            
-        # Add a 500ms delay before taking the screenshot so window movement/animations can settle
-        self.after(500, lambda: self._perform_screenshot_selection(Image, ImageTk, subprocess))
-
-    def _perform_screenshot_selection(self, Image, ImageTk, subprocess):
-
+        # Create a borderless, transparent, fullscreen overlay window
         selection_window = tk.Toplevel(self.winfo_toplevel())
         selection_window.attributes('-fullscreen', True)
+        selection_window.attributes('-alpha', 0.3)
+        selection_window.configure(bg='gray10')
         selection_window.attributes('-topmost', True)
         
-        # Optional Mac compatibility to remove window headers
         try:
             selection_window.overrideredirect(True)
         except Exception:
@@ -76,17 +66,6 @@ class RedPercentView(tk.Frame):
 
         screen_width = selection_window.winfo_screenwidth()
         screen_height = selection_window.winfo_screenheight()
-        
-        # Take a native macOS screenshot to avoid all 3rd party buffer wrap-around bugs
-        filepath = "/tmp/redpercent_full.png"
-        subprocess.run(["screencapture", "-x", "-m", filepath], check=True)
-        screenshot = Image.open(filepath).convert("RGB")
-        
-        # Handle macOS Retina scaling by forcing the screenshot to match Tkinter's logical screen dimensions
-        if screenshot.width != screen_width or screenshot.height != screen_height:
-            screenshot = screenshot.resize((screen_width, screen_height))
-            
-        self._screenshot_img = ImageTk.PhotoImage(screenshot)
 
         self.start_x = None
         self.start_y = None
@@ -96,9 +75,6 @@ class RedPercentView(tk.Frame):
         canvas = tk.Canvas(selection_window, highlightthickness=0,
                            width=screen_width, height=screen_height, cursor="crosshair")
         canvas.pack(fill=tk.BOTH, expand=True)
-        
-        # Draw the frozen screenshot
-        canvas.create_image(0, 0, image=self._screenshot_img, anchor="nw")
 
         def start_selection(event):
             self.start_x = event.x
