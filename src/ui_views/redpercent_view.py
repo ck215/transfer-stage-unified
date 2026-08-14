@@ -48,14 +48,23 @@ class RedPercentView(tk.Frame):
         self.reset_btn = ttk.Button(color_frame, text="Reset Baseline", state=tk.DISABLED, command=self.reset_baseline)
         self.reset_btn.grid(row=2, column=0, columnspan=2, pady=5)
         
-        self.sync_x_var = tk.BooleanVar(value=False)
-        self.sync_x_chk = ttk.Checkbutton(color_frame, text="Sync Stepper X Location", variable=self.sync_x_var, command=self._toggle_sync)
-        self.sync_x_chk.grid(row=3, column=0, columnspan=2, pady=5, sticky=tk.W)
+        self.sync_vars = {
+            'X': tk.BooleanVar(value=False),
+            'Y': tk.BooleanVar(value=False),
+            'Z': tk.BooleanVar(value=False)
+        }
+        
+        sync_frame = ttk.Frame(color_frame)
+        sync_frame.grid(row=3, column=0, columnspan=2, pady=5, sticky=tk.W)
+        ttk.Label(sync_frame, text="Sync Dimensions:").pack(side=tk.LEFT)
+        for dim in ['X', 'Y', 'Z']:
+            chk = ttk.Checkbutton(sync_frame, text=dim, variable=self.sync_vars[dim], command=self._update_sync_dimensions)
+            chk.pack(side=tk.LEFT, padx=2)
 
         self.poll_display()
 
-    def _toggle_sync(self):
-        self.system.sync_x_location = self.sync_x_var.get()
+    def _update_sync_dimensions(self):
+        self.system.sync_dimensions = [dim for dim in ['X', 'Y', 'Z'] if self.sync_vars[dim].get()]
 
     def select_focus_area(self):
         # Create a borderless, transparent, fullscreen overlay window
@@ -212,7 +221,7 @@ class RedPercentView(tk.Frame):
                 return
             
             red_percents = []
-            stepper_xs = []
+            dim_data = {}
             
             try:
                 with open(filepath, 'r', newline='') as f:
@@ -224,21 +233,22 @@ class RedPercentView(tk.Frame):
                         return
                     
                     red_idx = 0
-                    stepper_idx = -1
+                    dim_indices = {}
                     
                     for i, h in enumerate(headers):
                         h_lower = h.strip().lower()
                         if "red" in h_lower:
                             red_idx = i
-                        elif "stepper" in h_lower or "location" in h_lower or "x" in h_lower:
-                            stepper_idx = i
-                            
-                    if red_idx == 0 and stepper_idx == -1 and len(headers) >= 2:
-                        if "x" in headers[0].lower() or "stepper" in headers[0].lower():
-                            stepper_idx = 0
-                            red_idx = 1
-                        else:
-                            stepper_idx = 1
+                        elif "x" in h_lower:
+                            dim_indices['X'] = i
+                        elif "y" in h_lower:
+                            dim_indices['Y'] = i
+                        elif "z" in h_lower:
+                            dim_indices['Z'] = i
+                        # Fallback for older formats where 'stepper x' or just 'stepper' was used
+                        elif "stepper" in h_lower or "location" in h_lower:
+                            if 'X' not in dim_indices:
+                                dim_indices['X'] = i
                             
                     for row in reader:
                         if not row:
@@ -246,8 +256,11 @@ class RedPercentView(tk.Frame):
                         try:
                             r_val = float(row[red_idx])
                             red_percents.append(r_val)
-                            if stepper_idx != -1 and len(row) > stepper_idx:
-                                stepper_xs.append(float(row[stepper_idx]))
+                            for dim, idx in dim_indices.items():
+                                if len(row) > idx:
+                                    if dim not in dim_data:
+                                        dim_data[dim] = []
+                                    dim_data[dim].append(float(row[idx]))
                         except ValueError:
                             continue
                             
@@ -255,25 +268,112 @@ class RedPercentView(tk.Frame):
                 messagebox.showerror("Error", f"Failed to load CSV:\n{e}", parent=plot_win)
                 return
                 
+            dims_found = list(dim_data.keys())
+            
+            if len(dims_found) > 0:
+                dialog = tk.Toplevel(plot_win)
+                dialog.title("Select Plot Type")
+                dialog.transient(plot_win)
+                dialog.grab_set()
+                
+                ttk.Label(dialog, text="Select the type of plot:").pack(pady=10)
+                
+                plot_type_var = tk.StringVar()
+                if len(dims_found) >= 2:
+                    plot_type_var.set("2D")
+                else:
+                    plot_type_var.set("1D")
+                    
+                dim1_var = tk.StringVar(value=dims_found[0])
+                dim2_var = tk.StringVar(value=dims_found[1] if len(dims_found) > 1 else dims_found[0])
+                
+                rb_frame = ttk.Frame(dialog)
+                rb_frame.pack(anchor=tk.W, padx=20)
+                
+                ttk.Radiobutton(rb_frame, text="0D (Time/Index)", variable=plot_type_var, value="0D").pack(anchor=tk.W, pady=2)
+                ttk.Radiobutton(rb_frame, text="1D (Single Dimension)", variable=plot_type_var, value="1D").pack(anchor=tk.W, pady=2)
+                if len(dims_found) >= 2:
+                    ttk.Radiobutton(rb_frame, text="2D (Two Dimensions)", variable=plot_type_var, value="2D").pack(anchor=tk.W, pady=2)
+                    
+                opt_frame = ttk.Frame(dialog)
+                opt_frame.pack(pady=15)
+                
+                ttk.Label(opt_frame, text="Dim 1 (1D/2D):").grid(row=0, column=0, sticky=tk.E, padx=5, pady=2)
+                ttk.OptionMenu(opt_frame, dim1_var, dim1_var.get(), *dims_found).grid(row=0, column=1, sticky=tk.W, pady=2)
+                
+                if len(dims_found) >= 2:
+                    ttk.Label(opt_frame, text="Dim 2 (2D):").grid(row=1, column=0, sticky=tk.E, padx=5, pady=2)
+                    ttk.OptionMenu(opt_frame, dim2_var, dim2_var.get(), *dims_found).grid(row=1, column=1, sticky=tk.W, pady=2)
+                    
+                result = {}
+                def on_ok():
+                    result['type'] = plot_type_var.get()
+                    result['dim1'] = dim1_var.get()
+                    result['dim2'] = dim2_var.get()
+                    dialog.destroy()
+                    
+                ttk.Button(dialog, text="Plot Data", command=on_ok).pack(pady=10)
+                
+                # Center dialog
+                plot_win.update_idletasks()
+                x = plot_win.winfo_x() + (plot_win.winfo_width() // 2) - 150
+                y = plot_win.winfo_y() + (plot_win.winfo_height() // 2) - 150
+                dialog.geometry(f"+{x}+{y}")
+                
+                plot_win.wait_window(dialog)
+                
+                if 'type' not in result:
+                    return # Dialog closed without plotting
+                
+                selected_plot_type = result['type']
+                dim1_sel = result['dim1']
+                dim2_sel = result['dim2']
+            else:
+                selected_plot_type = "0D"
+                dim1_sel = None
+                dim2_sel = None
+
             for widget in plot_frame.winfo_children():
                 widget.destroy()
                 
             fig = Figure(figsize=(8, 6), dpi=100)
-            ax = fig.add_subplot(111)
             
-            if stepper_xs and len(stepper_xs) == len(red_percents):
-                paired = sorted(zip(stepper_xs, red_percents))
-                sorted_xs = [p[0] for p in paired]
-                sorted_rs = [p[1] for p in paired]
-                ax.plot(sorted_xs, sorted_rs, marker='o', linestyle='-', color='b')
-                ax.set_xlabel('Stepper X Location')
-            else:
+            if selected_plot_type == "0D":
+                ax = fig.add_subplot(111)
                 ax.plot(red_percents, marker='o', linestyle='-', color='b')
                 ax.set_xlabel('Index (Time / Samples)')
+                ax.set_ylabel('Red Percent')
+                ax.set_title('Red Percent Data')
+                ax.grid(True)
+            elif selected_plot_type == "1D":
+                ax = fig.add_subplot(111)
+                if dim_data[dim1_sel] and len(dim_data[dim1_sel]) == len(red_percents):
+                    paired = sorted(zip(dim_data[dim1_sel], red_percents))
+                    sorted_xs = [p[0] for p in paired]
+                    sorted_rs = [p[1] for p in paired]
+                    ax.plot(sorted_xs, sorted_rs, marker='o', linestyle='-', color='b')
+                    ax.set_xlabel(f'Stepper {dim1_sel} Location')
+                else:
+                    ax.plot(red_percents, marker='o', linestyle='-', color='b')
+                    ax.set_xlabel('Index')
+                ax.set_ylabel('Red Percent')
+                ax.set_title(f'Red Percent vs {dim1_sel}')
+                ax.grid(True)
+            elif selected_plot_type == "2D":
+                ax = fig.add_subplot(111, projection='3d')
+                x = dim_data[dim1_sel]
+                y = dim_data[dim2_sel]
+                z = red_percents
                 
-            ax.set_ylabel('Red Percent')
-            ax.set_title('Red Percent Data')
-            ax.grid(True)
+                if len(x) == len(z) and len(y) == len(z):
+                    scatter = ax.scatter(x, y, z, c=z, cmap='coolwarm', marker='o')
+                    ax.set_xlabel(f'Stepper {dim1_sel} Location')
+                    ax.set_ylabel(f'Stepper {dim2_sel} Location')
+                    ax.set_zlabel('Red Percent')
+                    ax.set_title(f'Red Percent vs {dim1_sel} and {dim2_sel}')
+                    fig.colorbar(scatter, ax=ax, label='Red Percent')
+                else:
+                    ax.text2D(0.5, 0.5, "Data mismatch error", transform=ax.transAxes)
             
             canvas = FigureCanvasTkAgg(fig, master=plot_frame)
             canvas.draw()
