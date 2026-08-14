@@ -5,6 +5,8 @@ import os
 
 import re
 import time
+import threading
+import queue
 
 from hardware.serial_comm import SerialArduino
 from hardware.gamepad import ControllerPoller
@@ -33,13 +35,69 @@ try:
 except ImportError:
     PYGAME_AVAILABLE = False
 
+class DraggableClosableNotebook(ttk.Notebook):
+    """A ttk.Notebook with draggable tabs and middle-click/right-click to close."""
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.bind("<ButtonPress-1>", self.on_press)
+        self.bind("<B1-Motion>", self.on_drag)
+        self.bind("<ButtonRelease-1>", self.on_release)
+        
+        self.bind("<Button-2>", self.on_middle_click) # Middle click to close on some systems
+        self.bind("<Button-3>", self.on_right_click)  # Right click to close
+        
+        self._active = None
+        self.on_close_tab_callback = None
+
+    def on_press(self, event):
+        try:
+            self._active = self.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            self._active = None
+
+    def on_drag(self, event):
+        if self._active is None:
+            return
+        try:
+            target = self.index(f"@{event.x},{event.y}")
+            if self._active != target:
+                self.insert(target, self.tabs()[self._active])
+                self._active = target
+        except tk.TclError:
+            pass
+
+    def on_release(self, event):
+        self._active = None
+
+    def on_middle_click(self, event):
+        try:
+            index = self.index(f"@{event.x},{event.y}")
+            self.close_tab(index)
+        except tk.TclError:
+            pass
+
+    def on_right_click(self, event):
+        try:
+            index = self.index(f"@{event.x},{event.y}")
+            menu = tk.Menu(self, tearoff=0)
+            menu.add_command(label="Close Tab", command=lambda: self.close_tab(index))
+            menu.tk_popup(event.x_root, event.y_root)
+        except tk.TclError:
+            pass
+
+    def close_tab(self, index):
+        if self.on_close_tab_callback:
+            self.on_close_tab_callback(index)
+        else:
+            self.forget(index)
+
 class SetupWindow(tk.Tk):
     """Configuration interface to select systems and assign COM ports & physical joysticks."""
     def __init__(self):
         super().__init__()
         self.title("Device Configuration Setup")
-        self.geometry("750x520")
-        self.resizable(False, False)
+        self.geometry("850x650")
+        self.resizable(True, True)
         
         self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller", "SMC100 Rotator", "Red Percent Window"]
         self.device_vars = {}        
@@ -56,7 +114,59 @@ class SetupWindow(tk.Tk):
         
         self.get_available_ports()
         self.get_available_controllers()
+        
+        self.is_scanning = False
+        self.gui_queue = queue.Queue()
         self.create_widgets()
+        
+        self.after(200, self.start_autodetect)
+        self.after(2000, self.auto_refresh_loop)
+        self.after(50, self.check_queue)
+
+    def check_queue(self):
+        try:
+            while True:
+                msg_type, data = self.gui_queue.get_nowait()
+                if msg_type == 'status':
+                    self.status_var.set(data)
+                elif msg_type == 'progress':
+                    self.progress_var.set(data)
+                elif msg_type == 'found':
+                    device_name, port = data
+                    self._update_device_ui(device_name, port)
+                elif msg_type == 'complete':
+                    self._scan_complete()
+        except queue.Empty:
+            pass
+        self.after(50, self.check_queue)
+
+    def auto_refresh_loop(self):
+        if SERIAL_AVAILABLE:
+            current_ports = sorted([port.device for port in serial.tools.list_ports.comports()])
+        else:
+            current_ports = []
+            
+        if not current_ports:
+            current_ports = ["COM1", "COM2", "COM3", "COM4"]
+            
+        if current_ports != self.detected_ports:
+            self.detected_ports = current_ports
+            
+            for device in self.devices:
+                menu = self.dropdown_widgets[device]["menu"]
+                menu.delete(0, "end")
+                for port in self.detected_ports:
+                    menu.add_command(label=port, command=lambda p=port, d=device: self.port_vars[d].set(p))
+                    
+                if self.port_vars[device].get() not in self.detected_ports:
+                    self.port_vars[device].set(self.detected_ports[0] if self.detected_ports else "None")
+                    if self.device_vars[device].get():
+                        self.device_vars[device].set(False)
+                        self.toggle_dropdown_state(device)
+            
+            self.start_autodetect()
+            
+        self.after(2000, self.auto_refresh_loop)
 
     def get_available_ports(self):
         if SERIAL_AVAILABLE:
@@ -87,6 +197,9 @@ class SetupWindow(tk.Tk):
             self.detected_controllers = ["None", "Virtual Controller A", "Virtual Controller B"]
 
     def refresh_devices(self):
+        if getattr(self, 'is_scanning', False):
+            return
+            
         self.get_available_ports()
         self.get_available_controllers()
         
@@ -107,6 +220,8 @@ class SetupWindow(tk.Tk):
             if self.controller_vars[device].get() not in self.detected_controllers:
                 self.controller_vars[device].set(self.detected_controllers[0])
                 
+        self.start_autodetect(force=True)
+                
     def toggle_dropdown_state(self, device):
         is_checked = self.device_vars[device].get()
         serial_widget = self.dropdown_widgets[device]
@@ -125,6 +240,17 @@ class SetupWindow(tk.Tk):
         header = ttk.Label(self, text="System Hardware Configuration", font=("Helvetica", 14, "bold"))
         header.pack(pady=15)
         
+        self.scan_frame = ttk.Frame(self)
+        self.scan_frame.pack(fill="x", pady=0)
+        
+        self.status_var = tk.StringVar(value="Ready to scan...")
+        self.status_label = ttk.Label(self.scan_frame, textvariable=self.status_var, font=("Helvetica", 10))
+        self.status_label.pack(pady=5)
+        
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_bar = ttk.Progressbar(self.scan_frame, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill="x", padx=40, pady=5)
+        
         grid_frame = ttk.LabelFrame(self, text="Configure Devices", padding="15")
         grid_frame.pack(fill="x", padx=20, pady=5)
         
@@ -135,50 +261,11 @@ class SetupWindow(tk.Tk):
         grid_frame.columnconfigure(1, weight=1)
         grid_frame.columnconfigure(2, weight=1)
 
-        found_devices = {}
-        if SERIAL_AVAILABLE:
-            DEVICE_MAP = {
-                's': "Stepper Probe",
-                'd': "DC Probe",
-                'c': "Chuck Positioner",
-                't': "Temperature Controller"
-            }
-            DEV_PATTERN = re.compile(r"DEV:\s*([sdct])", re.IGNORECASE)
-            for port in self.detected_ports:
-                print(f"[main_app] Scanning for devices on {port}...")
-                try: 
-                    with serial.Serial(port, baudrate=500000, timeout=.1, write_timeout=.2) as ser:
-                        time.sleep(1.5)
-                        ser.reset_input_buffer()
-                        ser.reset_output_buffer()
-                        ser.write(b"s\n")
-                        start_time = time.time()
-                        device_found = False
-                        while ((time.time() - start_time < 1.0) and not device_found):
-                            if ser.in_waiting > 0: 
-                                response_bytes = ser.read(ser.in_waiting)
-                            else:
-                                continue
-                            response_str = response_bytes.decode('utf-8', errors='ignore').strip()
-                            match = DEV_PATTERN.search(response_str)
-                            if match:
-                                dev_char = match.group(1).lower()
-                                if dev_char in DEVICE_MAP:
-                                    device_name = DEVICE_MAP[dev_char]
-                                    found_devices[device_name] = port
-                                    print(f"[main_app] Auto-detected {device_name} on {port}")
-                                device_found = True
-                except Exception as e:
-                    pass
-
         for idx, device in enumerate(self.devices):
             check_var = tk.BooleanVar(value=False)
             self.device_vars[device] = check_var
             
             port_var = tk.StringVar(value=self.detected_ports[0] if self.detected_ports else "None")
-            if device in found_devices:
-                check_var.set(True)
-                port_var.set(found_devices[device])
             self.port_vars[device] = port_var
             
             chk = ttk.Checkbutton(grid_frame, text=device, variable=check_var, 
@@ -201,13 +288,111 @@ class SetupWindow(tk.Tk):
         btn_frame = ttk.Frame(self)
         btn_frame.pack(pady=20)
         
-        refresh_btn = ttk.Button(btn_frame, text="🔄 Refresh Devices", command=self.refresh_devices)
-        refresh_btn.pack(side="left", padx=10)
+        self.refresh_btn = ttk.Button(btn_frame, text="🔄 Refresh Devices", command=self.refresh_devices)
+        self.refresh_btn.pack(side="left", padx=10)
         
-        launch_btn = ttk.Button(btn_frame, text="🚀 Launch Unified Application", command=self.launch_unified)
-        launch_btn.pack(side="left", padx=10)
+        self.launch_btn = ttk.Button(btn_frame, text="🚀 Launch Unified Application", command=self.launch_unified)
+        self.launch_btn.pack(side="left", padx=10)
+
+    def start_autodetect(self, force=False):
+        if not SERIAL_AVAILABLE or not self.detected_ports:
+            self.status_var.set("No serial ports detected.")
+            self.progress_bar.pack_forget()
+            self.status_label.pack_forget()
+            return
+            
+        if force:
+            for device in self.devices:
+                self.device_vars[device].set(False)
+                self.toggle_dropdown_state(device)
+            
+        self.is_scanning = True
+        
+        self.launch_btn.config(state=tk.DISABLED)
+        self.refresh_btn.config(state=tk.DISABLED)
+        
+        self.status_label.pack(pady=5)
+        self.progress_bar.pack(fill="x", padx=40, pady=5)
+        self.progress_var.set(0)
+        self.status_var.set("Scanning for devices...")
+        
+        thread = threading.Thread(target=self._scan_ports_thread)
+        thread.daemon = True
+        thread.start()
+
+    def _scan_ports_thread(self):
+        DEVICE_MAP = {
+            's': "Stepper Probe",
+            'd': "DC Probe",
+            'c': "Chuck Positioner",
+            't': "Temperature Controller"
+        }
+        DEV_PATTERN = re.compile(r"DEV:\s*([sdct])", re.IGNORECASE)
+        total_ports = len(self.detected_ports)
+        
+        for i, port in enumerate(self.detected_ports):
+            self.gui_queue.put(('status', f"Scanning {port}..."))
+            
+            # Check if this port is already assigned to an active device
+            already_assigned = False
+            for dev_name, check_var in self.device_vars.items():
+                if check_var.get() and self.port_vars[dev_name].get() == port:
+                    already_assigned = True
+                    break
+            
+            if not already_assigned:
+                try: 
+                    with serial.Serial(port, baudrate=500000, timeout=.1, write_timeout=.2) as ser:
+                        ser.reset_input_buffer()
+                        ser.reset_output_buffer()
+                        start_time = time.time()
+                        device_found = False
+                        while ((time.time() - start_time < 1.5) and not device_found):
+                            try:
+                                ser.write(b"s\n")
+                            except Exception:
+                                break
+                            
+                            if ser.in_waiting > 0: 
+                                response_bytes = ser.read(ser.in_waiting)
+                                response_str = response_bytes.decode('utf-8', errors='ignore').strip()
+                                match = DEV_PATTERN.search(response_str)
+                                if match:
+                                    dev_char = match.group(1).lower()
+                                    if dev_char in DEVICE_MAP:
+                                        device_name = DEVICE_MAP[dev_char]
+                                        self.gui_queue.put(('found', (device_name, port)))
+                                        print(f"[main_app] Auto-detected {device_name} on {port}")
+                                    device_found = True
+                            else:
+                                time.sleep(0.05)
+                except Exception as e:
+                    time.sleep(0.1) # Add a small sleep so invalid ports don't instantly finish and make the bar look frozen
+                    pass
+            
+            progress = ((i + 1) / total_ports) * 100
+            self.gui_queue.put(('progress', progress))
+            
+        self.gui_queue.put(('complete', None))
+
+    def _update_device_ui(self, device_name, port):
+        if device_name in self.device_vars:
+            self.device_vars[device_name].set(True)
+            self.port_vars[device_name].set(port)
+            self.toggle_dropdown_state(device_name)
+
+    def _scan_complete(self):
+        self.is_scanning = False
+        self.status_var.set("Scan complete.")
+        self.progress_bar.pack_forget()
+        self.status_label.pack_forget()
+        self.launch_btn.config(state=tk.NORMAL)
+        self.refresh_btn.config(state=tk.NORMAL)
 
     def launch_unified(self):
+        if getattr(self, 'is_scanning', False):
+            return
+            
         active_configs = []
         assigned_ports = set()
         assigned_controllers = set()
@@ -249,14 +434,60 @@ class SetupWindow(tk.Tk):
         self.domain_models = {}
         self.views = {}
         self.pollers = []
+        
+        self.tab_metadata = {}
 
         # Create a unified Dashboard Notebook
         self.dashboard_window = tk.Toplevel(self)
         self.dashboard_window.title("Transfer Stage Unified Control")
         self.dashboard_window.protocol("WM_DELETE_WINDOW", self.shutdown)
 
-        self.notebook = ttk.Notebook(self.dashboard_window)
+        self.notebook = DraggableClosableNotebook(self.dashboard_window)
         self.notebook.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        def _on_close_tab(index):
+            tab_id = self.notebook.tabs()[index]
+            if tab_id in self.tab_metadata:
+                meta = self.tab_metadata[tab_id]
+                
+                # Stop Poller
+                if meta['poller']:
+                    meta['poller'].stop_polling()
+                    meta['poller'].close()
+                    if meta['poller'] in self.pollers:
+                        self.pollers.remove(meta['poller'])
+                
+                # Cancel after timers
+                for timer_id in meta.get('timers', []):
+                    try:
+                        self.dashboard_window.after_cancel(timer_id)
+                    except Exception:
+                        pass
+                
+                # Close Models / Connections
+                model = meta['model']
+                if hasattr(model, 'disconnect'):
+                    model.disconnect()
+                if hasattr(model, 'stop'):
+                    try:
+                        model.stop()
+                    except Exception:
+                        pass
+                        
+                serial_conn = meta['serial_conn']
+                if serial_conn and hasattr(serial_conn, 'close'):
+                    serial_conn.close()
+                    
+                del self.tab_metadata[tab_id]
+                
+            self.notebook.forget(index)
+            
+            # If all tabs are closed, destroy dashboard and show setup window
+            if not self.notebook.tabs():
+                self.dashboard_window.destroy()
+                self.deiconify()
+                
+        self.notebook.on_close_tab_callback = _on_close_tab
 
         for config in active_configs:
             device = config["device"]
@@ -307,15 +538,17 @@ class SetupWindow(tk.Tk):
                 view = RedPercentView(frame, model)
                 view.pack(fill='both', expand=True)
                 
+            timers = []
+
             # If the device has a controller, hook up the manual polling loop
             # Note: For strict OOP, the poller logic can either push to the model, or the model can poll. 
             # ControllerDrive historically calls callback to push updates.
             if poller:
                 # Provide dummy log updater to avoid crash
-                m.last_activity_time = time.time()
-                m.disable_timer_id = None
+                model.last_activity_time = time.time()
+                model.disable_timer_id = None
                 
-                def _reset_disable_timer(model_ref=m):
+                def _reset_disable_timer(model_ref=model):
                     model_ref.last_activity_time = time.time()
                     if hasattr(model_ref, 'disable_timer_id') and model_ref.disable_timer_id:
                         self.dashboard_window.after_cancel(model_ref.disable_timer_id)
@@ -326,23 +559,37 @@ class SetupWindow(tk.Tk):
                         
                 def _auto_disable(model_ref):
                     print(f"[Timeout] 5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}")
-                    model_ref.disable()
+                    if hasattr(model_ref, 'disable'):
+                        model_ref.disable()
                     
                 poller.start_polling(self.dashboard_window, log_updater=print, activity_callback=_reset_disable_timer)
                 # Let's write a generic loop to route controller state into the model
                 def _route_input(m=model, p=poller):
-                    if hasattr(m, 'send_manual_mode_command') and m.manual_flag:
+                    if hasattr(m, 'send_manual_mode_command') and getattr(m, 'manual_flag', False):
                         controller_params = p.get_mapped_state()
                         m.send_manual_mode_command(controller_params)
-                    self.dashboard_window.after(50, _route_input)
-                self.dashboard_window.after(50, _route_input)
+                    timer_id = self.dashboard_window.after(50, lambda: _route_input(m, p))
+                    timers.append(timer_id)
+                timer_id = self.dashboard_window.after(50, _route_input)
+                timers.append(timer_id)
                 
             # For probes, setup continuous position polling
             if hasattr(model, 'read_position'):
                 def _poll_pos(m=model):
                     m.read_position()
-                    self.dashboard_window.after(100, _poll_pos)
-                self.dashboard_window.after(100, _poll_pos)
+                    timer_id = self.dashboard_window.after(100, lambda: _poll_pos(m))
+                    timers.append(timer_id)
+                timer_id = self.dashboard_window.after(100, _poll_pos)
+                timers.append(timer_id)
+                
+            # Register in metadata for cleanup
+            frame_id = str(frame)
+            self.tab_metadata[frame_id] = {
+                'model': model,
+                'poller': poller,
+                'serial_conn': serial_conn,
+                'timers': timers
+            }
 
     def shutdown(self):
         for poller in self.pollers:

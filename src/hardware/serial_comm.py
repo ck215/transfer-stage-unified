@@ -42,16 +42,39 @@ class SerialArduino:
                 write_timeout=1
             )
 
-            # Wait for the connection to establish
-            time.sleep(1) 
-            print("[SerialDrive] Serial Connection Established, Arduino Ready")
+            # Wait up to 1.5s for the Arduino to boot and respond
+            print(f"[SerialDrive] Pinging port {self.SERIAL_PORT} to verify connection...")
+            start_time = time.time()
+            verified = False
+            
+            self.ser.reset_input_buffer()
+            self.ser.reset_output_buffer()
+            
+            while (time.time() - start_time < 1.5):
+                try:
+                    self.ser.write(b"s\n")
+                except Exception:
+                    break
+                    
+                if self.ser.in_waiting > 0:
+                    response = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
+                    if "DEV:" in response:
+                        verified = True
+                        break
+                time.sleep(0.05)
+                
+            if verified:
+                print(f"[SerialDrive] Serial Connection Verified! Arduino Ready on {self.SERIAL_PORT}")
+            else:
+                print(f"[WARNING] Port {self.SERIAL_PORT} opened, but no Arduino response received. Operating blind.")
         
         # Exception handling
         except serial.SerialException as e:
-            print(f"[SerialDrive] Error establishing serial connection: {e}")
+            print(f"[WARNING] Error establishing serial connection to {self.SERIAL_PORT}: {e}")
+            print(f"[WARNING] Operating blind without hardware.")
         except Exception as e:
-            print(f"[SerialDrive] Unexpected error: {e}")
-            sys.exit(1)
+            print(f"[WARNING] Unexpected error: {e}")
+            print(f"[WARNING] Operating blind without hardware.")
         finally:
             print("[SerialDrive] Finish SerialDrive __init__")
 
