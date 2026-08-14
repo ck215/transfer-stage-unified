@@ -46,10 +46,10 @@ class RedPercentView(tk.Frame):
         self.sync_x_chk = ttk.Checkbutton(color_frame, text="Sync Stepper X Location", variable=self.sync_x_var, command=self._toggle_sync)
         self.sync_x_chk.grid(row=3, column=0, columnspan=2, pady=5, sticky=tk.W)
 
+        self.poll_display()
+
     def _toggle_sync(self):
         self.system.sync_x_location = self.sync_x_var.get()
-        
-        self.poll_display()
 
     def select_focus_area(self):
         # Create a borderless, transparent, fullscreen overlay window
