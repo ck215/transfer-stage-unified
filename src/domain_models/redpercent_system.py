@@ -2,14 +2,13 @@ import threading
 import time
 try:
     from PIL import Image
-    import mss
     import numpy as np
 except ImportError:
     Image = None
-    mss = None
     np = None
 import typing
 import csv
+import subprocess
 
 class RedPercentDataLog:
     def __init__(self, use_x_sync=False):
@@ -47,13 +46,18 @@ class RedPercentSystem:
         self.sync_x_location = False
         self.data_log = None
 
-    def capture_focus_area(self, sct):
+    def capture_focus_area(self):
         if not self.focus_area:
             return None
         try:
-            screenshot = sct.grab(self.focus_area)
-            img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
-            return np.array(img)
+            filepath = "/tmp/redpercent_grab.png"
+            rect = f"{self.focus_area['left']},{self.focus_area['top']},{self.focus_area['width']},{self.focus_area['height']}"
+            subprocess.run(["screencapture", "-x", "-R", rect, filepath], check=True, capture_output=True)
+            
+            if Image is not None and np is not None:
+                img = Image.open(filepath).convert('RGB')
+                return np.array(img)
+            return None
         except Exception as e:
             print(f"Error capturing screen: {e}")
             return None
@@ -88,20 +92,19 @@ class RedPercentSystem:
 
     def _monitor_colors(self):
         first_reading = True
-        with mss.mss() as sct:
-            while self.monitoring:
-                image = self.capture_focus_area(sct)
-                if image is not None:
-                    red_pct = self.detect_red(image)
-                    if first_reading:
-                        self.baseline_red = red_pct
-                        first_reading = False
+        while self.monitoring:
+            image = self.capture_focus_area()
+            if image is not None:
+                red_pct = self.detect_red(image)
+                if first_reading:
+                    self.baseline_red = red_pct
+                    first_reading = False
+                
+                self.current_red = red_pct
+                self.red_change = ((red_pct - self.baseline_red) / max(self.baseline_red, 0.1)) * 100
+                
+                if self.data_log:
+                    x_loc = self.stepper_model.pos_x if (self.sync_x_location and self.stepper_model) else None
+                    self.data_log.add_entry(red_pct, x_loc)
                     
-                    self.current_red = red_pct
-                    self.red_change = ((red_pct - self.baseline_red) / max(self.baseline_red, 0.1)) * 100
-                    
-                    if self.data_log:
-                        x_loc = self.stepper_model.pos_x if (self.sync_x_location and self.stepper_model) else None
-                        self.data_log.add_entry(red_pct, x_loc)
-                        
-                time.sleep(0.1)
+            time.sleep(0.1)
