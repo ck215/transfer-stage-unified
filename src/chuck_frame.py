@@ -360,37 +360,60 @@ class AppLogic:
         if not self._running:
             return
 
-        hardware_controllers = self.controller.get_physical_controllers()
+        try:
+            hardware_controllers = self.controller.get_physical_controllers()
 
-        other_claims = {
-            id_str for proc, id_str in self.active_claims.items()
-            if proc != self.process_name
-        }
+            # Safely fetch claims from manager proxy
+            other_claims = set()
+            if self.active_claims is not None:
+                other_claims = {
+                    id_str for proc, id_str in list(self.active_claims.items())
+                    if proc != self.process_name
+                }
 
-        available_options = ["None"]
-        for ctrl in hardware_controllers:
-            if ctrl not in other_claims:
-                available_options.append(ctrl)
+            available_options = ["None"]
+            for ctrl in hardware_controllers:
+                if ctrl not in other_claims:
+                    available_options.append(ctrl)
 
-        self.gui.controller_dropdown['values'] = available_options
+            # Safely update GUI widgets only if they exist
+            if hasattr(self.gui, 'controller_dropdown') and self.gui.controller_dropdown.winfo_exists():
+                self.gui.controller_dropdown['values'] = available_options
 
-        current_selection = self.active_claims.get(self.process_name, "None")
-        self.gui.controller_var.set(current_selection)
+                current_selection = "None"
+                if self.active_claims is not None:
+                    current_selection = self.active_claims.get(self.process_name, "None")
+                
+                self.gui.controller_var.set(current_selection)
 
-        self.root.after(500, self._update_controller_dropdown_loop)
+        except (BrokenPipeError, ConnectionResetError, EOFError, KeyError, Exception) as e:
+            # Silently catch IPC pipe breakages during full stop / shutdown
+            print(f"[{self.process_name}] Dropdown loop IPC query skipped: {e}")
+
+        # Schedule next loop only if app is still actively running
+        if self._running:
+            try:
+                self.root.after(500, self._update_controller_dropdown_loop)
+            except Exception:
+                pass
     
     def on_controller_dropdown_selected(self, event):
         selected = self.gui.controller_var.get()
 
         success = self.controller.change_controller(selected)
 
-        if not success or "None" in selected:
-            self.active_claims[self.process_name] = "None"
-            if self.manualFlag:
-                self.full_stop_button()
-        else:
-            self.active_claims[self.process_name] = selected
-            print(f"[{self.process_name}] Successfully mapped to {selected}")
+        try:
+            if not success or "None" in selected:
+                if self.active_claims is not None:
+                    self.active_claims[self.process_name] = "None"
+                if self.manualFlag:
+                    self.full_stop_button()
+            else:
+                if self.active_claims is not None:
+                    self.active_claims[self.process_name] = selected
+                print(f"[{self.process_name}] Successfully mapped to {selected}")
+        except (BrokenPipeError, ConnectionResetError, EOFError, Exception) as e:
+            print(f"[{self.process_name}] Active claims update failed: {e}")
 
     # NEW: Periodically reads position from firmware and updates the GUI display.
     #      Self-scheduling via root.after(), runs regardless of mode (manual, auton, idle).
