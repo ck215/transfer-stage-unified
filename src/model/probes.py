@@ -1,9 +1,9 @@
-from controller.serial_comm import SerialArduino
+from controller.seiral import serial
 from controller.gamepad import ControllerPoller
 
 class BaseProbe:
     def __init__(self, port, controller_id, active_claims=None):
-        self.serial_comm = SerialArduino(port) if port and port != "None" else None
+        self.serial_comm = serial(port) if port and port != "None" else None
         
         self.packet_format = '<BBffffffffff'  # Standardized 42-byte float format
         

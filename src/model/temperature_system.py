@@ -1,4 +1,4 @@
-from controller.serial_comm import SerialArduino
+from controller.seiral import serial
 
 class TemperatureSystem:
     def __init__(self, port=None):
@@ -16,7 +16,7 @@ class TemperatureSystem:
         self.sp = []
         self.cnt = 0
         
-        self.serial_conn = SerialArduino(port) if port and port != "None" else None
+        self.serial_conn = serial(port) if port and port != "None" else None
         
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
             try:

@@ -8,8 +8,8 @@ This file documents all bug fixes, architectural repairs, and regressions addres
 - **Correction:** Fixed a UI bug where the controller dropdowns were completely disabled/missing. The boolean evaluation used bitwise `&` operators for string comparisons, which failed. Swapped to logical `and`.
 
 ## 2. Serial Communication Pipeline
-- **File:** `src/hardware/serial_comm.py`
-- **Correction:** Increased the same Arduino bootloader timeout in the `SerialArduino` initialization to 3.0s.
+- **File:** `src/hardware/seiral.py`
+- **Correction:** Increased the same Arduino bootloader timeout in the `serial` initialization to 3.0s.
 - **Correction:** Fixed a chunking bug where fast polling caused the firmware's `DEV:` response to arrive in multiple fragmented packets. Replaced the strict string overwrite with a `buffer` string that accumulates responses, ensuring the handshake succeeds even if fragmented.
 
 ## 3. Gamepad Mappings & Overrides
@@ -20,7 +20,7 @@ This file documents all bug fixes, architectural repairs, and regressions addres
 
 ## 4. Temperature System
 - **File:** `src/domain_models/temperature_system.py`
-- **Correction:** Fixed a crash where the system attempted to call `.write()` directly on the `SerialArduino` wrapper object rather than its underlying PySerial `ser` object.
+- **Correction:** Fixed a crash where the system attempted to call `.write()` directly on the `serial` wrapper object rather than its underlying PySerial `ser` object.
 - **Correction:** Repaired a math bug in the `stop()` method. It was sending the raw degrees/minute value to the firmware instead of properly calculating the `spdelay` (seconds/degree).
 - **Correction:** Restored the initial burst command `b"<0,10,0,0,0,0>"` in the constructor to zero out and synchronize the firmware upon connection.
 
@@ -43,18 +43,18 @@ This file documents all bug fixes, architectural repairs, and regressions addres
 ## 8. Protocol & Architecture Standardization
 - **Firmware Standardized:** Refactored `stepper_firmware.ino` and `chuck_firmware.ino` to use strict 42-byte float structs (`ManualControlPacket`), aligning completely with `high_polling_rate.ino`. This prevents 16-bit vs 32-bit `int` sizing vulnerabilities.
 - **Python Standardized:** Updated `BaseProbe` packet format to `<BBffffffffff` strictly across all systems.
-- **Architecture Standardized:** Removed the "patchwork" dependency injection inside `main_app.py`. The Domain Models (`BaseProbe`, `TemperatureSystem`) now directly instantiate and encapsulate their own `SerialArduino` and `ControllerPoller` instances, restoring true object ownership.
+- **Architecture Standardized:** Removed the "patchwork" dependency injection inside `main_app.py`. The Domain Models (`BaseProbe`, `TemperatureSystem`) now directly instantiate and encapsulate their own `serial` and `ControllerPoller` instances, restoring true object ownership.
 - **Polling Loop Decoupled:** Shifted the controller polling loop from `main_app.py` into the respective UI Views (`ProbeView.start_polling()`). This cleans up the main app and adheres to MVC by making the View responsible for manipulating the Domain Model continuously via its own Tkinter `after` hooks.
 
 ## 9. MVC Naming Standardization
 - **Directory Structure:** Aligned the internal package references with the new explicitly named directories: `model` (formerly `hardware`), `controller` (formerly `models` / `domain_models`), and `view` (formerly `ui` / `ui_views`).
 - **Import Path Fixes:** Deployed a fleet of subagents to dynamically crawl and rewrite all import statements across the codebase.
   - `src/main_app.py`: Updated all module loading paths to correctly load from `model.*`, `controller.*`, and `view.*`.
-  - `src/controller/probes.py` & `src/controller/temperature_system.py`: Updated internal imports of `SerialArduino` and `ControllerPoller` to target `model.serial_comm` and `model.gamepad`.
+  - `src/controller/probes.py` & `src/controller/temperature_system.py`: Updated internal imports of `serial` and `ControllerPoller` to target `model.seiral` and `model.gamepad`.
   - `src/view/rotator_view.py` & `src/view/redpercent_view.py`: Updated their respective model initializations to correctly import from the `controller.*` packages.
 
 ## 10. True MVC Alignment & View Architecture
-- **MVC Directory Swap:** Swapped the contents of `src/model` and `src/controller` to adhere strictly to standard MVC definitions. Hardware communicators (`serial_comm.py`, `gamepad.py`) are now correctly categorized as `controllers`, while stateful hardware abstractions (`probes.py`, `temperature_system.py`, etc.) are now correctly categorized as `models`. All internal import dependencies across the codebase were dynamically rewritten to support this swap.
+- **MVC Directory Swap:** Swapped the contents of `src/model` and `src/controller` to adhere strictly to standard MVC definitions. Hardware communicators (`seiral.py`, `gamepad.py`) are now correctly categorized as `controllers`, while stateful hardware abstractions (`probes.py`, `temperature_system.py`, etc.) are now correctly categorized as `models`. All internal import dependencies across the codebase were dynamically rewritten to support this swap.
 - **View Decoupling Evaluation:** Evaluated the feasibility of a single, universal `View` class. Drafted a prototype (`src/view/dynamic_view_prototype.py`) demonstrating a Schema-driven UI generation approach. Concluded that a `DynamicView` is optimal for standard parameterized hardware (e.g., probes, temperature) to reduce boilerplate, but the architecture must remain flexible to support bespoke views (like `RedPercentView`'s transparent screen-capture overlays) without violating MVC boundaries.
 
 ## 11. Generic View Engine & Project Flattening

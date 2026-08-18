@@ -1,8 +1,8 @@
 # --------- Necessary Libraries ----------
 try:
-    import serial
+    import serial as pyserial
 except ImportError:
-    serial = None
+    pyserial = None
 import time
 import sys
 import struct
@@ -13,7 +13,7 @@ START_MARKER = 0xAA
 # ------ Serial Simulation Setup --------
 
 # Dedicated class for serial communication with Arduino
-class SerialArduino:
+class serial:
 
     # Class constructor
     def __init__(self, port='SIM', baud_rate=500000):
@@ -35,7 +35,7 @@ class SerialArduino:
         
         try:
             print("[SerialDrive] Establishing Serial Connection...")
-            self.ser = serial.Serial(
+            self.ser = pyserial.Serial(
                 self.SERIAL_PORT,
                 self.BAUD_RATE,
                 timeout=1,
@@ -71,7 +71,7 @@ class SerialArduino:
                 print(f"[WARNING] Port {self.SERIAL_PORT} opened, but no Arduino response received. Operating blind.")
         
         # Exception handling
-        except serial.SerialException as e:
+        except pyserial.SerialException as e:
             print(f"[WARNING] Error establishing serial connection to {self.SERIAL_PORT}: {e}")
             print(f"[WARNING] Operating blind without hardware.")
         except Exception as e:
@@ -147,7 +147,7 @@ class SerialArduino:
             self.ser.write(command.encode('utf-8'))    # type: ignore
 
         # Exception handling
-        except serial.SerialTimeoutException:
+        except pyserial.SerialTimeoutException:
             print("[SerialDrive] WRITE TIMEOUT ERROR (Auton)")
             print("The serial write operation timed out.")
         except Exception as e:
@@ -194,7 +194,7 @@ class SerialArduino:
             self.ser.flush()                         # type: ignore
             
         # Exception handling
-        except serial.SerialTimeoutException:
+        except pyserial.SerialTimeoutException:
             print("[SerialDrive] WRITE TIMEOUT ERROR (Manual)")
             print("The serial write operation timed out.")
         except Exception as e:

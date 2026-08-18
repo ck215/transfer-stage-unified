@@ -8,7 +8,7 @@ import time
 import threading
 import queue
 
-from controller.serial_comm import SerialArduino
+from controller.seiral import serial
 from controller.gamepad import ControllerPoller
 
 from model.probes import StepperProbe, DCProbe, ChuckPositioner
