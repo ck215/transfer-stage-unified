@@ -8,18 +8,14 @@ import time
 import threading
 import queue
 
-from hardware.serial_comm import SerialArduino
-from hardware.gamepad import ControllerPoller
+from controller.serial_comm import SerialArduino
+from controller.gamepad import ControllerPoller
 
-from domain_models.probes import StepperProbe, DCProbe, ChuckPositioner
-from domain_models.temperature_system import TemperatureSystem
-from domain_models.rotator_system import RotatorSystem
-from domain_models.redpercent_system import RedPercentSystem
+from model.probes import StepperProbe, DCProbe, ChuckPositioner
+from model.temperature_system import TemperatureSystem
+from model.rotator_system import RotatorSystem
+from model.redpercent_system import RedPercentSystem
 
-from ui_views.probe_view import ProbeView
-from ui_views.temp_view import TempView
-from ui_views.rotator_view import RotatorView
-from ui_views.redpercent_view import RedPercentView
 
 try:
     import serial.tools.list_ports
@@ -34,62 +30,6 @@ try:
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
-
-class DraggableClosableNotebook(ttk.Notebook):
-    """A ttk.Notebook with draggable tabs and middle-click/right-click to close."""
-    def __init__(self, master=None, **kwargs):
-        super().__init__(master, **kwargs)
-        self.bind("<ButtonPress-1>", self.on_press)
-        self.bind("<B1-Motion>", self.on_drag)
-        self.bind("<ButtonRelease-1>", self.on_release)
-        
-        self.bind("<Button-2>", self.on_middle_click) # Middle click to close on some systems
-        self.bind("<Button-3>", self.on_right_click)  # Right click to close
-        
-        self._active = None
-        self.on_close_tab_callback = None
-
-    def on_press(self, event):
-        try:
-            self._active = self.index(f"@{event.x},{event.y}")
-        except tk.TclError:
-            self._active = None
-
-    def on_drag(self, event):
-        if self._active is None:
-            return
-        try:
-            target = self.index(f"@{event.x},{event.y}")
-            if self._active != target:
-                self.insert(target, self.tabs()[self._active])
-                self._active = target
-        except tk.TclError:
-            pass
-
-    def on_release(self, event):
-        self._active = None
-
-    def on_middle_click(self, event):
-        try:
-            index = self.index(f"@{event.x},{event.y}")
-            self.close_tab(index)
-        except tk.TclError:
-            pass
-
-    def on_right_click(self, event):
-        try:
-            index = self.index(f"@{event.x},{event.y}")
-            menu = tk.Menu(self, tearoff=0)
-            menu.add_command(label="Close Tab", command=lambda: self.close_tab(index))
-            menu.tk_popup(event.x_root, event.y_root)
-        except tk.TclError:
-            pass
-
-    def close_tab(self, index):
-        if self.on_close_tab_callback:
-            self.on_close_tab_callback(index)
-        else:
-            self.forget(index)
 
 class SetupWindow(tk.Tk):
     """Configuration interface to select systems and assign COM ports & physical joysticks."""
@@ -202,7 +142,7 @@ class SetupWindow(tk.Tk):
         ctrl_widget = self.controller_widgets[device]
         
         if is_checked:
-            if ((device != "Temperature Controller") & (device != "SMC100 Rotator") & (device != "Red Percent Window")):
+            if ((device != "Temperature Controller") and (device != "SMC100 Rotator") and (device != "Red Percent Window")):
                 ctrl_widget.state(["!disabled"])
             if device != "Red Percent Window":
                 if device not in self.autodetected_devices:
@@ -334,7 +274,8 @@ class SetupWindow(tk.Tk):
                         ser.reset_output_buffer()
                         start_time = time.time()
                         device_found = False
-                        while ((time.time() - start_time < 1.5) and not device_found):
+                        time.sleep(1.5) # Wait for Arduino bootloader
+                        while ((time.time() - start_time < 3.0) and not device_found):
                             try:
                                 ser.write(b"s\n")
                             except Exception:
@@ -354,8 +295,27 @@ class SetupWindow(tk.Tk):
                             else:
                                 time.sleep(0.05)
                 except Exception as e:
-                    time.sleep(0.1) # Add a small sleep so invalid ports don't instantly finish and make the bar look frozen
                     pass
+                    
+                # If not found at 500k, check 57600 for SMC100 Rotator
+                if not device_found:
+                    try:
+                        with serial.Serial(port, baudrate=57600, timeout=0.1, write_timeout=0.2) as ser:
+                            ser.reset_input_buffer()
+                            ser.write(b"1ID?\r\n")
+                            time.sleep(0.1)
+                            if ser.in_waiting > 0:
+                                resp = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+                                if "SMC100" in resp:
+                                    device_name = "SMC100 Rotator"
+                                    self.gui_queue.put(('found', (device_name, port)))
+                                    print(f"[main_app] Auto-detected {device_name} on {port}")
+                                    device_found = True
+                    except Exception:
+                        pass
+                
+                if not device_found:
+                    time.sleep(0.1)
             
             progress = ((i + 1) / total_ports) * 100
             self.gui_queue.put(('progress', progress))
@@ -427,180 +387,56 @@ class SetupWindow(tk.Tk):
         # Hide the setup window launcher panel
         self.withdraw()
         
-        # We will keep a reference to instantiated UI frames and Domain Models
-        self.domain_models = {}
-        self.views = {}
-        self.pollers = []
-        
-        self.tab_metadata = {}
+        # Launch the decoupled DashboardWindow
 
-        # Create a unified Dashboard Notebook
-        self.dashboard_window = tk.Toplevel(self)
-        self.dashboard_window.title("Transfer Stage Unified Control")
-        self.dashboard_window.protocol("WM_DELETE_WINDOW", self.shutdown)
-
-        self.notebook = DraggableClosableNotebook(self.dashboard_window)
-        self.notebook.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        def _on_close_tab(index):
-            tab_id = self.notebook.tabs()[index]
-            if tab_id in self.tab_metadata:
-                meta = self.tab_metadata[tab_id]
-                
-                # Stop Poller
-                if meta['poller']:
-                    meta['poller'].stop_polling()
-                    meta['poller'].close()
-                    if meta['poller'] in self.pollers:
-                        self.pollers.remove(meta['poller'])
-                
-                # Cancel after timers
-                for timer_id in meta.get('timers', []):
-                    try:
-                        self.dashboard_window.after_cancel(timer_id)
-                    except Exception:
-                        pass
-                
-                # Close Models / Connections
-                model = meta['model']
-                if hasattr(model, 'disconnect'):
-                    model.disconnect()
-                if hasattr(model, 'stop'):
-                    try:
-                        model.stop()
-                    except Exception:
-                        pass
-                        
-                serial_conn = meta['serial_conn']
-                if serial_conn and hasattr(serial_conn, 'close'):
-                    serial_conn.close()
-                    
-                del self.tab_metadata[tab_id]
-                
-            self.notebook.forget(index)
-            
-            # If all tabs are closed, destroy dashboard and show setup window
-            if not self.notebook.tabs():
-                self.dashboard_window.destroy()
-                self.deiconify()
-                
-        self.notebook.on_close_tab_callback = _on_close_tab
+        print("\n--- Launching Unified Control Dashboard ---")
+        active_models = {}
 
         for config in active_configs:
             device = config["device"]
-            port = config["port"]
-            controllerID = config["controller"]
-
-            self.active_claims[device] = controllerID
             
-            # 1. Instantiate Hardware Transceivers
-            if device != "Red Percent Window":
-                serial_conn = SerialArduino(port=port)
-            else:
-                serial_conn = None
+            # 1. Check assignments
+            port = self.port_vars[device].get()
+            controllerID = self.controller_vars[device].get()
+            self.active_claims[device] = controllerID
 
-            # Instantiate physical controller poller if applicable
-            if "None" not in controllerID and "Virtual" not in controllerID:
-                poller = ControllerPoller(controllerID, self.active_claims, device)
-                self.pollers.append(poller)
-            else:
-                poller = None
-
-            # 2. Instantiate Domain Model & 3. UI View
-            frame = ttk.Frame(self.notebook)
-            self.notebook.add(frame, text=device)
-
+            # 2. Instantiate Domain Models
             if device == "Stepper Probe":
-                model = StepperProbe(serial_conn)
-                view = ProbeView(frame, model)
-                view.pack(fill='both', expand=True)
+                from model.probes import StepperProbe
+                active_models[device] = StepperProbe(port, controllerID, self.active_claims)
             elif device == "DC Probe":
-                model = DCProbe(serial_conn)
-                view = ProbeView(frame, model)
-                view.pack(fill='both', expand=True)
+                from model.probes import DCProbe
+                active_models[device] = DCProbe(port, controllerID, self.active_claims)
             elif device == "Chuck Positioner":
-                model = ChuckPositioner(serial_conn)
-                view = ProbeView(frame, model)
-                view.pack(fill='both', expand=True)
+                from model.probes import ChuckPositioner
+                active_models[device] = ChuckPositioner(port, controllerID, self.active_claims)
             elif device == "Temperature Controller":
-                model = TemperatureSystem(serial_conn)
-                view = TempView(frame, model)
-                view.pack(fill='both', expand=True)
+                from model.temperature_system import TemperatureSystem
+                active_models[device] = TemperatureSystem(port)
             elif device == "SMC100 Rotator":
-                model = RotatorSystem(port)
-                view = RotatorView(frame, model)
-                view.pack(fill='both', expand=True)
+                from model.rotator_system import RotatorSystem
+                active_models[device] = RotatorSystem(port)
             elif device == "Red Percent Window":
-                model = RedPercentSystem()
-                view = RedPercentView(frame, model)
-                view.pack(fill='both', expand=True)
-                
-            timers = []
-
-            # If the device has a controller, hook up the manual polling loop
-            if poller:
-                # Provide dummy log updater to avoid crash
-                model.last_activity_time = time.time()
-                model.disable_timer_id = None
-                
-                def _reset_disable_timer(model_ref=model):
-                    model_ref.last_activity_time = time.time()
-                    if hasattr(model_ref, 'disable_timer_id') and model_ref.disable_timer_id:
-                        self.dashboard_window.after_cancel(model_ref.disable_timer_id)
-                        model_ref.disable_timer_id = None
-                        
-                    if hasattr(model_ref, 'system_enabled') and model_ref.system_enabled:
-                        model_ref.disable_timer_id = self.dashboard_window.after(300000, lambda: _auto_disable(model_ref))
-                        
-                def _auto_disable(model_ref):
-                    print(f"[Timeout] 5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}")
-                    if hasattr(model_ref, 'disable'):
-                        model_ref.disable()
-                    
-                poller.start_polling(self.dashboard_window, log_updater=print, activity_callback=_reset_disable_timer)
-                # Let's write a generic loop to route controller state into the model
-                def _route_input(m=model, p=poller):
-                    if hasattr(m, 'send_manual_mode_command') and getattr(m, 'manual_flag', False):
-                        controller_params = p.get_mapped_state()
-                        m.send_manual_mode_command(controller_params)
-                    timer_id = self.dashboard_window.after(50, lambda: _route_input(m, p))
-                    timers.append(timer_id)
-                timer_id = self.dashboard_window.after(50, _route_input)
-                timers.append(timer_id)
-                
-            # For probes, setup continuous position polling
-            if hasattr(model, 'read_position'):
-                def _poll_pos(m=model):
-                    m.read_position()
-                    timer_id = self.dashboard_window.after(100, lambda: _poll_pos(m))
-                    timers.append(timer_id)
-                timer_id = self.dashboard_window.after(100, _poll_pos)
-                timers.append(timer_id)
-                
-            # Register in metadata for cleanup
-            self.tab_metadata[str(frame)] = {
-                'model': model,
-                'view': view,
-                'poller': poller,
-                'serial_conn': serial_conn,
-                'timers': timers
-            }
+                from model.redpercent_system import RedPercentSystem
+                active_models[device] = RedPercentSystem()
 
         # Link RedPercentSystem to StepperProbe for X-coordinate syncing
         stepper_model = None
         red_model = None
-        for tab_id, meta in self.tab_metadata.items():
-            if meta['model'].__class__.__name__ == 'StepperProbe':
-                stepper_model = meta['model']
-            if meta['model'].__class__.__name__ == 'RedPercentSystem':
-                red_model = meta['model']
+        for device_name, model in active_models.items():
+            if model.__class__.__name__ == 'StepperProbe':
+                stepper_model = model
+            if model.__class__.__name__ == 'RedPercentSystem':
+                red_model = model
         if red_model and stepper_model:
             red_model.stepper_model = stepper_model
 
+        # Launch the decoupled DashboardWindow
+        from view import DashboardWindow
+        self.dashboard_window = DashboardWindow(self, active_models)
+        self.withdraw()
+
     def shutdown(self):
-        for poller in self.pollers:
-            poller.stop_polling()
-            poller.close()
         self.destroy()
 
 if __name__ == "__main__":

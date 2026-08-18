@@ -7,7 +7,7 @@ import time
 import sys
 import struct
 
-PACKET_FORMAT = '<BBfffhhhhhhh'
+PACKET_FORMAT = '<BBffffffffff'
 START_MARKER = 0xAA
 
 # ------ Serial Simulation Setup --------
@@ -50,15 +50,17 @@ class SerialArduino:
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
             
-            while (time.time() - start_time < 1.5):
+            time.sleep(1.5) # Wait for bootloader
+            buffer = ""
+            while (time.time() - start_time < 3.0):
                 try:
                     self.ser.write(b"s\n")
                 except Exception:
                     break
                     
                 if self.ser.in_waiting > 0:
-                    response = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
-                    if "DEV:" in response:
+                    buffer += self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
+                    if "DEV:" in buffer:
                         verified = True
                         break
                 time.sleep(0.05)
@@ -171,41 +173,21 @@ class SerialArduino:
             combined_z_axis_status = z_up_value - z_down_value
             combined_bumpers = int(params.get('LBumper')) - int(params.get('RBumper'))
 
-            # Retrieve dynamic packet format, fallback to default
-            packet_format = params.get('packet_format', PACKET_FORMAT)
-            
-            if packet_format == '<BBffffffffff':
-                packet = struct.pack(
-                    packet_format,
-                    START_MARKER,
-                    1,
-                    float(params['x_axisStatus']),
-                    float(params['y_axisStatus']),
-                    float(combined_z_axis_status),
-                    float(params['x_stepSize']),
-                    float(params['y_stepSize']),
-                    float(params['z_stepSize']),
-                    float(params['dpad_LR']),
-                    float(params['dpad_UD']),
-                    float(combined_bumpers),
-                    float(params['manual_jog_speed']),
-                )
-            else:
-                packet = struct.pack(
-                    packet_format,
-                    START_MARKER,
-                    1,
-                    float(params['x_axisStatus']),
-                    float(params['y_axisStatus']),
-                    combined_z_axis_status,
-                    int(params['x_stepSize']),
-                    int(params['y_stepSize']),
-                    int(params['z_stepSize']),
-                    int(params['dpad_LR']),
-                    int(params['dpad_UD']),
-                    (combined_bumpers),
-                    int(params['manual_jog_speed']),
-                )
+            packet = struct.pack(
+                '<BBffffffffff',
+                START_MARKER,
+                1,
+                float(params['x_axisStatus']),
+                float(params['y_axisStatus']),
+                float(combined_z_axis_status),
+                float(params['x_stepSize']),
+                float(params['y_stepSize']),
+                float(params['z_stepSize']),
+                float(params['dpad_LR']),
+                float(params['dpad_UD']),
+                float(combined_bumpers),
+                float(params['manual_jog_speed']),
+            )
 
             print(f"[SerialDrive] Sending 12-Field MANUAL State: {packet}")
             self.ser.write(packet)  # type: ignore

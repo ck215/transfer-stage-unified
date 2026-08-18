@@ -78,13 +78,15 @@ class XboxGamepad(BaseGamepad):
         if sys.platform.startswith("linux"):
             z_left_axis = 2
             z_right_axis = 5
+            y_axis = 4
         else:
             z_left_axis = 4
             z_right_axis = 5
+            y_axis = 3
 
         return {
             "x_axisStatus": self.prev_axis_states.get(0, 0.0),
-            "y_axisStatus": self.prev_axis_states.get(1, 0.0),
+            "y_axisStatus": self.prev_axis_states.get(y_axis, 0.0),
             "z_axisStatusL": self.prev_axis_states.get(z_left_axis, -1.0),
             "z_axisStatusR": self.prev_axis_states.get(z_right_axis, -1.0),
             "dpad_LR": self.prev_hat_states.get(0, (0,0))[0],
@@ -99,28 +101,32 @@ class BluetoothXboxGamepad(XboxGamepad):
         if sys.platform.startswith("linux"):
             return {
                 "x_axisStatus": self.prev_axis_states.get(0, 0.0),
-                "y_axisStatus": self.prev_axis_states.get(1, 0.0),
-                "z_axisStatusL": self.prev_axis_states.get(4, -1.0), # Differ
-                "z_axisStatusR": self.prev_axis_states.get(5, -1.0), # Differ
+                "y_axisStatus": self.prev_axis_states.get(3, 0.0),
+                "z_axisStatusL": self.prev_axis_states.get(5, -1.0),
+                "z_axisStatusR": self.prev_axis_states.get(4, -1.0),
                 "dpad_LR": self.prev_hat_states.get(0, (0,0))[0],
                 "dpad_UD": self.prev_hat_states.get(0, (0,0))[1],
-                "LBumper": self.prev_button_states.get(6, 0), # Differ
-                "RBumper": self.prev_button_states.get(7, 0), # Differ
+                "LBumper": self.prev_button_states.get(6, 0),
+                "RBumper": self.prev_button_states.get(7, 0),
             }
         return super().get_mapped_state()
 
 class T16000MGamepad(BaseGamepad):
     def update_overrides(self):
-        # Override for T.16000M Z Axis using buttons
+        # Keep original behavior: always map button 2 -> 9, button 3 -> 10
         self.prev_axis_states[9] = self.joystick.get_button(2)
         self.prev_axis_states[10] = self.joystick.get_button(3)
         
     def get_mapped_state(self):
+        if sys.platform.startswith("linux"):
+            z_l = 9; z_r = 10
+        else:
+            z_l = 10; z_r = 9
         return {
             "x_axisStatus": self.prev_axis_states.get(0, 0.0),
             "y_axisStatus": self.prev_axis_states.get(1, 0.0),
-            "z_axisStatusL": self.prev_axis_states.get(9, 0.0) * 2.0 - 1.0, # Remap to [-1, 1] range
-            "z_axisStatusR": self.prev_axis_states.get(10, 0.0) * 2.0 - 1.0, # Remap to [-1, 1] range
+            "z_axisStatusL": self.prev_axis_states.get(z_l, 0.0) * 2.0 - 1.0, # Remap to [-1, 1] range
+            "z_axisStatusR": self.prev_axis_states.get(z_r, 0.0) * 2.0 - 1.0, # Remap to [-1, 1] range
             "dpad_LR": self.prev_hat_states.get(0, (0,0))[0],
             "dpad_UD": self.prev_hat_states.get(0, (0,0))[1],
             "LBumper": self.prev_button_states.get(7, 0),
