@@ -1,0 +1,132 @@
+classDiagram
+    %% Core Main Launcher
+    class SetupWindow {
+        +list devices
+        +dict detected_ports
+        +dict detected_controllers
+        +refresh_devices()
+        +launch_modules()
+        +close()
+    }
+    
+    %% Communication & Hardware APIs
+    class SerialArduino {
+        +string SERIAL_PORT
+        +int BAUD_RATE
+        +send_autonomous_command()
+        +send_manual_mode_command()
+        +read_position()
+    }
+    
+    class ControllerPoller {
+        +string controllerID
+        +bool is_polling
+        +connect_controller()
+        +start_polling()
+        +stop_polling()
+    }
+    
+    %% Stepper Motor Logic & UI
+    class StepperAppLogic {
+        +bool autonFlag
+        +bool manualFlag
+        +enter_autonomous_mode()
+        +start_stepping_button()
+    }
+    class StepperFrame {
+        +Tk root
+        +StringVar pos_x_var
+        +get_gui_params()
+        +run()
+    }
+
+    %% DC Motor Logic & UI
+    class DCAppLogic {
+        +bool autonFlag
+        +bool manualFlag
+        +enter_autonomous_mode()
+        +start_stepping_button()
+    }
+    class DCFrame {
+        +Tk root
+        +StringVar pos_x_var
+        +get_gui_params()
+        +run()
+    }
+
+    %% Chuck Positioning Logic & UI
+    class ChuckAppLogic {
+        +bool autonFlag
+        +bool manualFlag
+        +enter_autonomous_mode()
+        +start_stepping_button()
+    }
+    class ChuckFrame {
+        +Tk root
+        +StringVar pos_x_var
+        +get_gui_params()
+        +run()
+    }
+
+    %% Rotator Stage (SMC100) Logic & UI
+    class SMC100GUI {
+        +bool is_connected
+        +toggle_connection()
+        +cmd_move_absolute()
+        +cmd_home()
+    }
+
+    class SMC100 {
+        -string _port
+        -string _smcID
+        +reset_and_configure()
+        +move_absolute_deg()
+        +get_position_deg()
+    }
+
+    %% Peripheral Subsystems
+    class TempControlApp {
+        +float tempC
+        +Queue data_queue
+        +send_settings()
+        +read_serial_data()
+        +update_gui()
+    }
+
+    class ColorDetector {
+        +bool monitoring
+        +list focus_area
+        +setup_gui()
+        +detect_red()
+        +monitor_colors()
+    }
+    
+    class CameraPresetManager {
+        +dict settings
+        +build_ui()
+        +apply_settings()
+        +save_preset()
+    }
+
+    %% Multiprocessing System Spawns
+    SetupWindow ..> StepperAppLogic : Multiprocess spawn
+    SetupWindow ..> DCAppLogic : Multiprocess spawn
+    SetupWindow ..> ChuckAppLogic : Multiprocess spawn
+    SetupWindow ..> SMC100GUI : Multiprocess spawn
+    SetupWindow ..> TempControlApp : Multiprocess spawn
+    SetupWindow ..> ColorDetector : Multiprocess spawn
+
+    %% Core Application Compositions
+    StepperAppLogic *-- StepperFrame : Composes (View)
+    StepperAppLogic *-- SerialArduino : Composes (Model/Hardware)
+    StepperAppLogic *-- ControllerPoller : Composes (Input)
+
+    DCAppLogic *-- DCFrame : Composes (View)
+    DCAppLogic *-- SerialArduino : Composes (Model/Hardware)
+    DCAppLogic *-- ControllerPoller : Composes (Input)
+
+    ChuckAppLogic *-- ChuckFrame : Composes (View)
+    ChuckAppLogic *-- SerialArduino : Composes (Model/Hardware)
+    ChuckAppLogic *-- ControllerPoller : Composes (Input)
+
+    SMC100GUI *-- SMC100 : Composes (Model/Hardware)
