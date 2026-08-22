@@ -25,6 +25,8 @@ if sys.platform == "win32":
             ("dwReserved2", wintypes.DWORD),
         ]
 
+DEADZONE = 0.1
+
 class ControllerPoller:
     
     # Poll 50 times per second (1000ms / 20ms = 50Hz)
@@ -161,8 +163,12 @@ class ControllerPoller:
                                         self.controller_binds = [0,3,4,5,6,7]
                                     case _:
                                         raise ValueError("Error connecting Xbox Controller: Connection bus not recognized!")
-                        case "T.16000M": self.controller_binds = [0,1,9,10,7,9] # WINDOWS name; 9 and 10 will be buttons simulated to be axes
-                        case "Thrustmaster T.16000M": self.controller_binds = [0,1,10,9,7,9] # MINT name; 2 and 3 will be buttons simulated to be axes
+                        case "T.16000M": 
+                            self.controller_binds = [0,1,9,10,7,9] # WINDOWS name; 9 and 10 will be buttons simulated to be axes
+                            DEADZONE = 0.03
+                        case "Thrustmaster T.16000M":
+                            self.controller_binds = [0,1,10,9,7,9] # MINT name; 2 and 3 will be buttons simulated to be axes
+                            DEADZONE = 0.03
                         case "Logitech Gamepad F310": self.controller_binds = STANDARD_CONTROLLER_BINDS
                         case _: raise ValueError("Unsupported joystick detected! Add axis binds in controllerDrive.py!")
 
@@ -269,7 +275,7 @@ class ControllerPoller:
                 current_val = self.joystick.get_axis(i)  # type: ignore
                 
                 # Original polling logic (with smaller deadzone)
-                if abs(current_val) < 0.1: 
+                if abs(current_val) < DEADZONE: 
                     current_val = 0.0
                 
                 if round(current_val, 2) != round(self.prev_axis_states.get(i, 0.0), 2):
