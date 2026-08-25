@@ -1,4 +1,6 @@
 from controller.seiral import serial
+import threading
+import time
 
 class TemperatureSystem:
     def __init__(self, port=None):
@@ -17,12 +19,16 @@ class TemperatureSystem:
         self.cnt = 0
         
         self.serial_conn = serial(port) if port and port != "None" else None
+        self.continue_reading = True
         
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
             try:
                 self.serial_conn.ser.write(b"<0,6.0,0,0,0,0>")
             except Exception as e:
                 print(f"Error writing initial state to serial: {e}")
+                
+            self.serial_thread = threading.Thread(target=self.read_serial_data, daemon=True)
+            self.serial_thread.start()
                 
     @property
     def ui_schema(self):
@@ -70,6 +76,20 @@ class TemperatureSystem:
             except Exception as e:
                 print(f"Error writing to serial: {e}")
                 
+    def read_serial_data(self):
+        while getattr(self, 'continue_reading', True):
+            try:
+                if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+                    raw_line = self.serial_conn.ser.readline()
+                    if raw_line:
+                        line = raw_line.decode('utf-8', errors='ignore')
+                        self.process_raw_data(line)
+                else:
+                    time.sleep(0.1)
+            except Exception as e:
+                print(f"Serial background read error: {e}")
+                break
+
     def process_raw_data(self, data_line):
         line = data_line.strip()
         if not line:
@@ -96,6 +116,7 @@ class TemperatureSystem:
                 pass
 
     def stop(self):
+        self.continue_reading = False
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
             try:
                 rate_float = float(self.ramp_rate)
