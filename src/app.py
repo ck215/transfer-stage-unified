@@ -300,17 +300,30 @@ class SetupWindow(tk.Tk):
                 # If not found at 500k, check 57600 for SMC100 Rotator
                 if not device_found:
                     try:
-                        with serial.Serial(port, baudrate=57600, timeout=0.1, write_timeout=0.2) as ser:
+                        with serial.Serial(
+                            port,
+                            baudrate=57600,
+                            timeout=0.2,
+                            write_timeout=0.2,
+                            xonxoff=True
+                        ) as ser:
                             ser.reset_input_buffer()
+                            ser.reset_output_buffer()
                             ser.write(b"1ID?\r\n")
                             time.sleep(0.1)
-                            if ser.in_waiting > 0:
-                                resp = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
-                                if "SMC100" in resp:
-                                    device_name = "SMC100 Rotator"
-                                    self.gui_queue.put(('found', (device_name, port)))
-                                    print(f"[main_app] Auto-detected {device_name} on {port}")
-                                    device_found = True
+                            
+                            response = ser.read_all().decode("utf-8", errors="ignore").strip()
+                            
+                            if not response:
+                                ser.write(b"1TS?\r\n")
+                                time.sleep(0.1)
+                                response = ser.read_all().decode("utf-8", errors="ignore").strip()
+                            
+                            if response.startswith("1ID") or response.startswith("1TS"):
+                                device_name = "SMC100 Rotator"
+                                self.gui_queue.put(('found', (device_name, port)))
+                                print(f"[main_app] Auto-detected {device_name} on {port}")
+                                device_found = True
                     except Exception:
                         pass
                 
