@@ -104,7 +104,7 @@ class SetupWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Device Configuration Setup (PySide6)")
-        self.resize(850, 650)
+        self.resize(850, 400)
 
         self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller", "SMC100 Rotator", "Red Percent Window"]
         self.device_vars = {}        
@@ -188,9 +188,12 @@ class SetupWindow(QMainWindow):
             self.status_labels[device] = status_lbl
             grid.addWidget(status_lbl, row, 4)
 
+
         main_layout.addLayout(grid)
+        main_layout.addStretch(1)  # Prevents grid from stretching vertically
 
         # Bottom section
+
         self.progress_bar = QProgressBar()
         self.progress_bar.hide()
         main_layout.addWidget(self.progress_bar)
