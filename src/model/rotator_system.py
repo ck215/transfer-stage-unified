@@ -19,7 +19,8 @@ class RotatorSystem:
         self.is_connected = False
         self.error_callback = None
         
-        self.custom_view_class = RotatorView
+        self.target_deg = "0"
+        self.step_deg = "0"
         
     @property
     def position(self):
