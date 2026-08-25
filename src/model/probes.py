@@ -50,6 +50,8 @@ class BaseProbe:
                 {
                     "title": "Configuration",
                     "elements": [
+                        {"type": "entry", "text": "Serial Port:", "model_attr": "serial_port"},
+                        {"type": "entry", "text": "Controller ID:", "model_attr": "controller_var"},
                         {"type": "entry", "text": "X Step Size:", "model_attr": "x_step"},
                         {"type": "entry", "text": "Y Step Size:", "model_attr": "y_step"},
                         {"type": "entry", "text": "Z Step Size:", "model_attr": "z_step"},
@@ -72,7 +74,10 @@ class BaseProbe:
                         {"type": "button", "text": "Start Stepping", "command": "macro_start_auton", "bg": "darkgreen", "fg": "white"},
                         {"type": "button", "text": "Full Stop", "command": "full_stop", "bg": "darkred", "fg": "white"},
                         {"type": "file_picker", "text": "Run Script", "command": "run_script"},
-                        {"type": "button", "text": "Serial Reconnect", "command": "reconnect_serial", "bg": "gray", "fg": "black"}
+                        {"type": "button", "text": "Serial Reconnect", "command": "reconnect_serial", "bg": "gray", "fg": "black"},
+                        {"type": "button", "text": "Color Test Window", "command": "color_test_window", "bg": "purple", "fg": "white"},
+                        {"type": "button", "text": "Controller Selector", "command": "open_controller_selector", "bg": "orange", "fg": "black"},
+                        {"type": "button", "text": "Controller Log Window", "command": "open_controller_log", "bg": "black", "fg": "white"}
                     ]
                 }
             ]
@@ -84,6 +89,15 @@ class BaseProbe:
             import time
             time.sleep(1)
             self.serial_comm.__init__(self.serial_port)
+
+    def color_test_window(self):
+        print("[BaseProbe] Color test window requested")
+
+    def open_controller_selector(self):
+        print("[BaseProbe] Controller selector requested")
+
+    def open_controller_log(self):
+        print("[BaseProbe] Controller log window requested")
 
     def toggle_enable(self):
         if self.system_enabled:
