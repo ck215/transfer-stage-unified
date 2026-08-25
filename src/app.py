@@ -55,6 +55,7 @@ class ScannerThread(QThread):
             return
 
         for i, port in enumerate(self.detected_ports):
+            if port == "Headless": continue
             self.pinging.emit(port)
             device_found = False
             try:
@@ -132,11 +133,11 @@ class SetupWindow(QMainWindow):
     def get_available_ports(self):
         if SERIAL_AVAILABLE:
             ports = [port.device for port in serial.tools.list_ports.comports()]
-            self.detected_ports = sorted(ports)
+            self.detected_ports = ["Headless"] + sorted(ports)
         else:
             self.detected_ports = []
         if not self.detected_ports:
-            self.detected_ports = ["COM1", "COM2", "COM3", "COM4"]
+            self.detected_ports = ["Headless", "COM1", "COM2", "COM3", "COM4"]
 
     def get_available_controllers(self):
         self.detected_controllers = ["None"]
@@ -186,7 +187,11 @@ class SetupWindow(QMainWindow):
                 port_cb.setEnabled(False)
                 ctrl_cb.setEnabled(False)
 
-            status_lbl = QLabel("Waiting...")
+            if device == "Red Percent Window":
+                status_lbl = QLabel("Headless")
+                status_lbl.setStyleSheet("color: gray;")
+            else:
+                status_lbl = QLabel("Waiting...")
             self.status_labels[device] = status_lbl
             grid.addWidget(status_lbl, row, 4)
 
@@ -280,12 +285,15 @@ class SetupWindow(QMainWindow):
                 port = self.port_vars[device].currentText()
                 controller = self.controller_vars[device].currentText()
 
+                if port == "Headless":
+                    port = "SIM"
+
                 active_configs.append({
                     "device": device, 
                     "port": port, 
                     "controller": controller
                 })
-                if device != "Red Percent Window":
+                if device != "Red Percent Window" and port != "SIM":
                     assigned_ports.add(port)
                 if "None" not in controller and "Virtual" not in controller and device != "Red Percent Window":
                     assigned_controllers.add(controller)
@@ -294,7 +302,7 @@ class SetupWindow(QMainWindow):
             QMessageBox.warning(self, "No Devices Selected", "Please select at least one device to launch.")
             return
 
-        devices_needing_ports = [c for c in active_configs if c["device"] != "Red Percent Window"]
+        devices_needing_ports = [c for c in active_configs if c["device"] != "Red Percent Window" and c["port"] != "SIM"]
         if len(assigned_ports) < len(devices_needing_ports):
             QMessageBox.critical(self, "Port Collision", "Error: You cannot assign the same COM port to multiple active devices!")
             return
