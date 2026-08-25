@@ -126,3 +126,9 @@ This file documents all bug fixes, architectural repairs, and regressions addres
 ## Active Subagents
 - `feature_validator`: Launched to comprehensively map and unit-test all PySide6 `ui_schema` fields against backend object models.
 - `mvc_refactor_fixer`: Launched to debug and solve a catastrophic macOS initialization conflict between SDL (Pygame) and Qt (PySide6) causing `cocoa` framework drops.
+
+## Dual-Boot Application Launcher
+- Encountered macOS framework collisions where `tkinter` and `PySide6` fundamentally cannot exist in the same Python process without triggering security crashes.
+- Implemented a process-replacing launcher in `src/app.py`. Upon execution, a tiny launcher window asks the user which engine to boot into.
+- It leverages `os.execv` to completely overwrite the Python process in memory, ensuring perfectly clean framework loads for both PySide6 and Tkinter.
+- Re-added the complete, unmodified original Tkinter Setup/View stack as `src/app_legacy.py`, fully preserving the embedded `RedPercentView` 3D Matplotlib plotting tools that could not be mapped to PySide6 `ui_schema`.
