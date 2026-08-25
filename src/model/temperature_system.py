@@ -70,6 +70,7 @@ class TemperatureSystem:
         spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
         
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+            print(f"Sending: Setpoint={self.setpoint}C, Ramp={self.ramp_rate}deg/min (delay={spdelay}s), P={self.p_term}, I={self.i_term}, D={self.d_term}, Offset={self.offset}")
             input_string = f"<{self.setpoint},{spdelay},{self.p_term},{self.i_term},{self.d_term},{self.offset}>"
             try:
                 self.serial_conn.ser.write(input_string.encode())
@@ -129,3 +130,5 @@ class TemperatureSystem:
                 self.serial_conn.ser.write(input_string.encode())
             except Exception as e:
                 print(f"Error writing to serial: {e}")
+            finally:
+                self.serial_conn.close()
