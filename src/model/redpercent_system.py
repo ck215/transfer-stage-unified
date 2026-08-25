@@ -89,10 +89,55 @@ class RedPercentSystem:
         red_pixels = np.sum(red_mask)
         return (red_pixels / total_pixels) * 100
 
+    @property
+    def ui_schema(self):
+        return {
+            "sections": [
+                {
+                    "title": "Red Detection",
+                    "elements": [
+                        {"type": "readonly", "text": "Current Red %:", "model_attr": "current_red"},
+                        {"type": "readonly", "text": "Red Change %:", "model_attr": "red_change"}
+                    ]
+                },
+                {
+                    "title": "System Control",
+                    "elements": [
+                        {"type": "button", "text": "Start Monitoring", "command": "start_monitoring", "bg": "darkgreen", "fg": "white"},
+                        {"type": "button", "text": "Stop Monitoring", "command": "stop_monitoring", "bg": "darkred", "fg": "white"},
+                        {"type": "button", "text": "Reset Baseline", "command": "reset_baseline", "bg": "gray", "fg": "white"},
+                        {"type": "button", "text": "Save Log", "command": "save_log", "bg": "blue", "fg": "white"}
+                    ]
+                }
+            ]
+        }
+
+    def save_log(self):
+        if not self.data_log or not self.data_log.red_values:
+            print("[color_test] No data to save.")
+            return
+
+        from tkinter import filedialog
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv")],
+            title="Save Red Detection Log"
+        )
+
+        if file_path:
+            try:
+                self.data_log.save_to_csv(file_path)
+                print(f"[color_test] Log saved to: {file_path}")
+            except Exception as e:
+                print(f"[color_test] Error saving file: {e}")
+        else:
+            print("[color_test] Save cancelled.")
+
     def start_monitoring(self):
         if self.monitoring:
             return
         self.monitoring = True
+        print("=== MONITORING STARTED ===")
         if not self.data_log:
             self.data_log = RedPercentDataLog(self.sync_dimensions)
         self._monitor_thread = threading.Thread(target=self._monitor_colors)
@@ -100,10 +145,12 @@ class RedPercentSystem:
         self._monitor_thread.start()
 
     def stop_monitoring(self):
+        print("=== MONITORING STOPPED ===")
         self.monitoring = False
 
     def reset_baseline(self):
         self.baseline_red = self.current_red
+        print(f"BASELINE RESET - Red: {self.baseline_red:.1f}%")
 
     def _monitor_colors(self):
         first_reading = True
@@ -115,6 +162,7 @@ class RedPercentSystem:
                     red_pct = self.detect_red(image)
                     if first_reading:
                         self.baseline_red = red_pct
+                        print(f"BASELINE SET - Red: {self.baseline_red:.1f}%")
                         first_reading = False
                     
                     self.current_red = red_pct
@@ -126,6 +174,7 @@ class RedPercentSystem:
                             self.last_logged_red = -1000.0
                             
                         if abs(rounded_red - self.last_logged_red) >= 0.1:
+                            print(f"RED: {rounded_red:.1f}%")
                             self.last_logged_red = rounded_red
                             locs = {}
                             if self.stepper_model:
