@@ -27,6 +27,7 @@ class ScannerThread(QThread):
     status = Signal(str)
     found = Signal(str, str)
     complete = Signal()
+    pinging = Signal(str)
 
     def __init__(self, devices, detected_ports):
         super().__init__()
@@ -54,6 +55,7 @@ class ScannerThread(QThread):
             return
 
         for i, port in enumerate(self.detected_ports):
+            self.pinging.emit(port)
             device_found = False
             try:
                 with serial.Serial(port, baudrate=115200, timeout=0.2, write_timeout=0.2) as ser:
@@ -184,7 +186,7 @@ class SetupWindow(QMainWindow):
                 port_cb.setEnabled(False)
                 ctrl_cb.setEnabled(False)
 
-            status_lbl = QLabel("-")
+            status_lbl = QLabel("Waiting...")
             self.status_labels[device] = status_lbl
             grid.addWidget(status_lbl, row, 4)
 
@@ -233,6 +235,7 @@ class SetupWindow(QMainWindow):
         self.scanner = ScannerThread(self.devices, self.detected_ports)
         self.scanner.progress.connect(self.progress_bar.setValue)
         self.scanner.status.connect(self.status_label.setText)
+        self.scanner.pinging.connect(lambda p: self.status_label.setText(f"Scanning port {p}..."))
         self.scanner.found.connect(self._update_device_ui)
         self.scanner.complete.connect(self._scan_complete)
         self.scanner.start()
