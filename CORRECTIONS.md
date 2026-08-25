@@ -77,3 +77,33 @@ This file documents all bug fixes, architectural repairs, and regressions addres
 - **GUI Engine:** 
   - Migrated the orphaned `DraggableClosableNotebook` logic from `app.py` to `view.py` and integrated it into the new `DashboardWindow`.
   - Restored the 57600-baud fallback in the `app.py` scanner thread to successfully auto-detect the SMC100 Rotator.
+
+## 13. Temperature System Serial Read Fix
+- **File:** `src/model/temperature_system.py`
+- **Correction:** Restored the background thread responsible for reading `ser.readline()` which was lost during the MVC refactor. The system now correctly performs non-blocking reads from the serial port, passes lines to `process_raw_data`, and updates `self.current_temp`. Also ensured clean shutdown when `stop()` is called.
+
+## 14. Rotator System Auto-Detect Fix
+- **File:** `src/app.py`
+- **Correction:** Fixed a regression in the MVC refactor where the auto-detect logic was scanning for the literal string `"SMC100"` instead of `"1ID"` or `"1TS"`. Restored exact detection behavior from the `main` branch, ensuring software flow control (`xonxoff=True`) and the fallback checks are functioning to correctly claim the COM port.
+
+## 15. Testing Suite Implementation
+- **Directory:** `tests/`
+- **Addition:** Implemented a new pytest suite focusing on the edge-case interactions between models and controllers (e.g., `test_gamepad.py`, `test_model_interactions.py`, `test_serial.py`). This isolates hardware and successfully detects when refactors break previously functional application flows. The suite correctly uncovered a critical state bug in `src/model/probes.py`.
+
+## 16. Probes Auton and Manual State Bug
+- **File:** `src/model/probes.py`
+- **Correction:** `enter_auton` and `enter_manual` were calling `self.full_stop()`, which reset both `auton_flag` and `manual_flag` to `False` inadvertently preventing the system from entering either state. Implemented `send_stop_command()` which zeros out movement without clearing internal flags.
+- **File:** `src/controller/seiral.py`
+- **Correction:** The manual packet format had been mistakenly changed to `<BBffffffffff` (42 bytes), preventing parsing on the Arduino. Restored it to the `main` branch format `<BBfffhhhhhhh` (28 bytes) and ensured integer fields are properly cast.
+
+## 17. SystemManager & PySide6 Architecture Migration
+- **File:** `src/model/system_manager.py`, `src/view_pyside.py`, `src/app.py`
+- **Correction:** Implemented the platform agnostic PySide6 overhaul. Created `SystemManager` to decouple object lifecycles from the UI (allowing model reboots without killing the main window). Created `QtDynamicView` and `DashboardWindow` to replace `ttk.Notebook` with native tear-off `QDockWidget` floating windows.
+
+## 18. Probes MVC Regressions Restored
+- **File:** `src/model/probes.py`
+- **Correction:** Subagents successfully added missing `ui_schema` mappings and model stub methods for the `serial_port` field, `color_test_window` button, and the `open_controller_selector` / `open_controller_log` UI triggers, restoring parity with the original `main` branch.
+
+## 19. RedPercent MVC Regressions Restored
+- **File:** `src/model/redpercent_system.py`
+- **Correction:** Subagents successfully restored the standalone "Save Log" button by adding it to the `ui_schema`. They also re-implemented the realtime console prints (`BASELINE SET`, `RED: X%`) inside the monitoring loop to ensure parity with the old `color_test_new.py` logging behavior.

@@ -433,6 +433,7 @@ class SetupWindow(tk.Tk):
                 from model.redpercent_system import RedPercentSystem
                 active_models[device] = RedPercentSystem()
 
+        
         # Link RedPercentSystem to StepperProbe for X-coordinate syncing
         stepper_model = None
         red_model = None
@@ -444,14 +445,34 @@ class SetupWindow(tk.Tk):
         if red_model and stepper_model:
             red_model.stepper_model = stepper_model
 
-        # Launch the decoupled DashboardWindow
-        from view import DashboardWindow
-        self.dashboard_window = DashboardWindow(self, active_models)
-        self.withdraw()
+        # Store models globally to start PySide6 after Tkinter closes
+        global g_active_models
+        g_active_models = active_models
+        self.destroy()
+
 
     def shutdown(self):
         self.destroy()
 
+
+g_active_models = {}
+
 if __name__ == "__main__":
     app = SetupWindow()
     app.mainloop()
+    
+    if g_active_models:
+        import sys
+        from view_pyside import DashboardWindow
+        from PySide6.QtWidgets import QApplication
+        from model.system_manager import SystemManager
+        
+        qapp = QApplication(sys.argv)
+        manager = SystemManager()
+        for name, model in g_active_models.items():
+            manager.register_model(name, model)
+            
+        dash = DashboardWindow(manager)
+        dash.show()
+        sys.exit(qapp.exec())
+
