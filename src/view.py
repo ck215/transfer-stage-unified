@@ -1,6 +1,101 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import time
+import queue
+import sys
+import traceback
+
+from error_routing import ErrorRouter
+
+class ErrorPopupManager:
+    """
+    Centralized error handler for receiving errors from across the application
+    and presenting them to the user via visual popups.
+    """
+    _root = None
+    _error_queue = queue.Queue()
+    _is_polling = False
+
+    @classmethod
+    def initialize(cls, root):
+        """Initialize with the main Tk window to allow thread-safe popups."""
+        cls._root = root
+        ErrorRouter.set_callbacks(cls.report_error, cls.report_warning, cls.report_info)
+        if not cls._is_polling:
+            cls._poll_queue()
+            cls._is_polling = True
+
+    @classmethod
+    def _poll_queue(cls):
+        """Poll the error queue and display popups in the main thread."""
+        if not cls._root:
+            return
+            
+        while not cls._error_queue.empty():
+            error_data = cls._error_queue.get()
+            cls._display_popup(error_data)
+            
+        cls._root.after(100, cls._poll_queue)
+
+    @classmethod
+    def _display_popup(cls, error_data):
+        """Actually display the messagebox."""
+        title = error_data.get('title', 'Message')
+        message = error_data.get('message', '')
+        exception = error_data.get('exception')
+        msg_type = error_data.get('type', 'error')
+        
+        full_message = message
+        if exception:
+            full_message += f"\n\nDetails:\n{type(exception).__name__}: {str(exception)}"
+            
+        if msg_type == 'error':
+            messagebox.showerror(title, full_message, parent=cls._root)
+        elif msg_type == 'warning':
+            messagebox.showwarning(title, full_message, parent=cls._root)
+        else:
+            messagebox.showinfo(title, full_message, parent=cls._root)
+
+    @classmethod
+    def report_error(cls, title, message, exception=None):
+        cls._queue_message('error', title, message, exception)
+
+    @classmethod
+    def report_warning(cls, title, message, exception=None):
+        cls._queue_message('warning', title, message, exception)
+
+    @classmethod
+    def report_info(cls, title, message):
+        cls._queue_message('info', title, message, None)
+
+    @classmethod
+    def _queue_message(cls, msg_type, title, message, exception=None):
+        if cls._root is None:
+            # Fallback if GUI is not initialized
+            prefix = f"[{msg_type.upper()}] {title}: "
+            print(prefix + message)
+            if exception:
+                print(f"Exception details: {exception}")
+                traceback.print_exc()
+        
+        cls._error_queue.put({
+            'type': msg_type,
+            'title': title,
+            'message': message,
+            'exception': exception
+        })
+
+    @classmethod
+    def setup_excepthook(cls):
+        """Hook into sys.excepthook to catch all unhandled exceptions globally."""
+        def custom_excepthook(exc_type, exc_value, exc_traceback):
+            traceback.print_exception(exc_type, exc_value, exc_traceback)
+            cls.report_error(
+                "Unhandled Exception",
+                f"An unexpected error occurred:\n\n{exc_value}",
+                exception=exc_value
+            )
+        sys.excepthook = custom_excepthook
 
 class DraggableClosableNotebook(ttk.Notebook):
     """A ttk.Notebook with draggable tabs and middle-click/right-click to close."""
@@ -269,7 +364,9 @@ class DynamicView(tk.Frame):
                 if getattr(model_ref, 'system_enabled', False):
                     model_ref.disable_timer_id = dashboard_window.after(300000, lambda: _auto_disable(model_ref))
             def _auto_disable(model_ref):
-                print(f"[Timeout] 5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}")
+                msg = f"5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}"
+                print(f"[Timeout] {msg}")
+                ErrorPopupManager.report_info("Idle Timeout", msg)
                 if hasattr(model_ref, 'disable'):
                     model_ref.disable()
                     

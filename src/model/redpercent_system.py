@@ -73,7 +73,8 @@ class RedPercentSystem:
                 return np.array(img)
             return None
         except Exception as e:
-            print(f"Error capturing screen: {e}")
+            from error_routing import ErrorRouter as ErrorPopupManager
+            ErrorPopupManager.report_error("Screen Capture Error", f"Error capturing screen:\n{e}", e)
             return None
 
     def detect_red(self, image):
@@ -131,7 +132,10 @@ class RedPercentSystem:
                 self.data_log.save_to_csv(file_path)
                 print(f"[color_test] Log saved to: {file_path}")
             except Exception as e:
-                print(f"[color_test] Error saving file: {e}")
+                from error_routing import ErrorRouter
+                msg = f"[color_test] Error saving file: {e}"
+                print(msg)
+                ErrorRouter.report_error("File Save Error", msg, e)
         else:
             print("[color_test] Save cancelled.")
 
@@ -378,7 +382,10 @@ class RedPercentView(tk.Frame):
                 self.system.data_log.save_to_csv(file_path)
                 print(f"[color_test] Log saved to: {file_path}")
             except Exception as e:
-                print(f"[color_test] Error saving file: {e}")
+                from error_routing import ErrorRouter
+                msg = f"[color_test] Error saving file: {e}"
+                print(msg)
+                ErrorRouter.report_error("File Save Error", msg, e)
         else:
             print("[color_test] Save cancelled.")
 

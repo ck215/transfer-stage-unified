@@ -109,7 +109,7 @@ class QtDynamicView(QWidget):
             try:
                 func()
             except Exception as e:
-                print(f"Command {cmd_name} failed: {e}")
+                QMessageBox.critical(self, "Command Failed", f"Command {cmd_name} failed:\n{e}")
 
     def _poll_model(self):
         for attr, widget in self.vars.items():

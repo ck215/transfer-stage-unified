@@ -1,9 +1,11 @@
 # --------- Necessary Libraries ----------
+import time
+import math
+from error_routing import ErrorRouter as ErrorPopupManager
 try:
     import serial as pyserial
 except ImportError:
     pyserial = None
-import time
 import sys
 import struct
 
@@ -30,7 +32,9 @@ class serial:
         # NEW: Buffer for incoming serial data from firmware
         self._read_buffer = ""
         if self.SERIAL_PORT == 'SIM':
-            print("[SerialDrive] Running in SIMULATOR mode. No serial connection will be established.")
+            msg = "[SerialDrive] Running in SIMULATOR mode. No serial connection will be established."
+            print(msg)
+            ErrorPopupManager.report_info("Simulator Mode", msg)
             return
         
         try:
@@ -68,22 +72,28 @@ class serial:
             if verified:
                 print(f"[SerialDrive] Serial Connection Verified! Arduino Ready on {self.SERIAL_PORT}")
             else:
-                print(f"[WARNING] Port {self.SERIAL_PORT} opened, but no Arduino response received. Operating blind.")
+                msg = f"[WARNING] Port {self.SERIAL_PORT} opened, but no Arduino response received. Operating blind."
+                print(msg)
+                ErrorPopupManager.report_warning("Serial Connection Warning", msg)
         
         # Exception handling
         except pyserial.SerialException as e:
-            print(f"[WARNING] Error establishing serial connection to {self.SERIAL_PORT}: {e}")
-            print(f"[WARNING] Operating blind without hardware.")
+            msg = f"[WARNING] Error establishing serial connection to {self.SERIAL_PORT}:\n{e}\nOperating blind without hardware."
+            print(msg)
+            ErrorPopupManager.report_warning("Serial Exception", msg, e)
         except Exception as e:
-            print(f"[WARNING] Unexpected error: {e}")
-            print(f"[WARNING] Operating blind without hardware.")
+            msg = f"[WARNING] Unexpected error:\n{e}\nOperating blind without hardware."
+            print(msg)
+            ErrorPopupManager.report_error("Unexpected Serial Error", msg, e)
         finally:
             print("[SerialDrive] Finish SerialDrive __init__")
 
     # Helper to verify serial connection before sending data
     def _verify_serial(self):
         if self.ser is None or not self.ser.is_open:
-            print("[SerialDrive] Error: Serial connection not established.")
+            msg = "[SerialDrive] Error: Serial connection not established."
+            print(msg)
+            ErrorPopupManager.report_warning("Serial Disconnected", msg)
             return False
         return True
 
@@ -119,7 +129,7 @@ class serial:
             return latest_pos
 
         except Exception as e:
-            print(f"[SerialDrive] Error reading position: {e}")
+            ErrorPopupManager.report_error("Serial Read Error", f"[SerialDrive] Error reading position:\n{e}", e)
             return None
 
     # Function to send autonomous command
@@ -147,11 +157,14 @@ class serial:
             self.ser.write(command.encode('utf-8'))    # type: ignore
 
         # Exception handling
-        except pyserial.SerialTimeoutException:
-            print("[SerialDrive] WRITE TIMEOUT ERROR (Auton)")
-            print("The serial write operation timed out.")
+        except pyserial.SerialTimeoutException as e:
+            msg = "[SerialDrive] WRITE TIMEOUT ERROR (Auton)\nThe serial write operation timed out."
+            print(msg)
+            ErrorPopupManager.report_error("Serial Write Timeout", msg, e)
         except Exception as e:
-            print(f"[SerialDrive] Error sending auton data: {e}")
+            msg = f"[SerialDrive] Error sending auton data:\n{e}"
+            print(msg)
+            ErrorPopupManager.report_error("Serial Write Error", msg, e)
 
     # Function to send manual command, looped by manual mode loop
     def send_manual_mode_command(self, params):
@@ -194,11 +207,14 @@ class serial:
             self.ser.flush()                         # type: ignore
             
         # Exception handling
-        except pyserial.SerialTimeoutException:
-            print("[SerialDrive] WRITE TIMEOUT ERROR (Manual)")
-            print("The serial write operation timed out.")
+        except pyserial.SerialTimeoutException as e:
+            msg = "[SerialDrive] WRITE TIMEOUT ERROR (Manual)\nThe serial write operation timed out."
+            print(msg)
+            ErrorPopupManager.report_error("Serial Write Timeout", msg, e)
         except Exception as e:
-            print(f"[SerialDrive] Error sending manual data: {e}")
+            msg = f"[SerialDrive] Error sending manual data:\n{e}"
+            print(msg)
+            ErrorPopupManager.report_error("Serial Write Error", msg, e)
 
     def enable(self):
         if not self._verify_serial():

@@ -145,7 +145,8 @@ class BaseProbe:
                 import time
                 time.sleep(0.1) # Simple pacing
         except Exception as e:
-            print(f"Error running script: {e}")
+            from error_routing import ErrorRouter as ErrorPopupManager
+            ErrorPopupManager.report_error("Script Execution Error", f"Error running script:\n{e}", e)
 
     def get_params(self):
         return {

@@ -33,6 +33,8 @@ def run_legacy_app():
         import os
         os.environ["SDL_VIDEODRIVER"] = "dummy"
         os.environ["SDL_AUDIODRIVER"] = "dummy"
+        import os
+        os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
         import pygame
         PYGAME_AVAILABLE = True
     except ImportError:
@@ -452,36 +454,21 @@ def run_legacy_app():
             if red_model and stepper_model:
                 red_model.stepper_model = stepper_model
     
-            # Store models globally to start PySide6 after Tkinter closes
-            global g_active_models
-            g_active_models = active_models
-            self.destroy()
-    
-    
-        def shutdown(self):
-            self.destroy()
-    
-    
-    g_active_models = {}
-    
+            # Launch Tkinter Dashboard
+            from view import DashboardWindow, ErrorPopupManager
+            
+            dash = DashboardWindow(self, active_models)
+            ErrorPopupManager.initialize(dash)
+            
+            # We don't destroy self here, we withdrew it.
+            # dash will call self.deiconify() on close.
+
     if __name__ == "__main__":
         app = SetupWindow()
+        from view import ErrorPopupManager
+        ErrorPopupManager.initialize(app)
+        ErrorPopupManager.setup_excepthook()
         app.mainloop()
-        
-        if g_active_models:
-            import sys
-            from view_pyside import DashboardWindow
-            from PySide6.QtWidgets import QApplication
-            from model.system_manager import SystemManager
-            
-            qapp = QApplication(sys.argv)
-            manager = SystemManager()
-            for name, model in g_active_models.items():
-                manager.register_model(name, model)
-                
-            dash = DashboardWindow(manager)
-            dash.show()
-            sys.exit(qapp.exec())
     
     
 
@@ -502,6 +489,8 @@ def run_pyside_app():
         import os
         os.environ["SDL_VIDEODRIVER"] = "dummy"
         os.environ["SDL_AUDIODRIVER"] = "dummy"
+        import os
+        os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
         import pygame
         PYGAME_AVAILABLE = True
     except ImportError:
@@ -857,6 +846,20 @@ def run_pyside_app():
     
     if __name__ == "__main__":
         app = QApplication(sys.argv)
+        
+        from error_routing import ErrorRouter
+        from PySide6.QtCore import QTimer
+        def _err(title, msg, exc=None):
+            m = msg if not exc else f"{msg}\n\n{exc}"
+            QTimer.singleShot(0, lambda: QMessageBox.critical(None, title, m))
+        def _warn(title, msg, exc=None):
+            m = msg if not exc else f"{msg}\n\n{exc}"
+            QTimer.singleShot(0, lambda: QMessageBox.warning(None, title, m))
+        def _info(title, msg):
+            QTimer.singleShot(0, lambda: QMessageBox.information(None, title, msg))
+            
+        ErrorRouter.set_callbacks(_err, _warn, _info)
+        
         window = SetupWindow()
         window.show()
         sys.exit(app.exec())
@@ -864,8 +867,7 @@ def run_pyside_app():
 
 import os
 import sys
-import tkinter as tk
-from tkinter import ttk
+# Removed global tkinter import
 
 def launch_legacy():
     print("[Launcher] Starting Legacy Tkinter Dashboard...")
@@ -885,24 +887,28 @@ def main():
         run_pyside_app()
         sys.exit(0)
 
-    root = tk.Tk()
-    root.title("Unified Stage Controller - Launcher")
-    root.geometry("400x200")
-    root.eval('tk::PlaceWindow . center')
-
-    ttk.Label(root, text="Select Dashboard UI Engine", font=("Helvetica", 16, "bold")).pack(pady=20)
-
-    btn_frame = ttk.Frame(root)
-    btn_frame.pack(pady=10)
-
-    btn_pyside = ttk.Button(btn_frame, text="Launch PySide6 (New)", command=launch_pyside, width=25)
-    btn_pyside.grid(row=0, column=0, padx=10, pady=10)
-
-    btn_legacy = ttk.Button(btn_frame, text="Launch Tkinter (Legacy)", command=launch_legacy, width=25)
-    btn_legacy.grid(row=1, column=0, padx=10, pady=10)
-
-    root.mainloop()
-
+    print("========================================")
+    print("  Unified Stage Controller - Launcher   ")
+    print("========================================")
+    print("1. Launch Modern App (PySide6)")
+    print("2. Launch Legacy App (Tkinter)")
+    print("========================================")
+    
+    while True:
+        try:
+            choice = input("Select an engine (1 or 2): ").strip()
+            if choice == "1":
+                launch_pyside()
+                break
+            elif choice == "2":
+                launch_legacy()
+                break
+            else:
+                print("Invalid selection. Please enter 1 or 2.")
+        except KeyboardInterrupt:
+            print("\nExiting launcher.")
+            sys.exit(0)
+            
 if __name__ == "__main__":
     main()
 

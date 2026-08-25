@@ -8,6 +8,7 @@ import os
 import sys
 import ctypes
 from ctypes import wintypes
+from error_routing import ErrorRouter as ErrorPopupManager
 
 # Windows API structure for polling raw joystick status
 if sys.platform == "win32":
@@ -179,7 +180,8 @@ class ControllerPoller:
         return True
 
     def _handle_disconnect(self):
-        print(f"[controllerDrive] Controller disconnected.")
+        msg = "[controllerDrive] Controller disconnected."
+        ErrorPopupManager.report_warning("Controller Disconnected", msg)
         self.gamepad = None
         self.active_claims[self.process_name] = "None Detected"
         self.stop_polling()
@@ -200,7 +202,7 @@ class ControllerPoller:
                     pass
             return hardware_controllers
         except Exception as e:
-            print(f"[{self.process_name}] Error scanning physical controllers: {e}")
+            ErrorPopupManager.report_error("Controller Scan Error", f"[{self.process_name}] Error scanning physical controllers:\n{e}", e)
             return []
 
     def connect_controller(self):
@@ -241,14 +243,16 @@ class ControllerPoller:
                 print(f"[controllerDrive] Joystick initialization succesful: {joystick.get_name()}")
                 return True
             except:
-                print("[controllerDrive] No joystick found.")
+                msg = "[controllerDrive] No joystick found."
+                print(msg)
+                ErrorPopupManager.report_warning("Joystick Not Found", msg)
                 self._handle_disconnect()
                 self.active_claims[self.process_name] = "None"
                 pygame.quit()
                 return False
                 
         except Exception as e:
-            print(f"[controllerDrive] Error initializing pygame: {e}")
+            ErrorPopupManager.report_error("Pygame Init Error", f"[controllerDrive] Error initializing pygame:\n{e}", e)
             return False
 
     def change_controller(self, new_controller_id):
@@ -336,7 +340,9 @@ class ControllerPoller:
                     self.gamepad.prev_hat_states[i] = current_val
 
         except pygame.error as e:
-            print(f"[controllerDrive] Pygame error during polling: {e}")
+            msg = f"[controllerDrive] Pygame error during polling:\n{e}"
+            print(msg)
+            ErrorPopupManager.report_error("Gamepad Polling Error", msg, e)
             self._handle_disconnect()
             return
         

@@ -28,7 +28,8 @@ class SystemManager:
                     elif hasattr(old_model, 'serial_comm') and old_model.serial_comm:
                         old_model.serial_comm.close()
                 except Exception as e:
-                    print(f"Error tearing down old model {name}: {e}")
+                    from error_routing import ErrorRouter as ErrorPopupManager
+                    ErrorPopupManager.report_error("Model Teardown Error", f"Error tearing down old model {name}:\n{e}", e)
 
             print(f"Rebooting {name}...")
             time.sleep(1) # simulate hardware reboot delay
@@ -38,7 +39,10 @@ class SystemManager:
                 self.active_models[name] = new_model
                 return new_model
             except Exception as e:
-                print(f"Failed to reboot {name}: {e}")
+                from error_routing import ErrorRouter
+                msg = f"Failed to reboot {name}:\n{e}"
+                print(msg)
+                ErrorRouter.report_error("Reboot Failed", msg, e)
                 return None
 
     def shutdown_all(self):

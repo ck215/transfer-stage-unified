@@ -25,7 +25,8 @@ class TemperatureSystem:
             try:
                 self.serial_conn.ser.write(b"<0,6.0,0,0,0,0>")
             except Exception as e:
-                print(f"Error writing initial state to serial: {e}")
+                from error_routing import ErrorRouter as ErrorPopupManager
+                ErrorPopupManager.report_error("Serial Write Error", f"Error writing initial state to serial:\n{e}", e)
                 
             self.serial_thread = threading.Thread(target=self.read_serial_data, daemon=True)
             self.serial_thread.start()
@@ -75,7 +76,8 @@ class TemperatureSystem:
             try:
                 self.serial_conn.ser.write(input_string.encode())
             except Exception as e:
-                print(f"Error writing to serial: {e}")
+                from error_routing import ErrorRouter as ErrorPopupManager
+                ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
                 
     def read_serial_data(self):
         while getattr(self, 'continue_reading', True):
@@ -88,7 +90,10 @@ class TemperatureSystem:
                 else:
                     time.sleep(0.1)
             except Exception as e:
-                print(f"Serial background read error: {e}")
+                from error_routing import ErrorRouter
+                msg = f"Serial background read error: {e}"
+                print(msg)
+                ErrorRouter.report_error("Temperature Read Error", msg, e)
                 break
 
     def process_raw_data(self, data_line):
@@ -129,6 +134,7 @@ class TemperatureSystem:
             try:
                 self.serial_conn.ser.write(input_string.encode())
             except Exception as e:
-                print(f"Error writing to serial: {e}")
+                from error_routing import ErrorRouter as ErrorPopupManager
+                ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
             finally:
                 self.serial_conn.close()
