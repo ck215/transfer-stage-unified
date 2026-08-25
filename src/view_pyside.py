@@ -144,6 +144,7 @@ class DashboardWindow(QMainWindow):
         # Sidebar
         self.sidebar = QDockWidget("Device Manager", self)
         self.sidebar.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.sidebar.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         self.device_list = QListWidget()
         self.device_list.setStyleSheet("background-color: #1E1E1E; color: white; border: none;")
         self.sidebar.setWidget(self.device_list)
@@ -154,6 +155,7 @@ class DashboardWindow(QMainWindow):
         self.setCentralWidget(QWidget()) # Empty workspace
         
         self.active_docks = {}
+        self._last_added_dock = None
         self.populate_sidebar()
 
     def populate_sidebar(self):
@@ -187,7 +189,12 @@ class DashboardWindow(QMainWindow):
         
         dock.visibilityChanged.connect(lambda visible: self.on_dock_closed(device_name, visible))
         
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        if self._last_added_dock:
+            self.splitDockWidget(self._last_added_dock, dock, Qt.Horizontal)
+        else:
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+            
+        self._last_added_dock = dock
         self.active_docks[device_name] = dock
         
     def on_dock_closed(self, device_name, visible):
