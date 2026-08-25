@@ -132,3 +132,9 @@ This file documents all bug fixes, architectural repairs, and regressions addres
 - Implemented a process-replacing launcher in `src/app.py`. Upon execution, a tiny launcher window asks the user which engine to boot into.
 - It leverages `os.execv` to completely overwrite the Python process in memory, ensuring perfectly clean framework loads for both PySide6 and Tkinter.
 - Re-added the complete, unmodified original Tkinter Setup/View stack as `src/app_legacy.py`, fully preserving the embedded `RedPercentView` 3D Matplotlib plotting tools that could not be mapped to PySide6 `ui_schema`.
+
+## Repository & Script Consolidation
+- Cleaned up a severe Git sync conflict that had duplicated models (`probes.py`, `rotator_system.py`, etc.) into the `src/controller` directory, and controllers (`gamepad.py`) into the `src/model` directory.
+- Resolved oversegmentation of the application entry points. Merged `app_legacy.py` and `app_pyside.py` entirely back into a single `src/app.py` file, utilizing isolated functions (`run_legacy_app()` and `run_pyside_app()`) to maintain the mutually exclusive Tkinter/PySide6 dual-boot safety within one script.
+- Modernized `run.sh` and `run.bat`. Replaced hardcoded absolute paths with dynamic directory targeting (`cd "$(dirname "$0")"`), injected automatic `.venv` activation, and set them to instantly bypass the launcher and boot the PySide6 dashboard using the `--pyside` flag.
+- Performed a final manual flush and forced extraction of the PySide6 binaries to clear macOS `dyld` cache corruption caused by intentional `test_tk.py` collision testing, permanently restoring `libqcocoa.dylib` Cocoa framework hooks.
