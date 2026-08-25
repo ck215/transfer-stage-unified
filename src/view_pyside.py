@@ -118,14 +118,17 @@ class QtDynamicView(QWidget):
         for tb in self.toggle_buttons:
             val = getattr(self.model, tb["attr"], False)
             widget = tb["widget"]
-            if val:
-                if widget.text() != tb["true_text"]:
+            
+            # Use property to track current set style
+            current_state = widget.property("toggle_state")
+            if current_state != val:
+                if val:
                     widget.setText(tb["true_text"])
-                    widget.setStyleSheet("background-color: #107C10; color: white;")
-            else:
-                if widget.text() != tb["false_text"]:
+                    widget.setStyleSheet("background-color: #107C10; color: white; font-weight: bold;")
+                else:
                     widget.setText(tb["false_text"])
-                    widget.setStyleSheet("background-color: #D13438; color: white;")
+                    widget.setStyleSheet("background-color: #D13438; color: white; font-weight: bold;")
+                widget.setProperty("toggle_state", val)
 
 
 class DashboardWindow(QMainWindow):
