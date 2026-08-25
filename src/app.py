@@ -30,6 +30,9 @@ def run_legacy_app():
     
     # Try to import pygame for physical joystick/gamepad detection.
     try:
+        import os
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
+        os.environ["SDL_AUDIODRIVER"] = "dummy"
         import pygame
         PYGAME_AVAILABLE = True
     except ImportError:
@@ -496,6 +499,9 @@ def run_pyside_app():
         SERIAL_AVAILABLE = False
     
     try:
+        import os
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
+        os.environ["SDL_AUDIODRIVER"] = "dummy"
         import pygame
         PYGAME_AVAILABLE = True
     except ImportError:
