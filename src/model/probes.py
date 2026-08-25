@@ -91,18 +91,26 @@ class BaseProbe:
         else:
             self.enable()
 
+    def send_stop_command(self):
+        if self.serial_comm:
+            params = self.get_params()
+            params["command_code_manual"] = 0
+            params["command_code_auton"] = 0
+            self.serial_comm.send_autonomous_command(params)
+
     def enter_auton(self):
         self.auton_flag = True
         self.manual_flag = False
-        self.full_stop()
+        self.send_stop_command()
 
     def enter_manual(self):
         self.auton_flag = False
         self.manual_flag = True
-        self.full_stop()
+        self.send_stop_command()
 
     def macro_start_auton(self):
-        self.enter_auton()
+        self.auton_flag = True
+        self.manual_flag = False
         self.send_autonomous_command()
 
     def run_script(self, script_path=None):

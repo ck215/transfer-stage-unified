@@ -7,7 +7,7 @@ import time
 import sys
 import struct
 
-PACKET_FORMAT = '<BBffffffffff'
+PACKET_FORMAT = '<BBfffhhhhhhh'
 START_MARKER = 0xAA
 
 # ------ Serial Simulation Setup --------
@@ -174,19 +174,19 @@ class serial:
             combined_bumpers = int(params.get('LBumper')) - int(params.get('RBumper'))
 
             packet = struct.pack(
-                '<BBffffffffff',
+                PACKET_FORMAT,
                 START_MARKER,
                 1,
                 float(params['x_axisStatus']),
                 float(params['y_axisStatus']),
                 float(combined_z_axis_status),
-                float(params['x_stepSize']),
-                float(params['y_stepSize']),
-                float(params['z_stepSize']),
-                float(params['dpad_LR']),
-                float(params['dpad_UD']),
-                float(combined_bumpers),
-                float(params['manual_jog_speed']),
+                int(params['x_stepSize']),
+                int(params['y_stepSize']),
+                int(params['z_stepSize']),
+                int(params['dpad_LR']),
+                int(params['dpad_UD']),
+                int(combined_bumpers),
+                int(params['manual_jog_speed']),
             )
 
             print(f"[SerialDrive] Sending 12-Field MANUAL State: {packet}")
