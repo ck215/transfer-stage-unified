@@ -5,6 +5,13 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTimer
 
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from matplotlib.figure import Figure
+import csv
+from PySide6.QtWidgets import QDialog, QFileDialog, QFormLayout, QComboBox
+from PySide6.QtGui import QPainter, QColor, QPen
+ 
+
 class QtDynamicView(QWidget):
     def __init__(self, model, parent=None):
         super().__init__(parent)
@@ -131,6 +138,230 @@ class QtDynamicView(QWidget):
                 widget.setProperty("toggle_state", val)
 
 
+
+
+class SelectionOverlay(QWidget):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setStyleSheet("background-color: rgba(0, 0, 0, 100);")
+        
+        # Make fullscreen across all monitors (PySide6)
+        screen_geom = QApplication.primaryScreen().geometry()
+        for screen in QApplication.screens():
+            screen_geom = screen_geom.united(screen.geometry())
+        self.setGeometry(screen_geom)
+        
+        self.start_pos = None
+        self.end_pos = None
+
+    def mousePressEvent(self, event):
+        self.start_pos = event.globalPosition().toPoint()
+        self.end_pos = self.start_pos
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        self.end_pos = event.globalPosition().toPoint()
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        if self.start_pos and self.end_pos:
+            x1, x2 = sorted([self.start_pos.x(), self.end_pos.x()])
+            y1, y2 = sorted([self.start_pos.y(), self.end_pos.y()])
+            w = x2 - x1
+            h = y2 - y1
+            if w > 10 and h > 10:
+                self.model.focus_area = {'top': y1, 'left': x1, 'width': w, 'height': h}
+                print(f"Captured Focus Area: {self.model.focus_area}")
+        self.close()
+
+    def paintEvent(self, event):
+        if self.start_pos and self.end_pos:
+            painter = QPainter(self)
+            pen = QPen(QColor("red"))
+            pen.setWidth(3)
+            painter.setPen(pen)
+            
+            x1, x2 = sorted([self.start_pos.x(), self.end_pos.x()])
+            y1, y2 = sorted([self.start_pos.y(), self.end_pos.y()])
+            painter.drawRect(x1, y1, x2 - x1, y2 - y1)
+
+
+class PlotDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Data Plotter")
+        self.resize(800, 600)
+        self.layout = QVBoxLayout(self)
+
+        self.top_frame = QHBoxLayout()
+        self.layout.addLayout(self.top_frame)
+
+        self.load_btn = QPushButton("Select & Load CSV File")
+        self.load_btn.clicked.connect(self.load_csv)
+        self.top_frame.addWidget(self.load_btn)
+
+        self.plot_frame = QVBoxLayout()
+        self.layout.addLayout(self.plot_frame)
+        self.canvas = None
+        self.toolbar = None
+
+    def load_csv(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Select Red Percent Log", "", "CSV Files (*.csv);;All Files (*)")
+        if not filename: return
+        
+        try:
+            with open(filename, 'r') as f:
+                reader = csv.reader(f)
+                header = next(reader)
+                
+                try: red_idx = header.index("Red Percent")
+                except ValueError:
+                    QMessageBox.showerror(self, "Invalid File", "CSV missing 'Red Percent' column")
+                    return
+                    
+                dim_indices = {}
+                for i, col in enumerate(header):
+                    if col not in ["Timestamp", "Red Percent"] and col.strip():
+                        dim_indices[col] = i
+                        
+                red_percents = []
+                dim_data = {dim: [] for dim in dim_indices.keys()}
+                
+                for row in reader:
+                    if not row: continue
+                    try:
+                        r_val = float(row[red_idx])
+                        red_percents.append(r_val)
+                        for dim, idx in dim_indices.items():
+                            if len(row) > idx:
+                                dim_data[dim].append(float(row[idx]))
+                    except ValueError:
+                        continue
+                        
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load CSV: {e}")
+            return
+            
+        dims_found = list(dim_data.keys())
+        self.select_plot_type(dims_found, red_percents, dim_data)
+
+    def select_plot_type(self, dims_found, red_percents, dim_data):
+        if not dims_found:
+            self.draw_plot("0D", None, None, None, red_percents, dim_data)
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Plot Type")
+        dlg_layout = QVBoxLayout(dialog)
+        
+        dlg_layout.addWidget(QLabel("Select the type of plot:"))
+        
+        plot_type_combo = QComboBox()
+        plot_type_combo.addItems(["0D (Time/Index)", "1D (Single Dimension)"])
+        if len(dims_found) >= 2: plot_type_combo.addItem("2D (Two Dimensions)")
+        if len(dims_found) >= 3: plot_type_combo.addItem("3D (Three Dimensions)")
+        plot_type_combo.setCurrentIndex(len(plot_type_combo) - 1)
+        dlg_layout.addWidget(plot_type_combo)
+        
+        form = QFormLayout, QComboBox()
+        dim1_cb = QComboBox(); dim1_cb.addItems(dims_found)
+        dim2_cb = QComboBox(); dim2_cb.addItems(dims_found)
+        dim3_cb = QComboBox(); dim3_cb.addItems(dims_found)
+        
+        form.addRow("Dim 1:", dim1_cb)
+        form.addRow("Dim 2:", dim2_cb)
+        form.addRow("Dim 3:", dim3_cb)
+        dlg_layout.addLayout(form)
+        
+        btn = QPushButton("Plot Data")
+        dlg_layout.addWidget(btn)
+        
+        selected = {}
+        def on_ok():
+            pt = plot_type_combo.currentText().split()[0]
+            selected['type'] = pt
+            selected['dim1'] = dim1_cb.currentText()
+            selected['dim2'] = dim2_cb.currentText()
+            selected['dim3'] = dim3_cb.currentText()
+            dialog.accept()
+            
+        btn.clicked.connect(on_ok)
+        dialog.exec()
+        
+        if 'type' in selected:
+            self.draw_plot(selected['type'], selected['dim1'], selected['dim2'], selected['dim3'], red_percents, dim_data)
+
+    def draw_plot(self, plot_type, dim1, dim2, dim3, red_percents, dim_data):
+        if self.canvas:
+            self.plot_frame.removeWidget(self.canvas)
+            self.canvas.deleteLater()
+        if self.toolbar:
+            self.plot_frame.removeWidget(self.toolbar)
+            self.toolbar.deleteLater()
+
+        fig = Figure(figsize=(8, 6), dpi=100)
+        
+        if plot_type == "0D":
+            ax = fig.add_subplot(111)
+            ax.plot(red_percents, marker='o', linestyle='-', color='b')
+            ax.set_xlabel('Index (Time / Samples)')
+            ax.set_ylabel('Red Percent')
+            ax.set_title('Red Percent Data')
+            ax.grid(True)
+        elif plot_type == "1D":
+            ax = fig.add_subplot(111)
+            if dim_data[dim1] and len(dim_data[dim1]) == len(red_percents):
+                paired = sorted(zip(dim_data[dim1], red_percents))
+                sorted_xs = [p[0] for p in paired]
+                sorted_rs = [p[1] for p in paired]
+                ax.plot(sorted_xs, sorted_rs, marker='o', linestyle='-', color='b')
+                ax.set_xlabel(f'Stepper {dim1} Location')
+            else:
+                ax.plot(red_percents, marker='o', linestyle='-', color='b')
+                ax.set_xlabel('Index')
+            ax.set_ylabel('Red Percent')
+            ax.set_title(f'Red Percent vs {dim1}')
+            ax.grid(True)
+        elif plot_type == "2D":
+            ax = fig.add_subplot(111, projection='3d')
+            x, y, z = dim_data[dim1], dim_data[dim2], red_percents
+            if len(x) == len(z) and len(y) == len(z):
+                scatter = ax.scatter(x, y, z, c=z, cmap='coolwarm', marker='o')
+                ax.set_xlabel(f'Stepper {dim1}')
+                ax.set_ylabel(f'Stepper {dim2}')
+                ax.set_zlabel('Red Percent')
+                fig.colorbar(scatter, ax=ax, label='Red Percent')
+        elif plot_type == "3D":
+            ax = fig.add_subplot(111, projection='3d')
+            x, y, z, c = dim_data[dim1], dim_data[dim2], dim_data[dim3], red_percents
+            if len(x) == len(c) and len(y) == len(c) and len(z) == len(c):
+                scatter = ax.scatter(x, y, z, c=c, cmap='coolwarm', marker='o')
+                ax.set_xlabel(f'Stepper {dim1}')
+                ax.set_ylabel(f'Stepper {dim2}')
+                ax.set_zlabel(f'Stepper {dim3}')
+                fig.colorbar(scatter, ax=ax, label='Red Percent')
+                
+        self.canvas = FigureCanvasQTAgg(fig)
+        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        
+        self.plot_frame.addWidget(self.toolbar)
+        self.plot_frame.addWidget(self.canvas)
+
+
+class RedPercentDynamicView(QtDynamicView):
+    def _execute_command(self, cmd_name):
+        if cmd_name == "select_focus_area":
+            self.overlay = SelectionOverlay(self.model)
+            self.overlay.show()
+        elif cmd_name == "plot_data_ui":
+            self.plot_dialog = PlotDialog(self)
+            self.plot_dialog.show()
+        else:
+            super()._execute_command(cmd_name)
+
 class DashboardWindow(QMainWindow):
     def __init__(self, system_manager):
         super().__init__()
@@ -187,7 +418,11 @@ class DashboardWindow(QMainWindow):
         
         # In the future, route to bespoke views if model.custom_view_class exists.
         # For now, DynamicView handles all.
-        view_widget = QtDynamicView(model)
+        
+        if device_name == "Red Percent Window":
+            view_widget = RedPercentDynamicView(model)
+        else:
+            view_widget = QtDynamicView(model)
         dock.setWidget(view_widget)
         
         dock.visibilityChanged.connect(lambda visible: self.on_dock_closed(device_name, visible))

@@ -106,7 +106,9 @@ class RedPercentSystem:
                         {"type": "button", "text": "Start Monitoring", "command": "start_monitoring", "bg": "darkgreen", "fg": "white"},
                         {"type": "button", "text": "Stop Monitoring", "command": "stop_monitoring", "bg": "darkred", "fg": "white"},
                         {"type": "button", "text": "Reset Baseline", "command": "reset_baseline", "bg": "gray", "fg": "white"},
-                        {"type": "button", "text": "Save Log", "command": "save_log", "bg": "blue", "fg": "white"}
+                        {"type": "button", "text": "Save Log", "command": "save_log", "bg": "blue", "fg": "white"},
+                        {"type": "button", "text": "Select Focus Area", "command": "select_focus_area", "bg": "purple", "fg": "white"},
+                        {"type": "button", "text": "Plot Data", "command": "plot_data_ui", "bg": "teal", "fg": "white"}
                     ]
                 }
             ]
@@ -602,6 +604,9 @@ class RedPercentView(tk.Frame):
 
         load_btn = ttk.Button(top_frame, text="Select & Load CSV File", command=load_csv)
         load_btn.pack(side=tk.LEFT, padx=10)
+
+    def select_focus_area(self): pass
+    def plot_data_ui(self): pass
 
     def destroy(self):
         print("[color_test] Cleaning up and closing RedPercentView...")
