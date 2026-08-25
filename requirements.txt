@@ -4,3 +4,4 @@ mss
 Pillow
 numpy
 matplotlib
+PySide6
