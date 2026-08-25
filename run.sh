@@ -1,4 +1,4 @@
 #!/bin/bash
-cd ~/Documents/GitHub/transfer-stage-unified/
+cd "$(dirname "$0")"
 source .venv/bin/activate
-python3 src/main_app.py
+python3 src/app.py --pyside
