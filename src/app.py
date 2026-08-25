@@ -55,6 +55,7 @@ class ScannerThread(QThread):
             return
 
         for i, port in enumerate(self.detected_ports):
+            if port == "Headless": continue
             self.pinging.emit(port)
             device_found = False
             try:
@@ -132,11 +133,11 @@ class SetupWindow(QMainWindow):
     def get_available_ports(self):
         if SERIAL_AVAILABLE:
             ports = [port.device for port in serial.tools.list_ports.comports()]
-            self.detected_ports = sorted(ports)
+            self.detected_ports = ["Headless"] + sorted(ports)
         else:
             self.detected_ports = []
         if not self.detected_ports:
-            self.detected_ports = ["COM1", "COM2", "COM3", "COM4"]
+            self.detected_ports = ["Headless", "COM1", "COM2", "COM3", "COM4"]
 
     def get_available_controllers(self):
         self.detected_controllers = ["None"]
@@ -186,7 +187,11 @@ class SetupWindow(QMainWindow):
                 port_cb.setEnabled(False)
                 ctrl_cb.setEnabled(False)
 
-            status_lbl = QLabel("Waiting...")
+            if device == "Red Percent Window":
+                status_lbl = QLabel("Headless")
+                status_lbl.setStyleSheet("color: gray;")
+            else:
+                status_lbl = QLabel("Waiting...")
             self.status_labels[device] = status_lbl
             grid.addWidget(status_lbl, row, 4)
 
@@ -219,73 +224,19 @@ class SetupWindow(QMainWindow):
     def refresh_ports(self):
         self.get_available_ports()
         for device in self.devices:
-            if device != "Red Percent Window":
-                self.port_vars[device].clear()
-                self.port_vars[device].addItems(self.detected_ports)
-
-    def start_autodetect(self):
-        self.is_scanning = True
-        self.progress_bar.setValue(0)
-        self.progress_bar.show()
-        self.status_label.setText("Scanning for active devices...")
-        self.status_label.show()
-        self.launch_btn.setEnabled(False)
-        self.refresh_btn.setEnabled(False)
-
-        self.scanner = ScannerThread(self.devices, self.detected_ports)
-        self.scanner.progress.connect(self.progress_bar.setValue)
-        self.scanner.status.connect(self.status_label.setText)
-        self.scanner.pinging.connect(lambda p: self.status_label.setText(f"Scanning port {p}..."))
-        self.scanner.found.connect(self._update_device_ui)
-        self.scanner.complete.connect(self._scan_complete)
-        self.scanner.start()
-
-    def _update_device_ui(self, device_name, port):
-        if device_name in self.device_vars:
-            self.autodetected_devices.add(device_name)
-            self.device_vars[device_name].setChecked(True)
-            idx = self.port_vars[device_name].findText(port)
-            if idx >= 0:
-                self.port_vars[device_name].setCurrentIndex(idx)
-            self.status_labels[device_name].setText("✓ Auto-Verified")
-            self.status_labels[device_name].setStyleSheet("color: #107C10;")
-
-    def _scan_complete(self):
-        self.is_scanning = False
-        self.progress_bar.setValue(100)
-        self.status_label.setText("Scan complete.")
-        
-        for device in self.devices:
-            if device not in self.autodetected_devices and device != "Red Percent Window":
-                self.status_labels[device].setText("Not Found")
-                self.status_labels[device].setStyleSheet("color: #D13438;")
-                
-        QTimer.singleShot(1000, self._cleanup_scan_ui)
-
-    def _cleanup_scan_ui(self):
-        self.progress_bar.hide()
-        self.status_label.hide()
-        self.launch_btn.setEnabled(True)
-        self.refresh_btn.setEnabled(True)
-
-    def launch_unified(self):
-        if self.is_scanning: return
-
-        active_configs = []
-        assigned_ports = set()
-        assigned_controllers = set()
-        
-        for device in self.devices:
             if self.device_vars[device].isChecked():
                 port = self.port_vars[device].currentText()
                 controller = self.controller_vars[device].currentText()
+                
+                if port == "Headless":
+                    port = "SIM"
 
                 active_configs.append({
                     "device": device, 
                     "port": port, 
                     "controller": controller
                 })
-                if device != "Red Percent Window":
+                if device != "Red Percent Window" and port != "SIM":
                     assigned_ports.add(port)
                 if "None" not in controller and "Virtual" not in controller and device != "Red Percent Window":
                     assigned_controllers.add(controller)
@@ -294,7 +245,7 @@ class SetupWindow(QMainWindow):
             QMessageBox.warning(self, "No Devices Selected", "Please select at least one device to launch.")
             return
 
-        devices_needing_ports = [c for c in active_configs if c["device"] != "Red Percent Window"]
+        devices_needing_ports = [c for c in active_configs if c["device"] != "Red Percent Window" and c["port"] != "SIM"]
         if len(assigned_ports) < len(devices_needing_ports):
             QMessageBox.critical(self, "Port Collision", "Error: You cannot assign the same COM port to multiple active devices!")
             return
