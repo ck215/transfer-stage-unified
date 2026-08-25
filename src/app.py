@@ -255,6 +255,11 @@ class SetupWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.status_label.setText("Scan complete.")
         
+        for device in self.devices:
+            if device not in self.autodetected_devices and device != "Red Percent Window":
+                self.status_labels[device].setText("Not Found")
+                self.status_labels[device].setStyleSheet("color: #D13438;")
+                
         QTimer.singleShot(1000, self._cleanup_scan_ui)
 
     def _cleanup_scan_ui(self):

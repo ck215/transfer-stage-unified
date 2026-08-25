@@ -169,6 +169,7 @@ class DashboardWindow(QMainWindow):
 
     def open_device_view(self, device_name):
         if device_name in self.active_docks:
+            self.active_docks[device_name].show()
             self.active_docks[device_name].raise_()
             return
             
@@ -191,9 +192,9 @@ class DashboardWindow(QMainWindow):
         
     def on_dock_closed(self, device_name, visible):
         if not visible and device_name in self.active_docks:
-            # Clean up the dock when closed to allow relaunching
-            self.active_docks[device_name].deleteLater()
-            del self.active_docks[device_name]
+            # Do not delete the dock! It causes segfaults during layout initialization.
+            pass
+
             
     def closeEvent(self, event):
         self.system_manager.shutdown_all()
