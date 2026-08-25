@@ -107,3 +107,22 @@ This file documents all bug fixes, architectural repairs, and regressions addres
 ## 19. RedPercent MVC Regressions Restored
 - **File:** `src/model/redpercent_system.py`
 - **Correction:** Subagents successfully restored the standalone "Save Log" button by adding it to the `ui_schema`. They also re-implemented the realtime console prints (`BASELINE SET`, `RED: X%`) inside the monitoring loop to ensure parity with the old `color_test_new.py` logging behavior.
+
+## Layout & Dock Updates
+- Changed PySide6 `DashboardWindow` to utilize `splitDockWidget` when launching multiple devices, automatically organizing them into clean, draggable vertical partitions (side-by-side columns).
+- Disabled the close button on the `Device Manager` sidebar, making it a permanent embedded widget that cannot be accidentally closed.
+- Resolved a critical crash (segmentation fault) that occurred upon closing PySide6 floating docks by safely decoupling their memory destruction lifecycle from the visibility event handler.
+
+## Headless Mode Integration
+- Added native "Headless" support inside `src/app.py`. Any physical hardware device (e.g. Stepper, Chuck) can now be assigned "Headless" from the COM port dropdown.
+- "Headless" mapping secretly translates to `'SIM'` under the hood, hooking into the `SerialDrive` simulator mode.
+- Modified port collision checks to explicitly ignore simulated headless ports, meaning multiple devices can be launched entirely virtually.
+
+## Rotator UI Restoration
+- Completely purged legacy Tkinter `RotatorView` frame from `src/model/rotator_system.py`.
+- Generated a native PySide6 `ui_schema` property for the Rotator model to seamlessly link it back into the `QtDynamicView` engine.
+- Fixed a bug in `src/view_pyside.py` toggle button rendering where toggle colors (green/red) would not initialize properly on boot.
+
+## Active Subagents
+- `feature_validator`: Launched to comprehensively map and unit-test all PySide6 `ui_schema` fields against backend object models.
+- `mvc_refactor_fixer`: Launched to debug and solve a catastrophic macOS initialization conflict between SDL (Pygame) and Qt (PySide6) causing `cocoa` framework drops.
