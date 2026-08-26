@@ -283,9 +283,30 @@ class ControllerPoller:
 
     def get_mapped_state(self):
         """Returns the universally mapped input dictionary from the current gamepad."""
-        if self.gamepad:
-            return self.gamepad.get_mapped_state()
-        return {}
+        if not self.gamepad:
+            return {}
+            
+        raw = self.gamepad.get_mapped_state()
+        result = dict(raw)
+        
+        if not hasattr(self, '_latch_state'):
+            self._latch_state = {}
+            
+        for key in ["dpad_LR", "dpad_UD", "LBumper", "RBumper"]:
+            current_val = raw.get(key, 0)
+            last_val = self._latch_state.get(key, 0)
+            
+            if current_val != 0:
+                if current_val != last_val:
+                    result[key] = current_val
+                else:
+                    result[key] = 0
+            else:
+                result[key] = 0
+                
+            self._latch_state[key] = current_val
+            
+        return result
 
     def _poll_loop(self):
         if not self.is_polling: return

@@ -186,20 +186,21 @@ class serial:
             combined_z_axis_status = z_up_value - z_down_value
             combined_bumpers = int(params.get('LBumper')) - int(params.get('RBumper'))
 
+            fmt = params.get('packet_format', PACKET_FORMAT)
             packet = struct.pack(
-                PACKET_FORMAT,
+                fmt,
                 START_MARKER,
                 1,
                 float(params['x_axisStatus']),
                 float(params['y_axisStatus']),
                 float(combined_z_axis_status),
-                int(params['x_stepSize']),
-                int(params['y_stepSize']),
-                int(params['z_stepSize']),
-                int(params['dpad_LR']),
-                int(params['dpad_UD']),
-                int(combined_bumpers),
-                int(params['manual_jog_speed']),
+                float(params['x_stepSize']) if 'f' in fmt[5:] else int(params['x_stepSize']),
+                float(params['y_stepSize']) if 'f' in fmt[5:] else int(params['y_stepSize']),
+                float(params['z_stepSize']) if 'f' in fmt[5:] else int(params['z_stepSize']),
+                float(params['dpad_LR']) if 'f' in fmt[5:] else int(params['dpad_LR']),
+                float(params['dpad_UD']) if 'f' in fmt[5:] else int(params['dpad_UD']),
+                float(combined_bumpers) if 'f' in fmt[5:] else int(combined_bumpers),
+                float(params['manual_jog_speed']) if 'f' in fmt[5:] else int(params['manual_jog_speed']),
             )
 
             print(f"[SerialDrive] Sending 12-Field MANUAL State: {packet}")
