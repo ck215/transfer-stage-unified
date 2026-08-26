@@ -8,11 +8,36 @@ from PySide6.QtCore import Qt, QTimer
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 import csv
-from PySide6.QtWidgets import QDialog, QFileDialog, QFormLayout, QComboBox
+from PySide6.QtWidgets import QDialog, QFileDialog, QFormLayout, QComboBox, QTextEdit
 from PySide6.QtGui import QPainter, QColor, QPen
  
 
+
+class ControllerLogWindow(QDialog):
+    def __init__(self, poller=None, parent=None):
+        super().__init__(parent)
+        self.poller = poller
+        self.setWindowTitle("Controller Log Window")
+        self.resize(500, 400)
+        from PySide6.QtWidgets import QVBoxLayout
+        self.layout = QVBoxLayout(self)
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+        self.layout.addWidget(self.text_edit)
+        self.setStyleSheet("QWidget { background-color: #121212; color: #FFFFFF; } QTextEdit { background-color: #1E1E1E; border: 1px solid #333; padding: 5px; color: lightgreen; }")
+
+    def append_log(self, message):
+        self.text_edit.append(message)
+        
+    def closeEvent(self, event):
+        if self.poller:
+            def print_log(msg):
+                print(f"[controllerDrive] {msg}")
+            self.poller.log_updater = print_log
+        event.accept()
+
 class QtDynamicView(QWidget):
+
     def __init__(self, model, parent=None):
         super().__init__(parent)
         self.model = model
@@ -35,6 +60,38 @@ class QtDynamicView(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll_model)
         self.timer.start(self.poll_interval_ms)
+        
+        # Start the controller poller and manual mode loop if available
+        if hasattr(self.model, 'poller') and self.model.poller:
+            class GUIAdapter:
+                def after(self, ms, func):
+                    QTimer.singleShot(ms, func)
+            
+            def _reset_disable_timer(model_ref=self.model):
+                if hasattr(self, 'disable_timer'):
+                    self.disable_timer.stop()
+                def _do_disable():
+                    if hasattr(model_ref, 'disable'):
+                        model_ref.disable()
+                if not hasattr(self, 'disable_timer'):
+                    self.disable_timer = QTimer()
+                    self.disable_timer.setSingleShot(True)
+                    self.disable_timer.timeout.connect(_do_disable)
+                self.disable_timer.start(5000)
+
+            def print_log(msg):
+                print(f"[controllerDrive] {msg}")
+
+            self.model.poller.start_polling(GUIAdapter(), log_updater=print_log, activity_callback=_reset_disable_timer)
+            
+            self.input_timer = QTimer(self)
+            def _route_input():
+                if getattr(self.model, 'manual_flag', False):
+                    controller_params = self.model.poller.get_mapped_state()
+                    if hasattr(self.model, 'send_manual_mode_command'):
+                        self.model.send_manual_mode_command(controller_params)
+            self.input_timer.timeout.connect(_route_input)
+            self.input_timer.start(20)
 
     def _build_ui(self):
         schema = getattr(self.model, 'ui_schema', {"sections": []})
@@ -104,6 +161,17 @@ class QtDynamicView(QWidget):
         self.layout.addStretch()
 
     def _execute_command(self, cmd_name):
+        if cmd_name == "open_controller_log":
+            if not hasattr(self, 'log_window') or not self.log_window.isVisible():
+                poller = getattr(self.model, 'poller', None)
+                self.log_window = ControllerLogWindow(poller=poller, parent=self)
+                if poller:
+                    poller.log_updater = self.log_window.append_log
+                self.log_window.show()
+            else:
+                self.log_window.raise_()
+            return
+            
         func = getattr(self.model, cmd_name, None)
         if func and callable(func):
             try:

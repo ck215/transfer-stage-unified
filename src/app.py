@@ -625,7 +625,12 @@ def run_pyside_app():
                 pygame.init()
                 pygame.joystick.init()
                 for i in range(pygame.joystick.get_count()):
-                    self.detected_controllers.append(f"Joy {i}")
+                    try:
+                        js = pygame.joystick.Joystick(i)
+                        js.init()
+                        self.detected_controllers.append(f"Joy {i}: {js.get_name()}")
+                    except Exception:
+                        pass
     
         def create_widgets(self):
             central = QWidget()
@@ -801,7 +806,8 @@ def run_pyside_app():
                 controllerID = config["controller"]
                 
                 if "Joy" in controllerID:
-                    controllerID = int(controllerID.replace("Joy ", ""))
+                    prefix = controllerID.split(":")[0]
+                    controllerID = int(prefix.replace("Joy ", ""))
                 elif controllerID == "None":
                     controllerID = None
     

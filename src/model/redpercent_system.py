@@ -90,6 +90,12 @@ class RedPercentSystem:
         red_pixels = np.sum(red_mask)
         return (red_pixels / total_pixels) * 100
 
+    def select_focus_area(self):
+        pass
+
+    def plot_data_ui(self):
+        pass
+
     @property
     def ui_schema(self):
         return {
