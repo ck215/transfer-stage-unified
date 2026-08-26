@@ -95,7 +95,10 @@ class ErrorPopupManager:
     def setup_excepthook(cls):
         """Hook into sys.excepthook to catch all unhandled exceptions globally."""
         def custom_excepthook(exc_type, exc_value, exc_traceback):
-            traceback.print_exception(exc_type, exc_value, exc_traceback)
+            try:
+                traceback.print_exception(exc_type, exc_value, exc_traceback)
+            except Exception:
+                print(f"Exception: {exc_value}")
             cls.report_error(
                 "Unhandled Exception",
                 f"An unexpected error occurred:\n\n{exc_value}",

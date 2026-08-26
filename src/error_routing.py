@@ -15,7 +15,7 @@ class ErrorRouter:
         cls._info_cb = info
         
     @classmethod
-    def _is_spam(cls, message):
+    def _is_spam(cls, message):\n        message = str(message)
         now = time.time()
         if message in cls._last_messages:
             if now - cls._last_messages[message] < 5.0:

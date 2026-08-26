@@ -142,19 +142,27 @@ class BaseProbe:
         print(f"[BaseProbe] Parsing script: {script_path}")
         self.enter_auton()
         
-        try:
-            from gcodeparser import GcodeParser
-            with open(script_path, 'r') as f:
-                gcode = f.read()
-            parsed = GcodeParser(gcode)
-            for line in parsed.lines:
-                # Basic script sending logic
-                self.serial_comm.ser.write((line.gcode_str + '\n').encode())
-                import time
-                time.sleep(0.1) # Simple pacing
-        except Exception as e:
-            from error_routing import ErrorRouter as ErrorPopupManager
-            ErrorPopupManager.report_error("Script Execution Error", f"Error running script:\n{e}", e)
+        import threading
+        def _execute():
+            try:
+                from gcodeparser import GcodeParser
+                with open(script_path, 'r', encoding="utf-8") as f:
+                    gcode = f.read()
+                parsed = GcodeParser(gcode)
+                for line in parsed.lines:
+                    if self.serial_comm.ser:
+                        self.serial_comm.ser.write((line.gcode_str + '\n').encode())
+                    else:
+                        raise AttributeError("Serial connection not active.")
+                    import time
+                    time.sleep(0.1)  
+            except Exception as e:
+                print(f"[BaseProbe] Script execution error: {e}")
+                from error_routing import ErrorRouter as ErrorPopupManager
+                ErrorPopupManager.report_error("Script Execution Error", f"Error running script:\n{e}", e)
+            finally:
+                self.full_stop()
+        threading.Thread(target=_execute, daemon=True).start()
 
     def get_params(self):
         return {
