@@ -7,7 +7,20 @@ import threading
 import os
 import serial
 import re
-import time
+import time\n
+# Safe messagebox monkey-patch for edge cases
+original_showerror = messagebox.showerror
+def safe_showerror(title, message, **options):
+    if not isinstance(message, str):
+        message = str(message)
+    if len(message) > 5000:
+        message = message[:5000] + "... [TRUNCATED]"
+    if threading.current_thread() is threading.main_thread():
+        original_showerror(title, message, **options)
+    else:
+        print(f"[Background Error - {title}] {message}")
+messagebox.showerror = safe_showerror
+
 
 # Import your external device modules
 import stepper_frame
