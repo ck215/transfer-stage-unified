@@ -5,6 +5,10 @@ from unittest.mock import MagicMock
 sys.modules["PIL"] = MagicMock()
 sys.modules["PIL.ImageTk"] = MagicMock()
 sys.modules["PIL.Image"] = MagicMock()
+sys.modules["mss"] = MagicMock()
+sys.modules["gcodeparser"] = MagicMock()
+
+
 
 import os
 import tkinter as tk
