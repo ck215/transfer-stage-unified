@@ -220,13 +220,20 @@ def run_legacy_app():
                 dropdown.state(["disabled"])
                 self.dropdown_widgets[device] = dropdown
                 
-                ctrl_var = tk.StringVar(value=self.detected_controllers[0] if self.detected_controllers else "None")
-                self.controller_vars[device] = ctrl_var
-                
-                ctrl_dropdown = ttk.OptionMenu(grid_frame, ctrl_var, ctrl_var.get(), *self.detected_controllers if self.detected_controllers else ["None"])
-                ctrl_dropdown.grid(row=idx+1, column=2, padx=10, pady=10, sticky="ew")
-                ctrl_dropdown.state(["disabled"])
-                self.controller_widgets[device] = ctrl_dropdown
+                if device in ["Red Percent Window", "SMC100 Rotator"]:
+                    ctrl_var = tk.StringVar(value="N/A")
+                    self.controller_vars[device] = ctrl_var
+                    ctrl_dropdown = ttk.OptionMenu(grid_frame, ctrl_var, "N/A", "N/A")
+                    ctrl_dropdown.grid(row=idx+1, column=2, padx=10, pady=10, sticky="ew")
+                    ctrl_dropdown.state(["disabled"])
+                    self.controller_widgets[device] = ctrl_dropdown
+                else:
+                    ctrl_var = tk.StringVar(value=self.detected_controllers[0] if self.detected_controllers else "None")
+                    self.controller_vars[device] = ctrl_var
+                    ctrl_dropdown = ttk.OptionMenu(grid_frame, ctrl_var, ctrl_var.get(), *self.detected_controllers if self.detected_controllers else ["None"])
+                    ctrl_dropdown.grid(row=idx+1, column=2, padx=10, pady=10, sticky="ew")
+                    ctrl_dropdown.state(["disabled"])
+                    self.controller_widgets[device] = ctrl_dropdown
                 
                 lbl = tk.Label(grid_frame, text="", font=("Helvetica", 10, "bold"))
                 lbl.grid(row=idx+1, column=3, padx=10, pady=10, sticky="w")
@@ -555,26 +562,33 @@ def run_pyside_app():
                 if port == "Headless": continue
                 self.pinging.emit(port)
                 device_found = False
-                try:
-                    with serial.Serial(port, baudrate=115200, timeout=0.2, write_timeout=0.2) as ser:
+                try: 
+                    with serial.Serial(port, baudrate=500000, timeout=.1, write_timeout=.2) as ser:
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
-                        ser.write(b"<0,0,0>")
-                        time.sleep(0.1)
-                        
-                        if ser.in_waiting > 0:
-                            response_bytes = ser.read_all()
-                            response_str = response_bytes.decode('utf-8', errors='ignore')
-                            match = DEV_PATTERN.search(response_str)
-                            if match:
-                                dev_char = match.group(1).lower()
-                                if dev_char in DEVICE_MAP:
-                                    device_name = DEVICE_MAP[dev_char]
-                                    self.found.emit(device_name, port)
+                        start_time = time.time()
+                        device_found = False
+                        time.sleep(1.5) # Wait for Arduino bootloader
+                        while ((time.time() - start_time < 3.0) and not device_found):
+                            try:
+                                ser.write(b"s\n")
+                            except Exception:
+                                break
+                            
+                            if ser.in_waiting > 0: 
+                                response_bytes = ser.read(ser.in_waiting)
+                                response_str = response_bytes.decode('utf-8', errors='ignore').strip()
+                                match = DEV_PATTERN.search(response_str)
+                                if match:
+                                    dev_char = match.group(1).lower()
+                                    if dev_char in DEVICE_MAP:
+                                        device_name = DEVICE_MAP[dev_char]
+                                        self.found.emit(device_name, port)
+                                        print(f"[main_app] Auto-detected {device_name} on {port}")
                                     device_found = True
-                        else:
-                            time.sleep(0.05)
-                except Exception:
+                            else:
+                                time.sleep(0.05)
+                except Exception as e:
                     pass
     
                 if not device_found:
@@ -681,13 +695,16 @@ def run_pyside_app():
                 grid.addWidget(port_cb, row, 2)
     
                 ctrl_cb = QComboBox()
-                ctrl_cb.addItems(self.detected_controllers)
+                if device in ["Red Percent Window", "SMC100 Rotator"]:
+                    ctrl_cb.addItem("N/A")
+                    ctrl_cb.setEnabled(False)
+                else:
+                    ctrl_cb.addItems(self.detected_controllers)
                 self.controller_vars[device] = ctrl_cb
                 grid.addWidget(ctrl_cb, row, 3)
                 
                 if device == "Red Percent Window":
                     port_cb.setEnabled(False)
-                    ctrl_cb.setEnabled(False)
     
                 if device == "Red Percent Window":
                     status_lbl = QLabel("Headless")

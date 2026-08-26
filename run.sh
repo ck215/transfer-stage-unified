@@ -1,4 +1,4 @@
 #!/bin/bash
 cd "$(dirname "$0")"
 source .venv/bin/activate
-python3 src/app.py --pyside
+python3 src/app.py "$@"
