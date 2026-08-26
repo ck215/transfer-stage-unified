@@ -126,3 +126,21 @@ Recent fixes focusing on gamepad interaction stability and UI refinements.
 - **Controller Enumeration Fix:** Updated PySide6 Setup Window to properly query device names from PyGame (e.g., "Joy 0: Xbox Series X Controller") and implemented safe string parsing to prevent application crash on launch.
 - **Dpad/Shoulder Edge Detection:** Fixed a bug where holding Dpad/Bumper buttons caused excessive, continuous stepping in the manual polling loop. Implemented edge-detection logic so that these buttons trigger exactly one step per physical press.
 - **Controller Log Window Fix:** Fully implemented the `ControllerLogWindow` as a floating PySide6 `QDialog` that is hidden by default and only pops up when the dedicated UI button is clicked, preventing it from automatically spamming the screen on system enable or manual mode entry.
+
+## Phase 6: Validation Testing & Hotfixes
+Deep validation suite executed to identify hidden vulnerabilities, memory leaks, and edge-cases across both `main` and `mvc-refactor` branches.
+
+### MVC Refactor Architecture Fixes
+- **Robust Controller Parsing:** The `controllerID` parsing logic was highly fragile when dealing with missing spaces, nulls, and Unicode/emojis. It was extracted into a standalone, robust `parse_controller_id()` module-level function.
+- **Enable Logic Redesign:** Replaced a generic "Enable System" toggle with mutually exclusive `toggle_auton()` and `toggle_manual()` commands to eliminate state conflicts, while successfully preserving the automated 5-minute inactivity watchdog.
+- **Async run_script Execution:** The `run_script` method for gcode was executing synchronously, entirely freezing the PySide6 UI loop. It was wrapped in a daemon thread, with robust error routing injected via `ErrorRouter.report_error()`.
+- **Global Exception Hooks:** Added a `try...except` wrapper inside the custom PySide6 `sys.excepthook` to prevent total GUI collapse when corrupted traceback objects (e.g., strings) were passed to it.
+- **Memory Leak Resolution:** Implemented `Qt.WA_DeleteOnClose` and `deleteLater()` on all PySide6 dialog windows (`PlotDialog`, `ControllerLogWindow`) to ensure underlying C++ objects are garbage collected when users spam open/close, preventing severe memory exhaustion.
+- **Serial Thread Safety:** Added `threading.Lock()` to the serial command queue to prevent autonomous string packets from interleaving with high-speed manual controller packets, which would otherwise crash the hardware parser.
+
+### Legacy Main Branch Fixes
+- **Modal Hang Fix:** Discovered the legacy Tkinter `messagebox.showerror` dialog could permanently lock the main thread if passed massive strings. Implemented a monkeypatch in `mainGUI.py` to truncate error strings to 5,000 characters and safely cast dictionaries/lists to string format before displaying.
+- **Runaway Recursion Loop:** Fixed a bug where Tkinter UI polling functions (like position readers) would infinitely re-schedule themselves (`root.after()`) even when the modes were disabled or the application was attempting to close. Added rigorous `_is_polling` flags and `after_cancel()` cleanups to all `_frame.py` files.
+- **Malformed COM Port Robustness:** The `get_arduino_port()` autodetect function would crash with an `AttributeError` if a highly malformed USB device without a `description`, `vid`, or `pid` attribute was scanned. Added safe `getattr()` checks with default fallback strings.
+- **SetupWindow Double-Destroy Bug:** Fixed a race condition where calling `app.destroy()` multiple times during tear-down raised fatal `TclError`s. Overrode the `destroy()` method in `SetupWindow` to gracefully catch and discard redundant closure calls.
+- **Pygame/Tkinter macOS Conflict:** Mitigated an initialization conflict (segfault) by deferring the global `pygame.init()` until after Tkinter finishes spawning its root window frame.
