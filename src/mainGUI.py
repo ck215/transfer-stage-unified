@@ -46,7 +46,7 @@ try:
     os.environ["SDL_AUDIODRIVER"] = "dummy"
     os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
     import pygame
-    # pygame.init() moved
+    pygame.init()
     pygame.joystick.init()
     PYGAME_AVAILABLE = True
 except ImportError:
