@@ -411,9 +411,9 @@ class AppLogic:
         print("Enter manual mode using the MANUAL MODE button to control the stage manually with the Xbox Controller.")
         self.autonFlag = True
         self.manualFlag = False
-            if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
-                self.root.after_cancel(self._manual_timer_id)
-                self._manual_timer_id = None
+        if hasattr(self, '_manual_timer_id') and self._manual_timer_id:
+            self.root.after_cancel(self._manual_timer_id)
+            self._manual_timer_id = None
 
         # Stop monitoring controller input
         self.controller.stop_polling()
@@ -448,7 +448,7 @@ class AppLogic:
         print("FULL STOP engaged. Select a mode to continue.")
         try:
             self.manualFlag = False
-            if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
+            if hasattr(self, '_manual_timer_id') and self._manual_timer_id:
                 self.root.after_cancel(self._manual_timer_id)
                 self._manual_timer_id = None
             self.autonFlag = False
@@ -465,7 +465,7 @@ class AppLogic:
         if self.controller.joystick is None:
             print("[AppLogic] No controller connected. Please connect a controller before entering MANUAL MODE.")
             self.manualFlag = False
-            if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
+            if hasattr(self, '_manual_timer_id') and self._manual_timer_id:
                 self.root.after_cancel(self._manual_timer_id)
                 self._manual_timer_id = None
             
@@ -502,7 +502,7 @@ class AppLogic:
             print("\nNo controller connected. Please connect a controller before entering MANUAL MODE.")
             # Adding a flag verification here to indicate manual mode was NOT entered
             self.manualFlag = False
-            if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
+            if hasattr(self, '_manual_timer_id') and self._manual_timer_id:
                 self.root.after_cancel(self._manual_timer_id)
                 self._manual_timer_id = None
             return

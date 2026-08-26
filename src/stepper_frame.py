@@ -465,9 +465,9 @@ class AppLogic:
         print("Enter manual mode using the MANUAL MODE button to control the stage manually with the Xbox Controller.")
         self.autonFlag = True
         self.manualFlag = False
-            if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
-                self.root.after_cancel(self._manual_timer_id)
-                self._manual_timer_id = None
+        if hasattr(self, '_manual_timer_id') and self._manual_timer_id:
+            self.root.after_cancel(self._manual_timer_id)
+            self._manual_timer_id = None
 
         # Stop monitoring controller input
         self.controller.stop_polling()
@@ -506,7 +506,7 @@ class AppLogic:
 
             # Cancel the timeout timer if it exists
             if self.disable_timer_id:
-                    self.root.after_cancel(self.disable_timer_id)
+                self.root.after_cancel(self.disable_timer_id)
                 self.disable_timer_id = None
 
         else:
@@ -523,7 +523,7 @@ class AppLogic:
                 
     def reset_disable_timer(self):
         if self.system_enabled and self.disable_timer_id:
-                self.root.after_cancel(self.disable_timer_id)
+            self.root.after_cancel(self.disable_timer_id)
             self.disable_timer_id = self.root.after(300000, self.auto_disable)
             
     def auto_disable(self):
@@ -554,9 +554,9 @@ class AppLogic:
         print("FULL STOP engaged. Select a mode to continue.")
         try:
             self.manualFlag = False
-                if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
-                    self.root.after_cancel(self._manual_timer_id)
-                    self._manual_timer_id = None
+            if hasattr(self, '_manual_timer_id') and self._manual_timer_id:
+                self.root.after_cancel(self._manual_timer_id)
+                self._manual_timer_id = None
             self.autonFlag = False
             self.controller.stop_polling()                          # FIX #6: Stop controller polling on full stop
             params = self.gui.get_gui_params(self.manualFlag, self.autonFlag)
@@ -582,7 +582,7 @@ class AppLogic:
         if self.controller.joystick is None:
             print("[AppLogic] No controller connected. Please connect a controller before entering MANUAL MODE.")
             self.manualFlag = False
-            if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
+            if hasattr(self, '_manual_timer_id') and self._manual_timer_id:
                 self.root.after_cancel(self._manual_timer_id)
                 self._manual_timer_id = None
         
@@ -621,7 +621,7 @@ class AppLogic:
         if self.controller.joystick is None:
             print("\nNo controller connected. Please connect a controller before entering MANUAL MODE.")
             self.manualFlag = False
-            if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
+            if hasattr(self, '_manual_timer_id') and self._manual_timer_id:
                 self.root.after_cancel(self._manual_timer_id)
                 self._manual_timer_id = None
             return
