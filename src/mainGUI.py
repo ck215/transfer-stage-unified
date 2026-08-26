@@ -7,7 +7,7 @@ import threading
 import os
 import serial
 import re
-import time\n
+import time
 # Safe messagebox monkey-patch for edge cases
 original_showerror = messagebox.showerror
 def safe_showerror(title, message, **options):

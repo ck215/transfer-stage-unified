@@ -22,6 +22,7 @@ from gcodeparser import parse_gcode_lines
 def get_arduino_port():
     print("Scanning system for Arduino Mega...")
     ports = serial.tools.list_ports.comports()
+    if ports is None: return None
 
     # Identifiers for Arduinoi Mega 2560 and clones (common VID/PID combinations)
     MEGA_VIDS = [0x2341, 0x1A86]
@@ -29,17 +30,21 @@ def get_arduino_port():
     
     for port in ports:
         # Convert text attributes to lowercase safely
-        desc = port.description.lower() if port.description else ""
-        hwid = port.hwid.lower() if port.hwid else ""
+        desc = getattr(port, 'description', None)
+        desc = desc.lower() if desc else ""
+        hwid = getattr(port, 'hwid', None)
+        hwid = hwid.lower() if hwid else ""
         
         # Method 1: Check by precise numeric Vendor/Product IDs (Win/Mac/Linus)
-        if port.vid in MEGA_VIDS and port.pid in MEGA_PIDS:
-            print(f"--> Auto-detected via Hardware ID: Official/Clone Mega 2560 oon {port.device}")
+        vid = getattr(port, 'vid', None)
+        pid = getattr(port, 'pid', None)
+        if vid in MEGA_VIDS and pid in MEGA_PIDS:
+            print(f"--> Auto-detected via Hardware ID: Official/Clone Mega 2560 on {port.device}")
             return port.device
         
         # Method 2: String matching fallback (For edge-case descriptors)
-        if "arduino" in desc or "mega" in desc or "ch340" in desc:
-            print(f"--> Auto-detected via Descriptor: {port.description} on {port.device}")
+        if "arduino" in desc or "mega" in desc or "ch340" in desc or "arduino" in hwid:
+            print(f"--> Auto-detected via Descriptor: {getattr(port, 'description', '')} on {port.device}")
             return port.device     
             
     # Fallback if no matching signature is plugged in
