@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from model.probes import StepperProbe, DCProbe
+from model.redpercent_system import RedPercentSystem
 
 def get_mock_serial():
     mock_instance = MagicMock()
@@ -56,6 +57,34 @@ def test_send_manual_mode_command():
         sent_params = args[0]
         assert sent_params["x_axisStatus"] == 0.5
         assert sent_params["manual_jog_speed"] == "120"
+
+def test_redpercent_syncs_to_non_stepper_probe():
+    """
+    RedPercentSystem must be linkable to any position-tracking probe, not just
+    StepperProbe, so rigs using a DC Probe / Chuck Positioner for XYZ still get
+    location data tied to red-percent readings (app.py's fallback linkage).
+    """
+    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+        mock_serial.return_value = get_mock_serial()
+        dc_probe = DCProbe("COM1", "Virtual Controller A")
+
+    assert hasattr(dc_probe, 'pos_x') and hasattr(dc_probe, 'pos_y') and hasattr(dc_probe, 'pos_z')
+
+    rp = RedPercentSystem()
+    rp.stepper_model = dc_probe
+    rp.sync_dimensions = ['X', 'Y', 'Z']
+    dc_probe.pos_x, dc_probe.pos_y, dc_probe.pos_z = "1.5", "2.5", "3.5"
+    rp.capture_focus_area = lambda sct: object()
+    rp.detect_red = lambda img: 25.0
+
+    rp.start_monitoring()
+    import time
+    time.sleep(0.2)
+    rp.stop_monitoring()
+    time.sleep(0.1)
+
+    assert rp.data_log.red_values == [25.0]
+    assert rp.data_log.loc_values == {'X': [1.5], 'Y': [2.5], 'Z': [3.5]}
 
 def test_temperature_system_baud_rate():
     with patch("model.temperature_system.serial") as mock_serial_cls:

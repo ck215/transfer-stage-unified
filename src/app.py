@@ -527,14 +527,17 @@ def run_legacy_app():
                     active_models[device] = RedPercentSystem()
     
             
-            # Link RedPercentSystem to StepperProbe for X-coordinate syncing
+            # Link RedPercentSystem to the active positioning probe for X/Y/Z syncing.
+            # Prefer StepperProbe, but fall back to any other probe that tracks position
+            # (e.g. DC Probe, Chuck Positioner) so red-percent data isn't silently
+            # left unsynced when a non-stepper probe is the one driving position.
             stepper_model = None
             red_model = None
             for device_name, model in active_models.items():
-                if model.__class__.__name__ == 'StepperProbe':
-                    stepper_model = model
                 if model.__class__.__name__ == 'RedPercentSystem':
                     red_model = model
+                elif hasattr(model, 'pos_x') and (stepper_model is None or model.__class__.__name__ == 'StepperProbe'):
+                    stepper_model = model
             if red_model and stepper_model:
                 red_model.stepper_model = stepper_model
     
@@ -979,7 +982,15 @@ def run_pyside_app():
                     from model.redpercent_system import RedPercentSystem
                     active_models[device] = RedPercentSystem()
     
+            # Prefer StepperProbe, but fall back to any other position-tracking probe
+            # (DC Probe, Chuck Positioner) so X/Y/Z stays tied to red-percent data
+            # regardless of which probe is driving position on this rig.
             stepper_model = active_models.get("Stepper Probe")
+            if stepper_model is None:
+                for device_name, model in active_models.items():
+                    if device_name != "Red Percent Window" and hasattr(model, 'pos_x'):
+                        stepper_model = model
+                        break
             red_model = active_models.get("Red Percent Window")
             if red_model and stepper_model:
                 red_model.stepper_model = stepper_model
