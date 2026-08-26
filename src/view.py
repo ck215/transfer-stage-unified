@@ -459,6 +459,10 @@ class DynamicView(tk.Frame):
                 if getattr(model_ref, 'system_enabled', False):
                     model_ref.disable_timer_id = dashboard_window.after(300000, lambda: _auto_disable(model_ref))
             def _auto_disable(model_ref):
+                if getattr(model_ref, 'is_stepping', False):
+                    print(f"[Timeout] {model_ref.__class__.__name__} is actively stepping, deferring inactivity disable.")
+                    model_ref.disable_timer_id = dashboard_window.after(30000, lambda: _auto_disable(model_ref))
+                    return
                 msg = f"5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}"
                 print(f"[Timeout] {msg}")
                 ErrorPopupManager.report_info("Idle Timeout", msg)

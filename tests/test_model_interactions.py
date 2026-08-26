@@ -36,6 +36,33 @@ def test_macro_start_auton_command_flags():
         params = args[0]
         assert params["command_code_auton"] == 1, "Command code auton should be 1"
 
+def test_is_stepping_starts_false_and_unaffected_by_plain_mode_entry():
+    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+        mock_serial.return_value = get_mock_serial()
+        probe = StepperProbe("COM1", "Virtual Controller A")
+
+    assert probe.is_stepping is False
+
+    probe.enter_auton()
+    assert probe.is_stepping is False, "enter_auton should not mark the probe as stepping"
+
+    probe.enter_manual()
+    assert probe.is_stepping is False, "enter_manual should not mark the probe as stepping"
+
+def test_macro_start_auton_sets_is_stepping_and_full_stop_clears_it():
+    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+        mock_serial.return_value = get_mock_serial()
+        probe = StepperProbe("COM1", "Virtual Controller A")
+        probe.serial_comm = MagicMock()
+
+        probe.macro_start_auton()
+        assert probe.is_stepping is True, "macro_start_auton should mark the probe as actively stepping"
+
+        probe.full_stop()
+        assert probe.is_stepping is False, "full_stop should clear is_stepping"
+        assert probe.auton_flag is False
+        assert probe.manual_flag is False
+
 def test_send_manual_mode_command():
     with patch("controller.seiral.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()

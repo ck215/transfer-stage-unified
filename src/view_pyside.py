@@ -173,6 +173,10 @@ class QtDynamicView(QWidget):
                 if hasattr(self, 'disable_timer') and self.disable_timer:
                     self.disable_timer.stop()
                 def _do_disable():
+                    if getattr(model_ref, 'is_stepping', False):
+                        print(f"[Timeout] {model_ref.__class__.__name__} is actively stepping, deferring inactivity disable.")
+                        self.disable_timer.start(30000)
+                        return
                     msg = f"5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}"
                     print(f"[Timeout] {msg}")
                     QtErrorPopupManager.report_info("Idle Timeout", msg)

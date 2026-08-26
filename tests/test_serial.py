@@ -45,6 +45,27 @@ def test_serial_send_manual_mode_command():
         assert unpacked[3] == -0.5
         assert unpacked[4] == 0.0
         
+def test_serial_enable_disable_send_explicit_bytes():
+    """
+    enable()/disable() must send distinct, idempotent commands rather than a
+    single shared toggle byte — a blind toggle can desync from the firmware's
+    actual armed state (e.g. across a reconnect that doesn't power-cycle the
+    Arduino), silently disarming hardware when Python believes it just armed
+    it. Also must not collide with the '0'-'9'/'-' autonomous text-command
+    range or the 's' identity-query byte used elsewhere in the protocol.
+    """
+    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+        mock_instance = get_mock_serial()
+        mock_serial.return_value = mock_instance
+
+        s = serial("COM1")
+
+        s.enable()
+        mock_instance.write.assert_called_with("e".encode('utf-8'))
+
+        s.disable()
+        mock_instance.write.assert_called_with("d".encode('utf-8'))
+
 def test_serial_read_position():
     with patch("controller.seiral.pyserial.Serial") as mock_serial:
         mock_instance = get_mock_serial()

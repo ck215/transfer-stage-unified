@@ -41,6 +41,7 @@ class BaseProbe:
         self.system_enabled = False
         self.auton_flag = False
         self.manual_flag = False
+        self.is_stepping = False
 
     @property
     def ui_schema(self):
@@ -159,6 +160,7 @@ class BaseProbe:
             return
         self.auton_flag = True
         self.manual_flag = False
+        self.is_stepping = True
         self.send_autonomous_command()
 
     def run_script(self, script_path=None):
@@ -167,8 +169,9 @@ class BaseProbe:
             
         print(f"[{self.__class__.__name__}] Parsing and executing script: {script_path}")
         self.enter_auton()
-        
+
         def _execute():
+            self.is_stepping = True
             try:
                 import gcodeparser
                 with open(script_path, 'r', encoding="utf-8") as f:
@@ -303,6 +306,7 @@ class BaseProbe:
     def _stop_and_disarm(self):
         self.manual_flag = False
         self.auton_flag = False
+        self.is_stepping = False
         self.send_stop_command()
         if self.system_enabled:
             if self.serial_comm:

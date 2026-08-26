@@ -319,8 +319,8 @@ void parseHybridSerial() {
             }
         }
 
-        // ---OPTION B: TOGGLE ENABLE
-        else if (peekChar == 0x74) {
+        // ---OPTION B: EXPLICIT DISABLE (idempotent — safe even if already disabled)
+        else if (peekChar == 0x64) { // 'd'
             Serial.read();
 
             if (system_enabled) {
@@ -329,9 +329,15 @@ void parseHybridSerial() {
                 yUART.toff(0);
                 zUART.toff(0);
             }
-            else {
+        }
+
+        // ---OPTION B2: EXPLICIT ENABLE (idempotent — safe even if already enabled)
+        else if (peekChar == 0x65) { // 'e'
+            Serial.read();
+
+            if (!system_enabled) {
                 system_enabled = true;
-                
+
                 // Safety: Force speeds to 0 before power-up so they don't jump instantly
                 x_axis.setSpeed(0);
                 y_axis.setSpeed(0);
