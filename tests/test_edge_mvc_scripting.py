@@ -11,7 +11,10 @@ class MockGcodeParser:
         if "malformed" in gcode.lower() or "invalid" in gcode.lower():
             raise ValueError("Malformed gcode")
         # For our tests, we don't need real lines
-        self.lines = []
+        class MockLine:
+            def __init__(self):
+                self.gcode_str = "G0 X10"
+        self.lines = [MockLine()]
 mock_gcodeparser.GcodeParser = MockGcodeParser
 sys.modules['gcodeparser'] = mock_gcodeparser
 
