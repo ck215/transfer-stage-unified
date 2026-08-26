@@ -90,8 +90,8 @@ class XboxGamepad(BaseGamepad):
             "y_axisStatus": self.prev_axis_states.get(y_axis, 0.0),
             "z_axisStatusL": self.prev_axis_states.get(z_left_axis, -1.0),
             "z_axisStatusR": self.prev_axis_states.get(z_right_axis, -1.0),
-            "dpad_LR": self.prev_hat_states.get(0, (0,0))[0],
-            "dpad_UD": self.prev_hat_states.get(0, (0,0))[1],
+            "dpad_LR": -self.prev_hat_states.get(0, (0,0))[0],
+            "dpad_UD": -self.prev_hat_states.get(0, (0,0))[1],
             "LBumper": self.prev_button_states.get(4, 0),
             "RBumper": self.prev_button_states.get(5, 0),
         }
@@ -177,6 +177,14 @@ class ControllerPoller:
             info.dwSize = ctypes.sizeof(JOYINFOEX)
             info.dwFlags = 255
             return ctypes.windll.winmm.joyGetPosEx(self.controller_index, ctypes.byref(info)) == 0
+        elif sys.platform == "darwin":
+            if not getattr(self, 'gamepad', None) or not getattr(self.gamepad, 'joystick', None):
+                return False
+            try:
+                self.gamepad.joystick.get_name()
+                return True
+            except:
+                return False
         return True
 
     def _handle_disconnect(self):

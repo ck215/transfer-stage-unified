@@ -5,3 +5,4 @@ Pillow
 numpy
 matplotlib
 PySide6
+gcodeparser

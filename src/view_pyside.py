@@ -17,7 +17,7 @@ class ControllerLogWindow(QDialog):
     def __init__(self, poller=None, parent=None):
         super().__init__(parent)
         self.poller = poller
-        self.setWindowTitle("Controller Log Window")
+        self.setWindowTitle("Controller Log Window")\n        self.setAttribute(Qt.WA_DeleteOnClose)
         self.resize(500, 400)
         from PySide6.QtWidgets import QVBoxLayout
         self.layout = QVBoxLayout(self)
@@ -77,7 +77,7 @@ class QtDynamicView(QWidget):
                     self.disable_timer = QTimer()
                     self.disable_timer.setSingleShot(True)
                     self.disable_timer.timeout.connect(_do_disable)
-                self.disable_timer.start(5000)
+                self.disable_timer.start(300000)
 
             def print_log(msg):
                 print(f"[controllerDrive] {msg}")
@@ -287,7 +287,7 @@ class PlotDialog(QDialog):
                 
                 try: red_idx = header.index("Red Percent")
                 except ValueError:
-                    QMessageBox.showerror(self, "Invalid File", "CSV missing 'Red Percent' column")
+                    QMessageBox.critical(self, "Invalid File", "CSV missing 'Red Percent' column")
                     return
                     
                 dim_indices = {}
@@ -425,7 +425,11 @@ class RedPercentDynamicView(QtDynamicView):
             self.overlay = SelectionOverlay(self.model)
             self.overlay.show()
         elif cmd_name == "plot_data_ui":
+            
+            if hasattr(self, 'plot_dialog') and self.plot_dialog:
+                self.plot_dialog.deleteLater()
             self.plot_dialog = PlotDialog(self)
+
             self.plot_dialog.show()
         else:
             super()._execute_command(cmd_name)

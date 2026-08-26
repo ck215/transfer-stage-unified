@@ -99,17 +99,25 @@ class BaseProbe:
     def open_controller_log(self):
         print("[BaseProbe] Controller log window requested")
 
-    def toggle_enable(self):
-        if self.system_enabled:
+    def toggle_manual(self):
+        if self.manual_flag:
             self.disable()
+            self.manual_flag = False
         else:
             self.enable()
+            self.enter_manual()
+
+    def toggle_auton(self):
+        if self.auton_flag:
+            self.disable()
+            self.auton_flag = False
+        else:
+            self.enable()
+            self.enter_auton()
 
     def send_stop_command(self):
         if self.serial_comm:
             params = self.get_params()
-            params["command_code_manual"] = 0
-            params["command_code_auton"] = 0
             self.serial_comm.send_autonomous_command(params)
 
     def enter_auton(self):

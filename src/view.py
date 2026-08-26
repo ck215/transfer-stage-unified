@@ -47,7 +47,13 @@ class ErrorPopupManager:
         
         full_message = message
         if exception:
-            full_message += f"\n\nDetails:\n{type(exception).__name__}: {str(exception)}"
+            if not full_message: full_message = ""
+            try:
+                full_message += f"\n\nDetails:\n{type(exception).__name__}: {str(exception)}"
+            except Exception:
+                full_message += "\n\nDetails: <Unprintable Exception>"
+        if full_message and len(full_message) > 5000:
+            full_message = full_message[:5000] + "... [TRUNCATED]"
             
         if msg_type == 'error':
             messagebox.showerror(title, full_message, parent=cls._root)
