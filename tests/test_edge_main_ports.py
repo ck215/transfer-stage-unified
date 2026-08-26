@@ -70,7 +70,8 @@ def test_malformed_ports(monkeypatch):
         
     assert port == 'COM4'
 
-def test_malformed_ports_missing_desc():
+def test_malformed_ports_missing_desc(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt: "COM200")
     class MissingAttrsPort:
         def __init__(self, device):
             self.device = device
@@ -110,3 +111,24 @@ def test_manual_input_fallback(monkeypatch):
     monkeypatch.setattr('builtins.input', lambda prompt: '/dev/ttyUSB0')
     port = get_arduino_port()
     assert port == '/dev/ttyUSB0'
+
+def test_empty_string_attributes(monkeypatch):
+    """Test with empty strings for description, vid, pid."""
+    port1 = MockPort(device="COM8", description="", vid="", pid="")
+    mock_list_ports.comports.return_value = [port1]
+    
+    monkeypatch.setattr('builtins.input', lambda prompt: 'COM99')
+    port = get_arduino_port()
+    assert port == 'COM99'
+
+def test_null_comports(monkeypatch):
+    """Test if comports returns None instead of a list."""
+    mock_list_ports.comports.return_value = None
+    
+    monkeypatch.setattr('builtins.input', lambda prompt: 'COM100')
+    try:
+        port = get_arduino_port()
+    except TypeError:
+        pytest.fail("Implementation error handling None comports list")
+    assert port == 'COM100'
+

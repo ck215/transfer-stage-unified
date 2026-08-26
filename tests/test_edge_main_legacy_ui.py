@@ -1,5 +1,11 @@
 import pytest
 import sys
+import sys
+from unittest.mock import MagicMock
+sys.modules["PIL"] = MagicMock()
+sys.modules["PIL.ImageTk"] = MagicMock()
+sys.modules["PIL.Image"] = MagicMock()
+
 import os
 import tkinter as tk
 from unittest.mock import patch, MagicMock

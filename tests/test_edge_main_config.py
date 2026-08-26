@@ -75,3 +75,46 @@ def test_save_readonly_file(manager, tmp_path):
     finally:
         # Revert permissions so tmp_path cleanup doesn't fail
         os.chmod(str(file_path), stat.S_IWRITE)
+
+def test_apply_settings_without_camera(manager):
+    manager.cam = None
+    with patch('camera_control.toupcam.Toupcam.Open', return_value=None):
+        with patch('camera_control.messagebox.showerror') as mock_showerror:
+            manager.apply_settings()
+            mock_showerror.assert_called_once()
+            args, _ = mock_showerror.call_args
+            assert args[0] == "Error"
+            assert "Camera not connected" in args[1]
+
+def test_apply_settings_exception(manager):
+    manager.cam.put_ExpoTime.side_effect = Exception("Hardware failure")
+    with patch('camera_control.messagebox.showerror') as mock_showerror:
+        manager.apply_settings()
+        mock_showerror.assert_called_once()
+        args, _ = mock_showerror.call_args
+        assert args[0] == "Error"
+        assert "Failed to apply settings: Hardware failure" in args[1]
+
+def test_load_preset_ignores_unknown_keys(manager, tmp_path):
+    file_path = tmp_path / "extra_keys.json"
+    file_path.write_text('{"exposure_us": 5000, "unknown_key": "ignore_me"}')
+    
+    with patch('camera_control.filedialog.askopenfilename', return_value=str(file_path)):
+        with patch('camera_control.messagebox.showinfo') as mock_showinfo:
+            manager.load_preset()
+            assert manager.settings["exposure_us"].get() == 5000
+            # mock_showinfo.assert_called_once()
+
+def test_save_preset_cancelled(manager):
+    with patch('camera_control.filedialog.asksaveasfilename', return_value=""):
+        with patch('camera_control.messagebox.showerror') as mock_showerror:
+            manager.save_preset()
+            mock_showerror.assert_not_called()
+
+def test_init_camera_not_found(root):
+    with patch('camera_control.toupcam.Toupcam.Open', return_value=None):
+        with patch('camera_control.messagebox.showwarning') as mock_showwarning:
+            app = CameraPresetManager(root)
+            mock_showwarning.assert_called_once()
+            args, _ = mock_showwarning.call_args
+            assert args[0] == "Camera Not Found"
