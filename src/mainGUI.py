@@ -262,13 +262,20 @@ class SetupWindow(tk.Tk):
             dropdown.state(["disabled"])
             self.dropdown_widgets[device] = dropdown
             
-            ctrl_var = tk.StringVar(value=self.detected_controllers[0])
-            self.controller_vars[device] = ctrl_var
-            
-            ctrl_dropdown = ttk.OptionMenu(grid_frame, ctrl_var, self.detected_controllers[0], *self.detected_controllers)
-            ctrl_dropdown.grid(row=idx+1, column=2, padx=10, pady=10, sticky="ew")
-            ctrl_dropdown.state(["disabled"])
-            self.controller_widgets[device] = ctrl_dropdown
+            if device in ["Red Percent Window", "SMC100 Rotator"]:
+                ctrl_var = tk.StringVar(value="N/A")
+                self.controller_vars[device] = ctrl_var
+                ctrl_dropdown = ttk.OptionMenu(grid_frame, ctrl_var, "N/A", "N/A")
+                ctrl_dropdown.grid(row=idx+1, column=2, padx=10, pady=10, sticky="ew")
+                ctrl_dropdown.state(["disabled"])
+                self.controller_widgets[device] = ctrl_dropdown
+            else:
+                ctrl_var = tk.StringVar(value=self.detected_controllers[0])
+                self.controller_vars[device] = ctrl_var
+                ctrl_dropdown = ttk.OptionMenu(grid_frame, ctrl_var, self.detected_controllers[0], *self.detected_controllers)
+                ctrl_dropdown.grid(row=idx+1, column=2, padx=10, pady=10, sticky="ew")
+                ctrl_dropdown.state(["disabled"])
+                self.controller_widgets[device] = ctrl_dropdown
             
         btn_frame = ttk.Frame(self)
         btn_frame.pack(pady=20)
