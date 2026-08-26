@@ -620,15 +620,13 @@ class AppLogic:
 
         # Start monitoring controller input
         self.controller.start_polling(gui=self.root, log_updater=self.gui.controller_log_print, activity_callback=self.reset_disable_timer)
-
-        # Open controller log window if not already open
-        self.open_controller_log_window()
         
         # Begin manual loop
         self._manual_mode_loop()
             
     # Passes controller axis states to a dictionary for serialDrive to send to arduino
     def get_controller_params(self):
+        dpad = self.controller.get_hat_edge(0)
         return {
             "x_axisStatus": self.controller.prev_axis_states.get(self.controller.controller_binds[0], 0.0),     # FIX #4: Added default 0.0 (was None)
             "y_axisStatus": self.controller.prev_axis_states.get(self.controller.controller_binds[1], 0.0),     # FIX #4: Added default 0.0 (was None)
@@ -637,10 +635,10 @@ class AppLogic:
             "x_stepSize": self.gui.entry_x_step.get(),
             "y_stepSize": self.gui.entry_y_step.get(),
             "z_stepSize": self.gui.entry_z_step.get(),
-            "dpad_LR": self.controller.prev_hat_states.get(0, (0, 0))[0],
-            "dpad_UD": self.controller.prev_hat_states.get(0, (0,0))[1],
-            "LBumper": self.controller.prev_button_states.get(self.controller.controller_binds[4], 0),
-            "RBumper": self.controller.prev_button_states.get(self.controller.controller_binds[5], 0),
+            "dpad_LR": dpad[0],
+            "dpad_UD": dpad[1],
+            "LBumper": self.controller.get_button_edge(self.controller.controller_binds[4]),
+            "RBumper": self.controller.get_button_edge(self.controller.controller_binds[5]),
             "manual_jog_speed": self.gui.entry_man_full_speed.get()                             
         }
     

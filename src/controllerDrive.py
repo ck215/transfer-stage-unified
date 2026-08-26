@@ -329,3 +329,48 @@ class ControllerPoller:
         else:
             print("[controllerDrive] Error: tkinter root window not found. Stopping poll.")
             self.stop_polling()
+
+    def get_button_edge(self, button_id):
+        if not hasattr(self, 'button_read_states'):
+            self.button_read_states = {}
+            
+        val = self.prev_button_states.get(button_id, 0)
+        
+        if val == 1:
+            if self.button_read_states.get(button_id, False):
+                return 0
+            else:
+                self.button_read_states[button_id] = True
+                return 1
+        else:
+            self.button_read_states[button_id] = False
+            return 0
+
+    def get_hat_edge(self, hat_id):
+        if not hasattr(self, 'hat_read_states'):
+            self.hat_read_states = {}
+            
+        val = self.prev_hat_states.get(hat_id, (0, 0))
+        read_val = self.hat_read_states.get(hat_id, (False, False))
+        
+        out_x, out_y = val[0], val[1]
+        new_read_x, new_read_y = read_val[0], read_val[1]
+        
+        if val[0] != 0:
+            if read_val[0]:
+                out_x = 0
+            else:
+                new_read_x = True
+        else:
+            new_read_x = False
+            
+        if val[1] != 0:
+            if read_val[1]:
+                out_y = 0
+            else:
+                new_read_y = True
+        else:
+            new_read_y = False
+            
+        self.hat_read_states[hat_id] = (new_read_x, new_read_y)
+        return (out_x, out_y)
