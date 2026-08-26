@@ -6,7 +6,7 @@ except ImportError:
     smc100 = None
 
 class RotatorSystem:
-    def __init__(self, default_port="COM1"):
+    def __init__(self, default_port=None):
         self.port = default_port
         self.smc_id = 1
         
@@ -21,6 +21,9 @@ class RotatorSystem:
         
         self.target_deg = "0"
         self.step_deg = "0"
+        
+        if default_port and default_port != "None" and default_port != "SIM":
+            self.connect(default_port, self.smc_id)
         
     @property
     def position(self):
@@ -58,30 +61,58 @@ class RotatorSystem:
         except Exception as e:
             if self.error_callback:
                 self.error_callback(e)
+            else:
+                try:
+                    from error_routing import ErrorRouter
+                    ErrorRouter.report_error("Rotator Controller Error", f"Action failed:\n{e}", e)
+                except Exception:
+                    pass
 
-    def connect(self, port: str, smc_id: int):
-        if not self.is_connected:
+    def connect(self, port: str, smc_id: int = 1):
+        with self._lock:
+            if self.is_connected:
+                return
             self.port = port
             self.smc_id = smc_id
-            self.smc = smc100.SMC100(
-                smcID=self.smc_id,
-                port=self.port,
-                silent=True,
-                sleepfunc=time.sleep,
-            )
-            self.is_connected = True
+        if smc100 is not None:
+            try:
+                smc_inst = smc100.SMC100(
+                    smcID=self.smc_id,
+                    port=self.port,
+                    silent=True,
+                    sleepfunc=time.sleep,
+                )
+                with self._lock:
+                    self.smc = smc_inst
+                    self.is_connected = True
+                    self._state = "Connected"
+            except Exception as e:
+                with self._lock:
+                    self.smc = None
+                    self.is_connected = False
+                    self._state = "Disconnected"
+                if self.error_callback:
+                    self.error_callback(e)
+                else:
+                    try:
+                        from error_routing import ErrorRouter
+                        ErrorRouter.report_error("Rotator Connection Error", f"Failed to connect to SMC100 on {port}:\n{e}", e)
+                    except Exception:
+                        pass
 
     def disconnect(self):
-        if self.smc:
+        with self._lock:
+            smc = self.smc
+            self.smc = None
+            self.is_connected = False
+            self._position = None
+            self._state = "Disconnected"
+            self._error = "0"
+        if smc:
             try:
-                self.smc.close()
+                smc.close()
             except Exception:
                 pass
-        self.smc = None
-        self.is_connected = False
-        self.position = None
-        self.state = "Disconnected"
-        self.error = "0"
 
     def home(self):
         if self.smc:
@@ -149,7 +180,17 @@ class RotatorSystem:
 
     def stop(self):
         if self.smc:
-            self.smc.stop()
+            try:
+                self.smc.stop()
+            except Exception as e:
+                if self.error_callback:
+                    self.error_callback(e)
+                else:
+                    try:
+                        from error_routing import ErrorRouter
+                        ErrorRouter.report_error("Rotator Error", f"Failed to send stop:\n{e}", e)
+                    except Exception:
+                        pass
 
     def reset_and_configure(self):
         if self.smc:

@@ -2,18 +2,20 @@ import sys
 
 def parse_controller_id(controllerID):
     """Safely parses a controller ID string into an integer or None."""
+    if controllerID is None:
+        return None
     if not isinstance(controllerID, str):
         return None
-    if "Joy" in controllerID:
+    if "None" in controllerID or "Virtual" in controllerID or controllerID == "N/A":
+        return None
+    import re
+    m = re.search(r'(?:Joy|ID)?\s*(\d+)', controllerID, re.IGNORECASE)
+    if m:
         try:
-            prefix = controllerID.split(":")[0]
-            num_str = prefix.replace("Joy", "").strip()
-            return int(num_str)
+            return int(m.group(1))
         except ValueError:
             return None
-    elif controllerID == "None":
-        return None
-    return controllerID
+    return None
 
 
 import os
@@ -110,13 +112,30 @@ def run_legacy_app():
     
         def get_available_ports(self):
             if SERIAL_AVAILABLE:
-                ports = [port.device for port in serial.tools.list_ports.comports()]
-                self.detected_ports = sorted(ports)
+                com_ports = list(serial.tools.list_ports.comports())
+                valid_ports = []
+                for port in com_ports:
+                    # Filter out unusable Linux motherboard /dev/ttyS* ports with hwid == 'n/a'
+                    if sys.platform.startswith("linux") and port.device.startswith("/dev/ttyS"):
+                        if getattr(port, "hwid", "n/a") == "n/a" or not getattr(port, "hwid", None):
+                            continue
+                    valid_ports.append(port.device)
+                
+                # Fallback to all ports if filtering eliminated everything
+                if not valid_ports and com_ports:
+                    valid_ports = [port.device for port in com_ports]
+                
+                # Prioritize USB serial ports (/dev/ttyACM*, /dev/ttyUSB*)
+                def port_sort_key(dev_name):
+                    is_usb = any(dev_name.startswith(prefix) for prefix in ("/dev/ttyACM", "/dev/ttyUSB", "/dev/cu.usb", "/dev/tty.usb")) or "USB" in dev_name
+                    return (0 if is_usb else 1, dev_name)
+                
+                self.detected_ports = ["Headless"] + sorted(valid_ports, key=port_sort_key)
             else:
                 self.detected_ports = []
                 
-            if not self.detected_ports:
-                self.detected_ports = ["COM1", "COM2", "COM3", "COM4"]
+            if not self.detected_ports or self.detected_ports == ["Headless"]:
+                self.detected_ports = ["Headless", "COM1", "COM2", "COM3", "COM4"]
     
         def get_available_controllers(self):
             self.detected_controllers = ["None"]
@@ -287,10 +306,12 @@ def run_legacy_app():
                 'c': "Chuck Positioner",
                 't': "Temperature Controller"
             }
-            DEV_PATTERN = re.compile(r"DEV:\s*([sdct])", re.IGNORECASE)
+            DEV_PATTERN = re.compile(r"(?:DEV:\s*|<)([sdct])>?", re.IGNORECASE)
             total_ports = len(self.detected_ports)
             
             for i, port in enumerate(self.detected_ports):
+                if port == "Headless":
+                    continue
                 self.gui_queue.put(('status', f"Scanning {port}..."))
                 
                 # Check if this port is already assigned to an active device
@@ -301,13 +322,15 @@ def run_legacy_app():
                         break
                 
                 if not already_assigned:
+                    device_found = False
+                    # 1. Attempt detection at 500,000 baud
                     try: 
-                        with serial.Serial(port, baudrate=500000, timeout=.1, write_timeout=.2) as ser:
+                        with serial.Serial(port, baudrate=500000, timeout=0.1, write_timeout=0.2) as ser:
                             ser.reset_input_buffer()
                             ser.reset_output_buffer()
-                            start_time = time.time()
-                            device_found = False
                             time.sleep(1.5) # Wait for Arduino bootloader
+                            start_time = time.time()
+                            response_buffer = ""
                             while ((time.time() - start_time < 3.0) and not device_found):
                                 try:
                                     ser.write(b"s\n")
@@ -316,8 +339,9 @@ def run_legacy_app():
                                 
                                 if ser.in_waiting > 0: 
                                     response_bytes = ser.read(ser.in_waiting)
-                                    response_str = response_bytes.decode('utf-8', errors='ignore').strip()
-                                    match = DEV_PATTERN.search(response_str)
+                                    response_str = response_bytes.decode('utf-8', errors='ignore')
+                                    response_buffer += response_str
+                                    match = DEV_PATTERN.search(response_buffer)
                                     if match:
                                         dev_char = match.group(1).lower()
                                         if dev_char in DEVICE_MAP:
@@ -330,7 +354,39 @@ def run_legacy_app():
                     except Exception as e:
                         pass
                         
-                    # If not found at 500k, check 57600 for SMC100 Rotator
+                    # 2. If not found at 500k, attempt 115,200 baud (for Temperature Controller / standard Arduinos)
+                    if not device_found:
+                        try:
+                            with serial.Serial(port, baudrate=115200, timeout=0.1, write_timeout=0.2) as ser:
+                                ser.reset_input_buffer()
+                                ser.reset_output_buffer()
+                                time.sleep(1.5) # Wait for Arduino bootloader
+                                start_time = time.time()
+                                response_buffer = ""
+                                while ((time.time() - start_time < 3.0) and not device_found):
+                                    try:
+                                        ser.write(b"s\n")
+                                    except Exception:
+                                        break
+                                    
+                                    if ser.in_waiting > 0:
+                                        response_bytes = ser.read(ser.in_waiting)
+                                        response_str = response_bytes.decode('utf-8', errors='ignore')
+                                        response_buffer += response_str
+                                        match = DEV_PATTERN.search(response_buffer)
+                                        if match:
+                                            dev_char = match.group(1).lower()
+                                            if dev_char in DEVICE_MAP:
+                                                device_name = DEVICE_MAP[dev_char]
+                                                self.gui_queue.put(('found', (device_name, port)))
+                                                print(f"[main_app] Auto-detected {device_name} on {port}")
+                                            device_found = True
+                                    else:
+                                        time.sleep(0.05)
+                        except Exception:
+                            pass
+
+                    # 3. If not found at 115.2k, check 57,600 baud for SMC100 Rotator
                     if not device_found:
                         try:
                             with serial.Serial(
@@ -404,13 +460,16 @@ def run_legacy_app():
                 if self.device_vars[device].get():
                     port = self.port_vars[device].get()
                     controller = self.controller_vars[device].get()
+
+                    if port == "Headless":
+                        port = "SIM"
     
                     active_configs.append({
                         "device": device, 
                         "port": port, 
                         "controller": controller
                     })
-                    if device != "Red Percent Window":
+                    if device != "Red Percent Window" and port != "SIM":
                         assigned_ports.add(port)
                     
                     if "None" not in controller and "Virtual" not in controller and device != "Red Percent Window":
@@ -420,7 +479,7 @@ def run_legacy_app():
                 messagebox.showwarning("No Devices Selected", "Please select at least one device to launch.")
                 return
                 
-            devices_needing_ports = [c for c in active_configs if c["device"] != "Red Percent Window"]
+            devices_needing_ports = [c for c in active_configs if c["device"] != "Red Percent Window" and c["port"] != "SIM"]
             if len(assigned_ports) < len(devices_needing_ports):
                 messagebox.showerror("Port Collision", "Error: You cannot assign the same COM port to multiple active devices!")
                 return
@@ -442,8 +501,9 @@ def run_legacy_app():
                 device = config["device"]
                 
                 # 1. Check assignments
-                port = self.port_vars[device].get()
-                controllerID = self.controller_vars[device].get()
+                port = config["port"]
+                controllerID = config["controller"]
+                controllerID = parse_controller_id(controllerID)
                 self.active_claims[device] = controllerID
     
                 # 2. Instantiate Domain Models
@@ -487,12 +547,11 @@ def run_legacy_app():
             # We don't destroy self here, we withdrew it.
             # dash will call self.deiconify() on close.
 
-    if __name__ == "__main__":
-        app = SetupWindow()
-        from view import ErrorPopupManager
-        ErrorPopupManager.initialize(app)
-        ErrorPopupManager.setup_excepthook()
-        app.mainloop()
+    app = SetupWindow()
+    from view import ErrorPopupManager
+    ErrorPopupManager.initialize(app)
+    ErrorPopupManager.setup_excepthook()
+    app.mainloop()
     
     
 
@@ -545,7 +604,7 @@ def run_pyside_app():
                 return
     
             import re
-            DEV_PATTERN = re.compile(r"<([^>]+)>")
+            DEV_PATTERN = re.compile(r"(?:DEV:\s*|<)([sdct])>?", re.IGNORECASE)
             DEVICE_MAP = {
                 'c': 'Chuck Positioner',
                 's': 'Stepper Probe',
@@ -562,13 +621,14 @@ def run_pyside_app():
                 if port == "Headless": continue
                 self.pinging.emit(port)
                 device_found = False
+                # 1. Attempt detection at 500,000 baud
                 try: 
-                    with serial.Serial(port, baudrate=500000, timeout=.1, write_timeout=.2) as ser:
+                    with serial.Serial(port, baudrate=500000, timeout=0.1, write_timeout=0.2) as ser:
                         ser.reset_input_buffer()
                         ser.reset_output_buffer()
-                        start_time = time.time()
-                        device_found = False
                         time.sleep(1.5) # Wait for Arduino bootloader
+                        start_time = time.time()
+                        response_buffer = ""
                         while ((time.time() - start_time < 3.0) and not device_found):
                             try:
                                 ser.write(b"s\n")
@@ -577,8 +637,9 @@ def run_pyside_app():
                             
                             if ser.in_waiting > 0: 
                                 response_bytes = ser.read(ser.in_waiting)
-                                response_str = response_bytes.decode('utf-8', errors='ignore').strip()
-                                match = DEV_PATTERN.search(response_str)
+                                response_str = response_bytes.decode('utf-8', errors='ignore')
+                                response_buffer += response_str
+                                match = DEV_PATTERN.search(response_buffer)
                                 if match:
                                     dev_char = match.group(1).lower()
                                     if dev_char in DEVICE_MAP:
@@ -591,6 +652,39 @@ def run_pyside_app():
                 except Exception as e:
                     pass
     
+                # 2. If not found at 500k, attempt 115,200 baud (for Temperature Controller / standard Arduinos)
+                if not device_found:
+                    try:
+                        with serial.Serial(port, baudrate=115200, timeout=0.1, write_timeout=0.2) as ser:
+                            ser.reset_input_buffer()
+                            ser.reset_output_buffer()
+                            time.sleep(1.5) # Wait for Arduino bootloader
+                            start_time = time.time()
+                            response_buffer = ""
+                            while ((time.time() - start_time < 3.0) and not device_found):
+                                try:
+                                    ser.write(b"s\n")
+                                except Exception:
+                                    break
+                                
+                                if ser.in_waiting > 0:
+                                    response_bytes = ser.read(ser.in_waiting)
+                                    response_str = response_bytes.decode('utf-8', errors='ignore')
+                                    response_buffer += response_str
+                                    match = DEV_PATTERN.search(response_buffer)
+                                    if match:
+                                        dev_char = match.group(1).lower()
+                                        if dev_char in DEVICE_MAP:
+                                            device_name = DEVICE_MAP[dev_char]
+                                            self.found.emit(device_name, port)
+                                            print(f"[main_app] Auto-detected {device_name} on {port}")
+                                        device_found = True
+                                else:
+                                    time.sleep(0.05)
+                    except Exception as e:
+                        pass
+
+                # 3. If not found at 115.2k, check 57,600 baud for SMC100 Rotator
                 if not device_found:
                     try:
                         with serial.Serial(port, baudrate=57600, timeout=0.2, write_timeout=0.2, xonxoff=True) as ser:
@@ -605,10 +699,14 @@ def run_pyside_app():
                                 response = ser.read_all().decode("utf-8", errors="ignore").strip()
                             if response.startswith("1ID") or response.startswith("1TS"):
                                 self.found.emit("SMC100 Rotator", port)
+                                print(f"[main_app] Auto-detected SMC100 Rotator on {port}")
                                 device_found = True
                     except Exception:
                         pass
                 
+                if not device_found:
+                    time.sleep(0.1)
+
                 prog = ((i + 1) / total_ports) * 100
                 self.progress.emit(prog)
     
@@ -643,11 +741,29 @@ def run_pyside_app():
     
         def get_available_ports(self):
             if SERIAL_AVAILABLE:
-                ports = [port.device for port in serial.tools.list_ports.comports()]
-                self.detected_ports = ["Headless"] + sorted(ports)
+                com_ports = list(serial.tools.list_ports.comports())
+                valid_ports = []
+                for port in com_ports:
+                    # Filter out unusable Linux motherboard /dev/ttyS* ports with hwid == 'n/a'
+                    if sys.platform.startswith("linux") and port.device.startswith("/dev/ttyS"):
+                        if getattr(port, "hwid", "n/a") == "n/a" or not getattr(port, "hwid", None):
+                            continue
+                    valid_ports.append(port.device)
+                
+                # Fallback to all ports if filtering eliminated everything
+                if not valid_ports and com_ports:
+                    valid_ports = [port.device for port in com_ports]
+                
+                # Prioritize USB serial ports (/dev/ttyACM*, /dev/ttyUSB*)
+                def port_sort_key(dev_name):
+                    is_usb = any(dev_name.startswith(prefix) for prefix in ("/dev/ttyACM", "/dev/ttyUSB", "/dev/cu.usb", "/dev/tty.usb")) or "USB" in dev_name
+                    return (0 if is_usb else 1, dev_name)
+                
+                sorted_ports = sorted(valid_ports, key=port_sort_key)
+                self.detected_ports = ["Headless"] + sorted_ports
             else:
                 self.detected_ports = []
-            if not self.detected_ports:
+            if not self.detected_ports or self.detected_ports == ["Headless"]:
                 self.detected_ports = ["Headless", "COM1", "COM2", "COM3", "COM4"]
     
         def get_available_controllers(self):
@@ -880,26 +996,16 @@ def run_pyside_app():
             
             self.close()
     
-    if __name__ == "__main__":
-        app = QApplication(sys.argv)
-        
-        from error_routing import ErrorRouter
-        from PySide6.QtCore import QTimer
-        def _err(title, msg, exc=None):
-            m = msg if not exc else f"{msg}\n\n{exc}"
-            QTimer.singleShot(0, lambda: QMessageBox.critical(None, title, m))
-        def _warn(title, msg, exc=None):
-            m = msg if not exc else f"{msg}\n\n{exc}"
-            QTimer.singleShot(0, lambda: QMessageBox.warning(None, title, m))
-        def _info(title, msg):
-            QTimer.singleShot(0, lambda: QMessageBox.information(None, title, msg))
-            
-        ErrorRouter.set_callbacks(_err, _warn, _info)
-        
-        window = SetupWindow()
-        window.show()
-        sys.exit(app.exec())
+    app = QApplication.instance() or QApplication(sys.argv)
     
+    from view_pyside import QtErrorPopupManager
+    QtErrorPopupManager.initialize(app)
+    QtErrorPopupManager.setup_excepthook()
+    
+    window = SetupWindow()
+    window.show()
+    return app.exec()
+
 
 import os
 import sys
@@ -908,12 +1014,14 @@ import sys
 def launch_legacy():
     print("[Launcher] Starting Legacy Tkinter Dashboard...")
     sys.stdout.flush()
-    os.execv(sys.executable, [sys.executable, __file__, "--legacy"])
+    script_path = os.path.abspath(__file__)
+    os.execv(sys.executable, [sys.executable, script_path, "--legacy"])
 
 def launch_pyside():
     print("[Launcher] Starting PySide6 Dashboard...")
     sys.stdout.flush()
-    os.execv(sys.executable, [sys.executable, __file__, "--pyside"])
+    script_path = os.path.abspath(__file__)
+    os.execv(sys.executable, [sys.executable, script_path, "--pyside"])
 
 def main():
     if "--legacy" in sys.argv:

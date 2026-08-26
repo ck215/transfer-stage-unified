@@ -31,8 +31,13 @@ class serial:
         # Empty serial object
         self.ser = None
 
+        # Threading lock for thread-safe serial port access
+        self._lock = threading.RLock()
+
         # NEW: Buffer for incoming serial data from firmware
         self._read_buffer = ""
+        self.device_type = None
+
         if self.SERIAL_PORT == 'SIM':
             msg = "[SerialDrive] Running in SIMULATOR mode. No serial connection will be established."
             print(msg)
@@ -50,13 +55,13 @@ class serial:
 
             # Wait up to 1.5s for the Arduino to boot and respond
             print(f"[SerialDrive] Pinging port {self.SERIAL_PORT} to verify connection...")
-            start_time = time.time()
             verified = False
             
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
             
             time.sleep(1.5) # Wait for bootloader
+            start_time = time.time()
             buffer = ""
             while (time.time() - start_time < 3.0):
                 try:
@@ -68,6 +73,9 @@ class serial:
                     buffer += self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
                     if "DEV:" in buffer:
                         verified = True
+                        for line in buffer.splitlines():
+                            if "DEV:" in line:
+                                self.device_type = line.split("DEV:")[1].strip()
                         break
                 time.sleep(0.05)
                 
@@ -91,42 +99,44 @@ class serial:
             print("[SerialDrive] Finish SerialDrive __init__")
 
     # Helper to verify serial connection before sending data
-    def _verify_serial(self):
+    def _verify_serial(self, verbose=False):
         if self.ser is None or not self.ser.is_open:
-            msg = "[SerialDrive] Error: Serial connection not established."
-            print(msg)
-            ErrorPopupManager.report_warning("Serial Disconnected", msg)
+            if verbose and self.SERIAL_PORT != 'SIM':
+                msg = "[SerialDrive] Error: Serial connection not established."
+                print(msg)
+                ErrorPopupManager.report_warning("Serial Disconnected", msg)
             return False
         return True
 
     # NEW: Read and parse absolute position data sent by firmware ("POS:x,y,z\n").
     #      Returns the latest (x, y, z) tuple from boot-time zero, or None if no new data.
     def read_position(self):
-        if not self._verify_serial():
+        if not self._verify_serial(verbose=False):
             return None
 
         try:
-            # Read all available bytes into the buffer without blocking
-            if self.ser.in_waiting > 0:                                                     # type: ignore
-                raw = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')   # type: ignore
-                self._read_buffer += raw
+            with self._lock:
+                # Read all available bytes into the buffer without blocking
+                if self.ser.in_waiting > 0:                                                     # type: ignore
+                    raw = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')   # type: ignore
+                    self._read_buffer += raw
 
-            # Safety: prevent unbounded buffer growth if newlines are ever missed
-            if len(self._read_buffer) > 1024:
-                self._read_buffer = self._read_buffer[-512:]
+                # Safety: prevent unbounded buffer growth if newlines are ever missed
+                if len(self._read_buffer) > 1024:
+                    self._read_buffer = self._read_buffer[-512:]
 
-            # Process all complete lines, keep only the latest POS reading
-            latest_pos = None
-            while '\n' in self._read_buffer:
-                line, self._read_buffer = self._read_buffer.split('\n', 1)
-                line = line.strip()
-                if line.startswith("POS:"):
-                    try:
-                        parts = line[4:].split(',')
-                        if len(parts) == 3:
-                            latest_pos = (int(parts[0]), int(parts[1]), int(parts[2]))
-                    except (ValueError, IndexError):
-                        pass  # Malformed line, skip
+                # Process all complete lines, keep only the latest POS reading
+                latest_pos = None
+                while '\n' in self._read_buffer:
+                    line, self._read_buffer = self._read_buffer.split('\n', 1)
+                    line = line.strip()
+                    if line.startswith("POS:"):
+                        try:
+                            parts = line[4:].split(',')
+                            if len(parts) == 3:
+                                latest_pos = (int(parts[0]), int(parts[1]), int(parts[2]))
+                        except (ValueError, IndexError):
+                            pass  # Malformed line, skip
 
             return latest_pos
 
@@ -138,7 +148,7 @@ class serial:
     def send_autonomous_command(self, params):
         
         # Port not open, do nothing
-        if not self._verify_serial():
+        if not self._verify_serial(verbose=True):
             return
 
         try:
@@ -156,7 +166,8 @@ class serial:
             )
 
             print(f"[SerialDrive] Sending 12-Field AUTON Command: {command.strip()}")
-            self.ser.write(command.encode('utf-8'))    # type: ignore
+            with self._lock:
+                self.ser.write(command.encode('utf-8'))    # type: ignore
 
         # Exception handling
         except pyserial.SerialTimeoutException as e:
@@ -172,7 +183,7 @@ class serial:
     def send_manual_mode_command(self, params):
         
         # Do nothing if the serial port is closed
-        if not self._verify_serial():
+        if not self._verify_serial(verbose=True):
             return
         try:
             # Build data for z direction triggers
@@ -186,7 +197,9 @@ class serial:
 
             # Combine the values. UP (L) is positive, DOWN (R) is negative.
             combined_z_axis_status = z_up_value - z_down_value
-            combined_bumpers = int(params.get('LBumper')) - int(params.get('RBumper'))
+            l_bump = params.get('LBumper', 0)
+            r_bump = params.get('RBumper', 0)
+            combined_bumpers = int(l_bump if l_bump is not None else 0) - int(r_bump if r_bump is not None else 0)
 
             fmt = params.get('packet_format', PACKET_FORMAT)
             packet = struct.pack(
@@ -206,8 +219,9 @@ class serial:
             )
 
             print(f"[SerialDrive] Sending 12-Field MANUAL State: {packet}")
-            self.ser.write(packet)  # type: ignore
-            self.ser.flush()                         # type: ignore
+            with self._lock:
+                self.ser.write(packet)  # type: ignore
+                self.ser.flush()        # type: ignore
             
         # Exception handling
         except pyserial.SerialTimeoutException as e:
@@ -220,17 +234,25 @@ class serial:
             ErrorPopupManager.report_error("Serial Write Error", msg, e)
 
     def enable(self):
-        if not self._verify_serial():
+        if not self._verify_serial(verbose=True):
             raise ValueError("[SerialDrive] Arduino not detected. Cannot enable system.")
-        self.ser.write("t".encode('utf-8'))
+        with self._lock:
+            self.ser.write("t".encode('utf-8'))
 
     def disable(self):
-        if not self._verify_serial():
+        if not self._verify_serial(verbose=True):
             raise ValueError("[SerialDrive] Arduino not detected. Cannot disable system.")
-        self.ser.write("t".encode('utf-8'))
+        with self._lock:
+            self.ser.write("t".encode('utf-8'))
 
     # Closes serial connection
     def close(self):
-        if self.ser and self.ser.is_open:
-            print("[SerialDrive] Closing serial port.")
-            self.ser.close()
+        with self._lock:
+            if self.ser and self.ser.is_open:
+                print("[SerialDrive] Closing serial port.")
+                self.ser.close()
+
+
+# Aliases for backwards compatibility with legacy stable branch and standard naming
+SerialArduino = serial
+Serial = serial

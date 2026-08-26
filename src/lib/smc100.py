@@ -406,9 +406,9 @@ class SMC100(object):
               return response[len(prefix):]
             else:
               raise SMC100InvalidResponseException(command, response)
-          except (Exception, ValueError):
-            if not retry or retry <=0:
-              raise ValueError("ex")
+          except Exception as e:
+            if not retry or retry <= 0:
+              raise e
             else:
               if type(retry) == int:
                 retry -= 1
@@ -456,7 +456,7 @@ class SMC100(object):
             done = True
         else:
             char = c.decode('ascii', errors='ignore')
-            if char and 32 < ord(char) < 127:
+            if char and 32 <= ord(char) < 127:
                 line += char
             else:
                 raise SMC100RS232CorruptionException(c)
@@ -475,9 +475,13 @@ class SMC100(object):
       print('[SMC100' + prefix + '] ' + message)
 
   def close(self):
-    if self._port:
-      self._port.close()
-      self._port = None
+    with self._serial_lock:
+      if self._port:
+        try:
+          self._port.close()
+        except Exception:
+          pass
+        self._port = None
 
   def __del__(self):
     self.close()

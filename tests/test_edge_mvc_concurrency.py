@@ -137,6 +137,4 @@ def test_serial_drive_thread_unsafety():
     t2.join()
     
     assert drive.ser.write.call_count == 2
-    # In a real pyserial object without a lock, concurrent writes interleave bytes.
-    # The lack of any lock acquisition in seiral.py proves the vulnerability.
-    assert not hasattr(drive, '_lock') and not hasattr(drive, 'lock'), "No lock found in SerialDrive to prevent concurrent write clashing!"
+    assert hasattr(drive, '_lock') or hasattr(drive, 'lock'), "Lock should exist in SerialDrive to prevent concurrent write clashing!"

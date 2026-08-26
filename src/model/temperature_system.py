@@ -13,12 +13,13 @@ class TemperatureSystem:
         
         self.current_temp = "N/A"
         
+        self._lock = threading.Lock()
         self.tempC = []
         self.time = []
         self.sp = []
         self.cnt = 0
         
-        self.serial_conn = serial(port) if port and port != "None" else None
+        self.serial_conn = serial(port, baud_rate=115200) if port and port != "None" else None
         self.continue_reading = True
         
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
@@ -99,6 +100,8 @@ class TemperatureSystem:
                 else:
                     time.sleep(0.1)
             except Exception as e:
+                if not getattr(self, 'continue_reading', True):
+                    break
                 from error_routing import ErrorRouter
                 msg = f"Serial background read error: {e}"
                 print(msg)
@@ -116,43 +119,66 @@ class TemperatureSystem:
                 temp = float(data_array[1].strip())
                 sp_val = float(data_array[2].strip())
                 
-                self.tempC.append(temp)
-                self.time.append(t)
-                self.sp.append(sp_val)
-                self.cnt += 1
-                
-                if self.cnt > 200:
-                    self.tempC.pop(0)
-                    self.time.pop(0)
-                    self.sp.pop(0)
+                with self._lock:
+                    self.tempC.append(temp)
+                    self.time.append(t)
+                    self.sp.append(sp_val)
+                    self.cnt += 1
                     
-                self.current_temp = f"{temp:.2f} °C"
+                    if self.cnt > 200:
+                        self.tempC.pop(0)
+                        self.time.pop(0)
+                        self.sp.pop(0)
+                        
+                    self.current_temp = f"{temp:.2f} °C"
             except ValueError:
                 pass
 
+    def get_history(self):
+        """Thread-safe snapshot of history arrays."""
+        with self._lock:
+            return list(self.time), list(self.tempC), list(self.sp)
+
     def stop(self):
-        self.continue_reading = False
-        if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
-            import math
-            try:
-                rate_float = float(self.ramp_rate)
-                if math.isnan(rate_float) or math.isinf(rate_float):
-                    rate_float = 0.0
-            except ValueError:
+        """Stops heating immediately by setting target setpoint to 0 while keeping serial monitoring active."""
+        self.setpoint = "0"
+        import math
+        try:
+            rate_float = float(self.ramp_rate)
+            if math.isnan(rate_float) or math.isinf(rate_float):
                 rate_float = 0.0
-                
-            try:
-                spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
-                if "inf" in spdelay.lower() or "nan" in spdelay.lower():
-                    spdelay = "0"
-            except OverflowError:
+        except ValueError:
+            rate_float = 0.0
+            
+        try:
+            spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
+            if "inf" in spdelay.lower() or "nan" in spdelay.lower():
                 spdelay = "0"
-            vals = ['0', spdelay, self.p_term, self.i_term, self.d_term, self.offset]
+        except OverflowError:
+            spdelay = "0"
+            
+        if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+            vals = ['0', spdelay, '0', '0', '0', str(self.offset)]
             input_string = f"<{','.join(vals)}>"
             try:
                 self.serial_conn.ser.write(input_string.encode())
             except Exception as e:
                 from error_routing import ErrorRouter as ErrorPopupManager
-                ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
-            finally:
+                ErrorPopupManager.report_error("Serial Write Error", f"Error writing stop state to serial:\n{e}", e)
+
+    def close(self):
+        """Cleanly terminates serial thread and closes serial connection."""
+        self.continue_reading = False
+        if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+            try:
+                self.serial_conn.ser.write(b"<0,6.0,0,0,0,0>")
+            except Exception:
+                pass
+            try:
                 self.serial_conn.close()
+            except Exception:
+                pass
+
+    def disconnect(self):
+        """Alias for close to support unified model lifecycle."""
+        self.close()

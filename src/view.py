@@ -219,6 +219,35 @@ class DashboardWindow(tk.Toplevel):
         self.master.deiconify() # Return to Setup Window
 
 
+class ControllerLogWindow(tk.Toplevel):
+    """Toplevel window to display real-time gamepad / joystick controller logs."""
+    def __init__(self, poller=None, master=None):
+        super().__init__(master)
+        self.poller = poller
+        self.title("Controller Log Window")
+        self.geometry("500x400")
+        self.configure(bg="#121212")
+        
+        self.text_widget = tk.Text(self, bg="#1E1E1E", fg="lightgreen", font=("Courier", 10), state="disabled", wrap="word")
+        self.text_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+    def append_log(self, message):
+        if not self.winfo_exists():
+            return
+        self.text_widget.config(state="normal")
+        self.text_widget.insert(tk.END, message + "\n")
+        self.text_widget.see(tk.END)
+        self.text_widget.config(state="disabled")
+        
+    def on_close(self):
+        if self.poller:
+            def print_log(msg):
+                print(f"[controllerDrive] {msg}")
+            self.poller.log_updater = print_log
+        self.destroy()
+
 class DynamicView(tk.Frame):
     """
     A generic View class that constructs its UI dynamically based on the 
@@ -321,7 +350,10 @@ class DynamicView(tk.Frame):
                     def make_file_cmd(c_name, label_widget):
                         def wrapped():
                             from tkinter import filedialog
-                            path = filedialog.askopenfilename(title="Select Script File", filetypes=[("Text files", "*.txt")])
+                            path = filedialog.askopenfilename(
+                                title="Select Script File", 
+                                filetypes=[("Text and GCode files", "*.txt *.gcode *.nc"), ("All files", "*.*")]
+                            )
                             if path:
                                 label_widget.config(text=path.split('/')[-1])
                                 func = getattr(self.model, c_name, None)
@@ -334,6 +366,18 @@ class DynamicView(tk.Frame):
                 row_counter += 1
 
     def _execute_command(self, cmd_name):
+        if cmd_name == "open_controller_log":
+            poller = getattr(self.model, 'poller', None)
+            if not hasattr(self, 'log_window') or self.log_window is None or not self.log_window.winfo_exists():
+                self.log_window = ControllerLogWindow(poller=poller, master=self)
+                if poller:
+                    poller.log_updater = self.log_window.append_log
+            else:
+                if poller:
+                    poller.log_updater = self.log_window.append_log
+                self.log_window.lift()
+            return
+
         func = getattr(self.model, cmd_name, None)
         if func and callable(func):
             try:
@@ -395,3 +439,10 @@ class DynamicView(tk.Frame):
                 self.model.read_position()
                 self.after(100, _poll_pos)
             self.after(100, _poll_pos)
+
+        # 3. Start hardware status / rotator polling
+        if hasattr(self.model, 'poll_status'):
+            def _poll_stat():
+                self.model.poll_status()
+                self.after(100, _poll_stat)
+            self.after(100, _poll_stat)

@@ -21,6 +21,11 @@ class SystemManager:
             old_model = self.active_models.get(name)
             if old_model:
                 try:
+                    if hasattr(old_model, 'poller') and old_model.poller:
+                        old_model.poller.stop_polling()
+                        old_model.poller.close()
+                    if hasattr(old_model, 'disconnect'):
+                        old_model.disconnect()
                     if hasattr(old_model, 'stop'):
                         old_model.stop()
                     if hasattr(old_model, 'serial_conn') and old_model.serial_conn:
@@ -49,6 +54,11 @@ class SystemManager:
         with self.lock:
             for name, model in self.active_models.items():
                 try:
+                    if hasattr(model, 'poller') and model.poller:
+                        model.poller.stop_polling()
+                        model.poller.close()
+                    if hasattr(model, 'disconnect'):
+                        model.disconnect()
                     if hasattr(model, 'stop'):
                         model.stop()
                     if hasattr(model, 'serial_conn') and model.serial_conn:

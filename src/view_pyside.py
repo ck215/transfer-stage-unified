@@ -1,31 +1,114 @@
 import sys
+import os
+import csv
+import traceback
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDockWidget, QListWidget, QWidget, 
-    QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout, QFrame, QMessageBox, QListWidgetItem
+    QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout, QFrame, 
+    QMessageBox, QListWidgetItem, QDialog, QFileDialog, QFormLayout, 
+    QComboBox, QTextEdit, QCheckBox
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QObject, Signal
+from PySide6.QtGui import QPainter, QColor, QPen
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
-import csv
-from PySide6.QtWidgets import QDialog, QFileDialog, QFormLayout, QComboBox, QTextEdit
-from PySide6.QtGui import QPainter, QColor, QPen
- 
+
+from error_routing import ErrorRouter
+
+
+class QtErrorPopupManager(QObject):
+    """
+    Centralized error handler for PySide6 that safely routes error popups
+    from any background thread to the main Qt GUI thread via Qt Signals.
+    """
+    _instance = None
+    _message_signal = Signal(str, str, str, object)  # type, title, message, exception
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._message_signal.connect(self._display_popup)
+        ErrorRouter.set_callbacks(self.report_error, self.report_warning, self.report_info)
+
+    @classmethod
+    def initialize(cls, parent=None):
+        if cls._instance is None:
+            cls._instance = QtErrorPopupManager(parent)
+        return cls._instance
+
+    @classmethod
+    def report_error(cls, title, message, exception=None):
+        if cls._instance:
+            cls._instance._message_signal.emit('error', title, message, exception)
+        else:
+            print(f"[ERROR] {title}: {message}")
+            if exception:
+                traceback.print_exc()
+
+    @classmethod
+    def report_warning(cls, title, message, exception=None):
+        if cls._instance:
+            cls._instance._message_signal.emit('warning', title, message, exception)
+        else:
+            print(f"[WARNING] {title}: {message}")
+
+    @classmethod
+    def report_info(cls, title, message):
+        if cls._instance:
+            cls._instance._message_signal.emit('info', title, message, None)
+        else:
+            print(f"[INFO] {title}: {message}")
+
+    def _display_popup(self, msg_type, title, message, exception):
+        full_message = message
+        if exception:
+            if not full_message:
+                full_message = ""
+            try:
+                full_message += f"\n\nDetails:\n{type(exception).__name__}: {str(exception)}"
+            except Exception:
+                full_message += "\n\nDetails: <Unprintable Exception>"
+        if full_message and len(full_message) > 5000:
+            full_message = full_message[:5000] + "... [TRUNCATED]"
+
+        if msg_type == 'error':
+            QMessageBox.critical(None, title, full_message)
+        elif msg_type == 'warning':
+            QMessageBox.warning(None, title, full_message)
+        else:
+            QMessageBox.information(None, title, full_message)
+
+    @classmethod
+    def setup_excepthook(cls):
+        """Hook into sys.excepthook to catch all unhandled exceptions globally."""
+        def custom_excepthook(exc_type, exc_value, exc_traceback):
+            try:
+                traceback.print_exception(exc_type, exc_value, exc_traceback)
+            except Exception:
+                print(f"Exception: {exc_value}")
+            cls.report_error(
+                "Unhandled Exception",
+                f"An unexpected error occurred:\n\n{exc_value}",
+                exception=exc_value
+            )
+        sys.excepthook = custom_excepthook
 
 
 class ControllerLogWindow(QDialog):
+    """Real-time display of gamepad/controller polling events."""
     def __init__(self, poller=None, parent=None):
         super().__init__(parent)
         self.poller = poller
         self.setWindowTitle("Controller Log Window")
-        self.setAttribute(Qt.WA_DeleteOnClose)
         self.resize(500, 400)
-        from PySide6.QtWidgets import QVBoxLayout
         self.layout = QVBoxLayout(self)
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
         self.layout.addWidget(self.text_edit)
-        self.setStyleSheet("QWidget { background-color: #121212; color: #FFFFFF; } QTextEdit { background-color: #1E1E1E; border: 1px solid #333; padding: 5px; color: lightgreen; }")
+        self.setStyleSheet(
+            "QWidget { background-color: #121212; color: #FFFFFF; } "
+            "QTextEdit { background-color: #1E1E1E; border: 1px solid #333; padding: 5px; color: lightgreen; font-family: 'Courier New', monospace; }"
+        )
 
     def append_log(self, message):
         self.text_edit.append(message)
@@ -37,8 +120,12 @@ class ControllerLogWindow(QDialog):
             self.poller.log_updater = print_log
         event.accept()
 
-class QtDynamicView(QWidget):
 
+class QtDynamicView(QWidget):
+    """
+    A dynamic View widget that constructs its UI dynamically based on the 
+    `ui_schema` provided by the model. 
+    """
     def __init__(self, model, parent=None):
         super().__init__(parent)
         self.model = model
@@ -46,6 +133,7 @@ class QtDynamicView(QWidget):
         self.layout = QVBoxLayout(self)
         self.vars = {}  # attr -> QLineEdit/QLabel
         self.toggle_buttons = []
+        self.log_window = None
         
         self.setStyleSheet("""
             QWidget { background-color: #121212; color: #FFFFFF; font-family: 'Segoe UI', sans-serif; }
@@ -58,27 +146,43 @@ class QtDynamicView(QWidget):
         
         self._build_ui()
         
+        # 1. UI Polling Timer (syncs UI fields from model)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll_model)
         self.timer.start(self.poll_interval_ms)
         
-        # Start the controller poller and manual mode loop if available
+        # 2. Hardware Live Polling Timers (read_position & poll_status)
+        if hasattr(self.model, 'read_position'):
+            self.pos_timer = QTimer(self)
+            self.pos_timer.timeout.connect(self._safe_read_position)
+            self.pos_timer.start(100)
+            
+        if hasattr(self.model, 'poll_status'):
+            self.status_timer = QTimer(self)
+            self.status_timer.timeout.connect(self._safe_poll_status)
+            self.status_timer.start(100)
+        
+        # 3. Gamepad Poller and Manual Mode Loop
         if hasattr(self.model, 'poller') and self.model.poller:
             class GUIAdapter:
                 def after(self, ms, func):
                     QTimer.singleShot(ms, func)
             
             def _reset_disable_timer(model_ref=self.model):
-                if hasattr(self, 'disable_timer'):
+                if hasattr(self, 'disable_timer') and self.disable_timer:
                     self.disable_timer.stop()
                 def _do_disable():
+                    msg = f"5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}"
+                    print(f"[Timeout] {msg}")
+                    QtErrorPopupManager.report_info("Idle Timeout", msg)
                     if hasattr(model_ref, 'disable'):
                         model_ref.disable()
-                if not hasattr(self, 'disable_timer'):
-                    self.disable_timer = QTimer()
-                    self.disable_timer.setSingleShot(True)
-                    self.disable_timer.timeout.connect(_do_disable)
-                self.disable_timer.start(300000)
+                if getattr(model_ref, 'system_enabled', False):
+                    if not hasattr(self, 'disable_timer') or self.disable_timer is None:
+                        self.disable_timer = QTimer(self)
+                        self.disable_timer.setSingleShot(True)
+                        self.disable_timer.timeout.connect(_do_disable)
+                    self.disable_timer.start(300000)
 
             def print_log(msg):
                 print(f"[controllerDrive] {msg}")
@@ -93,6 +197,18 @@ class QtDynamicView(QWidget):
                         self.model.send_manual_mode_command(controller_params)
             self.input_timer.timeout.connect(_route_input)
             self.input_timer.start(20)
+
+    def _safe_read_position(self):
+        try:
+            self.model.read_position()
+        except Exception:
+            pass
+
+    def _safe_poll_status(self):
+        try:
+            self.model.poll_status()
+        except Exception:
+            pass
 
     def _build_ui(self):
         schema = getattr(self.model, 'ui_schema', {"sections": []})
@@ -127,9 +243,9 @@ class QtDynamicView(QWidget):
                         self.vars[attr] = val_widget
                         
                         def make_editor(attr_name, widget):
-                            return lambda: setattr(self.model, attr_name, widget.text())
+                            return lambda text: setattr(self.model, attr_name, text)
                             
-                        val_widget.editingFinished.connect(make_editor(attr, val_widget))
+                        val_widget.textChanged.connect(make_editor(attr, val_widget))
                         row_layout.addWidget(val_widget)
                         
                 elif el_type == "button":
@@ -156,6 +272,32 @@ class QtDynamicView(QWidget):
                         "true_text": el.get("true_text"), "false_text": el.get("false_text")
                     })
                     row_layout.addWidget(btn)
+
+                elif el_type == "file_picker":
+                    cmd_name = el.get("command")
+                    btn = QPushButton(label_text)
+                    btn.setStyleSheet("background-color: darkorange; color: black; font-weight: bold;")
+                    file_lbl = QLabel("No Script Selected")
+                    file_lbl.setStyleSheet("color: yellow; font-size: 11px;")
+                    
+                    def make_file_cmd(c_name, lbl_widget):
+                        def wrapped():
+                            path, _ = QFileDialog.getOpenFileName(
+                                self, 
+                                "Select Script File", 
+                                "", 
+                                "Text and GCode files (*.txt *.gcode *.nc);;All Files (*)"
+                            )
+                            if path:
+                                lbl_widget.setText(os.path.basename(path))
+                                func = getattr(self.model, c_name, None)
+                                if func and callable(func):
+                                    func(path)
+                        return wrapped
+                        
+                    btn.clicked.connect(make_file_cmd(cmd_name, file_lbl))
+                    row_layout.addWidget(btn)
+                    row_layout.addWidget(file_lbl)
                     
                 card_layout.addLayout(row_layout)
             self.layout.addWidget(card)
@@ -163,14 +305,19 @@ class QtDynamicView(QWidget):
 
     def _execute_command(self, cmd_name):
         if cmd_name == "open_controller_log":
-            if not hasattr(self, 'log_window') or not self.log_window.isVisible():
-                poller = getattr(self.model, 'poller', None)
+            poller = getattr(self.model, 'poller', None)
+            if not hasattr(self, 'log_window') or self.log_window is None:
                 self.log_window = ControllerLogWindow(poller=poller, parent=self)
+                self.log_window.destroyed.connect(lambda: setattr(self, 'log_window', None))
                 if poller:
                     poller.log_updater = self.log_window.append_log
                 self.log_window.show()
             else:
+                if poller:
+                    poller.log_updater = self.log_window.append_log
+                self.log_window.show()
                 self.log_window.raise_()
+                self.log_window.activateWindow()
             return
             
         func = getattr(self.model, cmd_name, None)
@@ -181,6 +328,11 @@ class QtDynamicView(QWidget):
                 QMessageBox.critical(self, "Command Failed", f"Command {cmd_name} failed:\n{e}")
 
     def _poll_model(self):
+        if hasattr(self.model, 'read_position'):
+            self.model.read_position()
+        if hasattr(self.model, 'poll_status'):
+            self.model.poll_status()
+
         for attr, widget in self.vars.items():
             if hasattr(self.model, attr):
                 current_val = str(getattr(self.model, attr))
@@ -195,7 +347,6 @@ class QtDynamicView(QWidget):
             val = getattr(self.model, tb["attr"], False)
             widget = tb["widget"]
             
-            # Use property to track current set style
             current_state = widget.property("toggle_state")
             if current_state != val:
                 if val:
@@ -206,7 +357,23 @@ class QtDynamicView(QWidget):
                     widget.setStyleSheet("background-color: #D13438; color: white; font-weight: bold;")
                 widget.setProperty("toggle_state", val)
 
-
+    def cleanup(self):
+        """Stop all timers and release poller/hardware references."""
+        if hasattr(self, 'timer') and self.timer:
+            self.timer.stop()
+        if hasattr(self, 'pos_timer') and self.pos_timer:
+            self.pos_timer.stop()
+        if hasattr(self, 'status_timer') and self.status_timer:
+            self.status_timer.stop()
+        if hasattr(self, 'input_timer') and self.input_timer:
+            self.input_timer.stop()
+        if hasattr(self, 'disable_timer') and self.disable_timer:
+            self.disable_timer.stop()
+        if hasattr(self, 'log_window') and self.log_window:
+            self.log_window.close()
+        if hasattr(self.model, 'poller') and self.model.poller:
+            self.model.poller.stop_polling()
+            self.model.poller.close()
 
 
 class SelectionOverlay(QWidget):
@@ -217,44 +384,53 @@ class SelectionOverlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background-color: rgba(0, 0, 0, 100);")
         
-        # Make fullscreen across all monitors (PySide6)
+        # Make fullscreen across all monitors
         screen_geom = QApplication.primaryScreen().geometry()
         for screen in QApplication.screens():
             screen_geom = screen_geom.united(screen.geometry())
         self.setGeometry(screen_geom)
         
-        self.start_pos = None
-        self.end_pos = None
+        self.start_pos_global = None
+        self.end_pos_global = None
+        self.start_pos_local = None
+        self.end_pos_local = None
 
     def mousePressEvent(self, event):
-        self.start_pos = event.globalPosition().toPoint()
-        self.end_pos = self.start_pos
+        self.start_pos_global = event.globalPosition().toPoint()
+        self.end_pos_global = self.start_pos_global
+        self.start_pos_local = event.position().toPoint()
+        self.end_pos_local = self.start_pos_local
         self.update()
 
     def mouseMoveEvent(self, event):
-        self.end_pos = event.globalPosition().toPoint()
+        self.end_pos_global = event.globalPosition().toPoint()
+        self.end_pos_local = event.position().toPoint()
         self.update()
 
     def mouseReleaseEvent(self, event):
-        if self.start_pos and self.end_pos:
-            x1, x2 = sorted([self.start_pos.x(), self.end_pos.x()])
-            y1, y2 = sorted([self.start_pos.y(), self.end_pos.y()])
+        if self.start_pos_global and self.end_pos_global:
+            x1, x2 = sorted([self.start_pos_global.x(), self.end_pos_global.x()])
+            y1, y2 = sorted([self.start_pos_global.y(), self.end_pos_global.y()])
             w = x2 - x1
             h = y2 - y1
             if w > 10 and h > 10:
-                self.model.focus_area = {'top': y1, 'left': x1, 'width': w, 'height': h}
+                self.model.focus_area = {'top': int(y1), 'left': int(x1), 'width': int(w), 'height': int(h)}
                 print(f"Captured Focus Area: {self.model.focus_area}")
         self.close()
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+
     def paintEvent(self, event):
-        if self.start_pos and self.end_pos:
+        if hasattr(self, 'start_pos_local') and hasattr(self, 'end_pos_local') and self.start_pos_local and self.end_pos_local:
             painter = QPainter(self)
             pen = QPen(QColor("red"))
             pen.setWidth(3)
             painter.setPen(pen)
             
-            x1, x2 = sorted([self.start_pos.x(), self.end_pos.x()])
-            y1, y2 = sorted([self.start_pos.y(), self.end_pos.y()])
+            x1, x2 = sorted([self.start_pos_local.x(), self.end_pos_local.x()])
+            y1, y2 = sorted([self.start_pos_local.y(), self.end_pos_local.y()])
             painter.drawRect(x1, y1, x2 - x1, y2 - y1)
 
 
@@ -335,7 +511,7 @@ class PlotDialog(QDialog):
         plot_type_combo.setCurrentIndex(len(plot_type_combo) - 1)
         dlg_layout.addWidget(plot_type_combo)
         
-        form = QFormLayout, QComboBox()
+        form = QFormLayout()
         dim1_cb = QComboBox(); dim1_cb.addItems(dims_found)
         dim2_cb = QComboBox(); dim2_cb.addItems(dims_found)
         dim3_cb = QComboBox(); dim3_cb.addItems(dims_found)
@@ -382,7 +558,7 @@ class PlotDialog(QDialog):
             ax.grid(True)
         elif plot_type == "1D":
             ax = fig.add_subplot(111)
-            if dim_data[dim1] and len(dim_data[dim1]) == len(red_percents):
+            if dim_data.get(dim1) and len(dim_data[dim1]) == len(red_percents):
                 paired = sorted(zip(dim_data[dim1], red_percents))
                 sorted_xs = [p[0] for p in paired]
                 sorted_rs = [p[1] for p in paired]
@@ -421,19 +597,79 @@ class PlotDialog(QDialog):
 
 
 class RedPercentDynamicView(QtDynamicView):
+    def __init__(self, model, parent=None):
+        super().__init__(model, parent)
+        self._add_sync_dimension_controls()
+        
+    def _add_sync_dimension_controls(self):
+        sync_frame = QFrame()
+        sync_layout = QHBoxLayout(sync_frame)
+        lbl = QLabel("Sync Dimensions:")
+        lbl.setProperty("class", "header")
+        sync_layout.addWidget(lbl)
+        
+        self.sync_cbs = {}
+        for dim in ['X', 'Y', 'Z']:
+            cb = QCheckBox(dim)
+            cb.setChecked(dim in self.model.sync_dimensions)
+            cb.stateChanged.connect(self._update_sync_dimensions)
+            self.sync_cbs[dim] = cb
+            sync_layout.addWidget(cb)
+        sync_layout.addStretch()
+        self.layout.insertWidget(self.layout.count() - 1, sync_frame)
+
+    def _update_sync_dimensions(self):
+        self.model.sync_dimensions = [dim for dim, cb in self.sync_cbs.items() if cb.isChecked()]
+
     def _execute_command(self, cmd_name):
         if cmd_name == "select_focus_area":
             self.overlay = SelectionOverlay(self.model)
             self.overlay.show()
         elif cmd_name == "plot_data_ui":
-            
             if hasattr(self, 'plot_dialog') and self.plot_dialog:
                 self.plot_dialog.deleteLater()
             self.plot_dialog = PlotDialog(self)
-
             self.plot_dialog.show()
+        elif cmd_name == "save_log":
+            self.save_log_ui()
+        elif cmd_name == "stop_monitoring":
+            super()._execute_command(cmd_name)
+            if self.model.data_log and self.model.data_log.red_values:
+                reply = QMessageBox.question(
+                    self, 
+                    "Save Log", 
+                    "Monitoring stopped. Would you like to save the data to a CSV?", 
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    self.save_log_ui()
         else:
             super()._execute_command(cmd_name)
+
+    def save_log_ui(self):
+        if not self.model.data_log or not self.model.data_log.red_values:
+            QMessageBox.information(self, "No Data", "No data to save.")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Red Detection Log", "", "CSV Files (*.csv);;All Files (*)"
+        )
+        if file_path:
+            try:
+                self.model.data_log.save_to_csv(file_path)
+                print(f"[color_test] Log saved to: {file_path}")
+            except Exception as e:
+                from error_routing import ErrorRouter
+                msg = f"[color_test] Error saving file: {e}"
+                print(msg)
+                ErrorRouter.report_error("File Save Error", msg, e)
+
+    def cleanup(self):
+        super().cleanup()
+        if hasattr(self.model, 'stop_monitoring'):
+            self.model.stop_monitoring()
+        if hasattr(self, 'plot_dialog') and self.plot_dialog:
+            self.plot_dialog.close()
+
 
 class DashboardWindow(QMainWindow):
     def __init__(self, system_manager):
@@ -478,8 +714,10 @@ class DashboardWindow(QMainWindow):
 
     def open_device_view(self, device_name):
         if device_name in self.active_docks:
-            self.active_docks[device_name].show()
-            self.active_docks[device_name].raise_()
+            dock = self.active_docks[device_name]
+            dock.show()
+            dock.raise_()
+            dock.activateWindow()
             return
             
         model = self.system_manager.get_model(device_name)
@@ -488,9 +726,6 @@ class DashboardWindow(QMainWindow):
             
         dock = QDockWidget(device_name, self)
         dock.setAllowedAreas(Qt.AllDockWidgetAreas)
-        
-        # In the future, route to bespoke views if model.custom_view_class exists.
-        # For now, DynamicView handles all.
         
         if device_name == "Red Percent Window":
             view_widget = RedPercentDynamicView(model)
@@ -510,10 +745,17 @@ class DashboardWindow(QMainWindow):
         
     def on_dock_closed(self, device_name, visible):
         if not visible and device_name in self.active_docks:
-            # Do not delete the dock! It causes segfaults during layout initialization.
+            # Do not delete the dock; keep it cached so it can be restored from the sidebar
             pass
 
-            
     def closeEvent(self, event):
+        # Stop all dynamic view timers and pollers
+        for name, dock in self.active_docks.items():
+            widget = dock.widget()
+            if hasattr(widget, 'cleanup'):
+                try:
+                    widget.cleanup()
+                except Exception:
+                    pass
         self.system_manager.shutdown_all()
         event.accept()

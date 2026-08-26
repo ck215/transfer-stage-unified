@@ -1,5 +1,10 @@
+import math
+import time
+import copy
+import threading
 from controller.seiral import serial
 from controller.gamepad import ControllerPoller
+from error_routing import ErrorRouter as ErrorPopupManager
 
 class BaseProbe:
     def __init__(self, port, controller_id, active_claims=None):
@@ -15,7 +20,8 @@ class BaseProbe:
         # Connection variables
         self.controller_var = controller_id
         self.serial_port = port
-        self.poller = ControllerPoller(controller_id, active_claims or {}, self.__class__.__name__) if controller_id and "None" not in controller_id else None
+        self.active_claims = active_claims or {}
+        self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__) if controller_id and "None" not in controller_id else None
         
         # Step sizes
         self.x_step = "16"
@@ -35,6 +41,7 @@ class BaseProbe:
         self.system_enabled = False
         self.auton_flag = False
         self.manual_flag = False
+
     @property
     def ui_schema(self):
         return {
@@ -84,40 +91,52 @@ class BaseProbe:
         }
 
     def reconnect_serial(self):
+        print(f"[{self.__class__.__name__}] Reconnecting serial port {self.serial_port}...")
         if self.serial_comm:
-            self.serial_comm.close()
-            import time
-            time.sleep(1)
-            self.serial_comm.__init__(self.serial_port)
+            try:
+                self.serial_comm.close()
+            except Exception as e:
+                print(f"[{self.__class__.__name__}] Error closing existing serial connection: {e}")
+        time.sleep(1)
+        if self.serial_port and self.serial_port != "None":
+            self.serial_comm = serial(self.serial_port)
+        else:
+            self.serial_comm = None
+        self.system_enabled = False
+        self.auton_flag = False
+        self.manual_flag = False
 
     def color_test_window(self):
-        print("[BaseProbe] Color test window requested")
+        print(f"[{self.__class__.__name__}] Color test / Red Percent window requested")
 
     def open_controller_selector(self):
-        print("[BaseProbe] Controller selector requested")
+        if self.poller:
+            controllers = self.poller.get_physical_controllers()
+            print(f"[{self.__class__.__name__}] Available controllers: {controllers}")
+            return controllers
+        print(f"[{self.__class__.__name__}] No ControllerPoller initialized.")
+        return []
 
     def open_controller_log(self):
-        print("[BaseProbe] Controller log window requested")
+        print(f"[{self.__class__.__name__}] Controller log window requested")
 
     def toggle_manual(self):
         if self.manual_flag:
-            self.disable()
-            self.manual_flag = False
+            self.full_stop()
         else:
-            self.enable()
             self.enter_manual()
 
     def toggle_auton(self):
         if self.auton_flag:
-            self.disable()
-            self.auton_flag = False
+            self.full_stop()
         else:
-            self.enable()
             self.enter_auton()
 
     def send_stop_command(self):
         if self.serial_comm:
             params = self.get_params()
+            params["command_code_manual"] = 0
+            params["command_code_auton"] = 0
             self.serial_comm.send_autonomous_command(params)
 
     def enter_auton(self):
@@ -139,29 +158,77 @@ class BaseProbe:
         if not script_path or not self.serial_comm:
             return
             
-        print(f"[BaseProbe] Parsing script: {script_path}")
+        print(f"[{self.__class__.__name__}] Parsing and executing script: {script_path}")
         self.enter_auton()
         
-        import threading
         def _execute():
             try:
-                from gcodeparser import GcodeParser
+                import gcodeparser
                 with open(script_path, 'r', encoding="utf-8") as f:
-                    gcode = f.read()
-                parsed = GcodeParser(gcode)
-                for line in parsed.lines:
-                    if self.serial_comm.ser:
-                        self.serial_comm.ser.write((line.gcode_str + '\n').encode())
+                    gcode_content = f.read()
+                
+                # Check if serial connection is active
+                if not getattr(self.serial_comm, 'ser', None):
+                    raise AttributeError("Serial connection not active.")
+                
+                # Support both GcodeParser and parse_gcode_lines
+                if hasattr(gcodeparser, 'GcodeParser'):
+                    parsed = gcodeparser.GcodeParser(gcode_content)
+                    lines = parsed.lines
+                elif hasattr(gcodeparser, 'parse_gcode_lines'):
+                    import io
+                    lines = list(gcodeparser.parse_gcode_lines(io.StringIO(gcode_content), include_comments=False))
+                else:
+                    lines = []
+
+                for line in lines:
+                    gcode_str = getattr(line, 'gcode_str', str(line))
+                    params = getattr(line, 'params', {})
+                    command = getattr(line, 'command', ('', 0))
+                    
+                    if command and command[0] == 'G':
+                        x_dist = params.get('X', 0)
+                        y_dist = params.get('Y', 0)
+                        z_dist = params.get('Z', 0)
+                        feedrate = params.get('F', self.full_speed)
+                        
+                        cmd_params = {
+                            "x_step_size": self.x_step,
+                            "y_step_size": self.y_step,
+                            "z_step_size": self.z_step,
+                            "full_speed": str(feedrate),
+                            "slow_speed": 0,
+                            "brake_distance": 0,
+                            "x_dist": str(x_dist),
+                            "y_dist": str(y_dist),
+                            "z_dist": str(z_dist),
+                            "command_code_manual": 0,
+                            "command_code_auton": 1
+                        }
+                        self.serial_comm.send_autonomous_command(cmd_params)
+                        
+                        x_steps = abs(float(self.x_step) * float(x_dist))
+                        y_steps = abs(float(self.y_step) * float(y_dist))
+                        z_steps = abs(float(self.z_step) * float(z_dist))
+                        dist = math.sqrt(x_steps**2 + y_steps**2 + z_steps**2)
+                        speed = float(feedrate) if float(feedrate) > 0 else float(self.full_speed)
+                        duration = (dist / speed) + 0.05 if speed > 0 else 0.1
+                        time.sleep(duration)
+                    elif ',' in gcode_str:
+                        if self.serial_comm.ser:
+                            raw_cmd = gcode_str.strip() + '\n'
+                            self.serial_comm.ser.write(raw_cmd.encode('utf-8'))
+                        time.sleep(0.1)
                     else:
-                        raise AttributeError("Serial connection not active.")
-                    import time
-                    time.sleep(0.1)  
+                        if self.serial_comm.ser:
+                            self.serial_comm.ser.write((gcode_str + '\n').encode('utf-8'))
+                        time.sleep(0.1)
             except Exception as e:
-                print(f"[BaseProbe] Script execution error: {e}")
-                from error_routing import ErrorRouter as ErrorPopupManager
+                print(f"[{self.__class__.__name__}] Script execution error: {e}")
                 ErrorPopupManager.report_error("Script Execution Error", f"Error running script:\n{e}", e)
             finally:
                 self.full_stop()
+
         threading.Thread(target=_execute, daemon=True).start()
 
     def get_params(self):
@@ -209,9 +276,15 @@ class BaseProbe:
                 self.pos_x, self.pos_y, self.pos_z = str(pos[0]), str(pos[1]), str(pos[2])
 
     def enable(self):
-        if self.serial_comm:
-            self.serial_comm.enable()
-        self.system_enabled = True
+        if not self.system_enabled:
+            if self.serial_comm:
+                try:
+                    self.serial_comm.enable()
+                except ValueError as e:
+                    print(f"[{self.__class__.__name__}] {e}")
+                    ErrorPopupManager.report_warning("Enable Failed", str(e))
+                    return
+            self.system_enabled = True
 
     def toggle_enable(self):
         if self.system_enabled:
@@ -220,15 +293,19 @@ class BaseProbe:
             self.enable()
 
     def disable(self):
-        if self.serial_comm:
-            self.serial_comm.disable()
-        self.system_enabled = False
-        self.full_stop()
+        if self.system_enabled:
+            if self.serial_comm:
+                try:
+                    self.serial_comm.disable()
+                except ValueError as e:
+                    print(f"[{self.__class__.__name__}] {e}")
+            self.system_enabled = False
+            self.full_stop()
 
     def full_stop(self):
         self.manual_flag = False
         self.auton_flag = False
-        self.send_autonomous_command()
+        self.send_stop_command()
 
 
 class StepperProbe(BaseProbe):
@@ -249,7 +326,7 @@ class DCProbe(BaseProbe):
 
     @property
     def ui_schema(self):
-        schema = super().ui_schema
+        schema = copy.deepcopy(super().ui_schema)
         # Find the Configuration section and insert the two new fields
         for section in schema["sections"]:
             if section["title"] == "Configuration":

@@ -1072,10 +1072,10 @@ class Toupcam:
             arrPath = ctiPath + [None]
             if sys.platform == 'win32':
                 arrType = ctypes.c_wchar_p * len(arrPath)
-                ctiArray = ctypes.arr_type(*arrPath)
+                ctiArray = arrType(*arrPath)
             else:
                 arrType = ctypes.c_char_p * len(arrPath)
-                ctiArray = ctypes.arr_type(*arrPath)
+                ctiArray = arrType(*arrPath)
         cls.__initlib()
         cls.__ctienable_fun = fun
         cls.__ctienable_ctx = ctx
@@ -1112,7 +1112,7 @@ class Toupcam:
                 cls.__lib.Toupcam_HotPlug(cls.__HOTPLUG_CALLBACK(0), None)
             else:
                 cls.__hotplug_cb = cls.__HOTPLUG_CALLBACK(cls.__hotplugCallbackFun)
-                cls.__lib.Toupcam_HotPlug(__hotplug_cb, None)
+                cls.__lib.Toupcam_HotPlug(cls.__hotplug_cb, None)
 
     @classmethod
     def EnumV2(cls):
@@ -1987,7 +1987,7 @@ class Toupcam:
         self.__lib.Toupcam_get_Binning(self.__h, ctypes.byref(pValue), ctypes.byref(pMethod))
         return (pValue.value.decode('ascii'), pMethod.value.decode('ascii'))
 
-    def get_BinningValue(self):
+    def get_all_BinningValue(self):
         num = self.get_BinningNumber()
         if num <= 0:
             return []
@@ -2027,7 +2027,7 @@ class Toupcam:
     def put_ColorMatrix(self, v):
         if len(v) == 9:
             a = (ctypes.c_double * 9)(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8])
-            return self.__lib.Toupcam_put_ColorMatrix(self.__h, v)
+            return self.__lib.Toupcam_put_ColorMatrix(self.__h, a)
         else:
             raise HRESULTException(0x80070057)
 

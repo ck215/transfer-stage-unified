@@ -207,8 +207,12 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import csv
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.colors import LinearSegmentedColormap
+try:
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.colors import LinearSegmentedColormap
+except ImportError:
+    FigureCanvasTkAgg = None
+    LinearSegmentedColormap = None
 
 class RedPercentView(tk.Frame):
     def __init__(self, master=None, system=None):
