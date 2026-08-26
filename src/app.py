@@ -472,7 +472,7 @@ def run_legacy_app():
                     if device != "Red Percent Window" and port != "SIM":
                         assigned_ports.add(port)
                     
-                    if "None" not in controller and "Virtual" not in controller and device != "Red Percent Window":
+                    if "None" not in controller and "Virtual" not in controller and "N/A" not in controller and device != "Red Percent Window":
                         assigned_controllers.add(controller)
                     
             if not active_configs:
@@ -484,7 +484,7 @@ def run_legacy_app():
                 messagebox.showerror("Port Collision", "Error: You cannot assign the same COM port to multiple active devices!")
                 return
                 
-            physical_configs = [c for c in active_configs if "None" not in c["controller"] and "Virtual" not in c["controller"] and c["device"] != "Red Percent Window"]
+            physical_configs = [c for c in active_configs if "None" not in c["controller"] and "Virtual" not in c["controller"] and "N/A" not in c["controller"] and c["device"] != "Red Percent Window"]
             if len(assigned_controllers) < len(physical_configs):
                 messagebox.showerror("Controller Collision", "Error: You cannot map the same physical controller to multiple active devices!")
                 return
@@ -860,11 +860,18 @@ def run_pyside_app():
             main_layout.addLayout(btn_layout)
     
         def refresh_ports(self):
+            if getattr(self, 'is_scanning', False):
+                return
             self.get_available_ports()
             for device in self.devices:
                 if device != "Red Percent Window":
+                    current = self.port_vars[device].currentText()
                     self.port_vars[device].clear()
                     self.port_vars[device].addItems(self.detected_ports)
+                    idx = self.port_vars[device].findText(current)
+                    if idx >= 0:
+                        self.port_vars[device].setCurrentIndex(idx)
+            self.start_autodetect()
     
         def start_autodetect(self):
             self.is_scanning = True
@@ -933,7 +940,7 @@ def run_pyside_app():
                     })
                     if device != "Red Percent Window" and port != "SIM":
                         assigned_ports.add(port)
-                    if "None" not in controller and "Virtual" not in controller and device != "Red Percent Window":
+                    if "None" not in controller and "Virtual" not in controller and "N/A" not in controller and device != "Red Percent Window":
                         assigned_controllers.add(controller)
     
             if not active_configs:
@@ -945,7 +952,7 @@ def run_pyside_app():
                 QMessageBox.critical(self, "Port Collision", "Error: You cannot assign the same COM port to multiple active devices!")
                 return
                 
-            physical_configs = [c for c in active_configs if "None" not in c["controller"] and "Virtual" not in c["controller"] and c["device"] != "Red Percent Window"]
+            physical_configs = [c for c in active_configs if "None" not in c["controller"] and "Virtual" not in c["controller"] and "N/A" not in c["controller"] and c["device"] != "Red Percent Window"]
             if len(assigned_controllers) < len(physical_configs):
                 QMessageBox.critical(self, "Controller Collision", "Error: You cannot map the same physical controller to multiple active devices!")
                 return
