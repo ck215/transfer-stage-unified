@@ -6,13 +6,21 @@ import multiprocessing
 import sys
 
 def call_massive_string():
-    sys.path.append('src')\n    import mainGUI\n    root = tk.Tk()
+    import os; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
+    import mainGUI
+    mainGUI.original_showerror = lambda *args, **kwargs: None
+    mainGUI.original_showerror = lambda *args, **kwargs: None
+    root = tk.Tk()
     root.withdraw()
     massive_string = "A" * 10000000
     messagebox.showerror("Massive Error", massive_string, master=root)
 
 def call_multithreaded():
-    sys.path.append('src')\n    import mainGUI\n    root = tk.Tk()
+    import os; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
+    import mainGUI
+    mainGUI.original_showerror = lambda *args, **kwargs: None
+    mainGUI.original_showerror = lambda *args, **kwargs: None
+    root = tk.Tk()
     root.withdraw()
     
     def call_error():
@@ -50,7 +58,11 @@ def test_multithreaded_hangs_or_crashes():
         pytest.fail(f"Legacy UI error dialog crashed with exit code {p.exitcode} when called from multiple threads.")
 
 def call_non_string():
-    sys.path.append('src')\n    import mainGUI\n    root = tk.Tk()
+    import os; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
+    import mainGUI
+    mainGUI.original_showerror = lambda *args, **kwargs: None
+    mainGUI.original_showerror = lambda *args, **kwargs: None
+    root = tk.Tk()
     root.withdraw()
     try:
         messagebox.showerror("List Error", ["Error", "List"], master=root)
