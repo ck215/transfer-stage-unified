@@ -11,6 +11,8 @@ import time
 # Safe messagebox monkey-patch for edge cases
 original_showerror = messagebox.showerror
 def safe_showerror(title, message, **options):
+    print("SAFE_SHOWERROR CALLED!")
+
     if not isinstance(message, str):
         message = str(message)
     if len(message) > 5000:
@@ -53,6 +55,12 @@ except ImportError:
 
 class SetupWindow(tk.Tk):
     """Configuration interface to select systems and assign COM ports & physical joysticks."""
+    def destroy(self):
+        try:
+            super().destroy()
+        except tk.TclError:
+            pass
+
     def __init__(self):
         super().__init__()
         self.title("Device Configuration Setup")
