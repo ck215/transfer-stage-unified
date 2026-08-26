@@ -73,12 +73,12 @@ class BaseProbe:
                 {
                     "title": "System Control",
                     "elements": [
-                        {"type": "toggle", "model_attr": "system_enabled", 
-                         "true_text": "System Enabled (Click to Disable)", 
-                         "false_text": "System Disabled (Click to Enable)", 
-                         "command": "toggle_enable"},
-                        {"type": "button", "text": "ENTER AUTONOMOUS MODE", "command": "enter_auton", "bg": "darkgreen", "fg": "white"},
-                        {"type": "button", "text": "ENTER MANUAL MODE", "command": "enter_manual", "bg": "blue", "fg": "white"},
+                        {"type": "toggle", "model_attr": "auton_flag",
+                         "true_text": "AUTONOMOUS MODE (Click to Stop)",
+                         "false_text": "Enter Autonomous Mode", "command": "toggle_auton"},
+                        {"type": "toggle", "model_attr": "manual_flag",
+                         "true_text": "MANUAL MODE (Click to Stop)",
+                         "false_text": "Enter Manual Mode", "command": "toggle_manual"},
                         {"type": "button", "text": "Start Stepping", "command": "macro_start_auton", "bg": "darkgreen", "fg": "white"},
                         {"type": "button", "text": "Full Stop", "command": "full_stop", "bg": "darkred", "fg": "white"},
                         {"type": "file_picker", "text": "Run Script", "command": "run_script"},
@@ -141,16 +141,22 @@ class BaseProbe:
             self.serial_comm.send_autonomous_command(params)
 
     def enter_auton(self):
+        if not self.enable():
+            return
         self.auton_flag = True
         self.manual_flag = False
         self.send_stop_command()
 
     def enter_manual(self):
+        if not self.enable():
+            return
         self.auton_flag = False
         self.manual_flag = True
         self.send_stop_command()
 
     def macro_start_auton(self):
+        if not self.enable():
+            return
         self.auton_flag = True
         self.manual_flag = False
         self.send_autonomous_command()
@@ -284,8 +290,9 @@ class BaseProbe:
                 except ValueError as e:
                     print(f"[{self.__class__.__name__}] {e}")
                     ErrorPopupManager.report_warning("Enable Failed", str(e))
-                    return
+                    return False
             self.system_enabled = True
+        return True
 
     def toggle_enable(self):
         if self.system_enabled:
@@ -293,7 +300,10 @@ class BaseProbe:
         else:
             self.enable()
 
-    def disable(self):
+    def _stop_and_disarm(self):
+        self.manual_flag = False
+        self.auton_flag = False
+        self.send_stop_command()
         if self.system_enabled:
             if self.serial_comm:
                 try:
@@ -301,12 +311,12 @@ class BaseProbe:
                 except ValueError as e:
                     print(f"[{self.__class__.__name__}] {e}")
             self.system_enabled = False
-            self.full_stop()
+
+    def disable(self):
+        self._stop_and_disarm()
 
     def full_stop(self):
-        self.manual_flag = False
-        self.auton_flag = False
-        self.send_stop_command()
+        self._stop_and_disarm()
 
 
 class StepperProbe(BaseProbe):
