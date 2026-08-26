@@ -74,3 +74,21 @@ def test_script_recursive_macros(app_logic, tmp_path, capsys):
     
     captured = capsys.readouterr()
     pass
+
+def test_script_empty_file(app_logic, tmp_path, capsys):
+    empty_file = tmp_path / "empty.gcode"
+    empty_file.write_text("")
+    
+    app_logic.open_script = str(empty_file)
+    app_logic.run_script_button()
+    
+    captured = capsys.readouterr()
+    assert "[AppLogic] Script parse failed" not in captured.out
+
+def test_script_none_file(app_logic, capsys):
+    app_logic.open_script = None
+    # Suppress TypeError since open(None, 'r') raises TypeError but bare except catches it
+    app_logic.run_script_button()
+    
+    captured = capsys.readouterr()
+    assert "[AppLogic] Script parse failed. Perhaps selected file is not gcode." in captured.out
