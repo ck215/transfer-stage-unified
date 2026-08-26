@@ -1,4 +1,4 @@
-#include <max6675.h>
+#include <MAX6675.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
@@ -11,7 +11,7 @@ int ktcSO = 8;
 int ktcCS = 9;
 int ktcCLK = 10;
 
-MAX6675 ktc(ktcCLK, ktcCS, ktcSO);
+MAX6675 ktc(ktcCS, ktcSO, ktcCLK);
 
 float endpoint;                              // final temperature setpoint in deg C
 float setpoint;                              // current temperature setpoint used to control ramp rate
@@ -49,6 +49,8 @@ void setup() {
                                                 // initialize serial communication at 115200 bits per second:
   delay(500);                                   // give the MAX a little time to settle
 
+  ktc.begin();
+
   lcd.init();                                   // initialize lcd
   lcd.backlight();                              // turn on backlight
 
@@ -60,7 +62,8 @@ void setup() {
   counter = 0;
   counter2 = 0;
   offset = 0;                                     // Temperature offset default = 0
-  setpoint = ktc.readCelsius() + offset;          // initial setpoint
+  ktc.read();
+  setpoint = ktc.getCelsius() + offset;          // initial setpoint
   endpoint = 0;                                   // final desired temperature, set to zero 
   spdelay = 5;                                      // set setpoint delay in seconds (amount of time it takes to increase setpoint)
   kp = 2.0;                                           // Proportion constant
@@ -117,7 +120,8 @@ void loop(){
   
   if(counter == 60){                                      // every half-second (roughly - it is actually more like 0.5766s)
     timer = (millis() - starttime)*(0.001);               // Timer (measure time)
-    temp = ktc.readCelsius() + offset;                    // Read Temperature
+    ktc.read();
+    temp = ktc.getCelsius() + offset;                    // Read Temperature
     
     counter2 = counter2 + 1;                                            // count every half-second
       if(counter2 >= 1.73425*spdelay && setpoint < endpoint){           // after the setpoint delay (ramp rate) and if setpoint is less than endpoint. (1.73425 is number of counts per second - almost 2)
@@ -230,7 +234,8 @@ void recvWithStartEndMarkers() {
 
 void showNewData() {
     if (newData == true) {
-        setpoint = ktc.readCelsius() + offset;
+        ktc.read();
+        setpoint = ktc.getCelsius() + offset;
         counter2 = 0;
         starttime = millis();
         newData = false;
