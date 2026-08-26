@@ -49,3 +49,29 @@ def test_system_manager_invalid_model():
     manager = SystemManager()
     manager.register_model("Invalid", "Not a model")
     assert manager.get_model("Invalid") == "Not a model"
+
+def test_dcprobe_mutating_state_out_of_order():
+    """Test mutating state out of order on the DCProbe."""
+    probe = DCProbe("SIM", None)
+    probe.serial_comm = MagicMock()
+    
+    try:
+        probe.disable()
+        probe.enter_auton()
+        probe.enable()
+        probe.reconnect_serial()
+        probe.disable()
+        probe.enter_manual()
+    except Exception as e:
+        pytest.fail(f"DCProbe crashed when mutating state out of order: {e}")
+
+def test_dcprobe_invalid_speed():
+    """Test DCProbe with invalid speed (assignment)."""
+    probe = DCProbe("SIM", None)
+    
+    # Just checking it doesn't crash the program unexpectedly.
+    try:
+        probe.full_speed = "1000"
+        probe.full_speed = "invalid_speed"
+    except Exception:
+        pass  # It's okay if it raises an exception, we just don't want a hard crash

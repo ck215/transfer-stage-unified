@@ -7,7 +7,8 @@ try:
 except ImportError:
     pyserial = None
 import sys
-import struct\nimport threading
+import struct
+import threading
 
 PACKET_FORMAT = '<BBfffhhhhhhh'
 START_MARKER = 0xAA

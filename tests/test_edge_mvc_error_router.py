@@ -62,3 +62,11 @@ def test_setup_excepthook_corrupted_traceback():
             pytest.fail(f"excepthook crashed with corrupted traceback: {e}")
             
         mock_report.assert_called_once()
+
+def test_error_router_unhashable_message():
+    from error_routing import ErrorRouter
+    # Should not crash if message is unhashable
+    try:
+        ErrorRouter.report_error("Title", {"unhashable": "dict"})
+    except TypeError as e:
+        pytest.fail(f"ErrorRouter crashed on unhashable message: {e}")

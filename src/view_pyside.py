@@ -17,7 +17,8 @@ class ControllerLogWindow(QDialog):
     def __init__(self, poller=None, parent=None):
         super().__init__(parent)
         self.poller = poller
-        self.setWindowTitle("Controller Log Window")\n        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setWindowTitle("Controller Log Window")
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.resize(500, 400)
         from PySide6.QtWidgets import QVBoxLayout
         self.layout = QVBoxLayout(self)
