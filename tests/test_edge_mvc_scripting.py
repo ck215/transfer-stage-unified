@@ -28,6 +28,7 @@ def probe():
 def test_run_script_missing_file(probe):
     with patch.object(ErrorRouter, 'report_error') as mock_err:
         probe.run_script("this_file_does_not_exist_at_all.gcode")
+        import time; time.sleep(0.5)
         mock_err.assert_called_once()
         title, message, exc = mock_err.call_args[0]
         assert title == "Script Execution Error"
@@ -39,6 +40,7 @@ def test_run_script_malformed_gcode(probe, tmp_path):
     
     with patch.object(ErrorRouter, 'report_error') as mock_err:
         probe.run_script(str(file_path))
+        import time; time.sleep(0.5)
         mock_err.assert_called_once()
         title, message, exc = mock_err.call_args[0]
         assert title == "Script Execution Error"
@@ -51,7 +53,23 @@ def test_run_script_non_utf8(probe, tmp_path):
     
     with patch.object(ErrorRouter, 'report_error') as mock_err:
         probe.run_script(str(file_path))
+        import time; time.sleep(0.5)
         mock_err.assert_called_once()
         title, message, exc = mock_err.call_args[0]
         assert title == "Script Execution Error"
         assert isinstance(exc, UnicodeDecodeError)
+
+def test_run_script_no_serial_port_sim(probe, tmp_path):
+    # In SIM mode, serial_comm might exist but serial_comm.ser is None
+    probe.serial_comm.ser = None
+    file_path = tmp_path / "valid.gcode"
+    file_path.write_text("G0 X10")
+    
+    # We expect it to catch the AttributeError and report it
+    with patch.object(ErrorRouter, 'report_error') as mock_err:
+        probe.run_script(str(file_path))
+        import time; time.sleep(0.5)
+        mock_err.assert_called_once()
+        title, message, exc = mock_err.call_args[0]
+        assert title == "Script Execution Error"
+        assert isinstance(exc, AttributeError)
