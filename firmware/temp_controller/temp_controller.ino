@@ -2,7 +2,8 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);  // Set the LCD I2C address
+// Use standard LiquidCrystal_I2C constructor (Address, Columns, Rows)
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 int zcross = 2;
 int pwmPin = 3;
@@ -48,7 +49,8 @@ void setup() {
                                                 // initialize serial communication at 115200 bits per second:
   delay(500);                                   // give the MAX a little time to settle
 
-  lcd.begin(20,4);                            // initialize lcd
+  lcd.init();                                   // initialize lcd
+  lcd.backlight();                              // turn on backlight
 
   pinMode(zcross, INPUT);                       // set pin modes
   pinMode(pwmPin, OUTPUT);
