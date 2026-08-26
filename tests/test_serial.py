@@ -28,7 +28,8 @@ def test_serial_send_manual_mode_command():
             "dpad_UD": 0,
             "LBumper": 0,
             "RBumper": 0,
-            "manual_jog_speed": 400
+            "manual_jog_speed": 400,
+            "packet_format": "<BBffffffffff"
         }
         
         s.send_manual_mode_command(params)

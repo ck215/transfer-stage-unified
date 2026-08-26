@@ -4,9 +4,11 @@ from unittest.mock import MagicMock
 
 # Mock libraries that might not be installed
 sys.modules['pygame'] = MagicMock()
+sys.modules['pygame'].error = Exception
 
 mock_serial_lib = MagicMock()
 mock_serial_lib.SerialException = Exception
+mock_serial_lib.SerialTimeoutException = Exception
 sys.modules['serial'] = mock_serial_lib
 sys.modules['serial.tools'] = MagicMock()
 sys.modules['serial.tools.list_ports'] = MagicMock()
