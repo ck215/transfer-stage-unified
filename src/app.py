@@ -1,4 +1,21 @@
 import sys
+
+def parse_controller_id(controllerID):
+    """Safely parses a controller ID string into an integer or None."""
+    if not isinstance(controllerID, str):
+        return None
+    if "Joy" in controllerID:
+        try:
+            prefix = controllerID.split(":")[0]
+            num_str = prefix.replace("Joy", "").strip()
+            return int(num_str)
+        except ValueError:
+            return None
+    elif controllerID == "None":
+        return None
+    return controllerID
+
+
 import os
 
 def run_legacy_app():
@@ -805,11 +822,7 @@ def run_pyside_app():
                 port = config["port"]
                 controllerID = config["controller"]
                 
-                if "Joy" in controllerID:
-                    prefix = controllerID.split(":")[0]
-                    controllerID = int(prefix.replace("Joy ", ""))
-                elif controllerID == "None":
-                    controllerID = None
+                controllerID = parse_controller_id(controllerID)
     
                 self.active_claims[device] = controllerID
     
