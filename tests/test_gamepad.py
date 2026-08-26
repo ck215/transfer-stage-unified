@@ -149,6 +149,20 @@ def test_controller_claim_conflict():
         assert poller.gamepad is None
         assert claims["ProcessB"] == "None Detected"
 
+def test_controller_claim_conflict_with_integer_ids():
+    """
+    parse_controller_id() returns raw ints (e.g. 0, 1), and active_claims is
+    populated with those ints directly. The claim-collision check must not
+    assume claimed_id is a string (regression: crashed with
+    TypeError: argument of type 'int' is not iterable on real hardware
+    when two probes were assigned integer controller IDs).
+    """
+    with patch("controller.gamepad.pygame"):
+        claims = {"ProcessA": 0}
+        poller = ControllerPoller(0, claims, "ProcessB")
+        assert poller.gamepad is None
+        assert claims["ProcessB"] == "None Detected"
+
 def test_controller_multi_digit_id_parsing():
     with patch("controller.gamepad.pygame") as mock_pygame:
         mock_pygame.joystick.get_count.return_value = 15

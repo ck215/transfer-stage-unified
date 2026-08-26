@@ -342,6 +342,48 @@ class DynamicView(tk.Frame):
                         "false_text": false_text
                     })
                         
+                elif el_type == "dropdown":
+                    attr = el.get("model_attr")
+                    cmd_name = el.get("command")
+                    options_cmd = el.get("options_command")
+
+                    tk.Label(self, text=label_text, bg=self.bg_main, fg=self.fg_accent).grid(
+                        row=row_counter, column=0, padx=5, pady=2, sticky='w')
+
+                    options_func = getattr(self.model, options_cmd, None) if options_cmd else None
+                    current_val = str(getattr(self.model, attr, ""))
+                    options = list(options_func()) if callable(options_func) else []
+                    if current_val and current_val not in options:
+                        options = [current_val] + options
+
+                    combo_var = tk.StringVar(value=current_val)
+                    combo = ttk.Combobox(self, textvariable=combo_var, values=options, state="readonly")
+                    combo.grid(row=row_counter, column=1, padx=5, pady=2, sticky='ew')
+
+                    def make_dropdown_cmd(c_name, var):
+                        def handler(event=None):
+                            func = getattr(self.model, c_name, None)
+                            if func:
+                                func(var.get())
+                        return handler
+
+                    combo.bind("<<ComboboxSelected>>", make_dropdown_cmd(cmd_name, combo_var))
+
+                    def make_refresh(o_func, cb, var):
+                        def handler():
+                            cur = var.get()
+                            opts = list(o_func()) if callable(o_func) else []
+                            if cur and cur not in opts:
+                                opts = [cur] + opts
+                            cb['values'] = opts
+                            if cur in opts:
+                                var.set(cur)
+                        return handler
+
+                    tk.Button(self, text="⟳", width=2,
+                              command=make_refresh(options_func, combo, combo_var)).grid(
+                        row=row_counter, column=2, padx=2, pady=2)
+
                 elif el_type == "file_picker":
                     cmd_name = el.get("command")
                     lbl = tk.Label(self, text="No Script Selected", bg=self.bg_main, fg='yellow', font=('Arial', 8))

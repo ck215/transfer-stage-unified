@@ -320,6 +320,11 @@ class ControllerPoller:
             ErrorPopupManager.report_error("Controller Scan Error", f"[{self.process_name}] Error scanning physical controllers:\n{e}", e)
             return []
 
+    def set_controller(self, controllerID):
+        """Reassigns this poller to a different physical controller, tearing down any existing connection first."""
+        self.controllerID = controllerID
+        return self._initialize_pygame_joystick(controllerID)
+
     def connect_controller(self):
         print("[controllerDrive] Restarting pygame...")
         try:
@@ -342,7 +347,7 @@ class ControllerPoller:
         # Multi-controller claim check: verify this controller isn't claimed by another subsystem
         if self.active_claims:
             for proc, claimed_id in self.active_claims.items():
-                if proc != self.process_name and claimed_id == controllerID and "None" not in claimed_id and "Virtual" not in claimed_id:
+                if proc != self.process_name and claimed_id == controllerID and "None" not in str(claimed_id) and "Virtual" not in str(claimed_id):
                     msg = f"[{self.process_name}] Controller collision: {controllerID} is already claimed by {proc}."
                     print(msg)
                     ErrorPopupManager.report_warning("Controller Claim Conflict", msg)

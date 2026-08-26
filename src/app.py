@@ -239,7 +239,7 @@ def run_legacy_app():
                 dropdown.state(["disabled"])
                 self.dropdown_widgets[device] = dropdown
                 
-                if device in ["Red Percent Window", "SMC100 Rotator"]:
+                if device in ["Red Percent Window", "SMC100 Rotator", "Temperature Controller"]:
                     ctrl_var = tk.StringVar(value="N/A")
                     self.controller_vars[device] = ctrl_var
                     ctrl_dropdown = ttk.OptionMenu(grid_frame, ctrl_var, "N/A", "N/A")
@@ -814,7 +814,7 @@ def run_pyside_app():
                 grid.addWidget(port_cb, row, 2)
     
                 ctrl_cb = QComboBox()
-                if device in ["Red Percent Window", "SMC100 Rotator"]:
+                if device in ["Red Percent Window", "SMC100 Rotator", "Temperature Controller"]:
                     ctrl_cb.addItem("N/A")
                     ctrl_cb.setEnabled(False)
                 else:

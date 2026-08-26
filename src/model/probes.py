@@ -21,7 +21,7 @@ class BaseProbe:
         self.controller_var = controller_id
         self.serial_port = port
         self.active_claims = active_claims or {}
-        self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__) if controller_id and "None" not in controller_id else None
+        self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
         
         # Step sizes
         self.x_step = "16"
@@ -58,7 +58,8 @@ class BaseProbe:
                     "title": "Configuration",
                     "elements": [
                         {"type": "entry", "text": "Serial Port:", "model_attr": "serial_port"},
-                        {"type": "entry", "text": "Controller ID:", "model_attr": "controller_var"},
+                        {"type": "dropdown", "text": "Controller ID:", "model_attr": "controller_var",
+                         "options_command": "get_available_controllers", "command": "set_controller"},
                         {"type": "entry", "text": "X Step Size:", "model_attr": "x_step"},
                         {"type": "entry", "text": "Y Step Size:", "model_attr": "y_step"},
                         {"type": "entry", "text": "Z Step Size:", "model_attr": "z_step"},
@@ -82,8 +83,6 @@ class BaseProbe:
                         {"type": "button", "text": "Full Stop", "command": "full_stop", "bg": "darkred", "fg": "white"},
                         {"type": "file_picker", "text": "Run Script", "command": "run_script"},
                         {"type": "button", "text": "Serial Reconnect", "command": "reconnect_serial", "bg": "gray", "fg": "black"},
-                        {"type": "button", "text": "Color Test Window", "command": "color_test_window", "bg": "purple", "fg": "white"},
-                        {"type": "button", "text": "Controller Selector", "command": "open_controller_selector", "bg": "orange", "fg": "black"},
                         {"type": "button", "text": "Controller Log Window", "command": "open_controller_log", "bg": "black", "fg": "white"}
                     ]
                 }
@@ -106,16 +105,18 @@ class BaseProbe:
         self.auton_flag = False
         self.manual_flag = False
 
-    def color_test_window(self):
-        print(f"[{self.__class__.__name__}] Color test / Red Percent window requested")
-
-    def open_controller_selector(self):
+    def get_available_controllers(self):
         if self.poller:
-            controllers = self.poller.get_physical_controllers()
-            print(f"[{self.__class__.__name__}] Available controllers: {controllers}")
-            return controllers
-        print(f"[{self.__class__.__name__}] No ControllerPoller initialized.")
+            return self.poller.get_physical_controllers()
         return []
+
+    def set_controller(self, controller_id):
+        print(f"[{self.__class__.__name__}] Swapping controller to: {controller_id}")
+        self.controller_var = controller_id
+        if self.poller:
+            self.poller.set_controller(controller_id)
+        else:
+            self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
 
     def open_controller_log(self):
         print(f"[{self.__class__.__name__}] Controller log window requested")

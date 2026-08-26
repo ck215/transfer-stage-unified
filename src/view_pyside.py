@@ -274,6 +274,59 @@ class QtDynamicView(QWidget):
                     })
                     row_layout.addWidget(btn)
 
+                elif el_type == "dropdown":
+                    attr = el.get("model_attr")
+                    cmd_name = el.get("command")
+                    options_cmd = el.get("options_command")
+                    lbl = QLabel(label_text)
+                    row_layout.addWidget(lbl)
+
+                    options_func = getattr(self.model, options_cmd, None) if options_cmd else None
+                    current_val = str(getattr(self.model, attr, ""))
+                    options = list(options_func()) if callable(options_func) else []
+                    if current_val and current_val not in options:
+                        options = [current_val] + options
+
+                    combo = QComboBox()
+                    combo.addItems(options)
+                    if current_val in options:
+                        combo.setCurrentText(current_val)
+                    row_layout.addWidget(combo)
+
+                    def make_dropdown_cmd(c_name):
+                        def handler(text):
+                            if not text:
+                                return
+                            func = getattr(self.model, c_name, None)
+                            if func and callable(func):
+                                try:
+                                    func(text)
+                                except Exception as e:
+                                    QMessageBox.critical(self, "Command Failed", f"Command {c_name} failed:\n{e}")
+                        return handler
+
+                    combo.currentTextChanged.connect(make_dropdown_cmd(cmd_name))
+
+                    def make_refresh(o_func, cb):
+                        def handler():
+                            cb.blockSignals(True)
+                            cur = cb.currentText()
+                            cb.clear()
+                            opts = list(o_func()) if callable(o_func) else []
+                            if cur and cur not in opts:
+                                opts = [cur] + opts
+                            cb.addItems(opts)
+                            if cur in opts:
+                                cb.setCurrentText(cur)
+                            cb.blockSignals(False)
+                        return handler
+
+                    refresh_btn = QPushButton("⟳")
+                    refresh_btn.setFixedWidth(28)
+                    refresh_btn.setToolTip("Rescan available controllers")
+                    refresh_btn.clicked.connect(make_refresh(options_func, combo))
+                    row_layout.addWidget(refresh_btn)
+
                 elif el_type == "file_picker":
                     cmd_name = el.get("command")
                     btn = QPushButton(label_text)
