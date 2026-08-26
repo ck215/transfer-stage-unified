@@ -373,4 +373,4 @@ class ControllerPoller:
             new_read_y = False
             
         self.hat_read_states[hat_id] = (new_read_x, new_read_y)
-        return (out_x, out_y)
+        return (-out_x, -out_y)

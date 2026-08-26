@@ -372,6 +372,7 @@ class AppLogic:
     # NEW: Periodically reads position from firmware and updates the GUI display.
     #      Self-scheduling via root.after(), runs regardless of mode (manual, auton, idle).
     def _poll_position(self):
+        self._is_polling_pos = True
         if not self._running:
             self._is_polling_pos = False
             return
@@ -410,6 +411,9 @@ class AppLogic:
         print("Enter manual mode using the MANUAL MODE button to control the stage manually with the Xbox Controller.")
         self.autonFlag = True
         self.manualFlag = False
+        if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
+            self.root.after_cancel(self._manual_timer_id)
+            self._manual_timer_id = None
 
         # Stop monitoring controller input
         self.controller.stop_polling()
@@ -444,6 +448,9 @@ class AppLogic:
         print("FULL STOP engaged. Select a mode to continue.")
         try:
             self.manualFlag = False
+        if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
+            self.root.after_cancel(self._manual_timer_id)
+            self._manual_timer_id = None
             self.autonFlag = False
             self.controller.stop_polling()                          # FIX #6: Stop controller polling on full stop
             params = self.gui.get_gui_params(self.manualFlag, self.autonFlag)
@@ -458,6 +465,9 @@ class AppLogic:
         if self.controller.joystick is None:
             print("[AppLogic] No controller connected. Please connect a controller before entering MANUAL MODE.")
             self.manualFlag = False
+        if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
+            self.root.after_cancel(self._manual_timer_id)
+            self._manual_timer_id = None
             
             try:
                 self.full_stop_button()
@@ -492,6 +502,9 @@ class AppLogic:
             print("\nNo controller connected. Please connect a controller before entering MANUAL MODE.")
             # Adding a flag verification here to indicate manual mode was NOT entered
             self.manualFlag = False
+        if hasattr(self, "_manual_timer_id") and self._manual_timer_id:
+            self.root.after_cancel(self._manual_timer_id)
+            self._manual_timer_id = None
             return
         if self.manualFlag:
             print("\n[AppLogic] Already in MANUAL MODE.")

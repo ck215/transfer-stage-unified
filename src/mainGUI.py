@@ -27,7 +27,7 @@ except ImportError:
 # Try to import pygame for physical joystick/gamepad detection.
 try:
     import pygame
-    pygame.init()
+    # pygame.init() moved
     pygame.joystick.init()
     PYGAME_AVAILABLE = True
 except ImportError:
