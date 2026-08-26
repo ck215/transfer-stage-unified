@@ -29,7 +29,7 @@ def test_manual_mode_struct_packing_out_of_bounds():
         'dpad_LR': 0, 'dpad_UD': 0,
         'LBumper': 0, 'RBumper': 0,
         'manual_jog_speed': 0,
-        'packet_format': '<BBfffhhhhhhh'
+        'packet_format': '<BBffffffffff'
     }
     # It catches struct.error inside except Exception as e
     # So it doesn't crash the program directly. We'll verify it doesn't crash.

@@ -88,20 +88,29 @@ class RotatorSystem:
             self._run_async(self.smc.home)
 
     def _move_abs_ui(self):
+        import math
         try:
-            self.move_absolute(float(self.target_deg))
+            val = float(self.target_deg)
+            if math.isnan(val) or math.isinf(val): return
+            self.move_absolute(val)
         except ValueError:
             pass
 
     def _move_rel_pos_ui(self):
+        import math
         try:
-            self.move_relative(float(self.step_deg))
+            val = float(self.step_deg)
+            if math.isnan(val) or math.isinf(val): return
+            self.move_relative(val)
         except ValueError:
             pass
 
     def _move_rel_neg_ui(self):
+        import math
         try:
-            self.move_relative(-float(self.step_deg))
+            val = float(self.step_deg)
+            if math.isnan(val) or math.isinf(val): return
+            self.move_relative(-val)
         except ValueError:
             pass
 

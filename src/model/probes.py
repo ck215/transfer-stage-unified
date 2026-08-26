@@ -213,6 +213,12 @@ class BaseProbe:
             self.serial_comm.enable()
         self.system_enabled = True
 
+    def toggle_enable(self):
+        if self.system_enabled:
+            self.disable()
+        else:
+            self.enable()
+
     def disable(self):
         if self.serial_comm:
             self.serial_comm.disable()

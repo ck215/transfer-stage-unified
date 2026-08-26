@@ -10,7 +10,8 @@ import sys
 import struct
 import threading
 
-PACKET_FORMAT = '<BBfffhhhhhhh'
+# Updated to 42-byte format (2 bytes + 10 floats) to match unified firmware struct
+PACKET_FORMAT = '<BBffffffffff'
 START_MARKER = 0xAA
 
 # ------ Serial Simulation Setup --------

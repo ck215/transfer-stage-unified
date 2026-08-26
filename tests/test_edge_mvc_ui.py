@@ -4,7 +4,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 # Add mvc-refactor/src to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'mvc-refactor', 'src')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from view_pyside import PlotDialog, ControllerLogWindow, RedPercentDynamicView, QtDynamicView
 

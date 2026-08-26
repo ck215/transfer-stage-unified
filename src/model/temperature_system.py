@@ -64,11 +64,20 @@ class TemperatureSystem:
         
     def send_settings(self):
         # Calculate spdelay (seconds per 1 degree step) assuming ramp_rate is degrees/minute
+        import math
         try:
             rate_float = float(self.ramp_rate)
+            if math.isnan(rate_float) or math.isinf(rate_float):
+                rate_float = 0.0
         except ValueError:
             rate_float = 0.0
-        spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
+            
+        try:
+            spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
+            if "inf" in spdelay.lower() or "nan" in spdelay.lower():
+                spdelay = "0"
+        except OverflowError:
+            spdelay = "0"
         
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
             print(f"Sending: Setpoint={self.setpoint}C, Ramp={self.ramp_rate}deg/min (delay={spdelay}s), P={self.p_term}, I={self.i_term}, D={self.d_term}, Offset={self.offset}")
@@ -124,11 +133,20 @@ class TemperatureSystem:
     def stop(self):
         self.continue_reading = False
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+            import math
             try:
                 rate_float = float(self.ramp_rate)
+                if math.isnan(rate_float) or math.isinf(rate_float):
+                    rate_float = 0.0
             except ValueError:
                 rate_float = 0.0
-            spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
+                
+            try:
+                spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
+                if "inf" in spdelay.lower() or "nan" in spdelay.lower():
+                    spdelay = "0"
+            except OverflowError:
+                spdelay = "0"
             vals = ['0', spdelay, self.p_term, self.i_term, self.d_term, self.offset]
             input_string = f"<{','.join(vals)}>"
             try:

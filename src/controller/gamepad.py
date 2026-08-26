@@ -327,9 +327,9 @@ class ControllerPoller:
             self._handle_disconnect()
             return
         
-        pygame.event.get() 
-
         try:
+            pygame.event.get() 
+            
             # Check Axes
             for i in range(self.gamepad.joystick.get_numaxes()): # type: ignore
                 current_val = self.gamepad.joystick.get_axis(i)  # type: ignore

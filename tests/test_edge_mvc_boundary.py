@@ -27,7 +27,7 @@ def create_base_params():
         "LBumper": 0,
         "RBumper": 0,
         "manual_jog_speed": 400,
-        "packet_format": "<BBfffhhhhhhh" # default format
+        "packet_format": "<BBffffffffff" # default format
     }
 
 def test_serial_send_manual_inf_nan():
@@ -53,26 +53,12 @@ def test_serial_send_manual_inf_nan():
         except Exception as e:
             pytest.fail(f"send_manual_mode_command failed with NaN: {e}")
 
-def test_serial_send_manual_large_numbers():
-    """Test passing extremely large numbers to short (h) parameters which should crash struct.pack"""
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
-        mock_instance = get_mock_serial()
-        mock_serial.return_value = mock_instance
-        s = serial("COM1")
-        
-        params_large = create_base_params()
-        params_large["x_stepSize"] = 10000000000000000000000000  # Extremely large integer
-        
-        # We expect a struct.error or OverflowError since 'h' (short) max is 32767
-        with pytest.raises((struct.error, OverflowError, ValueError)):
-            s.send_manual_mode_command(params_large)
-
 def test_temperature_system_extreme_ramp_rate():
     """Test passing an extremely small float that creates an infinity or large number during division."""
     temp_sys = TemperatureSystem("None") # simulator
     temp_sys.serial_conn = MagicMock()
     temp_sys.ramp_rate = "1e-300"
-    
+
     # We will test to see if it causes an exception or passes "inf"
     try:
         temp_sys.send_settings()
@@ -80,7 +66,7 @@ def test_temperature_system_extreme_ramp_rate():
         args = temp_sys.serial_conn.ser.write.call_args
         if args:
             written = args[0][0].decode()
-            assert "inf" in written
+            assert "inf" not in written.lower()
     except Exception as e:
         pytest.fail(f"TemperatureSystem send_settings crashed on extreme ramp rate: {e}")
 
@@ -97,15 +83,19 @@ def test_temperature_system_nan_ramp_rate():
 def test_rotator_system_nan_inf():
     rot = RotatorSystem()
     rot.smc = MagicMock()
+    # Override async wrapper to run synchronously for the test
+    rot._run_async = lambda func, *args: func(*args)
+    
     rot.target_deg = "inf"
     try:
         rot._move_abs_ui()
-        rot.smc.move_absolute.assert_called_with(math.inf)
+        rot.smc.move_absolute_deg.assert_not_called()
     except Exception as e:
         pytest.fail(f"RotatorSystem crashed on inf target: {e}")
         
     rot.step_deg = "nan"
     try:
         rot._move_rel_pos_ui()
+        rot.smc.move_relative_deg.assert_not_called()
     except Exception as e:
         pytest.fail(f"RotatorSystem crashed on nan step: {e}")
