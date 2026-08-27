@@ -775,12 +775,13 @@ class DashboardWindow(QMainWindow):
         self.sidebar = QDockWidget("Device Manager", self)
         self.sidebar.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.sidebar.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        self.sidebar.setMinimumWidth(250)
         self.device_list = QListWidget()
         self.device_list.setStyleSheet("background-color: #1E1E1E; color: white; border: none;")
         self.sidebar.setWidget(self.device_list)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.sidebar)
         
-        self.device_list.itemClicked.connect(self.on_device_clicked)
+        self.device_list.itemChanged.connect(self.on_device_item_changed)
         
         self.setCentralWidget(QWidget()) # Empty workspace
         
@@ -789,6 +790,7 @@ class DashboardWindow(QMainWindow):
         self.populate_sidebar()
 
     def populate_sidebar(self):
+        self.device_list.blockSignals(True)
         self.device_list.clear()
         
         all_devices = [
@@ -798,14 +800,28 @@ class DashboardWindow(QMainWindow):
         
         for name in all_devices:
             item = QListWidgetItem(name)
-            self.device_list.addItem(item)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             
             # Auto-open only if it was selected at startup (already active)
             if self.system_manager.get_model(name) is not None:
+                item.setCheckState(Qt.Checked)
                 self.open_device_view(name)
+            else:
+                item.setCheckState(Qt.Unchecked)
+            self.device_list.addItem(item)
+            
+        self.device_list.blockSignals(False)
 
-    def on_device_clicked(self, item):
-        self.open_device_view(item.text())
+    def on_device_item_changed(self, item):
+        device_name = item.text()
+        if item.checkState() == Qt.Checked:
+            self.open_device_view(device_name)
+        else:
+            self.close_device_view(device_name)
+            
+    def close_device_view(self, device_name):
+        if device_name in self.active_docks:
+            self.active_docks[device_name].hide()
 
     def open_device_view(self, device_name):
         if device_name in self.active_docks:
@@ -813,6 +829,21 @@ class DashboardWindow(QMainWindow):
             dock.show()
             dock.raise_()
             dock.activateWindow()
+            
+            # Ensure serial port is checked/reconnected when reopened to avoid unexpected state
+            model = self.system_manager.get_model(device_name)
+            if model and hasattr(model, 'reconnect_serial'):
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Serial Scan")
+                msg.setText(f"Scanning and reconnecting serial port for {device_name}...\nPlease wait.")
+                msg.setStandardButtons(QMessageBox.NoButton)
+                msg.show()
+                QApplication.processEvents()
+                
+                model.reconnect_serial()
+                
+                msg.accept()
+                
             return
             
         model = self.system_manager.get_model(device_name)
@@ -877,7 +908,15 @@ class DashboardWindow(QMainWindow):
     def on_dock_closed(self, device_name, visible):
         if not visible and device_name in self.active_docks:
             # Do not delete the dock; keep it cached so it can be restored from the sidebar
-            pass
+            
+            # Synchronize sidebar checkbox
+            self.device_list.blockSignals(True)
+            for i in range(self.device_list.count()):
+                item = self.device_list.item(i)
+                if item.text() == device_name:
+                    item.setCheckState(Qt.Unchecked)
+                    break
+            self.device_list.blockSignals(False)
 
     def closeEvent(self, event):
         # Stop all dynamic view timers and pollers

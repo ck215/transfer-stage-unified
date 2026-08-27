@@ -849,7 +849,10 @@ def run_pyside_app():
     
             self.launch_btn = QPushButton("Launch Application")
             self.launch_btn.clicked.connect(self.launch_unified)
-            self.launch_btn.setStyleSheet("background-color: #0078D4; color: white; font-weight: bold; padding: 10px;")
+            self.launch_btn.setStyleSheet("""
+                QPushButton { background-color: #0078D4; color: white; font-weight: bold; padding: 10px; }
+                QPushButton:disabled { background-color: #cccccc; color: #666666; }
+            """)
             btn_layout.addWidget(self.launch_btn)
     
             main_layout.addLayout(btn_layout)
