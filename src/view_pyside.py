@@ -567,7 +567,7 @@ class PlotDialog(QDialog):
         plot_type_combo.addItems(["0D (Time/Index)", "1D (Single Dimension)"])
         if len(dims_found) >= 2: plot_type_combo.addItem("2D (Two Dimensions)")
         if len(dims_found) >= 3: plot_type_combo.addItem("3D (Three Dimensions)")
-        plot_type_combo.setCurrentIndex(len(plot_type_combo) - 1)
+        plot_type_combo.setCurrentIndex(plot_type_combo.count() - 1)
         dlg_layout.addWidget(plot_type_combo)
         
         form = QFormLayout()
