@@ -508,8 +508,8 @@ void setup() {
   xUART.rms_current(600);    // can increase this to 700 if we want even more torque for, say, more accurate microsteps
   xUART.microsteps(microstepMode);      
   xUART.intpol(true);     
-  yUART.pwm_autoscale(true);
-  yUART.en_spreadCycle(false);
+  xUART.pwm_autoscale(true);
+  xUART.en_spreadCycle(false);
 
   yUART.begin();        
   yUART.I_scale_analog(false);    

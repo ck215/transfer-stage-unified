@@ -52,7 +52,7 @@ def run_legacy_app():
         import os
         os.environ["SDL_VIDEODRIVER"] = "dummy"
         os.environ["SDL_AUDIODRIVER"] = "dummy"
-        import os
+        os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
         os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
         import pygame
         PYGAME_AVAILABLE = True
@@ -504,7 +504,6 @@ def run_legacy_app():
                 port = config["port"]
                 controllerID = config["controller"]
                 controllerID = parse_controller_id(controllerID)
-                self.active_claims[device] = controllerID
     
                 # 2. Instantiate Domain Models
                 if device == "Stepper Probe":
@@ -528,18 +527,14 @@ def run_legacy_app():
     
             
             # Link RedPercentSystem to the active positioning probe for X/Y/Z syncing.
-            # Prefer StepperProbe, but fall back to any other probe that tracks position
-            # (e.g. DC Probe, Chuck Positioner) so red-percent data isn't silently
-            # left unsynced when a non-stepper probe is the one driving position.
-            stepper_model = None
-            red_model = None
-            for device_name, model in active_models.items():
-                if model.__class__.__name__ == 'RedPercentSystem':
-                    red_model = model
-                elif hasattr(model, 'pos_x') and (stepper_model is None or model.__class__.__name__ == 'StepperProbe'):
-                    stepper_model = model
-            if red_model and stepper_model:
-                red_model.stepper_model = stepper_model
+            red_model = active_models.get("Red Percent Window")
+            if red_model:
+                probe_models = {name: model for name, model in active_models.items() if hasattr(model, 'pos_x')}
+                red_model.available_probes = probe_models
+                if "Stepper Probe" in probe_models:
+                    red_model.set_stepper_model("Stepper Probe")
+                elif probe_models:
+                    red_model.set_stepper_model(list(probe_models.keys())[0])
     
             # Launch Tkinter Dashboard
             from view import DashboardWindow, ErrorPopupManager
@@ -575,7 +570,7 @@ def run_pyside_app():
         import os
         os.environ["SDL_VIDEODRIVER"] = "dummy"
         os.environ["SDL_AUDIODRIVER"] = "dummy"
-        import os
+        os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
         os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
         import pygame
         PYGAME_AVAILABLE = True
@@ -778,7 +773,7 @@ def run_pyside_app():
                     try:
                         js = pygame.joystick.Joystick(i)
                         js.init()
-                        self.detected_controllers.append(f"Joy {i}: {js.get_name()}")
+                        self.detected_controllers.append(f"ID {i}: {js.get_name()}")
                     except Exception:
                         pass
     
@@ -967,8 +962,6 @@ def run_pyside_app():
                 
                 controllerID = parse_controller_id(controllerID)
     
-                self.active_claims[device] = controllerID
-    
                 # Instantiate Domain Models
                 if device == "Stepper Probe":
                     from model.probes import StepperProbe
@@ -989,18 +982,15 @@ def run_pyside_app():
                     from model.redpercent_system import RedPercentSystem
                     active_models[device] = RedPercentSystem()
     
-            # Prefer StepperProbe, but fall back to any other position-tracking probe
-            # (DC Probe, Chuck Positioner) so X/Y/Z stays tied to red-percent data
-            # regardless of which probe is driving position on this rig.
-            stepper_model = active_models.get("Stepper Probe")
-            if stepper_model is None:
-                for device_name, model in active_models.items():
-                    if device_name != "Red Percent Window" and hasattr(model, 'pos_x'):
-                        stepper_model = model
-                        break
+            # Link RedPercentSystem to the available positioning probes for X/Y/Z syncing.
             red_model = active_models.get("Red Percent Window")
-            if red_model and stepper_model:
-                red_model.stepper_model = stepper_model
+            if red_model:
+                probe_models = {name: model for name, model in active_models.items() if hasattr(model, 'pos_x')}
+                red_model.available_probes = probe_models
+                if "Stepper Probe" in probe_models:
+                    red_model.set_stepper_model("Stepper Probe")
+                elif probe_models:
+                    red_model.set_stepper_model(list(probe_models.keys())[0])
     
             from view_pyside import DashboardWindow
             from model.system_manager import SystemManager
@@ -1049,27 +1039,8 @@ def main():
         run_pyside_app()
         sys.exit(0)
 
-    print("========================================")
-    print("  Unified Stage Controller - Launcher   ")
-    print("========================================")
-    print("1. Launch Modern App (PySide6)")
-    print("2. Launch Legacy App (Tkinter)")
-    print("========================================")
-    
-    while True:
-        try:
-            choice = input("Select an engine (1 or 2): ").strip()
-            if choice == "1":
-                launch_pyside()
-                break
-            elif choice == "2":
-                launch_legacy()
-                break
-            else:
-                print("Invalid selection. Please enter 1 or 2.")
-        except KeyboardInterrupt:
-            print("\nExiting launcher.")
-            sys.exit(0)
+    # Temporarily default to PySide6 UI and disable prompt
+    launch_pyside()
             
 if __name__ == "__main__":
     main()

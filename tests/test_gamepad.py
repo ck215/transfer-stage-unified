@@ -215,3 +215,46 @@ def test_edge_triggered_dpad_and_bumpers():
     poller.gamepad.get_mapped_state.return_value["LBumper"] = 1
     state4 = poller.get_mapped_state()
     assert state4["LBumper"] == 1
+
+def test_controller_claim_conflict_mixed_types():
+    """Verify claim collision detection works when mixing int and string formats."""
+    with patch("controller.gamepad.pygame"):
+        # ProcessA claimed int 0, ProcessB tries 'ID 0: Xbox Controller'
+        claims = {"ProcessA": 0}
+        poller = ControllerPoller("ID 0: Xbox Controller", claims, "ProcessB")
+        assert poller.gamepad is None
+        assert claims["ProcessB"] == "None Detected"
+
+        # ProcessA claimed 'Joy 1: Stick', ProcessB tries int 1
+        claims2 = {"ProcessA": "Joy 1: Stick"}
+        poller2 = ControllerPoller(1, claims2, "ProcessB")
+        assert poller2.gamepad is None
+        assert claims2["ProcessB"] == "None Detected"
+
+def test_set_controller_resumes_polling_when_active():
+    """Verify set_controller automatically resumes polling loop if GUI was previously polling."""
+    mock_gui = MagicMock()
+    with patch("controller.gamepad.pygame") as mock_pygame:
+        mock_pygame.joystick.get_count.return_value = 2
+        mock_js = MagicMock()
+        mock_js.get_name.return_value = "Controller"
+        mock_js.get_numaxes.return_value = 4
+        mock_js.get_numbuttons.return_value = 4
+        mock_js.get_numhats.return_value = 1
+        mock_js.get_axis.return_value = 0.0
+        mock_js.get_button.return_value = 0
+        mock_js.get_hat.return_value = (0, 0)
+        mock_pygame.joystick.Joystick.return_value = mock_js
+
+        claims = {}
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            poller = ControllerPoller(0, claims, "ProcessA")
+            poller.start_polling(mock_gui, log_updater=MagicMock())
+            assert poller.is_polling is True
+
+            # Swap controller
+            success = poller.set_controller(1)
+            assert success is True
+            assert poller.controller_index == 1
+            assert poller.is_polling is True
+

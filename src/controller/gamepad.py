@@ -1,10 +1,12 @@
 # Libraries
+import os
+os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
+
 try:
     import pygame
 except ImportError:
     pygame = None
 import time
-import os
 import sys
 import re
 import ctypes
@@ -236,6 +238,8 @@ class ControllerPoller:
         self.controllerID = controllerID
         self.controller_index = None # Stores integer ID for OS queries
         self.gui_root = None  
+        self.log_updater = None
+        self.activity_callback = None
         self.active_claims = active_claims
         self.process_name = process_name
         self.gamepad = None
@@ -323,7 +327,10 @@ class ControllerPoller:
     def set_controller(self, controllerID):
         """Reassigns this poller to a different physical controller, tearing down any existing connection first."""
         self.controllerID = controllerID
-        return self._initialize_pygame_joystick(controllerID)
+        success = self._initialize_pygame_joystick(controllerID)
+        if success and self.gui_root and not self.is_polling:
+            self.start_polling(self.gui_root, self.log_updater, self.activity_callback)
+        return success
 
     def connect_controller(self):
         print("[controllerDrive] Restarting pygame...")
@@ -332,28 +339,57 @@ class ControllerPoller:
                 pygame.quit()
         except Exception:
             pass
-        self._initialize_pygame_joystick(self.controllerID)
-        return True if self.gamepad else False
+        success = self._initialize_pygame_joystick(self.controllerID)
+        if success and self.gui_root and not self.is_polling:
+            self.start_polling(self.gui_root, self.log_updater, self.activity_callback)
+        return success
 
     def _initialize_pygame_joystick(self, controllerID):
         self.stop_polling()
 
-        if not controllerID or "None" in str(controllerID) or "Virtual" in str(controllerID):
+        if controllerID is None or "None" in str(controllerID) or "Virtual" in str(controllerID) or str(controllerID) == "N/A":
             print(f"[{self.process_name}] Joystick set to None.")
             self.gamepad = None
             self.active_claims[self.process_name] = "None Detected"
             return False
 
-        # Multi-controller claim check: verify this controller isn't claimed by another subsystem
+        # Extract numeric controller index (handles int, multi-digit indices, Joy X, ID X)
+        if isinstance(controllerID, int):
+            controller_number = controllerID
+        else:
+            match = re.search(r'(?:Joy|ID)?\s*(\d+)', str(controllerID), re.IGNORECASE)
+            if match:
+                controller_number = int(match.group(1))
+            else:
+                try:
+                    controller_number = int(str(controllerID)[3:4])
+                except (ValueError, IndexError):
+                    controller_number = None
+
+        if controller_number is None:
+            print(f"[{self.process_name}] Invalid controller ID: {controllerID}")
+            self.gamepad = None
+            self.active_claims[self.process_name] = "None Detected"
+            return False
+
+        # Multi-controller claim check: verify this controller index isn't claimed by another subsystem
         if self.active_claims:
-            for proc, claimed_id in self.active_claims.items():
-                if proc != self.process_name and claimed_id == controllerID and "None" not in str(claimed_id) and "Virtual" not in str(claimed_id):
-                    msg = f"[{self.process_name}] Controller collision: {controllerID} is already claimed by {proc}."
-                    print(msg)
-                    ErrorPopupManager.report_warning("Controller Claim Conflict", msg)
-                    self.gamepad = None
-                    self.active_claims[self.process_name] = "None Detected"
-                    return False
+            for proc, claimed_id in list(self.active_claims.items()):
+                if proc != self.process_name and claimed_id is not None and "None" not in str(claimed_id) and "Virtual" not in str(claimed_id) and str(claimed_id) != "N/A":
+                    # Compare parsed numeric indices
+                    if isinstance(claimed_id, int):
+                        claimed_num = claimed_id
+                    else:
+                        m = re.search(r'(?:Joy|ID)?\s*(\d+)', str(claimed_id), re.IGNORECASE)
+                        claimed_num = int(m.group(1)) if m else None
+
+                    if claimed_num is not None and claimed_num == controller_number:
+                        msg = f"[{self.process_name}] Controller collision: {controllerID} is already claimed by {proc}."
+                        print(msg)
+                        ErrorPopupManager.report_warning("Controller Claim Conflict", msg)
+                        self.gamepad = None
+                        self.active_claims[self.process_name] = "None Detected"
+                        return False
 
         try:
             if pygame:
@@ -361,15 +397,6 @@ class ControllerPoller:
                 pygame.joystick.init()
         
             try:
-                if isinstance(controllerID, int):
-                    controller_number = controllerID
-                else:
-                    # Extract numeric controller index (handles multi-digit indices, Joy X, ID X)
-                    match = re.search(r'(?:Joy|ID)?\s*(\d+)', str(controllerID), re.IGNORECASE)
-                    if match:
-                        controller_number = int(match.group(1))
-                    else:
-                        controller_number = int(str(controllerID)[3:4])
                 self.controller_index = controller_number
 
                 if not self._is_os_connected():
@@ -395,11 +422,6 @@ class ControllerPoller:
                 print(msg)
                 ErrorPopupManager.report_warning("Joystick Not Found", msg, e)
                 self._handle_disconnect()
-                if pygame:
-                    try:
-                        pygame.quit()
-                    except Exception:
-                        pass
                 return False
                 
         except Exception as e:
@@ -408,23 +430,25 @@ class ControllerPoller:
 
     def change_controller(self, new_controller_id):
         print(f"[{self.process_name}] Hot-swapping to: {new_controller_id}")
-        try:
-            if pygame:
-                pygame.quit()
-        except Exception:
-            pass
         self.controllerID = new_controller_id
-        return self._initialize_pygame_joystick(new_controller_id)
+        success = self._initialize_pygame_joystick(new_controller_id)
+        if success and self.gui_root and not self.is_polling:
+            self.start_polling(self.gui_root, self.log_updater, self.activity_callback)
+        return success
 
-    def start_polling(self, gui, log_updater, activity_callback=None):
+    def start_polling(self, gui=None, log_updater=None, activity_callback=None):
+        if gui is not None:
+            self.gui_root = gui
+        if log_updater is not None:
+            self.log_updater = log_updater
+        if activity_callback is not None:
+            self.activity_callback = activity_callback
+
         if self.is_polling: return
         if not self.gamepad: return
 
         print("[controllerDrive] Starting controller polling...")
         self.is_polling = True
-        self.gui_root = gui 
-        self.log_updater = log_updater
-        self.activity_callback = activity_callback
 
         self._poll_loop() 
 
@@ -480,7 +504,8 @@ class ControllerPoller:
         
         try:
             if pygame:
-                pygame.event.get() 
+                pygame.event.pump()
+                pygame.event.get()
             
             if not self.gamepad or not self.gamepad.joystick:
                 self._handle_disconnect()
@@ -493,15 +518,15 @@ class ControllerPoller:
                 if abs(current_val) < 0.1: 
                     current_val = 0.0
                 
-                if round(current_val, 2) != round(self.gamepad.prev_axis_states.get(i, 0.0), 2):
+                prev_val = self.gamepad.prev_axis_states.get(i, 0.0)
+                if round(current_val, 2) != round(prev_val, 2):
                     _log(f"Axis {i} changed: {current_val:.2f}")
 
-                    prev_val = self.gamepad.prev_axis_states.get(i, 0.0)
                     is_hard_snap = (abs(current_val) >= 1.0) and (abs(current_val - prev_val) > 0.5)
                     if not is_hard_snap and self.activity_callback:
                         self.activity_callback()
 
-                    self.gamepad.prev_axis_states[i] = current_val
+                self.gamepad.prev_axis_states[i] = current_val
             
             # Apply controller-specific overrides (like T16000M buttons mapped as axes)
             self.gamepad.update_overrides()

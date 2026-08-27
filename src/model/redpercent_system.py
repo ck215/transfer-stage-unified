@@ -52,6 +52,8 @@ class RedPercentSystem:
         self.data_log = []
         
         self.stepper_model = None
+        self.available_probes = {}
+        self.selected_probe_name = None
         
         self.custom_view_class = RedPercentView
         self.sync_dimensions = []
@@ -62,6 +64,13 @@ class RedPercentSystem:
         self.current_red = 0.0
         self.red_change = 0.0
         self._monitor_thread = None
+
+    def set_stepper_model(self, probe_name):
+        if self.available_probes and probe_name in self.available_probes:
+            self.stepper_model = self.available_probes[probe_name]
+            self.selected_probe_name = probe_name
+            print(f"[color_test] Active position probe set to: {probe_name}")
+
 
     def capture_focus_area(self, sct):
         if not self.focus_area:
@@ -270,7 +279,36 @@ class RedPercentView(tk.Frame):
             chk = ttk.Checkbutton(sync_frame, text=dim, variable=self.sync_vars[dim], command=self._update_sync_dimensions)
             chk.pack(side=tk.LEFT, padx=2)
 
+        probe_frame = ttk.Frame(color_frame)
+        probe_frame.grid(row=4, column=0, columnspan=2, pady=5, sticky=tk.W)
+        ttk.Label(probe_frame, text="Position Source:").pack(side=tk.LEFT)
+        
+        self.probe_var = tk.StringVar()
+        self.probe_dropdown = ttk.Combobox(probe_frame, textvariable=self.probe_var, state="readonly")
+        self.probe_dropdown.pack(side=tk.LEFT, padx=5)
+        self.probe_dropdown.bind("<<ComboboxSelected>>", self._on_probe_selected)
+        
+        self._update_probe_dropdown()
+
         self.poll_display()
+
+    def _update_probe_dropdown(self):
+        if hasattr(self.system, 'available_probes') and self.system.available_probes:
+            probes = list(self.system.available_probes.keys())
+            self.probe_dropdown['values'] = probes
+            if hasattr(self.system, 'selected_probe_name') and self.system.selected_probe_name in probes:
+                self.probe_var.set(self.system.selected_probe_name)
+            else:
+                self.probe_var.set(probes[0])
+                self.system.set_stepper_model(probes[0])
+        else:
+            self.probe_dropdown['values'] = ["None Available"]
+            self.probe_var.set("None Available")
+
+    def _on_probe_selected(self, event=None):
+        selected = self.probe_var.get()
+        if hasattr(self.system, 'set_stepper_model'):
+            self.system.set_stepper_model(selected)
 
     def _update_sync_dimensions(self):
         self.system.sync_dimensions = [dim for dim in ['X', 'Y', 'Z'] if self.sync_vars[dim].get()]

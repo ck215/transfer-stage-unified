@@ -677,6 +677,34 @@ class RedPercentDynamicView(QtDynamicView):
         sync_layout.addStretch()
         self.layout.insertWidget(self.layout.count() - 1, sync_frame)
 
+        probe_frame = QFrame()
+        probe_layout = QHBoxLayout(probe_frame)
+        lbl_probe = QLabel("Position Source:")
+        lbl_probe.setProperty("class", "header")
+        probe_layout.addWidget(lbl_probe)
+        
+        self.probe_combo = QComboBox()
+        if hasattr(self.model, 'available_probes') and self.model.available_probes:
+            probes = list(self.model.available_probes.keys())
+            self.probe_combo.addItems(probes)
+            if hasattr(self.model, 'selected_probe_name') and self.model.selected_probe_name in probes:
+                self.probe_combo.setCurrentText(self.model.selected_probe_name)
+            else:
+                self.probe_combo.setCurrentIndex(0)
+                if hasattr(self.model, 'set_stepper_model'):
+                    self.model.set_stepper_model(probes[0])
+        else:
+            self.probe_combo.addItem("None Available")
+            
+        self.probe_combo.currentTextChanged.connect(self._on_probe_selected)
+        probe_layout.addWidget(self.probe_combo)
+        probe_layout.addStretch()
+        self.layout.insertWidget(self.layout.count() - 1, probe_frame)
+
+    def _on_probe_selected(self, text):
+        if hasattr(self.model, 'set_stepper_model'):
+            self.model.set_stepper_model(text)
+
     def _update_sync_dimensions(self):
         self.model.sync_dimensions = [dim for dim, cb in self.sync_cbs.items() if cb.isChecked()]
 
