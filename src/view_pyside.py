@@ -790,11 +790,19 @@ class DashboardWindow(QMainWindow):
 
     def populate_sidebar(self):
         self.device_list.clear()
-        for name in self.system_manager.active_models.keys():
+        
+        all_devices = [
+            "Stepper Probe", "DC Probe", "Chuck Positioner", 
+            "Temperature Controller", "SMC100 Rotator", "Red Percent Window"
+        ]
+        
+        for name in all_devices:
             item = QListWidgetItem(name)
             self.device_list.addItem(item)
-            # Auto-open all devices initially
-            self.open_device_view(name)
+            
+            # Auto-open only if it was selected at startup (already active)
+            if self.system_manager.get_model(name) is not None:
+                self.open_device_view(name)
 
     def on_device_clicked(self, item):
         self.open_device_view(item.text())
@@ -809,7 +817,43 @@ class DashboardWindow(QMainWindow):
             
         model = self.system_manager.get_model(device_name)
         if not model:
-            return
+            # Dynamically instantiate missing models with empty/None connections
+            if device_name == "Stepper Probe":
+                from model.probes import StepperProbe
+                model = StepperProbe(None, "None", {})
+            elif device_name == "DC Probe":
+                from model.probes import DCProbe
+                model = DCProbe(None, "None", {})
+            elif device_name == "Chuck Positioner":
+                from model.probes import ChuckPositioner
+                model = ChuckPositioner(None, "None", {})
+            elif device_name == "Temperature Controller":
+                from model.temperature_system import TemperatureSystem
+                model = TemperatureSystem(None)
+            elif device_name == "SMC100 Rotator":
+                from model.rotator_system import RotatorSystem
+                model = RotatorSystem(None)
+            elif device_name == "Red Percent Window":
+                from model.redpercent_system import RedPercentSystem
+                model = RedPercentSystem()
+                # Link any active positioning probes
+                probe_models = {n: m for n, m in self.system_manager.active_models.items() if hasattr(m, 'pos_x')}
+                model.available_probes = probe_models
+                if "Stepper Probe" in probe_models:
+                    model.set_stepper_model("Stepper Probe")
+                elif probe_models:
+                    model.set_stepper_model(list(probe_models.keys())[0])
+                
+            if model:
+                self.system_manager.register_model(device_name, model)
+                
+                # If a new probe was just added, and Red Percent is active, let it know
+                if hasattr(model, 'pos_x'):
+                    red_model = self.system_manager.get_model("Red Percent Window")
+                    if red_model:
+                        red_model.available_probes[device_name] = model
+            else:
+                return
             
         dock = QDockWidget(device_name, self)
         dock.setAllowedAreas(Qt.AllDockWidgetAreas)
