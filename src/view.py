@@ -168,6 +168,14 @@ class DashboardWindow(tk.Toplevel):
         self.title("Unified Control Dashboard")
         self.geometry("1000x800")
         
+        def on_focus_out(event):
+            if event.widget == self:
+                for model in active_models.values():
+                    if hasattr(model, 'poller') and model.poller:
+                        model.poller.flush_neutral()
+                        
+        self.bind("<FocusOut>", on_focus_out)
+        
         self.notebook = DraggableClosableNotebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
         self.tab_metadata = {}
@@ -272,6 +280,15 @@ class DynamicView(tk.Frame):
         schema = getattr(self.model, 'ui_schema', {"sections": []})
         self._build_from_schema(schema)
 
+    def _is_valid_float(self, val):
+        if val in ('.', '-', '-.', '+'):
+            return True
+        try:
+            float(val)
+            return True
+        except ValueError:
+            return False
+
     def _build_from_schema(self, schema):
         row_counter = 0
         for section in schema.get("sections", []):
@@ -300,14 +317,41 @@ class DynamicView(tk.Frame):
                         tk.Label(self, textvariable=str_var, bg=self.bg_main, fg='lightgreen', 
                                  font=('Arial', 10, 'bold')).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w')
                     else: # entry
-                        entry = tk.Entry(self, textvariable=str_var)
-                        entry.grid(row=row_counter, column=1, padx=5, pady=2)
-                        
-                        # Add trace to update model on UI change
-                        def make_trace(attr_name, var):
-                            return lambda *args: setattr(self.model, attr_name, var.get())
+                        is_numeric = False
+                        if attr != "serial_port":
+                            try:
+                                float(val)
+                                is_numeric = True
+                            except ValueError:
+                                pass
+                                
+                        if is_numeric:
+                            vcmd = (self.register(lambda P: P == "" or (self._is_valid_float(P))), '%P')
+                            entry = tk.Entry(self, textvariable=str_var, validate='key', validatecommand=vcmd)
+                            entry.grid(row=row_counter, column=1, padx=5, pady=2)
                             
-                        str_var.trace_add("write", make_trace(attr, str_var))
+                            def on_finish(event, attr_name=attr, var=str_var):
+                                text = var.get()
+                                try:
+                                    if not text:
+                                        raise ValueError()
+                                    v = float(text)
+                                    if v != v or v in (float('inf'), float('-inf')):
+                                        raise ValueError()
+                                    setattr(self.model, attr_name, text)
+                                except ValueError:
+                                    var.set(str(getattr(self.model, attr_name, "")))
+                            
+                            entry.bind("<FocusOut>", on_finish)
+                            entry.bind("<Return>", on_finish)
+                        else:
+                            entry = tk.Entry(self, textvariable=str_var)
+                            entry.grid(row=row_counter, column=1, padx=5, pady=2)
+                            
+                            def make_trace(attr_name, var):
+                                return lambda *args: setattr(self.model, attr_name, var.get())
+                                
+                            str_var.trace_add("write", make_trace(attr, str_var))
                         
                 elif el_type == "button":
                     cmd_name = el.get("command")
@@ -459,8 +503,8 @@ class DynamicView(tk.Frame):
                 if getattr(model_ref, 'system_enabled', False):
                     model_ref.disable_timer_id = dashboard_window.after(300000, lambda: _auto_disable(model_ref))
             def _auto_disable(model_ref):
-                if getattr(model_ref, 'is_stepping', False):
-                    print(f"[Timeout] {model_ref.__class__.__name__} is actively stepping, deferring inactivity disable.")
+                if getattr(model_ref, 'is_stepping', False) or getattr(model_ref, 'manual_flag', False):
+                    print(f"[Timeout] {model_ref.__class__.__name__} is actively stepping or in manual mode, deferring inactivity disable.")
                     model_ref.disable_timer_id = dashboard_window.after(30000, lambda: _auto_disable(model_ref))
                     return
                 msg = f"5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}"
@@ -471,11 +515,17 @@ class DynamicView(tk.Frame):
                     
             self.model.poller.start_polling(dashboard_window, log_updater=print, activity_callback=_reset_disable_timer)
             
+            self._prev_manual_flag = False
             def _route_input():
-                if getattr(self.model, 'manual_flag', False):
+                current_manual = getattr(self.model, 'manual_flag', False)
+                if current_manual:
                     controller_params = self.model.poller.get_mapped_state()
                     if hasattr(self.model, 'send_manual_mode_command'):
-                        self.model.send_manual_mode_command(controller_params)
+                        self.model.send_manual_mode_command(controller_params or {})
+                elif getattr(self, '_prev_manual_flag', False):
+                    if hasattr(self.model, 'send_manual_mode_command'):
+                        self.model.send_manual_mode_command({})
+                self._prev_manual_flag = current_manual
                 self.after(50, _route_input)
             self.after(50, _route_input)
             

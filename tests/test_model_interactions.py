@@ -63,6 +63,27 @@ def test_macro_start_auton_sets_is_stepping_and_full_stop_clears_it():
         assert probe.auton_flag is False
         assert probe.manual_flag is False
 
+def test_send_stop_command_emits_zeros():
+    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+        mock_serial.return_value = get_mock_serial()
+        probe = StepperProbe("COM1", "Virtual Controller A")
+        probe.serial_comm = MagicMock()
+        
+        probe.x_dist = "10"
+        probe.full_speed = "500"
+        probe.manual_flag = True
+        
+        probe.send_stop_command()
+        probe.serial_comm.send_autonomous_command.assert_called_once()
+        args, _ = probe.serial_comm.send_autonomous_command.call_args
+        params = args[0]
+        
+        assert params["x_step_size"] == 0
+        assert params["full_speed"] == 0
+        assert params["x_dist"] == 0
+        assert params["command_code_manual"] == 0
+        assert params["command_code_auton"] == 0
+
 def test_send_manual_mode_command():
     with patch("controller.seiral.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
@@ -83,7 +104,7 @@ def test_send_manual_mode_command():
         args, kwargs = probe.serial_comm.send_manual_mode_command.call_args
         sent_params = args[0]
         assert sent_params["x_axisStatus"] == 0.5
-        assert sent_params["manual_jog_speed"] == "120"
+        assert sent_params["manual_jog_speed"] == 120.0
 
 def test_redpercent_syncs_to_non_stepper_probe():
     """
@@ -160,3 +181,31 @@ def test_qt_dynamic_view_poll_model(qtbot):
     qtbot.addWidget(rot_view)
     rot_view._poll_model()
     rot_model.poll_status.assert_called()
+
+def test_watchdog_do_disable_manual_mode(qtbot):
+    from view_pyside import QtDynamicView
+    probe_model = MagicMock()
+    probe_model.ui_schema = {"sections": []}
+    probe_model.poller = MagicMock()
+    probe_model.system_enabled = True
+    probe_model.is_stepping = False
+    probe_model.manual_flag = True
+    probe_model.disable = MagicMock()
+
+    view = QtDynamicView(probe_model)
+    qtbot.addWidget(view)
+    
+    # Get the activity_callback passed to start_polling
+    args, kwargs = probe_model.poller.start_polling.call_args
+    activity_callback = kwargs.get("activity_callback")
+    
+    # Initialize the disable timer
+    activity_callback()
+    
+    # Trigger the timeout
+    view.disable_timer.timeout.emit()
+    
+    # Probe disable should NOT be called because manual_flag is True
+    probe_model.disable.assert_not_called()
+    assert view.disable_timer.isActive(), "disable_timer should be restarted"
+

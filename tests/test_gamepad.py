@@ -179,6 +179,7 @@ def test_controller_multi_digit_id_parsing():
 def test_edge_triggered_dpad_and_bumpers():
     poller = ControllerPoller.__new__(ControllerPoller)
     poller.gamepad = MagicMock()
+    poller.is_polling = True
     
     # Simulate first press of LBumper and Dpad Up
     poller.gamepad.get_mapped_state.return_value = {
@@ -258,3 +259,45 @@ def test_set_controller_resumes_polling_when_active():
             assert poller.controller_index == 1
             assert poller.is_polling is True
 
+def test_stale_cache_guard():
+    """Verify get_mapped_state() returns {} when polling is stopped."""
+    poller = ControllerPoller.__new__(ControllerPoller)
+    poller.gamepad = MagicMock()
+    poller.is_polling = False
+    
+    state = poller.get_mapped_state()
+    assert state == {}
+
+
+def test_controller_claim_success_then_conflict_with_string_ids():
+    """Verify claim collision behaves correctly when using string IDs from combobox."""
+    with patch("controller.gamepad.pygame") as mock_pygame:
+        mock_pygame.joystick.get_count.return_value = 1
+        mock_js = MagicMock()
+        mock_js.get_name.return_value = "Xbox"
+        mock_js.get_numaxes.return_value = 4
+        mock_js.get_numbuttons.return_value = 4
+        mock_js.get_numhats.return_value = 1
+        mock_pygame.joystick.Joystick.return_value = mock_js
+        
+        claims = {}
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            with patch("controller.gamepad.ErrorPopupManager.report_warning") as mock_warn:
+                poller1 = ControllerPoller("ID 0: Xbox", claims, "StepperProbe")
+                assert poller1.gamepad is not None
+                assert poller1.controller_index == 0
+                mock_warn.assert_not_called()
+                
+                poller2 = ControllerPoller("ID 0: Xbox", claims, "DCProbe")
+                assert poller2.gamepad is None
+
+def test_flush_neutral():
+    poller = ControllerPoller.__new__(ControllerPoller)
+    poller.gamepad = MagicMock()
+    poller.gamepad.prev_axis_states = [0.5, -0.5, 0.0, 0.0, 0.0, 0.0]
+    
+    poller.flush_neutral()
+    
+    assert poller.gamepad.prev_axis_states == [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    if hasattr(poller, '_latch_state'):
+        assert len(poller._latch_state) == 0

@@ -6,6 +6,17 @@ from controller.seiral import serial
 from controller.gamepad import ControllerPoller
 from error_routing import ErrorRouter as ErrorPopupManager
 
+def _num(value, default, *, minimum=None, integer=False):
+    try:
+        v = float(value)
+        if math.isnan(v) or math.isinf(v):
+            return default
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None and v < minimum:
+        v = minimum
+    return int(v) if integer else v
+
 class BaseProbe:
     def __init__(self, port, controller_id, active_claims=None):
         self.serial_comm = serial(port) if port and port != "None" else None
@@ -136,9 +147,12 @@ class BaseProbe:
 
     def send_stop_command(self):
         if self.serial_comm:
-            params = self.get_params()
-            params["command_code_manual"] = 0
-            params["command_code_auton"] = 0
+            params = {
+                "x_step_size": 0, "y_step_size": 0, "z_step_size": 0,
+                "full_speed": 0, "slow_speed": 0, "brake_distance": 0,
+                "x_dist": 0, "y_dist": 0, "z_dist": 0,
+                "command_code_manual": 0, "command_code_auton": 0
+            }
             self.serial_comm.send_autonomous_command(params)
 
     def enter_auton(self):
@@ -243,15 +257,15 @@ class BaseProbe:
 
     def get_params(self):
         return {
-            "x_step_size": self.x_step,             
-            "y_step_size": self.y_step,              
-            "z_step_size": self.z_step,              
-            "full_speed": self.full_speed,           
+            "x_step_size": _num(self.x_step, 16, minimum=1, integer=True),             
+            "y_step_size": _num(self.y_step, 16, minimum=1, integer=True),              
+            "z_step_size": _num(self.z_step, 16, minimum=1, integer=True),              
+            "full_speed": _num(self.full_speed, 400, minimum=1),           
             "slow_speed": 0,           
             "brake_distance": 0,   
-            "x_dist": self.x_dist,                   
-            "y_dist": self.y_dist,                   
-            "z_dist": self.z_dist,  
+            "x_dist": _num(self.x_dist, 0),                   
+            "y_dist": _num(self.y_dist, 0),                   
+            "z_dist": _num(self.z_dist, 0),  
             "command_code_manual": int(self.manual_flag),               
             "command_code_auton": int(self.auton_flag)                      
         }
@@ -267,14 +281,14 @@ class BaseProbe:
                 "y_axisStatus": controller_params.get("y_axisStatus", 0.0),
                 "z_axisStatusR": controller_params.get("z_axisStatusR", -1.0),
                 "z_axisStatusL": controller_params.get("z_axisStatusL", -1.0),
-                "x_stepSize": self.x_step,
-                "y_stepSize": self.y_step,
-                "z_stepSize": self.z_step,
+                "x_stepSize": _num(self.x_step, 16, minimum=1, integer=True),
+                "y_stepSize": _num(self.y_step, 16, minimum=1, integer=True),
+                "z_stepSize": _num(self.z_step, 16, minimum=1, integer=True),
                 "dpad_LR": controller_params.get("dpad_LR", 0),
                 "dpad_UD": controller_params.get("dpad_UD", 0),
                 "LBumper": controller_params.get("LBumper", 0),
                 "RBumper": controller_params.get("RBumper", 0),
-                "manual_jog_speed": self.man_full_speed,
+                "manual_jog_speed": _num(self.man_full_speed, 400, minimum=1),
                 "packet_format": self.packet_format
             }
             self.serial_comm.send_manual_mode_command(params)
@@ -352,8 +366,8 @@ class DCProbe(BaseProbe):
 
     def get_params(self):
         params = super().get_params()
-        params["slow_speed"] = self.slow_speed
-        params["brake_distance"] = self.brake_distance
+        params["slow_speed"] = _num(self.slow_speed, 0)
+        params["brake_distance"] = _num(self.brake_distance, 0)
         return params
 
 

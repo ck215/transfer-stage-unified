@@ -95,6 +95,7 @@ def test_two_way_data_binding_pyside(qtbot):
     # UI -> Model binding
     step_input = view.vars["step_size"]
     step_input.setText("32")
+    step_input.editingFinished.emit()
     assert model.step_size == "32"
     
     # Model -> UI polling
@@ -208,6 +209,7 @@ def test_redpercent_sync_dimensions(qtbot):
 def test_dashboard_dock_lifecycle(qtbot):
     from model.system_manager import SystemManager
     from model.probes import StepperProbe
+    from PySide6.QtCore import Qt
 
     mgr = SystemManager()
     probe = StepperProbe("COM1", "None")
@@ -222,11 +224,78 @@ def test_dashboard_dock_lifecycle(qtbot):
     
     # User closes dock
     dock.close()
-    assert not dock.isVisible()
     
-    # User clicks sidebar item to restore dock
+    # Wait for the dock visibility to update and the checkbox to sync
+    qtbot.waitUntil(lambda: not dock.isVisible(), timeout=1000)
     item = dash.device_list.item(0)
-    dash.on_device_clicked(item)
+    assert item.checkState() == Qt.Unchecked
+    
+    # User checks the checkbox to restore the dock
+    item.setCheckState(Qt.Checked)
+    
+    qtbot.waitUntil(lambda: dock.isVisible(), timeout=1000)
     assert dock.isVisible()
     
+    # User unchecks the checkbox to hide the dock
+    item.setCheckState(Qt.Unchecked)
+    qtbot.waitUntil(lambda: not dock.isVisible(), timeout=1000)
+    assert not dock.isVisible()
+    
     dash.close()
+
+def test_dashboard_dock_focus_loss(qtbot):
+    from model.system_manager import SystemManager
+    from model.probes import StepperProbe
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QWindowStateChangeEvent
+
+    mgr = SystemManager()
+    probe = StepperProbe("COM1", "None")
+    mgr.register_model("Stepper Probe", probe)
+    
+    dash = DashboardWindow(mgr)
+    qtbot.addWidget(dash)
+    dash.show()
+    
+    dock = dash.active_docks["Stepper Probe"]
+    item = dash.device_list.item(0)
+    
+    assert dock.isVisible()
+    assert item.checkState() == Qt.Checked
+    
+    # Simulate dock hiding due to alt-tab / visibility loss (not explicit closeEvent)
+    dock.hide()
+    
+    # Checkbox should REMAIN checked
+    assert item.checkState() == Qt.Checked
+    
+    dash.close()
+
+def test_negative_numeric_entry_not_blocked_by_validator(qtbot):
+    class MockModel:
+        def __init__(self):
+            self.target_deg = "0"
+            
+        @property
+        def ui_schema(self):
+            return {
+                "sections": [
+                    {
+                        "title": "Config",
+                        "elements": [
+                            {"type": "entry", "text": "Target (deg):", "model_attr": "target_deg"}
+                        ]
+                    }
+                ]
+            }
+
+    model = MockModel()
+    view = QtDynamicView(model)
+    qtbot.addWidget(view)
+    
+    target_input = view.vars["target_deg"]
+    target_input.setText("-45")
+    target_input.editingFinished.emit()
+    assert model.target_deg == "-45"
+    
+    view.cleanup()

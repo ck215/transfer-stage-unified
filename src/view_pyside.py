@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
     QMessageBox, QListWidgetItem, QDialog, QFileDialog, QFormLayout, 
     QComboBox, QTextEdit, QCheckBox
 )
-from PySide6.QtCore import Qt, QTimer, QObject, Signal
-from PySide6.QtGui import QPainter, QColor, QPen
+from PySide6.QtCore import Qt, QTimer, QObject, Signal, QEvent
+from PySide6.QtGui import QPainter, QColor, QPen, QDoubleValidator
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
@@ -173,8 +173,8 @@ class QtDynamicView(QWidget):
                 if hasattr(self, 'disable_timer') and self.disable_timer:
                     self.disable_timer.stop()
                 def _do_disable():
-                    if getattr(model_ref, 'is_stepping', False):
-                        print(f"[Timeout] {model_ref.__class__.__name__} is actively stepping, deferring inactivity disable.")
+                    if getattr(model_ref, 'is_stepping', False) or getattr(model_ref, 'manual_flag', False):
+                        print(f"[Timeout] {model_ref.__class__.__name__} is actively stepping or in manual mode, deferring inactivity disable.")
                         self.disable_timer.start(30000)
                         return
                     msg = f"5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}"
@@ -195,11 +195,17 @@ class QtDynamicView(QWidget):
             self.model.poller.start_polling(GUIAdapter(), log_updater=print_log, activity_callback=_reset_disable_timer)
             
             self.input_timer = QTimer(self)
+            self._prev_manual_flag = False
             def _route_input():
-                if getattr(self.model, 'manual_flag', False):
+                current_manual = getattr(self.model, 'manual_flag', False)
+                if current_manual:
                     controller_params = self.model.poller.get_mapped_state()
                     if hasattr(self.model, 'send_manual_mode_command'):
-                        self.model.send_manual_mode_command(controller_params)
+                        self.model.send_manual_mode_command(controller_params or {})
+                elif getattr(self, '_prev_manual_flag', False):
+                    if hasattr(self.model, 'send_manual_mode_command'):
+                        self.model.send_manual_mode_command({})
+                self._prev_manual_flag = current_manual
             self.input_timer.timeout.connect(_route_input)
             self.input_timer.start(20)
 
@@ -247,10 +253,27 @@ class QtDynamicView(QWidget):
                         val_widget = QLineEdit(val)
                         self.vars[attr] = val_widget
                         
-                        def make_editor(attr_name, widget):
-                            return lambda text: setattr(self.model, attr_name, text)
+                        is_numeric = False
+                        if attr != "serial_port":
+                            try:
+                                float(val)
+                                is_numeric = True
+                            except ValueError:
+                                pass
+                        
+                        if is_numeric:
+                            val_widget.setValidator(QDoubleValidator(-1e9, 1e9, 3, val_widget))
+
+                        def make_editor(attr_name, widget, num):
+                            def commit():
+                                text = widget.text()
+                                if num and (not text or not widget.hasAcceptableInput()):
+                                    widget.setText(str(getattr(self.model, attr_name, "")))
+                                else:
+                                    setattr(self.model, attr_name, text)
+                            return commit
                             
-                        val_widget.textChanged.connect(make_editor(attr, val_widget))
+                        val_widget.editingFinished.connect(make_editor(attr, val_widget, is_numeric))
                         row_layout.addWidget(val_widget)
                         
                 elif el_type == "button":
@@ -758,6 +781,12 @@ class RedPercentDynamicView(QtDynamicView):
             self.plot_dialog.close()
 
 
+class DeviceDock(QDockWidget):
+    closed = Signal()
+    def closeEvent(self, event):
+        self.closed.emit()
+        super().closeEvent(event)
+
 class DashboardWindow(QMainWindow):
     def __init__(self, system_manager):
         super().__init__()
@@ -788,6 +817,13 @@ class DashboardWindow(QMainWindow):
         self.active_docks = {}
         self._last_added_dock = None
         self.populate_sidebar()
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.WindowDeactivate:
+            for model_id, model in self.system_manager.models.items():
+                if hasattr(model, 'poller') and model.poller:
+                    model.poller.flush_neutral()
+        super().changeEvent(event)
 
     def populate_sidebar(self):
         self.device_list.blockSignals(True)
@@ -886,7 +922,7 @@ class DashboardWindow(QMainWindow):
             else:
                 return
             
-        dock = QDockWidget(device_name, self)
+        dock = DeviceDock(device_name, self)
         dock.setAllowedAreas(Qt.AllDockWidgetAreas)
         
         if device_name == "Red Percent Window":
@@ -895,7 +931,7 @@ class DashboardWindow(QMainWindow):
             view_widget = QtDynamicView(model)
         dock.setWidget(view_widget)
         
-        dock.visibilityChanged.connect(lambda visible: self.on_dock_closed(device_name, visible))
+        dock.closed.connect(lambda: self.on_dock_closed(device_name))
         
         if self._last_added_dock:
             self.splitDockWidget(self._last_added_dock, dock, Qt.Horizontal)
@@ -905,8 +941,8 @@ class DashboardWindow(QMainWindow):
         self._last_added_dock = dock
         self.active_docks[device_name] = dock
         
-    def on_dock_closed(self, device_name, visible):
-        if not visible and device_name in self.active_docks:
+    def on_dock_closed(self, device_name):
+        if device_name in self.active_docks:
             # Do not delete the dock; keep it cached so it can be restored from the sidebar
             
             # Synchronize sidebar checkbox

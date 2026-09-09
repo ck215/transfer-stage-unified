@@ -82,6 +82,7 @@ class RotatorSystem:
                     silent=True,
                     sleepfunc=time.sleep,
                 )
+                smc_inst.get_status(silent=True)
                 with self._lock:
                     self.smc = smc_inst
                     self.is_connected = True
@@ -155,6 +156,7 @@ class RotatorSystem:
                         {"type": "readonly", "text": "Position (deg):", "model_attr": "position"},
                         {"type": "readonly", "text": "State Code:", "model_attr": "state"},
                         {"type": "readonly", "text": "Error Code:", "model_attr": "error"},
+                        {"type": "button", "text": "Reconnect", "command": "reconnect"},
                     ]
                 },
                 {
@@ -177,6 +179,10 @@ class RotatorSystem:
                 }
             ]
         }
+
+    def reconnect(self):
+        self.disconnect()
+        self.connect(self.port, self.smc_id)
 
     def stop(self):
         if self.smc:
@@ -204,6 +210,20 @@ class RotatorSystem:
         if self.smc:
             self._run_async(self.smc.move_relative_deg, step_deg)
 
+    def _map_state_code(self, code: str) -> str:
+        code = str(code).upper()
+        if code in ("0A", "0B", "0C"):
+            return "Not referenced - run Home"
+        elif code in ("32", "33", "34"):
+            return "Ready"
+        elif code in ("1E", "1F"):
+            return "Homing"
+        elif code == "28":
+            return "Moving"
+        elif code in ("3C", "3D", "3E", "3F"):
+            return "Disabled"
+        return code
+
     def poll_status(self):
         if self.is_connected and self.smc:
             try:
@@ -211,7 +231,11 @@ class RotatorSystem:
                 err, state = self.smc.get_status(silent=True)
                 
                 self.position = pos
-                self.state = state
+                self.state = self._map_state_code(state)
                 self.error = str(err)
-            except Exception:
-                pass
+            except Exception as e:
+                try:
+                    from error_routing import ErrorRouter
+                    ErrorRouter.report_warning("Rotator Poll Error", f"Failed to read status:\n{e}")
+                except Exception:
+                    pass

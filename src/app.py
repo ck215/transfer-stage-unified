@@ -19,6 +19,7 @@ def parse_controller_id(controllerID):
 
 
 import os
+os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
 
 def run_legacy_app():
     import tkinter as tk
@@ -503,8 +504,7 @@ def run_legacy_app():
                 # 1. Check assignments
                 port = config["port"]
                 controllerID = config["controller"]
-                controllerID = parse_controller_id(controllerID)
-    
+
                 # 2. Instantiate Domain Models
                 if device == "Stepper Probe":
                     from model.probes import StepperProbe
@@ -962,8 +962,6 @@ def run_pyside_app():
                 device = config["device"]
                 port = config["port"]
                 controllerID = config["controller"]
-                
-                controllerID = parse_controller_id(controllerID)
     
                 # Instantiate Domain Models
                 if device == "Stepper Probe":

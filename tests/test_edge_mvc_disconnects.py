@@ -120,3 +120,32 @@ def test_gamepad_pygame_error_mid_poll():
                 mock_err.assert_called_once()
                 assert "Pygame error during polling" in mock_err.call_args[0][1]
                 mock_handle.assert_called_once()
+
+from model.rotator_system import RotatorSystem
+
+def test_rotator_connect_failure_sets_disconnected():
+    """Test that a connect() failure path sets state == 'Disconnected' and surfaces exception."""
+    rotator = RotatorSystem()
+    with patch("model.rotator_system.smc100.SMC100") as mock_smc:
+        mock_instance = MagicMock()
+        mock_instance.get_status.side_effect = Exception("Mock connection failure")
+        mock_smc.return_value = mock_instance
+        
+        with patch("error_routing.ErrorRouter.report_error") as mock_err:
+            rotator.connect("COM1")
+            
+            assert rotator.state == "Disconnected"
+            assert rotator.is_connected is False
+            mock_err.assert_called_once()
+            assert "Mock connection failure" in mock_err.call_args[0][1]
+
+def test_rotator_reconnect():
+    """Test that reconnect() successfully disconnects and re-opens."""
+    rotator = RotatorSystem()
+    rotator.port = "COM1"
+    
+    with patch.object(rotator, 'disconnect') as mock_disconnect:
+        with patch.object(rotator, 'connect') as mock_connect:
+            rotator.reconnect()
+            mock_disconnect.assert_called_once()
+            mock_connect.assert_called_once_with("COM1", 1)

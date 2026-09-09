@@ -75,3 +75,15 @@ def test_dcprobe_invalid_speed():
         probe.full_speed = "invalid_speed"
     except Exception:
         pass  # It's okay if it raises an exception, we just don't want a hard crash
+
+from model.rotator_system import RotatorSystem
+
+def test_rotator_state_code_map():
+    """Test that the RotatorSystem correctly maps SMC100 state codes to human strings."""
+    rotator = RotatorSystem()
+    assert rotator._map_state_code("0A") == "Not referenced - run Home"
+    assert rotator._map_state_code("33") == "Ready"
+    assert rotator._map_state_code("1E") == "Homing"
+    assert rotator._map_state_code("28") == "Moving"
+    assert rotator._map_state_code("3C") == "Disabled"
+    assert rotator._map_state_code("UNKNOWN") == "UNKNOWN"

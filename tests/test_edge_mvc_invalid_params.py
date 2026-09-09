@@ -69,3 +69,44 @@ def test_pyserial_none_fallback_error():
     finally:
         controller.seiral.pyserial = original_pyserial
 
+def test_probe_invalid_numeric_inputs():
+    probe = BaseProbe("SIM", "dummy")
+    probe.serial_comm = get_sim_serial()
+    
+    # Test blank inputs
+    probe.man_full_speed = ""
+    probe.x_step = ""
+    
+    try:
+        probe.send_manual_mode_command({})
+    except Exception as e:
+        pytest.fail(f"send_manual_mode_command raised Exception with blank input: {e}")
+        
+    params = probe.get_params()
+    assert params["full_speed"] == 400
+    assert params["x_step_size"] == 16
+    
+    # Test garbage inputs
+    probe.man_full_speed = "abc"
+    probe.x_step = "def"
+    try:
+        probe.send_manual_mode_command({})
+    except Exception as e:
+        pytest.fail(f"send_manual_mode_command raised Exception with garbage input: {e}")
+        
+    params = probe.get_params()
+    assert params["full_speed"] == 400
+    assert params["x_step_size"] == 16
+    
+    # Test fractional speeds
+    probe.man_full_speed = "0.5"
+    probe.full_speed = "200.5"
+    probe.x_step = "16.5"
+    try:
+        probe.send_manual_mode_command({})
+    except Exception as e:
+        pytest.fail(f"send_manual_mode_command raised Exception with fractional input: {e}")
+        
+    params = probe.get_params()
+    assert params["full_speed"] == 200.5
+    assert params["x_step_size"] == 16  # integer clamp

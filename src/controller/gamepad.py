@@ -466,11 +466,20 @@ class ControllerPoller:
 
     def get_mapped_state(self):
         """Returns the universally mapped input dictionary from the current gamepad."""
-        if not self.gamepad:
+        if not self.gamepad or not self.is_polling:
             return {}
             
         raw = self.gamepad.get_mapped_state()
         result = dict(raw)
+        
+        for k in ("x_axisStatus", "y_axisStatus"):
+            if abs(result.get(k, 0.0)) < 0.12:
+                result[k] = 0.0
+                
+        if result.get("z_axisStatusL", 0.0) < -0.9:
+            result["z_axisStatusL"] = -1.0
+        if result.get("z_axisStatusR", 0.0) < -0.9:
+            result["z_axisStatusR"] = -1.0
         
         if not hasattr(self, '_latch_state'):
             self._latch_state = {}
@@ -491,6 +500,17 @@ class ControllerPoller:
             
         return result
 
+    def flush_neutral(self):
+        """Reset the controller state to neutral, typically when focus is lost."""
+        if self.gamepad is None:
+            return
+        
+        # Clear axis state caches so get_mapped_state reads neutral 0
+        for i in range(len(self.gamepad.prev_axis_states)):
+            self.gamepad.prev_axis_states[i] = 0.0
+            
+        if hasattr(self, '_latch_state'):
+            self._latch_state.clear()
     def _poll_loop(self):
         if not self.is_polling: return
         
