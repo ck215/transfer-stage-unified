@@ -48,7 +48,7 @@ long XAXIS_SIZE = 16; // defualts
 long YAXIS_SIZE = 16; 
 long ZAXIS_SIZE = 16; 
 
-int FULL_SPEED = 400;
+float FULL_SPEED = 400.0;
 int SLOW_SPEED = 10;
 long BRAKE_DISTANCE = 0;
 bool AUTONOMOUS_ON = true;
@@ -179,7 +179,7 @@ void parseSerialAuto() // only run if there is new information in the buffer
                 z_axis.setSpeed(0);
                 
                 // Parse FULL_SPEED (Field 4) as the MAX manual speed
-                FULL_SPEED = getValue(incomingData, ',', 4).toInt(); 
+                FULL_SPEED = getValue(incomingData, ',', 4).toFloat(); 
 
                 // --- PARSE AS FLOATS ---
                 // Parse fields 0, 1, 2 as MANUAL DIRECTION/SPEED COMMANDS
@@ -210,7 +210,7 @@ void parseSerialAuto() // only run if there is new information in the buffer
                 XAXIS_SIZE = getValue(incomingData, ',', 0).toInt();
                 YAXIS_SIZE = getValue(incomingData, ',', 1).toInt();
                 ZAXIS_SIZE = getValue(incomingData, ',', 2).toInt();
-                FULL_SPEED = getValue(incomingData, ',', 4).toInt(); 
+                FULL_SPEED = getValue(incomingData, ',', 4).toFloat(); 
                 SLOW_SPEED = getValue(incomingData, ',', 5).toInt(); 
                 BRAKE_DISTANCE = getValue(incomingData, ',', 6).toInt(); // what is this one for?
                 XAXIS_DIST = -1*getValue(incomingData, ',', 7).toInt(); 
@@ -325,9 +325,9 @@ void parseHybridSerial() {
 
             if (system_enabled) {
                 system_enabled = false;
-                xUART.toff(0);
-                yUART.toff(0);
-                zUART.toff(0);
+                xUART.toff(2);
+                yUART.toff(2);
+                zUART.toff(2);
             }
         }
 

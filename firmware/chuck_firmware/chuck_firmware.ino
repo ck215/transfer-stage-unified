@@ -325,9 +325,9 @@ void parseHybridSerial() {
 
             if (system_enabled) {
                 system_enabled = false;
-                xUART.toff(0);
-                yUART.toff(0);
-                zUART.toff(0);
+                xUART.toff(2);
+                yUART.toff(2);
+                zUART.toff(2);
             }
         }
 
