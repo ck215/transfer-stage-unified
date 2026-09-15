@@ -393,8 +393,17 @@ class ControllerPoller:
 
         try:
             if pygame:
-                # pygame.init()
-                pygame.joystick.init()
+                # pygame.init() omitted — SDL video conflicts with Qt on macOS.
+                # joystick.init() may raise SDL video errors under SDL_VIDEODRIVER=dummy;
+                # these are expected in headless mode and are not real failures.
+                try:
+                    pygame.joystick.init()
+                except Exception as sdl_e:
+                    sdl_msg = str(sdl_e).lower()
+                    if any(k in sdl_msg for k in ("video", "display", "no video", "no available")):
+                        print(f"[controllerDrive] SDL headless mode (expected): {sdl_e}")
+                    else:
+                        raise  # unexpected — let outer handler catch it
         
             try:
                 self.controller_index = controller_number

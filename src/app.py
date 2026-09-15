@@ -808,18 +808,22 @@ def run_pyside_app():
             main_layout.addWidget(title)
     
             grid = QGridLayout()
-            grid.addWidget(QLabel("Enable"), 0, 0)
+            enable_hdr = QLabel("Enable")
+            enable_hdr.setMinimumWidth(60)
+            enable_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(enable_hdr, 0, 0)
             grid.addWidget(QLabel("System / Device"), 0, 1)
             grid.addWidget(QLabel("COM Port"), 0, 2)
             grid.addWidget(QLabel("Gamepad Mapping"), 0, 3)
             grid.addWidget(QLabel("Status"), 0, 4)
+            grid.setColumnMinimumWidth(0, 60)
     
             for i, device in enumerate(self.devices):
                 row = i + 1
                 
                 cb = QCheckBox()
                 self.device_vars[device] = cb
-                grid.addWidget(cb, row, 0)
+                grid.addWidget(cb, row, 0, alignment=Qt.AlignmentFlag.AlignCenter)
     
                 lbl = QLabel(device)
                 grid.addWidget(lbl, row, 1)
