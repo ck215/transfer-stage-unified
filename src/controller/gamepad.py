@@ -303,7 +303,7 @@ class ControllerPoller:
     def get_physical_controllers(self):
         try:
             if pygame:
-                pygame.init()
+                # pygame.init()
         except Exception:
             pass
         try:
@@ -393,7 +393,7 @@ class ControllerPoller:
 
         try:
             if pygame:
-                pygame.init()
+                # pygame.init()
                 pygame.joystick.init()
         
             try:

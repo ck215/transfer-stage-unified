@@ -117,6 +117,8 @@ def run_legacy_app():
                 valid_ports = []
                 for port in com_ports:
                     # Filter out unusable Linux motherboard /dev/ttyS* ports with hwid == 'n/a'
+                    if "Bluetooth" in port.device or "Wireless" in port.device:
+                        continue
                     if sys.platform.startswith("linux") and port.device.startswith("/dev/ttyS"):
                         if getattr(port, "hwid", "n/a") == "n/a" or not getattr(port, "hwid", None):
                             continue
@@ -141,7 +143,7 @@ def run_legacy_app():
         def get_available_controllers(self):
             self.detected_controllers = ["None"]
             if PYGAME_AVAILABLE:
-                pygame.init()
+                # pygame.init()
                 pygame.joystick.init()
                 pygame.event.pump()
                 joystick_count = pygame.joystick.get_count()
@@ -743,6 +745,8 @@ def run_pyside_app():
                 valid_ports = []
                 for port in com_ports:
                     # Filter out unusable Linux motherboard /dev/ttyS* ports with hwid == 'n/a'
+                    if "Bluetooth" in port.device or "Wireless" in port.device:
+                        continue
                     if sys.platform.startswith("linux") and port.device.startswith("/dev/ttyS"):
                         if getattr(port, "hwid", "n/a") == "n/a" or not getattr(port, "hwid", None):
                             continue
@@ -767,7 +771,7 @@ def run_pyside_app():
         def get_available_controllers(self):
             self.detected_controllers = ["None"]
             if PYGAME_AVAILABLE:
-                pygame.init()
+                # pygame.init()
                 pygame.joystick.init()
                 for i in range(pygame.joystick.get_count()):
                     try:
