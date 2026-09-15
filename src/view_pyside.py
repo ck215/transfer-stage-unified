@@ -106,10 +106,7 @@ class ControllerLogWindow(QDialog):
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
         self.layout.addWidget(self.text_edit)
-        self.setStyleSheet(
-            "QWidget { background-color: #121212; color: #FFFFFF; } "
-            "QTextEdit { background-color: #1E1E1E; border: 1px solid #333; padding: 5px; color: lightgreen; font-family: 'Courier New', monospace; }"
-        )
+        self.layout.addWidget(self.text_edit)
 
     def append_log(self, message):
         self.text_edit.append(message)
@@ -136,14 +133,7 @@ class QtDynamicView(QWidget):
         self.toggle_buttons = []
         self.log_window = None
         
-        self.setStyleSheet("""
-            QWidget { background-color: #121212; color: #FFFFFF; font-family: 'Segoe UI', sans-serif; }
-            QLabel.header { font-weight: bold; color: #0078D4; margin-top: 10px; }
-            QLineEdit { background-color: #1E1E1E; border: 1px solid #333; padding: 5px; color: #FFF; }
-            QPushButton { background-color: #0078D4; color: white; font-weight: bold; padding: 5px; border-radius: 3px; }
-            QPushButton:hover { background-color: #107C10; }
-            QFrame { background-color: #1E1E1E; border-radius: 5px; }
-        """)
+        self.log_window = None
         
         self._build_ui()
         
@@ -225,12 +215,15 @@ class QtDynamicView(QWidget):
         schema = getattr(self.model, 'ui_schema', {"sections": []})
         for section in schema.get("sections", []):
             card = QFrame()
-            card_layout = QVBoxLayout(card)
+            card.setObjectName("card")
+            card_layout = QFormLayout(card)
+            card_layout.setContentsMargins(10, 10, 10, 10)
+            card_layout.setSpacing(10)
             
             title = section.get("title", "Section")
             lbl_title = QLabel(title)
             lbl_title.setProperty("class", "header")
-            card_layout.addWidget(lbl_title)
+            card_layout.addRow(lbl_title)
             
             elements = section.get("elements", [])
             for el in elements:
@@ -246,11 +239,13 @@ class QtDynamicView(QWidget):
                     val = str(getattr(self.model, attr, ""))
                     if el_type == "readonly":
                         val_widget = QLabel(val)
-                        val_widget.setStyleSheet("color: lightgreen; font-weight: bold;")
+                        val_widget.setObjectName("valueLabel")
+                        val_widget.setToolTip(f"Current value of {label_text.replace(':', '')}")
                         self.vars[attr] = val_widget
                         row_layout.addWidget(val_widget)
                     else:
                         val_widget = QLineEdit(val)
+                        val_widget.setToolTip(f"Edit {label_text.replace(':', '')}")
                         self.vars[attr] = val_widget
                         
                         is_numeric = False
@@ -279,6 +274,7 @@ class QtDynamicView(QWidget):
                 elif el_type == "button":
                     cmd_name = el.get("command")
                     btn = QPushButton(label_text)
+                    btn.setToolTip(f"Execute {label_text.replace(':', '')}")
                     
                     def make_cmd(c_name):
                         return lambda: self._execute_command(c_name)
@@ -290,6 +286,8 @@ class QtDynamicView(QWidget):
                     attr = el.get("model_attr")
                     cmd_name = el.get("command")
                     btn = QPushButton(el.get("false_text", "False"))
+                    btn.setObjectName("toggleFalse")
+                    btn.setToolTip(f"Toggle {label_text.replace(':', '')}")
                     
                     def make_cmd(c_name):
                         return lambda: self._execute_command(c_name)
@@ -357,9 +355,10 @@ class QtDynamicView(QWidget):
                 elif el_type == "file_picker":
                     cmd_name = el.get("command")
                     btn = QPushButton(label_text)
-                    btn.setStyleSheet("background-color: darkorange; color: black; font-weight: bold;")
+                    btn.setObjectName("filePicker")
+                    btn.setToolTip("Select a script file")
                     file_lbl = QLabel("No Script Selected")
-                    file_lbl.setStyleSheet("color: yellow; font-size: 11px;")
+                    file_lbl.setObjectName("fileLabel")
                     
                     def make_file_cmd(c_name, lbl_widget):
                         def wrapped():
@@ -380,7 +379,7 @@ class QtDynamicView(QWidget):
                     row_layout.addWidget(btn)
                     row_layout.addWidget(file_lbl)
                     
-                card_layout.addLayout(row_layout)
+                card_layout.addRow(row_layout)
             self.layout.addWidget(card)
         self.layout.addStretch()
 
@@ -432,10 +431,12 @@ class QtDynamicView(QWidget):
             if current_state != val:
                 if val:
                     widget.setText(tb["true_text"])
-                    widget.setStyleSheet("background-color: #107C10; color: white; font-weight: bold;")
+                    widget.setObjectName("toggleTrue")
                 else:
                     widget.setText(tb["false_text"])
-                    widget.setStyleSheet("background-color: #D13438; color: white; font-weight: bold;")
+                    widget.setObjectName("toggleFalse")
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
                 widget.setProperty("toggle_state", val)
 
     def cleanup(self):
@@ -542,8 +543,20 @@ class PlotDialog(QDialog):
         try:
             with open(filename, 'r') as f:
                 reader = csv.reader(f)
-                header = next(reader)
+                header = None
+                metadata = {}
+                for row in reader:
+                    if not row: continue
+                    if "Red Percent" in row:
+                        header = row
+                        break
+                    elif row[0].startswith("#") and len(row) >= 2:
+                        metadata[row[0].strip('# ')] = row[1]
                 
+                if not header:
+                    QMessageBox.critical(self, "Invalid File", "CSV missing 'Red Percent' column")
+                    return
+                    
                 try: red_idx = header.index("Red Percent")
                 except ValueError:
                     QMessageBox.critical(self, "Invalid File", "CSV missing 'Red Percent' column")
@@ -551,7 +564,8 @@ class PlotDialog(QDialog):
                     
                 dim_indices = {}
                 for i, col in enumerate(header):
-                    if col not in ["Timestamp", "Red Percent"] and col.strip():
+                    # Filter out velocity columns as requested
+                    if col not in ["Timestamp", "Red Percent"] and col.strip() and not col.endswith(" Velocity"):
                         dim_indices[col] = i
                         
                 red_percents = []
@@ -682,7 +696,21 @@ class RedPercentDynamicView(QtDynamicView):
     def __init__(self, model, parent=None):
         super().__init__(model, parent)
         self._add_sync_dimension_controls()
+        self._add_custom_buttons()
         
+
+    def _add_custom_buttons(self):
+        btn_frame = QFrame()
+        btn_layout = QHBoxLayout(btn_frame)
+        
+        save_btn = QPushButton("Save Log")
+        save_btn.clicked.connect(self._save_log)
+        btn_layout.addWidget(save_btn)
+        
+        self.layout.insertWidget(self.layout.count() - 1, btn_frame)
+
+    def _save_log(self):
+        self.save_log_ui()
     def _add_sync_dimension_controls(self):
         sync_frame = QFrame()
         sync_layout = QHBoxLayout(sync_frame)
@@ -760,8 +788,14 @@ class RedPercentDynamicView(QtDynamicView):
         if not self.model.data_log or not self.model.data_log.red_values:
             QMessageBox.information(self, "No Data", "No data to save.")
             return
+            
+        p_name = getattr(self.model, 'probe_name', None)
+        if not p_name or not str(p_name).strip():
+            p_name = "red_log"
+        default_name = f"{p_name}.csv".replace(' ', '_')
+            
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Red Detection Log", "", "CSV Files (*.csv);;All Files (*)"
+            self, "Save Red Detection Log", default_name, "CSV Files (*.csv);;All Files (*)"
         )
         if file_path:
             try:
@@ -795,10 +829,12 @@ class DashboardWindow(QMainWindow):
         self.resize(1200, 800)
         self.setDockOptions(QMainWindow.AllowNestedDocks | QMainWindow.AllowTabbedDocks)
         
-        self.setStyleSheet("""
-            QMainWindow::separator { width: 4px; background: #333; }
-            QMainWindow::separator:hover { background: #0078D4; }
-        """)
+        style_path = os.path.join(os.path.dirname(__file__), "style.qss")
+        try:
+            with open(style_path, "r") as f:
+                self.setStyleSheet(f.read())
+        except Exception as e:
+            print(f"Failed to load stylesheet: {e}")
         
         # Sidebar
         self.sidebar = QDockWidget("Device Manager", self)

@@ -10,9 +10,10 @@ def _num(value, default, *, minimum=None, integer=False):
     try:
         v = float(value)
         if math.isnan(v) or math.isinf(v):
-            return default
+            v = float(default)
     except (TypeError, ValueError):
-        return default
+        v = float(default)
+        
     if minimum is not None and v < minimum:
         v = minimum
     return int(v) if integer else v
@@ -55,6 +56,32 @@ class BaseProbe:
         self.is_stepping = False
 
     @property
+    def vel_x(self):
+        state = self.poller.get_mapped_state() if self.poller else {}
+        val = state.get("x_axisStatus", 0.0)
+        try: return float(val) if val is not None else 0.0
+        except (ValueError, TypeError): return 0.0
+
+    @property
+    def vel_y(self):
+        state = self.poller.get_mapped_state() if self.poller else {}
+        val = state.get("y_axisStatus", 0.0)
+        try: return float(val) if val is not None else 0.0
+        except (ValueError, TypeError): return 0.0
+
+    @property
+    def vel_z(self):
+        state = self.poller.get_mapped_state() if self.poller else {}
+        r_val = state.get("z_axisStatusR", -1.0)
+        l_val = state.get("z_axisStatusL", -1.0)
+        try:
+            r = float(r_val) if r_val is not None else -1.0
+            l = float(l_val) if l_val is not None else -1.0
+            return (r - l) / 2.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    @property
     def ui_schema(self):
         return {
             "sections": [
@@ -93,6 +120,7 @@ class BaseProbe:
                          "false_text": "Enter Manual Mode", "command": "toggle_manual"},
                         {"type": "button", "text": "Start Stepping", "command": "macro_start_auton", "bg": "darkgreen", "fg": "white"},
                         {"type": "button", "text": "Full Stop", "command": "full_stop", "bg": "darkred", "fg": "white"},
+                        {"type": "button", "text": "Power Down (Kill)", "command": "power_down", "bg": "black", "fg": "red"},
                         {"type": "file_picker", "text": "Run Script", "command": "run_script"},
                         {"type": "button", "text": "Serial Reconnect", "command": "reconnect_serial", "bg": "gray", "fg": "black"},
                         {"type": "button", "text": "Controller Log Window", "command": "open_controller_log", "bg": "black", "fg": "white"}
@@ -335,6 +363,15 @@ class BaseProbe:
 
     def full_stop(self):
         self._stop_and_disarm()
+
+    def power_down(self):
+        self._stop_and_disarm()
+        if self.serial_comm and getattr(self.serial_comm, 'ser', None):
+            try:
+                self.serial_comm.ser.write(b'k\n')
+                print(f"[{self.__class__.__name__}] Sent Power Down (Kill Coils) command 'k'")
+            except Exception as e:
+                print(f"[{self.__class__.__name__}] Failed to send power down: {e}")
 
 
 class StepperProbe(BaseProbe):
