@@ -2,7 +2,6 @@ import pytest
 import struct
 import sys
 import os
-sys.path.insert(0, os.path.abspath('src'))
 
 from controller.seiral import serial
 from model.probes import BaseProbe
@@ -110,3 +109,25 @@ def test_probe_invalid_numeric_inputs():
     params = probe.get_params()
     assert params["full_speed"] == 200.5
     assert params["x_step_size"] == 16  # integer clamp
+
+def test_num_sanitizer():
+    from model.probes import _num
+    # Test valid floats/ints
+    assert _num("123", default=10) == 123.0
+    assert _num("123.5", default=10) == 123.5
+    assert _num("-45", default=10) == -45.0
+    
+    # Test integer coerce
+    assert _num("123.5", default=10, integer=True) == 123
+    
+    # Test minimum clamp
+    assert _num("5", default=10, minimum=10) == 10
+    assert _num("-5", default=10, minimum=0) == 0
+    assert _num("-5", default=10, minimum=-10) == -5.0
+    
+    # Test garbage/blank/nan
+    assert _num("", default=10) == 10.0
+    assert _num("abc", default=10) == 10.0
+    assert _num("NaN", default=10) == 10.0
+    assert _num("inf", default=10) == 10.0
+    assert _num("-inf", default=10) == 10.0

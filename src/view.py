@@ -185,7 +185,9 @@ class DashboardWindow(tk.Toplevel):
             self.notebook.add(frame, text=device_name)
             
             # View Routing Logic
-            if hasattr(model, 'custom_view_class'):
+            if device_name == "Red Percent Window":
+                view = RedPercentView(frame, model)
+            elif hasattr(model, 'custom_view_class'):
                 view_class = model.custom_view_class
                 view = view_class(frame, model)
             elif hasattr(model, 'ui_schema'):
@@ -542,3 +544,208 @@ class DynamicView(tk.Frame):
                 self.model.poll_status()
                 self.after(100, _poll_stat)
             self.after(100, _poll_stat)
+
+from tkinter import filedialog
+import csv
+from matplotlib.figure import Figure
+try:
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.colors import LinearSegmentedColormap
+except ImportError:
+    FigureCanvasTkAgg = None
+    LinearSegmentedColormap = None
+
+class RedPercentView(tk.Frame):
+    def __init__(self, master=None, system=None):
+        super().__init__(master)
+        self.system = system
+
+        # GUI Setup
+        control_frame = ttk.Frame(self)
+        control_frame.pack(pady=10)
+
+        self.select_btn = ttk.Button(control_frame, text="Select Focus Area", command=self.select_focus_area)
+        self.select_btn.pack(side=tk.LEFT, padx=5)
+
+        self.start_btn = ttk.Button(control_frame, text="Start Monitoring", command=self.start_monitoring)
+        self.start_btn.pack(side=tk.LEFT, padx=5)
+
+        self.stop_btn = ttk.Button(control_frame, text="Stop Monitoring", state=tk.DISABLED, command=self.stop_monitoring)
+        self.stop_btn.pack(side=tk.LEFT, padx=5)
+
+        self.plot_btn = ttk.Button(control_frame, text="Plot CSV", command=self.open_plot_window)
+        self.plot_btn.pack(side=tk.LEFT, padx=5)
+
+        status_frame = ttk.Frame(self)
+        status_frame.pack(pady=10)
+
+        ttk.Label(status_frame, text="Focus Area:").grid(row=0, column=0, sticky=tk.W)
+        self.area_label = ttk.Label(status_frame, text="Not selected")
+        self.area_label.grid(row=0, column=1, sticky=tk.W)
+
+        color_frame = ttk.LabelFrame(self, text="Red Detection")
+        color_frame.pack(pady=10, padx=10, fill=tk.X)
+
+        ttk.Label(color_frame, text="Red %:").grid(row=0, column=0, sticky=tk.W)
+        self.red_label = ttk.Label(color_frame, text="0.0%")
+        self.red_label.grid(row=0, column=1, sticky=tk.W)
+
+        ttk.Label(color_frame, text="Red Change:").grid(row=1, column=0, sticky=tk.W)
+        self.red_change_label = tk.Label(color_frame, text="0.0%", fg="black")
+        self.red_change_label.grid(row=1, column=1, sticky=tk.W)
+
+        self.reset_btn = ttk.Button(color_frame, text="Reset Baseline", state=tk.DISABLED, command=self.reset_baseline)
+        self.reset_btn.grid(row=2, column=0, columnspan=2, pady=5)
+        
+        self.sync_vars = {
+            'X': tk.BooleanVar(value=False),
+            'Y': tk.BooleanVar(value=False),
+            'Z': tk.BooleanVar(value=False)
+        }
+        
+        sync_frame = ttk.Frame(color_frame)
+        sync_frame.grid(row=3, column=0, columnspan=2, pady=5, sticky=tk.W)
+        ttk.Label(sync_frame, text="Sync Dimensions:").pack(side=tk.LEFT)
+        for dim in ['X', 'Y', 'Z']:
+            chk = ttk.Checkbutton(sync_frame, text=dim, variable=self.sync_vars[dim], command=self._update_sync_dimensions)
+            chk.pack(side=tk.LEFT, padx=2)
+
+        probe_frame = ttk.Frame(color_frame)
+        probe_frame.grid(row=4, column=0, columnspan=2, pady=5, sticky=tk.W)
+        ttk.Label(probe_frame, text="Position Source:").pack(side=tk.LEFT)
+        
+        self.probe_var = tk.StringVar()
+        self.probe_dropdown = ttk.Combobox(probe_frame, textvariable=self.probe_var, state="readonly")
+        self.probe_dropdown.pack(side=tk.LEFT, padx=5)
+        self.probe_dropdown.bind("<<ComboboxSelected>>", self._on_probe_selected)
+        
+        self._update_probe_dropdown()
+        self.poll_display()
+
+    def _update_probe_dropdown(self):
+        if hasattr(self.system, 'available_probes') and self.system.available_probes:
+            probes = list(self.system.available_probes.keys())
+            self.probe_dropdown['values'] = probes
+            if hasattr(self.system, 'selected_probe_name') and self.system.selected_probe_name in probes:
+                self.probe_var.set(self.system.selected_probe_name)
+            else:
+                self.probe_var.set(probes[0])
+                self.system.set_stepper_model(probes[0])
+        else:
+            self.probe_dropdown['values'] = ["None Available"]
+            self.probe_var.set("None Available")
+
+    def _on_probe_selected(self, event=None):
+        selected = self.probe_var.get()
+        if hasattr(self.system, 'set_stepper_model'):
+            self.system.set_stepper_model(selected)
+
+    def _update_sync_dimensions(self):
+        self.system.sync_dimensions = [dim for dim in ['X', 'Y', 'Z'] if self.sync_vars[dim].get()]
+
+    def select_focus_area(self):
+        selection_window = tk.Toplevel(self.winfo_toplevel())
+        screen_width = selection_window.winfo_screenwidth()
+        screen_height = selection_window.winfo_screenheight()
+        selection_window.geometry(f"{screen_width}x{screen_height}+0+0")
+        selection_window.attributes('-alpha', 0.3)
+        selection_window.configure(bg='gray10')
+        selection_window.attributes('-topmost', True)
+        try:
+            selection_window.overrideredirect(True)
+        except Exception:
+            pass
+
+        self.start_x = None
+        self.start_y = None
+        self.rect_id = None
+        self.dragging = False
+
+        canvas = tk.Canvas(selection_window, highlightthickness=0, width=screen_width, height=screen_height, cursor="crosshair")
+        canvas.pack(fill=tk.BOTH, expand=True)
+
+        def start_selection(event):
+            self.start_x = event.x
+            self.start_y = event.y
+            self.dragging = True
+            if self.rect_id:
+                canvas.delete(self.rect_id)
+
+        def update_selection(event):
+            if self.dragging:
+                if self.rect_id:
+                    canvas.delete(self.rect_id)
+                self.rect_id = canvas.create_rectangle(self.start_x, self.start_y, event.x, event.y, outline='red', width=3)
+
+        def end_selection(event):
+            if self.dragging:
+                self.dragging = False
+                end_x = event.x
+                end_y = event.y
+                left = min(self.start_x, end_x)
+                top = min(self.start_y, end_y)
+                width = abs(end_x - self.start_x)
+                height = abs(end_y - self.start_y)
+                if width > 10 and height > 10:
+                    self.system.focus_area = {'left': int(left), 'top': int(top), 'width': int(width), 'height': int(height)}
+                    selection_window.destroy()
+                    self.area_label.config(text=f"{int(width)}x{int(height)} at ({int(left)},{int(top)})")
+                    self.start_btn.config(state=tk.NORMAL)
+
+        def cancel_selection(event):
+            selection_window.destroy()
+
+        canvas.bind('<Button-1>', start_selection)
+        canvas.bind('<B1-Motion>', update_selection)
+        canvas.bind('<ButtonRelease-1>', end_selection)
+        canvas.bind('<Escape>', cancel_selection)
+        selection_window.bind('<Escape>', cancel_selection)
+
+        instruction = tk.Label(selection_window, text="Click and drag to select focus area. Press ESC to cancel.", fg='red', bg='black', font=('Arial', 24, 'bold'))
+        instruction.place(relx=0.5, rely=0.05, anchor=tk.CENTER)
+        canvas.focus_set()
+
+    def start_monitoring(self):
+        self.system.start_monitoring()
+        self.start_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        self.reset_btn.config(state=tk.NORMAL)
+
+    def stop_monitoring(self):
+        self.system.stop_monitoring()
+        self.start_btn.config(state=tk.NORMAL)
+        self.stop_btn.config(state=tk.DISABLED)
+        
+        if self.system.data_log and self.system.data_log.red_values:
+            if messagebox.askyesno("Save Log", "Monitoring stopped. Would you like to save the data to a CSV?"):
+                self.save_log_to_file()
+
+    def reset_baseline(self):
+        self.system.reset_baseline()
+
+    def save_log_to_file(self):
+        if not self.system.data_log or not self.system.data_log.red_values:
+            print("[color_test] No data to save.")
+            return
+        file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV Files", "*.csv")], title="Save Red Detection Log")
+        if file_path:
+            self.system.save_log(file_path)
+
+    def poll_display(self):
+        if not self.winfo_exists():
+            return
+        red_pct = self.system.current_red
+        red_change = self.system.red_change
+        self.red_label.config(text=f"{red_pct:.1f}%")
+        color = "green" if red_change > 0 else "red" if red_change < 0 else "black"
+        self.red_change_label.config(text=f"{red_change:+.1f}%", fg=color)
+        self.after(100, self.poll_display)
+
+    def open_plot_window(self):
+        pass
+
+    def destroy(self):
+        print("[color_test] Cleaning up and closing RedPercentView...")
+        self.system.stop_monitoring()
+        super().destroy()
+        print("[color_test] Cleanup complete.")

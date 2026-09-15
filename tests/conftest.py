@@ -15,7 +15,6 @@ sys.modules['serial.tools.list_ports'] = MagicMock()
 
 sys.modules['PIL'] = MagicMock()
 sys.modules['mss'] = MagicMock()
-sys.modules['numpy'] = MagicMock()
 sys.modules['matplotlib'] = MagicMock()
 sys.modules['matplotlib.figure'] = MagicMock()
 sys.modules['matplotlib.backends'] = MagicMock()
@@ -30,4 +29,3 @@ sys.modules['tkinter.filedialog'] = MagicMock()
 sys.modules['tkinter.messagebox'] = MagicMock()
 
 # Add the src directory to the python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))

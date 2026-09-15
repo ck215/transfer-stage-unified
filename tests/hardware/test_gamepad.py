@@ -294,10 +294,74 @@ def test_controller_claim_success_then_conflict_with_string_ids():
 def test_flush_neutral():
     poller = ControllerPoller.__new__(ControllerPoller)
     poller.gamepad = MagicMock()
-    poller.gamepad.prev_axis_states = [0.5, -0.5, 0.0, 0.0, 0.0, 0.0]
+    poller.gamepad.prev_axis_states = {0: 0.5, 1: -0.5, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
     
     poller.flush_neutral()
     
-    assert poller.gamepad.prev_axis_states == [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert poller.gamepad.prev_axis_states == {0: 0.0, 1: 0.0, 2: -1.0, 3: 0.0, 4: -1.0, 5: -1.0}
     if hasattr(poller, '_latch_state'):
         assert len(poller._latch_state) == 0
+
+def test_controller_deadzone():
+    poller = ControllerPoller.__new__(ControllerPoller)
+    poller.is_polling = True
+    poller.gamepad = MagicMock()
+    
+    # Simulate a raw mapped state just under and just over deadzones
+    poller.gamepad.get_mapped_state.return_value = {
+        "x_axisStatus": 0.11,
+        "y_axisStatus": -0.11,
+        "z_axisStatusL": -0.95,
+        "z_axisStatusR": -0.85,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0,
+    }
+    
+    state = poller.get_mapped_state()
+    
+    assert state["x_axisStatus"] == 0.0
+    assert state["y_axisStatus"] == 0.0
+    assert state["z_axisStatusL"] == -1.0
+    assert state["z_axisStatusR"] == -0.85
+
+    # Test over deadzone
+    poller.gamepad.get_mapped_state.return_value = {
+        "x_axisStatus": 0.13,
+        "y_axisStatus": -0.13,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": 0.5,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0,
+    }
+    
+    state = poller.get_mapped_state()
+    assert state["x_axisStatus"] == 0.13
+    assert state["y_axisStatus"] == -0.13
+    assert state["z_axisStatusL"] == -1.0
+    assert state["z_axisStatusR"] == 0.5
+
+def test_gamepad_disconnect_mid_session():
+    """Verify poller handles pygame.error gracefully when reading disconnected hardware."""
+    from unittest.mock import patch
+    import pygame
+    
+    with patch("controller.gamepad.pygame") as mock_pygame:
+        mock_pygame.error = type("error", (Exception,), {})
+        poller = ControllerPoller.__new__(ControllerPoller)
+        poller.is_polling = True
+        poller.gamepad = MagicMock()
+        
+        # Simulate pygame throwing an error on hardware read
+        poller.gamepad.get_mapped_state.side_effect = mock_pygame.error("Joystick disconnected")
+        
+        # Should catch pygame.error and return empty dict instead of crashing thread
+        with patch("controller.gamepad.ErrorPopupManager") as mock_error:
+            state = poller.get_mapped_state()
+            assert state == {}
+            
+            # Since the device is lost, the polling flag or object might be cleared/warned
+            # (Depends on implementation, but testing it doesn't crash is primary requirement)

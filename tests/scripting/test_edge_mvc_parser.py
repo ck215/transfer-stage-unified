@@ -1,7 +1,6 @@
 import pytest
 import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 from app import parse_controller_id
 
 def test_parse_valid():

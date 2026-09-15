@@ -115,3 +115,37 @@ def test_temperature_system_clean_shutdown():
         with patch("error_routing.ErrorRouter.report_error") as mock_report:
             ts2.disconnect()
             mock_report.assert_not_called()
+
+    def test_temperature_system_invalid_ramp_rates(self):
+        """Test fallback to spdelay=0 for malformed ramp rates."""
+        sys = TemperatureSystem()
+        mock_serial = MagicMock()
+        sys.serial_conn = mock_serial
+        
+        invalid_rates = ["invalid_string", "0", "inf", "nan", "-1"]
+        
+        for rate in invalid_rates:
+            sys.ramp_rate = rate
+            sys.send_settings()
+            
+            # Should have called write, and fallback logic sends '0' for spdelay when invalid
+            # Let's inspect the actual write arguments
+            assert mock_serial.ser.write.called
+            write_args = mock_serial.ser.write.call_args[0][0].decode('utf-8')
+            assert '0' in write_args, f"Failed for rate={rate}"
+            mock_serial.ser.write.reset_mock()
+
+    @patch('model.temperature_system.ErrorRouter.report_error')
+    def test_temperature_system_serial_write_failure(self, mock_report_error):
+        """Test serial write exception is routed securely to ErrorRouter."""
+        sys = TemperatureSystem()
+        mock_serial = MagicMock()
+        mock_serial.ser.write.side_effect = Exception("USB Disconnected")
+        sys.serial_conn = mock_serial
+        sys.ramp_rate = "12"
+        
+        sys.send_settings()
+        mock_report_error.assert_called_once()
+        assert "Serial Write Error" in mock_report_error.call_args[0][0]
+        assert "USB Disconnected" in mock_report_error.call_args[0][1]
+

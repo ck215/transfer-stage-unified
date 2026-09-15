@@ -25,24 +25,46 @@ def test_modifying_missing_variables():
     assert "non_existent_var" not in params
 
 def test_mutating_state_out_of_order():
-    """Test mutating state out of order on the StepperProbe."""
+    """Test mutating state out of order checks exact internal variables instead of just avoiding crashes."""
     probe = StepperProbe("SIM", None)
     probe.serial_comm = MagicMock()
+    probe.system_enabled = True # Force enable to succeed for flag flips
     
-    try:
-        probe.disable()
-        probe.full_stop()
-        probe.enter_auton()
-        probe.macro_start_auton()
-        probe.enter_manual()
-        probe.enable()
-        probe.send_stop_command()
-        probe.reconnect_serial()
-        probe.disable()
-        probe.enter_manual()
-        probe.macro_start_auton()
-    except Exception as e:
-        pytest.fail(f"StepperProbe crashed when mutating state out of order: {e}")
+    probe.enter_auton()
+    assert probe.auton_flag is True
+    assert probe.manual_flag is False
+    
+    probe.enter_manual()
+    assert probe.auton_flag is False
+    assert probe.manual_flag is True
+    
+    probe.macro_start_auton()
+    assert probe.auton_flag is True
+    assert probe.manual_flag is False
+    assert probe.is_stepping is True
+    
+    probe.full_stop()
+    assert probe.auton_flag is False
+    assert probe.manual_flag is False
+    assert probe.is_stepping is False
+
+def test_mutually_exclusive_probe_flags():
+    """Test that auton_flag and manual_flag can never be active at the same time."""
+    probe = StepperProbe("SIM", None)
+    probe.serial_comm = MagicMock()
+    probe.system_enabled = True
+    
+    probe.enter_auton()
+    assert not (probe.auton_flag and probe.manual_flag)
+    
+    probe.enter_manual()
+    assert not (probe.auton_flag and probe.manual_flag)
+    
+    # Simulate a malformed state assignment
+    probe.auton_flag = True
+    probe.manual_flag = True
+    probe.full_stop()
+    assert not probe.auton_flag and not probe.manual_flag
 
 def test_system_manager_invalid_model():
     """Test registering an invalid model type."""

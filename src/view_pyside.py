@@ -316,6 +316,8 @@ class QtDynamicView(QWidget):
                     combo.addItems(options)
                     if current_val in options:
                         combo.setCurrentText(current_val)
+                    if attr:
+                        self.vars[attr] = combo
                     row_layout.addWidget(combo)
 
                     def make_dropdown_cmd(c_name):
@@ -422,6 +424,10 @@ class QtDynamicView(QWidget):
                 elif isinstance(widget, QLabel):
                     if widget.text() != current_val:
                         widget.setText(current_val)
+                elif isinstance(widget, QComboBox):
+                    if not widget.hasFocus() and widget.currentText() != current_val:
+                        if current_val in [widget.itemText(i) for i in range(widget.count())]:
+                            widget.setCurrentText(current_val)
                         
         for tb in self.toggle_buttons:
             val = getattr(self.model, tb["attr"], False)

@@ -118,7 +118,11 @@ class serial:
             with self._lock:
                 # Read all available bytes into the buffer without blocking
                 if self.ser.in_waiting > 0:                                                     # type: ignore
-                    raw = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')   # type: ignore
+                    try:
+                        raw = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
+                    except Exception as e:
+                        ErrorPopupManager.report_error("Serial Read Error", f"[SerialDrive] Error reading position:\n{e}", e)
+                        return None
                     self._read_buffer += raw
 
                 # Safety: prevent unbounded buffer growth if newlines are ever missed
@@ -237,13 +241,19 @@ class serial:
         if not self._verify_serial(verbose=True):
             raise ValueError("[SerialDrive] Arduino not detected. Cannot enable system.")
         with self._lock:
-            self.ser.write("e".encode('utf-8'))
+            try:
+                self.ser.write("e".encode('utf-8'))
+            except Exception as e:
+                ErrorPopupManager.report_error('Serial Write', str(e))
 
     def disable(self):
         if not self._verify_serial(verbose=True):
             raise ValueError("[SerialDrive] Arduino not detected. Cannot disable system.")
         with self._lock:
-            self.ser.write("d".encode('utf-8'))
+            try:
+                self.ser.write("d".encode('utf-8'))
+            except Exception as e:
+                ErrorPopupManager.report_error('Serial Write', str(e))
 
     # Closes serial connection
     def close(self):

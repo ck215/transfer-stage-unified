@@ -78,3 +78,41 @@ def test_serial_read_position():
         
         pos = s.read_position()
         assert pos == (10, 20, 30)
+
+def test_serial_read_position_corrupt_data():
+    """Verify that read_position handles corrupt serial data and returns None."""
+    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+        mock_instance = get_mock_serial()
+        mock_serial.return_value = mock_instance
+        s = serial("COM1")
+        
+        # Incomplete data
+        mock_instance.in_waiting = 10
+        mock_instance.read.return_value = b"POS:10,20\n"
+        pos = s.read_position()
+        assert pos is None
+
+        # Garbled text
+        mock_instance.in_waiting = 15
+        mock_instance.read.return_value = b"GarbageData\n"
+        pos = s.read_position()
+        assert pos is None
+
+def test_serial_disconnect_mid_operation():
+    """Verify sudden SerialException doesn't bubble up unhandled."""
+    import serial as pyserial
+    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+        mock_instance = get_mock_serial()
+        mock_serial.return_value = mock_instance
+        s = serial("COM1")
+        
+        # Read operation failure
+        mock_instance.read.side_effect = pyserial.SerialException("Device unplugged")
+        mock_instance.in_waiting = 5
+        pos = s.read_position()
+        assert pos is None
+        
+        # Write operation failure
+        mock_instance.write.side_effect = pyserial.SerialException("Device unplugged")
+        # Ensure it doesn't crash
+        s.enable() 

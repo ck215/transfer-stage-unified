@@ -234,6 +234,9 @@ class BaseProbe:
                     lines = []
 
                 for line in lines:
+                    if not self.is_stepping or not self.auton_flag:
+                        print(f"[{self.__class__.__name__}] Script execution halted by user state override.")
+                        break
                     gcode_str = getattr(line, 'gcode_str', str(line))
                     params = getattr(line, 'params', {})
                     command = getattr(line, 'command', ('', 0))

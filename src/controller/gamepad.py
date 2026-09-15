@@ -469,8 +469,14 @@ class ControllerPoller:
         if not self.gamepad or not self.is_polling:
             return {}
             
-        raw = self.gamepad.get_mapped_state()
-        result = dict(raw)
+        try:
+            raw = self.gamepad.get_mapped_state()
+            result = dict(raw)
+        except pygame.error as e:
+            ErrorPopupManager.report_error("Gamepad Disconnected", f"Hardware error during poll:\n{e}")
+            self.gamepad = None
+            self.is_polling = False
+            return {}
         
         for k in ("x_axisStatus", "y_axisStatus"):
             if abs(result.get(k, 0.0)) < 0.12:
@@ -506,8 +512,12 @@ class ControllerPoller:
             return
         
         # Clear axis state caches so get_mapped_state reads neutral 0
-        for i in range(len(self.gamepad.prev_axis_states)):
-            self.gamepad.prev_axis_states[i] = 0.0
+        for k in self.gamepad.prev_axis_states.keys():
+            # Triggers (typically axes 2, 4, 5 depending on OS) idle at -1.0
+            if k in (2, 4, 5): 
+                self.gamepad.prev_axis_states[k] = -1.0
+            else:
+                self.gamepad.prev_axis_states[k] = 0.0
             
         if hasattr(self, '_latch_state'):
             self._latch_state.clear()
