@@ -303,7 +303,7 @@ class ControllerPoller:
     def get_physical_controllers(self):
         try:
             if pygame:
-                # pygame.init()
+                pass  # pygame.init() omitted — SDL video conflicts with Qt on macOS
         except Exception:
             pass
         try:

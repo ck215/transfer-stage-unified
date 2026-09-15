@@ -3,7 +3,6 @@ import time
 import copy
 import threading
 from controller.seiral import serial
-from controller.gamepad import ControllerPoller
 from error_routing import ErrorRouter as ErrorPopupManager
 
 def _num(value, default, *, minimum=None, integer=False):
@@ -33,7 +32,12 @@ class BaseProbe:
         self.controller_var = controller_id
         self.serial_port = port
         self.active_claims = active_claims or {}
-        self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
+        self.poller = None
+        try:
+            from controller.gamepad import ControllerPoller
+            self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
+        except Exception as e:
+            print(f"[{self.__class__.__name__}] Gamepad unavailable, running headless: {e}")
         
         # Step sizes
         self.x_step = "16"
@@ -156,7 +160,11 @@ class BaseProbe:
         if self.poller:
             self.poller.set_controller(controller_id)
         else:
-            self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
+            try:
+                from controller.gamepad import ControllerPoller
+                self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
+            except Exception as e:
+                print(f"[{self.__class__.__name__}] Gamepad still unavailable: {e}")
 
     def open_controller_log(self):
         print(f"[{self.__class__.__name__}] Controller log window requested")
