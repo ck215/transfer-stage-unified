@@ -21,6 +21,23 @@ def parse_controller_id(controllerID):
 import os
 os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
 
+# Fix macOS Qt cocoa platform plugin discovery.
+# When launched via os.execv (Homebrew Python), the venv's rpath context is
+# stripped and Qt cannot locate its platform plugins. Set the path explicitly
+# using PySide6's own location — must happen before any PySide6 import.
+try:
+    import importlib.util as _ilu
+    _ps6_spec = _ilu.find_spec("PySide6")
+    if _ps6_spec and _ps6_spec.submodule_search_locations:
+        _ps6_dir = list(_ps6_spec.submodule_search_locations)[0]
+        _qt_plugins = os.path.join(_ps6_dir, "Qt", "plugins")
+        if os.path.isdir(_qt_plugins):
+            os.environ.setdefault("QT_PLUGIN_PATH", _qt_plugins)
+            os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH",
+                                  os.path.join(_qt_plugins, "platforms"))
+except Exception:
+    pass
+
 def run_legacy_app():
     import tkinter as tk
     from tkinter import ttk, messagebox
@@ -1027,14 +1044,12 @@ import sys
 def launch_legacy():
     print("[Launcher] Starting Legacy Tkinter Dashboard...")
     sys.stdout.flush()
-    script_path = os.path.abspath(__file__)
-    os.execv(sys.executable, [sys.executable, script_path, "--legacy"])
+    run_legacy_app()
 
 def launch_pyside():
     print("[Launcher] Starting PySide6 Dashboard...")
     sys.stdout.flush()
-    script_path = os.path.abspath(__file__)
-    os.execv(sys.executable, [sys.executable, script_path, "--pyside"])
+    run_pyside_app()
 
 def main():
     if "--legacy" in sys.argv:
