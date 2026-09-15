@@ -1047,8 +1047,6 @@ def launch_legacy():
     run_legacy_app()
 
 def launch_pyside():
-    print("[Launcher] Starting PySide6 Dashboard...")
-    sys.stdout.flush()
     run_pyside_app()
 
 def main():
