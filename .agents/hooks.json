@@ -1,0 +1,11 @@
+{
+  "root-hygiene-guard": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "bash .agents/hooks/check_root_hygiene.sh",
+        "timeout": 15
+      }
+    ]
+  }
+}
