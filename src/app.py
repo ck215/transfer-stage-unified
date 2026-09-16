@@ -1041,9 +1041,38 @@ def run_pyside_app():
     return app.exec()
 
 
-import os
-import sys
-# Removed global tkinter import
+def run_web_app(port=8080, open_browser=True):
+    from model.probes import StepperProbe, DCProbe, ChuckPositioner
+    from model.temperature_system import TemperatureSystem
+    from model.rotator_system import RotatorSystem
+    from model.redpercent_system import RedPercentSystem
+    from model.system_manager import SystemManager
+    from view.web_view import WebDashboardWindow
+
+    manager = SystemManager()
+    active_claims = {}
+
+    # Register default hardware/simulation models
+    manager.register_model("Stepper Probe", StepperProbe(port="SIM", controller_id=None, active_claims=active_claims))
+    manager.register_model("DC Probe", DCProbe(port="SIM", controller_id=None, active_claims=active_claims))
+    manager.register_model("Chuck Positioner", ChuckPositioner(port="SIM", controller_id=None, active_claims=active_claims))
+    manager.register_model("Temperature Controller", TemperatureSystem(port="SIM"))
+    manager.register_model("SMC100 Rotator", RotatorSystem(default_port="SIM"))
+    red_model = RedPercentSystem()
+    red_model.available_probes = {k: v for k, v in manager.active_models.items() if hasattr(v, 'pos_x')}
+    red_model.set_stepper_model("Stepper Probe")
+    manager.register_model("Red Percent Window", red_model)
+
+    dashboard = WebDashboardWindow(manager, port=port, open_browser=open_browser)
+    dashboard.show()
+    print(f"[Launcher] Web View is live at http://127.0.0.1:{dashboard.server.port}")
+    try:
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("[Launcher] Shutting down Web View...")
+        dashboard.close()
 
 def launch_legacy():
     print("[Launcher] Starting Legacy Tkinter Dashboard...")
@@ -1053,17 +1082,105 @@ def launch_legacy():
 def launch_pyside():
     run_pyside_app()
 
-def main():
-    if "--legacy" in sys.argv:
-        run_legacy_app()
-        sys.exit(0)
-    elif "--pyside" in sys.argv:
-        run_pyside_app()
-        sys.exit(0)
+def launch_web():
+    print("[Launcher] Starting Cross-Platform Web Dashboard...")
+    sys.stdout.flush()
+    run_web_app()
 
-    # Temporarily default to PySide6 UI and disable prompt
-    launch_pyside()
-            
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Unified Stage Control Application",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Views:
+  web       Modern browser-based dashboard (cross-platform, recommended for macOS)
+  pyside    Native Qt desktop GUI (PySide6)
+  legacy    Original Tkinter interface
+
+Examples:
+  python3 src/app.py --view web
+  python3 src/app.py --pyside
+  python3 src/app.py --web --port 8080 --no-browser
+"""
+    )
+
+    # View selection
+    view_group = parser.add_mutually_exclusive_group()
+    view_group.add_argument(
+        "--view",
+        choices=["web", "pyside", "legacy"],
+        help="Select UI interface to launch (web, pyside, legacy)"
+    )
+    view_group.add_argument(
+        "--web",
+        action="store_const",
+        dest="view",
+        const="web",
+        help="Launch modern browser-based web dashboard"
+    )
+    view_group.add_argument(
+        "--pyside",
+        action="store_const",
+        dest="view",
+        const="pyside",
+        help="Launch native PySide6 desktop GUI"
+    )
+    view_group.add_argument(
+        "--legacy",
+        action="store_const",
+        dest="view",
+        const="legacy",
+        help="Launch legacy Tkinter GUI"
+    )
+
+    # Web view configuration options
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port for the web dashboard server (default: 8080)"
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not automatically open the web dashboard in a browser"
+    )
+
+    args, unknown = parser.parse_known_args()
+
+    selected_view = args.view
+
+    if selected_view is None:
+        # Default behavior:
+        # Default to web on macOS or if PySide6 is unavailable; otherwise default to pyside
+        if sys.platform == "darwin":
+            print("[Launcher] Detected macOS environment - defaulting to Web View.")
+            selected_view = "web"
+        else:
+            try:
+                from PySide6.QtWidgets import QApplication
+                selected_view = "pyside"
+            except ImportError:
+                print("[Launcher] PySide6 not available - falling back to Web View.")
+                selected_view = "web"
+
+    if selected_view == "legacy":
+        launch_legacy()
+    elif selected_view == "web":
+        print("[Launcher] Starting Cross-Platform Web Dashboard...")
+        sys.stdout.flush()
+        run_web_app(port=args.port, open_browser=not args.no_browser)
+    elif selected_view == "pyside":
+        # Pass remaining arguments to PySide if needed
+        launch_pyside()
+    else:
+        print(f"[Launcher] Unknown view: {selected_view}. Launching default.")
+        launch_web()
+
+
 if __name__ == "__main__":
     main()
+
 
