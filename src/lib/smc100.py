@@ -14,6 +14,7 @@ COMMAND_WAIT_TIME_SEC = 0.06
 # States from page 65 of the manual
 STATE_NOT_REFERENCED_FROM_RESET = '0A'
 STATE_NOT_REFERENCED_FROM_CONFIGURATION = '0C'
+STATE_NOT_REFERENCED = STATE_NOT_REFERENCED_FROM_RESET   # convenience alias
 STATE_READY_FROM_HOMING = '32'
 STATE_READY_FROM_MOVING = '33'
 
@@ -37,7 +38,8 @@ class SMC100DisabledStateException(Exception):
 
 class SMC100RS232CorruptionException(Exception):
   def __init__(self, c):
-    super(SMC100RS232CorruptionException, self).__init__('RS232 corruption detected: %s'%(hex(ord(c))))
+    val = c[0] if isinstance(c, bytes) else ord(c)
+    super(SMC100RS232CorruptionException, self).__init__('RS232 corruption detected: %s'%(hex(val)))
 
 class SMC100InvalidResponseException(Exception):
   def __init__(self, cmd, resp):

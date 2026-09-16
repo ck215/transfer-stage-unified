@@ -106,7 +106,6 @@ class ControllerLogWindow(QDialog):
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
         self.layout.addWidget(self.text_edit)
-        self.layout.addWidget(self.text_edit)
 
     def append_log(self, message):
         self.text_edit.append(message)
