@@ -101,8 +101,8 @@ class XboxGamepad(BaseGamepad):
             "y_axisStatus": self.prev_axis_states.get(y_axis, 0.0),
             "z_axisStatusL": self.prev_axis_states.get(z_left_axis, -1.0),
             "z_axisStatusR": self.prev_axis_states.get(z_right_axis, -1.0),
-            "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
-            "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
+            "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
+            "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
             "LBumper": self.prev_button_states.get(4, 0),
             "RBumper": self.prev_button_states.get(5, 0),
         }
@@ -122,8 +122,8 @@ class BluetoothXboxGamepad(XboxGamepad):
                 "y_axisStatus": self.prev_axis_states.get(3, 0.0),
                 "z_axisStatusL": self.prev_axis_states.get(5, -1.0),
                 "z_axisStatusR": self.prev_axis_states.get(4, -1.0),
-                "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
-                "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
+                "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
+                "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
                 "LBumper": self.prev_button_states.get(6, 0),
                 "RBumper": self.prev_button_states.get(7, 0),
             }
@@ -157,8 +157,8 @@ class LogitechF310Gamepad(BaseGamepad):
                 "y_axisStatus": self.prev_axis_states.get(3, self.prev_axis_states.get(1, 0.0)),
                 "z_axisStatusL": 1.0 if lt_pressed else -1.0,
                 "z_axisStatusR": 1.0 if rt_pressed else -1.0,
-                "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
-                "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
+                "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
+                "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
                 "LBumper": self.prev_button_states.get(4, 0),
                 "RBumper": self.prev_button_states.get(5, 0),
             }
@@ -178,8 +178,8 @@ class LogitechF310Gamepad(BaseGamepad):
                 "y_axisStatus": self.prev_axis_states.get(y_axis, 0.0),
                 "z_axisStatusL": self.prev_axis_states.get(z_left_axis, -1.0),
                 "z_axisStatusR": self.prev_axis_states.get(z_right_axis, -1.0),
-                "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
-                "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
+                "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
+                "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
                 "LBumper": self.prev_button_states.get(4, 0),
                 "RBumper": self.prev_button_states.get(5, 0),
             }
@@ -205,8 +205,8 @@ class T16000MGamepad(BaseGamepad):
             "y_axisStatus": self.prev_axis_states.get(1, 0.0),
             "z_axisStatusL": self.prev_axis_states.get(z_l, 0.0) * 2.0 - 1.0,  # Remap to [-1, 1] range
             "z_axisStatusR": self.prev_axis_states.get(z_r, 0.0) * 2.0 - 1.0,  # Remap to [-1, 1] range
-            "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
-            "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
+            "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
+            "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
             "LBumper": self.prev_button_states.get(4, self.prev_button_states.get(7, 0)),
             "RBumper": self.prev_button_states.get(5, self.prev_button_states.get(9, 0)),
         }

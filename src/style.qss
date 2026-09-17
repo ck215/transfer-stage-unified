@@ -3,7 +3,7 @@ QWidget {
     background-color: #1E1E1E;
     color: #E0E0E0;
     font-family: "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 14px;
+    font-size: 12px;
 }
 
 QDialog, QMainWindow {
@@ -17,7 +17,7 @@ QDockWidget {
 
 QDockWidget::title {
     background: #252526;
-    padding: 8px;
+    padding: 6px;
     border-bottom: 1px solid #333333;
 }
 
@@ -26,11 +26,11 @@ QLabel {
 }
 
 QLabel[class="header"] {
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 600;
     color: #4DAAF2;
-    margin-top: 12px;
-    margin-bottom: 8px;
+    margin-top: 10px;
+    margin-bottom: 6px;
 }
 
 QLabel#valueLabel {

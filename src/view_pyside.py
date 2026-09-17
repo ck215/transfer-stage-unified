@@ -167,10 +167,38 @@ class QtDynamicView(QWidget):
                         self.disable_timer.start(30000)
                         return
                     msg = f"5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}"
-                    print(f"[Timeout] {msg}")
-                    QtErrorPopupManager.report_info("Idle Timeout", msg)
-                    if hasattr(model_ref, 'disable'):
-                        model_ref.disable()
+                    print(f"[{model_ref.__class__.__name__} Timeout] {msg}")
+                    
+                    dialog = QMessageBox(self)
+                    dialog.setIcon(QMessageBox.Warning)
+                    dialog.setWindowTitle("Idle Timeout")
+                    
+                    countdown = 10
+                    dialog.setText(f"{msg}\n\nAuto-disabling in {countdown} seconds.")
+                    dialog.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+                    dialog.button(QMessageBox.Yes).setText("Keep Awake")
+                    dialog.button(QMessageBox.No).setText("Disable Now")
+                    dialog.setDefaultButton(QMessageBox.Yes)
+                    
+                    auto_timer = QTimer(dialog)
+                    def tick():
+                        nonlocal countdown
+                        countdown -= 1
+                        dialog.setText(f"{msg}\n\nAuto-disabling in {countdown} seconds.")
+                        if countdown <= 0:
+                            auto_timer.stop()
+                            dialog.done(QMessageBox.No)
+                    
+                    auto_timer.timeout.connect(tick)
+                    auto_timer.start(1000)
+                    
+                    result = dialog.exec()
+                    if result == QMessageBox.No:
+                        if hasattr(model_ref, 'disable'):
+                            model_ref.disable()
+                    else:
+                        _reset_disable_timer()
+                        
                 if getattr(model_ref, 'system_enabled', False):
                     if not hasattr(self, 'disable_timer') or self.disable_timer is None:
                         self.disable_timer = QTimer(self)
@@ -188,9 +216,18 @@ class QtDynamicView(QWidget):
             def _route_input():
                 current_manual = getattr(self.model, 'manual_flag', False)
                 if current_manual:
-                    controller_params = self.model.poller.get_mapped_state()
-                    if hasattr(self.model, 'send_manual_mode_command'):
-                        self.model.send_manual_mode_command(controller_params or {})
+                    # Block manual enable without a controller
+                    poller = getattr(self.model, 'poller', None)
+                    if not poller or not poller.gamepad:
+                        self.model.manual_flag = False
+                        current_manual = False
+                        print(f"[{self.model.__class__.__name__}] Manual mode blocked (No gamepad).")
+                        if hasattr(self.model, 'send_manual_mode_command'):
+                            self.model.send_manual_mode_command({})
+                    else:
+                        controller_params = self.model.poller.get_mapped_state()
+                        if hasattr(self.model, 'send_manual_mode_command'):
+                            self.model.send_manual_mode_command(controller_params or {})
                 elif getattr(self, '_prev_manual_flag', False):
                     if hasattr(self.model, 'send_manual_mode_command'):
                         self.model.send_manual_mode_command({})
@@ -261,8 +298,12 @@ class QtDynamicView(QWidget):
                         def make_editor(attr_name, widget, num):
                             def commit():
                                 text = widget.text()
-                                if num and (not text or not widget.hasAcceptableInput()):
-                                    widget.setText(str(getattr(self.model, attr_name, "")))
+                                if num:
+                                    try:
+                                        float(text)
+                                        setattr(self.model, attr_name, text)
+                                    except ValueError:
+                                        widget.setText(str(getattr(self.model, attr_name, "")))
                                 else:
                                     setattr(self.model, attr_name, text)
                             return commit
@@ -354,6 +395,7 @@ class QtDynamicView(QWidget):
                     row_layout.addWidget(refresh_btn)
 
                 elif el_type == "file_picker":
+                    continue
                     cmd_name = el.get("command")
                     btn = QPushButton(label_text)
                     btn.setObjectName("filePicker")
@@ -805,10 +847,10 @@ class RedPercentDynamicView(QtDynamicView):
         if file_path:
             try:
                 self.model.data_log.save_to_csv(file_path)
-                print(f"[color_test] Log saved to: {file_path}")
+                print(f"[{self.__class__.__name__}] Log saved to: {file_path}")
             except Exception as e:
                 from error_routing import ErrorRouter
-                msg = f"[color_test] Error saving file: {e}"
+                msg = f"[{self.__class__.__name__}] Error saving file: {e}"
                 print(msg)
                 ErrorRouter.report_error("File Save Error", msg, e)
 
@@ -822,6 +864,11 @@ class RedPercentDynamicView(QtDynamicView):
 
 class DeviceDock(QDockWidget):
     closed = Signal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+
     def closeEvent(self, event):
         self.closed.emit()
         super().closeEvent(event)
@@ -898,7 +945,23 @@ class DashboardWindow(QMainWindow):
             
     def close_device_view(self, device_name):
         if device_name in self.active_docks:
-            self.active_docks[device_name].hide()
+            dock = self.active_docks.pop(device_name)
+            dock.close()
+            
+            # Destroy the model completely
+            model = self.system_manager.get_model(device_name)
+            if model:
+                if hasattr(model, 'disable'):
+                    model.disable()
+                if hasattr(model, 'poller') and model.poller:
+                    model.poller.stop_polling()
+                    model.poller.close()
+                if hasattr(model, 'disconnect'):
+                    model.disconnect()
+                
+                if device_name in self.system_manager.active_models:
+                    del self.system_manager.active_models[device_name]
+                    print(f"[DashboardWindow] Unregistered and destroyed model: {device_name}")
 
     def open_device_view(self, device_name):
         if device_name in self.active_docks:
@@ -983,17 +1046,18 @@ class DashboardWindow(QMainWindow):
         self.active_docks[device_name] = dock
         
     def on_dock_closed(self, device_name):
+        # Synchronize sidebar checkbox
+        self.device_list.blockSignals(True)
+        for i in range(self.device_list.count()):
+            item = self.device_list.item(i)
+            if item.text() == device_name:
+                item.setCheckState(Qt.Unchecked)
+                break
+        self.device_list.blockSignals(False)
+        
+        # If the dock wasn't already popped by the checkbox, close it and clean up the model
         if device_name in self.active_docks:
-            # Do not delete the dock; keep it cached so it can be restored from the sidebar
-            
-            # Synchronize sidebar checkbox
-            self.device_list.blockSignals(True)
-            for i in range(self.device_list.count()):
-                item = self.device_list.item(i)
-                if item.text() == device_name:
-                    item.setCheckState(Qt.Unchecked)
-                    break
-            self.device_list.blockSignals(False)
+            self.close_device_view(device_name)
 
     def closeEvent(self, event):
         # Stop all dynamic view timers and pollers
