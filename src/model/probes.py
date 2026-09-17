@@ -119,10 +119,13 @@ class BaseProbe:
                 {
                     "title": "System Control",
                     "elements": [
-                        {"type": "toggle", "model_attr": "auton_flag",
+                        {"type": "toggle", "text": "System Power:", "model_attr": "system_enabled",
+                         "true_text": "SYSTEM ENABLED (Click to Disable)",
+                         "false_text": "SYSTEM DISABLED (Click to Enable)", "command": "toggle_enable"},
+                        {"type": "toggle", "text": "Autonomous:", "model_attr": "auton_flag",
                          "true_text": "AUTONOMOUS MODE (Click to Stop)",
                          "false_text": "Enter Autonomous Mode", "command": "toggle_auton"},
-                        {"type": "toggle", "model_attr": "manual_flag",
+                        {"type": "toggle", "text": "Manual / Gamepad:", "model_attr": "manual_flag",
                          "true_text": "MANUAL MODE (Click to Stop)",
                          "false_text": "Enter Manual Mode", "command": "toggle_manual"},
                         {"type": "button", "text": "Start Stepping", "command": "macro_start_auton", "bg": "darkgreen", "fg": "white"},

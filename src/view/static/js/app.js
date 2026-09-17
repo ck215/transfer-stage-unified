@@ -51,7 +51,6 @@ class TransferStageApp {
       connectionBeacon: document.getElementById('system-status-beacon'),
       connectionStateText: document.getElementById('connection-state-text'),
       syncStatusIndicator: document.getElementById('sync-status-indicator'),
-      activeProbesCount: document.getElementById('active-probes-count'),
       pollingFrequencyLabel: document.getElementById('polling-frequency-label'),
       pollIntervalSelect: document.getElementById('poll-interval-select'),
       btnOpenSettings: document.getElementById('btn-open-settings'),
@@ -394,7 +393,6 @@ class TransferStageApp {
     const count = devNames.length;
     if (this.dom.tabAllCount) this.dom.tabAllCount.innerText = count;
     if (this.dom.viewDeviceCount) this.dom.viewDeviceCount.innerText = `${count} devices active`;
-    if (this.dom.activeProbesCount) this.dom.activeProbesCount.innerText = `${count} / ${count}`;
   }
 
   renderSidebar() {
