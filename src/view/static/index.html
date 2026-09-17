@@ -40,12 +40,7 @@
       <div class="header-right">
 
 
-        <button id="btn-toggle-plotter" class="btn btn-header" title="Open Red Detection Plotter">
-          <svg class="icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-          </svg>
-          <span>Red % Plotter</span>
-        </button>
+
 
         <button id="btn-toggle-logs" class="btn btn-header" title="Open Hardware Controller Log Window">
           <svg class="icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -144,8 +139,8 @@
   </div>
 
   <!-- Modal / Floating Panel: Controller Hardware Log -->
-  <div id="controller-log-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
-    <div class="modal-window log-modal-window">
+  <div id="controller-log-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" style="pointer-events: none; background: transparent;">
+    <div class="modal-window log-modal-window" style="pointer-events: auto; position: absolute; right: 20px; top: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
       <div class="modal-header">
         <div class="modal-title-group">
           <svg class="icon icon-blue" viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none">
@@ -169,91 +164,62 @@
         <div id="controller-log-console" class="log-console" tabIndex="0"></div>
       </div>
       <div class="modal-footer log-modal-footer">
-        <form id="form-log-command" class="log-command-form">
-          <span class="log-prompt-prefix">&gt;</span>
-          <input type="text" id="input-log-cmd" class="log-command-input" placeholder="Execute serial direct command or system diagnostic query (e.g. ? or STATUS)..." autocomplete="off">
-          <button type="submit" class="btn btn-primary btn-sm">Send</button>
-        </form>
       </div>
     </div>
   </div>
 
-  <!-- Modal / Floating Panel: Red Percent Plotter & Focus Area -->
-  <div id="redpercent-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+  <!-- Modal / Floating Panel: Plot Data UI -->
+  <div id="plot-dialog-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
     <div class="modal-window plotter-modal-window">
       <div class="modal-header">
-        <div class="modal-title-group">
-          <svg class="icon icon-red" viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-          </svg>
-          <h3 class="modal-title">Optical Focus & Red Percent Real-Time Plotter</h3>
-          <span class="badge badge-instrument">VISION ANALYSIS</span>
-        </div>
-        <div class="modal-actions">
-          <button id="btn-close-plotter" class="btn btn-icon btn-ghost" aria-label="Close plotter modal">✕</button>
-        </div>
+        <h3 class="modal-title">Data Plotter</h3>
+        <button id="btn-close-plot-dialog" class="btn btn-icon btn-ghost" aria-label="Close modal">✕</button>
       </div>
-      <div class="modal-body plotter-modal-body">
-        <div class="plotter-grid">
-          <!-- Chart Visualizer Column -->
-          <div class="plotter-chart-panel">
-            <div class="panel-subhead">
-              <span class="subhead-title">Transient Red Ratio Plot (% vs Time)</span>
-              <div class="chart-legend">
-                <span class="legend-item"><span class="legend-color legend-red"></span> Current Red %</span>
-                <span class="legend-item"><span class="legend-color legend-blue"></span> Red Change %</span>
-              </div>
-            </div>
-            <div class="canvas-wrapper">
-              <canvas id="redpercent-canvas" width="640" height="280"></canvas>
-            </div>
-            <div class="plotter-metrics-bar">
-              <div class="metric-block">
-                <span class="metric-label">CURRENT RED:</span>
-                <span class="metric-value text-red" id="plotter-current-red">0.00%</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">BASELINE RED:</span>
-                <span class="metric-value" id="plotter-baseline-red">0.00%</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">DELTA (Δ):</span>
-                <span class="metric-value text-blue" id="plotter-delta-red">0.00%</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">PEAK:</span>
-                <span class="metric-value" id="plotter-peak-red">0.00%</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Camera ROI / Focus Area Panel -->
-          <div class="plotter-focus-panel">
-            <div class="panel-subhead">
-              <span class="subhead-title">Microscope Focus Area & ROI</span>
-              <span class="badge badge-subtle" id="roi-status-badge">ToupCam 20X</span>
-            </div>
-            <div class="roi-viewfinder-container">
-              <canvas id="focus-roi-canvas" width="280" height="200"></canvas>
-              <div class="viewfinder-crosshair"></div>
-              <div class="roi-bounds-overlay">
-                <span class="roi-label">ROI: Center 80%</span>
-              </div>
-            </div>
-            <div class="plotter-controls-stack">
-              <button id="btn-plotter-start" class="btn btn-success btn-full">Start Monitoring</button>
-              <button id="btn-plotter-reset" class="btn btn-secondary btn-full">Reset Baseline</button>
-              <button id="btn-plotter-stop" class="btn btn-danger btn-full">Halt Analysis</button>
-            </div>
-          </div>
+      <div class="modal-body">
+        <div class="form-group" style="margin-bottom: 12px;">
+          <input type="file" id="plot-csv-upload" accept=".csv">
+        </div>
+        <div class="form-group" style="margin-bottom: 12px;">
+          <select id="plot-type-select" class="schema-select">
+            <option value="0D">0D</option>
+            <option value="1D">1D</option>
+            <option value="2D">2D</option>
+            <option value="3D">3D</option>
+          </select>
+        </div>
+        <button id="btn-generate-plot" class="btn btn-primary">Generate Plot</button>
+        <div style="margin-top: 16px;">
+          <img id="plot-output-img" style="max-width: 100%; max-height: 400px; display: block;">
         </div>
       </div>
     </div>
   </div>
 
   <!-- Modal / Dialog: Script File Picker -->
+
+  <!-- Fullscreen ROI Modal -->
+  <div id="focus-roi-modal" class="modal-overlay hidden" style="align-items: center; justify-content: center; background: rgba(0,0,0,0.85);" role="dialog" aria-modal="true">
+    <div class="modal-window" style="width: auto; max-width: 90vw; border: 1px solid var(--border-dark); background: var(--bg-dark);">
+      <div class="modal-header">
+        <h3 class="modal-title">Select Focus Area</h3>
+        <button id="btn-close-roi-modal" class="btn btn-icon btn-ghost" onclick="document.getElementById('focus-roi-modal').classList.add('hidden')">✕</button>
+      </div>
+      <div class="modal-body" style="padding: 1rem; display: flex; justify-content: center;">
+        <div class="roi-viewfinder-container" style="position: relative; cursor: crosshair;">
+          <canvas id="focus-roi-canvas" width="800" height="600" style="border: 1px solid var(--border-subtle); display: block;"></canvas>
+          <div class="viewfinder-crosshair"></div>
+          <div class="roi-bounds-overlay">
+            <span class="roi-label" id="roi-status-badge">ROI: Center 80%</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" style="justify-content: flex-end;">
+        <p style="font-size: 11px; color: var(--text-muted); margin-right: auto; padding-left: 10px;">Drag to draw a region. Click confirm to lock focus area.</p>
+        <button id="btn-confirm-roi" class="btn btn-primary" onclick="document.getElementById('focus-roi-modal').classList.add('hidden')">Confirm & Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="file-picker-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
     <div class="modal-window file-modal-window">
       <div class="modal-header">

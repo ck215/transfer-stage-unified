@@ -38,7 +38,7 @@ class serial:
         self._read_buffer = ""
         self.device_type = None
 
-        if self.SERIAL_PORT == 'SIM':
+        if self.SERIAL_PORT in ('SIM', 'None', None):
             msg = "[SerialDrive] Running in SIMULATOR mode. No serial connection will be established."
             print(msg)
             ErrorPopupManager.report_info("Simulator Mode", msg)

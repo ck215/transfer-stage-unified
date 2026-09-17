@@ -7,8 +7,9 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 try:
     import pygame
-    if pygame and not pygame.get_init():
-        pygame.init()
+    if pygame:
+        if not pygame.joystick.get_init():
+            pygame.joystick.init()
 except ImportError:
     pygame = None
 import time
@@ -308,7 +309,7 @@ class ControllerPoller:
     def get_physical_controllers(self):
         try:
             if pygame:
-                pygame.init()
+                pygame.joystick.init()
         except Exception:
             pass
         try:
@@ -398,7 +399,8 @@ class ControllerPoller:
 
         try:
             if pygame:
-                pygame.init()
+                # Initialize the joystick module
+                pygame.joystick.init()
                 # joystick.init() may raise SDL video errors under SDL_VIDEODRIVER=dummy;
                 # these are expected in headless mode and are not real failures.
                 try:

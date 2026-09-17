@@ -12,7 +12,7 @@ class TransferStageApp {
 
     // Initialization
     this.pollTimer = null;
-    this.pollIntervalMs = 50;
+    this.pollIntervalMs = 20;
     this.isPolling = false;
     this.logs = [];
     this.autoScrollLogs = true;
@@ -22,12 +22,12 @@ class TransferStageApp {
     this.scannedPorts = ['SIM'];
     this.scannedControllers = ['None'];
     this.setupDeviceConfigs = [
-      { id: 'Stepper Probe', name: 'Stepper Probe', desc: 'X/Y/Z Stepper Stage with Joystick', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: false },
-      { id: 'DC Probe', name: 'DC Probe', desc: 'X/Y/Z DC Motor Probe Positioner', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: false },
-      { id: 'Chuck Positioner', name: 'Chuck Positioner', desc: 'Motorized Substrate Chuck Stage', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: false },
-      { id: 'Temperature Controller', name: 'Temperature Controller', desc: 'Thermal Stage Sensor & Heater', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: false },
-      { id: 'SMC100 Rotator', name: 'SMC100 Rotator', desc: 'Newport Precision Single-Axis Stage', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: false },
-      { id: 'Red Percent Window', name: 'Red Percent Window', desc: 'ToupCam Optical Flake Monitor', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: false }
+      { id: 'Stepper Probe', name: 'Stepper Probe', desc: 'X/Y/Z Stepper Stage with Joystick', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: true },
+      { id: 'DC Probe', name: 'DC Probe', desc: 'X/Y/Z DC Motor Probe Positioner', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: true },
+      { id: 'Chuck Positioner', name: 'Chuck Positioner', desc: 'Motorized Substrate Chuck Stage', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: true },
+      { id: 'Temperature Controller', name: 'Temperature Controller', desc: 'Thermal Stage Sensor & Heater', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: true },
+      { id: 'SMC100 Rotator', name: 'SMC100 Rotator', desc: 'Newport Precision Single-Axis Stage', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: true },
+      { id: 'Red Percent Window', name: 'Red Percent Window', desc: 'ToupCam Optical Flake Monitor', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: true }
     ];
 
     // Optical Plotter state
@@ -39,6 +39,15 @@ class TransferStageApp {
     this.maxPlotPoints = 60;
     this.baselineRed = 0.0;
     this.peakRed = 0.0;
+
+    // Camera Focus ROI state
+    this.focusRoi = { active: false, x: 0, y: 0, w: 0, h: 0 };
+    this.hostOriginalWidth = 1920;
+    this.hostOriginalHeight = 1080;
+    this.hostMonitorLeft = 0;
+    this.hostMonitorTop = 0;
+    this.lastFocusImage = null;
+    this.focusStreamInterval = null;
 
     // Cache DOM Elements
     this.dom = {
@@ -86,6 +95,8 @@ class TransferStageApp {
       btnPlotterStart: document.getElementById('btn-plotter-start'),
       btnPlotterReset: document.getElementById('btn-plotter-reset'),
       btnPlotterStop: document.getElementById('btn-plotter-stop'),
+      focusRoiCanvas: document.getElementById('focus-roi-canvas'),
+      roiStatusBadge: document.getElementById('roi-status-badge'),
 
       // File Picker Modal
       fileModal: document.getElementById('file-picker-modal'),
@@ -227,13 +238,13 @@ class TransferStageApp {
       this.dom.btnTogglePlotter.addEventListener('click', () => {
         this.toggleModal(this.dom.plotterModal, true);
         this.renderPlotterCanvas();
-        this.startFocusStream();
+        
       });
     }
     if (this.dom.btnClosePlotter) {
       this.dom.btnClosePlotter.addEventListener('click', () => {
         this.toggleModal(this.dom.plotterModal, false);
-        this.stopFocusStream();
+        
       });
     }
     if (this.dom.btnPlotterReset) {
@@ -403,10 +414,19 @@ class TransferStageApp {
     if (!this.dom.sidebarNav) return;
     this.dom.sidebarNav.innerHTML = '';
 
-    const devNames = Object.keys(this.devices);
-    for (const devName of devNames) {
+    const activeDevs = [];
+    const disabledDevs = [];
+    Object.keys(this.devices).forEach(name => {
+      if (this.devices[name]._disabled) disabledDevs.push(name);
+      else activeDevs.push(name);
+    });
+    
+    const sortedDevNames = [...activeDevs, ...disabledDevs];
+    
+    for (const devName of sortedDevNames) {
+      const isDisabled = this.devices[devName]._disabled;
       const li = document.createElement('li');
-      li.className = 'nav-item';
+      li.className = 'nav-item' + (isDisabled ? ' disabled-tab' : '');
 
       const button = document.createElement('button');
       const isSelected = this.activeFilter === devName;
@@ -529,6 +549,8 @@ class TransferStageApp {
         `;
       }
 
+      let focusPanelHtml = '';
+
       card.innerHTML = `
         <div class="card-header">
           <div class="card-title-group">
@@ -538,6 +560,7 @@ class TransferStageApp {
         </div>
         <div class="card-body">
           ${sectionsHtml}
+          ${focusPanelHtml}
         </div>
       `;
 
@@ -683,6 +706,48 @@ class TransferStageApp {
         }
       });
     });
+
+    // Camera Focus ROI / Red Percent panel binding
+    const focusCanvas = document.getElementById('focus-roi-canvas');
+    if (focusCanvas) {
+      this.dom.focusRoiCanvas = focusCanvas;
+      this.dom.roiStatusBadge = document.getElementById('roi-status-badge');
+      this.initFocusRoiEvents();
+      
+    }
+
+    const btnPlotterStart = document.getElementById('btn-plotter-start');
+    if (btnPlotterStart && !btnPlotterStart.dataset.bound) {
+      btnPlotterStart.dataset.bound = 'true';
+      this.dom.btnPlotterStart = btnPlotterStart;
+      btnPlotterStart.addEventListener('click', () => {
+        this.dispatchCommand('Red Percent Window', 'start_monitoring');
+      });
+    }
+
+    const btnPlotterReset = document.getElementById('btn-plotter-reset');
+    if (btnPlotterReset && !btnPlotterReset.dataset.bound) {
+      btnPlotterReset.dataset.bound = 'true';
+      this.dom.btnPlotterReset = btnPlotterReset;
+      btnPlotterReset.addEventListener('click', () => {
+        const curr = this.plotterData.currentRed.slice(-1)[0] || 0;
+        this.baselineRed = curr;
+        this.plotterData.deltaRed = [];
+        if (this.dom.plotterBaselineRed) {
+          this.dom.plotterBaselineRed.innerText = curr.toFixed(2) + '%';
+        }
+        this.showToast(`Baseline optical red reset to ${curr.toFixed(2)}%`, 'info');
+      });
+    }
+
+    const btnPlotterStop = document.getElementById('btn-plotter-stop');
+    if (btnPlotterStop && !btnPlotterStop.dataset.bound) {
+      btnPlotterStop.dataset.bound = 'true';
+      this.dom.btnPlotterStop = btnPlotterStop;
+      btnPlotterStop.addEventListener('click', () => {
+        this.dispatchCommand('Red Percent Window', 'stop_monitoring');
+      });
+    }
   }
 
   // =========================================================================
@@ -808,10 +873,10 @@ class TransferStageApp {
             } else {
               // System is enabled or doesn't have the flag
               if (autonOn) {
-                if (isStop || isPowerDown || isAutonToggle) ctrl.disabled = false;
+                if (isStop || isPowerDown || isAutonToggle || isManualToggle) ctrl.disabled = false;
                 else ctrl.disabled = true;
               } else if (manualOn) {
-                if (isStop || isPowerDown || isManualToggle) ctrl.disabled = false;
+                if (isStop || isPowerDown || isManualToggle || isAutonToggle) ctrl.disabled = false;
                 else ctrl.disabled = true;
               } else {
                 // Both off, normal operation
@@ -970,6 +1035,52 @@ class TransferStageApp {
   // Command & Attribute Dispatch API
   // =========================================================================
   async dispatchCommand(deviceName, commandName, args = [], triggerBtn = null) {
+    if (commandName === 'plot_data_ui') {
+      const modal = document.getElementById('plot-dialog-modal');
+      this.toggleModal(modal, true);
+      
+      const btnClose = document.getElementById('btn-close-plot-dialog');
+      if (btnClose) btnClose.onclick = () => this.toggleModal(modal, false);
+
+      const btnGen = document.getElementById('btn-generate-plot');
+      if (btnGen) {
+        btnGen.onclick = () => {
+          const fileInput = document.getElementById('plot-csv-upload');
+          const typeSelect = document.getElementById('plot-type-select');
+          if (!fileInput.files.length) {
+            this.showToast('Please upload a CSV file', 'warning');
+            return;
+          }
+          
+          const file = fileInput.files[0];
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+            const text = e.target.result;
+            try {
+              const res = await fetch('/api/plot', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  csv_data: text,
+                  plot_type: typeSelect.value
+                })
+              });
+              const data = await res.json();
+              if (data.image_base64) {
+                document.getElementById('plot-output-img').src = 'data:image/png;base64,' + data.image_base64;
+              } else {
+                this.showToast('Failed to generate plot', 'error');
+              }
+            } catch (err) {
+              this.showToast('Error generating plot', 'error');
+            }
+          };
+          reader.readAsText(file);
+        };
+      }
+      return;
+    }
+
     if (triggerBtn) {
       triggerBtn.classList.add('pending');
       triggerBtn.disabled = true;
@@ -1171,8 +1282,61 @@ class TransferStageApp {
     }
   }
 
+  initFocusRoiEvents() {
+    const canvas = this.dom.focusRoiCanvas || document.getElementById('focus-roi-canvas');
+    if (!canvas || canvas.dataset.bound) return;
+    canvas.dataset.bound = 'true';
+    this.dom.focusRoiCanvas = canvas;
+    this.dom.roiStatusBadge = document.getElementById('roi-status-badge');
+
+    let isSelecting = false;
+    let startX = 0;
+    let startY = 0;
+
+    canvas.addEventListener('mousedown', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const scaleCanvasX = canvas.width / rect.width;
+      const scaleCanvasY = canvas.height / rect.height;
+      startX = (e.clientX - rect.left) * scaleCanvasX;
+      startY = (e.clientY - rect.top) * scaleCanvasY;
+      isSelecting = true;
+      this.focusRoi.active = true;
+      this.focusRoi.x = startX;
+      this.focusRoi.y = startY;
+      this.focusRoi.w = 0;
+      this.focusRoi.h = 0;
+      this.renderFocusRoiCanvas();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isSelecting || !this.dom.focusRoiCanvas) return;
+      const rect = this.dom.focusRoiCanvas.getBoundingClientRect();
+      const scaleCanvasX = this.dom.focusRoiCanvas.width / rect.width;
+      const scaleCanvasY = this.dom.focusRoiCanvas.height / rect.height;
+      const curX = Math.max(0, Math.min(this.dom.focusRoiCanvas.width, (e.clientX - rect.left) * scaleCanvasX));
+      const curY = Math.max(0, Math.min(this.dom.focusRoiCanvas.height, (e.clientY - rect.top) * scaleCanvasY));
+
+      this.focusRoi.x = Math.min(startX, curX);
+      this.focusRoi.y = Math.min(startY, curY);
+      this.focusRoi.w = Math.abs(curX - startX);
+      this.focusRoi.h = Math.abs(curY - startY);
+      this.renderFocusRoiCanvas();
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (!isSelecting) return;
+      isSelecting = false;
+      if (this.focusRoi.w > 5 && this.focusRoi.h > 5) {
+        this.commitFocusRoi();
+      } else {
+        this.focusRoi.active = false;
+        this.renderFocusRoiCanvas();
+      }
+    });
+  }
+
   renderFocusRoiCanvas() {
-    const canvas = this.dom.focusRoiCanvas;
+    const canvas = this.dom.focusRoiCanvas || document.getElementById('focus-roi-canvas');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     
@@ -1191,7 +1355,7 @@ class TransferStageApp {
     ctx.drawImage(this.lastFocusImage, 0, 0, canvas.width, canvas.height);
 
     // Draw the ROI box if active
-    if (this.focusRoi.active) {
+    if (this.focusRoi && this.focusRoi.active) {
         ctx.strokeStyle = '#ef4444'; // Red-500
         ctx.lineWidth = 2;
         ctx.setLineDash([4, 4]);
@@ -1208,15 +1372,15 @@ class TransferStageApp {
   }
 
   commitFocusRoi() {
-    const canvas = this.dom.focusRoiCanvas;
+    const canvas = this.dom.focusRoiCanvas || document.getElementById('focus-roi-canvas');
     if (!canvas) return;
     
     // Calculate scaling factors
-    const scaleX = this.hostOriginalWidth / canvas.width;
-    const scaleY = this.hostOriginalHeight / canvas.height;
+    const scaleX = (this.hostOriginalWidth || 1920) / canvas.width;
+    const scaleY = (this.hostOriginalHeight || 1080) / canvas.height;
     
-    const hostX = Math.round(this.focusRoi.x * scaleX) + this.hostMonitorLeft;
-    const hostY = Math.round(this.focusRoi.y * scaleY) + this.hostMonitorTop;
+    const hostX = Math.round(this.focusRoi.x * scaleX) + (this.hostMonitorLeft || 0);
+    const hostY = Math.round(this.focusRoi.y * scaleY) + (this.hostMonitorTop || 0);
     const hostW = Math.round(this.focusRoi.w * scaleX);
     const hostH = Math.round(this.focusRoi.h * scaleY);
     
@@ -1229,15 +1393,7 @@ class TransferStageApp {
     this.showToast(`Boundaries locked at [${hostX}, ${hostY}] (${hostW}x${hostH})`, 'success');
     
     // Dispatch to Python backend!
-    fetch('/api/command', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            device: 'Red Percent Window',
-            command: 'set_focus_area',
-            args: [hostX, hostY, hostW, hostH]
-        })
-    }).catch(e => console.error("Failed to commit ROI:", e));
+    this.dispatchCommand('Red Percent Window', 'set_focus_area', [hostX, hostY, hostW, hostH]);
   }
 
   renderPlotterCanvas() {
@@ -1351,9 +1507,24 @@ class TransferStageApp {
     if (this.dom.setupScanBtnText) this.dom.setupScanBtnText.innerText = 'Scanning...';
     if (this.dom.btnSetupScan) this.dom.btnSetupScan.disabled = true;
     if (this.dom.setupScanIndicator) {
-      this.dom.setupScanIndicator.innerText = 'Scanning Interfaces...';
+      this.dom.setupScanIndicator.innerHTML = '<div style="width: 100%; background: #333; height: 10px; border-radius: 5px; margin-top: 5px; overflow: hidden;"><div id="scan-progress-bar" style="width: 0%; height: 100%; background: var(--primary); transition: width 0.2s;"></div></div><div style="font-size: 11px; margin-top: 4px;">Scanning Interfaces...</div>';
       this.dom.setupScanIndicator.className = 'scan-indicator-badge scanning';
     }
+    
+    let progress = 0;
+    const progressBarInterval = setInterval(() => {
+        progress += Math.random() * 15;
+        if (progress > 90) progress = 90;
+        const bar = document.getElementById('scan-progress-bar');
+        if (bar) bar.style.width = `${progress}%`;
+    }, 100);
+
+    let progressDots = 0;
+    const progressInterval = setInterval(() => {
+      progressDots = (progressDots + 1) % 4;
+      const dots = '.'.repeat(progressDots);
+      if (this.dom.setupScanBtnText) this.dom.setupScanBtnText.innerText = `Scanning${dots}`;
+    }, 500);
 
     try {
       const res = await fetch('/api/setup/scan');
@@ -1370,8 +1541,8 @@ class TransferStageApp {
         this.scannedControllers.unshift('None');
       }
 
-      const portCount = this.scannedPorts.length;
-      const ctrlCount = this.scannedControllers.filter(c => c !== 'None').length;
+      const portCount = this.scannedPorts.filter(p => p !== 'SIM').length;
+      const ctrlCount = this.scannedControllers.filter(c => c !== 'None' && c !== 'Virtual Controller').length;
 
       if (this.dom.setupScanIndicator) {
         this.dom.setupScanIndicator.innerText = 'Scan Complete';
@@ -1394,6 +1565,7 @@ class TransferStageApp {
       }
       this.showToast(`Hardware scan error: ${err.message}`, 'error');
     } finally {
+      clearInterval(progressInterval); clearInterval(progressBarInterval);
       if (this.dom.setupScanSpinner) this.dom.setupScanSpinner.classList.add('hidden');
       if (this.dom.setupScanBtnText) this.dom.setupScanBtnText.innerText = 'Rescan Hardware';
       if (this.dom.btnSetupScan) this.dom.btnSetupScan.disabled = false;
@@ -1528,11 +1700,22 @@ class TransferStageApp {
   }
 
   setAllSetupToDisabled() {
+    const btn = this.dom.btnSetupDisableAll;
+    const currentlyDisabling = btn.innerText.trim() === 'Disable All';
+    
     for (const dev of this.setupDeviceConfigs) {
-      dev.enabled = false;
+      dev.enabled = !currentlyDisabling;
     }
+    
+    if (currentlyDisabling) {
+      btn.innerText = 'Enable All';
+      this.showToast('All devices disabled.', 'info');
+    } else {
+      btn.innerText = 'Disable All';
+      this.showToast('All devices enabled.', 'info');
+    }
+    
     this.renderSetupDeviceRows();
-    this.showToast('All devices disabled.', 'info');
   }
 
   async initializeHardwareSetup() {

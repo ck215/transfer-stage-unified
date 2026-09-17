@@ -66,24 +66,13 @@ class WebModelAdapter:
 
         controllers = ["None"]
         try:
-            import os
-            os.environ["SDL_VIDEODRIVER"] = "dummy"
-            os.environ["SDL_AUDIODRIVER"] = "dummy"
-            os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
-            import pygame
-            if not pygame.get_init():
-                pygame.init()
-            if not pygame.joystick.get_init():
-                pygame.joystick.init()
-            pygame.event.pump()
-            count = pygame.joystick.get_count()
-            for i in range(count):
-                try:
-                    js = pygame.joystick.Joystick(i)
-                    js.init()
-                    controllers.append(f"ID {i}: {js.get_name()}")
-                except Exception:
-                    pass
+            import subprocess
+            code = "import os; os.environ['SDL_VIDEODRIVER']='dummy'; os.environ['PYGAME_HIDE_SUPPORT_PROMPT']='1'; import pygame; pygame.joystick.init(); count = pygame.joystick.get_count(); print(','.join([pygame.joystick.Joystick(i).get_name() for i in range(count)]))"
+            res = subprocess.run(["python3", "-c", code], capture_output=True, text=True, timeout=3)
+            if res.returncode == 0 and res.stdout.strip():
+                names = res.stdout.strip().split(',')
+                for i, name in enumerate(names):
+                    controllers.append(f"ID {i}: {name}")
         except Exception:
             pass
 
@@ -161,7 +150,7 @@ class WebModelAdapter:
                 port = "SIM"
                 c["port"] = "SIM"
 
-            if dev != "Red Percent Window" and port != "SIM":
+            if dev != "Red Percent Window" and port not in ("SIM", "None"):
                 if port in assigned_ports:
                     return {
                         "status": "error",
@@ -212,15 +201,15 @@ class WebModelAdapter:
                     # Generic mock model or custom device if provided in config
                     pass
                 
-                # Apply disabled state directly if user opted out
+                # Apply disabled state so all devices initialize as connected but disabled
                 model = new_manager.get_model(dev)
                 if model:
+                    model._disabled_in_setup = not is_enabled
                     if hasattr(model, 'system_enabled'):
-                        model.system_enabled = is_enabled
-                    elif not is_enabled:
+                        model.system_enabled = False
+                    elif hasattr(model, 'disable'):
                         # Fallback to general disable
-                        if hasattr(model, 'disable'):
-                            model.disable()
+                        model.disable()
 
             except Exception as e:
                 return {
@@ -279,7 +268,10 @@ class WebModelAdapter:
             if self.system_manager:
                 models = getattr(self.system_manager, "active_models", {})
                 for name, model in models.items():
-                    devices[name] = getattr(model, "ui_schema", {"sections": []})
+                    schema = getattr(model, "ui_schema", {"sections": []}).copy()
+                    if getattr(model, "_disabled_in_setup", False):
+                        schema["_disabled"] = True
+                    devices[name] = schema
         return devices
 
     def _determine_connection_status(self, model) -> str:

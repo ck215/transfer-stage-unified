@@ -122,6 +122,45 @@ class RedPercentSystem:
         return (red_pixels / total_pixels) * 100
 
     @property
+    def sync_x(self):
+        return 'X' in self.sync_dimensions
+
+    @sync_x.setter
+    def sync_x(self, value):
+        if value and 'X' not in self.sync_dimensions:
+            self.sync_dimensions.append('X')
+        elif not value and 'X' in self.sync_dimensions:
+            self.sync_dimensions.remove('X')
+
+    @property
+    def sync_y(self):
+        return 'Y' in self.sync_dimensions
+
+    @sync_y.setter
+    def sync_y(self, value):
+        if value and 'Y' not in self.sync_dimensions:
+            self.sync_dimensions.append('Y')
+        elif not value and 'Y' in self.sync_dimensions:
+            self.sync_dimensions.remove('Y')
+
+    @property
+    def sync_z(self):
+        return 'Z' in self.sync_dimensions
+
+    @sync_z.setter
+    def sync_z(self, value):
+        if value and 'Z' not in self.sync_dimensions:
+            self.sync_dimensions.append('Z')
+        elif not value and 'Z' in self.sync_dimensions:
+            self.sync_dimensions.remove('Z')
+
+    def save_log_web(self):
+        self.save_log("redpercent_log.csv")
+
+    def plot_data_ui(self):
+        pass
+
+    @property
     def ui_schema(self):
         return {
             "sections": [
@@ -129,7 +168,16 @@ class RedPercentSystem:
                     "title": "Probe Metadata",
                     "elements": [
                         {"type": "entry", "text": "Probe Name:", "model_attr": "probe_name"},
-                        {"type": "entry", "text": "Probe Tilt Angle:", "model_attr": "probe_tilt_angle"}
+                        {"type": "entry", "text": "Probe Tilt Angle:", "model_attr": "probe_tilt_angle"},
+                        {"type": "dropdown", "text": "Position Source:", "model_attr": "selected_probe_name"}
+                    ]
+                },
+                {
+                    "title": "Sync Dimensions",
+                    "elements": [
+                        {"type": "toggle", "text": "Sync X", "model_attr": "sync_x"},
+                        {"type": "toggle", "text": "Sync Y", "model_attr": "sync_y"},
+                        {"type": "toggle", "text": "Sync Z", "model_attr": "sync_z"}
                     ]
                 },
                 {
@@ -144,7 +192,10 @@ class RedPercentSystem:
                     "elements": [
                         {"type": "button", "text": "Start Monitoring", "command": "start_monitoring", "bg": "darkgreen", "fg": "white"},
                         {"type": "button", "text": "Stop Monitoring", "command": "stop_monitoring", "bg": "darkred", "fg": "white"},
-                        {"type": "button", "text": "Reset Baseline", "command": "reset_baseline", "bg": "gray", "fg": "white"}
+                        {"type": "button", "text": "Reset Baseline", "command": "reset_baseline", "bg": "gray", "fg": "white"},
+                        {"type": "button", "text": "Set Focus Area", "command": "set_focus_area_ui", "bg": "darkblue", "fg": "white"},
+                        {"type": "button", "text": "Save Log", "command": "save_log_web", "bg": "blue", "fg": "white"},
+                        {"type": "button", "text": "Plot Data", "command": "plot_data_ui", "bg": "purple", "fg": "white"}
                     ]
                 }
             ]

@@ -130,7 +130,6 @@ class BaseProbe:
                          "false_text": "Enter Manual Mode", "command": "toggle_manual"},
                         {"type": "button", "text": "Start Stepping", "command": "macro_start_auton", "bg": "darkgreen", "fg": "white"},
                         {"type": "button", "text": "Full Stop", "command": "full_stop", "bg": "darkred", "fg": "white"},
-                        {"type": "button", "text": "Power Down (Kill)", "command": "power_down", "bg": "black", "fg": "red"},
                         {"type": "file_picker", "text": "Run Script", "command": "run_script"},
                         {"type": "button", "text": "Serial Reconnect", "command": "reconnect_serial", "bg": "gray", "fg": "black"},
                         {"type": "button", "text": "Controller Log Window", "command": "open_controller_log", "bg": "black", "fg": "white"}
