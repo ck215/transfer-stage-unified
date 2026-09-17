@@ -211,6 +211,17 @@ class WebModelAdapter:
                 else:
                     # Generic mock model or custom device if provided in config
                     pass
+                
+                # Apply disabled state directly if user opted out
+                model = new_manager.get_model(dev)
+                if model:
+                    if hasattr(model, 'system_enabled'):
+                        model.system_enabled = is_enabled
+                    elif not is_enabled:
+                        # Fallback to general disable
+                        if hasattr(model, 'disable'):
+                            model.disable()
+
             except Exception as e:
                 return {
                     "status": "error",

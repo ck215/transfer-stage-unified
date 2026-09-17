@@ -1432,28 +1432,27 @@ class TransferStageApp {
     const usedControllers = new Set();
 
     for (const dev of this.setupDeviceConfigs) {
-      if (!dev.enabled) continue;
-
       const port = dev.defaultPort || 'SIM';
       const ctrl = dev.hasController ? (dev.defaultCtrl || 'None') : 'None';
 
       // Check controller collision (excluding 'None')
-      if (ctrl !== 'None' && usedControllers.has(ctrl)) {
+      if (dev.enabled && ctrl !== 'None' && usedControllers.has(ctrl)) {
         this.showSetupAlert(`Controller Conflict: '${ctrl}' is assigned to multiple devices. Each axis joystick must be unique.`, 'error');
         return;
       }
-      if (ctrl !== 'None') {
+      if (dev.enabled && ctrl !== 'None') {
         usedControllers.add(ctrl);
       }
 
       configs.push({
         device: dev.id,
         port: port,
-        controller: ctrl
+        controller: ctrl,
+        enabled: dev.enabled
       });
     }
 
-    if (configs.length === 0) {
+    if (configs.filter(c => c.enabled).length === 0) {
       this.showSetupAlert('Please enable at least one device before launching the stage.', 'error');
       return;
     }
