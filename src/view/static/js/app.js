@@ -9,8 +9,10 @@ class TransferStageApp {
     this.devices = {};          // device_name -> schema
     this.deviceState = {};      // device_name -> { attr: val }
     this.activeFilter = 'all';  // 'all' or device name
-    this.pollIntervalMs = 200;
+
+    // Initialization
     this.pollTimer = null;
+    this.pollIntervalMs = 50;
     this.isPolling = false;
     this.logs = [];
     this.autoScrollLogs = true;

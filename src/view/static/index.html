@@ -133,8 +133,10 @@
             <div class="polling-control-group">
               <label for="poll-interval-select" class="control-label">Poll Rate:</label>
               <select id="poll-interval-select" class="schema-select select-compact">
+                <option value="20">20 ms (Ultra)</option>
+                <option value="50" selected>50 ms (Aggressive)</option>
                 <option value="100">100 ms (Fast)</option>
-                <option value="200" selected>200 ms (Standard)</option>
+                <option value="200">200 ms (Standard)</option>
                 <option value="500">500 ms (Relaxed)</option>
                 <option value="0">Paused</option>
               </select>
