@@ -111,13 +111,12 @@ class WebModelAdapter:
                 if not isinstance(cfg, dict):
                     continue
                 # Support enabled flag (default True if not specified)
-                if not cfg.get("enabled", True):
-                    continue
-                mode = cfg.get("mode", "").lower()
-                port = cfg.get("port")
+                is_enabled = cfg.get("enabled", True)
+                mode = cfg.get("mode", "").lower() if is_enabled else "simulation"
+                port = cfg.get("port") if is_enabled else "None"
                 if mode == "simulation":
-                    port = "SIM"
-                ctrl = cfg.get("controller_id", cfg.get("controller", "None"))
+                    port = "SIM" if is_enabled else "None"
+                ctrl = cfg.get("controller_id", cfg.get("controller", "None")) if is_enabled else "None" 
                 normalized_configs.append({
                     "device": dev_name,
                     "port": port,
@@ -128,13 +127,12 @@ class WebModelAdapter:
             for c in configs:
                 if not isinstance(c, dict):
                     return {"status": "error", "code": 400, "message": "Each configuration must be a dictionary"}
-                if not c.get("enabled", True):
-                    continue
-                mode = c.get("mode", "").lower()
-                port = c.get("port")
+                is_enabled = c.get("enabled", True)
+                mode = c.get("mode", "").lower() if is_enabled else "simulation"
+                port = c.get("port") if is_enabled else "None"
                 if mode == "simulation":
-                    port = "SIM"
-                ctrl = c.get("controller_id", c.get("controller", "None"))
+                    port = "SIM" if is_enabled else "None"
+                ctrl = c.get("controller_id", c.get("controller", "None")) if is_enabled else "None" 
                 normalized_configs.append({
                     "device": c.get("device"),
                     "port": port,
@@ -156,8 +154,8 @@ class WebModelAdapter:
             port = c.get("port")
             ctrl = c.get("controller", "None")
 
-            if not dev or not port:
-                return {"status": "error", "code": 400, "message": "Device name and port are required"}
+            if not dev:
+                return {"status": "error", "code": 400, "message": "Device name is required"}
 
             if port == "Headless":
                 port = "SIM"
@@ -275,6 +273,9 @@ class WebModelAdapter:
 
     def _determine_connection_status(self, model) -> str:
         """Determines if device is 'simulated', 'hardware', or 'disconnected'."""
+        if model.__class__.__name__ == "RedPercentSystem":
+            return "online"
+            
         if hasattr(model, "connection_status") and getattr(model, "connection_status"):
             status_val = str(getattr(model, "connection_status")).lower()
             if status_val in ("hardware", "simulated", "disconnected"):

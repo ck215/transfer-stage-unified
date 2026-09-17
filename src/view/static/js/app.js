@@ -425,7 +425,7 @@ class TransferStageApp {
       else if (lower.includes('red')) dotColorClass = 'dot-red';
 
       button.innerHTML = `
-        <span class="tab-dot ${dotColorClass}"></span>
+        
         <span class="tab-label" title="${devName}">${devName}</span>
         <span class="tab-status-pill" data-status-for="${devName}">--</span>
       `;
@@ -781,6 +781,44 @@ class TransferStageApp {
         // =====================================================================
         // Dynamic Badging: Connection Status and Busy State
         // =====================================================================
+        
+        // Enforce autonomous/manual/enabled interlock
+        const autonOn = attrs.auton_flag === true || attrs.auton_flag === 'True';
+        const manualOn = attrs.manual_flag === true || attrs.manual_flag === 'True';
+        const sysEnabled = attrs.system_enabled === true || attrs.system_enabled === 'True';
+        
+        const cardBody = document.querySelector(`#card-${sanitizedDev} .card-body`);
+        if (cardBody) {
+          const controls = cardBody.querySelectorAll('button, input, select');
+          controls.forEach(ctrl => {
+            const isEnableBtn = ctrl.innerText.includes('Enable') || ctrl.innerText.includes('Serial Reconnect') || ctrl.dataset.command === 'toggle_enable' || ctrl.dataset.command === 'reconnect_serial';
+            const isPowerDown = ctrl.innerText.includes('Power Down') || ctrl.dataset.command === 'power_down';
+            const isStop = ctrl.innerText.includes('Full Stop') || ctrl.dataset.command === 'full_stop';
+            const isAutonToggle = ctrl.dataset.attr === 'auton_flag' || ctrl.dataset.command === 'toggle_auton';
+            const isManualToggle = ctrl.dataset.attr === 'manual_flag' || ctrl.dataset.command === 'toggle_manual';
+            
+            if (!sysEnabled && attrs.system_enabled !== undefined) {
+              if (!isEnableBtn && !isPowerDown) {
+                ctrl.disabled = true;
+              } else {
+                ctrl.disabled = false;
+              }
+            } else {
+              // System is enabled or doesn't have the flag
+              if (autonOn) {
+                if (isStop || isPowerDown || isAutonToggle) ctrl.disabled = false;
+                else ctrl.disabled = true;
+              } else if (manualOn) {
+                if (isStop || isPowerDown || isManualToggle) ctrl.disabled = false;
+                else ctrl.disabled = true;
+              } else {
+                // Both off, normal operation
+                ctrl.disabled = false;
+              }
+            }
+          });
+        }
+        
         this.updateDeviceStatusBadges(devName, attrs);
       }
     } catch (err) {
