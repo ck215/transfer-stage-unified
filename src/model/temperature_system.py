@@ -3,6 +3,9 @@ import threading
 import time
 
 class TemperatureSystem:
+    def __del__(self):
+        print(f"[{self.__class__.__name__}] Destructor called")
+
     def __init__(self, port=None):
         self.setpoint = "0"
         self.ramp_rate = "10"
@@ -81,7 +84,13 @@ class TemperatureSystem:
             spdelay = "0"
         
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
-            print(f"Sending: Setpoint={self.setpoint}C, Ramp={self.ramp_rate}°C/min (delay={spdelay}s), P={self.p_term}, I={self.i_term}, D={self.d_term}, Offset={self.offset}")
+            msg = f"[{self.__class__.__name__}] Sending: Setpoint={self.setpoint}C, Ramp={self.ramp_rate}°C/min (delay={spdelay}s), P={self.p_term}, I={self.i_term}, D={self.d_term}, Offset={self.offset}"
+            print(msg)
+            try:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_info("Temperature Send", msg)
+            except Exception:
+                pass
             input_string = f"<{self.setpoint},{spdelay},{self.p_term},{self.i_term},{self.d_term},{self.offset}>"
             try:
                 self.serial_conn.ser.write(input_string.encode())

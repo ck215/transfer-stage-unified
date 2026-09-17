@@ -6,6 +6,9 @@ except ImportError:
     smc100 = None
 
 class RotatorSystem:
+    def __del__(self):
+        print(f"[{self.__class__.__name__}] Destructor called")
+
     def __init__(self, default_port=None):
         self.port = default_port
         self.smc_id = 1
@@ -202,12 +205,40 @@ class RotatorSystem:
         if self.smc:
             self._run_async(self.smc.reset_and_configure)
 
+    def _confirm_rotation(self, target_deg: float) -> bool:
+        if abs(target_deg) <= 30.0:
+            return True
+        try:
+            from PySide6.QtWidgets import QMessageBox, QApplication
+            if QApplication.instance() is None:
+                print(f"[{self.__class__.__name__}] Rotation past ±30 blocked automatically (No UI context).")
+                return False
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Rotation Limit Warning")
+            msg.setText(f"Target rotation {target_deg:.2f}° exceeds the safe ±30° range.\n\nMoving past this limit risks damaging physical tubing.\n\nAre you sure you want to proceed?")
+            msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg.setDefaultButton(QMessageBox.No)
+            return msg.exec() == QMessageBox.Yes
+        except ImportError:
+            print(f"[{self.__class__.__name__}] Rotation past ±30 blocked automatically (PySide6 missing).")
+            return False
+
     def move_absolute(self, target_deg: float):
         if self.smc:
+            if not self._confirm_rotation(target_deg):
+                return
             self._run_async(self.smc.move_absolute_deg, target_deg)
 
     def move_relative(self, step_deg: float):
         if self.smc:
+            try:
+                current = float(self.position)
+            except (ValueError, TypeError):
+                current = 0.0
+            target = current + step_deg
+            if not self._confirm_rotation(target):
+                return
             self._run_async(self.smc.move_relative_deg, step_deg)
 
     def _map_state_code(self, code: str) -> str:

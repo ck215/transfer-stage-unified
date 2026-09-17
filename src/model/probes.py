@@ -18,6 +18,9 @@ def _num(value, default, *, minimum=None, integer=False):
     return int(v) if integer else v
 
 class BaseProbe:
+    def __del__(self):
+        print(f"[{self.__class__.__name__}] Destructor called")
+
     def __init__(self, port, controller_id, active_claims=None):
         self.serial_comm = serial(port) if port and port != "None" else None
         

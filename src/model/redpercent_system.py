@@ -54,6 +54,9 @@ class RedPercentDataLog:
                     writer.writerow(row)
 
 class RedPercentSystem:
+    def __del__(self):
+        print(f"[{self.__class__.__name__}] Destructor called")
+
     def __init__(self):
         self.red_percent = 0.0
         self.is_monitoring = False
@@ -84,7 +87,7 @@ class RedPercentSystem:
         if self.available_probes and probe_name in self.available_probes:
             self.stepper_model = self.available_probes[probe_name]
             self.selected_probe_name = probe_name
-            print(f"[color_test] Active position probe set to: {probe_name}")
+            print(f"[{self.__class__.__name__}] Active position probe set to: {probe_name}")
 
     def capture_focus_area(self, sct):
         if not self.focus_area:
@@ -144,7 +147,7 @@ class RedPercentSystem:
 
     def save_log(self, file_path=None):
         if not self.data_log or not self.data_log.red_values:
-            print("[color_test] No data to save.")
+            print(f"[{self.__class__.__name__}] No data to save.")
             return
 
         # Catch late UI edits before saving
@@ -154,20 +157,20 @@ class RedPercentSystem:
         if file_path:
             try:
                 self.data_log.save_to_csv(file_path)
-                print(f"[color_test] Log saved to: {file_path}")
+                print(f"[{self.__class__.__name__}] Log saved to: {file_path}")
             except Exception as e:
                 from error_routing import ErrorRouter
                 msg = f"[color_test] Error saving file: {e}"
                 print(msg)
                 ErrorRouter.report_error("File Save Error", msg, e)
         else:
-            print("[color_test] Save cancelled or no file path provided.")
+            print(f"[{self.__class__.__name__}] Save cancelled or no file path provided.")
 
     def start_monitoring(self):
         if self.monitoring:
             return
         self.monitoring = True
-        print("=== MONITORING STARTED ===")
+        print(f"[{self.__class__.__name__}] === MONITORING STARTED ===")
         if not self.data_log:
             self.data_log = RedPercentDataLog(self.sync_dimensions, self.probe_name, self.probe_tilt_angle)
         self._monitor_thread = threading.Thread(target=self._monitor_colors)
@@ -175,7 +178,7 @@ class RedPercentSystem:
         self._monitor_thread.start()
 
     def stop_monitoring(self):
-        print("=== MONITORING STOPPED ===")
+        print(f"[{self.__class__.__name__}] === MONITORING STOPPED ===")
         self.monitoring = False
 
     def reset_baseline(self):
