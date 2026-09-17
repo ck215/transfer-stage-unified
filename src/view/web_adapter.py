@@ -66,6 +66,10 @@ class WebModelAdapter:
 
         controllers = ["None"]
         try:
+            import os
+            os.environ["SDL_VIDEODRIVER"] = "dummy"
+            os.environ["SDL_AUDIODRIVER"] = "dummy"
+            os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
             import pygame
             if not pygame.get_init():
                 pygame.init()
