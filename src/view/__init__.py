@@ -22,6 +22,16 @@ _legacy = _import_legacy()
 ErrorPopupManager = _legacy.ErrorPopupManager
 DashboardWindow   = _legacy.DashboardWindow
 DynamicView       = _legacy.DynamicView
+messagebox        = getattr(_legacy, "messagebox", None)
+
+import sys as _sys
+class _ViewModule(_sys.modules[__name__].__class__):
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if "_legacy" in self.__dict__ and hasattr(_legacy, name):
+            setattr(_legacy, name, value)
+
+_sys.modules[__name__].__class__ = _ViewModule
 
 __all__ = [
     # Web layer
@@ -34,4 +44,5 @@ __all__ = [
     "ErrorPopupManager",
     "DashboardWindow",
     "DynamicView",
+    "messagebox",
 ]

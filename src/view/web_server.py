@@ -16,7 +16,7 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
     Interacts with models exclusively via WebModelAdapter to preserve MVC boundaries.
     """
     adapter: Optional[WebModelAdapter] = WebModelAdapter()
-    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "static"))
 
     # Maintain backward compatibility if external code references system_manager directly
     @classmethod
