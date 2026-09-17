@@ -4,6 +4,10 @@ import os
 import mimetypes
 import threading
 from urllib.parse import urlparse
+import mss
+import io
+import base64
+from PIL import Image
 from typing import Optional
 
 from .web_adapter import WebModelAdapter
@@ -102,6 +106,27 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
         elif route == "/api/errors":
             errors = adapter.pop_errors()
             self._send_json(200, {"errors": errors})
+
+        elif route == "/api/screenshot":
+            try:
+                with mss.mss() as sct:
+                    monitor = sct.monitors[1]
+                    sct_img = sct.grab(monitor)
+                    img = Image.frombytes('RGB', sct_img.size, sct_img.bgra, 'raw', 'BGRX')
+                    img.thumbnail((800, 600), Image.Resampling.LANCZOS)
+                    buf = io.BytesIO()
+                    img.save(buf, format='JPEG', quality=60)
+                    img_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+                    self._send_json(200, {
+                        "status": "success",
+                        "image": f"data:image/jpeg;base64,{img_b64}",
+                        "original_width": monitor["width"],
+                        "original_height": monitor["height"],
+                        "monitor_left": monitor["left"],
+                        "monitor_top": monitor["top"]
+                    })
+            except Exception as e:
+                self._send_json(500, {"status": "error", "message": str(e)})
 
         else:
             self._serve_static(route)

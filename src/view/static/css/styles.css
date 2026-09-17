@@ -1652,3 +1652,7 @@ html, body {
 .btn-launch:hover {
   background-color: #2ea043;
 }
+
+#focus-roi-canvas {
+  cursor: crosshair;
+}

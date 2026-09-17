@@ -83,6 +83,11 @@ class RedPercentSystem:
         self.probe_name = ""
         self.probe_tilt_angle = ""
 
+    def set_focus_area(self, x, y, w, h):
+        self.focus_area = {'top': int(y), 'left': int(x), 'width': int(w), 'height': int(h)}
+        print(f"[{self.__class__.__name__}] Focus Area set to: {self.focus_area}")
+        return True
+
     def set_stepper_model(self, probe_name):
         if self.available_probes and probe_name in self.available_probes:
             self.stepper_model = self.available_probes[probe_name]

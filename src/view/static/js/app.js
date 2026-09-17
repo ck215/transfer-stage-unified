@@ -227,10 +227,14 @@ class TransferStageApp {
       this.dom.btnTogglePlotter.addEventListener('click', () => {
         this.toggleModal(this.dom.plotterModal, true);
         this.renderPlotterCanvas();
+        this.startFocusStream();
       });
     }
     if (this.dom.btnClosePlotter) {
-      this.dom.btnClosePlotter.addEventListener('click', () => this.toggleModal(this.dom.plotterModal, false));
+      this.dom.btnClosePlotter.addEventListener('click', () => {
+        this.toggleModal(this.dom.plotterModal, false);
+        this.stopFocusStream();
+      });
     }
     if (this.dom.btnPlotterReset) {
       this.dom.btnPlotterReset.addEventListener('click', () => {
@@ -1129,6 +1133,111 @@ class TransferStageApp {
     if (this.dom.plotterModal && !this.dom.plotterModal.classList.contains('hidden')) {
       this.renderPlotterCanvas();
     }
+  }
+
+  startFocusStream() {
+    if (this.focusStreamInterval) return;
+    this.fetchFocusFrame();
+    this.focusStreamInterval = setInterval(() => this.fetchFocusFrame(), 500);
+  }
+
+  stopFocusStream() {
+    if (this.focusStreamInterval) {
+      clearInterval(this.focusStreamInterval);
+      this.focusStreamInterval = null;
+    }
+  }
+
+  async fetchFocusFrame() {
+    try {
+      const res = await fetch('/api/screenshot');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.status === 'success' && data.image) {
+        this.hostOriginalWidth = data.original_width || 1920;
+        this.hostOriginalHeight = data.original_height || 1080;
+        this.hostMonitorLeft = data.monitor_left || 0;
+        this.hostMonitorTop = data.monitor_top || 0;
+        
+        const img = new Image();
+        img.onload = () => {
+          this.lastFocusImage = img;
+          this.renderFocusRoiCanvas();
+        };
+        img.src = data.image;
+      }
+    } catch (e) {
+      console.warn("Focus stream error:", e);
+    }
+  }
+
+  renderFocusRoiCanvas() {
+    const canvas = this.dom.focusRoiCanvas;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    
+    // Fill background black if no image
+    if (!this.lastFocusImage) {
+        ctx.fillStyle = '#09090b';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#71717a';
+        ctx.font = '12px var(--font-mono)';
+        ctx.textAlign = 'center';
+        ctx.fillText('Waiting for Optical Feed...', canvas.width/2, canvas.height/2);
+        return;
+    }
+
+    // Draw the scaled snapshot
+    ctx.drawImage(this.lastFocusImage, 0, 0, canvas.width, canvas.height);
+
+    // Draw the ROI box if active
+    if (this.focusRoi.active) {
+        ctx.strokeStyle = '#ef4444'; // Red-500
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(this.focusRoi.x, this.focusRoi.y, this.focusRoi.w, this.focusRoi.h);
+        
+        // Darken outside ROI
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(0, 0, canvas.width, this.focusRoi.y);
+        ctx.fillRect(0, this.focusRoi.y + this.focusRoi.h, canvas.width, canvas.height - (this.focusRoi.y + this.focusRoi.h));
+        ctx.fillRect(0, this.focusRoi.y, this.focusRoi.x, this.focusRoi.h);
+        ctx.fillRect(this.focusRoi.x + this.focusRoi.w, this.focusRoi.y, canvas.width - (this.focusRoi.x + this.focusRoi.w), this.focusRoi.h);
+        ctx.setLineDash([]);
+    }
+  }
+
+  commitFocusRoi() {
+    const canvas = this.dom.focusRoiCanvas;
+    if (!canvas) return;
+    
+    // Calculate scaling factors
+    const scaleX = this.hostOriginalWidth / canvas.width;
+    const scaleY = this.hostOriginalHeight / canvas.height;
+    
+    const hostX = Math.round(this.focusRoi.x * scaleX) + this.hostMonitorLeft;
+    const hostY = Math.round(this.focusRoi.y * scaleY) + this.hostMonitorTop;
+    const hostW = Math.round(this.focusRoi.w * scaleX);
+    const hostH = Math.round(this.focusRoi.h * scaleY);
+    
+    if (this.dom.roiStatusBadge) {
+        this.dom.roiStatusBadge.innerText = `ROI: ${hostW}x${hostH} px`;
+        this.dom.roiStatusBadge.classList.add('badge-instrument');
+        this.dom.roiStatusBadge.classList.remove('badge-subtle');
+    }
+    
+    this.showToast(`Boundaries locked at [${hostX}, ${hostY}] (${hostW}x${hostH})`, 'success');
+    
+    // Dispatch to Python backend!
+    fetch('/api/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            device: 'Red Percent Window',
+            command: 'set_focus_area',
+            args: [hostX, hostY, hostW, hostH]
+        })
+    }).catch(e => console.error("Failed to commit ROI:", e));
   }
 
   renderPlotterCanvas() {
