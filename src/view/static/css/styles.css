@@ -622,9 +622,9 @@ html, body {
   box-shadow: var(--shadow-card);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
   transition: transform 0.15s ease, border-color 0.15s ease;
-  min-height: 320px;
+  min-height: 400px;
 }
 
 .device-card:hover {
@@ -1062,14 +1062,14 @@ html, body {
 .log-modal-window {
   width: 900px;
   max-width: 94vw;
-  height: 600px;
+  height: 85vh;
   max-height: 88vh;
 }
 
 .plotter-modal-window {
   width: 1000px;
   max-width: 96vw;
-  height: 660px;
+  height: 85vh;
   max-height: 90vh;
 }
 

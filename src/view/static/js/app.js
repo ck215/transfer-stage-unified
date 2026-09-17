@@ -20,12 +20,12 @@ class TransferStageApp {
     this.scannedPorts = ['SIM'];
     this.scannedControllers = ['None'];
     this.setupDeviceConfigs = [
-      { id: 'Stepper Probe', name: 'Stepper Probe', desc: 'X/Y/Z Stepper Stage with Joystick', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: true },
-      { id: 'DC Probe', name: 'DC Probe', desc: 'X/Y/Z DC Motor Probe Positioner', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: true },
-      { id: 'Chuck Positioner', name: 'Chuck Positioner', desc: 'Motorized Substrate Chuck Stage', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: true },
-      { id: 'Temperature Controller', name: 'Temperature Controller', desc: 'Thermal Stage Sensor & Heater', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: true },
-      { id: 'SMC100 Rotator', name: 'SMC100 Rotator', desc: 'Newport Precision Single-Axis Stage', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: true },
-      { id: 'Red Percent Window', name: 'Red Percent Window', desc: 'ToupCam Optical Flake Monitor', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: true }
+      { id: 'Stepper Probe', name: 'Stepper Probe', desc: 'X/Y/Z Stepper Stage with Joystick', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: false },
+      { id: 'DC Probe', name: 'DC Probe', desc: 'X/Y/Z DC Motor Probe Positioner', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: false },
+      { id: 'Chuck Positioner', name: 'Chuck Positioner', desc: 'Motorized Substrate Chuck Stage', defaultPort: 'SIM', defaultCtrl: 'None', hasController: true, enabled: false },
+      { id: 'Temperature Controller', name: 'Temperature Controller', desc: 'Thermal Stage Sensor & Heater', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: false },
+      { id: 'SMC100 Rotator', name: 'SMC100 Rotator', desc: 'Newport Precision Single-Axis Stage', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: false },
+      { id: 'Red Percent Window', name: 'Red Percent Window', desc: 'ToupCam Optical Flake Monitor', defaultPort: 'SIM', defaultCtrl: 'None', hasController: false, enabled: false }
     ];
 
     // Optical Plotter state
@@ -99,6 +99,7 @@ class TransferStageApp {
       btnSetupCancel: document.getElementById('btn-setup-cancel'),
       btnSetupScan: document.getElementById('btn-setup-scan'),
       btnSetupAllSim: document.getElementById('btn-setup-all-sim'),
+      btnSetupDisableAll: document.getElementById('btn-setup-disable-all'),
       btnSetupLaunch: document.getElementById('btn-setup-launch'),
       setupScanSpinner: document.getElementById('setup-scan-spinner'),
       setupScanBtnText: document.getElementById('setup-scan-btn-text'),
@@ -284,6 +285,11 @@ class TransferStageApp {
     if (this.dom.btnSetupAllSim) {
       this.dom.btnSetupAllSim.addEventListener('click', () => {
         this.setAllSetupToSim();
+      });
+    }
+    if (this.dom.btnSetupDisableAll) {
+      this.dom.btnSetupDisableAll.addEventListener('click', () => {
+        this.setAllSetupToDisabled();
       });
     }
     if (this.dom.btnSetupLaunch) {
@@ -1346,6 +1352,14 @@ class TransferStageApp {
     }
     this.renderSetupDeviceRows();
     this.showToast('All devices set to Simulation / Mock mode.', 'info');
+  }
+
+  setAllSetupToDisabled() {
+    for (const dev of this.setupDeviceConfigs) {
+      dev.enabled = false;
+    }
+    this.renderSetupDeviceRows();
+    this.showToast('All devices disabled.', 'info');
   }
 
   async initializeHardwareSetup() {
