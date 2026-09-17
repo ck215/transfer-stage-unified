@@ -70,9 +70,10 @@ def run_legacy_app():
         import os
         os.environ["SDL_VIDEODRIVER"] = "dummy"
         os.environ["SDL_AUDIODRIVER"] = "dummy"
-        os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
         os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
         import pygame
+        if not pygame.get_init():
+            pygame.init()
         PYGAME_AVAILABLE = True
     except ImportError:
         PYGAME_AVAILABLE = False
@@ -160,7 +161,8 @@ def run_legacy_app():
         def get_available_controllers(self):
             self.detected_controllers = ["None"]
             if PYGAME_AVAILABLE:
-                # pygame.init()
+                if not pygame.get_init():
+                    pygame.init()
                 pygame.joystick.init()
                 pygame.event.pump()
                 joystick_count = pygame.joystick.get_count()
@@ -592,6 +594,8 @@ def run_pyside_app():
         os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
         os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
         import pygame
+        if not pygame.get_init():
+            pygame.init()
         PYGAME_AVAILABLE = True
     except ImportError:
         PYGAME_AVAILABLE = False
@@ -788,7 +792,8 @@ def run_pyside_app():
         def get_available_controllers(self):
             self.detected_controllers = ["None"]
             if PYGAME_AVAILABLE:
-                # pygame.init()
+                if not pygame.get_init():
+                    pygame.init()
                 pygame.joystick.init()
                 for i in range(pygame.joystick.get_count()):
                     try:

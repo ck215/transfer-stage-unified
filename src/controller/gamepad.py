@@ -1,9 +1,14 @@
 # Libraries
 import os
 os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
+os.environ["SDL_VIDEODRIVER"] = "dummy"
+os.environ["SDL_AUDIODRIVER"] = "dummy"
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 try:
     import pygame
+    if pygame and not pygame.get_init():
+        pygame.init()
 except ImportError:
     pygame = None
 import time
@@ -303,7 +308,7 @@ class ControllerPoller:
     def get_physical_controllers(self):
         try:
             if pygame:
-                pass  # pygame.init() omitted — SDL video conflicts with Qt on macOS
+                pygame.init()
         except Exception:
             pass
         try:
@@ -393,7 +398,7 @@ class ControllerPoller:
 
         try:
             if pygame:
-                # pygame.init() omitted — SDL video conflicts with Qt on macOS.
+                pygame.init()
                 # joystick.init() may raise SDL video errors under SDL_VIDEODRIVER=dummy;
                 # these are expected in headless mode and are not real failures.
                 try:

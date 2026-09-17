@@ -77,7 +77,7 @@ class TemperatureSystem:
             rate_float = 0.0
             
         try:
-            spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
+            spdelay = f"{60.0 / rate_float:.2f}" if rate_float > 0 else "0"
             if "inf" in spdelay.lower() or "nan" in spdelay.lower():
                 spdelay = "0"
         except OverflowError:
@@ -160,7 +160,7 @@ class TemperatureSystem:
             rate_float = 0.0
             
         try:
-            spdelay = str(60.0 / rate_float) if rate_float > 0 else "0"
+            spdelay = f"{60.0 / rate_float:.2f}" if rate_float > 0 else "0"
             if "inf" in spdelay.lower() or "nan" in spdelay.lower():
                 spdelay = "0"
         except OverflowError:

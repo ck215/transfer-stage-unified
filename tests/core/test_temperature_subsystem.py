@@ -43,7 +43,7 @@ def test_temperature_system_send_settings_packet():
 
         ts.send_settings()
 
-        mock_instance.ser.write.assert_called_once_with(b"<45.5,5.0,2.5,0.8,0.2,1.0>")
+        mock_instance.ser.write.assert_called_once_with(b"<45.5,5.00,2.5,0.8,0.2,1.0>")
         ts.close()
 
 
