@@ -1336,25 +1336,30 @@ class TransferStageApp {
 
       // 3. COM Port Select Dropdown
       const tdPort = document.createElement('td');
-      const portSelect = document.createElement('select');
-      portSelect.id = `setup-port-${sanitized}`;
-      portSelect.className = 'setup-select setup-port-select';
-      portSelect.disabled = !dev.enabled;
+      if (dev.id === 'Red Percent Window' || dev.defaultPort === 'Headless') {
+          tdPort.innerHTML = '<span style="color:var(--text-dim);font-size:11px;font-style:italic;">No Interface Required</span>';
+          dev.defaultPort = 'Headless';
+      } else {
+          const portSelect = document.createElement('select');
+          portSelect.id = `setup-port-${sanitized}`;
+          portSelect.className = 'setup-select setup-port-select';
+          portSelect.disabled = !dev.enabled;
 
-      // Populate port options
-      const currentPort = dev.defaultPort || 'SIM';
-      for (const p of this.scannedPorts) {
-        const opt = document.createElement('option');
-        opt.value = p;
-        opt.text = p === 'SIM' ? 'SIM (Simulation / Mock)' : p;
-        if (p === currentPort) opt.selected = true;
-        portSelect.appendChild(opt);
+          // Populate port options
+          const currentPort = dev.defaultPort || 'SIM';
+          for (const p of this.scannedPorts) {
+            const opt = document.createElement('option');
+            opt.value = p;
+            opt.text = p === 'SIM' ? 'SIM (Simulation / Mock)' : p;
+            if (p === currentPort) opt.selected = true;
+            portSelect.appendChild(opt);
+          }
+          portSelect.addEventListener('change', (e) => {
+            dev.defaultPort = e.target.value;
+            this.updateSetupRowPill(tr, dev);
+          });
+          tdPort.appendChild(portSelect);
       }
-      portSelect.addEventListener('change', (e) => {
-        dev.defaultPort = e.target.value;
-        this.updateSetupRowPill(tr, dev);
-      });
-      tdPort.appendChild(portSelect);
       tr.appendChild(tdPort);
 
       // 4. Controller / Joystick Dropdown (or N/A)
