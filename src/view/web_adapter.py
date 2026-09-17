@@ -18,7 +18,7 @@ class WebModelAdapter:
     Encapsulates thread safety, attribute updates, device discovery, polling, and command dispatch.
     """
 
-    def __init__(self, system_manager=None, mode="running"):
+    def __init__(self, system_manager=None, mode="setup"):
         self.system_manager = system_manager
         self.mode = mode  # "setup" or "running"
         self._state_lock = threading.RLock()

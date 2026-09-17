@@ -1057,16 +1057,8 @@ def run_web_app(port=8080, open_browser=True):
     manager = SystemManager()
     active_claims = {}
 
-    # Register default hardware/simulation models
-    manager.register_model("Stepper Probe", StepperProbe(port="SIM", controller_id=None, active_claims=active_claims))
-    manager.register_model("DC Probe", DCProbe(port="SIM", controller_id=None, active_claims=active_claims))
-    manager.register_model("Chuck Positioner", ChuckPositioner(port="SIM", controller_id=None, active_claims=active_claims))
-    manager.register_model("Temperature Controller", TemperatureSystem(port="SIM"))
-    manager.register_model("SMC100 Rotator", RotatorSystem(default_port="SIM"))
-    red_model = RedPercentSystem()
-    red_model.available_probes = {k: v for k, v in manager.active_models.items() if hasattr(v, 'pos_x')}
-    red_model.set_stepper_model("Stepper Probe")
-    manager.register_model("Red Percent Window", red_model)
+    # In Web Mode, we bypass default SIM initialization so the UI can boot directly into the Setup Wizard
+    # Models will be registered dynamically via WebModelAdapter.initialize_setup()
 
     dashboard = WebDashboardWindow(manager, port=port, open_browser=open_browser)
     dashboard.show()

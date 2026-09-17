@@ -54,6 +54,10 @@ class TransferStageApp {
       activeProbesCount: document.getElementById('active-probes-count'),
       pollingFrequencyLabel: document.getElementById('polling-frequency-label'),
       pollIntervalSelect: document.getElementById('poll-interval-select'),
+      btnOpenSettings: document.getElementById('btn-open-settings'),
+      btnCloseSettings: document.getElementById('btn-close-settings'),
+      btnSettingsDone: document.getElementById('btn-settings-done'),
+      settingsModal: document.getElementById('settings-modal'),
       btnRefreshDevices: document.getElementById('btn-refresh-devices'),
       btnGlobalHalt: document.getElementById('btn-global-halt'),
       btnCardExpandAll: document.getElementById('btn-card-expand-all'),
@@ -158,6 +162,23 @@ class TransferStageApp {
 
     if (this.dom.btnGlobalHalt) {
       this.dom.btnGlobalHalt.addEventListener('click', () => this.triggerGlobalEmergencyStop());
+    }
+
+    
+    if (this.dom.btnOpenSettings) {
+      this.dom.btnOpenSettings.addEventListener('click', () => {
+        this.toggleModal(this.dom.settingsModal, true);
+      });
+    }
+    if (this.dom.btnCloseSettings) {
+      this.dom.btnCloseSettings.addEventListener('click', () => {
+        this.toggleModal(this.dom.settingsModal, false);
+      });
+    }
+    if (this.dom.btnSettingsDone) {
+      this.dom.btnSettingsDone.addEventListener('click', () => {
+        this.toggleModal(this.dom.settingsModal, false);
+      });
     }
 
     if (this.dom.pollIntervalSelect) {

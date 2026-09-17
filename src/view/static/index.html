@@ -130,19 +130,9 @@
             <span class="badge badge-subtle" id="view-device-count">0 devices active</span>
           </div>
           <div class="toolbar-right">
-            <div class="polling-control-group">
-              <label for="poll-interval-select" class="control-label">Poll Rate:</label>
-              <select id="poll-interval-select" class="schema-select select-compact">
-                <option value="20">20 ms (Ultra)</option>
-                <option value="50" selected>50 ms (Aggressive)</option>
-                <option value="100">100 ms (Fast)</option>
-                <option value="200">200 ms (Standard)</option>
-                <option value="500">500 ms (Relaxed)</option>
-                <option value="0">Paused</option>
-              </select>
-            </div>
-            <button id="btn-card-expand-all" class="btn btn-ghost btn-sm" title="Expand / Collapse Sections">
-              Toggle Compact
+            <button id="btn-open-settings" class="btn btn-secondary btn-sm" title="Dashboard Settings">
+              <svg class="icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+              Settings
             </button>
           </div>
         </div>
@@ -381,5 +371,38 @@
   </div>
 
   <script src="js/app.js"></script>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-window file-modal-window">
+      <div class="modal-header">
+        <h3 class="modal-title">Dashboard Settings</h3>
+        <button id="btn-close-settings" class="btn btn-icon btn-ghost" aria-label="Close settings">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-group" style="margin-bottom: 16px;">
+            <label for="poll-interval-select" style="display:block; margin-bottom: 8px; font-weight: bold;">Poll Rate</label>
+            <select id="poll-interval-select" class="schema-select" style="width: 100%;">
+                <option value="20">20 ms (Ultra)</option>
+                <option value="50" selected>50 ms (Aggressive)</option>
+                <option value="100">100 ms (Fast)</option>
+                <option value="200">200 ms (Standard)</option>
+                <option value="500">500 ms (Relaxed)</option>
+                <option value="0">Paused</option>
+            </select>
+        </div>
+        
+        <div class="settings-group" style="margin-bottom: 16px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: bold;">Window Size & Layout</label>
+            <button id="btn-card-expand-all" class="btn btn-secondary btn-full">Toggle Compact Mode</button>
+            <p class="dialog-description" style="margin-top: 8px; font-size: 11px;">(Additional windowing order & sizing controls can be configured here in the future)</p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-settings-done" class="btn btn-primary">Done</button>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>
