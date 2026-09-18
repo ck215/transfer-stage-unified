@@ -1063,12 +1063,32 @@ def run_web_app(port=8080, open_browser=True):
     dashboard = WebDashboardWindow(manager, port=port, open_browser=open_browser)
     dashboard.show()
     print(f"[Launcher] Web View is live at http://127.0.0.1:{dashboard.server.port}")
+
+    import sys
+    import threading
+    import traceback
+    from error_routing import ErrorRouter
+
+    def _handle_exception(exc_type, exc_value, exc_traceback):
+        traceback.print_exception(exc_type, exc_value, exc_traceback)
+        ErrorRouter.report_error('Unhandled Exception', f'An unexpected error occurred:\n\n{exc_value}', exception=exc_value)
+
+    # WebDashboardServer.start() runs serve_forever() on a daemon thread;
+    # sys.excepthook alone never sees exceptions raised there.
+    sys.excepthook = _handle_exception
+    threading.excepthook = lambda args: _handle_exception(args.exc_type, args.exc_value, args.exc_traceback)
+
     try:
         import time
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         print("[Launcher] Shutting down Web View...")
+        dashboard.close()
+    except Exception as e:
+        print(f"[Launcher] Unhandled exception: {e}")
+        traceback.print_exception(type(e), e, e.__traceback__)
+        ErrorRouter.report_error('Unhandled Exception', f'An unexpected error occurred:\n\n{e}', exception=e)
         dashboard.close()
 
 def launch_legacy():

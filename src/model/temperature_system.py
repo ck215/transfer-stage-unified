@@ -106,6 +106,12 @@ class TemperatureSystem:
                     if raw_line:
                         line = raw_line.decode('utf-8', errors='ignore')
                         self.process_raw_data(line)
+                    # Unconditional floor: readline() is expected to block via
+                    # the serial timeout, but must never be trusted to do so —
+                    # a mock or misconfigured non-blocking serial returning
+                    # truthy data instantly would otherwise free-spin (observed
+                    # multi-GB RSS growth in seconds during testing).
+                    time.sleep(0.01)
                 else:
                     time.sleep(0.1)
             except Exception as e:
@@ -160,12 +166,12 @@ class TemperatureSystem:
             rate_float = 0.0
             
         try:
-            spdelay = f"{60.0 / rate_float:.2f}" if rate_float > 0 else "0"
+            spdelay = f"{60.0 / rate_float:.1f}" if rate_float > 0 else "0"
             if "inf" in spdelay.lower() or "nan" in spdelay.lower():
                 spdelay = "0"
         except OverflowError:
             spdelay = "0"
-            
+
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
             vals = ['0', spdelay, '0', '0', '0', str(self.offset)]
             input_string = f"<{','.join(vals)}>"
