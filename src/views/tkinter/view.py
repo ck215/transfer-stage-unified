@@ -177,6 +177,10 @@ class DashboardWindow(tk.Toplevel):
                         
         self.bind("<FocusOut>", on_focus_out)
         
+        stop_btn = tk.Button(self, text="FULL STOP", bg="red", fg="white", 
+                             font=('Arial', 12, 'bold'), command=self.system_manager.full_stop_all)
+        stop_btn.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        
         self.notebook = DraggableClosableNotebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
         self.tab_metadata = {}

@@ -379,6 +379,19 @@ class WebModelAdapter:
                     "message": str(e),
                 }
 
+    def full_stop_all(self) -> Dict[str, Any]:
+        with self._state_lock:
+            if not self.system_manager:
+                return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
+            
+        try:
+            self.system_manager.full_stop_all()
+            return {"status": "ok", "code": 200}
+        except Exception as e:
+            import traceback
+            print(f"[WebModelAdapter] full_stop_all failed:\n{traceback.format_exc()}")
+            return {"status": "error", "code": 500, "message": str(e)}
+
     def set_device_attribute(self, device_name: str, attr: str, value: Any) -> Dict[str, Any]:
         """
         Thread-safely updates configurable parameters/attributes on target devices.

@@ -454,3 +454,18 @@ def test_thread_safety_concurrent_requests(web_server_fixture):
     assert slow_res[1] == 200
     assert fast_res[2] < 0.25  # Fast finished promptly
     assert slow_res[2] >= 0.28  # Slow took its full time
+
+
+def test_api_full_stop_all(web_server_fixture):
+    server, mgr = web_server_fixture
+    mgr.full_stop_called = False
+    def mock_full_stop_all():
+        mgr.full_stop_called = True
+    mgr.full_stop_all = mock_full_stop_all
+    
+    url = f"http://127.0.0.1:{server.port}/api/system/full_stop"
+    status, _, body = make_request(url, method="POST", json_data={})
+    assert status == 200
+    data = json.loads(body)
+    assert data["status"] == "ok"
+    assert mgr.full_stop_called is True

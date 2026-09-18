@@ -91,3 +91,28 @@ def test_web_dashboard_window_lifecycle():
     win.close()
     assert mgr.shutdown_called is True
     assert win.server.server is None
+
+
+def test_web_adapter_full_stop_all():
+    from views.web.web_adapter import WebModelAdapter
+    
+    # Uninitialized SystemManager case
+    adapter = WebModelAdapter()
+    res = adapter.full_stop_all()
+    assert res["status"] == "error"
+    assert res["code"] == 500
+    assert "SystemManager not initialized" in res["message"]
+    
+    # Success case
+    class MockMgr:
+        def __init__(self):
+            self.called = False
+        def full_stop_all(self):
+            self.called = True
+            
+    mgr = MockMgr()
+    adapter.set_system_manager(mgr)
+    res2 = adapter.full_stop_all()
+    assert res2["status"] == "ok"
+    assert res2["code"] == 200
+    assert mgr.called is True

@@ -1185,24 +1185,22 @@ class TransferStageApp {
   async triggerGlobalEmergencyStop() {
     this.showToast('GLOBAL EMERGENCY STOP BROADCASTED', 'error');
 
-    // Issue stop command to all devices that declare a stop method
-    const stopPromises = Object.entries(this.devices).map(([devName, schema]) => {
-      const sections = schema.sections || [];
-      let hasStop = false;
-      for (const s of sections) {
-        for (const el of (s.elements || [])) {
-          if (el.command && el.command.toLowerCase().includes('stop')) {
-            hasStop = true;
-            return this.dispatchCommand(devName, el.command);
-          }
-        }
-      }
-      if (!hasStop) {
-        return this.dispatchCommand(devName, 'stop').catch(() => {});
-      }
-    });
+    try {
+      const response = await fetch('/api/system/full_stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
 
-    await Promise.all(stopPromises);
+      if (!response.ok) {
+        const resData = await response.json().catch(() => null);
+        const errorMsg = (resData && resData.message) || `HTTP ${response.status}`;
+        this.showToast(`Global stop failed: ${errorMsg}`, 'error');
+        console.error('Global stop error:', resData);
+      }
+    } catch (err) {
+      this.showToast(`Network error executing global stop: ${err.message}`, 'error');
+    }
   }
 
   handleLogConsoleCommand() {

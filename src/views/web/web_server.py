@@ -281,6 +281,11 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             code = result.get("code", 200)
             return self._send_json(code, result)
 
+        elif route == "/api/system/full_stop":
+            result = adapter.full_stop_all()
+            code = result.get("code", 200)
+            return self._send_json(code, result)
+
         else:
             self.send_error(404, "Endpoint not found")
 

@@ -81,3 +81,17 @@ class SystemManager:
                 self._teardown_model(name, model)
             except Exception:
                 pass
+
+    def full_stop_all(self):
+        models = self.get_active_models_snapshot()
+        for name, model in models.items():
+            try:
+                if hasattr(model, 'full_stop'):
+                    model.full_stop()
+                elif hasattr(model, 'stop_monitoring'):
+                    model.stop_monitoring()
+                elif hasattr(model, 'stop'):
+                    model.stop()
+            except Exception as e:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_error("Stop Error", f"Failed to stop {name}: {e}", e)

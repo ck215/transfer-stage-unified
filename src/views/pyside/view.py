@@ -841,9 +841,22 @@ class DashboardWindow(QMainWindow):
         self.sidebar.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.sidebar.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         self.sidebar.setMinimumWidth(250)
+        
+        sidebar_widget = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar_widget)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
+        
+        self.stop_btn = QPushButton("FULL STOP")
+        self.stop_btn.setStyleSheet("background-color: red; color: white; font-weight: bold; font-size: 14px; padding: 10px;")
+        self.stop_btn.clicked.connect(self.system_manager.full_stop_all)
+        sidebar_layout.addWidget(self.stop_btn)
+        
         self.device_list = QListWidget()
         self.device_list.setStyleSheet("background-color: #1E1E1E; color: white; border: none;")
-        self.sidebar.setWidget(self.device_list)
+        sidebar_layout.addWidget(self.device_list)
+        
+        self.sidebar.setWidget(sidebar_widget)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.sidebar)
         
         self.device_list.itemChanged.connect(self.on_device_item_changed)
