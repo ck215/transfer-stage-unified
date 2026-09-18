@@ -49,7 +49,24 @@ sys.modules["matplotlib.figure"] = MagicMock()
 
 sys.modules['matplotlib.backends.backend_tkagg'] = MagicMock()
 sys.modules['matplotlib.colors'] = MagicMock()
-sys.modules['tkinter'] = MagicMock()
+tkinter_mock = MagicMock()
+class DummyTkWidget:
+    def __init__(self, master=None, *args, **kwargs): self.master = master or __import__('unittest.mock').mock.MagicMock()
+    def protocol(self, *args, **kwargs): pass
+    def destroy(self): pass
+    def deiconify(self): pass
+    def configure(self, *args, **kwargs): pass
+    def pack(self, *args, **kwargs): pass
+    def bind(self, *args, **kwargs): pass
+    def title(self, *args, **kwargs): pass
+    def geometry(self, *args, **kwargs): pass
+    def minsize(self, *args, **kwargs): pass
+    def after(self, *args, **kwargs): pass
+    def winfo_exists(self, *args, **kwargs): return True
+tkinter_mock.Toplevel = DummyTkWidget
+tkinter_mock.Frame = DummyTkWidget
+tkinter_mock.Tk = DummyTkWidget
+sys.modules['tkinter'] = tkinter_mock
 sys.modules['tkinter.ttk'] = MagicMock()
 sys.modules['tkinter.filedialog'] = MagicMock()
 sys.modules['tkinter.messagebox'] = MagicMock()
@@ -81,3 +98,18 @@ def _reset_global_error_routing():
         QtErrorPopupManager._instance = None
     except ImportError:
         pass
+
+@pytest.fixture
+def dual_shutdown_model():
+    class DualShutdownModel:
+        def __init__(self):
+            self.power_down_calls = 0
+            self.disable_calls = 0
+            
+        def power_down(self):
+            self.power_down_calls += 1
+            
+        def disable(self):
+            self.disable_calls += 1
+            
+    return DualShutdownModel()

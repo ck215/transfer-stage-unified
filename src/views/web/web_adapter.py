@@ -37,32 +37,22 @@ class WebModelAdapter:
             self.system_manager = system_manager
 
     def scan_hardware(self) -> Dict[str, Any]:
-        """Scans and enumerates available serial COM ports and gamepad controllers."""
+        """Scans and enumerates available serial COM ports and gamepad controllers.
+
+        Port listing only — deliberately does not probe device type per port
+        (that requires opening each port and waiting up to ~4.5s per baud
+        rate, same as tkinter/pyside's background-threaded scan). Doing that
+        synchronously here would turn this fast GET into a multi-second block
+        per connected port. Real device-type autodetection for the web view
+        needs an async scan flow (background task + poll/websocket), not a
+        loop bolted onto this handler; tracked as a follow-up, not done here.
+        """
         ports = ["SIM"]
-        try:
-            import serial.tools.list_ports
-            com_ports = list(serial.tools.list_ports.comports())
-            valid_ports = []
-            for port in com_ports:
-                dev_name = getattr(port, "device", str(port))
-                if "Bluetooth" in dev_name or "Wireless" in dev_name:
-                    continue
-                if sys.platform.startswith("linux") and dev_name.startswith("/dev/ttyS"):
-                    if getattr(port, "hwid", "n/a") == "n/a" or not getattr(port, "hwid", None):
-                        continue
-                valid_ports.append(dev_name)
-
-            if not valid_ports and com_ports:
-                valid_ports = [getattr(p, "device", str(p)) for p in com_ports]
-
-            def port_sort_key(dev_name):
-                is_usb = any(dev_name.startswith(prefix) for prefix in ("/dev/ttyACM", "/dev/ttyUSB", "/dev/cu.usb", "/dev/tty.usb")) or "USB" in dev_name
-                return (0 if is_usb else 1, dev_name)
-
-            sorted_ports = sorted(valid_ports, key=port_sort_key)
-            ports.extend(sorted_ports)
-        except Exception:
-            pass
+        import app_bootstrap
+        discovered = app_bootstrap.discover_ports()
+        for p in discovered:
+            if p not in ports:
+                ports.append(p)
 
         controllers = ["None"]
         try:
@@ -135,90 +125,44 @@ class WebModelAdapter:
             return {"status": "error", "code": 400, "message": "No active devices configured"}
 
         configs = normalized_configs
-        assigned_ports = set()
-        assigned_controllers = set()
-
+        import app_bootstrap
+        
+        # We need to map Headless to SIM for configs
         for c in configs:
-            dev = c.get("device")
-            port = c.get("port")
-            ctrl = c.get("controller", "None")
-
-            if not dev:
-                return {"status": "error", "code": 400, "message": "Device name is required"}
-
-            if port == "Headless":
-                port = "SIM"
+            if c.get("port") == "Headless":
                 c["port"] = "SIM"
-
-            if dev != "Red Percent Window" and port not in ("SIM", "None"):
-                if port in assigned_ports:
-                    return {
-                        "status": "error",
-                        "code": 400,
-                        "message": f"Port collision: Port '{port}' is assigned to multiple devices"
-                    }
-                assigned_ports.add(port)
-
-            if ctrl and "None" not in ctrl and "Virtual" not in ctrl and "N/A" not in ctrl and dev != "Red Percent Window":
-                if ctrl in assigned_controllers:
-                    return {
-                        "status": "error",
-                        "code": 400,
-                        "message": f"Controller collision: Controller '{ctrl}' is assigned to multiple devices"
-                    }
-                assigned_controllers.add(ctrl)
-
+                
+        errors = app_bootstrap.validate_assignment(configs)
+        if errors:
+            return {
+                "status": "error",
+                "code": 400,
+                "message": "\n".join(errors)
+            }
         # Instantiate Domain Models via SystemManager
         from model.system_manager import SystemManager
         new_manager = SystemManager()
         active_claims = {}
 
-        for c in configs:
-            dev = c["device"]
-            port = c["port"]
-            ctrl = c.get("controller", "None")
-
-            try:
-                if dev == "Stepper Probe":
-                    from model.probes import StepperProbe
-                    new_manager.register_model(dev, StepperProbe(port, ctrl, active_claims))
-                elif dev == "DC Probe":
-                    from model.probes import DCProbe
-                    new_manager.register_model(dev, DCProbe(port, ctrl, active_claims))
-                elif dev == "Chuck Positioner":
-                    from model.probes import ChuckPositioner
-                    new_manager.register_model(dev, ChuckPositioner(port, ctrl, active_claims))
-                elif dev == "Temperature Controller":
-                    from model.temperature_system import TemperatureSystem
-                    new_manager.register_model(dev, TemperatureSystem(port))
-                elif dev == "SMC100 Rotator":
-                    from model.rotator_system import RotatorSystem
-                    new_manager.register_model(dev, RotatorSystem(port))
-                elif dev == "Red Percent Window":
-                    from model.redpercent_system import RedPercentSystem
-                    new_manager.register_model(dev, RedPercentSystem())
-                else:
-                    # Generic mock model or custom device if provided in config
-                    pass
-                
-                # Apply disabled state so all devices initialize as connected but disabled
-                model = new_manager.get_model(dev)
-                if model:
-                    model._disabled_in_setup = not c.get("enabled", True)
-                    if hasattr(model, 'system_enabled'):
-                        model.system_enabled = False
-                    elif hasattr(model, 'disable'):
-                        # Fallback to general disable
-                        model.disable()
-
-            except Exception as e:
-                print(f"[WebModelAdapter] Failed to initialize device '{dev}':\n{traceback.format_exc()}")
-                return {
-                    "status": "error",
-                    "code": 500,
-                    "message": f"Failed to initialize device '{dev}': {str(e)}",
-                }
-
+        try:
+            active_models = app_bootstrap.build_models(configs, active_claims)
+        except Exception as e:
+            import traceback
+            print(f"[WebModelAdapter] Failed to initialize devices:\n{traceback.format_exc()}")
+            return {
+                "status": "error",
+                "code": 500,
+                "message": f"Failed to initialize devices: {str(e)}"
+            }
+            
+        for dev, model in active_models.items():
+            new_manager.register_model(dev, model)
+            cfg = next((c for c in configs if c["device"] == dev), {})
+            model._disabled_in_setup = not cfg.get("enabled", True)
+            if hasattr(model, 'system_enabled'):
+                model.system_enabled = False
+            elif hasattr(model, 'disable'):
+                model.disable()
         # Link Red Percent Window probes if active
         red_model = new_manager.active_models.get("Red Percent Window")
         if red_model:

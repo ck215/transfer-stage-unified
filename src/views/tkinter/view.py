@@ -162,8 +162,10 @@ class DraggableClosableNotebook(ttk.Notebook):
             self.forget(index)
 
 class DashboardWindow(tk.Toplevel):
-    def __init__(self, parent, active_models):
+    def __init__(self, parent, system_manager):
         super().__init__(parent)
+        self.system_manager = system_manager
+        active_models = self.system_manager.get_active_models_snapshot()
         self.title("Unified Control Dashboard")
         self.geometry("1000x800")
         
@@ -206,27 +208,8 @@ class DashboardWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def on_close(self):
-        # Handle graceful shutdown of pollers
-        for meta in self.tab_metadata.values():
-            model = meta['model']
-            if hasattr(model, 'poller') and model.poller:
-                model.poller.stop_polling()
-                model.poller.close()
-            if hasattr(model, 'disconnect'):
-                model.disconnect()
-            if hasattr(model, 'stop'):
-                try: model.stop()
-                except: pass
-            if hasattr(model, 'disable'):
-                model.disable()
-            elif hasattr(model, 'power_down'):
-                model.power_down()
-            if hasattr(model, 'serial_conn') and model.serial_conn:
-                if hasattr(model.serial_conn, 'close'):
-                    model.serial_conn.close()
-            elif hasattr(model, 'serial_comm') and model.serial_comm:
-                if hasattr(model.serial_comm, 'close'):
-                    model.serial_comm.close()
+
+        self.system_manager.shutdown_all()
                     
         self.destroy()
         self.master.deiconify() # Return to Setup Window
