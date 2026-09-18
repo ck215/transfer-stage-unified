@@ -183,29 +183,25 @@ def test_qt_dynamic_view_poll_model(qtbot):
     rot_model.poll_status.assert_called()
 
 def test_watchdog_do_disable_manual_mode(qtbot):
+    """The idle-disable watchdog now lives in the model (BaseProbe), not the
+    view — see model/probes.py's _start_interlock_watchdog and
+    tests/core/test_edge_mvc_model.py's test_auto_disable_interlock_*. The
+    view's only remaining responsibility is relaying real controller
+    activity into the model via touch_activity()."""
     from view_pyside import QtDynamicView
     probe_model = MagicMock()
     probe_model.ui_schema = {"sections": []}
     probe_model.poller = MagicMock()
-    probe_model.system_enabled = True
-    probe_model.is_stepping = False
-    probe_model.manual_flag = True
-    probe_model.disable = MagicMock()
+    probe_model.touch_activity = MagicMock()
 
     view = QtDynamicView(probe_model)
     qtbot.addWidget(view)
-    
+
     # Get the activity_callback passed to start_polling
     args, kwargs = probe_model.poller.start_polling.call_args
     activity_callback = kwargs.get("activity_callback")
-    
-    # Initialize the disable timer
+
+    assert activity_callback is probe_model.touch_activity
     activity_callback()
-    
-    # Trigger the timeout
-    view.disable_timer.timeout.emit()
-    
-    # Probe disable should NOT be called because manual_flag is True
-    probe_model.disable.assert_not_called()
-    assert view.disable_timer.isActive(), "disable_timer should be restarted"
+    probe_model.touch_activity.assert_called_once()
 

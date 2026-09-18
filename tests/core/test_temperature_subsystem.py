@@ -13,6 +13,28 @@ def get_mock_serial_conn():
     return mock_conn
 
 
+def test_read_serial_data_cannot_free_spin_on_instant_readline():
+    """read_serial_data must never exceed ~100Hz even if the underlying
+    serial object returns truthy data instantly instead of blocking
+    (e.g. a misconfigured non-blocking port, or a mock) — previously this
+    free-spun and grew RSS by multiple GB in seconds."""
+    with patch("model.temperature_system.serial") as mock_serial_cls:
+        mock_instance = get_mock_serial_conn()
+        mock_instance.ser.readline.return_value = b"0,20.0,20.0\n"  # never blocks, always truthy
+        mock_serial_cls.return_value = mock_instance
+
+        ts = TemperatureSystem("COM4")
+        thread = threading.Thread(target=ts.read_serial_data, daemon=True)
+        thread.start()
+        time.sleep(0.5)
+        ts.close()
+        thread.join(timeout=2)
+
+        # At 0.01s/iteration a bound loop does ~50 iterations in 0.5s;
+        # a free-spinning loop would do tens of thousands.
+        assert mock_instance.ser.readline.call_count < 200
+
+
 def test_temperature_system_initialization_and_handshake():
     """Verify 115200 baud rate and initial handshake packet <0,6.0,0,0,0,0>."""
     with patch("model.temperature_system.serial") as mock_serial_cls:

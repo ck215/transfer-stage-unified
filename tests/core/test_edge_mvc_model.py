@@ -1,3 +1,4 @@
+import time
 import pytest
 from unittest.mock import MagicMock
 from model.probes import StepperProbe, DCProbe
@@ -66,11 +67,71 @@ def test_mutually_exclusive_probe_flags():
     probe.full_stop()
     assert not probe.auton_flag and not probe.manual_flag
 
+def test_auto_disable_interlock_fires_with_no_view_attached():
+    """The 5-minute idle interlock must live in the model so it protects
+    every frontend, including the web dashboard (which previously had no
+    auto-disable at all). No view/poller callback involved here at all."""
+    probe = StepperProbe("SIM", None)
+    probe.serial_comm = MagicMock()
+    probe._INTERLOCK_POLL_INTERVAL = 0.02
+    probe._INTERLOCK_TIMEOUT = 0.05
+
+    probe.enable()
+    assert probe.system_enabled is True
+
+    time.sleep(0.3)
+
+    assert probe.system_enabled is False
+    probe.serial_comm.disable.assert_called()
+
+def test_auto_disable_interlock_deferred_while_stepping():
+    """Per user decision: defer the idle disable while actively stepping/
+    manual, rather than disabling unconditionally like main does."""
+    probe = StepperProbe("SIM", None)
+    probe.serial_comm = MagicMock()
+    probe._INTERLOCK_POLL_INTERVAL = 0.02
+    probe._INTERLOCK_TIMEOUT = 0.05
+
+    probe.enable()
+    probe.is_stepping = True
+
+    time.sleep(0.3)
+
+    assert probe.system_enabled is True  # not disabled while "stepping"
+    probe.full_stop()
+    assert probe.system_enabled is False
+
+def test_stepper_probe_step_size_defaults():
+    """StepperProbe must default to step size 1, matching main/src/stepper_frame.py,
+    not BaseProbe's 16 (a 16x-further-than-intended move on identical UI input)."""
+    probe = StepperProbe("SIM", None)
+    assert probe.x_step == "1"
+    assert probe.y_step == "1"
+    assert probe.z_step == "1"
+
 def test_system_manager_invalid_model():
     """Test registering an invalid model type."""
     manager = SystemManager()
     manager.register_model("Invalid", "Not a model")
     assert manager.get_model("Invalid") == "Not a model"
+
+def test_shutdown_all_disables_probes_without_disconnect_or_stop():
+    """BaseProbe (Stepper/Chuck/DC) defines disable()/power_down(), not
+    disconnect()/stop() — shutdown_all must fall back to disable() so
+    motors actually de-energize on app close/reboot, matching main's
+    explicit self.serial.disable() on window close."""
+    manager = SystemManager()
+    probe = MagicMock(spec=['disable'])
+    manager.register_model("Stepper", probe)
+    manager.shutdown_all()
+    probe.disable.assert_called_once()
+
+def test_reboot_model_disables_old_probe_without_disconnect_or_stop():
+    manager = SystemManager()
+    old_probe = MagicMock(spec=['disable'])
+    manager.active_models["Stepper"] = old_probe
+    manager.reboot_model("Stepper", lambda: MagicMock())
+    old_probe.disable.assert_called_once()
 
 def test_dcprobe_mutating_state_out_of_order():
     """Test mutating state out of order on the DCProbe."""

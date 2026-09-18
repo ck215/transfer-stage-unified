@@ -141,6 +141,12 @@ def test_get_gamepad_wrapper_factory():
     js_t16000.get_name.return_value = "Thrustmaster T.16000M"
     assert isinstance(get_gamepad_wrapper(js_t16000), T16000MGamepad)
 
+def test_get_gamepad_wrapper_rejects_unrecognized_device():
+    js_unknown = MagicMock()
+    js_unknown.get_name.return_value = "Generic HID Device"
+    with pytest.raises(ValueError, match="Unsupported joystick detected"):
+        get_gamepad_wrapper(js_unknown)
+
 def test_controller_claim_conflict():
     with patch("controller.gamepad.pygame"):
         claims = {"ProcessA": "ID 0: Xbox Controller"}
