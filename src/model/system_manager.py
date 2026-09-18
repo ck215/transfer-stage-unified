@@ -28,6 +28,10 @@ class SystemManager:
                         old_model.disconnect()
                     if hasattr(old_model, 'stop'):
                         old_model.stop()
+                    if hasattr(old_model, 'disable'):
+                        old_model.disable()
+                    elif hasattr(old_model, 'power_down'):
+                        old_model.power_down()
                     if hasattr(old_model, 'serial_conn') and old_model.serial_conn:
                         old_model.serial_conn.close()
                     elif hasattr(old_model, 'serial_comm') and old_model.serial_comm:
@@ -61,6 +65,10 @@ class SystemManager:
                         model.disconnect()
                     if hasattr(model, 'stop'):
                         model.stop()
+                    if hasattr(model, 'disable'):
+                        model.disable()
+                    elif hasattr(model, 'power_down'):
+                        model.power_down()
                     if hasattr(model, 'serial_conn') and model.serial_conn:
                         model.serial_conn.close()
                     elif hasattr(model, 'serial_comm') and model.serial_comm:

@@ -158,58 +158,15 @@ class QtDynamicView(QWidget):
                 def after(self, ms, func):
                     QTimer.singleShot(ms, func)
             
-            def _reset_disable_timer(model_ref=self.model):
-                if hasattr(self, 'disable_timer') and self.disable_timer:
-                    self.disable_timer.stop()
-                def _do_disable():
-                    if getattr(model_ref, 'is_stepping', False) or getattr(model_ref, 'manual_flag', False):
-                        print(f"[Timeout] {model_ref.__class__.__name__} is actively stepping or in manual mode, deferring inactivity disable.")
-                        self.disable_timer.start(30000)
-                        return
-                    msg = f"5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}"
-                    print(f"[{model_ref.__class__.__name__} Timeout] {msg}")
-                    
-                    dialog = QMessageBox(self)
-                    dialog.setIcon(QMessageBox.Warning)
-                    dialog.setWindowTitle("Idle Timeout")
-                    
-                    countdown = 10
-                    dialog.setText(f"{msg}\n\nAuto-disabling in {countdown} seconds.")
-                    dialog.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-                    dialog.button(QMessageBox.Yes).setText("Keep Awake")
-                    dialog.button(QMessageBox.No).setText("Disable Now")
-                    dialog.setDefaultButton(QMessageBox.Yes)
-                    
-                    auto_timer = QTimer(dialog)
-                    def tick():
-                        nonlocal countdown
-                        countdown -= 1
-                        dialog.setText(f"{msg}\n\nAuto-disabling in {countdown} seconds.")
-                        if countdown <= 0:
-                            auto_timer.stop()
-                            dialog.done(QMessageBox.No)
-                    
-                    auto_timer.timeout.connect(tick)
-                    auto_timer.start(1000)
-                    
-                    result = dialog.exec()
-                    if result == QMessageBox.No:
-                        if hasattr(model_ref, 'disable'):
-                            model_ref.disable()
-                    else:
-                        _reset_disable_timer()
-                        
-                if getattr(model_ref, 'system_enabled', False):
-                    if not hasattr(self, 'disable_timer') or self.disable_timer is None:
-                        self.disable_timer = QTimer(self)
-                        self.disable_timer.setSingleShot(True)
-                        self.disable_timer.timeout.connect(_do_disable)
-                    self.disable_timer.start(300000)
-
+            # Idle auto-disable now lives in the model (BaseProbe's interlock
+            # watchdog) so every frontend shares it, including the web
+            # dashboard, which previously had no auto-disable at all. The
+            # view only needs to relay real controller activity into it.
             def print_log(msg):
                 print(f"[controllerDrive] {msg}")
 
-            self.model.poller.start_polling(GUIAdapter(), log_updater=print_log, activity_callback=_reset_disable_timer)
+            activity_callback = getattr(self.model, 'touch_activity', None)
+            self.model.poller.start_polling(GUIAdapter(), log_updater=print_log, activity_callback=activity_callback)
             
             self.input_timer = QTimer(self)
             self._prev_manual_flag = False

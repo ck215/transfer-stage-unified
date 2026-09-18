@@ -18,6 +18,10 @@ def _num(value, default, *, minimum=None, integer=False):
     return int(v) if integer else v
 
 class BaseProbe:
+    # Overridable by tests to avoid waiting on the real 5-minute timeout.
+    _INTERLOCK_POLL_INTERVAL = 5
+    _INTERLOCK_TIMEOUT = 300
+
     def __del__(self):
         print(f"[{self.__class__.__name__}] Destructor called")
 
@@ -61,6 +65,13 @@ class BaseProbe:
         self.auton_flag = False
         self.manual_flag = False
         self.is_stepping = False
+
+        # Auto-disable interlock (mirrors main's stepper_frame.py/chuck_frame.py
+        # 5-minute idle timeout). Lives in the model, not the view, so every
+        # frontend shares it — the web dashboard previously had none at all.
+        self.last_activity_time = time.time()
+        self._interlock_stop = threading.Event()
+        self._interlock_thread = None
 
     @property
     def vel_x(self):
@@ -315,11 +326,18 @@ class BaseProbe:
         }
 
     def send_autonomous_command(self):
+        self.touch_activity()
         if self.serial_comm:
             self.serial_comm.send_autonomous_command(self.get_params())
 
     def send_manual_mode_command(self, controller_params):
         if self.serial_comm:
+            if (controller_params.get("x_axisStatus", 0.0) or controller_params.get("y_axisStatus", 0.0)
+                    or controller_params.get("z_axisStatusR", -1.0) != -1.0
+                    or controller_params.get("z_axisStatusL", -1.0) != -1.0
+                    or controller_params.get("dpad_LR", 0) or controller_params.get("dpad_UD", 0)
+                    or controller_params.get("LBumper", 0) or controller_params.get("RBumper", 0)):
+                self.touch_activity()
             params = {
                 "x_axisStatus": controller_params.get("x_axisStatus", 0.0),
                 "y_axisStatus": controller_params.get("y_axisStatus", 0.0),
@@ -343,6 +361,33 @@ class BaseProbe:
             if pos:
                 self.pos_x, self.pos_y, self.pos_z = str(pos[0]), str(pos[1]), str(pos[2])
 
+    def touch_activity(self):
+        self.last_activity_time = time.time()
+
+    def _start_interlock_watchdog(self):
+        if self._interlock_thread and self._interlock_thread.is_alive():
+            return
+        self._interlock_stop.clear()
+        self.touch_activity()
+
+        def _watch():
+            while not self._interlock_stop.wait(self._INTERLOCK_POLL_INTERVAL):
+                if not self.system_enabled:
+                    return
+                if self.is_stepping or self.manual_flag:
+                    # Deferred while actively operating, matching this
+                    # refactor's existing Tkinter/PySide behavior.
+                    continue
+                if time.time() - self.last_activity_time > self._INTERLOCK_TIMEOUT:
+                    msg = f"5 minutes of inactivity detected. Disabling {self.__class__.__name__}"
+                    print(f"[Timeout] {msg}")
+                    ErrorPopupManager.report_info("Idle Timeout", msg)
+                    self.disable()
+                    return
+
+        self._interlock_thread = threading.Thread(target=_watch, daemon=True)
+        self._interlock_thread.start()
+
     def enable(self):
         if not self.system_enabled:
             if self.serial_comm:
@@ -353,6 +398,7 @@ class BaseProbe:
                     ErrorPopupManager.report_warning("Enable Failed", str(e))
                     return False
             self.system_enabled = True
+        self._start_interlock_watchdog()
         return True
 
     def toggle_enable(self):
@@ -365,6 +411,7 @@ class BaseProbe:
         self.manual_flag = False
         self.auton_flag = False
         self.is_stepping = False
+        self._interlock_stop.set()
         self.send_stop_command()
         if self.system_enabled:
             if self.serial_comm:
@@ -391,7 +438,11 @@ class BaseProbe:
 
 
 class StepperProbe(BaseProbe):
-    pass
+    def __init__(self, port, controller_id, active_claims=None):
+        super().__init__(port, controller_id, active_claims)
+        self.x_step = "1"
+        self.y_step = "1"
+        self.z_step = "1"
 
 
 class DCProbe(BaseProbe):

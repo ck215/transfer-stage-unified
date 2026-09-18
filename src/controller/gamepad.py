@@ -230,8 +230,7 @@ def get_gamepad_wrapper(joystick):
         return BluetoothXboxGamepad(joystick)
     if "xbox" in name_lower or "controller" in name_lower or "x-box" in name_lower:
         return XboxGamepad(joystick)
-    # Default fallback
-    return XboxGamepad(joystick)
+    raise ValueError(f"Unsupported joystick detected: '{name}'. Add axis binds in gamepad.py!")
 
 class ControllerPoller:
     

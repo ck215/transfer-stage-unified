@@ -1,6 +1,5 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import time
 import queue
 import sys
 import traceback
@@ -218,6 +217,10 @@ class DashboardWindow(tk.Toplevel):
             if hasattr(model, 'stop'):
                 try: model.stop()
                 except: pass
+            if hasattr(model, 'disable'):
+                model.disable()
+            elif hasattr(model, 'power_down'):
+                model.power_down()
             if hasattr(model, 'serial_conn') and model.serial_conn:
                 if hasattr(model.serial_conn, 'close'):
                     model.serial_conn.close()
@@ -497,25 +500,12 @@ class DynamicView(tk.Frame):
     def start_polling(self, dashboard_window):
         # 1. Start the controller poller if available
         if hasattr(self.model, 'poller') and self.model.poller:
-            def _reset_disable_timer(model_ref=self.model):
-                model_ref.last_activity_time = time.time()
-                if hasattr(model_ref, 'disable_timer_id') and model_ref.disable_timer_id:
-                    dashboard_window.after_cancel(model_ref.disable_timer_id)
-                    model_ref.disable_timer_id = None
-                if getattr(model_ref, 'system_enabled', False):
-                    model_ref.disable_timer_id = dashboard_window.after(300000, lambda: _auto_disable(model_ref))
-            def _auto_disable(model_ref):
-                if getattr(model_ref, 'is_stepping', False) or getattr(model_ref, 'manual_flag', False):
-                    print(f"[Timeout] {model_ref.__class__.__name__} is actively stepping or in manual mode, deferring inactivity disable.")
-                    model_ref.disable_timer_id = dashboard_window.after(30000, lambda: _auto_disable(model_ref))
-                    return
-                msg = f"5 minutes of inactivity detected. Disabling {model_ref.__class__.__name__}"
-                print(f"[Timeout] {msg}")
-                ErrorPopupManager.report_info("Idle Timeout", msg)
-                if hasattr(model_ref, 'disable'):
-                    model_ref.disable()
-                    
-            self.model.poller.start_polling(dashboard_window, log_updater=print, activity_callback=_reset_disable_timer)
+            # Idle auto-disable now lives in the model (BaseProbe's interlock
+            # watchdog) so every frontend shares it, including the web
+            # dashboard, which previously had no auto-disable at all. The
+            # view only needs to relay real controller activity into it.
+            activity_callback = getattr(self.model, 'touch_activity', None)
+            self.model.poller.start_polling(dashboard_window, log_updater=print, activity_callback=activity_callback)
             
             self._prev_manual_flag = False
             def _route_input():
