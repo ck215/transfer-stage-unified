@@ -173,18 +173,9 @@ class QtDynamicView(QWidget):
             def _route_input():
                 current_manual = getattr(self.model, 'manual_flag', False)
                 if current_manual:
-                    # Block manual enable without a controller
-                    poller = getattr(self.model, 'poller', None)
-                    if not poller or not poller.gamepad:
-                        self.model.manual_flag = False
-                        current_manual = False
-                        print(f"[{self.model.__class__.__name__}] Manual mode blocked (No gamepad).")
-                        if hasattr(self.model, 'send_manual_mode_command'):
-                            self.model.send_manual_mode_command({})
-                    else:
-                        controller_params = self.model.poller.get_mapped_state()
-                        if hasattr(self.model, 'send_manual_mode_command'):
-                            self.model.send_manual_mode_command(controller_params or {})
+                    controller_params = self.model.poller.get_mapped_state()
+                    if hasattr(self.model, 'send_manual_mode_command'):
+                        self.model.send_manual_mode_command(controller_params or {})
                 elif getattr(self, '_prev_manual_flag', False):
                     if hasattr(self.model, 'send_manual_mode_command'):
                         self.model.send_manual_mode_command({})

@@ -331,6 +331,11 @@ class BaseProbe:
             self.serial_comm.send_autonomous_command(self.get_params())
 
     def send_manual_mode_command(self, controller_params):
+        if self.manual_flag and (not self.poller or not self.poller.gamepad):
+            self.manual_flag = False
+            print(f"[{self.__class__.__name__}] Manual mode blocked (No gamepad).")
+            controller_params = {}
+            
         if self.serial_comm:
             if (controller_params.get("x_axisStatus", 0.0) or controller_params.get("y_axisStatus", 0.0)
                     or controller_params.get("z_axisStatusR", -1.0) != -1.0
