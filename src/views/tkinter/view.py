@@ -584,7 +584,7 @@ class RedPercentView(tk.Frame):
         sync_frame.grid(row=3, column=0, columnspan=2, pady=5, sticky=tk.W)
         ttk.Label(sync_frame, text="Sync Dimensions:").pack(side=tk.LEFT)
         for dim in ['X', 'Y', 'Z']:
-            chk = ttk.Checkbutton(sync_frame, text=dim, variable=self.sync_vars[dim], command=self._update_sync_dimensions)
+            chk = ttk.Checkbutton(sync_frame, text=dim, variable=self.sync_vars[dim], command=getattr(self.system, f"toggle_sync_{dim.lower()}"))
             chk.pack(side=tk.LEFT, padx=2)
 
         probe_frame = ttk.Frame(color_frame)
@@ -600,8 +600,8 @@ class RedPercentView(tk.Frame):
         self.poll_display()
 
     def _update_probe_dropdown(self):
-        if hasattr(self.system, 'available_probes') and self.system.available_probes:
-            probes = list(self.system.available_probes.keys())
+        probes = self.system.get_available_probe_names()
+        if probes:
             self.probe_dropdown['values'] = probes
             if hasattr(self.system, 'selected_probe_name') and self.system.selected_probe_name in probes:
                 self.probe_var.set(self.system.selected_probe_name)
@@ -616,9 +616,6 @@ class RedPercentView(tk.Frame):
         selected = self.probe_var.get()
         if hasattr(self.system, 'set_stepper_model'):
             self.system.set_stepper_model(selected)
-
-    def _update_sync_dimensions(self):
-        self.system.sync_dimensions = [dim for dim in ['X', 'Y', 'Z'] if self.sync_vars[dim].get()]
 
     def select_focus_area(self):
         selection_window = tk.Toplevel(self.winfo_toplevel())
@@ -693,7 +690,7 @@ class RedPercentView(tk.Frame):
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
         
-        if self.system.data_log and self.system.data_log.red_values:
+        if self.system.has_unsaved_data:
             if messagebox.askyesno("Save Log", "Monitoring stopped. Would you like to save the data to a CSV?"):
                 self.save_log_to_file()
 

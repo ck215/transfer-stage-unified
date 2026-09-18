@@ -717,7 +717,7 @@ class RedPercentDynamicView(QtDynamicView):
         for dim in ['X', 'Y', 'Z']:
             cb = QCheckBox(dim)
             cb.setChecked(dim in self.model.sync_dimensions)
-            cb.stateChanged.connect(self._update_sync_dimensions)
+            cb.toggled.connect(lambda checked, d=dim: getattr(self.model, f"toggle_sync_{d.lower()}")())
             self.sync_cbs[dim] = cb
             sync_layout.addWidget(cb)
         sync_layout.addStretch()
@@ -730,8 +730,8 @@ class RedPercentDynamicView(QtDynamicView):
         probe_layout.addWidget(lbl_probe)
         
         self.probe_combo = QComboBox()
-        if hasattr(self.model, 'available_probes') and self.model.available_probes:
-            probes = list(self.model.available_probes.keys())
+        probes = self.model.get_available_probe_names()
+        if probes:
             self.probe_combo.addItems(probes)
             if hasattr(self.model, 'selected_probe_name') and self.model.selected_probe_name in probes:
                 self.probe_combo.setCurrentText(self.model.selected_probe_name)
@@ -751,9 +751,6 @@ class RedPercentDynamicView(QtDynamicView):
         if hasattr(self.model, 'set_stepper_model'):
             self.model.set_stepper_model(text)
 
-    def _update_sync_dimensions(self):
-        self.model.sync_dimensions = [dim for dim, cb in self.sync_cbs.items() if cb.isChecked()]
-
     def _execute_command(self, cmd_name):
         if cmd_name == "set_focus_area_ui":
             self.overlay = SelectionOverlay(self.model)
@@ -767,7 +764,7 @@ class RedPercentDynamicView(QtDynamicView):
             self.save_log_ui()
         elif cmd_name == "stop_monitoring":
             super()._execute_command(cmd_name)
-            if self.model.data_log and self.model.data_log.red_values:
+            if self.model.has_unsaved_data:
                 reply = QMessageBox.question(
                     self, 
                     "Save Log", 

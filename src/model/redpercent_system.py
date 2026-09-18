@@ -167,6 +167,22 @@ class RedPercentSystem:
         on the model."""
         pass
 
+    def toggle_sync_x(self):
+        self.sync_x = not self.sync_x
+
+    def toggle_sync_y(self):
+        self.sync_y = not self.sync_y
+
+    def toggle_sync_z(self):
+        self.sync_z = not self.sync_z
+
+    def get_available_probe_names(self) -> list:
+        return list(self.available_probes.keys()) if self.available_probes else []
+
+    @property
+    def has_unsaved_data(self) -> bool:
+        return bool(self.data_log and self.data_log.red_values)
+
     @property
     def ui_schema(self):
         return {
@@ -176,15 +192,15 @@ class RedPercentSystem:
                     "elements": [
                         {"type": "entry", "text": "Probe Name:", "model_attr": "probe_name"},
                         {"type": "entry", "text": "Probe Tilt Angle:", "model_attr": "probe_tilt_angle"},
-                        {"type": "dropdown", "text": "Position Source:", "model_attr": "selected_probe_name"}
+                        {"type": "dropdown", "text": "Position Source:", "model_attr": "selected_probe_name", "options_command": "get_available_probe_names"}
                     ]
                 },
                 {
                     "title": "Sync Dimensions",
                     "elements": [
-                        {"type": "toggle", "text": "Sync X", "model_attr": "sync_x"},
-                        {"type": "toggle", "text": "Sync Y", "model_attr": "sync_y"},
-                        {"type": "toggle", "text": "Sync Z", "model_attr": "sync_z"}
+                        {"type": "toggle", "text": "Sync X", "model_attr": "sync_x", "command": "toggle_sync_x"},
+                        {"type": "toggle", "text": "Sync Y", "model_attr": "sync_y", "command": "toggle_sync_y"},
+                        {"type": "toggle", "text": "Sync Z", "model_attr": "sync_z", "command": "toggle_sync_z"}
                     ]
                 },
                 {
