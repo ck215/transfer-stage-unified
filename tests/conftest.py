@@ -1,10 +1,25 @@
 import sys
 import os
+import pytest
 
 # Set headless Qt platform before any Qt fixtures initialize.
 # Without this, pytest-qt's qapp fixture calls QApplication() which
 # aborts immediately on macOS when no display server is available.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+if sys.platform == "darwin":
+    # macOS marks pip-downloaded PySide6 .dylib files UF_HIDDEN, which makes
+    # Qt's plugin scanner silently skip them — QApplication() then aborts
+    # with a native SIGABRT (qt_check_pointer) instead of raising a Python
+    # exception, which looks like pytest hanging/crashing. Same fix as
+    # run_macos.sh's launcher self-heal; must run before any PySide6 import.
+    try:
+        import subprocess
+        import PySide6
+        pyside6_dir = os.path.dirname(PySide6.__file__)
+        subprocess.run(["chflags", "-R", "nohidden", pyside6_dir], check=False)
+    except ImportError:
+        pass
 
 from unittest.mock import MagicMock
 
@@ -40,3 +55,29 @@ sys.modules['tkinter.filedialog'] = MagicMock()
 sys.modules['tkinter.messagebox'] = MagicMock()
 
 # Add the src directory to the python path
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_error_routing():
+    """QtErrorPopupManager (views/pyside/view.py) is a process-wide class-level
+    singleton: once any test calls .initialize(), it globally rewires
+    ErrorRouter's callbacks (also process-wide class state) to real,
+    blocking QMessageBox popups for the rest of the pytest process — not
+    just its own test. Under the offscreen Qt platform there is no user to
+    click the dialog, so the next unrelated test anywhere in the session
+    that triggers ErrorRouter.report_error/warning/info hits QDialog.exec()
+    and hangs forever (confirmed via a native stack sample: the hang sits
+    in QDialog::exec() -> qt_safe_poll, reached only through this signal
+    chain). Reset both pieces of global state after every test so Qt-popup
+    routing never leaks into a later, unrelated test.
+    """
+    yield
+    from error_routing import ErrorRouter
+    ErrorRouter._error_cb = None
+    ErrorRouter._warning_cb = None
+    ErrorRouter._info_cb = None
+    try:
+        from views.pyside.view import QtErrorPopupManager
+        QtErrorPopupManager._instance = None
+    except ImportError:
+        pass
