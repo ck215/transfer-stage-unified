@@ -155,9 +155,16 @@ class RedPercentSystem:
             self.sync_dimensions.remove('Z')
 
     def save_log_web(self):
-        self.save_log("redpercent_log.csv")
+        self.save_log(f"redpercent_log_{time.strftime('%Y%m%d_%H%M%S')}.csv")
 
     def plot_data_ui(self):
+        pass
+
+    def set_focus_area_ui(self):
+        """Invoked by the web/PySide UI to open the client-side focus-area
+        selector. The actual ROI coordinates land via set_focus_area() once
+        the user finishes the drag selection; this call itself is a no-op
+        on the model."""
         pass
 
     @property
@@ -194,6 +201,11 @@ class RedPercentSystem:
                         {"type": "button", "text": "Stop Monitoring", "command": "stop_monitoring", "bg": "darkred", "fg": "white"},
                         {"type": "button", "text": "Reset Baseline", "command": "reset_baseline", "bg": "gray", "fg": "white"},
                         {"type": "button", "text": "Set Focus Area", "command": "set_focus_area_ui", "bg": "darkblue", "fg": "white"},
+                        # Not rendered (unknown element type to the UI renderers): registers
+                        # set_focus_area in the schema-derived command allowlist. The button
+                        # above only opens the client-side selector; the real coordinates are
+                        # submitted via this command once the user finishes the drag selection.
+                        {"type": "internal", "command": "set_focus_area"},
                         {"type": "button", "text": "Save Log", "command": "save_log_web", "bg": "blue", "fg": "white"},
                         {"type": "button", "text": "Plot Data", "command": "plot_data_ui", "bg": "purple", "fg": "white"}
                     ]
