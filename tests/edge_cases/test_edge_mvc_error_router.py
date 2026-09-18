@@ -3,10 +3,10 @@ import sys
 from unittest.mock import patch, MagicMock
 
 sys.path.append("src")
-from view import ErrorPopupManager
+from views.tkinter.view import ErrorPopupManager
 
 def test_error_popup_manager_none_types():
-    with patch("view.messagebox") as mock_mb:
+    with patch("views.tkinter.view.messagebox") as mock_mb:
         # Test None for message with an exception
         # This will likely crash because None += str
         error_data = {
@@ -24,7 +24,7 @@ def test_error_popup_manager_corrupted_exception():
         def __str__(self):
             raise RuntimeError("Corrupted stack trace or string representation")
     
-    with patch("view.messagebox") as mock_mb:
+    with patch("views.tkinter.view.messagebox") as mock_mb:
         error_data = {
             'title': "Title",
             'message': "Message",
@@ -36,7 +36,7 @@ def test_error_popup_manager_corrupted_exception():
 
 
 def test_error_popup_manager_large_strings():
-    with patch("view.messagebox") as mock_mb:
+    with patch("views.tkinter.view.messagebox") as mock_mb:
         large_string = "A" * (10**7)
         error_data = {
             'title': large_string,
@@ -53,7 +53,7 @@ def test_error_popup_manager_large_strings():
 def test_setup_excepthook_corrupted_traceback():
     ErrorPopupManager.setup_excepthook()
     # Trigger sys.excepthook with None types and strings
-    with patch("view.ErrorPopupManager.report_error") as mock_report:
+    with patch("views.tkinter.view.ErrorPopupManager.report_error") as mock_report:
         # Corrupted stack trace, exc_type is a string, exc_value is None, traceback is string
         # This tests if traceback.print_exception crashes
         try:

@@ -558,7 +558,7 @@ def run_legacy_app():
                     red_model.set_stepper_model(list(probe_models.keys())[0])
     
             # Launch Tkinter Dashboard
-            from view import DashboardWindow, ErrorPopupManager
+            from views.tkinter.view import DashboardWindow, ErrorPopupManager
             
             dash = DashboardWindow(self, active_models)
             ErrorPopupManager.initialize(dash)
@@ -567,7 +567,7 @@ def run_legacy_app():
             # dash will call self.deiconify() on close.
 
     app = SetupWindow()
-    from view import ErrorPopupManager
+    from views.tkinter.view import ErrorPopupManager
     ErrorPopupManager.initialize(app)
     ErrorPopupManager.setup_excepthook()
     app.mainloop()
@@ -1023,7 +1023,7 @@ def run_pyside_app():
                 elif probe_models:
                     red_model.set_stepper_model(list(probe_models.keys())[0])
     
-            from view_pyside import DashboardWindow
+            from views.pyside.view import DashboardWindow
             from model.system_manager import SystemManager
     
             self.manager = SystemManager()
@@ -1037,7 +1037,7 @@ def run_pyside_app():
     
     app = QApplication.instance() or QApplication(sys.argv)
     
-    from view_pyside import QtErrorPopupManager
+    from views.pyside.view import QtErrorPopupManager
     QtErrorPopupManager.initialize(app)
     QtErrorPopupManager.setup_excepthook()
     
@@ -1052,7 +1052,7 @@ def run_web_app(port=8080, open_browser=True):
     from model.rotator_system import RotatorSystem
     from model.redpercent_system import RedPercentSystem
     from model.system_manager import SystemManager
-    from view.web_view import WebDashboardWindow
+    from views.web.web_view import WebDashboardWindow
 
     manager = SystemManager()
     active_claims = {}

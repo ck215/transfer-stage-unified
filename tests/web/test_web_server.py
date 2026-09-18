@@ -5,7 +5,7 @@ import urllib.parse
 import urllib.error
 import time
 import threading
-from view.web_server import WebDashboardServer, WebAPIHandler
+from views.web.web_server import WebDashboardServer, WebAPIHandler
 
 class MockDeviceModel:
     def __init__(self, name="TestStage"):

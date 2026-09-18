@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QApplication
 
 # Add mvc-refactor/src to path
 
-from view_pyside import PlotDialog, ControllerLogWindow, RedPercentDynamicView, QtDynamicView, DashboardWindow
+from views.pyside.view import PlotDialog, ControllerLogWindow, RedPercentDynamicView, QtDynamicView, DashboardWindow
 
 def test_plot_dialog_invalid_args(qtbot):
     # Pass invalid parent
@@ -405,7 +405,7 @@ def test_numeric_field_validation(qtbot):
     assert isinstance(entry.validator(), QDoubleValidator)
 
 def test_error_popup_manager_signal_routing(qtbot):
-    from view_pyside import QtErrorPopupManager
+    from views.pyside.view import QtErrorPopupManager
     manager = QtErrorPopupManager.initialize()
     
     with patch('PySide6.QtWidgets.QMessageBox.critical') as mock_critical:
@@ -423,7 +423,7 @@ def test_error_popup_manager_signal_routing(qtbot):
         assert "Test Message" in args[2]
 
 def test_selection_overlay_mouse_drag(qtbot):
-    from view_pyside import SelectionOverlay
+    from views.pyside.view import SelectionOverlay
     from PySide6.QtGui import QMouseEvent, QScreen
     from PySide6.QtCore import Qt, QPoint, QPointF
     

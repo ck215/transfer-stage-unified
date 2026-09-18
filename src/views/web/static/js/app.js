@@ -716,6 +716,22 @@ class TransferStageApp {
       
     }
 
+    const btnCloseRoiModal = document.getElementById('btn-close-roi-modal');
+    if (btnCloseRoiModal && !btnCloseRoiModal.dataset.bound) {
+      btnCloseRoiModal.dataset.bound = 'true';
+      btnCloseRoiModal.addEventListener('click', () => {
+        this.stopFocusStream();
+      });
+    }
+
+    const btnConfirmRoi = document.getElementById('btn-confirm-roi');
+    if (btnConfirmRoi && !btnConfirmRoi.dataset.bound) {
+      btnConfirmRoi.dataset.bound = 'true';
+      btnConfirmRoi.addEventListener('click', () => {
+        this.stopFocusStream();
+      });
+    }
+
     const btnPlotterStart = document.getElementById('btn-plotter-start');
     if (btnPlotterStart && !btnPlotterStart.dataset.bound) {
       btnPlotterStart.dataset.bound = 'true';
@@ -1078,6 +1094,13 @@ class TransferStageApp {
           reader.readAsText(file);
         };
       }
+      return;
+    }
+
+    if (commandName === 'set_focus_area_ui') {
+      const modal = document.getElementById('focus-roi-modal');
+      this.toggleModal(modal, true);
+      this.startFocusStream();
       return;
     }
 

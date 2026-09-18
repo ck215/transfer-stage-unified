@@ -7,8 +7,8 @@ import time
 import threading
 from unittest.mock import MagicMock, patch
 
-from view.web_server import WebDashboardServer, WebAPIHandler
-from view.web_adapter import WebModelAdapter
+from views.web.web_server import WebDashboardServer, WebAPIHandler
+from views.web.web_adapter import WebModelAdapter
 from model.system_manager import SystemManager
 
 

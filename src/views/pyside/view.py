@@ -764,7 +764,7 @@ class RedPercentDynamicView(QtDynamicView):
         self.model.sync_dimensions = [dim for dim, cb in self.sync_cbs.items() if cb.isChecked()]
 
     def _execute_command(self, cmd_name):
-        if cmd_name == "select_focus_area":
+        if cmd_name == "set_focus_area_ui":
             self.overlay = SelectionOverlay(self.model)
             self.overlay.show()
         elif cmd_name == "plot_data_ui":
@@ -772,7 +772,7 @@ class RedPercentDynamicView(QtDynamicView):
                 self.plot_dialog.deleteLater()
             self.plot_dialog = PlotDialog(self)
             self.plot_dialog.show()
-        elif cmd_name == "save_log":
+        elif cmd_name == "save_log_web":
             self.save_log_ui()
         elif cmd_name == "stop_monitoring":
             super()._execute_command(cmd_name)

@@ -163,7 +163,7 @@ def test_rotator_system_auto_connect():
         mock_connect.assert_not_called()
 
 def test_qt_dynamic_view_poll_model(qtbot):
-    from view_pyside import QtDynamicView
+    from views.pyside.view import QtDynamicView
     probe_model = MagicMock()
     probe_model.ui_schema = {"sections": []}
     probe_model.read_position = MagicMock()
@@ -188,7 +188,7 @@ def test_watchdog_do_disable_manual_mode(qtbot):
     tests/core/test_edge_mvc_model.py's test_auto_disable_interlock_*. The
     view's only remaining responsibility is relaying real controller
     activity into the model via touch_activity()."""
-    from view_pyside import QtDynamicView
+    from views.pyside.view import QtDynamicView
     probe_model = MagicMock()
     probe_model.ui_schema = {"sections": []}
     probe_model.poller = MagicMock()

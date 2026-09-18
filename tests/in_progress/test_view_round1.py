@@ -3,7 +3,7 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-from view_pyside import (
+from views.pyside.view import (
     QtDynamicView, RedPercentDynamicView, QtErrorPopupManager, 
     ControllerLogWindow, PlotDialog, SelectionOverlay, DashboardWindow
 )
@@ -174,7 +174,7 @@ def test_pyside_dashboard_sidebar_dock_sync(qtbot):
 
 def test_legacy_error_popup_manager_queue():
     """Test legacy ErrorPopupManager thread-safe queue buffering."""
-    from view import ErrorPopupManager
+    from views.tkinter.view import ErrorPopupManager
     ErrorPopupManager._error_queue.queue.clear()
     
     ErrorPopupManager._root = None
@@ -194,7 +194,7 @@ def test_legacy_dynamic_view_schema_parsing():
     with patch('tkinter.Frame.__init__', return_value=None), \
          patch('tkinter.Label'), patch('tkinter.Entry'), \
          patch('tkinter.Button'), patch('tkinter.StringVar'):
-        from view import DynamicView
+        from views.tkinter.view import DynamicView
         
         view = DynamicView.__new__(DynamicView)
         view.model = model

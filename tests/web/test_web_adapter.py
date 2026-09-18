@@ -1,7 +1,7 @@
 import pytest
 import time
-from view.web_view import WebDashboardWindow, WebErrorManager
-from view.web_server import WebAPIHandler
+from views.web.web_view import WebDashboardWindow, WebErrorManager
+from views.web.web_server import WebAPIHandler
 from error_routing import ErrorRouter
 
 class DummyPoller:
