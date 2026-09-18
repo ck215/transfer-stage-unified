@@ -204,7 +204,7 @@ class WebModelAdapter:
                 # Apply disabled state so all devices initialize as connected but disabled
                 model = new_manager.get_model(dev)
                 if model:
-                    model._disabled_in_setup = not is_enabled
+                    model._disabled_in_setup = not c.get("enabled", True)
                     if hasattr(model, 'system_enabled'):
                         model.system_enabled = False
                     elif hasattr(model, 'disable'):
@@ -212,11 +212,11 @@ class WebModelAdapter:
                         model.disable()
 
             except Exception as e:
+                print(f"[WebModelAdapter] Failed to initialize device '{dev}':\n{traceback.format_exc()}")
                 return {
                     "status": "error",
                     "code": 500,
                     "message": f"Failed to initialize device '{dev}': {str(e)}",
-                    "traceback": traceback.format_exc()
                 }
 
         # Link Red Percent Window probes if active
@@ -230,8 +230,15 @@ class WebModelAdapter:
                 red_model.set_stepper_model(list(probe_models.keys())[0])
 
         with self._state_lock:
+            old_manager = self.system_manager
             self.system_manager = new_manager
             self.mode = "running"
+
+        # Tear down the outgoing manager's models (closes serial ports) outside
+        # the lock — shutdown_all does blocking hardware I/O and must not stall
+        # API access to the manager we just installed.
+        if old_manager and old_manager is not new_manager:
+            old_manager.shutdown_all()
 
         return {
             "status": "ok",
@@ -360,10 +367,38 @@ class WebModelAdapter:
                 state[name] = model_state
         return state
 
+    @staticmethod
+    def _schema_commands(model) -> set:
+        """Every command/options_command name a model's own ui_schema exposes.
+        This is the allowlist: only what the UI can already trigger is
+        dispatchable over the API — never arbitrary attribute/method access."""
+        allowed = set()
+        schema = getattr(model, "ui_schema", {"sections": []})
+        for sec in schema.get("sections", []):
+            for el in sec.get("elements", []):
+                for key in ("command", "options_command"):
+                    val = el.get(key)
+                    if val:
+                        allowed.add(val)
+        return allowed
+
+    @staticmethod
+    def _schema_attrs(model) -> set:
+        """Every model_attr a model's own ui_schema exposes for writing."""
+        allowed = set()
+        schema = getattr(model, "ui_schema", {"sections": []})
+        for sec in schema.get("sections", []):
+            for el in sec.get("elements", []):
+                attr = el.get("model_attr")
+                if attr:
+                    allowed.add(attr)
+        return allowed
+
     def dispatch_command(self, device_name: str, command_name: str, args: Any = None) -> Dict[str, Any]:
         """
         Thread-safely dispatches a command (move, stop, home, calibrate, etc.)
-        to the target device model using per-device locking.
+        to the target device model using per-device locking. Only commands the
+        device's own ui_schema declares are eligible for dispatch.
         """
         if args is None:
             args = []
@@ -376,8 +411,10 @@ class WebModelAdapter:
             if not model:
                 return {"status": "error", "code": 404, "message": f"Device {device_name} not found"}
 
+            # Not in the allowlist and doesn't exist are reported identically:
+            # don't let a caller distinguish "blocked" from "doesn't exist".
             func = getattr(model, command_name, None)
-            if not func or not callable(func):
+            if command_name not in self._schema_commands(model) or not func or not callable(func):
                 return {"status": "error", "code": 400, "message": f"Command {command_name} not found on {device_name}"}
 
         dev_lock = self._get_device_lock(device_name)
@@ -391,17 +428,19 @@ class WebModelAdapter:
                     res = func(args)
                 return {"status": "ok", "code": 200, "result": str(res)}
             except Exception as e:
+                print(f"[WebModelAdapter] dispatch_command({device_name}.{command_name}) failed:\n{traceback.format_exc()}")
                 return {
                     "status": "error",
                     "code": 500,
                     "message": str(e),
-                    "traceback": traceback.format_exc()
                 }
 
     def set_device_attribute(self, device_name: str, attr: str, value: Any) -> Dict[str, Any]:
         """
         Thread-safely updates configurable parameters/attributes on target devices.
-        Performs safe type coercion matching existing attribute types.
+        Performs safe type coercion matching existing attribute types. Only
+        attributes the device's own ui_schema declares as model_attr are
+        eligible for writing.
         """
         with self._state_lock:
             if not self.system_manager:
@@ -410,6 +449,9 @@ class WebModelAdapter:
             model = getattr(self.system_manager, "active_models", {}).get(device_name)
             if not model:
                 return {"status": "error", "code": 404, "message": f"Device {device_name} not found"}
+
+            if attr not in self._schema_attrs(model):
+                return {"status": "error", "code": 403, "message": f"Attribute {attr} is not exposed on {device_name}"}
 
         dev_lock = self._get_device_lock(device_name)
         with dev_lock:
@@ -426,6 +468,7 @@ class WebModelAdapter:
                 setattr(model, attr, value)
                 return {"status": "ok", "code": 200, "attr": attr, "value": getattr(model, attr)}
             except Exception as e:
+                print(f"[WebModelAdapter] set_device_attribute({device_name}.{attr}) failed:\n{traceback.format_exc()}")
                 return {"status": "error", "code": 500, "message": str(e)}
 
     def append_log(self, message: str, max_size: int = 500):
@@ -438,9 +481,11 @@ class WebModelAdapter:
         with self._state_lock:
             return list(self.log_buffer)
 
-    def append_error(self, err_dict: Dict[str, Any]):
+    def append_error(self, err_dict: Dict[str, Any], max_size: int = 500):
         with self._state_lock:
             self.error_buffer.append(err_dict)
+            if len(self.error_buffer) > max_size:
+                self.error_buffer.pop(0)
 
     def pop_errors(self) -> List[Dict[str, Any]]:
         with self._state_lock:

@@ -31,7 +31,12 @@ class MockDeviceModel:
                         {"type": "entry", "text": "Active:", "model_attr": "enabled"},
                         {"type": "entry", "text": "Tag:", "model_attr": "label"},
                         {"type": "readonly", "text": "Pos:", "model_attr": "pos_x"},
-                        {"type": "button", "text": "Home", "command": "home_axis"}
+                        {"type": "button", "text": "Home", "command": "home_axis"},
+                        {"type": "button", "text": "Move", "command": "move_rel"},
+                        {"type": "button", "text": "Single Arg", "command": "single_arg_cmd"},
+                        {"type": "button", "text": "Dict Arg", "command": "dict_arg_cmd"},
+                        {"type": "button", "text": "Slow Task", "command": "slow_task"},
+                        {"type": "button", "text": "Fail", "command": "failing_command"}
                     ]
                 }
             ]
@@ -301,7 +306,9 @@ def test_api_command_execution_error(web_server_fixture):
     data = json.loads(body)
     assert data["status"] == "error"
     assert "Hardware motor fault" in data["message"]
-    assert "traceback" in data
+    # Tracebacks are logged server-side (print), not returned to the client
+    # — leaking stack traces over an unauthenticated LAN API is an info-disclosure risk.
+    assert "traceback" not in data
 
 
 def test_api_set_attr_type_casting(web_server_fixture):

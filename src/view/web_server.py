@@ -39,7 +39,10 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # No CORS header: the dashboard is same-origin (served by this same
+        # process). A wildcard origin here would let any external site the
+        # user's browser visits issue cross-origin requests that drive
+        # physical stage hardware.
         self.end_headers()
         self.wfile.write(payload)
 
@@ -239,7 +242,8 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
                 return self._send_json(200, {"image_base64": base64.b64encode(buf.getvalue()).decode('utf-8')})
             except Exception as e:
                 import traceback
-                return self._send_json(500, {"status": "error", "message": str(e), "traceback": traceback.format_exc()})
+                print(f"[WebAPIHandler] /api/plot failed:\n{traceback.format_exc()}")
+                return self._send_json(500, {"status": "error", "message": str(e)})
 
         if route == "/api/setup/initialize":
             if not isinstance(data, dict):
