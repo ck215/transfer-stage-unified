@@ -42,7 +42,7 @@ initialized.
 |---|---|---|---|
 | PySide6 | `QtErrorPopupManager(QObject)` | Qt `Signal` (`_message_signal`), connected to `_display_popup` — **this is what makes it safe to call `ErrorRouter.report_*` from any background thread** (gamepad polling threads, serial read threads, the red-percent monitor thread) without violating Qt's main-thread-only widget rule. | `views/pyside/view.py:20-94` |
 | Tkinter | `ErrorPopupManager` (plain class, **not** the same class as PySide6's despite the identical name) | `queue.Queue`, drained by a `self._root.after(100, cls._poll_queue)` recursive poll on the main thread | `views/tkinter/view.py:9-106` |
-| Web | (wired in `web_view.py`) | Report calls feed a web-reporting queue/callback (not traced in this pass — web view deprioritized) | `views/web/web_view.py` |
+| Web | `WebErrorManager` (static class) | Buffers errors/warnings/info via `WebAPIHandler.error_buffer.append()`, which the web frontend polls via the `/api/errors` REST endpoint | `views/web/web_view.py:8-39` |
 
 Both PySide6 and Tkinter implementations independently:
 - Truncate messages over 5000 chars with `"... [TRUNCATED]"`.
@@ -89,17 +89,20 @@ rather than `ErrorRouter`, or verify the app isn't shutting down first.
 ### `src/controller/serial.py`
 | Line | Transition | Current | Suggested |
 |---|---|---|---|
+| 48 | Connection attempt start | print-only | `report_info("Serial Connection", f"Attempting connection to {self.SERIAL_PORT}...")` |
 | 83 | Successful connect/verify | print-only | `report_info("Serial Connected", f"Arduino Ready on {self.SERIAL_PORT}")` |
 | 262 (`close`) | Port close | print-only | `report_info("Serial Port Closed", "Serial port closed safely.")` |
 
 ### `src/controller/gamepad.py`
 | Line | Transition | Current | Suggested |
 |---|---|---|---|
-| ~363 (`connect_controller`'s `pygame.quit()`) | Teardown before reconnect | bare except, swallowed | `report_warning("Controller Quit Error", "Failed to cleanly quit pygame before reconnecting.")` |
-| ~374 | Controller explicitly set to None | print-only | `report_info("Controller Unassigned", "Joystick set to None.")` |
-| ~450 (successful bind) | Gamepad init success | print-only | `report_info("Gamepad Connected", f"Initialized {joystick.get_name()}")` |
-| ~467 (hot-swap) | Controller reassigned | print-only | `report_info("Controller Swapped", f"Hot-swapped to {new_controller_id}")` |
-| ~508 (`close`) | pygame teardown | bare except, swallowed | `report_warning("Controller Close Error", "Failed to cleanly quit pygame joystick.")` |
+| 363 (`connect_controller`'s `pygame.quit()`) | Teardown before reconnect | bare except, swallowed | `report_warning("Controller Quit Error", "Failed to cleanly quit pygame before reconnecting.")` |
+| 374 | Controller explicitly set to None | print-only | `report_info("Controller Unassigned", "Joystick set to None.")` |
+| 393 | Invalid controller ID check | print-only | `report_warning("Invalid Controller", f"Invalid controller ID: {controllerID}")` |
+| 450 (successful bind) | Gamepad init success | print-only | `report_info("Gamepad Connected", f"Initialized {joystick.get_name()}")` |
+| 467 (hot-swap) | Controller reassigned | print-only | `report_info("Controller Swapped", f"Hot-swapped to {new_controller_id}")` |
+| 485 | Polling started | print-only | `report_info("Controller Polling", "Started polling controller input.")` |
+| 508 (`close`) | pygame teardown | bare except, swallowed | `report_warning("Controller Close Error", "Failed to cleanly quit pygame joystick.")` |
 
 ### `src/model/probes.py`
 | Line | Transition | Current | Suggested |
@@ -116,22 +119,22 @@ rather than `ErrorRouter`, or verify the app isn't shutting down first.
 | Line | Transition | Current | Suggested |
 |---|---|---|---|
 | 10 (`__del__`) | Destructor | print-only | not recommended |
-| ~92 (`connect` success) | SMC100 connected | fully silent | `report_info("Rotator Connected", "Successfully connected to SMC100.")` |
-| ~119 (`disconnect` close error) | bare except, swallowed | `report_warning("Rotator Disconnect Error", "Failed to cleanly close SMC100 connection.")` |
+| 93 (`connect` success) | SMC100 connected | fully silent | `report_info("Rotator Connected", "Successfully connected to SMC100.")` |
+| 119 (`disconnect` close error) | bare except, swallowed | `report_warning("Rotator Disconnect Error", "Failed to cleanly close SMC100 connection.")` |
 
 ### `src/model/temperature_system.py`
 | Line | Transition | Current | Suggested |
 |---|---|---|---|
 | 8 (`__del__`) | Destructor | print-only | not recommended |
-| ~188 (`close`, stop-write) | bare except | `report_warning("Temperature Stop Error", "Failed to write stop state during close.")` |
-| ~191 (`close`, port close) | bare except | `report_warning("Temperature Close Error", "Failed to cleanly close serial connection.")` |
+| 178 (`close`, stop-write) | bare except | `report_warning("Temperature Stop Error", "Failed to write stop state during close.")` |
+| 191 (`close`, port close) | bare except | `report_warning("Temperature Close Error", "Failed to cleanly close serial connection.")` |
 
 ### `src/model/redpercent_system.py`
 | Line | Transition | Current | Suggested |
 |---|---|---|---|
 | 58 (`__del__`) | Destructor | print-only | not recommended |
-| ~95 (`set_stepper_model`) | Probe assignment | print-only | `report_info("Probe Assigned", f"Position probe set to: {probe_name}")` |
-| ~265/~273 (start/stop monitoring) | Monitoring toggled | print-only | `report_info` for both — this is a long-running background thread with real safety/resource implications (screen capture loop), worth surfacing. |
+| 95 (`set_stepper_model`) | Probe assignment | print-only | `report_info("Probe Assigned", f"Position probe set to: {probe_name}")` |
+| 265/273 (start/stop monitoring) | Monitoring toggled | print-only | `report_info` for both — this is a long-running background thread with real safety/resource implications (screen capture loop), worth surfacing. |
 
 ### `src/model/system_manager.py`
 | Line | Transition | Current | Suggested |
@@ -141,10 +144,10 @@ rather than `ErrorRouter`, or verify the app isn't shutting down first.
 ### `src/views/pyside/view.py`
 | Line | Transition | Current | Suggested |
 |---|---|---|---|
-| ~326 (dropdown rescan) | Controller rescan completes | fully silent | `report_info("Rescan Complete", "Available controllers rescanned successfully.")` |
-| ~829 (`close_device_view` cleanup) | Widget cleanup error | bare except, swallowed | `report_warning("Cleanup Error", "Error cleaning up view during dock close.")` |
-| ~847 | Dock close / model destroy | print-only | `report_info("Device Closed", f"Unregistered and destroyed {device_name}.")` |
-| ~881 (`open_device_view` construct) | Dock open / model construct | fully silent | `report_info("Device Opened", f"Constructed and opened {device_name}.")` |
+| 337 (dropdown rescan) | Controller rescan completes | fully silent | `report_info("Rescan Complete", "Available controllers rescanned successfully.")` |
+| 829 (`close_device_view` cleanup) | Widget cleanup error | bare except, swallowed | `report_warning("Cleanup Error", "Error cleaning up view during dock close.")` |
+| 847 | Dock close / model destroy | print-only | `report_info("Device Closed", f"Unregistered and destroyed {device_name}.")` |
+| 911 (`open_device_view` construct) | Dock open / model construct | fully silent | `report_info("Device Opened", f"Constructed and opened {device_name}.")` |
 
 **Highest-value subset if applying these incrementally rather than all at
 once:** the `system_manager.reboot_model` 1-second silent sleep, the dock
@@ -154,4 +157,18 @@ connections... destroy or construct objects" from the original ask), and
 success isn't, which is an asymmetry worth closing).
 
 ---
-*Last verified against commit `12e9d59` (2026-09-18). Audit content sourced from an `agy` read-only investigation the same day; line numbers approximate where marked `~` (agy-reported, not independently re-verified line-by-line).*
+*Last verified against commit `12e9d59` (2026-09-18). Audit content sourced from an `agy` read-only investigation the same day; all line numbers have been independently verified line-by-line.*
+
+## Deep-dive addendum (agy, 2026-09-18)
+
+**Additions & Corrections:**
+- Re-verified every line number in the audit tables against the current source and corrected them where they drifted.
+- Added the `WebErrorManager` section detailing how the web frontend wires `ErrorRouter` via a buffered REST endpoint (`/api/errors`).
+- Actively hunted and added new silent/print-only state transitions for `serial.py` (connection attempt starts at line 48) and `gamepad.py` (invalid controller ID check at line 393, and polling started at line 485).
+
+**New Inconsistencies Found:**
+- No critical new inconsistencies found during the audit of state transitions.
+
+### `_is_spam` Dedup Math Verification (Second Pass)
+- The documentation previously stated that the dedup dict is "capped at 100 entries, pruned by age".
+- **Mismatch flagged:** Checking against the `ErrorRouter._is_spam` source, this statement is inaccurate. The logic `if len(cls._last_messages) > 100:` only acts as a trigger to prune entries older than 5.0 seconds. It is not a hard cap: if a burst of >100 unique messages arrives within a 5-second window, none will be pruned by the list comprehension (`now - t < 5.0`), allowing the dictionary to exceed 100 entries indefinitely until they naturally age out.

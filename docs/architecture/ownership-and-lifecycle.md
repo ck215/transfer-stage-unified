@@ -168,5 +168,54 @@ backlog is clear, rather than defaulting to option 2 by inertia.
 | `RotatorSystem` async ops (`connect`, moves) | ad-hoc daemon `threading.Thread` per call via `_run_async` | `self._lock` around `smc`/`is_connected`/position state |
 | Error popups | Any of the above → `ErrorRouter.report_*` → frontend-specific cross-thread marshaling (Qt signal / Tk queue) | see [error-routing.md](error-routing.md) |
 
+## Dock Close/Reopen Sequence Diagram (`Stepper Probe`)
+
+This diagram traces the exact objects created/destroyed and methods called during a close-then-reopen cycle for a `StepperProbe`, illustrating the port leak and reconstruct-on-reopen behavior described above.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant View as DashboardWindow
+    participant Dock as DeviceDock
+    participant Model as old_model: StepperProbe
+    participant Poller as old_poller: ControllerPoller
+    participant SysMgr as SystemManager
+    participant NewModel as new_model: StepperProbe
+    participant NewPoller as new_poller: ControllerPoller
+
+    Note over User, SysMgr: --- DOCK CLOSE ---
+    User->>View: click X on dock
+    View->>View: close_device_view("Stepper Probe")<br/>(src/views/pyside/view.py:813)
+    View->>View: active_docks.pop("Stepper Probe")<br/>(src/views/pyside/view.py:815)
+    View->>Dock: widget.cleanup() if exists<br/>(src/views/pyside/view.py:828)
+    View->>Dock: dock.close() scheduling UI destruction<br/>(src/views/pyside/view.py:832)
+    View->>SysMgr: get_model("Stepper Probe")<br/>(src/views/pyside/view.py:835)
+    SysMgr-->>View: returns old_model
+    View->>Model: disable()<br/>(src/views/pyside/view.py:838)
+    View->>Poller: stop_polling()<br/>(src/views/pyside/view.py:840)
+    View->>Poller: close()<br/>(src/views/pyside/view.py:841)
+    Note right of View: model.disconnect() is skipped<br/>because StepperProbe lacks it (view.py:842)
+    Note right of View: model.serial_comm.close() is NEVER called.<br/>OS port handle is leaked!
+    View->>SysMgr: del active_models["Stepper Probe"]<br/>(src/views/pyside/view.py:846)
+    Note over View, SysMgr: old_model and old_poller are unreferenced<br/>and eventually garbage collected
+
+    Note over User, SysMgr: --- DOCK REOPEN ---
+    User->>View: select "Stepper Probe" from menu
+    View->>View: open_device_view("Stepper Probe")<br/>(src/views/pyside/view.py:858)
+    View->>SysMgr: get_model("Stepper Probe")<br/>(src/views/pyside/view.py:881)
+    SysMgr-->>View: returns None
+    View->>NewModel: StepperProbe(None, "None", {})<br/>(src/views/pyside/view.py:886)
+    NewModel->>NewModel: BaseProbe.__init__(None, "None", {})<br/>(src/model/probes.py:22)
+    Note right of NewModel: serial_comm initialized to None<br/>(src/model/probes.py:23)
+    NewModel->>NewPoller: ControllerPoller(...)<br/>(src/model/probes.py:39)
+    View->>SysMgr: register_model("Stepper Probe", new_model)<br/>(src/views/pyside/view.py:911)
+    SysMgr->>SysMgr: active_models["Stepper Probe"] = new_model<br/>(src/model/system_manager.py:12)
+    View->>Dock: DeviceDock("Stepper Probe", self)<br/>(src/views/pyside/view.py:924)
+    View->>View: addDockWidget(...)<br/>(src/views/pyside/view.py:938)
+```
+
 ---
 *Last verified against commit `12e9d59` (2026-09-18) plus the two subsequent uncommitted fixes noted in [known-issues.md](known-issues.md).*
+
+**Addendum (2026-09-18):** 
+The `close_device_view` divergence described in this document was explicitly re-verified against the current source code (`src/views/pyside/view.py:813-847`). The hand-rolled teardown behavior—specifically the omission of `remove_model` and the conditional bypass of `disconnect()` which leads to the OS port handle leak—matches the current implementation exactly.

@@ -25,6 +25,7 @@ unintended state).
 
 ## Open — high priority
 
+- **Swallowed Exceptions in Probing:** `app_bootstrap.probe_device_at()` wraps every serial attempt in `try... except Exception: pass`. If a user launches the app but the serial port is locked by another process (e.g., Arduino IDE) or requires `sudo` (Linux permission errors), it silently fails and reports "Not Found" instead of throwing an actionable error.
 - **SAFETY-adjacent, serial-port leak on probe dock close.** `close_device_view`
   (PySide6) checks `hasattr(model, 'disconnect')` before releasing a serial
   port, but `BaseProbe` (Stepper/DC/Chuck) has no `disconnect()` method — so
@@ -75,12 +76,18 @@ unintended state).
 
 ## Open — lower priority / needs follow-up verification
 
-- `TemperatureSystem.emergency_stop()` = `stop()` = sets setpoint to 0 (a
-  gradual PID-driven cooldown, not an instant hardware cutoff) — physically
-  reasonable for a heater (residual heat can't be cut instantly the way
-  motor current can), but worth confirming this is the intended semantic
-  for the global FULL STOP button rather than assuming it from the method
-  name alone.
+- `TemperatureSystem.emergency_stop()` = `stop()` = explicitly sets the P, I, and D parameters to 0 (`vals = ['0', spdelay, '0', '0', '0', ...]`), forcing the PID loop to output exactly 0 PWM instantly. Previously suspected to be a gradual PID-driven cooldown, but source confirms it is an immediate hardware cutoff. Confirmed physically safer.
+- **Raw Serial Bypass:** `BaseProbe` (`power_down()`, `run_script()`) and `TemperatureSystem` (`stop()`, `send_settings()`, `close()`) bypass their `serial_conn` wrapper methods entirely and write directly to the raw `pyserial` socket (`self.serial_conn.ser.write`).
+- **Coupled Base Class:** `BaseProbe.send_stop_command()` explicitly zeroes out `"slow_speed"` and `"brake_distance"` — parameters that nominally only exist on the `DCProbe` subclass.
+- **Dead State:** `RedPercentSystem.__init__` declares five lock/thread state variables (`is_monitoring`, `stop_event`, `thread`, `monitor_thread`, `baseline`) that are completely unread by the rest of the file (which uses `monitoring` and `_monitor_thread` instead). Conversely, `last_logged_red` is referenced and built inside the monitoring thread without ever being declared in `__init__`.
+- **Wasted Packet Sends:** `BaseProbe.send_manual_mode_command()` correctly checks if the gamepad dropped out and resets `manual_flag`, but instead of aborting the send, it still writes a full zero-padded manual packet to the firmware on that tick.
+- **G-Code Execution Race:** `BaseProbe.run_script()` sets `self.is_stepping = True` without checking if the stage is already actively executing a routine.
+- **RedPercent System Wiring Bypass in Web:** Because `run_web_app()` entirely skips the setup window and `build_models()`, it also skips the custom wiring loop that links positioning probes to the `RedPercentSystem`. If the Web view uses the Red Percent feature, it will likely fail to sync coordinates due to an empty `available_probes` dict.
+- **Redundant Pygame Joystick Initialization:** In PySide6's `get_available_controllers` (`app.py:543`), it calls `js.init()` on each iterated joystick, whereas Tkinter's version just reads the name and skips `js.init()`.
+- **Dead Code:** `app.py:3` defines `parse_controller_id()`, but it is completely unused.
+- **Dead Code:** `src/lib/toupcam.py` is confirmed unused outside of itself and represents dead code that could be safely deleted.
+- **PySide6 vs Tkinter Save Logic:** PySide6 uses `save_to_csv` on `self.model.data_log` (`RedPercentDynamicView`), while Tkinter directly calls `self.system.save_log()` (`RedPercentView`).
+- **PySide6 vs Tkinter Polling Threads:** Tkinter's `DynamicView.start_polling` triggers the hardware position and status polls using `self.after(100)`, running them directly in the UI thread loop, whereas PySide6 uses `QTimer`s.
 - `RedPercentSystem`'s background monitor thread
   (`_monitor_colors`) reads/writes `current_red`/`red_change`/`baseline_red`
   with no lock, while the view polls the same attributes every tick from
@@ -130,8 +137,11 @@ unintended state).
   strategy (schema-driven vs. hand-built) and port the other tab to match,
   rather than continuing to fix individual widget divergences as they're
   reported.
+- **Plotting strategy divergence:** Tkinter's `RedPercentView` plotting is fully implemented locally via `FigureCanvasTkAgg` and runs in a `tk.Toplevel`, while PySide6 opens a separate `PlotDialog` class that handles the `FigureCanvasQTAgg` canvas.
 
 ---
 *Started 2026-09-18. Update this file as issues are found/fixed — it's the
 one place meant to answer "what's currently broken and why" without
 re-deriving it from source each time.*
+
+*Consolidation pass (agy, 2026-09-18): Merged candidate findings from `models.md`, `views.md`, `bootstrap-and-entrypoint.md`, `libs-and-web.md`, and confirmed `TemperatureSystem` cutoff behavior.*

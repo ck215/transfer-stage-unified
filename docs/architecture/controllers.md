@@ -33,33 +33,58 @@ centralized call rather than four separate `pygame.init()` calls (fixed
 ### Wrapper classes (composition, 1 poller : 0..1 wrapper)
 
 `BaseGamepad` and its subclasses `XboxGamepad`, `BluetoothXboxGamepad`,
-`LogitechF310Gamepad` (lines 44-200ish) each wrap one `pygame.joystick.Joystick`
+`LogitechF310Gamepad`, and `T16000MGamepad` (lines 44-234) each wrap one `pygame.joystick.Joystick`
 and normalize its raw axis/button/hat layout into one dict shape via
 `get_mapped_state()`:
+
 ```python
-def get_mapped_state(self) -> dict:
-    # {"x_axisStatus": float, "y_axisStatus": float,
-    #  "z_axisStatusL": float, "z_axisStatusR": float,
-    #  "dpad_LR": int, "dpad_UD": int, "LBumper": int, "RBumper": int}
+class BaseGamepad:
+    def __init__(self, joystick: pygame.joystick.Joystick)
+    def get_mapped_state(self) -> dict
+    def update_overrides(self) -> None
+
+class XboxGamepad(BaseGamepad):
+    def __init__(self, joystick)
+    def get_mapped_state(self) -> dict
+
+class BluetoothXboxGamepad(XboxGamepad):
+    def __init__(self, joystick)
+    def get_mapped_state(self) -> dict
+
+class LogitechF310Gamepad(BaseGamepad):
+    def __init__(self, joystick)
+    def _is_dinput_mode(self) -> bool
+    def get_mapped_state(self) -> dict
+
+class T16000MGamepad(BaseGamepad):
+    def update_overrides(self) -> None
+    def get_mapped_state(self) -> dict
+
+def get_gamepad_wrapper(joystick: pygame.joystick.Joystick) -> BaseGamepad
 ```
-`get_gamepad_wrapper(joystick)` (module function) picks the right subclass
+
+`get_gamepad_wrapper(joystick)` (module function, line 236) picks the right subclass
 by matching `joystick.get_name()`. `self.poller.gamepad` on `BaseProbe` is
 one of these wrapper instances (or `None`), not the raw `pygame.joystick.Joystick`.
 
 ### `ControllerPoller` method inventory
 
-| Method | Signature | Ownership / side effect |
-|---|---|---|
-| `__init__` | `(controllerID, active_claims: dict, process_name: str)` | Calls `_initialize_pygame_joystick(controllerID)` unconditionally — a poller always attempts a connection at construction time. |
-| `_is_os_connected` | `() -> bool` | Platform-branched (linux/win32/darwin) liveness check, doesn't touch `self.gamepad`. |
-| `_handle_disconnect` | `() -> None` | Reports a warning popup, clears `self.gamepad`, calls `self.stop_polling()`. |
-| `get_physical_controllers` | `() -> list[str]` | **Static-ish scan**, not tied to `self`'s own binding — lists every joystick pygame currently sees. Backs the "⟳ Rescan controllers" UI button. |
-| `set_controller` | `(controllerID) -> bool` | Rebinds this poller to a different physical controller; restarts polling if it was already running. |
-| `connect_controller` | `() -> bool` | **Full pygame teardown+rebuild**: `pygame.quit()` then `_initialize_pygame_joystick(self.controllerID)`. This is the "reconnect" entry point — note it nukes the *entire* SDL context, not just this poller's joystick, since SDL state is process-global (see below). |
-| `_initialize_pygame_joystick` | `(controllerID) -> bool` | The actual bind logic: parses `controllerID` → index, checks for cross-device claim collisions via `active_claims` (shared dict, one entry per `process_name`), constructs the `BaseGamepad` wrapper, increments `_active_poller_count`. |
-| `close` | `() -> None` | Idempotent (`self._closed` guard). Decrements `_active_poller_count`; **only when it hits 0** does it call `pygame.joystick.quit()` + `pygame.quit()` — i.e. the last poller to close tears down SDL for every other poller too, if any still existed (in practice they shouldn't, since count reached 0). Re-establishes the dummy video driver immediately afterward via `_ensure_pygame_video()` (fixed 2026-09-18). |
-| `get_mapped_state` | `() -> dict` | Delegates to `self.gamepad.get_mapped_state()` if bound, else a zeroed dict. |
-| `start_polling` / `stop_polling` | `(gui, log_updater, activity_callback)` / `()` | Owns the actual input-polling loop (not shown above — thread or Qt-timer driven depending on caller); `is_polling` is the run flag. |
+| Method | Signature | Line | Ownership / side effect |
+|---|---|---|---|
+| `__init__` | `(controllerID, active_claims: dict, process_name: str)` | 256 | Calls `_initialize_pygame_joystick(controllerID)` unconditionally. |
+| `_is_os_connected` | `() -> bool` | 271 | Platform-branched (linux/win32/darwin) liveness check, doesn't touch `self.gamepad`. |
+| `_handle_disconnect` | `() -> None` | 315 | Reports a warning popup, clears `self.gamepad`, calls `self.stop_polling()`. |
+| `get_physical_controllers` | `() -> list[str]` | 325 | **Static-ish scan**, lists every joystick pygame currently sees. Backs the "⟳ Rescan controllers" UI button. |
+| `set_controller` | `(controllerID) -> bool` | 350 | Rebinds this poller to a different physical controller; restarts polling if it was already running. |
+| `connect_controller` | `() -> bool` | 358 | **Full pygame teardown+rebuild**: `pygame.quit()` then `_initialize_pygame_joystick(self.controllerID)`. |
+| `_initialize_pygame_joystick` | `(controllerID) -> bool` | 370 | Parses `controllerID` → index, checks for cross-device claim collisions via `active_claims`. |
+| `change_controller` | `(new_controller_id) -> bool` | 466 | Hot-swapping to a new controller ID. |
+| `start_polling` | `(gui=None, log_updater=None, activity_callback=None)` | 474 | Starts polling if gamepad is bound and not already polling. |
+| `stop_polling` | `() -> None` | 490 | Stops the actual input-polling loop. |
+| `close` | `() -> None` | 494 | Idempotent (`self._closed` guard). Decrements `_active_poller_count`; **only when it hits 0** does it call `pygame.quit()`. Re-establishes dummy video driver. |
+| `get_mapped_state` | `() -> dict` | 515 | Delegates to `self.gamepad.get_mapped_state()` if bound, else a zeroed dict. Handles debouncing/latching. |
+| `flush_neutral` | `() -> None` | 557 | Reset the controller state to neutral, typically when focus is lost. |
+| `_poll_loop` | `() -> None` | 572 | Owns the actual input-polling loop via gui root's `after` or similar async task dispatch. |
 
 ### Firmware/SDL command surface (why `_ensure_pygame_video()` exists)
 
@@ -94,15 +119,18 @@ Thread safety: `self._lock` (an `RLock`) guards every `self.ser` read/write.
 
 ### Method inventory
 
-| Method | Signature | Purpose / notes |
-|---|---|---|
-| `__init__` | `(port='SIM', baud_rate=500000)` | Opens the port, then spends up to ~4.5s (1.5s settle + up to 3s polling `"s\n"`) verifying the Arduino responds with a `"DEV:"` handshake before considering the connection "verified" — this is the same handshake shape `app_bootstrap.probe_device_at()` uses for autodetection (see [ownership-and-lifecycle.md](ownership-and-lifecycle.md)). Reports `report_info`/`report_warning` on the outcome — already well-instrumented. |
-| `_verify_serial` | `(verbose=False) -> bool` | Guard used by every send/read method; `verbose` controls whether a popup fires on failure. |
-| `read_position` | `() -> tuple[int,int,int] \| None` | Parses `"POS:x,y,z\n"` lines out of a rolling buffer (capped at 1024 bytes to prevent unbounded growth if a newline is ever missed). |
-| `send_autonomous_command` | `(params: dict) -> None` | Sends the 12-field **text/ASCII** comma command (`command_code_manual`/`command_code_auton` are two of the twelve fields). This is what `send_stop_command()` uses to zero motion targets — **it does not touch the driver enable pin**, see below. |
-| `send_manual_mode_command` | `(params: dict) -> None` | Sends a **binary struct** (`PACKET_FORMAT = '<BBffffffffff'`, 42 bytes) — a completely different wire format from the autonomous command, parsed by the firmware's separate binary-mode branch. |
-| `enable` / `disable` | `() -> None` (raises `ValueError` if not connected) | Sends the single-char `'e'`/`'d'` commands. **`disable()` is the only thing that can physically cut stepper coil current** — see the firmware fix history in [known-issues.md](known-issues.md). No ACK/confirmation is read back for either — fire-and-forget over serial (flagged as a known gap in `probes.py`'s own comments, "the serial ACK-verification gap tracked separately" — not yet resolved). |
-| `close` | `() -> None` | Closes `self.ser` if open. |
+| Method | Signature | Line | Purpose / notes |
+|---|---|---|---|
+| `__init__` | `(port='SIM', baud_rate=500000)` | 23 | Opens the port, then spends up to ~4.5s (1.5s settle + up to 3s polling `"s
+"`) verifying the Arduino responds with a `"DEV:"` handshake. |
+| `_verify_serial` | `(verbose=False) -> bool` | 102 | Guard used by every send/read method; `verbose` controls whether a popup fires on failure. |
+| `read_position` | `() -> tuple[int,int,int] \| None` | 113 | Parses `"POS:x,y,z
+"` lines out of a rolling buffer (capped at 1024 bytes). |
+| `send_autonomous_command` | `(params: dict) -> None` | 152 | Sends the 12-field **text/ASCII** comma command (`command_code_manual`/`command_code_auton` are two of the twelve fields). |
+| `send_manual_mode_command` | `(params: dict) -> None` | 187 | Sends a **binary struct** (`PACKET_FORMAT = '<BBffffffffff'`, 42 bytes) — a completely different wire format from the autonomous command. |
+| `enable` | `() -> None` | 240 | Sends the single-char `'e'` command. Firmware sets `toff(4)`. |
+| `disable` | `() -> None` | 249 | Sends the single-char `'d'` command. **This is the only thing that actually disables coil current** (firmware sets `toff(0)`). |
+| `close` | `() -> None` | 258 | Closes `self.ser` if open. |
 
 ### Command-surface summary (cuts across serial.py + firmware)
 
@@ -123,3 +151,17 @@ indefinitely.
 
 ---
 *Last verified against commit `8267e21` (2026-09-18).*
+
+## Deep-dive addendum (agy, 2026-09-18)
+
+**Additions & Corrections:**
+- Expanded UML-level detail for `gamepad.py` wrapper classes and `serial.py` methods with exact line numbers.
+- Verified the "Command-surface summary" table against the actual current firmware (`stepper_firmware.ino` and `chuck_firmware.ino` commit 8267e21). The table is 100% correct: `handleAllStop()` zeroes speeds and state but does NOT touch `toff`; only the `'e'` and `'d'` commands toggle driver `toff` to truly enable/disable the TMC2209 coils.
+
+**New Inconsistencies Found:**
+- None in the command-surface contract. The firmware genuinely decouples motion-stop from coil-disable.
+
+### Packet Format Struct Layout Trace (Second Pass)
+- Python's `PACKET_FORMAT = '<BBffffffffff'` (2x `uint8`, 10x `float` via little-endian packing) results in exactly 42 bytes. 
+- Firmware's `ManualControlPacket` utilizes `__attribute__((packed))` to strip padding, ensuring the fields map 1:1 with Python's layout.
+- **Mismatch flagged:** There are no byte-level structural misalignments. However, there is an implicit type cast in the firmware: `x_stepSize`, `y_stepSize`, and `z_stepSize` are received as `float` (and packed as `float` by Python) but are immediately assigned to global `int` variables (e.g., `x_step_size = incomingPacket.x_stepSize;`) in `stepper_firmware.ino`.
