@@ -108,9 +108,15 @@ Standalone viewer for red percent CSVs.
 ### `DashboardWindow(QMainWindow)` (`:730-968`)
 - `__init__(self, system_manager)` (`:731-774`): Top-level shell. Builds a sidebar dock containing a list of devices (via `populate_sidebar`) and a global `stop_btn` mapped to `self.system_manager.full_stop_all()`.
 - `changeEvent(self, event)` (`:776-781`): Catches `QEvent.WindowDeactivate` and fires `model.poller.flush_neutral()` for all active models to prevent runaway hardware on focus loss.
-- `populate_sidebar(self)` (`:783-804`): Iterates through `SYSTEM_CONFIG` devices, creating checkable `QListWidgetItem`s. Initially checks them if `self.system_manager.get_model()` confirms they are active.
+- `populate_sidebar(self)` (`:783-804`): Iterates a **hardcoded device-name list** (`:786-789`), creating checkable `QListWidgetItem`s. Initially checks them if `self.system_manager.get_model()` confirms they are active. *(Corrected 2026-09-19: earlier text said "`SYSTEM_CONFIG` devices". No `SYSTEM_CONFIG` exists anywhere in `src/` — do not go looking for it. The hardcoded list is itself a finding; see root-causes.md RC-7/RC-9.)*
 - `on_device_item_changed(self, item)` (`:806-811`): Triggered when a sidebar checkbox changes state. Routes to `open_device_view` if checked, `close_device_view` if unchecked.
-- `close_device_view(self, device_name)` (`:813-847`): Closes the `DeviceDock` and gracefully cleans up its view (stopping QTimers via `cleanup()`). Then performs deep teardown on the model itself: `model.disable()`, `model.poller.stop_polling()`, `model.disconnect()`, and deregisters it from `system_manager`.
+- `close_device_view(self, device_name)` (`:813-847`): Closes the `DeviceDock` and cleans up its view (stopping QTimers via `cleanup()`). It then attempts to tear down the model by hand using `hasattr()` guards (`model.disable()`, `model.poller.stop_polling()`, `model.poller.close()` at `:840`, `model.disconnect()`) and deregistering it from `system_manager` via `del self.system_manager.active_models[...]` (`:846`).
+
+  This conditional bypass of `ManagedModel.teardown()` has **two** defects, not one:
+  1. Probe models have no `disconnect()` method, so the serial port is never released (RC-1).
+  2. `model.poller.close()` decrements the process-global poller refcount, which can fire `pygame.quit()` while another poller is still live — the mechanism behind the recurring "no video instance" bug (RC-13 / GAMEPAD-2).
+
+  **Do not "fix" this by adding a `disconnect()` method to `BaseProbe`.** That keeps the view-owned `hasattr` ladder and leaves defect 2 untouched; root-causes.md lists it as an anti-fix. The path is replaced by `SystemManager` lifecycle authority.
 - `_confirm_rotation_dialog(self, target_deg)` (`:849-856`): Safety warning specific to SMC100 to prevent twisting physical tubing.
 - `open_device_view(self, device_name)` (`:858-941`): Spawns the `DeviceDock`. If the model doesn't exist, instantiates it based on hardcoded `device_name` strings, links active probes (for Red Percent), and registers with `system_manager`. If the model exists, calls `reconnect_serial()`. Connects `dock.closed` to `on_dock_closed`.
 - `on_dock_closed(self, device_name)` (`:943-955`): Acknowledges dock closure, temporarily unblocks signals to uncheck the corresponding sidebar item, and calls `close_device_view` to tear down the model.
@@ -138,7 +144,7 @@ tk.Frame
 - `_build_from_schema(self, schema, container)` (`:306-480`): Walk logic mapping to Tkinter widgets. Trace variables.
 - `_execute_command(self, cmd_name)` (`:482-510`): Special-cases `"open_controller_log"`, otherwise wraps `getattr(self.model, cmd_name)()`. Focus-sets away first to ensure numeric edits commit.
 - `_poll_model(self)` (`:512-540`): Updates `self.vars` string vars from model state if the active widget does not hold focus.
-- `start_polling(self, dashboard_window)` (`:542-578`): Evaluates loops. Sets up `model.poller.start_polling()` and manually calls `self.model.send_manual_mode_command({})` iteratively on manual-mode exit (20ms equivalent). Starts loops for `model.read_position()` and `model.poll_status()`.
+- `start_polling(self, dashboard_window)` (`:542-578`): Evaluates loops. Sets up `model.poller.start_polling()` and manually calls `self.model.send_manual_mode_command({})` iteratively on manual-mode exit, re-armed every **50 ms** (`:563-564`). Starts `after(100)` loops for `model.read_position()` and `model.poll_status()` (`:565-578`). *(Corrected 2026-09-19: earlier text said "20ms equivalent". 20 ms is PySide's rate (`pyside/view.py:184`); Tk is 50 ms, so PySide routes manual input 2.5× as often.)*
 
 ### `RedPercentView(tk.Frame)` (`:590-835`)
 Hand-built implementation disconnected from `ui_schema`.
@@ -184,7 +190,7 @@ Hand-built implementation disconnected from `ui_schema`.
 - **New Inconsistencies / Findings (to log in known-issues)**:
     - `file_picker` schema element on PySide6 has an unconditional `continue` at the top of its handler (`view.py:346`), making the rest of the file picker code entirely unreachable dead code, whereas Tkinter implements it fully.
     - PySide6 uses `save_to_csv` on `self.model.data_log` (`RedPercentDynamicView`), while Tkinter directly calls `self.system.save_log()` (`RedPercentView`).
-    - Tkinter's `DynamicView.start_polling` triggers the hardware position and status polls using `self.after(100)`, running them directly in the UI thread loop, whereas PySide6 uses `QTimer`s.
+    - ~~Tkinter's `DynamicView.start_polling` triggers the hardware position and status polls using `self.after(100)`, running them directly in the UI thread loop, whereas PySide6 uses `QTimer`s.~~ **Wrong — corrected 2026-09-19.** Both run on the GUI event loop (a `QTimer` is not a thread), and both dedicated poll timers are 100 ms (`tkinter/view.py:565-578`, `pyside/view.py:148,153`). The real divergence: PySide *also* calls `read_position()` and `poll_status()` from `_poll_model` on its 50 ms render tick (`pyside/view.py:402-405`), which Tk does not — roughly 3× the hardware traffic, on the GUI thread. See root-causes.md RC-4 / PYSIDE-9.
     - Tkinter's `RedPercentView` plotting is fully implemented locally via `FigureCanvasTkAgg` and runs in a `tk.Toplevel`, while PySide6 opens a separate `PlotDialog` class that handles the `FigureCanvasQTAgg` canvas.
 
 ## Web view (`src/views/web/`) — deprioritized, brief notes only

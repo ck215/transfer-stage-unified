@@ -67,9 +67,8 @@ When the user clicks "Launch Unified Application", the setup configurations are 
 During the documentation of these entry points, several inconsistencies were identified that should be logged:
 
 * **Dead Code:** `app.py:3` defines `parse_controller_id()`, but it is completely unused. Both Tkinter and PySide6 parse `"ID X: Name"` purely by regex within their controller mapping routines later in the stack.
-* **RedPercent System Wiring Bypass in Web:** Because `run_web_app()` entirely skips the setup window and `build_models()`, it also skips the custom wiring loop that links positioning probes to the `RedPercentSystem`. If the Web view uses the Red Percent feature, it will likely fail to sync coordinates due to an empty `available_probes` dict.
 * **Swallowed Exceptions in Probing:** `probe_device_at()` wraps every serial attempt in `try... except Exception: pass`. If a user launches the app but the serial port is locked by another process (e.g., Arduino IDE) or requires `sudo` (Linux permission errors), it silently fails and reports "Not Found" instead of throwing an actionable error.
-* **Redundant Pygame Joystick Initialization:** In PySide6's `get_available_controllers` (`app.py:543`), it calls `js.init()` on each iterated joystick, whereas Tkinter's version just reads the name and skips `js.init()`.
+* **Redundant Pygame Joystick Initialization:** In PySide6's `get_available_controllers` (`app.py:545`), it calls `js.init()` on each iterated joystick, whereas Tkinter's version just reads the name and skips `js.init()`.
 
 ---
 *Verified against `mvc-refactor` branch at commit `a7a8eaa` / `ada4dbf`.*

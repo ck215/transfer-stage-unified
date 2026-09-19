@@ -142,7 +142,7 @@ to a serial device at all (no `serial_comm`/`poller`).
 **Inconsistencies & Anomalies:**
 - **Dead Code:** `is_monitoring`, `stop_event`, `thread`, `monitor_thread`, and `baseline` are initialized in `__init__` but never touched again. The thread loop strictly relies on `monitoring` and `_monitor_thread`.
 - **Uninitialized Attribute Reference:** `self.last_logged_red` is referenced and dynamically created via `hasattr()` on line 305 inside `_monitor_colors`. It is never initialized in `__init__`.
-- **Ghost Check:** `get_available_probe_names()` (:184) checks `getattr(probe, "_disabled_in_setup", False)`, but no probe subclass ever initializes this attribute.
+- **Disabled State Guard:** `get_available_probe_names()` (:184) checks `getattr(probe, "_disabled_in_setup", False)`. While no probe subclass initializes this natively, it is injected dynamically by the Web view (`web_adapter.py:161`) during setup based on the payload, and used to hide/disable widgets for unselected probes.
 
 ## `rotator_system.RotatorSystem` (`src/model/rotator_system.py`, 282 lines)
 

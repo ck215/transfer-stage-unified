@@ -91,7 +91,7 @@ rather than `ErrorRouter`, or verify the app isn't shutting down first.
 |---|---|---|---|
 | 48 | Connection attempt start | print-only | `report_info("Serial Connection", f"Attempting connection to {self.SERIAL_PORT}...")` |
 | 83 | Successful connect/verify | print-only | `report_info("Serial Connected", f"Arduino Ready on {self.SERIAL_PORT}")` |
-| 262 (`close`) | Port close | print-only | `report_info("Serial Port Closed", "Serial port closed safely.")` |
+| 259 (`close`) | Port close | print-only | `report_info("Serial Port Closed", "Serial port closed safely.")` |
 
 ### `src/controller/gamepad.py`
 | Line | Transition | Current | Suggested |

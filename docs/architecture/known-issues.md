@@ -1,5 +1,26 @@
 # Known Issues
 
+> **2026-09-19 note:** this log predates `audit/` and
+> [root-causes.md](root-causes.md). Each open item below is mapped to a root
+> cause there. Fix it via that root cause, not locally. Corrections to this
+> file:
+> - Fixed #2, #5, #7, #14 are **committed** in `046533f`, not
+>   "uncommitted, pending batch".
+> - Serial-port leak item: reopen does **not** open a second handle on the
+>   same port. It builds a model with `port=None` (a silent headless
+>   device). The old handle is what leaks. See SERIAL-19 / STEPPER-1.
+> - Toggle-desync hypothesis: the "transient falsy gamepad" window cannot
+>   occur on a successful Tk swap. See GAMEPAD-4 for the traced mechanism
+>   (lazy flag flip on a *failed* swap; Web never flips). Root cause: RC-3.
+> - #7's generalized `_ensure_pygame_video()` fix treats the aftermath of
+>   an unnecessary mid-session `pygame.quit()` (GAMEPAD-2, RC-13).
+> - "PySide6 vs Tkinter Polling Threads" was wrong: both poll on the GUI
+>   event loop at the same 100 ms. The real divergence is PySide's extra
+>   50 ms poll from `_poll_model`. Restated in place below (RC-4 / PYSIDE-9).
+> - Fixed #1 cited `addb0b8` for the Python-side fix. That commit is
+>   orphaned — real, but unreachable from this branch after a rebase or
+>   amend. The reachable equivalent is `4ffb2e3`, now cited instead.
+
 Living log. Newest first within each status group. Safety-tagged where
 relevant (**SAFETY** = could leave physical hardware in a dangerous or
 unintended state).
@@ -8,7 +29,7 @@ unintended state).
 
 | # | Summary | Root cause | Fix commit(s) | Files |
 |---|---|---|---|---|
-| 1 | **SAFETY** — Full Stop / disable never actually cut stepper coil current | Firmware's `'d'` handler set `xUART.toff(2)` (nonzero = still enabled for TMC2209) instead of `toff(0)`; also gated behind a `system_enabled` flag that could be stale. Python side had the same class of bug: `_stop_and_disarm()` only sent `'d'` `if self.system_enabled`, and that flag resets to `False` on model reconstruction while the firmware's own copy persists. | `addb0b8` (Python), `1896f25` (stepper_firmware), `8267e21` (chuck_firmware) | `probes.py`, `stepper_firmware.ino`, `chuck_firmware.ino` — **requires reflashing both boards** |
+| 1 | **SAFETY** — Full Stop / disable never actually cut stepper coil current | Firmware's `'d'` handler set `xUART.toff(2)` (nonzero = still enabled for TMC2209) instead of `toff(0)`; also gated behind a `system_enabled` flag that could be stale. Python side had the same class of bug: `_stop_and_disarm()` only sent `'d'` `if self.system_enabled`, and that flag resets to `False` on model reconstruction while the firmware's own copy persists. | `4ffb2e3` (Python), `1896f25` (stepper_firmware), `8267e21` (chuck_firmware) | `probes.py`, `stepper_firmware.ino`, `chuck_firmware.ino` — **requires reflashing both boards** |
 | 2 | **SAFETY**-adjacent — entering manual mode with no controller attached still sent the hardware enable command before the block took effect, firmware end up falsely enabled | `enter_manual()` called `self.enable()` (unconditionally sends `'e'`) *before* checking gamepad presence; the only gamepad check was downstream in `send_manual_mode_command()`, which could only revert the Python-side flag, not un-send the enable | uncommitted, pending batch | `probes.py` |
 | 3 | Tkinter entry fields effectively unmodifiable | `DynamicView._poll_model()` had no focus guard (PySide6's equivalent loop does: `not widget.hasFocus()`); every 50ms tick reset the StringVar to the model's last-committed value, erasing in-progress keystrokes before FocusOut/Return could commit them | `12e9d59` | `views/tkinter/view.py` |
 | 4 | Tkinter numeric fields commit the *previous* value, one edit-cycle behind | Buttons/toggles render as `tk.Label` (works around macOS Aqua ignoring `bg`/`fg` on real `tk.Button`); Labels don't take keyboard focus, so clicking one never fires `<FocusOut>` on the just-edited Entry — the command reads the model's stale pre-edit value. Confirmed via Temperature Controller's Ramp Rate: 5→shows 10 (prior value), 10→shows 5, 4→shows 10 — consistent one-cycle lag, not corruption. Affects every numeric field paired with any button/toggle, every tab. | `b42c13e` | `views/tkinter/view.py` |
@@ -82,12 +103,11 @@ unintended state).
 - **Dead State:** `RedPercentSystem.__init__` declares five lock/thread state variables (`is_monitoring`, `stop_event`, `thread`, `monitor_thread`, `baseline`) that are completely unread by the rest of the file (which uses `monitoring` and `_monitor_thread` instead). Conversely, `last_logged_red` is referenced and built inside the monitoring thread without ever being declared in `__init__`.
 - **Wasted Packet Sends:** `BaseProbe.send_manual_mode_command()` correctly checks if the gamepad dropped out and resets `manual_flag`, but instead of aborting the send, it still writes a full zero-padded manual packet to the firmware on that tick.
 - **G-Code Execution Race:** `BaseProbe.run_script()` sets `self.is_stepping = True` without checking if the stage is already actively executing a routine.
-- **RedPercent System Wiring Bypass in Web:** Because `run_web_app()` entirely skips the setup window and `build_models()`, it also skips the custom wiring loop that links positioning probes to the `RedPercentSystem`. If the Web view uses the Red Percent feature, it will likely fail to sync coordinates due to an empty `available_probes` dict.
-- **Redundant Pygame Joystick Initialization:** In PySide6's `get_available_controllers` (`app.py:543`), it calls `js.init()` on each iterated joystick, whereas Tkinter's version just reads the name and skips `js.init()`.
+- **Redundant Pygame Joystick Initialization:** In PySide6's `get_available_controllers` (`app.py:545`), it calls `js.init()` on each iterated joystick, whereas Tkinter's version just reads the name and skips `js.init()`.
 - **Dead Code:** `app.py:3` defines `parse_controller_id()`, but it is completely unused.
 - **Dead Code:** `src/lib/toupcam.py` is confirmed unused outside of itself and represents dead code that could be safely deleted.
-- **PySide6 vs Tkinter Save Logic:** PySide6 uses `save_to_csv` on `self.model.data_log` (`RedPercentDynamicView`), while Tkinter directly calls `self.system.save_log()` (`RedPercentView`).
-- **PySide6 vs Tkinter Polling Threads:** Tkinter's `DynamicView.start_polling` triggers the hardware position and status polls using `self.after(100)`, running them directly in the UI thread loop, whereas PySide6 uses `QTimer`s.
+- **PySide6 vs Tkinter Save Logic Bug:** PySide6 uses `save_to_csv` directly on `self.model.data_log` (`views/pyside/view.py:703`), bypassing `RedPercentSystem.save_log()` (`redpercent_system.py:246-247`) which re-syncs `probe_name` and `probe_tilt_angle` before writing. As a result, edited fields silently save stale values in PySide6, whereas Tkinter correctly saves them by routing through the model.
+- **PySide6 vs Tkinter polling rate** *(restated 2026-09-19; the earlier "Tk polls in the UI thread, PySide uses QTimers" framing was wrong — both run on the GUI event loop, and both dedicated timers are 100 ms).* The real divergence: PySide6 *additionally* calls `read_position()` and `poll_status()` from `_poll_model` on its 50 ms render tick (`views/pyside/view.py:402-405`), which Tkinter does not — about 3× the hardware traffic, all on the GUI thread, and unguarded on that path. Root cause: RC-4 (PYSIDE-9).
 - `RedPercentSystem`'s background monitor thread
   (`_monitor_colors`) reads/writes `current_red`/`red_change`/`baseline_red`
   with no lock, while the view polls the same attributes every tick from
@@ -125,14 +145,16 @@ unintended state).
 
 ## Design questions raised but not decided
 
-- **Reconstruct-on-reopen vs. persistent-controller-ownership**: closing and
-  reopening a device dock currently destroys and rebuilds the entire model
-  (including its `ControllerPoller` and `serial` connection) from scratch.
-  This is the root mechanism behind at least two bug classes fixed this
-  session (the video-driver issue, plausibly the controller-swap toggle
-  desync). See
-  [ownership-and-lifecycle.md](ownership-and-lifecycle.md#the-reconstruct-on-reopen-pattern-and-why-it-matters-for-the-gamepad-bug-history)
-  for the two options and why neither has been chosen yet.
+- ~~**Reconstruct-on-reopen vs. persistent-controller-ownership**~~ —
+  **DECIDED 2026-09-19 (owner): persistent ownership.** Closing a tab or
+  dock *hides*; the model, its `ControllerPoller` and its `serial`
+  connection all stay alive, and reopening shows the existing model rather
+  than rebuilding one. Reconstruct-on-reopen was the root mechanism behind
+  the video-driver issue and plausibly the controller-swap toggle desync.
+  Tracked as D-1 in
+  [root-causes.md](root-causes.md#answered-decisions), which lists the
+  implementation consequences (including that Tk needs a real re-add path
+  and that RC-4 becomes a prerequisite).
 - **PySide6/Tkinter parity strategy for Red Percent**: pick one rendering
   strategy (schema-driven vs. hand-built) and port the other tab to match,
   rather than continuing to fix individual widget divergences as they're

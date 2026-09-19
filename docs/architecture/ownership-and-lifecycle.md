@@ -1,5 +1,24 @@
 # Ownership & Lifecycle
 
+> **2026-09-19 corrections (see [root-causes.md](root-causes.md) RC-1):**
+> 1. `SystemManager.remove_model()` **does not** tear down. It only pops
+>    the dict (`system_manager.py:24-27`). The fix recommended below
+>    ("call `remove_model`, which internally calls `_teardown_model`")
+>    would leak exactly as today. Only `reboot_model` and `shutdown_all`
+>    call `teardown()`.
+> 2. Reopen does **not** open a second `serial()` on the same port. PySide
+>    `open_device_view` constructs with `port=None`, so the reopened device
+>    is silently headless. The *old* handle is the leak.
+> 3. Tk has **no** reopen flow. Tab close is `notebook.forget()` only, and
+>    the model and all loops keep running.
+> 4. `power_down()` ≠ `disable()`: `power_down` also writes `k`, which no
+>    firmware handles.
+> 5. The threading table's temperature "backoff" is a fixed 0.1 s retry
+>    that gives up permanently after 5 failures.
+>
+> The two directions under "reconstruct on reopen" are now owner decision
+> **D-1** in root-causes.md, with a recommendation.
+
 The master map of who constructs what, who destroys it, and where the
 `ManagedModel` contract (`teardown()` + `emergency_stop()`, see
 [models.md](models.md#basemanagedmodel-protocol-srcmodelbasepy-22-lines))

@@ -33,7 +33,7 @@ centralized call rather than four separate `pygame.init()` calls (fixed
 ### Wrapper classes (composition, 1 poller : 0..1 wrapper)
 
 `BaseGamepad` and its subclasses `XboxGamepad`, `BluetoothXboxGamepad`,
-`LogitechF310Gamepad`, and `T16000MGamepad` (lines 44-234) each wrap one `pygame.joystick.Joystick`
+`LogitechF310Gamepad`, and `T16000MGamepad` (lines 57-234) each wrap one `pygame.joystick.Joystick`
 and normalize its raw axis/button/hat layout into one dict shape via
 `get_mapped_state()`:
 
@@ -130,7 +130,7 @@ Thread safety: `self._lock` (an `RLock`) guards every `self.ser` read/write.
 | `send_manual_mode_command` | `(params: dict) -> None` | 187 | Sends a **binary struct** (`PACKET_FORMAT = '<BBffffffffff'`, 42 bytes) — a completely different wire format from the autonomous command. |
 | `enable` | `() -> None` | 240 | Sends the single-char `'e'` command. Firmware sets `toff(4)`. |
 | `disable` | `() -> None` | 249 | Sends the single-char `'d'` command. **This is the only thing that actually disables coil current** (firmware sets `toff(0)`). |
-| `close` | `() -> None` | 258 | Closes `self.ser` if open. |
+| `close` | `() -> None` | 259 | Closes `self.ser` if open. |
 
 ### Command-surface summary (cuts across serial.py + firmware)
 

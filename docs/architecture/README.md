@@ -13,7 +13,7 @@ memory/docs going stale). File:line references are exact as of the commit
 noted at the bottom of each doc; re-check them if the file has since moved.
 
 ## Quick Facts
-- **Active Bug Backlog**: 11 active issues (4 high priority, 7 lower priority/unverified) and 2 pending design decisions currently logged in `known-issues.md`.
+- **Active Bug Backlog**: 22 active issues (5 high priority, 17 lower priority/unverified) and 3 pending design decisions logged in `known-issues.md`. These counts are superseded by `audit/` (213 findings) and `root-causes.md` (13 root causes, 11 owner decisions D-1..D-11).
 - **Default Frontend**: `run.sh` explicitly forces the Tkinter UI (via `--tkinter`), making it the stable daily-driver view. However, running `src/app.py` directly without arguments still defaults to `web` (on macOS) or `pyside` (elsewhere).
 - **Key File Sizes**:
   - `src/views/pyside/view.py`: ~967 lines
@@ -31,6 +31,19 @@ For a brand-new investigator looking to understand the system architecture, read
 6. **[ownership-and-lifecycle.md](ownership-and-lifecycle.md)**: Deep dive into the complex and sometimes violated object lifecycle constraints.
 7. **[known-issues.md](known-issues.md)**: Review the active backlog before attempting to fix anything.
 8. **[libs-and-web.md](libs-and-web.md)**: (Optional) Review legacy systems and vendor driver integrations.
+
+## Start here for implementation work (added 2026-09-19)
+
+**[root-causes.md](root-causes.md)** is the entry point for any
+corrective work. It groups the ~230 findings in `audit/*.md` under 13
+root causes, lists the owner decisions (D-1..D-11) that must be answered
+first, gives the wave sequencing, and lists "anti-fixes" that would
+entrench a root cause. It also lists factual corrections to the docs
+below. Where it disagrees with them, it wins until they are corrected.
+
+- **[audit/](audit/)**: per-subsystem, symptom-level findings with file:line
+  evidence (MANAGER, SERIAL, ERRORS, GAMEPAD, STEPPER, DC, ROTATOR, TEMP,
+  REDPERCENT, PYSIDE, VIEW-TKINTER, WEB).
 
 ## Navigational Index
 
@@ -60,11 +73,10 @@ For a brand-new investigator looking to understand the system architecture, read
 
 ## Current framing (as of 2026-09-18)
 
-- **Web view (`src/views/web/`) is deprioritized/legacy for now.** Parity work
-  targets **PySide6 vs. Tkinter only** until stated otherwise.
-- **Tkinter as the stable fallback:** The app's stable daily-driver view is Tkinter (`run.sh` explicitly launches it via `--tkinter`) to give room to fix the PySide6 view without breaking the frontend people are actually using day-to-day. 
-- **Goal: complete parity between PySide6 and Tkinter** — same buttons, same
-  layout intent, same model methods called per field. Where they currently
+- **All three views are in scope for parity auditing:** The parity and architecture work currently targets **PySide6, Tkinter, AND the Web view**, auditing them against the stable `main` branch (pre-MVC-refactor monolith) and Tkinter view baseline.
+- **Tkinter as the stable fallback:** The app's stable daily-driver view is Tkinter (`run.sh` explicitly launches it via `--tkinter`) to give room to fix the PySide6 and Web views without breaking the frontend people are actually using day-to-day.
+- **Goal: Complete parity across all views** — same capabilities, same
+  layout intent, same model lifecycle/ownership methods called. Where they currently
   diverge structurally (see [views.md](views.md)), that's tracked as an open
   item, not fixed reactively one bug report at a time.
 - **Architectural integrity contract:** `src/model/base.py`'s
