@@ -182,5 +182,5 @@ entry it owns to be removed rather than left XPASSing.
 
 *Measured 2026-09-19 against commit `fd26a2b`. 264 collected (`tests/ui`
 excluded on top of that). Main pass: 247 selected — 239 pass, 8 xfail
-(known-bad), identical across three consecutive sweeps. Qt pass:
+(known-bad), identical across four consecutive sweeps. Qt pass:
 10. Order-dependent: 7. Known-bad: 10. Slow: 56.*
