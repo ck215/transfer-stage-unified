@@ -55,9 +55,17 @@ def test_redpercent_get_available_probe_names():
     rp = RedPercentSystem()
     assert rp.get_available_probe_names() == []
     
-    rp.available_probes = {"Probe A": "a", "Probe B": "b"}
-    assert set(rp.get_available_probe_names()) == {"Probe A", "Probe B"}
+    class MockProbe:
+        def __init__(self, disabled=False):
+            if disabled:
+                self._disabled_in_setup = True
 
+    rp.available_probes = {
+        "Probe A": MockProbe(disabled=False), 
+        "Probe B": MockProbe(disabled=False),
+        "Probe C (Disabled)": MockProbe(disabled=True)
+    }
+    assert set(rp.get_available_probe_names()) == {"Probe A", "Probe B"}
 def test_redpercent_has_unsaved_data():
     rp = RedPercentSystem()
     assert rp.has_unsaved_data is False

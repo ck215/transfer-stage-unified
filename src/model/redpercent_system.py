@@ -177,7 +177,12 @@ class RedPercentSystem:
         self.sync_z = not self.sync_z
 
     def get_available_probe_names(self) -> list:
-        return list(self.available_probes.keys()) if self.available_probes else []
+        if not self.available_probes:
+            return []
+        return [
+            name for name, probe in self.available_probes.items()
+            if not getattr(probe, "_disabled_in_setup", False)
+        ]
 
     @property
     def has_unsaved_data(self) -> bool:
@@ -264,6 +269,12 @@ class RedPercentSystem:
     def stop_monitoring(self):
         print(f"[{self.__class__.__name__}] === MONITORING STOPPED ===")
         self.monitoring = False
+
+    def teardown(self):
+        self.stop_monitoring()
+
+    def emergency_stop(self):
+        self.stop_monitoring()
 
     def reset_baseline(self):
         self.baseline_red = self.current_red
