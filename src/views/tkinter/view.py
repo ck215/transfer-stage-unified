@@ -162,6 +162,10 @@ class DraggableClosableNotebook(ttk.Notebook):
             self.forget(index)
 
 class DashboardWindow(tk.Toplevel):
+    def _confirm_rotation_dialog(self, target_deg: float) -> bool:
+        msg = f"Target rotation {target_deg:.2f}° exceeds the safe ±30° range.\n\nMoving past this limit risks damaging physical tubing.\n\nAre you sure you want to proceed?"
+        return messagebox.askyesno("Rotation Limit Warning", msg, parent=self)
+
     def __init__(self, parent, system_manager):
         super().__init__(parent)
         self.system_manager = system_manager
@@ -177,15 +181,23 @@ class DashboardWindow(tk.Toplevel):
                         
         self.bind("<FocusOut>", on_focus_out)
         
-        stop_btn = tk.Button(self, text="FULL STOP", bg="red", fg="white", 
-                             font=('Arial', 12, 'bold'), command=self.system_manager.full_stop_all)
-        stop_btn.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        # tk.Button ignores bg/fg on macOS Aqua, so a red/white button renders as
+        # an invisible white-on-white face. Use a Label styled as a button instead.
+        stop_btn = tk.Label(self, text="FULL STOP", bg="red", fg="white",
+                            font=('Arial', 12, 'bold'), relief=tk.RAISED, pady=5, cursor="hand2")
+        stop_btn.bind("<Button-1>", lambda e: self.system_manager.full_stop_all())
+        # Bottom-docked, not top: sitting directly above the tab bar made it an
+        # easy accidental-click target when reaching for a tab.
+        stop_btn.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
         
         self.notebook = DraggableClosableNotebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
         self.tab_metadata = {}
 
         for device_name, model in active_models.items():
+            if device_name == "SMC100 Rotator" and model:
+                model.confirm_rotation_callback = self._confirm_rotation_dialog
+                
             frame = ttk.Frame(self.notebook)
             self.notebook.add(frame, text=device_name)
             
@@ -269,8 +281,16 @@ class DynamicView(tk.Frame):
         self._poll_model()
 
     def _build_ui(self):
+        # Build the schema-driven grid inside its own sub-frame, then let
+        # pack()'s default center anchor place that whole block in the middle
+        # of the panel — the same layout RedPercentView already uses (packed
+        # sub-frames center automatically without any extra wiring). Gridding
+        # straight onto the outer, full-width frame left every row but the
+        # spanning section titles pinned to the left edge.
+        content = tk.Frame(self, bg=self.bg_main)
+        content.pack(expand=True)
         schema = getattr(self.model, 'ui_schema', {"sections": []})
-        self._build_from_schema(schema)
+        self._build_from_schema(schema, content)
 
     def _is_valid_float(self, val):
         if val in ('.', '-', '-.', '+'):
@@ -281,11 +301,11 @@ class DynamicView(tk.Frame):
         except ValueError:
             return False
 
-    def _build_from_schema(self, schema):
+    def _build_from_schema(self, schema, container):
         row_counter = 0
         for section in schema.get("sections", []):
             title = section.get("title", "Section")
-            tk.Label(self, text=f"--- {title} ---", font=('Arial', 10, 'bold'), 
+            tk.Label(container, text=f"--- {title} ---", font=('Arial', 10, 'bold'),
                      bg=self.bg_main, fg=self.fg_accent).grid(row=row_counter, column=0, columnspan=4, pady=5)
             row_counter += 1
             
@@ -302,11 +322,11 @@ class DynamicView(tk.Frame):
                     str_var = tk.StringVar(value=str(val))
                     self.vars[attr] = str_var
                     
-                    tk.Label(self, text=label_text, bg=self.bg_main, fg=self.fg_accent).grid(
+                    tk.Label(container, text=label_text, bg=self.bg_main, fg=self.fg_accent).grid(
                         row=row_counter, column=0, padx=5, pady=2, sticky='w')
-                        
+
                     if el_type == "readonly":
-                        tk.Label(self, textvariable=str_var, bg=self.bg_main, fg='lightgreen', 
+                        tk.Label(container, textvariable=str_var, bg=self.bg_main, fg='lightgreen',
                                  font=('Arial', 10, 'bold')).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w')
                     else: # entry
                         is_numeric = False
@@ -316,10 +336,10 @@ class DynamicView(tk.Frame):
                                 is_numeric = True
                             except ValueError:
                                 pass
-                                
+
                         if is_numeric:
                             vcmd = (self.register(lambda P: P == "" or (self._is_valid_float(P))), '%P')
-                            entry = tk.Entry(self, textvariable=str_var, validate='key', validatecommand=vcmd)
+                            entry = tk.Entry(container, textvariable=str_var, validate='key', validatecommand=vcmd)
                             entry.grid(row=row_counter, column=1, padx=5, pady=2)
                             
                             def on_finish(event, attr_name=attr, var=str_var):
@@ -337,7 +357,7 @@ class DynamicView(tk.Frame):
                             entry.bind("<FocusOut>", on_finish)
                             entry.bind("<Return>", on_finish)
                         else:
-                            entry = tk.Entry(self, textvariable=str_var)
+                            entry = tk.Entry(container, textvariable=str_var)
                             entry.grid(row=row_counter, column=1, padx=5, pady=2)
                             
                             def make_trace(attr_name, var):
@@ -349,13 +369,21 @@ class DynamicView(tk.Frame):
                     cmd_name = el.get("command")
                     bg_color = el.get("bg", "darkgreen")
                     fg_color = el.get("fg", "black")
-                    
+
+                    # tk.Button ignores bg/fg on macOS's native Aqua theme (the face
+                    # stays system white/gray regardless of the option), which made
+                    # white-text buttons like these invisible. A Label styled as a
+                    # button — the same trick already used for the toggle controls
+                    # above — renders its colors correctly on every platform.
+                    btn_lbl = tk.Label(container, text=label_text, bg=bg_color, fg=fg_color,
+                                        font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5,
+                                        cursor="hand2")
+
                     def make_cmd(c_name):
-                        return lambda: self._execute_command(c_name)
-                        
-                    tk.Button(self, text=label_text, bg=bg_color, fg=fg_color, 
-                              font=('Arial', 10, 'bold'), command=make_cmd(cmd_name)).grid(
-                        row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
+                        return lambda e: self._execute_command(c_name)
+
+                    btn_lbl.bind("<Button-1>", make_cmd(cmd_name))
+                    btn_lbl.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
                         
                 elif el_type == "toggle":
                     attr = el.get("model_attr")
@@ -363,7 +391,7 @@ class DynamicView(tk.Frame):
                     false_text = el.get("false_text")
                     cmd_name = el.get("command")
                     
-                    lbl = tk.Label(self, font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5, cursor="hand2")
+                    lbl = tk.Label(container, font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5, cursor="hand2")
                     
                     def make_cmd(c_name):
                         return lambda e: self._execute_command(c_name)
@@ -383,7 +411,7 @@ class DynamicView(tk.Frame):
                     cmd_name = el.get("command")
                     options_cmd = el.get("options_command")
 
-                    tk.Label(self, text=label_text, bg=self.bg_main, fg=self.fg_accent).grid(
+                    tk.Label(container, text=label_text, bg=self.bg_main, fg=self.fg_accent).grid(
                         row=row_counter, column=0, padx=5, pady=2, sticky='w')
 
                     options_func = getattr(self.model, options_cmd, None) if options_cmd else None
@@ -393,7 +421,7 @@ class DynamicView(tk.Frame):
                         options = [current_val] + options
 
                     combo_var = tk.StringVar(value=current_val)
-                    combo = ttk.Combobox(self, textvariable=combo_var, values=options, state="readonly")
+                    combo = ttk.Combobox(container, textvariable=combo_var, values=options, state="readonly")
                     combo.grid(row=row_counter, column=1, padx=5, pady=2, sticky='ew')
 
                     def make_dropdown_cmd(c_name, var):
@@ -416,20 +444,20 @@ class DynamicView(tk.Frame):
                                 var.set(cur)
                         return handler
 
-                    tk.Button(self, text="⟳", width=2,
+                    tk.Button(container, text="⟳", width=2,
                               command=make_refresh(options_func, combo, combo_var)).grid(
                         row=row_counter, column=2, padx=2, pady=2)
 
                 elif el_type == "file_picker":
                     cmd_name = el.get("command")
-                    lbl = tk.Label(self, text="No Script Selected", bg=self.bg_main, fg='yellow', font=('Arial', 8))
+                    lbl = tk.Label(container, text="No Script Selected", bg=self.bg_main, fg='yellow', font=('Arial', 8))
                     lbl.grid(row=row_counter, column=1, padx=5, pady=2, sticky='w')
-                    
+
                     def make_file_cmd(c_name, label_widget):
                         def wrapped():
                             from tkinter import filedialog
                             path = filedialog.askopenfilename(
-                                title="Select Script File", 
+                                title="Select Script File",
                                 filetypes=[("Text and GCode files", "*.txt *.gcode *.nc"), ("All files", "*.*")]
                             )
                             if path:
@@ -437,9 +465,13 @@ class DynamicView(tk.Frame):
                                 func = getattr(self.model, c_name, None)
                                 if func: func(path)
                         return wrapped
-                        
-                    tk.Button(self, text=label_text, bg="darkorange", fg="black", font=('Arial', 10, 'bold'), 
-                              command=make_file_cmd(cmd_name, lbl)).grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
+
+                    # Same Aqua-ignores-bg issue as the "button" element type above;
+                    # use the Label-styled-button pattern instead of tk.Button.
+                    file_btn = tk.Label(container, text=label_text, bg="darkorange", fg="black",
+                                         font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5, cursor="hand2")
+                    file_btn.bind("<Button-1>", lambda e, c=cmd_name, w=lbl: make_file_cmd(c, w)())
+                    file_btn.grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
                               
                 row_counter += 1
 
@@ -559,6 +591,25 @@ class RedPercentView(tk.Frame):
         ttk.Label(status_frame, text="Focus Area:").grid(row=0, column=0, sticky=tk.W)
         self.area_label = ttk.Label(status_frame, text="Not selected")
         self.area_label.grid(row=0, column=1, sticky=tk.W)
+
+        meta_frame = ttk.LabelFrame(self, text="Probe Metadata")
+        meta_frame.pack(pady=10, padx=10, fill=tk.X)
+        meta_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(meta_frame, text="Probe Name:").grid(row=0, column=0, padx=5, pady=2, sticky=tk.W)
+        self.probe_name_var = tk.StringVar(value=getattr(self.system, "probe_name", ""))
+        ttk.Entry(meta_frame, textvariable=self.probe_name_var).grid(
+            row=0, column=1, padx=5, pady=2, sticky=tk.EW)
+
+        ttk.Label(meta_frame, text="Probe Tilt Angle:").grid(row=1, column=0, padx=5, pady=2, sticky=tk.W)
+        self.probe_tilt_angle_var = tk.StringVar(value=getattr(self.system, "probe_tilt_angle", ""))
+        ttk.Entry(meta_frame, textvariable=self.probe_tilt_angle_var).grid(
+            row=1, column=1, padx=5, pady=2, sticky=tk.EW)
+
+        self.probe_name_var.trace_add(
+            "write", lambda *args: setattr(self.system, "probe_name", self.probe_name_var.get()))
+        self.probe_tilt_angle_var.trace_add(
+            "write", lambda *args: setattr(self.system, "probe_tilt_angle", self.probe_tilt_angle_var.get()))
 
         color_frame = ttk.LabelFrame(self, text="Red Detection")
         color_frame.pack(pady=10, padx=10, fill=tk.X)
@@ -716,7 +767,43 @@ class RedPercentView(tk.Frame):
         self.after(100, self.poll_display)
 
     def open_plot_window(self):
-        pass
+        if FigureCanvasTkAgg is None:
+            messagebox.showerror("Plotting Unavailable",
+                                  "matplotlib's Tk backend is not installed.", parent=self)
+            return
+
+        file_path = filedialog.askopenfilename(
+            title="Select Red Detection Log",
+            filetypes=[("CSV Files", "*.csv"), ("All files", "*.*")])
+        if not file_path:
+            return
+
+        from model.plot_data import parse_red_percent_csv, render_red_percent_figure
+        try:
+            with open(file_path, newline='') as csvfile:
+                parsed = parse_red_percent_csv(csvfile.read())
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not read CSV file:\n{e}", parent=self)
+            return
+
+        if not parsed["red_percents"]:
+            messagebox.showwarning("No Data", "The selected file has no plottable Red % data.", parent=self)
+            return
+
+        fig = render_red_percent_figure("0D", None, None, None, parsed["red_percents"], parsed["dim_data"])
+        metadata = parsed["metadata"]
+        if metadata:
+            title_bits = [f"{k}: {v}" for k, v in metadata.items() if v]
+            if title_bits:
+                fig.axes[0].set_title(" | ".join(title_bits))
+
+        plot_win = tk.Toplevel(self.winfo_toplevel())
+        plot_win.title(f"Red % Plot — {file_path.split('/')[-1]}")
+        plot_win.geometry("800x500")
+
+        canvas = FigureCanvasTkAgg(fig, master=plot_win)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def destroy(self):
         print("[color_test] Cleaning up and closing RedPercentView...")
