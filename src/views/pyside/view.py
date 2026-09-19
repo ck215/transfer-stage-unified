@@ -532,57 +532,19 @@ class PlotDialog(QDialog):
         self.toolbar = None
 
     def load_csv(self):
+        from model.plot_data import parse_red_percent_csv, render_red_percent_figure
         filename, _ = QFileDialog.getOpenFileName(self, "Select Red Percent Log", "", "CSV Files (*.csv);;All Files (*)")
         if not filename: return
-        
         try:
             with open(filename, 'r') as f:
-                reader = csv.reader(f)
-                header = None
-                metadata = {}
-                for row in reader:
-                    if not row: continue
-                    if "Red Percent" in row:
-                        header = row
-                        break
-                    elif row[0].startswith("#") and len(row) >= 2:
-                        metadata[row[0].strip('# ')] = row[1]
-                
-                if not header:
-                    QMessageBox.critical(self, "Invalid File", "CSV missing 'Red Percent' column")
-                    return
-                    
-                try: red_idx = header.index("Red Percent")
-                except ValueError:
-                    QMessageBox.critical(self, "Invalid File", "CSV missing 'Red Percent' column")
-                    return
-                    
-                dim_indices = {}
-                for i, col in enumerate(header):
-                    # Filter out velocity columns as requested
-                    if col not in ["Timestamp", "Red Percent"] and col.strip() and not col.endswith(" Velocity"):
-                        dim_indices[col] = i
-                        
-                red_percents = []
-                dim_data = {dim: [] for dim in dim_indices.keys()}
-                
-                for row in reader:
-                    if not row: continue
-                    try:
-                        r_val = float(row[red_idx])
-                        red_percents.append(r_val)
-                        for dim, idx in dim_indices.items():
-                            if len(row) > idx:
-                                dim_data[dim].append(float(row[idx]))
-                    except ValueError:
-                        continue
-                        
+                parsed = parse_red_percent_csv(f.read())
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load CSV: {e}")
             return
-            
-        dims_found = list(dim_data.keys())
-        self.select_plot_type(dims_found, red_percents, dim_data)
+        if not parsed["dims"] and not parsed["red_percents"]:
+            QMessageBox.critical(self, "Invalid File", "CSV missing 'Red Percent' column")
+            return
+        self.select_plot_type(parsed["dims"], parsed["red_percents"], parsed["dim_data"])
 
     def select_plot_type(self, dims_found, red_percents, dim_data):
         if not dims_found:
@@ -631,6 +593,7 @@ class PlotDialog(QDialog):
             self.draw_plot(selected['type'], selected['dim1'], selected['dim2'], selected['dim3'], red_percents, dim_data)
 
     def draw_plot(self, plot_type, dim1, dim2, dim3, red_percents, dim_data):
+        from model.plot_data import render_red_percent_figure
         if self.canvas:
             self.plot_frame.removeWidget(self.canvas)
             self.canvas.deleteLater()
@@ -638,47 +601,7 @@ class PlotDialog(QDialog):
             self.plot_frame.removeWidget(self.toolbar)
             self.toolbar.deleteLater()
 
-        fig = Figure(figsize=(8, 6), dpi=100)
-        
-        if plot_type == "0D":
-            ax = fig.add_subplot(111)
-            ax.plot(red_percents, marker='o', linestyle='-', color='b')
-            ax.set_xlabel('Index (Time / Samples)')
-            ax.set_ylabel('Red Percent')
-            ax.set_title('Red Percent Data')
-            ax.grid(True)
-        elif plot_type == "1D":
-            ax = fig.add_subplot(111)
-            if dim_data.get(dim1) and len(dim_data[dim1]) == len(red_percents):
-                paired = sorted(zip(dim_data[dim1], red_percents))
-                sorted_xs = [p[0] for p in paired]
-                sorted_rs = [p[1] for p in paired]
-                ax.plot(sorted_xs, sorted_rs, marker='o', linestyle='-', color='b')
-                ax.set_xlabel(f'Stepper {dim1} Location')
-            else:
-                ax.plot(red_percents, marker='o', linestyle='-', color='b')
-                ax.set_xlabel('Index')
-            ax.set_ylabel('Red Percent')
-            ax.set_title(f'Red Percent vs {dim1}')
-            ax.grid(True)
-        elif plot_type == "2D":
-            ax = fig.add_subplot(111, projection='3d')
-            x, y, z = dim_data[dim1], dim_data[dim2], red_percents
-            if len(x) == len(z) and len(y) == len(z):
-                scatter = ax.scatter(x, y, z, c=z, cmap='coolwarm', marker='o')
-                ax.set_xlabel(f'Stepper {dim1}')
-                ax.set_ylabel(f'Stepper {dim2}')
-                ax.set_zlabel('Red Percent')
-                fig.colorbar(scatter, ax=ax, label='Red Percent')
-        elif plot_type == "3D":
-            ax = fig.add_subplot(111, projection='3d')
-            x, y, z, c = dim_data[dim1], dim_data[dim2], dim_data[dim3], red_percents
-            if len(x) == len(c) and len(y) == len(c) and len(z) == len(c):
-                scatter = ax.scatter(x, y, z, c=c, cmap='coolwarm', marker='o')
-                ax.set_xlabel(f'Stepper {dim1}')
-                ax.set_ylabel(f'Stepper {dim2}')
-                ax.set_zlabel(f'Stepper {dim3}')
-                fig.colorbar(scatter, ax=ax, label='Red Percent')
+        fig = render_red_percent_figure(plot_type, dim1, dim2, dim3, red_percents, dim_data)
                 
         self.canvas = FigureCanvasQTAgg(fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
@@ -904,8 +827,24 @@ class DashboardWindow(QMainWindow):
     def close_device_view(self, device_name):
         if device_name in self.active_docks:
             dock = self.active_docks.pop(device_name)
+            if self._last_added_dock == dock:
+                self._last_added_dock = None
+
+            # Stop the view's QTimers before the dock's WA_DeleteOnClose
+            # schedules its widget for deletion -- otherwise a timer tick
+            # (e.g. RedPercentDynamicView's 50ms _poll_model, refreshing
+            # live-changing readonly fields) can land after Qt has already
+            # destroyed the underlying C++ widget, raising "Internal C++
+            # object already deleted".
+            widget = dock.widget()
+            if hasattr(widget, 'cleanup'):
+                try:
+                    widget.cleanup()
+                except Exception:
+                    pass
+
             dock.close()
-            
+
             # Destroy the model completely
             model = self.system_manager.get_model(device_name)
             if model:
@@ -920,6 +859,15 @@ class DashboardWindow(QMainWindow):
                 if device_name in self.system_manager.active_models:
                     del self.system_manager.active_models[device_name]
                     print(f"[DashboardWindow] Unregistered and destroyed model: {device_name}")
+
+    def _confirm_rotation_dialog(self, target_deg: float) -> bool:
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Rotation Limit Warning")
+        msg.setText(f"Target rotation {target_deg:.2f}° exceeds the safe ±30° range.\n\nMoving past this limit risks damaging physical tubing.\n\nAre you sure you want to proceed?")
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.No)
+        return msg.exec() == QMessageBox.Yes
 
     def open_device_view(self, device_name):
         if device_name in self.active_docks:
@@ -983,6 +931,9 @@ class DashboardWindow(QMainWindow):
                         red_model.available_probes[device_name] = model
             else:
                 return
+            
+        if device_name == "SMC100 Rotator" and model:
+            model.confirm_rotation_callback = self._confirm_rotation_dialog
             
         dock = DeviceDock(device_name, self)
         dock.setAllowedAreas(Qt.AllDockWidgetAreas)

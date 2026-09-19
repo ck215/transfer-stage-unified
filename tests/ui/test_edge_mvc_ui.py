@@ -207,6 +207,7 @@ def test_redpercent_sync_dimensions(qtbot):
 
 def test_dashboard_dock_lifecycle(qtbot):
     from model.system_manager import SystemManager
+    from PySide6 import QtCore
     from model.probes import StepperProbe
     from PySide6.QtCore import Qt
 
@@ -219,7 +220,7 @@ def test_dashboard_dock_lifecycle(qtbot):
     dash.show()
     
     dock = dash.active_docks["Stepper Probe"]
-    assert dock.isVisible()
+    assert dash.active_docks["Stepper Probe"].isVisible()
     
     # User closes dock
     dock.close()
@@ -232,18 +233,56 @@ def test_dashboard_dock_lifecycle(qtbot):
     # User checks the checkbox to restore the dock
     item.setCheckState(Qt.Checked)
     
-    qtbot.waitUntil(lambda: dock.isVisible(), timeout=1000)
-    assert dock.isVisible()
+    qtbot.waitUntil(lambda: "Stepper Probe" in dash.active_docks and dash.active_docks["Stepper Probe"].isVisible(), timeout=1000)
+    new_dock = dash.active_docks["Stepper Probe"]
+    assert new_dock.isVisible()
     
     # User unchecks the checkbox to hide the dock
     item.setCheckState(Qt.Unchecked)
-    qtbot.waitUntil(lambda: not dock.isVisible(), timeout=1000)
-    assert not dock.isVisible()
+    qtbot.waitUntil(lambda: not new_dock.isVisible(), timeout=1000)
+    assert not new_dock.isVisible()
     
+    dash.close()
+
+def test_red_percent_dock_close_stops_timers(qtbot):
+    """Regression test: closing a device dock (via the sidebar checkbox,
+    i.e. "disabling" it) must stop its QtDynamicView's QTimers immediately.
+    Previously only whole-app shutdown (DashboardWindow.closeEvent) called
+    widget.cleanup() -- closing a single dock left its 50ms _poll_model
+    timer running against a widget Qt had scheduled for deletion, raising
+    "Internal C++ object already deleted" once the timer next fired.
+    Red Percent surfaces this fastest since its readonly fields
+    (Current Red %, Red Change %) are updated by a live background thread."""
+    from model.system_manager import SystemManager
+    from PySide6.QtCore import Qt
+
+    mgr = SystemManager()
+    dash = DashboardWindow(mgr)
+    qtbot.addWidget(dash)
+    dash.show()
+
+    item = next(
+        dash.device_list.item(i)
+        for i in range(dash.device_list.count())
+        if dash.device_list.item(i).text() == "Red Percent Window"
+    )
+
+    item.setCheckState(Qt.Checked)
+    qtbot.waitUntil(lambda: "Red Percent Window" in dash.active_docks, timeout=1000)
+
+    widget = dash.active_docks["Red Percent Window"].widget()
+    assert widget.timer.isActive()
+
+    item.setCheckState(Qt.Unchecked)
+    qtbot.waitUntil(lambda: "Red Percent Window" not in dash.active_docks, timeout=1000)
+
+    assert not widget.timer.isActive()
+
     dash.close()
 
 def test_dashboard_dock_focus_loss(qtbot):
     from model.system_manager import SystemManager
+    from PySide6 import QtCore
     from model.probes import StepperProbe
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QWindowStateChangeEvent
@@ -259,7 +298,7 @@ def test_dashboard_dock_focus_loss(qtbot):
     dock = dash.active_docks["Stepper Probe"]
     item = dash.device_list.item(0)
     
-    assert dock.isVisible()
+    assert dash.active_docks["Stepper Probe"].isVisible()
     assert item.checkState() == Qt.Checked
     
     # Simulate dock hiding due to alt-tab / visibility loss (not explicit closeEvent)
@@ -485,26 +524,41 @@ def test_dynamic_view_inactivity_timer_expiration(qtbot):
             self.disable_called = False
             self.is_stepping = False
             self.manual_flag = False
+            self.touch_called = False
         @property
         def ui_schema(self): return {"sections": []}
         def disable(self):
             self.disable_called = True
             self.system_enabled = False
+        def touch_activity(self):
+            self.touch_called = True
             
     model = MockModelWithPoller()
     view = QtDynamicView(model)
     qtbot.addWidget(view)
     
-    # Fake gamepad activity to start the timer
+    # Fake gamepad activity to start the timer (now routed to model.touch_activity)
     model.poller.activity_callback()
     
-    assert hasattr(view, 'disable_timer')
-    assert view.disable_timer is not None
-    assert view.disable_timer.isActive()
-    
-    # Manually trigger timeout
-    view.disable_timer.timeout.emit()
-    
-    # Assert model was disabled
-    assert model.disable_called is True
+    # Assert model was touched
+    assert model.touch_called is True
 
+
+def test_pyside_dashboard_full_stop_wiring(qtbot):
+    """Verify that clicking the PySide FULL STOP button calls system_manager.full_stop_all()."""
+    from unittest.mock import MagicMock
+    from views.pyside.view import DashboardWindow
+    from model.system_manager import SystemManager
+    from PySide6 import QtCore
+
+    mgr = SystemManager()
+    mgr.full_stop_all = MagicMock()
+    
+    dash = DashboardWindow(mgr)
+    qtbot.addWidget(dash)
+    
+    # Simulate button click using qtbot
+    qtbot.mouseClick(dash.stop_btn, QtCore.Qt.LeftButton)
+    
+    # Verify the manager method was called
+    mgr.full_stop_all.assert_called_once()
