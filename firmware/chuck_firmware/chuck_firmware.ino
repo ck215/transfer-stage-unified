@@ -323,12 +323,17 @@ void parseHybridSerial() {
         else if (peekChar == 0x64) { // 'd'
             Serial.read();
 
-            if (system_enabled) {
-                system_enabled = false;
-                xUART.toff(2);
-                yUART.toff(2);
-                zUART.toff(2);
-            }
+            // TOFF=0 is what actually disables a TMC2209 driver output stage
+            // (see setup()'s toff(0) at boot for the same convention) --
+            // toff(2) here previously left the driver enabled with a
+            // different chopper off-time, never cutting coil current at all.
+            // Also run this unconditionally rather than gating on our own
+            // system_enabled belief: a stale/desynced flag must never be
+            // able to block the one command that actually kills power.
+            system_enabled = false;
+            xUART.toff(0);
+            yUART.toff(0);
+            zUART.toff(0);
         }
 
         // ---OPTION B2: EXPLICIT ENABLE (idempotent — safe even if already enabled)
