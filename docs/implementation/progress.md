@@ -5,7 +5,7 @@ what is next, and what is blocked. Update it in the *same commit* as the
 work it describes, then push. If this file and your memory disagree, this
 file wins.
 
-Route: [plan.md](plan.md) · Analysis:
+Route: [plan.md](plan.md) · Tests: [testing.md](testing.md) · Analysis:
 [../architecture/root-causes.md](../architecture/root-causes.md) ·
 Evidence: [../architecture/audit/](../architecture/audit/)
 
@@ -26,8 +26,10 @@ You are probably a fresh agent with no context. Do this, in order:
    re-derive the analysis; it cost a full audit pass.
 4. **Check the anti-fix table** in that same document before writing code.
    Several tempting patches entrench the cause they appear to fix.
-5. **Run the tests:** `python3 -m pytest tests/ -q` and, for structure,
-   `python3 -m pytest tests/architecture/ -q`.
+5. **Run the fast gate** — about 28 seconds:
+   `python3 -m pytest tests/ -m "not slow and not order_dependent and not qt"`.
+   Your stage's targeted gate and the three-pass full sweep are in
+   [testing.md](testing.md). Do not run the whole suite in a working loop.
 6. **Work, commit, push** per the protocol in plan.md. Every commit updates
    this file.
 7. **Before stopping,** write a session-log entry below saying what you did,
@@ -110,6 +112,40 @@ Newest last. One entry per working session, written *before* stopping.
 - **Next action:** S0's remaining item — write
   `tests/architecture/test_invariants.py` with the four grep invariants,
   `xfail`ed with their fixing stage. Then S1 (pure deletion).
+
+### 2026-09-19 (later) — test suite division
+Policy and commands: [testing.md](testing.md).
+
+- **The sweep was destroying its own results.** Two of three identical full
+  runs aborted with a native SIGABRT from Qt (exit 134), which kills the
+  pytest session and discards every already-passed result. Qt tests are now
+  auto-marked by fixture (`qapp`/`qtbot`, exact rather than by filename) and
+  run in their own 2-second pass, so an abort cannot take the suite with it.
+  Three consecutive main-pass sweeps then completed cleanly.
+- **Fast gate: ~28 s, down from ~3 min.** 160 s of the 180 s was real sleeps
+  during model construction (`serial.py:63`'s 1.5 s bootloader wait,
+  `probes.py:168`'s `sleep(1)`) — marked `slow` and excluded from the
+  working loop. Those sleeps are SERIAL-6/RC-4; **delete this marking in S5**
+  rather than maintaining it.
+- **Concern markers** map to stages, so each stage gates on its own subset
+  (`-m transport` is ~3 s). Applied from one table in `conftest.py`.
+- **12 failures triaged**, none deleted:
+  - 2 were harness gaps, fixed: the Tk mock lacked `focus_get`, which the
+    `12e9d59` focus guard calls on every poll tick.
+  - 6 are stale tests asserting behavior deliberately removed — five assume
+    `enter_manual()` succeeds with no gamepad (`046533f` made it refuse),
+    one asserts the duplicate checkbox row deleted as known-issues #5.
+  - 4 are real product bugs (PYSIDE-7, RC-6, RC-8, RC-2). Quarantined as
+    `known_bad` with `xfail(strict=True)` so they report XPASS-as-failure
+    when their stage lands, forcing re-authoring.
+- **7 order-dependent tests found**, which pass alone and fail in
+  composition. The four `run_script` ones were found by running four
+  identical sweeps and collecting failures — never the same pair twice.
+  **Their cause is two audit findings, not test defects:** `run_script` has
+  no run token (STEPPER-8, RC-5) so a previous test's thread is still
+  executing, and `ErrorRouter`'s callbacks are process-global (RC-8). The
+  suite's flakiness is a symptom of the architecture under repair. Expect
+  this set to dissolve during S3/S8/S11 — do not paper over it with sleeps.
 
 ---
 

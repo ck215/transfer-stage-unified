@@ -45,6 +45,9 @@ UI" is not closure.
 2. **Tests before implementation.** Each stage lists invariants from
    `root-causes.md`. Write them as failing tests first. Several are grep
    tests over the source tree, which makes regression cheap to detect.
+   Which tests to run, and the per-stage gate commands, are in
+   **[testing.md](testing.md)**. Work against the fast gate (~28 s); run the
+   full three-pass sweep at stage boundaries, not in between.
 3. **Never mark a finding closed without evidence.** The ledger's Status
    column moves to `closed` only with a test name or a verification note.
 4. **Hardware and design calls stay with the owner.** RC-12 mappings,
