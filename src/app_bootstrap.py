@@ -173,6 +173,10 @@ def validate_assignment(active_configs: list[dict]) -> list[str]:
         port = c.get("port")
         ctrl = c.get("controller", "None")
 
+        if not dev or not port:
+            errors.append(f"Device name and port are required in config: {c}")
+            continue
+
         if port == "Headless":
             port = "SIM"
 
