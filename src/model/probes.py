@@ -431,13 +431,21 @@ class BaseProbe:
         self.is_stepping = False
         self._interlock_stop.set()
         self.send_stop_command()
-        if self.system_enabled:
-            if self.serial_comm:
-                try:
-                    self.serial_comm.disable()
-                except ValueError as e:
-                    print(f"[{self.__class__.__name__}] {e}")
-            self.system_enabled = False
+        # Always send the hardware disable, regardless of our own
+        # system_enabled belief: the firmware's 'd' handler is explicitly
+        # idempotent (safe to resend any time) and its own system_enabled
+        # flag lives on the Arduino, independent of and persisting across
+        # this Python model's lifetime (e.g. across a dock close/reopen
+        # that reconstructs this model with system_enabled defaulting back
+        # to False). Gating this send on the Python-side flag let the two
+        # go out of sync and left the stepper coils energized with no way
+        # to force a disable through Full Stop.
+        if self.serial_comm:
+            try:
+                self.serial_comm.disable()
+            except ValueError as e:
+                print(f"[{self.__class__.__name__}] {e}")
+        self.system_enabled = False
 
     def disable(self):
         self._stop_and_disarm()
