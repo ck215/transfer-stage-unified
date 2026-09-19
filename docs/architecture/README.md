@@ -32,7 +32,15 @@ For a brand-new investigator looking to understand the system architecture, read
 7. **[known-issues.md](known-issues.md)**: Review the active backlog before attempting to fix anything.
 8. **[libs-and-web.md](libs-and-web.md)**: (Optional) Review legacy systems and vendor driver integrations.
 
-## Start here for implementation work (added 2026-09-19)
+## Start here if you are picking up the work (added 2026-09-19)
+
+**[../implementation/progress.md](../implementation/progress.md)** is the
+trail: stage status, owner decisions, session log, and a ledger of all 213
+findings. A fresh agent with no context starts there, not here. The route it
+follows is **[../implementation/plan.md](../implementation/plan.md)** (16
+stages, each ending in a commit and a push).
+
+## Background analysis (added 2026-09-19)
 
 **[root-causes.md](root-causes.md)** is the entry point for any
 corrective work. It groups the ~230 findings in `audit/*.md` under 13
