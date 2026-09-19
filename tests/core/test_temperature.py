@@ -2,7 +2,7 @@ import pytest
 import threading
 import time
 from unittest.mock import patch, MagicMock, PropertyMock
-from src.model.temperature_system import TemperatureSystem
+from model.temperature_system import TemperatureSystem
 
 
 class TestTemperatureSystemInit:
@@ -10,7 +10,7 @@ class TestTemperatureSystemInit:
 
     def test_init_without_port(self):
         """Test initialization with no port provided."""
-        with patch('src.model.temperature_system.serial') as mock_serial:
+        with patch('model.temperature_system.serial') as mock_serial:
             ts = TemperatureSystem(port=None)
             assert ts.serial_conn is None
             assert mock_serial.call_count == 0
@@ -29,7 +29,7 @@ class TestTemperatureSystemInit:
 
     def test_init_with_none_string_port(self):
         """Test initialization with port='None'."""
-        with patch('src.model.temperature_system.serial') as mock_serial:
+        with patch('model.temperature_system.serial') as mock_serial:
             ts = TemperatureSystem(port="None")
             assert ts.serial_conn is None
             assert mock_serial.call_count == 0
@@ -41,7 +41,7 @@ class TestTemperatureSystemInit:
         mock_serial_instance = MagicMock()
         mock_serial_instance.ser = mock_ser
         
-        with patch('src.model.temperature_system.serial', return_value=mock_serial_instance) as mock_serial:
+        with patch('model.temperature_system.serial', return_value=mock_serial_instance) as mock_serial:
             ts = TemperatureSystem(port="/dev/ttyUSB0")
             
             # Verify serial was called
@@ -63,7 +63,7 @@ class TestTemperatureSystemInit:
         mock_serial_instance = MagicMock()
         mock_serial_instance.ser = mock_ser
         
-        with patch('src.model.temperature_system.serial', return_value=mock_serial_instance):
+        with patch('model.temperature_system.serial', return_value=mock_serial_instance):
             with patch('error_routing.ErrorRouter.report_error') as mock_report:
                 ts = TemperatureSystem(port="/dev/ttyUSB0")
                 
@@ -80,7 +80,7 @@ class TestTemperatureSystemInit:
         mock_serial_instance = MagicMock()
         mock_serial_instance.ser = mock_ser
         
-        with patch('src.model.temperature_system.serial', return_value=mock_serial_instance):
+        with patch('model.temperature_system.serial', return_value=mock_serial_instance):
             ts = TemperatureSystem(port="/dev/ttyUSB0")
             
             # Should not write or start thread if not open

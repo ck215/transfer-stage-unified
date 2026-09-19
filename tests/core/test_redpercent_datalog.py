@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch, MagicMock, PropertyMock
 import numpy as np
 
 # Import the classes under test
-from src.model.redpercent_system import RedPercentDataLog, RedPercentSystem
+from model.redpercent_system import RedPercentDataLog, RedPercentSystem
 
 
 # --- Fixtures ---
@@ -112,5 +112,3 @@ class TestRedPercentDataLog:
         assert len(log.red_values) == 500
         assert len(log.loc_values['X']) == 500
 
-    def test_save_to_csv_empty(self):
-        log = RedPercentDataLog

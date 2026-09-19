@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 import serial as pyserial
 import pygame
 
-from controller.seiral import serial
+from controller.serial import serial
 from controller.gamepad import ControllerPoller
 
 def get_mock_serial():
@@ -14,7 +14,7 @@ def get_mock_serial():
     return mock_instance
 
 def test_serial_read_disconnect_exception():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_class:
+    with patch("controller.serial.pyserial.Serial") as mock_serial_class:
         mock_instance = get_mock_serial()
         mock_serial_class.return_value = mock_instance
         s = serial("COM1")
@@ -23,14 +23,14 @@ def test_serial_read_disconnect_exception():
         mock_instance.read.side_effect = Exception("Hardware disconnect")
         mock_instance.in_waiting = 1
         
-        with patch("controller.seiral.ErrorPopupManager.report_error") as mock_err:
+        with patch("controller.serial.ErrorPopupManager.report_error") as mock_err:
             pos = s.read_position()
             assert pos is None
             mock_err.assert_called_once()
             assert "Error reading position" in mock_err.call_args[0][1]
 
 def test_serial_write_timeout_manual():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_class:
+    with patch("controller.serial.pyserial.Serial") as mock_serial_class:
         mock_instance = get_mock_serial()
         mock_serial_class.return_value = mock_instance
         s = serial("COM1")
@@ -44,13 +44,13 @@ def test_serial_write_timeout_manual():
             "dpad_LR": 0, "dpad_UD": 0, "LBumper": 0, "RBumper": 0, "manual_jog_speed": 400
         }
 
-        with patch("controller.seiral.ErrorPopupManager.report_error") as mock_err:
+        with patch("controller.serial.ErrorPopupManager.report_error") as mock_err:
             s.send_manual_mode_command(params)
             mock_err.assert_called_once()
             assert "WRITE TIMEOUT ERROR" in mock_err.call_args[0][1]
 
 def test_serial_write_timeout_autonomous():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_class:
+    with patch("controller.serial.pyserial.Serial") as mock_serial_class:
         mock_instance = get_mock_serial()
         mock_serial_class.return_value = mock_instance
         s = serial("COM1")
@@ -64,13 +64,13 @@ def test_serial_write_timeout_autonomous():
             "x_dist": 10, "y_dist": 10, "z_dist": 10
         }
 
-        with patch("controller.seiral.ErrorPopupManager.report_error") as mock_err:
+        with patch("controller.serial.ErrorPopupManager.report_error") as mock_err:
             s.send_autonomous_command(params)
             mock_err.assert_called_once()
             assert "WRITE TIMEOUT ERROR" in mock_err.call_args[0][1]
 
 def test_serial_not_open_warning():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_class:
+    with patch("controller.serial.pyserial.Serial") as mock_serial_class:
         mock_instance = get_mock_serial()
         mock_serial_class.return_value = mock_instance
         s = serial("COM1")
@@ -78,7 +78,7 @@ def test_serial_not_open_warning():
         # Force closed
         mock_instance.is_open = False
         
-        with patch("controller.seiral.ErrorPopupManager.report_warning") as mock_warn:
+        with patch("controller.serial.ErrorPopupManager.report_warning") as mock_warn:
             s.send_manual_mode_command({})
             mock_warn.assert_called_once()
             assert "connection not established" in mock_warn.call_args[0][1]

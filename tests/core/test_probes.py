@@ -12,8 +12,8 @@ def mock_dependencies():
     """
     Mocks serial, ErrorRouter, ControllerPoller, and gcodeparser to isolate the unit tests.
     """
-    with patch('src.model.probes.serial') as mock_serial_class, \
-         patch('src.model.probes.ErrorPopupManager') as mock_error_router, \
+    with patch('model.probes.serial') as mock_serial_class, \
+         patch('model.probes.ErrorPopupManager') as mock_error_router, \
          patch('controller.gamepad.ControllerPoller') as mock_poller_class, \
          patch('gcodeparser.GcodeParser') as mock_gcode_parser, \
          patch('gcodeparser.parse_gcode_lines', return_value=[]) as mock_parse_lines:
@@ -41,7 +41,7 @@ def mock_dependencies():
 
 
 # Import the module under test after mocking
-from src.model.probes import BaseProbe, StepperProbe, DCProbe, ChuckPositioner, _num
+from model.probes import BaseProbe, StepperProbe, DCProbe, ChuckPositioner, _num
 
 
 class TestNumHelper:

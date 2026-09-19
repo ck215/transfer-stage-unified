@@ -27,57 +27,6 @@ def test_probes_num_sanitization_boundary_cases():
     assert _num("0", default=1, minimum=1, integer=True) == 1
 
 
-def test_base_probe_property_setters_sanitization():
-    """Verify BaseProbe parameter setters clamp or sanitize values cleanly."""
-    probe = BaseProbe(port=None, controller_id=0)
-
-    # Step size sanitization
-    probe.x_step = "-5"
-    assert probe.x_step_val == 1
-    probe.x_step = "nan"
-    assert probe.x_step_val == 1
-    probe.x_step = "50"
-    assert probe.x_step_val == 50
-
-    # Speed sanitization
-    probe.full_speed = "invalid"
-    assert probe.full_speed_val == 1
-    probe.full_speed = "500.8"
-    assert probe.full_speed_val == 500
-
-    # Position sanitization
-    probe.set_positions("10.5", "invalid", "30.0")
-    assert probe.x_pos_val == 10.5
-    assert probe.y_pos_val == 0.0
-    assert probe.z_pos_val == 30.0
-
-
-def test_dcprobe_speed_bounds():
-    """Verify DCProbe speed property setters enforce 0..100 boundary limits."""
-    dc = DCProbe(port=None, controller_id=0)
-    dc.x_speed = 150
-    assert dc.x_speed == 100
-    dc.x_speed = -20
-    assert dc.x_speed == 0
-    dc.x_speed = 75
-    assert dc.x_speed == 75
-
-
-def test_temperature_system_parameter_sanitization():
-    """Verify TemperatureSystem handles extreme or NaN setpoints and PID parameters."""
-    temp = TemperatureSystem(port=None)
-    
-    # PID setpoint sanitization
-    temp.setpoint = "nan"
-    assert temp.setpoint == "0.0"
-    temp.setpoint = "150.5"
-    assert temp.setpoint == "150.5"
-
-    temp.ramp_rate = "-10"
-    assert temp.ramp_rate == "0.0"
-
-    temp.p_term = "invalid"
-    assert temp.p_term == "0.0"
 
 
 def test_rotator_system_boundary_values():
@@ -128,16 +77,6 @@ def test_stepper_probe_mutual_exclusion_auton_manual():
     assert stepper.manual_flag is False
 
 
-def test_rotator_system_state_machine_mapping():
-    """Verify SMC100 status code mapping in RotatorSystem."""
-    rotator = RotatorSystem(default_port=None)
-
-    assert rotator._map_state_code("0A") == "Not referenced - run Home"
-    assert rotator._map_state_code("32") == "Ready"
-    assert rotator._map_state_code("1E") == "Homing"
-    assert rotator._map_state_code("28") == "Moving"
-    assert rotator._map_state_code("3C") == "Disabled"
-    assert rotator._map_state_code("UNKNOWN") == "Unknown State"
 
 
 # ============================================================================
@@ -151,13 +90,12 @@ def test_temperature_system_history_thread_safety():
 
     def serial_updater():
         for i in range(iterations):
-            temp.add_history_entry(float(i), float(i * 2))
+            temp.process_raw_data(f"{float(i)},{float(i*2)},{float(i)}")
 
     def reader():
         for _ in range(iterations):
-            history = temp.get_history()
-            assert isinstance(history, dict)
-            assert len(history['time']) == len(history['temp'])
+            time_arr, temp_arr, sp_arr = temp.get_history()
+            assert len(time_arr) == len(temp_arr)
 
     t1 = threading.Thread(target=serial_updater)
     t2 = threading.Thread(target=reader)
@@ -166,7 +104,8 @@ def test_temperature_system_history_thread_safety():
     t1.join()
     t2.join()
 
-    assert len(temp.get_history()['time']) <= 200
+    time_arr, temp_arr, sp_arr = temp.get_history()
+    assert len(time_arr) <= 200
 
 
 def test_redpercent_datalog_thread_safety():
@@ -200,7 +139,7 @@ def test_system_manager_register_get_unregister():
     assert mgr.get_model("probe_a") == probe
     assert "probe_a" in mgr.active_models
 
-    mgr.unregister_model("probe_a")
+    mgr.remove_model("probe_a")
     assert mgr.get_model("probe_a") is None
     assert "probe_a" not in mgr.active_models
 

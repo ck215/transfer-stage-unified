@@ -2,7 +2,7 @@ import pytest
 import time
 import threading
 from unittest.mock import MagicMock, patch
-from controller.seiral import serial
+from controller.serial import serial
 
 from controller.gamepad import ControllerPoller
 from error_routing import ErrorRouter

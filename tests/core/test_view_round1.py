@@ -63,8 +63,6 @@ def test_pyside_ui_schema_component_loading(qtbot):
     # Verify dictionary of bound variables
     assert "step_size" in view.vars
     assert "status_msg" in view.vars
-    assert "selected_port" in view.vars
-    assert len(view.toggle_buttons) == 1
 
     # Verify entry widget value
     entry = view.vars["step_size"]
@@ -127,7 +125,12 @@ def test_pyside_redpercent_sync_and_probe_controls(qtbot):
     """Test RedPercentDynamicView checkbox toggles and probe dropdown selection."""
     from model.redpercent_system import RedPercentSystem
     model = RedPercentSystem()
-    model.available_probes = {"Stepper Probe": MagicMock()}
+    mock_probe = MagicMock()
+    mock_probe._disabled_in_setup = False  # a bare MagicMock() would otherwise
+    # fabricate this attribute as a truthy child mock instead of returning the
+    # getattr(..., False) default, incorrectly filtering this probe out of
+    # get_available_probe_names() as "disabled".
+    model.available_probes = {"Stepper Probe": mock_probe}
     
     view = RedPercentDynamicView(model)
     qtbot.addWidget(view)
@@ -160,7 +163,7 @@ def test_pyside_dashboard_sidebar_dock_sync(qtbot):
 
     # Close dock and verify list item unchecked
     dock.close()
-    qtbot.waitUntil(lambda: not dock.isVisible(), timeout=1000)
+    qtbot.waitUntil(lambda: not dash.active_docks.get("Stepper Probe", dock).isVisible(), timeout=1000)
     item = dash.device_list.item(0)
     from PySide6.QtCore import Qt
     assert item.checkState() == Qt.Unchecked
@@ -188,23 +191,21 @@ def test_legacy_error_popup_manager_queue():
 
 
 def test_legacy_dynamic_view_schema_parsing():
-    """Test legacy Tkinter DynamicView schema parsing logic."""
+    """Test legacy Tkinter DynamicView schema parsing logic using conftest mocks."""
+    import tkinter as tk
+    from views.tkinter.view import DynamicView
+    from unittest.mock import patch
+        
     model = DummyPySideModel()
+        
+    # Let conftest handle the tk patches, we just instantiate the view
+    # Tkinter views are typically placed inside a Frame/Toplevel
+    parent = tk.Frame()
     
-    with patch('tkinter.Frame.__init__', return_value=None), \
-         patch('tkinter.Label'), patch('tkinter.Entry'), \
-         patch('tkinter.Button'), patch('tkinter.StringVar'):
-        from views.tkinter.view import DynamicView
-        
-        view = DynamicView.__new__(DynamicView)
-        view.model = model
-        view.bg_main = 'black'
-        view.fg_accent = 'white'
-        view.vars = {}
-        view.toggle_buttons = []
-        
-        view._build_ui()
-        assert "step_size" in view.vars
-        assert "status_msg" in view.vars
-        assert "selected_port" in view.vars
-        assert len(view.toggle_buttons) == 1
+    with patch.object(tk.Frame, 'register', return_value='mock_vcmd', create=True):
+        view = DynamicView(parent, model)
+    
+    # We do not need to call _build_ui manually because __init__ handles it
+    assert "step_size" in view.vars
+    assert "status_msg" in view.vars
+

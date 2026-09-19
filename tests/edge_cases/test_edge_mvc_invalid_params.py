@@ -3,7 +3,7 @@ import struct
 import sys
 import os
 
-from controller.seiral import serial
+from controller.serial import serial
 from model.probes import BaseProbe
 
 class MockSerial:
@@ -46,7 +46,7 @@ def test_auton_missing_keys():
     s = get_sim_serial()
     params = {}
     
-    # It triggers KeyError, but is caught by except Exception inside seiral.py
+    # It triggers KeyError, but is caught by except Exception inside serial.py
     # So it doesn't crash. We'll verify it returns silently.
     s.send_autonomous_command(params)
 
@@ -54,9 +54,9 @@ def test_pyserial_none_fallback_error():
     # If pyserial is None (like when serial is not installed),
     # the exception handling tries to access pyserial.SerialTimeoutException,
     # causing an AttributeError.
-    import controller.seiral
-    original_pyserial = controller.seiral.pyserial
-    controller.seiral.pyserial = None
+    import controller.serial
+    original_pyserial = controller.serial.pyserial
+    controller.serial.pyserial = None
     
     s = get_sim_serial()
     params = {} # will trigger KeyError
@@ -66,7 +66,7 @@ def test_pyserial_none_fallback_error():
         with pytest.raises(AttributeError, match="'NoneType' object has no attribute 'SerialTimeoutException'"):
             s.send_autonomous_command(params)
     finally:
-        controller.seiral.pyserial = original_pyserial
+        controller.serial.pyserial = original_pyserial
 
 def test_probe_invalid_numeric_inputs():
     probe = BaseProbe("SIM", "dummy")

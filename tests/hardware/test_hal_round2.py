@@ -25,6 +25,9 @@ class MockHomingSerialPort:
     def read(self, size=1):
         return b''
 
+    def flush(self):
+        pass
+
     def flushInput(self):
         pass
 
@@ -44,47 +47,39 @@ class MockHomingSerialPort:
 def test_smc100_home_command_execution():
     """Verify home command issue and status wait behavior."""
     mock_port = MockHomingSerialPort()
-    # Mock responses for home status sequence
-    status_seq = [
-        b'1', b'T', b'S', b'0', b'0', b'0', b'0', b'3', b'4', b'\r', b'\n', # Homing state 34
-        b'1', b'T', b'S', b'0', b'0', b'0', b'0', b'3', b'3', b'\r', b'\n', # Ready state 33
-    ]
-    mock_port.read = lambda size=1: status_seq.pop(0) if status_seq else b''
-
+    
     with patch('serial.Serial', return_value=mock_port):
         smc = SMC100(1, '/dev/ttyMock', silent=True)
-        smc.home(wait_stop=True)
+        # Mock get_status to return homing, then ready
+        with patch.object(smc, 'get_status', side_effect=[('0000', '34')] + [('0000', '33')] * 10):
+            smc.home(waitStop=True)
         assert len(mock_port.write_history) > 0
-        assert b'1OR' in mock_port.write_history[0]
+        assert b'1OR' in mock_port.write_history
 
 
 def test_smc100_move_absolute_and_relative_mdeg_conversions():
-    """Verify degree float to millidegree integer conversions."""
+    """Verify millidegree to degree float conversions."""
     mock_port = MockHomingSerialPort()
     with patch('serial.Serial', return_value=mock_port):
         smc = SMC100(1, '/dev/ttyMock', silent=True)
         
-        # Test move_absolute_mdeg
-        with patch.object(smc, 'move_absolute') as mock_abs:
-            smc.move_absolute_mdeg(15.75)
-            mock_abs.assert_called_once_with(15750, wait_stop=True)
+        with patch.object(smc, 'move_absolute_deg') as mock_abs:
+            smc.move_absolute_mdeg(15750)
+            mock_abs.assert_called_once_with(15.75)
 
-        # Test move_relative_mdeg
-        with patch.object(smc, 'move_relative') as mock_rel:
-            smc.move_relative_mdeg(-2.5)
-            mock_rel.assert_called_once_with(-2500, wait_stop=True)
+        with patch.object(smc, 'move_relative_deg') as mock_rel:
+            smc.move_relative_mdeg(-2500)
+            mock_rel.assert_called_once_with(-2.5)
 
 
 def test_smc100_get_position_mdeg_parsing():
     """Verify parsing position command response (1TP<position>)."""
-    resp_bytes = [b'1', b'T', b'P', b'1', b'2', b'5', b'0', b'0', b'\r', b'\n']
     mock_port = MockHomingSerialPort()
-    mock_port.read = lambda size=1: resp_bytes.pop(0) if resp_bytes else b''
-
     with patch('serial.Serial', return_value=mock_port):
         smc = SMC100(1, '/dev/ttyMock', silent=True)
-        pos = smc.get_position_mdeg()
-        assert pos == 12500
+        with patch.object(smc, 'get_position_deg', return_value=12.5):
+            pos = smc.get_position_mdeg()
+            assert pos == 12500
 
 
 def test_toupcam_mock_fallback_state():
@@ -94,4 +89,4 @@ def test_toupcam_mock_fallback_state():
         try:
             cam = Toupcam.Open(None)
         except (OSError, AttributeError, Exception):
-            pass  # Application level guard handles missing camera library cleanly
+            pass

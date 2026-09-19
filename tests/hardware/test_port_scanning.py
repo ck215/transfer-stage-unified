@@ -3,7 +3,7 @@ import re
 import time
 import pytest
 from unittest.mock import MagicMock, patch
-from controller.seiral import serial
+from controller.serial import serial
 
 def test_dev_pattern_matching():
     DEV_PATTERN = re.compile(r"(?:DEV:\s*|<)([sdct])>?", re.IGNORECASE)
@@ -87,7 +87,7 @@ def test_linux_port_filtering_and_prioritization():
         assert sorted_ports == ["/dev/ttyACM0", "/dev/ttyUSB0"]
 
 def test_serial_init_bootloader_timing():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_cls:
+    with patch("controller.serial.pyserial.Serial") as mock_serial_cls:
         mock_ser = MagicMock()
         mock_ser.is_open = True
         mock_ser.in_waiting = 0
@@ -104,8 +104,8 @@ def test_serial_init_bootloader_timing():
             call_order.append(('time', time_counter[0]))
             return time_counter[0]
             
-        with patch("controller.seiral.time.sleep", side_effect=fake_sleep), \
-             patch("controller.seiral.time.time", side_effect=fake_time):
+        with patch("controller.serial.time.sleep", side_effect=fake_sleep), \
+             patch("controller.serial.time.time", side_effect=fake_time):
             
             s = serial("COM1")
             

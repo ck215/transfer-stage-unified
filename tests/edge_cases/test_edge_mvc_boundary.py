@@ -3,7 +3,7 @@ import math
 import struct
 from unittest.mock import patch, MagicMock
 
-from controller.seiral import serial
+from controller.serial import serial
 from model.temperature_system import TemperatureSystem
 from model.rotator_system import RotatorSystem
 
@@ -32,7 +32,7 @@ def create_base_params():
 
 def test_serial_send_manual_inf_nan():
     """Test passing inf and nan to struct pack float fields."""
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_instance = get_mock_serial()
         mock_serial.return_value = mock_instance
         s = serial("COM1")

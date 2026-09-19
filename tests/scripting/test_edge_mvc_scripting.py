@@ -1,8 +1,25 @@
 import sys
+import time
 from unittest.mock import MagicMock, patch
 import pytest
 import os
 import tempfile
+
+
+def _wait_until(condition, timeout=2.0, interval=0.01):
+    """Poll `condition` (a zero-arg callable) until truthy or `timeout`
+    elapses. run_script() executes on a background daemon thread; a fixed
+    sleep-then-assert races real thread scheduling under full-suite load
+    (confirmed: reliably fails after ~230 other tests, passes in isolation)
+    — polling is both faster in the common case and robust under load,
+    instead of gambling on a fixed duration being "enough".
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if condition():
+            return True
+        time.sleep(interval)
+    return condition()
 
 # Create mock gcodeparser
 mock_gcodeparser = MagicMock()
@@ -49,7 +66,7 @@ def probe():
 def test_run_script_missing_file(probe):
     with patch.object(ErrorRouter, 'report_error') as mock_err:
         probe.run_script("this_file_does_not_exist_at_all.gcode")
-        import time; time.sleep(0.5)
+        _wait_until(lambda: mock_err.called)
         mock_err.assert_called_once()
         title, message, exc = mock_err.call_args[0]
         assert title == "Script Execution Error"
@@ -61,7 +78,7 @@ def test_run_script_malformed_gcode(probe, tmp_path):
     
     with patch.object(ErrorRouter, 'report_error') as mock_err:
         probe.run_script(str(file_path))
-        import time; time.sleep(0.5)
+        _wait_until(lambda: mock_err.called)
         mock_err.assert_called_once()
         title, message, exc = mock_err.call_args[0]
         assert title == "Script Execution Error"
@@ -74,7 +91,7 @@ def test_run_script_non_utf8(probe, tmp_path):
     
     with patch.object(ErrorRouter, 'report_error') as mock_err:
         probe.run_script(str(file_path))
-        import time; time.sleep(0.5)
+        _wait_until(lambda: mock_err.called)
         mock_err.assert_called_once()
         title, message, exc = mock_err.call_args[0]
         assert title == "Script Execution Error"
@@ -89,7 +106,7 @@ def test_run_script_no_serial_port_sim(probe, tmp_path):
     # We expect it to catch the AttributeError and report it
     with patch.object(ErrorRouter, 'report_error') as mock_err:
         probe.run_script(str(file_path))
-        import time; time.sleep(0.5)
+        _wait_until(lambda: mock_err.called)
         mock_err.assert_called_once()
         title, message, exc = mock_err.call_args[0]
         assert title == "Script Execution Error"
@@ -101,8 +118,8 @@ def test_run_script_gcode_execution_path(probe, tmp_path):
     
     probe.serial_comm.send_autonomous_command.reset_mock()
     probe.run_script(str(file_path))
-    import time; time.sleep(0.5)
-    
+    _wait_until(lambda: probe.serial_comm.send_autonomous_command.call_count >= 2)
+
     # Called by enter_auton() stop command + actual execution
     assert probe.serial_comm.send_autonomous_command.call_count == 2
     args = probe.serial_comm.send_autonomous_command.call_args_list[-1][0][0]
@@ -132,16 +149,16 @@ def test_run_script_unrecognized_actions(probe, tmp_path):
     file_path.write_text("raw,command,str")
     
     probe.run_script(str(file_path))
-    import time; time.sleep(0.5)
-    
+    _wait_until(lambda: probe.serial_comm.ser.write.called)
+
     probe.serial_comm.ser.write.assert_called_once_with(b"raw,command,str\n")
-    
+
     # Test M-codes fallback
     probe.serial_comm.ser.write.reset_mock()
     file_path2 = tmp_path / "mcode.gcode"
     file_path2.write_text("M104 S200")
-    
+
     probe.run_script(str(file_path2))
-    time.sleep(0.5)
-    
+    _wait_until(lambda: probe.serial_comm.ser.write.called)
+
     probe.serial_comm.ser.write.assert_called_once_with(b"M104 S200\n")

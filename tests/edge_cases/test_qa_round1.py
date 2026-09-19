@@ -34,6 +34,11 @@ class MockHardwareModel:
         if self.fail_on_teardown:
             raise AttributeError("Hardware stop failure simulated")
 
+    def teardown(self):
+        if self.fail_on_teardown:
+            raise RuntimeError("Hardware teardown failure simulated")
+        self.is_disconnected = True
+
 
 def test_system_manager_concurrent_reboot_and_teardown():
     """

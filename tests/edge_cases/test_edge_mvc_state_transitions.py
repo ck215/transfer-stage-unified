@@ -10,7 +10,7 @@ def get_mock_serial():
     return mock_instance
 
 def test_rapid_manual_auton_toggle():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
         
@@ -24,7 +24,7 @@ def test_rapid_manual_auton_toggle():
         assert probe.manual_flag is False
 
 def test_rapid_enable_disable():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
         
@@ -39,7 +39,7 @@ def test_rapid_enable_disable():
         assert probe.manual_flag is False
 
 def test_enable_during_manual_auton_transition():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
         
@@ -52,7 +52,7 @@ def test_enable_during_manual_auton_transition():
         assert probe.system_enabled is False
         
 def test_toggle_enable_rapidly():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
 
@@ -60,7 +60,7 @@ def test_toggle_enable_rapidly():
             probe.toggle_enable()
 
 def test_ui_schema_no_longer_has_system_enabled_toggle():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
 
@@ -76,7 +76,7 @@ def test_ui_schema_no_longer_has_system_enabled_toggle():
     assert toggle_elements["manual_flag"]["command"] == "toggle_manual"
 
 def test_auton_manual_toggle_mutual_exclusivity():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
 

@@ -1,7 +1,7 @@
 import pytest
 import struct
 from unittest.mock import patch, MagicMock
-from controller.seiral import serial
+from controller.serial import serial
 
 def get_mock_serial():
     mock_instance = MagicMock()
@@ -10,7 +10,7 @@ def get_mock_serial():
     return mock_instance
 
 def test_serial_send_manual_mode_command():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_instance = get_mock_serial()
         mock_serial.return_value = mock_instance
         
@@ -54,7 +54,7 @@ def test_serial_enable_disable_send_explicit_bytes():
     it. Also must not collide with the '0'-'9'/'-' autonomous text-command
     range or the 's' identity-query byte used elsewhere in the protocol.
     """
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_instance = get_mock_serial()
         mock_serial.return_value = mock_instance
 
@@ -67,7 +67,7 @@ def test_serial_enable_disable_send_explicit_bytes():
         mock_instance.write.assert_called_with("d".encode('utf-8'))
 
 def test_serial_read_position():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_instance = get_mock_serial()
         mock_serial.return_value = mock_instance
         
@@ -81,7 +81,7 @@ def test_serial_read_position():
 
 def test_serial_read_position_corrupt_data():
     """Verify that read_position handles corrupt serial data and returns None."""
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_instance = get_mock_serial()
         mock_serial.return_value = mock_instance
         s = serial("COM1")
@@ -101,7 +101,7 @@ def test_serial_read_position_corrupt_data():
 def test_serial_disconnect_mid_operation():
     """Verify sudden SerialException doesn't bubble up unhandled."""
     import serial as pyserial
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_instance = get_mock_serial()
         mock_serial.return_value = mock_instance
         s = serial("COM1")

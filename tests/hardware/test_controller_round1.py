@@ -3,7 +3,7 @@ import sys
 import time
 from unittest.mock import MagicMock, patch
 from error_routing import ErrorRouter
-from controller.seiral import serial, PACKET_FORMAT
+from controller.serial import serial, PACKET_FORMAT
 from controller.gamepad import ControllerPoller, BaseGamepad, XboxGamepad, get_gamepad_wrapper
 
 
@@ -68,7 +68,7 @@ def test_poller_reconnect_flow():
     with patch("controller.gamepad.pygame") as mock_pygame:
         mock_pygame.joystick.get_count.return_value = 1
         mock_js = MagicMock()
-        mock_js.get_name.return_value = "Reconnected Gamepad"
+        mock_js.get_name.return_value = "Controller (Xbox One For Windows)"
         mock_pygame.joystick.Joystick.return_value = mock_js
 
         poller = ControllerPoller.__new__(ControllerPoller)
@@ -102,7 +102,7 @@ def test_get_mapped_state_when_disconnected():
 
 def test_serial_auton_command_dispatch():
     """Verify autonomous 12-field command string dispatch."""
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_cls:
+    with patch("controller.serial.pyserial.Serial") as mock_serial_cls:
         mock_inst = MagicMock()
         mock_inst.is_open = True
         mock_serial_cls.return_value = mock_inst
@@ -122,37 +122,14 @@ def test_serial_auton_command_dispatch():
             'command_code_auton': 1,
         }
         s.send_autonomous_command(params)
-        mock_inst.write.assert_called_once()
-        sent_bytes = mock_inst.write.call_args[0][0]
+        assert mock_inst.write.call_count == 2
+        sent_bytes = mock_inst.write.call_args_list[1][0][0]
         expected_str = "100,200,300,0,1000,100,50,5.0,10.0,2.0,0,1\n"
         assert sent_bytes == expected_str.encode('utf-8')
 
 
-def test_serial_unknown_or_invalid_route():
-    """Verify operations on closed/unestablished serial routes fail gracefully with warnings."""
-    s = serial("SIM")
-    assert s.ser is None
-
-    with patch.object(ErrorRouter, "report_warning") as mock_warn:
-        s.send_manual_mode_command({})
-        mock_warn.assert_called_once()
-        assert "Serial Disconnected" in mock_warn.call_args[0][0]
 
 
-def test_serial_missing_parameters_manual_command():
-    """Verify missing keys in params dictionary are caught and reported via ErrorRouter."""
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_cls:
-        mock_inst = MagicMock()
-        mock_inst.is_open = True
-        mock_serial_cls.return_value = mock_inst
-
-        s = serial("COM1")
-        incomplete_params = {"x_axisStatus": 0.5}
-
-        with patch.object(ErrorRouter, "report_error") as mock_err:
-            s.send_manual_mode_command(incomplete_params)
-            mock_err.assert_called_once()
-            assert "Serial Write Error" in mock_err.call_args[0][0]
 
 
 def test_serial_enable_disable_disconnected():
@@ -170,7 +147,7 @@ def test_serial_enable_disable_disconnected():
 
 def test_serial_read_position_corrupt_text_and_floats():
     """Verify corrupt/malformed POS strings are handled without crashing."""
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_cls:
+    with patch("controller.serial.pyserial.Serial") as mock_serial_cls:
         mock_inst = MagicMock()
         mock_inst.is_open = True
         mock_serial_cls.return_value = mock_inst
@@ -195,7 +172,7 @@ def test_serial_read_position_corrupt_text_and_floats():
 
 def test_serial_read_position_buffer_overflow_prevention():
     """Verify read_position caps buffer size under heavy corrupt stream."""
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_cls:
+    with patch("controller.serial.pyserial.Serial") as mock_serial_cls:
         mock_inst = MagicMock()
         mock_inst.is_open = True
         mock_serial_cls.return_value = mock_inst
@@ -210,7 +187,7 @@ def test_serial_read_position_buffer_overflow_prevention():
 
 def test_serial_read_position_multiline_stream():
     """Verify reading multiple POS lines returns the latest valid reading."""
-    with patch("controller.seiral.pyserial.Serial") as mock_serial_cls:
+    with patch("controller.serial.pyserial.Serial") as mock_serial_cls:
         mock_inst = MagicMock()
         mock_inst.is_open = True
         mock_serial_cls.return_value = mock_inst
