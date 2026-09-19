@@ -49,7 +49,7 @@ def run_legacy_app():
     import threading
     import queue
     
-    from controller.seiral import serial
+    from controller.serial import serial
     from controller.gamepad import ControllerPoller
     
     from model.probes import StepperProbe, DCProbe, ChuckPositioner
@@ -178,6 +178,14 @@ def run_legacy_app():
                     
             self.start_autodetect(force=True)
                     
+        def _reset_device_status(self, device):
+            if device not in self.status_labels:
+                return
+            if device == "Red Percent Window":
+                self.status_labels[device].config(text="Headless", fg="gray")
+            else:
+                self.status_labels[device].config(text="Waiting...", fg="black")
+
         def toggle_dropdown_state(self, device):
             is_checked = self.device_vars[device].get()
             serial_widget = self.dropdown_widgets[device]
@@ -251,9 +259,10 @@ def run_legacy_app():
                     ctrl_dropdown.state(["disabled"])
                     self.controller_widgets[device] = ctrl_dropdown
                 
-                lbl = tk.Label(grid_frame, text="", font=("Helvetica", 10, "bold"))
+                lbl = tk.Label(grid_frame, font=("Helvetica", 10, "bold"))
                 lbl.grid(row=idx+1, column=3, padx=10, pady=10, sticky="w")
                 self.status_labels[device] = lbl
+                self._reset_device_status(device)
                 
             btn_frame = ttk.Frame(self)
             btn_frame.pack(pady=20)
@@ -278,8 +287,7 @@ def run_legacy_app():
                 self.autodetected_devices.clear()
                 for device in self.devices:
                     self.device_vars[device].set(False)
-                    if hasattr(self, 'status_labels') and device in self.status_labels:
-                        self.status_labels[device].config(text="")
+                    self._reset_device_status(device)
                     self.toggle_dropdown_state(device)
                 
             self.is_scanning = True
@@ -332,6 +340,9 @@ def run_legacy_app():
         def _scan_complete(self):
             self.progress_var.set(100)
             self.status_var.set("Scan complete.")
+            for device in self.devices:
+                if device != "Red Percent Window" and device not in self.autodetected_devices:
+                    self.status_labels[device].config(text="Not Found", fg="#D13438")
             self.update()
             # Hold the completed state for 1 second so the user can visually register it before it vanishes
             self.after(1000, self._cleanup_scan_ui)
