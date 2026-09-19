@@ -480,6 +480,16 @@ class DynamicView(tk.Frame):
                 row_counter += 1
 
     def _execute_command(self, cmd_name):
+        # Buttons/toggles render as tk.Label (see _build_from_schema -- real
+        # tk.Button ignores bg/fg on macOS Aqua), and Labels don't take
+        # keyboard focus. Clicking one therefore never fires <FocusOut> on
+        # whatever Entry the user was just typing into, so a numeric field's
+        # commit-on-FocusOut handler never ran -- the command below would
+        # read the model's PREVIOUS value, one edit-cycle behind whatever
+        # was just typed (e.g. Temperature Controller's Ramp Rate sending
+        # the prior value instead of the one just entered). Force focus
+        # away first so any pending edit commits before we read model state.
+        self.focus_set()
         if cmd_name == "open_controller_log":
             poller = getattr(self.model, 'poller', None)
             if not hasattr(self, 'log_window') or self.log_window is None or not self.log_window.winfo_exists():
