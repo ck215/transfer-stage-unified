@@ -17,6 +17,9 @@ import sys
 import re
 import ctypes
 from ctypes import wintypes
+import threading
+_poller_lock = threading.Lock()
+_active_poller_count = 0
 from error_routing import ErrorRouter as ErrorPopupManager
 
 # Windows API structure for polling raw joystick status
@@ -107,8 +110,8 @@ class XboxGamepad(BaseGamepad):
             "y_axisStatus": self.prev_axis_states.get(y_axis, 0.0),
             "z_axisStatusL": self.prev_axis_states.get(z_left_axis, -1.0),
             "z_axisStatusR": self.prev_axis_states.get(z_right_axis, -1.0),
-            "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
-            "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
+            "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
+            "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
             "LBumper": self.prev_button_states.get(4, 0),
             "RBumper": self.prev_button_states.get(5, 0),
         }
@@ -128,8 +131,8 @@ class BluetoothXboxGamepad(XboxGamepad):
                 "y_axisStatus": self.prev_axis_states.get(3, 0.0),
                 "z_axisStatusL": self.prev_axis_states.get(5, -1.0),
                 "z_axisStatusR": self.prev_axis_states.get(4, -1.0),
-                "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
-                "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
+                "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
+                "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
                 "LBumper": self.prev_button_states.get(6, 0),
                 "RBumper": self.prev_button_states.get(7, 0),
             }
@@ -163,8 +166,8 @@ class LogitechF310Gamepad(BaseGamepad):
                 "y_axisStatus": self.prev_axis_states.get(3, self.prev_axis_states.get(1, 0.0)),
                 "z_axisStatusL": 1.0 if lt_pressed else -1.0,
                 "z_axisStatusR": 1.0 if rt_pressed else -1.0,
-                "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
-                "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
+                "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
+                "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
                 "LBumper": self.prev_button_states.get(4, 0),
                 "RBumper": self.prev_button_states.get(5, 0),
             }
@@ -184,8 +187,8 @@ class LogitechF310Gamepad(BaseGamepad):
                 "y_axisStatus": self.prev_axis_states.get(y_axis, 0.0),
                 "z_axisStatusL": self.prev_axis_states.get(z_left_axis, -1.0),
                 "z_axisStatusR": self.prev_axis_states.get(z_right_axis, -1.0),
-                "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
-                "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
+                "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
+                "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
                 "LBumper": self.prev_button_states.get(4, 0),
                 "RBumper": self.prev_button_states.get(5, 0),
             }
@@ -211,8 +214,8 @@ class T16000MGamepad(BaseGamepad):
             "y_axisStatus": self.prev_axis_states.get(1, 0.0),
             "z_axisStatusL": self.prev_axis_states.get(z_l, 0.0) * 2.0 - 1.0,  # Remap to [-1, 1] range
             "z_axisStatusR": self.prev_axis_states.get(z_r, 0.0) * 2.0 - 1.0,  # Remap to [-1, 1] range
-            "dpad_LR": -self.prev_hat_states.get(0, (0, 0))[0],
-            "dpad_UD": -self.prev_hat_states.get(0, (0, 0))[1],
+            "dpad_LR": self.prev_hat_states.get(0, (0, 0))[0],
+            "dpad_UD": self.prev_hat_states.get(0, (0, 0))[1],
             "LBumper": self.prev_button_states.get(4, self.prev_button_states.get(7, 0)),
             "RBumper": self.prev_button_states.get(5, self.prev_button_states.get(9, 0)),
         }
@@ -248,6 +251,7 @@ class ControllerPoller:
         self.active_claims = active_claims
         self.process_name = process_name
         self.gamepad = None
+        self._closed = False
 
         self._initialize_pygame_joystick(controllerID)
 
@@ -431,6 +435,9 @@ class ControllerPoller:
                 if hasattr(self, '_latch_state'):
                     self._latch_state.clear()
                 print(f"[controllerDrive] Joystick initialization successful: {joystick.get_name()}")
+                global _active_poller_count
+                with _poller_lock:
+                    _active_poller_count += 1
                 return True
             except Exception as e:
                 msg = f"[controllerDrive] No joystick found ({e})."
@@ -472,7 +479,16 @@ class ControllerPoller:
             self.is_polling = False
 
     def close(self):
-        if pygame:
+        if self._closed:
+            return
+        self._closed = True
+        
+        global _active_poller_count
+        with _poller_lock:
+            _active_poller_count -= 1
+            count = _active_poller_count
+
+        if count <= 0 and pygame:
             try:
                 pygame.joystick.quit()
                 pygame.quit()

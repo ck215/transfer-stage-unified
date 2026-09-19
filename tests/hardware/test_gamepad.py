@@ -170,7 +170,7 @@ def test_controller_claim_conflict_with_integer_ids():
         assert claims["ProcessB"] == "None Detected"
 
 def test_controller_multi_digit_id_parsing():
-    with patch("controller.gamepad.pygame") as mock_pygame:
+    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
         mock_pygame.joystick.get_count.return_value = 15
         mock_js = MagicMock()
         mock_js.get_name.return_value = "Xbox Series X Controller"
@@ -241,7 +241,7 @@ def test_controller_claim_conflict_mixed_types():
 def test_set_controller_resumes_polling_when_active():
     """Verify set_controller automatically resumes polling loop if GUI was previously polling."""
     mock_gui = MagicMock()
-    with patch("controller.gamepad.pygame") as mock_pygame:
+    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
         mock_pygame.joystick.get_count.return_value = 2
         mock_js = MagicMock()
         mock_js.get_name.return_value = "Controller"
@@ -277,7 +277,7 @@ def test_stale_cache_guard():
 
 def test_controller_claim_success_then_conflict_with_string_ids():
     """Verify claim collision behaves correctly when using string IDs from combobox."""
-    with patch("controller.gamepad.pygame") as mock_pygame:
+    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
         mock_pygame.joystick.get_count.return_value = 1
         mock_js = MagicMock()
         mock_js.get_name.return_value = "Xbox"
@@ -355,7 +355,7 @@ def test_gamepad_disconnect_mid_session():
     from unittest.mock import patch
     import pygame
     
-    with patch("controller.gamepad.pygame") as mock_pygame:
+    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
         mock_pygame.error = type("error", (Exception,), {})
         poller = ControllerPoller.__new__(ControllerPoller)
         poller.is_polling = True
@@ -371,3 +371,31 @@ def test_gamepad_disconnect_mid_session():
             
             # Since the device is lost, the polling flag or object might be cleared/warned
             # (Depends on implementation, but testing it doesn't crash is primary requirement)
+
+def test_controller_pygame_teardown_refcounted():
+    """Verify ControllerPoller close() doesn't kill pygame while other pollers exist."""
+    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
+        mock_pygame.joystick.get_count.return_value = 2
+        mock_js = MagicMock()
+        mock_js.get_name.return_value = "Controller"
+        mock_pygame.joystick.Joystick.return_value = mock_js
+
+        claims = {}
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            poller1 = ControllerPoller(0, claims, "ProcessA")
+            poller2 = ControllerPoller(1, claims, "ProcessB")
+
+            assert poller1.gamepad is not None
+            assert poller2.gamepad is not None
+
+            poller1.close()
+            mock_pygame.quit.assert_not_called()
+            mock_pygame.joystick.quit.assert_not_called()
+            
+            poller2.close()
+            mock_pygame.quit.assert_called_once()
+            mock_pygame.joystick.quit.assert_called_once()
+            
+            mock_pygame.quit.reset_mock()
+            poller1.close()
+            mock_pygame.quit.assert_not_called()
