@@ -327,6 +327,23 @@ class WebModelAdapter:
         return allowed
 
     @staticmethod
+    def _schema_options_commands(model) -> set:
+        """Every options_command name a model's own ui_schema exposes —
+        deliberately narrower than _schema_commands, which also includes
+        plain "command" entries (real actions, e.g. home_axis). Mixing the
+        two would let a GET request to /api/options invoke a
+        side-effecting action (real hardware motion) through what must
+        stay a read-only options lookup."""
+        allowed = set()
+        schema = getattr(model, "ui_schema", {"sections": []})
+        for sec in schema.get("sections", []):
+            for el in sec.get("elements", []):
+                val = el.get("options_command")
+                if val:
+                    allowed.add(val)
+        return allowed
+
+    @staticmethod
     def _schema_attrs(model) -> set:
         """Every model_attr a model's own ui_schema exposes for writing."""
         allowed = set()
@@ -337,6 +354,27 @@ class WebModelAdapter:
                 if attr:
                     allowed.add(attr)
         return allowed
+
+    def resolve_options(self, device_name: str, options_command: str) -> Dict[str, Any]:
+        with self._state_lock:
+            if not self.system_manager:
+                return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
+            model = getattr(self.system_manager, "active_models", {}).get(device_name)
+            if not model:
+                return {"status": "error", "code": 404, "message": f"Device {device_name} not found"}
+            if options_command not in self._schema_options_commands(model):
+                return {"status": "error", "code": 400, "message": f"{options_command} is not an exposed options_command on {device_name}"}
+            func = getattr(model, options_command, None)
+            if not func or not callable(func):
+                return {"status": "error", "code": 400, "message": f"{options_command} not found on {device_name}"}
+                
+        dev_lock = self._get_device_lock(device_name)
+        with dev_lock:
+            try:
+                result = func()
+                return {"status": "ok", "code": 200, "options": list(result) if result else []}
+            except Exception as e:
+                return {"status": "error", "code": 500, "message": str(e)}
 
     def dispatch_command(self, device_name: str, command_name: str, args: Any = None) -> Dict[str, Any]:
         """

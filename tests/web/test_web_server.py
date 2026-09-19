@@ -36,11 +36,15 @@ class MockDeviceModel:
                         {"type": "button", "text": "Single Arg", "command": "single_arg_cmd"},
                         {"type": "button", "text": "Dict Arg", "command": "dict_arg_cmd"},
                         {"type": "button", "text": "Slow Task", "command": "slow_task"},
-                        {"type": "button", "text": "Fail", "command": "failing_command"}
+                        {"type": "button", "text": "Fail", "command": "failing_command"},
+                        {"type": "dropdown", "text": "Options:", "model_attr": "opt_val", "options_command": "get_opts"}
                     ]
                 }
             ]
         }
+
+    def get_opts(self):
+        return ["A", "B", "C"]
 
     def home_axis(self):
         self.executed_commands.append(("home_axis", ()))
@@ -469,3 +473,21 @@ def test_api_full_stop_all(web_server_fixture):
     data = json.loads(body)
     assert data["status"] == "ok"
     assert mgr.full_stop_called is True
+
+def test_api_options_success(web_server_fixture):
+    server, mgr = web_server_fixture
+    url = f"http://127.0.0.1:{server.port}/api/options?device=Stage_A&command=get_opts"
+    status, _, body = make_request(url)
+    assert status == 200
+    data = json.loads(body)
+    assert data["status"] == "ok"
+    assert data["options"] == ["A", "B", "C"]
+
+def test_api_options_security(web_server_fixture):
+    server, mgr = web_server_fixture
+    # home_axis is a valid method, but NOT an options_command
+    url = f"http://127.0.0.1:{server.port}/api/options?device=Stage_A&command=home_axis"
+    status, _, body = make_request(url)
+    assert status == 400
+    data = json.loads(body)
+    assert "not an exposed options_command" in data["message"]

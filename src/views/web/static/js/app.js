@@ -630,6 +630,7 @@ class TransferStageApp {
     if (el.type === 'dropdown') {
       const options = Array.isArray(el.options) ? el.options : [];
       const optionsHtml = options.map(opt => `<option value="${this.escapeHtml(String(opt))}">${this.escapeHtml(String(opt))}</option>`).join('');
+      const optsCmdAttr = el.options_command ? ` data-options-command="${el.options_command}"` : '';
       return `
         <div class="schema-row">
           <span class="schema-label">${this.escapeHtml(label)}</span>
@@ -637,7 +638,7 @@ class TransferStageApp {
                   id="select-${sanitizedDev}-${cleanAttr}"
                   data-device="${devName}" 
                   data-attr="${el.model_attr || ''}"
-                  data-command="${el.command || ''}">
+                  data-command="${el.command || ''}"${optsCmdAttr}>
             <option value="">Select option...</option>
             ${optionsHtml}
           </select>
@@ -649,6 +650,25 @@ class TransferStageApp {
   }
 
   bindCardInteractiveEvents() {
+    // Dropdown selects options_command fetching
+    document.querySelectorAll('select[data-options-command]').forEach(select => {
+      if (select.dataset.populated) return;
+      const dev = select.dataset.device;
+      const cmd = select.dataset.optionsCommand;
+      if (dev && cmd && select.options.length <= 1) { // Only placeholder exists
+        fetch('/api/options?device=' + encodeURIComponent(dev) + '&command=' + encodeURIComponent(cmd))
+          .then(r => r.json())
+          .then(data => {
+            if (data.status === 'ok' && Array.isArray(data.options)) {
+              const optionsHtml = data.options.map(opt => `<option value="${this.escapeHtml(String(opt))}">${this.escapeHtml(String(opt))}</option>`).join('');
+              select.innerHTML = '<option value="">Select option...</option>' + optionsHtml;
+            }
+            select.dataset.populated = "true";
+          })
+          .catch(e => console.warn('Failed to load dropdown options:', e));
+      }
+    });
+
     // Set Attr Buttons
     document.querySelectorAll('.btn-set-attr').forEach(btn => {
       btn.addEventListener('click', (e) => {

@@ -110,6 +110,17 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             errors = adapter.pop_errors()
             self._send_json(200, {"errors": errors})
 
+        elif route == "/api/options":
+            from urllib.parse import parse_qs
+            qs = parse_qs(parsed.query)
+            device = qs.get("device", [None])[0]
+            command = qs.get("command", [None])[0]
+            if not device or not command:
+                self._send_json(400, {"status": "error", "message": "device and command query params required"})
+            else:
+                result = adapter.resolve_options(device, command)
+                self._send_json(result.get("code", 200), result)
+
         elif route == "/api/screenshot":
             try:
                 with mss.mss() as sct:
@@ -150,95 +161,22 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
         if route == "/api/plot":
             try:
                 import io
-                import csv
-                import matplotlib
-                matplotlib.use('Agg')
-                import matplotlib.pyplot as plt
-                
+                from model.plot_data import parse_red_percent_csv, render_red_percent_figure
+
                 csv_data = data.get("csv_data", "")
                 plot_type = data.get("plot_type", "0D")
-                
-                # Parse CSV
-                f = io.StringIO(csv_data)
-                reader = csv.reader(f)
-                lines = list(reader)
-                
-                header_idx = -1
-                for i, row in enumerate(lines):
-                    if row and row[0] == "Red Percent":
-                        header_idx = i
-                        break
-                
-                red_percents = []
-                dim_data = {}
-                dims = []
-                if header_idx != -1:
-                    headers = lines[header_idx]
-                    for h in headers[1:]:
-                        if "Location" in h:
-                            dim = h.replace("Stepper ", "").replace(" Location", "")
-                            dim_data[dim] = []
-                            dims.append(dim)
-                    
-                    for row in lines[header_idx+1:]:
-                        if not row: continue
-                        try:
-                            red_percents.append(float(row[0]))
-                            for idx, dim in enumerate(dims):
-                                loc_col = 1 + 2*idx
-                                dim_data[dim].append(float(row[loc_col]))
-                        except ValueError:
-                            pass
 
-                fig = plt.figure(figsize=(8, 6), dpi=100)
-                
-                if plot_type == "0D":
-                    ax = fig.add_subplot(111)
-                    ax.plot(red_percents, marker='o', linestyle='-', color='b')
-                    ax.set_xlabel('Index (Time / Samples)')
-                    ax.set_ylabel('Red Percent')
-                    ax.set_title('Red Percent Data')
-                    ax.grid(True)
-                elif plot_type == "1D" and len(dims) >= 1:
-                    dim1 = dims[0]
-                    ax = fig.add_subplot(111)
-                    if dim_data.get(dim1) and len(dim_data[dim1]) == len(red_percents):
-                        paired = sorted(zip(dim_data[dim1], red_percents))
-                        sorted_xs = [p[0] for p in paired]
-                        sorted_rs = [p[1] for p in paired]
-                        ax.plot(sorted_xs, sorted_rs, marker='o', linestyle='-', color='b')
-                        ax.set_xlabel(f'Stepper {dim1} Location')
-                    else:
-                        ax.plot(red_percents, marker='o', linestyle='-', color='b')
-                        ax.set_xlabel('Index')
-                    ax.set_ylabel('Red Percent')
-                    ax.set_title(f'Red Percent vs {dim1}')
-                    ax.grid(True)
-                elif plot_type == "2D" and len(dims) >= 2:
-                    ax = fig.add_subplot(111, projection='3d')
-                    dim1, dim2 = dims[0], dims[1]
-                    x, y, z = dim_data[dim1], dim_data[dim2], red_percents
-                    if len(x) == len(z) and len(y) == len(z):
-                        scatter = ax.scatter(x, y, z, c=z, cmap='coolwarm', marker='o')
-                        ax.set_xlabel(f'Stepper {dim1}')
-                        ax.set_ylabel(f'Stepper {dim2}')
-                        ax.set_zlabel('Red Percent')
-                        fig.colorbar(scatter, ax=ax, label='Red Percent')
-                elif plot_type == "3D" and len(dims) >= 3:
-                    ax = fig.add_subplot(111, projection='3d')
-                    dim1, dim2, dim3 = dims[0], dims[1], dims[2]
-                    x, y, z, c = dim_data[dim1], dim_data[dim2], dim_data[dim3], red_percents
-                    if len(x) == len(c) and len(y) == len(c) and len(z) == len(c):
-                        scatter = ax.scatter(x, y, z, c=c, cmap='coolwarm', marker='o')
-                        ax.set_xlabel(f'Stepper {dim1}')
-                        ax.set_ylabel(f'Stepper {dim2}')
-                        ax.set_zlabel(f'Stepper {dim3}')
-                        fig.colorbar(scatter, ax=ax, label='Red Percent')
-                
+                parsed = parse_red_percent_csv(csv_data)
+                dims = parsed["dims"]
+                dim1 = dims[0] if len(dims) >= 1 else None
+                dim2 = dims[1] if len(dims) >= 2 else None
+                dim3 = dims[2] if len(dims) >= 3 else None
+
+                fig = render_red_percent_figure(plot_type, dim1, dim2, dim3, parsed["red_percents"], parsed["dim_data"])
+
                 buf = io.BytesIO()
-                plt.savefig(buf, format='png')
-                plt.close(fig)
-                
+                fig.savefig(buf, format='png')
+
                 return self._send_json(200, {"image_base64": base64.b64encode(buf.getvalue()).decode('utf-8')})
             except Exception as e:
                 import traceback
