@@ -224,6 +224,18 @@ class BaseProbe:
         self.send_stop_command()
 
     def enter_manual(self):
+        # Check gamepad presence BEFORE enable(): enable() unconditionally
+        # sends the hardware 'e' command, energizing the coils. Checking
+        # afterward (as send_manual_mode_command's defensive gamepad check
+        # does on the next poll tick) is too late -- it can revert
+        # manual_flag in Python, but the firmware has already been told to
+        # enable and nothing walks that back, leaving coils falsely
+        # energized for a mode that never actually engaged.
+        if not self.poller or not self.poller.gamepad:
+            msg = "Cannot enter manual mode: no gamepad/controller attached."
+            print(f"[{self.__class__.__name__}] {msg}")
+            ErrorPopupManager.report_warning("Manual Mode Blocked", msg)
+            return
         if not self.enable():
             return
         self.auton_flag = False
@@ -346,7 +358,9 @@ class BaseProbe:
     def send_manual_mode_command(self, controller_params):
         if self.manual_flag and (not self.poller or not self.poller.gamepad):
             self.manual_flag = False
-            print(f"[{self.__class__.__name__}] Manual mode blocked (No gamepad).")
+            msg = "Manual mode disabled: no gamepad/controller attached."
+            print(f"[{self.__class__.__name__}] {msg}")
+            ErrorPopupManager.report_warning("Manual Mode Blocked", msg)
             controller_params = {}
             
         if self.serial_comm:

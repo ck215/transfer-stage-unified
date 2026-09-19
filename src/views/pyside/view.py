@@ -615,7 +615,7 @@ class PlotDialog(QDialog):
 class RedPercentDynamicView(QtDynamicView):
     def __init__(self, model, parent=None):
         super().__init__(model, parent)
-        self._add_sync_dimension_controls()
+        self._add_position_source_control()
         self._add_custom_buttons()
         
 
@@ -631,23 +631,7 @@ class RedPercentDynamicView(QtDynamicView):
 
     def _save_log(self):
         self.save_log_ui()
-    def _add_sync_dimension_controls(self):
-        sync_frame = QFrame()
-        sync_layout = QHBoxLayout(sync_frame)
-        lbl = QLabel("Sync Dimensions:")
-        lbl.setProperty("class", "header")
-        sync_layout.addWidget(lbl)
-        
-        self.sync_cbs = {}
-        for dim in ['X', 'Y', 'Z']:
-            cb = QCheckBox(dim)
-            cb.setChecked(dim in self.model.sync_dimensions)
-            cb.toggled.connect(lambda checked, d=dim: getattr(self.model, f"toggle_sync_{d.lower()}")())
-            self.sync_cbs[dim] = cb
-            sync_layout.addWidget(cb)
-        sync_layout.addStretch()
-        self.layout.insertWidget(self.layout.count() - 1, sync_frame)
-
+    def _add_position_source_control(self):
         probe_frame = QFrame()
         probe_layout = QHBoxLayout(probe_frame)
         lbl_probe = QLabel("Position Source:")
@@ -791,7 +775,7 @@ class DashboardWindow(QMainWindow):
 
     def changeEvent(self, event):
         if event.type() == QEvent.WindowDeactivate:
-            for model_id, model in self.system_manager.models.items():
+            for model_id, model in self.system_manager.active_models.items():
                 if hasattr(model, 'poller') and model.poller:
                     model.poller.flush_neutral()
         super().changeEvent(event)

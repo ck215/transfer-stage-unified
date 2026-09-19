@@ -7,9 +7,6 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 try:
     import pygame
-    if pygame:
-        if not pygame.joystick.get_init():
-            pygame.joystick.init()
 except ImportError:
     pygame = None
 import time
@@ -21,6 +18,22 @@ import threading
 _poller_lock = threading.Lock()
 _active_poller_count = 0
 from error_routing import ErrorRouter as ErrorPopupManager
+
+
+def _ensure_pygame_video():
+    """Every joystick operation in this module depends on a live SDL video
+    subsystem (SDL_VIDEODRIVER=dummy), but pygame.quit() -- called whenever
+    the last active poller closes -- tears that down along with everything
+    else, and nothing was guaranteed to bring it back until the next
+    ad-hoc reconnect. pygame.init() is cheap and idempotent when subsystems
+    are already up, so call this before *any* pygame.joystick use and again
+    immediately after any pygame.quit(), rather than patching call sites
+    one at a time as this recurs."""
+    if pygame:
+        pygame.init()
+
+
+_ensure_pygame_video()
 
 # Windows API structure for polling raw joystick status
 if sys.platform == "win32":
@@ -311,6 +324,7 @@ class ControllerPoller:
     
     def get_physical_controllers(self):
         try:
+            _ensure_pygame_video()
             if pygame:
                 pygame.joystick.init()
         except Exception:
@@ -402,12 +416,7 @@ class ControllerPoller:
 
         try:
             if pygame:
-                # connect_controller() calls pygame.quit() before every reconnect,
-                # which tears down the dummy video subsystem (SDL_VIDEODRIVER=dummy)
-                # along with everything else. Joystick init depends on a live video
-                # subsystem, so re-establish the full SDL context here every time
-                # rather than only the joystick module.
-                pygame.init()
+                _ensure_pygame_video()
                 # joystick.init() may raise SDL video errors under SDL_VIDEODRIVER=dummy;
                 # these are expected in headless mode and are not real failures.
                 try:
@@ -498,6 +507,10 @@ class ControllerPoller:
                 pygame.quit()
             except Exception:
                 pass
+            # Re-establish the dummy video driver immediately rather than
+            # leaving the SDL context dead until whatever reconnects next
+            # happens to reinit it -- see _ensure_pygame_video().
+            _ensure_pygame_video()
 
     def get_mapped_state(self):
         """Returns the universally mapped input dictionary from the current gamepad."""
