@@ -10,7 +10,7 @@ def get_mock_serial():
     return mock_instance
 
 def test_stepper_probe_enter_auton():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
         probe.enter_auton()
@@ -18,7 +18,7 @@ def test_stepper_probe_enter_auton():
         assert probe.manual_flag is False
 
 def test_stepper_probe_enter_manual():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
         probe.enter_manual()
@@ -26,7 +26,7 @@ def test_stepper_probe_enter_manual():
         assert probe.auton_flag is False
 
 def test_macro_start_auton_command_flags():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
         probe.serial_comm = MagicMock()
@@ -37,7 +37,7 @@ def test_macro_start_auton_command_flags():
         assert params["command_code_auton"] == 1, "Command code auton should be 1"
 
 def test_is_stepping_starts_false_and_unaffected_by_plain_mode_entry():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
 
@@ -50,7 +50,7 @@ def test_is_stepping_starts_false_and_unaffected_by_plain_mode_entry():
     assert probe.is_stepping is False, "enter_manual should not mark the probe as stepping"
 
 def test_macro_start_auton_sets_is_stepping_and_full_stop_clears_it():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
         probe.serial_comm = MagicMock()
@@ -64,7 +64,7 @@ def test_macro_start_auton_sets_is_stepping_and_full_stop_clears_it():
         assert probe.manual_flag is False
 
 def test_send_stop_command_emits_zeros():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
         probe.serial_comm = MagicMock()
@@ -85,7 +85,7 @@ def test_send_stop_command_emits_zeros():
         assert params["command_code_auton"] == 0
 
 def test_send_manual_mode_command():
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = DCProbe("COM1", "Virtual Controller A")
         probe.serial_comm = MagicMock()
@@ -112,7 +112,7 @@ def test_redpercent_syncs_to_non_stepper_probe():
     StepperProbe, so rigs using a DC Probe / Chuck Positioner for XYZ still get
     location data tied to red-percent readings (app.py's fallback linkage).
     """
-    with patch("controller.seiral.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         dc_probe = DCProbe("COM1", "Virtual Controller A")
 

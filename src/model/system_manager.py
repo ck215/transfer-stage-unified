@@ -18,24 +18,8 @@ class SystemManager:
     def _teardown_model(self, name, model):
         """Runs hardware teardown for a single model. Not called under self.lock:
         it does blocking serial I/O and must not stall other device access."""
-        if hasattr(model, 'poller') and model.poller:
-            model.poller.stop_polling()
-            model.poller.close()
-        if hasattr(model, 'disconnect'):
-            model.disconnect()
-        if hasattr(model, 'stop'):
-            model.stop()
-        # power_down (de-energizes coils) is a strict superset of disable
-        # (BaseProbe.power_down calls the same stop-and-disarm plus a coil-kill
-        # command) so it must be preferred, not shadowed by disable.
-        if hasattr(model, 'power_down'):
-            model.power_down()
-        elif hasattr(model, 'disable'):
-            model.disable()
-        if hasattr(model, 'serial_conn') and model.serial_conn:
-            model.serial_conn.close()
-        elif hasattr(model, 'serial_comm') and model.serial_comm:
-            model.serial_comm.close()
+        if hasattr(model, 'teardown'):
+            model.teardown()
 
     def remove_model(self, name):
         """Thread-safely detaches and returns a model, or None if absent."""
@@ -79,19 +63,16 @@ class SystemManager:
         for name, model in models:
             try:
                 self._teardown_model(name, model)
-            except Exception:
-                pass
+            except Exception as e:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_error("Shutdown Error", f"Failed to tear down {name} during shutdown: {e}", e)
 
     def full_stop_all(self):
         models = self.get_active_models_snapshot()
         for name, model in models.items():
             try:
-                if hasattr(model, 'full_stop'):
-                    model.full_stop()
-                elif hasattr(model, 'stop_monitoring'):
-                    model.stop_monitoring()
-                elif hasattr(model, 'stop'):
-                    model.stop()
+                if hasattr(model, 'emergency_stop'):
+                    model.emergency_stop()
             except Exception as e:
                 from error_routing import ErrorRouter
                 ErrorRouter.report_error("Stop Error", f"Failed to stop {name}: {e}", e)

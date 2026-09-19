@@ -14,10 +14,8 @@ def test_system_manager_shutdown_all():
     
     mgr.shutdown_all()
     
-    mock_model1.poller.stop_polling.assert_called_once()
-    mock_model1.poller.close.assert_called_once()
-    mock_model1.disconnect.assert_called_once()
-    mock_model1.stop.assert_called_once()
+    mock_model1.teardown.assert_called_once()
+    mock_model2.teardown.assert_called_once()
     
     # Active models cleared
     assert len(mgr.active_models) == 0
@@ -37,9 +35,7 @@ def test_system_manager_reboot_model():
     with patch('time.sleep'):
         new = mgr.reboot_model("Model 1", mock_constructor)
         
-    mock_model.poller.stop_polling.assert_called_once()
-    mock_model.disconnect.assert_called_once()
-    mock_model.stop.assert_called_once()
+    mock_model.teardown.assert_called_once()
     
     assert constructor_called is True
     assert mgr.get_model("Model 1") == "New Model"

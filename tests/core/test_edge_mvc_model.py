@@ -116,22 +116,27 @@ def test_system_manager_invalid_model():
     assert manager.get_model("Invalid") == "Not a model"
 
 def test_shutdown_all_disables_probes_without_disconnect_or_stop():
-    """BaseProbe (Stepper/Chuck/DC) defines disable()/power_down(), not
-    disconnect()/stop() — shutdown_all must fall back to disable() so
-    motors actually de-energize on app close/reboot, matching main's
-    explicit self.serial.disable() on window close."""
+    """A MagicMock(spec=['teardown']) gets .teardown() called by shutdown_all()"""
     manager = SystemManager()
-    probe = MagicMock(spec=['disable'])
+    probe = MagicMock(spec=['teardown'])
     manager.register_model("Stepper", probe)
     manager.shutdown_all()
-    probe.disable.assert_called_once()
+    probe.teardown.assert_called_once()
+
+def test_shutdown_all_graceful_noop_without_teardown():
+    """A model with no teardown method causes no crash and nothing is called."""
+    manager = SystemManager()
+    probe = MagicMock(spec=[])
+    manager.register_model("Stepper", probe)
+    manager.shutdown_all()
 
 def test_reboot_model_disables_old_probe_without_disconnect_or_stop():
+    """A MagicMock(spec=['teardown']) gets .teardown() called by reboot_model()"""
     manager = SystemManager()
-    old_probe = MagicMock(spec=['disable'])
+    old_probe = MagicMock(spec=['teardown'])
     manager.active_models["Stepper"] = old_probe
     manager.reboot_model("Stepper", lambda: MagicMock())
-    old_probe.disable.assert_called_once()
+    old_probe.teardown.assert_called_once()
 
 def test_dcprobe_mutating_state_out_of_order():
     """Test mutating state out of order on the DCProbe."""
@@ -170,3 +175,23 @@ def test_rotator_state_code_map():
     assert rotator._map_state_code("28") == "Moving"
     assert rotator._map_state_code("3C") == "Disabled"
     assert rotator._map_state_code("UNKNOWN") == "UNKNOWN"
+
+def test_rotator_confirm_rotation_default():
+    rotator = RotatorSystem()
+    assert rotator._confirm_rotation(30.0) is True
+    assert rotator._confirm_rotation(-30.0) is True
+    # Default without callback denies > 30
+    assert rotator._confirm_rotation(30.1) is False
+    assert rotator._confirm_rotation(-30.1) is False
+
+def test_rotator_confirm_rotation_with_callback():
+    rotator = RotatorSystem()
+    mock_cb = MagicMock(return_value=True)
+    rotator.confirm_rotation_callback = mock_cb
+    
+    assert rotator._confirm_rotation(40.0) is True
+    mock_cb.assert_called_once_with(40.0)
+    
+    mock_cb.return_value = False
+    assert rotator._confirm_rotation(-40.0) is False
+    mock_cb.assert_called_with(-40.0)
