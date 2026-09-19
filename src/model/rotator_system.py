@@ -21,6 +21,7 @@ class RotatorSystem:
         self.smc = None
         self.is_connected = False
         self.error_callback = None
+        self.confirm_rotation_callback = None  # Optional[Callable[[float], bool]]
         
         self.target_deg = "0"
         self.step_deg = "0"
@@ -118,36 +119,36 @@ class RotatorSystem:
             except Exception:
                 pass
 
+    def teardown(self):
+        self.disconnect()
+
+    def emergency_stop(self):
+        self.stop()
+
     def home(self):
         if self.smc:
             self._run_async(self.smc.home)
 
     def _move_abs_ui(self):
-        import math
-        try:
-            val = float(self.target_deg)
-            if math.isnan(val) or math.isinf(val): return
-            self.move_absolute(val)
-        except ValueError:
-            pass
+        from model.numeric import safe_float
+        val = safe_float(self.target_deg)
+        if val is None:
+            return
+        self.move_absolute(val)
 
     def _move_rel_pos_ui(self):
-        import math
-        try:
-            val = float(self.step_deg)
-            if math.isnan(val) or math.isinf(val): return
-            self.move_relative(val)
-        except ValueError:
-            pass
+        from model.numeric import safe_float
+        val = safe_float(self.step_deg)
+        if val is None:
+            return
+        self.move_relative(val)
 
     def _move_rel_neg_ui(self):
-        import math
-        try:
-            val = float(self.step_deg)
-            if math.isnan(val) or math.isinf(val): return
-            self.move_relative(-val)
-        except ValueError:
-            pass
+        from model.numeric import safe_float
+        val = safe_float(self.step_deg)
+        if val is None:
+            return
+        self.move_relative(-val)
 
     @property
     def ui_schema(self):
@@ -208,21 +209,10 @@ class RotatorSystem:
     def _confirm_rotation(self, target_deg: float) -> bool:
         if abs(target_deg) <= 30.0:
             return True
-        try:
-            from PySide6.QtWidgets import QMessageBox, QApplication
-            if QApplication.instance() is None:
-                print(f"[{self.__class__.__name__}] Rotation past ±30 blocked automatically (No UI context).")
-                return False
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Warning)
-            msg.setWindowTitle("Rotation Limit Warning")
-            msg.setText(f"Target rotation {target_deg:.2f}° exceeds the safe ±30° range.\n\nMoving past this limit risks damaging physical tubing.\n\nAre you sure you want to proceed?")
-            msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-            msg.setDefaultButton(QMessageBox.No)
-            return msg.exec() == QMessageBox.Yes
-        except ImportError:
-            print(f"[{self.__class__.__name__}] Rotation past ±30 blocked automatically (PySide6 missing).")
-            return False
+        if self.confirm_rotation_callback:
+            return self.confirm_rotation_callback(target_deg)
+        print(f"[{self.__class__.__name__}] Rotation past ±30 blocked automatically (no confirmation handler registered).")
+        return False
 
     def move_absolute(self, target_deg: float):
         if self.smc:
@@ -243,16 +233,35 @@ class RotatorSystem:
 
     def _map_state_code(self, code: str) -> str:
         code = str(code).upper()
-        if code in ("0A", "0B", "0C"):
-            return "Not referenced - run Home"
-        elif code in ("32", "33", "34"):
-            return "Ready"
-        elif code in ("1E", "1F"):
-            return "Homing"
-        elif code == "28":
-            return "Moving"
-        elif code in ("3C", "3D", "3E", "3F"):
-            return "Disabled"
+        try:
+            from lib.smc100 import (
+                STATE_NOT_REFERENCED_FROM_RESET, STATE_NOT_REFERENCED_FROM_HOMING, STATE_NOT_REFERENCED_FROM_CONFIGURATION,
+                STATE_READY_FROM_HOMING, STATE_READY_FROM_MOVING, STATE_READY_FROM_DISABLE,
+                STATE_HOMING_FROM_RS232, STATE_HOMING_FROM_SMC_RC,
+                STATE_MOVING,
+                STATE_DISABLE_FROM_READY, STATE_DISABLE_FROM_MOVING, STATE_DISABLE_FROM_JOGGING
+            )
+            if code in (STATE_NOT_REFERENCED_FROM_RESET, STATE_NOT_REFERENCED_FROM_HOMING, STATE_NOT_REFERENCED_FROM_CONFIGURATION):
+                return "Not referenced - run Home"
+            elif code in (STATE_READY_FROM_HOMING, STATE_READY_FROM_MOVING, STATE_READY_FROM_DISABLE):
+                return "Ready"
+            elif code in (STATE_HOMING_FROM_RS232, STATE_HOMING_FROM_SMC_RC):
+                return "Homing"
+            elif code == STATE_MOVING:
+                return "Moving"
+            elif code in (STATE_DISABLE_FROM_READY, STATE_DISABLE_FROM_MOVING, STATE_DISABLE_FROM_JOGGING, "3F"): # 3F not in SMC100 docs
+                return "Disabled"
+        except ImportError:
+            if code in ("0A", "0B", "0C"):
+                return "Not referenced - run Home"
+            elif code in ("32", "33", "34"):
+                return "Ready"
+            elif code in ("1E", "1F"):
+                return "Homing"
+            elif code == "28":
+                return "Moving"
+            elif code in ("3C", "3D", "3E", "3F"):
+                return "Disabled"
         return code
 
     def poll_status(self):
