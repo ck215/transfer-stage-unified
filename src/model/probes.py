@@ -2,20 +2,14 @@ import math
 import time
 import copy
 import threading
-from controller.seiral import serial
+from controller.serial import serial, PACKET_FORMAT
 from error_routing import ErrorRouter as ErrorPopupManager
+from model.numeric import num as _num
 
-def _num(value, default, *, minimum=None, integer=False):
-    try:
-        v = float(value)
-        if math.isnan(v) or math.isinf(v):
-            v = float(default)
-    except (TypeError, ValueError):
-        v = float(default)
-        
-    if minimum is not None and v < minimum:
-        v = minimum
-    return int(v) if integer else v
+try:
+    import gcodeparser
+except ImportError:
+    gcodeparser = None
 
 class BaseProbe:
     # Overridable by tests to avoid waiting on the real 5-minute timeout.
@@ -28,7 +22,7 @@ class BaseProbe:
     def __init__(self, port, controller_id, active_claims=None):
         self.serial_comm = serial(port) if port and port != "None" else None
         
-        self.packet_format = '<BBffffffffff'  # Standardized 42-byte float format
+        self.packet_format = PACKET_FORMAT  # Standardized 42-byte float format
         
         # Position variables
         self.pos_x = "0"
@@ -130,9 +124,10 @@ class BaseProbe:
                 {
                     "title": "System Control",
                     "elements": [
-                        {"type": "toggle", "text": "System Power:", "model_attr": "system_enabled",
-                         "true_text": "SYSTEM ENABLED (Click to Disable)",
-                         "false_text": "SYSTEM DISABLED (Click to Enable)", "command": "toggle_enable"},
+                        # Per-device "System Power" toggle removed: enable/disable is already
+                        # reachable via the Autonomous/Manual mode toggles below (both call
+                        # enable() on entry, full_stop() on exit), and a separate System Power
+                        # control was a redundant, easy-to-desync third way to the same state.
                         {"type": "toggle", "text": "Autonomous:", "model_attr": "auton_flag",
                          "true_text": "AUTONOMOUS MODE (Click to Stop)",
                          "false_text": "Enter Autonomous Mode", "command": "toggle_auton"},
@@ -140,9 +135,23 @@ class BaseProbe:
                          "true_text": "MANUAL MODE (Click to Stop)",
                          "false_text": "Enter Manual Mode", "command": "toggle_manual"},
                         {"type": "button", "text": "Start Stepping", "command": "macro_start_auton", "bg": "darkgreen", "fg": "white"},
-                        {"type": "button", "text": "Full Stop", "command": "full_stop", "bg": "darkred", "fg": "white"},
-                        {"type": "file_picker", "text": "Run Script", "command": "run_script"},
-                        {"type": "button", "text": "Serial Reconnect", "command": "reconnect_serial", "bg": "gray", "fg": "black"},
+                        # Per-device "Full Stop" removed: SystemManager.full_stop_all() (the
+                        # dashboard's global FULL STOP bar) already calls this model's
+                        # full_stop() directly, so a dedicated per-tab button was a redundant,
+                        # confusing second E-stop. Per-device stop is still reachable by
+                        # toggling Autonomous/Manual mode off (both call full_stop()).
+                        #
+                        # "Run Script" (file_picker) removed from the live dashboard: the
+                        # underlying run_script() framework stays in place for future
+                        # development, but isn't exposed as a UI entry point yet.
+                        #
+                        # "Serial Reconnect" removed from the live dashboard: serial port
+                        # assignment should happen once, in the setup/configuration wizard,
+                        # not be re-triggerable mid-session. Unlike gamepads (designed to
+                        # hot-swap), a live serial reconnect risks desyncing Python-side
+                        # enable/disable state from the firmware (see the serial ACK-
+                        # verification gap tracked separately). reconnect_serial() itself
+                        # stays available for the setup wizard to call directly.
                         {"type": "button", "text": "Controller Log Window", "command": "open_controller_log", "bg": "black", "fg": "white"}
                     ]
                 }
@@ -239,7 +248,11 @@ class BaseProbe:
         def _execute():
             self.is_stepping = True
             try:
-                import gcodeparser
+                if gcodeparser is None:
+                    e = ImportError("gcodeparser not installed")
+                    print(f"[{self.__class__.__name__}] Script execution error: {e}")
+                    ErrorPopupManager.report_error("Script Execution Error", f"Error running script:\n{e}", e)
+                    return
                 with open(script_path, 'r', encoding="utf-8") as f:
                     gcode_content = f.read()
                 
@@ -441,6 +454,19 @@ class BaseProbe:
             except Exception as e:
                 print(f"[{self.__class__.__name__}] Failed to send power down: {e}")
 
+    def teardown(self):
+        """Full shutdown: stop the gamepad poller, apply the strongest stop
+        (power_down — kills coils), release the serial connection."""
+        if self.poller:
+            self.poller.stop_polling()
+            self.poller.close()
+        self.power_down()
+        if self.serial_comm:
+            self.serial_comm.close()
+
+    def emergency_stop(self):
+        self.power_down()
+
 
 class StepperProbe(BaseProbe):
     def __init__(self, port, controller_id, active_claims=None):
@@ -453,7 +479,7 @@ class StepperProbe(BaseProbe):
 class DCProbe(BaseProbe):
     def __init__(self, port, controller_id, active_claims=None):
         super().__init__(port, controller_id, active_claims)
-        self.packet_format = '<BBffffffffff'
+        self.packet_format = PACKET_FORMAT
         self.x_step = "1"
         self.y_step = "1"
         self.z_step = "1"
