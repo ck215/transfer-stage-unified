@@ -203,9 +203,12 @@ class RedPercentSystem:
                 {
                     "title": "Sync Dimensions",
                     "elements": [
-                        {"type": "toggle", "text": "Sync X", "model_attr": "sync_x", "command": "toggle_sync_x"},
-                        {"type": "toggle", "text": "Sync Y", "model_attr": "sync_y", "command": "toggle_sync_y"},
-                        {"type": "toggle", "text": "Sync Z", "model_attr": "sync_z", "command": "toggle_sync_z"}
+                        {"type": "toggle", "text": "Sync X", "model_attr": "sync_x", "command": "toggle_sync_x",
+                         "true_text": "Sync X: ON", "false_text": "Sync X: OFF"},
+                        {"type": "toggle", "text": "Sync Y", "model_attr": "sync_y", "command": "toggle_sync_y",
+                         "true_text": "Sync Y: ON", "false_text": "Sync Y: OFF"},
+                        {"type": "toggle", "text": "Sync Z", "model_attr": "sync_z", "command": "toggle_sync_z",
+                         "true_text": "Sync Z: ON", "false_text": "Sync Z: OFF"}
                     ]
                 },
                 {

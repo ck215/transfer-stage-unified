@@ -282,8 +282,8 @@ class QtDynamicView(QWidget):
                         
                     btn.clicked.connect(make_cmd(cmd_name))
                     self.toggle_buttons.append({
-                        "widget": btn, "attr": attr, 
-                        "true_text": el.get("true_text"), "false_text": el.get("false_text")
+                        "widget": btn, "attr": attr,
+                        "true_text": el.get("true_text", "True"), "false_text": el.get("false_text", "False")
                     })
                     row_layout.addWidget(btn)
 
@@ -493,6 +493,8 @@ class SelectionOverlay(QWidget):
             if w > 10 and h > 10:
                 self.model.focus_area = {'top': int(y1), 'left': int(x1), 'width': int(w), 'height': int(h)}
                 print(f"Captured Focus Area: {self.model.focus_area}")
+                QMessageBox.information(None, "Focus Area Set",
+                                         f"Focus area set: {w}x{h} at ({x1}, {y1})")
         self.close()
 
     def keyPressEvent(self, event):

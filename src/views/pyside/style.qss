@@ -3,7 +3,7 @@ QWidget {
     background-color: #1E1E1E;
     color: #E0E0E0;
     font-family: "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 12px;
+    font-size: 10px;
 }
 
 QDialog, QMainWindow {
@@ -26,7 +26,7 @@ QLabel {
 }
 
 QLabel[class="header"] {
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 600;
     color: #4DAAF2;
     margin-top: 10px;
@@ -41,7 +41,7 @@ QLabel#valueLabel {
 
 QLabel#fileLabel {
     color: #E5B567;
-    font-size: 12px;
+    font-size: 10px;
 }
 
 QLineEdit {

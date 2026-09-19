@@ -77,7 +77,6 @@ void setup() {
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 void loop(){
-  int pwmPinstate = digitalRead(pwmPin);
   int zcrossstate = digitalRead(zcross);
   
   recvWithStartEndMarkers();

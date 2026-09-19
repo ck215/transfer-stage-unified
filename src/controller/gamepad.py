@@ -402,8 +402,12 @@ class ControllerPoller:
 
         try:
             if pygame:
-                # Initialize the joystick module
-                pygame.joystick.init()
+                # connect_controller() calls pygame.quit() before every reconnect,
+                # which tears down the dummy video subsystem (SDL_VIDEODRIVER=dummy)
+                # along with everything else. Joystick init depends on a live video
+                # subsystem, so re-establish the full SDL context here every time
+                # rather than only the joystick module.
+                pygame.init()
                 # joystick.init() may raise SDL video errors under SDL_VIDEODRIVER=dummy;
                 # these are expected in headless mode and are not real failures.
                 try:

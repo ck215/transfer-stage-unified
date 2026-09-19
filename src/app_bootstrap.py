@@ -55,7 +55,29 @@ def probe_device_at(port: str) -> str | None:
     device_found = False
     device_name = None
 
-    # 1. 500k baud
+    # 1. 57600 baud (SMC100-specific, cheap — tried first so the SMC100
+    # rotator doesn't have to burn through both custom-firmware handshake
+    # timeouts below before reaching the check that actually identifies it)
+    try:
+        with serial.Serial(port, baudrate=57600, timeout=0.2, write_timeout=0.2, xonxoff=True) as ser:
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+            ser.write(b"1ID?\r\n")
+            time.sleep(0.1)
+            response = ser.read_all().decode("utf-8", errors="ignore").strip()
+            if not response:
+                ser.write(b"1TS?\r\n")
+                time.sleep(0.1)
+                response = ser.read_all().decode("utf-8", errors="ignore").strip()
+            if response.startswith("1ID") or response.startswith("1TS"):
+                device_name = "SMC100 Rotator"
+                device_found = True
+    except Exception:
+        pass
+
+    if device_found: return device_name
+
+    # 2. 500k baud
     try:
         with serial.Serial(port, baudrate=500000, timeout=0.1, write_timeout=0.2) as ser:
             ser.reset_input_buffer()
@@ -82,10 +104,10 @@ def probe_device_at(port: str) -> str | None:
                     time.sleep(0.05)
     except Exception:
         pass
-        
+
     if device_found: return device_name
 
-    # 2. 115200 baud
+    # 3. 115200 baud
     try:
         with serial.Serial(port, baudrate=115200, timeout=0.1, write_timeout=0.2) as ser:
             ser.reset_input_buffer()
@@ -112,27 +134,7 @@ def probe_device_at(port: str) -> str | None:
                     time.sleep(0.05)
     except Exception:
         pass
-        
-    if device_found: return device_name
 
-    # 3. 57600 baud
-    try:
-        with serial.Serial(port, baudrate=57600, timeout=0.2, write_timeout=0.2, xonxoff=True) as ser:
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
-            ser.write(b"1ID?\r\n")
-            time.sleep(0.1)
-            response = ser.read_all().decode("utf-8", errors="ignore").strip()
-            if not response:
-                ser.write(b"1TS?\r\n")
-                time.sleep(0.1)
-                response = ser.read_all().decode("utf-8", errors="ignore").strip()
-            if response.startswith("1ID") or response.startswith("1TS"):
-                device_name = "SMC100 Rotator"
-                device_found = True
-    except Exception:
-        pass
-        
     return device_name
 
 def build_models(active_configs: list[dict], active_claims: dict) -> dict[str, object]:
