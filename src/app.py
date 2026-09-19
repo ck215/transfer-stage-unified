@@ -862,7 +862,7 @@ Examples:
         help="Launch native PySide6 desktop GUI"
     )
     view_group.add_argument(
-        "--legacy",
+        "--tkinter",
         action="store_const",
         dest="view",
         const="legacy",
