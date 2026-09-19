@@ -270,6 +270,8 @@ class DynamicView(tk.Frame):
         self.model = model
         self.poll_interval_ms = poll_interval_ms
         self.vars = {}  # Store Tkinter StringVars for binding
+        self.entries = {}  # attr -> Entry widget, so _poll_model can skip
+                            # overwriting a field the user is actively editing
         
         self.bg_main = 'black'
         self.fg_accent = 'white'
@@ -341,7 +343,8 @@ class DynamicView(tk.Frame):
                             vcmd = (self.register(lambda P: P == "" or (self._is_valid_float(P))), '%P')
                             entry = tk.Entry(container, textvariable=str_var, validate='key', validatecommand=vcmd)
                             entry.grid(row=row_counter, column=1, padx=5, pady=2)
-                            
+                            self.entries[attr] = entry
+
                             def on_finish(event, attr_name=attr, var=str_var):
                                 text = var.get()
                                 try:
@@ -359,7 +362,8 @@ class DynamicView(tk.Frame):
                         else:
                             entry = tk.Entry(container, textvariable=str_var)
                             entry.grid(row=row_counter, column=1, padx=5, pady=2)
-                            
+                            self.entries[attr] = entry
+
                             def make_trace(attr_name, var):
                                 return lambda *args: setattr(self.model, attr_name, var.get())
                                 
@@ -497,7 +501,16 @@ class DynamicView(tk.Frame):
 
     def _poll_model(self):
         # Sync StringVars from model by polling (if model is updated elsewhere)
+        focused = self.focus_get()
         for attr, var in self.vars.items():
+            if attr in self.entries and self.entries[attr] is focused:
+                # Don't stomp a field the user is actively typing into --
+                # numeric entries only commit to the model on FocusOut/Return,
+                # so without this guard every keystroke got overwritten by
+                # the model's last-committed value on the very next tick
+                # (poll_interval_ms=50, faster than a human can type a
+                # second character), making entry fields unmodifiable.
+                continue
             if hasattr(self.model, attr):
                 current_val = str(getattr(self.model, attr))
                 if var.get() != current_val:
