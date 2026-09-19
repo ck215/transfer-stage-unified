@@ -57,7 +57,7 @@ def test_temperature_system_send_settings_packet():
         mock_instance.ser.write.reset_mock()
 
         ts.setpoint = "45.5"
-        ts.ramp_rate = "12"  # 12 deg/min => spdelay = 60/12 = 5.0 s
+        ts.ramp_rate = "12"  # ramp_rate is spdelay (s/°C) directly, sent unconverted
         ts.p_term = "2.5"
         ts.i_term = "0.8"
         ts.d_term = "0.2"
@@ -65,7 +65,7 @@ def test_temperature_system_send_settings_packet():
 
         ts.send_settings()
 
-        mock_instance.ser.write.assert_called_once_with(b"<45.5,5.00,2.5,0.8,0.2,1.0>")
+        mock_instance.ser.write.assert_called_once_with(b"<45.5,12.00,2.5,0.8,0.2,1.0>")
         ts.close()
 
 
@@ -85,7 +85,7 @@ def test_temperature_system_stop_logic():
 
         assert ts.setpoint == "0"
         assert ts.continue_reading is True
-        mock_instance.ser.write.assert_called_once_with(b"<0,6.0,0,0,0,0>")
+        mock_instance.ser.write.assert_called_once_with(b"<0,10.0,0,0,0,0>")
         mock_instance.close.assert_not_called()  # Serial port should NOT be closed on Stop
 
         ts.close()
@@ -138,36 +138,80 @@ def test_temperature_system_clean_shutdown():
             ts2.disconnect()
             mock_report.assert_not_called()
 
-    def test_temperature_system_invalid_ramp_rates(self):
-        """Test fallback to spdelay=0 for malformed ramp rates."""
-        sys = TemperatureSystem()
-        mock_serial = MagicMock()
-        sys.serial_conn = mock_serial
+
+def test_temperature_system_invalid_ramp_rates():
+    """Test fallback to spdelay=0 for malformed ramp rates."""
+    ts = TemperatureSystem()
+    mock_serial = MagicMock()
+    ts.serial_conn = mock_serial
+
+    invalid_rates = ["invalid_string", "0", "inf", "nan", "-1"]
+
+    for rate in invalid_rates:
+        ts.ramp_rate = rate
+        ts.send_settings()
+
+        # Should have called write, and fallback logic sends '0' for spdelay when invalid
+        # Let's inspect the actual write arguments
+        assert mock_serial.ser.write.called
+        write_args = mock_serial.ser.write.call_args[0][0].decode('utf-8')
+        assert '0' in write_args, f"Failed for rate={rate}"
+        mock_serial.ser.write.reset_mock()
+
+
+@patch('error_routing.ErrorRouter.report_error')
+def test_temperature_system_serial_write_failure(mock_report_error):
+    """Test serial write exception is routed securely to ErrorRouter."""
+    ts = TemperatureSystem()
+    mock_serial = MagicMock()
+    mock_serial.ser.write.side_effect = Exception("USB Disconnected")
+    ts.serial_conn = mock_serial
+    ts.ramp_rate = "12"
+
+    ts.send_settings()
+    mock_report_error.assert_called_once()
+    assert "Serial Write Error" in mock_report_error.call_args[0][0]
+    assert "USB Disconnected" in mock_report_error.call_args[0][1]
+
+
+def test_read_serial_data_retry_limit():
+    """Verify read_serial_data breaks after 5 consecutive failures,
+    but keeps retrying for <5, and resets counter on success."""
+    with patch("model.temperature_system.serial") as mock_serial_cls:
+        mock_instance = get_mock_serial_conn()
+        mock_serial_cls.return_value = mock_instance
         
-        invalid_rates = ["invalid_string", "0", "inf", "nan", "-1"]
+        responses = [
+            Exception("Transient 1"),
+            Exception("Transient 2"),
+            b"0,20.0,20.0\n",
+            Exception("Fatal 1"),
+            Exception("Fatal 2"),
+            Exception("Fatal 3"),
+            Exception("Fatal 4"),
+            Exception("Fatal 5"),
+            Exception("Should not be reached"),
+        ]
         
-        for rate in invalid_rates:
-            sys.ramp_rate = rate
-            sys.send_settings()
+        def side_effect(*args, **kwargs):
+            if not responses:
+                return b""
+            resp = responses.pop(0)
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
             
-            # Should have called write, and fallback logic sends '0' for spdelay when invalid
-            # Let's inspect the actual write arguments
-            assert mock_serial.ser.write.called
-            write_args = mock_serial.ser.write.call_args[0][0].decode('utf-8')
-            assert '0' in write_args, f"Failed for rate={rate}"
-            mock_serial.ser.write.reset_mock()
-
-    @patch('model.temperature_system.ErrorRouter.report_error')
-    def test_temperature_system_serial_write_failure(self, mock_report_error):
-        """Test serial write exception is routed securely to ErrorRouter."""
-        sys = TemperatureSystem()
-        mock_serial = MagicMock()
-        mock_serial.ser.write.side_effect = Exception("USB Disconnected")
-        sys.serial_conn = mock_serial
-        sys.ramp_rate = "12"
+        mock_instance.ser.readline.side_effect = side_effect
         
-        sys.send_settings()
-        mock_report_error.assert_called_once()
-        assert "Serial Write Error" in mock_report_error.call_args[0][0]
-        assert "USB Disconnected" in mock_report_error.call_args[0][1]
-
+        with patch('error_routing.ErrorRouter.report_error') as mock_report_error:
+            ts = TemperatureSystem("COM4")
+            ts.serial_thread.join(timeout=3)
+            
+            assert not ts.serial_thread.is_alive()
+            assert len(responses) == 1  # The last exception shouldn't be reached
+            
+            fatal_calls = [call for call in mock_report_error.mock_calls if "Fatal" in call.args[0]]
+            assert len(fatal_calls) == 1
+            assert "Giving up after 5 consecutive failures" in fatal_calls[0].args[1]
+            
+        ts.close()

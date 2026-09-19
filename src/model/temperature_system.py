@@ -1,4 +1,5 @@
-from controller.seiral import serial
+from controller.serial import serial
+from model.numeric import num
 import threading
 import time
 
@@ -49,7 +50,7 @@ class TemperatureSystem:
                     "title": "Control Parameters",
                     "elements": [
                         {"type": "entry", "text": "Setpoint:", "model_attr": "setpoint"},
-                        {"type": "entry", "text": "Ramp Rate (°C/min):", "model_attr": "ramp_rate"},
+                        {"type": "entry", "text": "Ramp Rate (s/°C):", "model_attr": "ramp_rate"},
                         {"type": "entry", "text": "Proportional Term (P):", "model_attr": "p_term"},
                         {"type": "entry", "text": "Integral Term (I):", "model_attr": "i_term"},
                         {"type": "entry", "text": "Derivative Term (D):", "model_attr": "d_term"},
@@ -67,24 +68,21 @@ class TemperatureSystem:
         }
         
     def send_settings(self):
-        # Calculate spdelay (seconds per 1 degree step) assuming ramp_rate is °C/minute
-        import math
+        # ramp_rate is spdelay (seconds per 1-degree setpoint step) directly,
+        # in the firmware's own native unit -- it's sent and displayed on the
+        # firmware's LCD ("RR = {spdelay}s/C") unconverted, so what's entered
+        # here matches what's shown on the physical display.
+        rate_float = num(self.ramp_rate, 0.0)
+
         try:
-            rate_float = float(self.ramp_rate)
-            if math.isnan(rate_float) or math.isinf(rate_float):
-                rate_float = 0.0
-        except ValueError:
-            rate_float = 0.0
-            
-        try:
-            spdelay = f"{60.0 / rate_float:.2f}" if rate_float > 0 else "0"
+            spdelay = f"{rate_float:.2f}" if rate_float >= 0 else "0"
             if "inf" in spdelay.lower() or "nan" in spdelay.lower():
                 spdelay = "0"
         except OverflowError:
             spdelay = "0"
-        
+
         if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
-            msg = f"[{self.__class__.__name__}] Sending: Setpoint={self.setpoint}C, Ramp={self.ramp_rate}°C/min (delay={spdelay}s), P={self.p_term}, I={self.i_term}, D={self.d_term}, Offset={self.offset}"
+            msg = f"[{self.__class__.__name__}] Sending: Setpoint={self.setpoint}C, Ramp={self.ramp_rate}s/°C (delay={spdelay}s), P={self.p_term}, I={self.i_term}, D={self.d_term}, Offset={self.offset}"
             print(msg)
             try:
                 from error_routing import ErrorRouter
@@ -99,6 +97,7 @@ class TemperatureSystem:
                 ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
                 
     def read_serial_data(self):
+        consecutive_failures = 0
         while getattr(self, 'continue_reading', True):
             try:
                 if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
@@ -106,22 +105,26 @@ class TemperatureSystem:
                     if raw_line:
                         line = raw_line.decode('utf-8', errors='ignore')
                         self.process_raw_data(line)
-                    # Unconditional floor: readline() is expected to block via
-                    # the serial timeout, but must never be trusted to do so —
-                    # a mock or misconfigured non-blocking serial returning
-                    # truthy data instantly would otherwise free-spin (observed
-                    # multi-GB RSS growth in seconds during testing).
+                    # Unconditional floor
                     time.sleep(0.01)
                 else:
                     time.sleep(0.1)
+                consecutive_failures = 0
             except Exception as e:
                 if not getattr(self, 'continue_reading', True):
                     break
+                consecutive_failures += 1
                 from error_routing import ErrorRouter
-                msg = f"Serial background read error: {e}"
-                print(msg)
-                ErrorRouter.report_error("Temperature Read Error", msg, e)
-                break
+                if consecutive_failures >= 5:
+                    msg = f"Giving up after {consecutive_failures} consecutive failures: {e}"
+                    print(msg)
+                    ErrorRouter.report_error("Temperature Read Error (Fatal)", msg, e)
+                    break
+                else:
+                    msg = f"Serial background read error (transient, retry {consecutive_failures}/5): {e}"
+                    print(msg)
+                    ErrorRouter.report_error("Temperature Read Error", msg, e)
+                    time.sleep(0.1)
 
     def process_raw_data(self, data_line):
         line = data_line.strip()
@@ -157,16 +160,10 @@ class TemperatureSystem:
     def stop(self):
         """Stops heating immediately by setting target setpoint to 0 while keeping serial monitoring active."""
         self.setpoint = "0"
-        import math
+        rate_float = num(self.ramp_rate, 0.0)
+
         try:
-            rate_float = float(self.ramp_rate)
-            if math.isnan(rate_float) or math.isinf(rate_float):
-                rate_float = 0.0
-        except ValueError:
-            rate_float = 0.0
-            
-        try:
-            spdelay = f"{60.0 / rate_float:.1f}" if rate_float > 0 else "0"
+            spdelay = f"{rate_float:.1f}" if rate_float >= 0 else "0"
             if "inf" in spdelay.lower() or "nan" in spdelay.lower():
                 spdelay = "0"
         except OverflowError:
@@ -197,3 +194,9 @@ class TemperatureSystem:
     def disconnect(self):
         """Alias for close to support unified model lifecycle."""
         self.close()
+
+    def teardown(self):
+        self.close()
+
+    def emergency_stop(self):
+        self.stop()
