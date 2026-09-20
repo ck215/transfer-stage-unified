@@ -103,6 +103,7 @@ _FILE_MARKERS = {
     "core/test_integration.py": ["integration"],
     "core/test_lifecycle_teardown.py": ["lifecycle", "estop"],
     "core/test_lifecycle_exit.py": ["lifecycle", "estop", "bootstrap"],
+    "core/test_transport_truth.py": ["transport", "estop"],
     "core/test_model_interactions.py": ["mode"],
     "core/test_model_round1.py": ["mode", "lifecycle"],
     "core/test_model_round2.py": ["mode"],
@@ -135,6 +136,7 @@ _FILE_MARKERS = {
     "ui/test_edge_mvc_ui.py": ["schema", "qt"],
     "ui/test_ui_schema.py": ["schema"],
     "web/test_web_adapter.py": ["web"],
+    "web/test_web_security.py": ["web"],
     "web/test_web_server.py": ["web"],
     "web/test_web_setup.py": ["web", "bootstrap"],
 }

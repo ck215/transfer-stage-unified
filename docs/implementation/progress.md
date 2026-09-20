@@ -50,7 +50,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S0 | Baseline, plan, invariant harness | done | `e760615` | 2026-09-19 | Docs baseline, plan, ledger, test division, invariant harness. |
 | S1 | Purge legacy paths (D-9, D-11) | done | | 2026-09-19 | D-9 + D-11 purged. SERIAL-18's `reboot_model` half reassigned to S2. |
 | S2 | Lifecycle authority (RC-1) | done | | 2026-09-19 | All 9 items. I-1.5 now holds. 7 tab-close findings deferred to S6 by D-1. |
-| S3 | Transport truth and E-stop latch | todo | | | SAFETY. |
+| S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
 | S4 | Web AppContext and security boundary | todo | | | Live CSRF hole; independent of S5+. |
 | S5 | Input service and model-owned loops | todo | | | Highest coupling. RC-13 first, then RC-4. |
 | S6 | Hide/show semantics (D-1) | todo | | | Needs S5. **Blocked on D-2** when reached. |
@@ -358,6 +358,69 @@ running), WEB-1/3/20.
   RC-5 item 1). Gate `-m "transport or estop or scripting"`. I-2.3's xfail
   retires there.
 
+### 2026-09-19 — S3: transport truth and the FULL STOP latch
+
+Gate `-m "(transport or estop or scripting) and not order_dependent and not
+qt"`: 89 passed, 4 xfailed. Fast gate: 247 passed, 6 xfailed. Invariants: 9
+passed, **2** xfailed — **I-2.3 now holds** and its `xfail` is retired, again
+surfaced as an XPASS-as-failure.
+
+**The defect was not "an error went undisplayed".** `serial.disable()`
+caught the write exception, reported it to the popup router and returned
+normally. `_stop_and_disarm` then set `system_enabled = False`
+unconditionally. So the UI reported the system disabled **on the strength of
+a command that never left the process** — with stepper coils, the difference
+between a safe bench and a hot one (SERIAL-1, STEPPER-4).
+
+Now: `write_command()` is the single write path, raises `TransportError`, and
+holds the transport lock. It deliberately does **not** report to the popup
+router — that would let a caller treat a reported failure as handled. The
+caller decides what a failed write means, and for a disable it means the
+hardware state is unknown: the model enters a persistent fault carrying
+"disable not confirmed — coils may be energized", and `system_enabled` is
+**not** cleared. A later successful disable clears the fault.
+
+All 13 direct `.ser` touches outside the transport are gone — 3 in
+`probes.py`, 10 in `temperature_system.py` — including the reads, so
+`read_line()` exists alongside `write_command()`.
+
+**FULL STOP latches (RC-5 item 1).** `emergency_stop()` sets a
+`threading.Event` **before any I/O**, and every motion write checks it: the
+autonomous and manual paths, and each iteration of a running script. That
+ordering is the point — STEPPER-8's untracked script thread means a command
+can already be in flight, so checking once at the start of a run would not
+help. The latch clears only via `clear_estop()`; a latch that clears itself
+is not a latch. The heater latches too: a setpoint accepted straight after an
+emergency stop is the same gap as a stepper accepting a move.
+
+**I-5.2 is written and `xfail`ed to S8, not quietly skipped.**
+`emergency_stop` does its hardware I/O on the calling thread, so a stalled
+transport holds it well past 100 ms. What *is* true today is tested
+separately: the latch is set immediately even while the stalled write is
+still outstanding, so no new motion can be issued meanwhile. RC-5's
+worker/timeout work is S8's.
+
+**Two things found along the way:**
+
+- **A failed stop frame was aborting the disable.** `_stop_and_disarm` called
+  `send_stop_command()` unguarded, so a transport error there skipped the
+  hardware disable entirely — the same skip-the-stop shape as the teardown
+  bug in S2. Isolated.
+- **SERIAL-9: simulator probes could never arm.** `_verify_serial` returns
+  False for SIM because there is no port object, so `enable()` raised and
+  every SIM probe was permanently un-armable — in the mode that exists
+  precisely to exercise the bench without hardware. `enable`/`disable` now
+  gate on `is_open()`, which treats SIM as the working configuration it is.
+
+**Re-authored, not deleted:** `test_serial_disconnect_mid_operation` asserted
+that `enable()` did *not* raise on a failed write. That swallowing was the
+defect, so it now asserts the opposite. The temperature test doubles moved
+from a raw pyserial handle to the transport API.
+
+- **Next action:** S4 — Web AppContext and the security boundary (RC-10
+  items 1-2). Gate `-m "web"`. **Note the live CSRF / no-origin-check hole
+  and `/api/screenshot` exposure are this stage's.**
+
 ---
 
 ## Finding ledger
@@ -499,7 +562,7 @@ it) · `n/a` (with a reason).
 | ROTATOR-13 | RC2 / RC8 | S3 | root cause | open |
 | ROTATOR-14 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | ROTATOR-15 | RC8 / doc | S11 | root cause | open |
-| SERIAL-1 | RC2 | S3 | root cause | open |
+| SERIAL-1 | RC2 | S3 | root cause | closed (test_a_failed_disable_faults_instead_of_claiming_the_system_is_off, tests/core/test_transport_truth.py) |
 | SERIAL-2 | RC1 | S2 | root cause | closed (test_probe_teardown_sends_hardware_stop_when_poller_stop_raises, tests/core/test_lifecycle_teardown.py) |
 | SERIAL-3 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | SERIAL-4 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
@@ -507,9 +570,9 @@ it) · `n/a` (with a reason).
 | SERIAL-6 | RC4 | S5 | root cause | open |
 | SERIAL-7 | RC2 | S3 | root cause | open |
 | SERIAL-8 | RC2 | S3 | root cause | open |
-| SERIAL-9 | RC2 | S3 | root cause | open |
+| SERIAL-9 | RC2 | S3 | root cause | closed (test_simulator_probes_can_arm_and_disarm, tests/core/test_transport_truth.py) |
 | SERIAL-10 | RC2 | S3 | root cause | open |
-| SERIAL-11 | RC2 | S3 | root cause | open |
+| SERIAL-11 | RC2 | S3 | root cause | closed (test_i_2_3_serial_handle_confined_to_transport; all writes go through write_command under the lock) |
 | SERIAL-12 | RC4 | S5 | root cause | open |
 | SERIAL-13 | RC2 | S3 | root cause | open |
 | SERIAL-14 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
@@ -521,7 +584,7 @@ it) · `n/a` (with a reason).
 | STEPPER-1 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | STEPPER-2 | RC4 | S5 | root cause | open |
 | STEPPER-3 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
-| STEPPER-4 | RC2 | S3 | root cause | open |
+| STEPPER-4 | RC2 | S3 | root cause | closed (test_a_failed_disable_faults_instead_of_claiming_the_system_is_off, tests/core/test_transport_truth.py) |
 | STEPPER-5 | RC3 | S7 | root cause | open |
 | STEPPER-6 | RC3 | S7 | root cause | open |
 | STEPPER-7 | RC5 / RC3 | S8 | root cause | open |

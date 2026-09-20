@@ -35,12 +35,14 @@ class TestTemperatureSystemInit:
             assert mock_serial.call_count == 0
 
     def test_init_with_valid_port(self):
-        """Test initialization with a valid port string."""
-        mock_ser = MagicMock()
-        mock_ser.is_open = True
+        """Test initialization with a valid port string.
+
+        The model talks to the transport, not to a pyserial handle
+        (invariant I-2.3), so the double exposes is_open()/write_command().
+        """
         mock_serial_instance = MagicMock()
-        mock_serial_instance.ser = mock_ser
-        
+        mock_serial_instance.is_open.return_value = True
+
         with patch('model.temperature_system.serial', return_value=mock_serial_instance) as mock_serial:
             ts = TemperatureSystem(port="/dev/ttyUSB0")
             
@@ -49,7 +51,7 @@ class TestTemperatureSystemInit:
             assert ts.serial_conn is not None
             
             # Verify initial write command
-            mock_ser.write.assert_called_once_with(b"<0,6.0,0,0,0,0>")
+            mock_serial_instance.write_command.assert_called_once_with(b"<0,6.0,0,0,0,0>")
             
             # Verify thread started
             assert hasattr(ts, 'serial_thread')
@@ -57,12 +59,10 @@ class TestTemperatureSystemInit:
 
     def test_init_serial_write_error(self):
         """Test initialization when serial write fails."""
-        mock_ser = MagicMock()
-        mock_ser.is_open = True
-        mock_ser.write.side_effect = IOError("Write failed")
         mock_serial_instance = MagicMock()
-        mock_serial_instance.ser = mock_ser
-        
+        mock_serial_instance.is_open.return_value = True
+        mock_serial_instance.write_command.side_effect = IOError("Write failed")
+
         with patch('model.temperature_system.serial', return_value=mock_serial_instance):
             with patch('error_routing.ErrorRouter.report_error') as mock_report:
                 ts = TemperatureSystem(port="/dev/ttyUSB0")
@@ -75,16 +75,14 @@ class TestTemperatureSystemInit:
 
     def test_init_serial_not_open(self):
         """Test initialization when serial connection is not open."""
-        mock_ser = MagicMock()
-        mock_ser.is_open = False
         mock_serial_instance = MagicMock()
-        mock_serial_instance.ser = mock_ser
-        
+        mock_serial_instance.is_open.return_value = False
+
         with patch('model.temperature_system.serial', return_value=mock_serial_instance):
             ts = TemperatureSystem(port="/dev/ttyUSB0")
             
             # Should not write or start thread if not open
-            mock_ser.write.assert_not_called()
+            mock_serial_instance.write_command.assert_not_called()
             assert not hasattr(ts, 'serial_thread')
 
 

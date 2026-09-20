@@ -285,6 +285,12 @@ returns in < 100 ms against a stalled fake transport).
 "confirmed" means a successful write, and the UI must say so honestly
 rather than claiming more.
 
+**Done.** I-2.3 holds and its `xfail` is retired. **I-5.2 does not hold and
+is `xfail`ed to S8**: `emergency_stop` does its I/O on the calling thread, so
+a stalled transport holds it past 100 ms. The latch itself is set before any
+I/O, which is what stops new motion — that part is tested and passing.
+SERIAL-9 (SIM probes could never arm) was found and fixed here.
+
 ---
 
 ## S4 — Web AppContext and security boundary (RC-10 items 1–2)

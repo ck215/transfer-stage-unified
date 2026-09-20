@@ -60,6 +60,19 @@ class BaseProbe:
         self.manual_flag = False
         self.is_stepping = False
 
+        # Fault state (RC-2). Set when a command's fate is unknown — a write
+        # that failed means the hardware may be in either state, and saying
+        # "disabled" would be a guess presented as a fact. It persists until
+        # a successful enable/disable proves the actual state.
+        self.fault_reason = None
+
+        # FULL STOP latch (RC-5). Set by emergency_stop() *before* any I/O and
+        # checked immediately before every motion write, so a command already
+        # in flight on another thread cannot land after the stop. It is
+        # cleared only by an explicit operator action, never automatically:
+        # a latch that clears itself is not a latch.
+        self._estop = threading.Event()
+
         # Auto-disable interlock (mirrors main's stepper_frame.py/chuck_frame.py
         # 5-minute idle timeout). Lives in the model, not the view, so every
         # frontend shares it — the web dashboard previously had none at all.
@@ -190,6 +203,42 @@ class BaseProbe:
         else:
             self.enter_auton()
 
+    def _enter_fault(self, reason):
+        """Record that the hardware state is unknown (RC-2)."""
+        self.fault_reason = reason
+        print(f"[{self.__class__.__name__}] FAULT: {reason}")
+        try:
+            ErrorPopupManager.report_error(
+                "Hardware State Unknown",
+                f"{self.__class__.__name__}: {reason}\n\n"
+                "The command may not have reached the hardware. Treat the "
+                "device as live until this is resolved.", None)
+        except Exception:
+            pass
+
+    @property
+    def in_fault(self):
+        return self.fault_reason is not None
+
+    def _clear_fault(self):
+        self.fault_reason = None
+
+    @property
+    def estop_latched(self):
+        return self._estop.is_set()
+
+    def clear_estop(self):
+        """Explicit operator action. Nothing else may call this (RC-5)."""
+        self._estop.clear()
+        print(f"[{self.__class__.__name__}] FULL STOP latch cleared by operator")
+
+    def _refuse_if_estopped(self, what):
+        """True when the latch forbids `what`. Checked before every motion write."""
+        if self._estop.is_set():
+            print(f"[{self.__class__.__name__}] {what} refused: FULL STOP is latched")
+            return True
+        return False
+
     def send_stop_command(self):
         if self.serial_comm:
             params = {
@@ -293,6 +342,8 @@ class BaseProbe:
                             "command_code_manual": 0,
                             "command_code_auton": 1
                         }
+                        if self._refuse_if_estopped("script motion"):
+                            break
                         self.serial_comm.send_autonomous_command(cmd_params)
                         
                         x_steps = abs(float(self.x_step) * float(x_dist))
@@ -303,13 +354,16 @@ class BaseProbe:
                         duration = (dist / speed) + 0.05 if speed > 0 else 0.1
                         time.sleep(duration)
                     elif ',' in gcode_str:
-                        if self.serial_comm.ser:
-                            raw_cmd = gcode_str.strip() + '\n'
-                            self.serial_comm.ser.write(raw_cmd.encode('utf-8'))
+                        if self._refuse_if_estopped("script motion"):
+                            break
+                        if self.serial_comm:
+                            self.serial_comm.write_command(gcode_str.strip() + '\n')
                         time.sleep(0.1)
                     else:
-                        if self.serial_comm.ser:
-                            self.serial_comm.ser.write((gcode_str + '\n').encode('utf-8'))
+                        if self._refuse_if_estopped("script motion"):
+                            break
+                        if self.serial_comm:
+                            self.serial_comm.write_command(gcode_str + '\n')
                         time.sleep(0.1)
             except Exception as e:
                 print(f"[{self.__class__.__name__}] Script execution error: {e}")
@@ -335,6 +389,8 @@ class BaseProbe:
         }
 
     def send_autonomous_command(self):
+        if self._refuse_if_estopped("autonomous command"):
+            return
         self.touch_activity()
         if self.serial_comm:
             self.serial_comm.send_autonomous_command(self.get_params())
@@ -369,6 +425,8 @@ class BaseProbe:
                 "manual_jog_speed": _num(self.man_full_speed, 400, minimum=1),
                 "packet_format": self.packet_format
             }
+            if self._refuse_if_estopped("manual command"):
+                return
             self.serial_comm.send_manual_mode_command(params)
 
     def read_position(self):
@@ -405,15 +463,25 @@ class BaseProbe:
         self._interlock_thread.start()
 
     def enable(self):
+        """Enable the hardware. Returns False if it did not happen.
+
+        `system_enabled` moves to True **only on a successful write**. It used
+        to be set even when the write raised, because the transport swallowed
+        the exception and returned normally — so the UI showed the system
+        armed when nothing had reached the board, and vice versa.
+        """
+        if self._refuse_if_estopped("enable"):
+            return False
         if not self.system_enabled:
             if self.serial_comm:
                 try:
                     self.serial_comm.enable()
-                except ValueError as e:
+                except Exception as e:
                     print(f"[{self.__class__.__name__}] {e}")
                     ErrorPopupManager.report_warning("Enable Failed", str(e))
                     return False
             self.system_enabled = True
+            self._clear_fault()
         self._start_interlock_watchdog()
         return True
 
@@ -428,7 +496,14 @@ class BaseProbe:
         self.auton_flag = False
         self.is_stepping = False
         self._interlock_stop.set()
-        self.send_stop_command()
+        try:
+            self.send_stop_command()
+        except Exception as e:
+            # A zero-motion frame that failed must not prevent the hardware
+            # disable below. Same isolation rule as teardown: the step that
+            # de-energizes hardware is never skipped because an earlier step
+            # raised.
+            print(f"[{self.__class__.__name__}] Stop frame failed, continuing to disable: {e}")
         # Always send the hardware disable, regardless of our own
         # system_enabled belief: the firmware's 'd' handler is explicitly
         # idempotent (safe to resend any time) and its own system_enabled
@@ -441,9 +516,15 @@ class BaseProbe:
         if self.serial_comm:
             try:
                 self.serial_comm.disable()
-            except ValueError as e:
-                print(f"[{self.__class__.__name__}] {e}")
+            except Exception as e:
+                # The disable did not reach the board, so the coils may still
+                # be energized. Recording system_enabled = False here — which
+                # is what used to happen unconditionally — would report the
+                # system safe on the strength of a command that failed.
+                self._enter_fault(f"disable not confirmed — coils may be energized: {e}")
+                return
         self.system_enabled = False
+        self._clear_fault()
 
     def disable(self):
         self._stop_and_disarm()
@@ -453,12 +534,14 @@ class BaseProbe:
 
     def power_down(self):
         self._stop_and_disarm()
-        if self.serial_comm and getattr(self.serial_comm, 'ser', None):
+        if self.serial_comm:
             try:
-                self.serial_comm.ser.write(b'k\n')
+                self.serial_comm.write_command(b'k\n')
                 print(f"[{self.__class__.__name__}] Sent Power Down (Kill Coils) command 'k'")
             except Exception as e:
-                print(f"[{self.__class__.__name__}] Failed to send power down: {e}")
+                # The kill never reached the board. Say so loudly rather than
+                # letting the caller believe the coils are dead (RC-2).
+                self._enter_fault(f"power down not confirmed: {e}")
 
     def teardown(self):
         """Safety-first, exception-safe shutdown (RC-1, invariant I-1.2).
@@ -492,6 +575,13 @@ class BaseProbe:
             print(f"[{self.__class__.__name__}] Transport close failed during teardown: {e}")
 
     def emergency_stop(self):
+        """Latch FULL STOP, then stop the hardware (RC-5).
+
+        The latch is set *first* and before any I/O: a motion command already
+        in flight on the script or gamepad thread would otherwise be able to
+        land after the stop returned.
+        """
+        self._estop.set()
         self.power_down()
 
 

@@ -133,12 +133,24 @@ def test_serial_auton_command_dispatch():
 
 
 def test_serial_enable_disable_disconnected():
-    """Verify enable() and disable() raise ValueError when port is disconnected."""
-    s = serial("SIM")
+    """A *disconnected real port* refuses to arm. Simulator mode does not.
+
+    Re-authored in S3 (SERIAL-9). This previously asserted that SIM raised
+    "Arduino not detected" — which was the bug, not the contract: simulator
+    mode exists precisely to exercise the bench with no hardware attached,
+    and that ValueError made every SIM probe permanently un-armable.
+    """
+    sim = serial("SIM")
+    sim.enable()
+    sim.disable()
+
+    dead = serial("SIM")
+    dead.SERIAL_PORT = "/dev/ttyUSB0"   # a real port name...
+    dead.ser = None                      # ...that never opened
     with pytest.raises(ValueError, match="Arduino not detected"):
-        s.enable()
+        dead.enable()
     with pytest.raises(ValueError, match="Arduino not detected"):
-        s.disable()
+        dead.disable()
 
 
 # ==========================================

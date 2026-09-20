@@ -18,6 +18,11 @@ class TemperatureSystem:
         self.current_temp = "N/A"
         
         self._lock = threading.Lock()
+        # FULL STOP latch (RC-5). A heater that can be re-commanded to a
+        # setpoint straight after an emergency stop is the same gap as a
+        # stepper that can be re-commanded to move. Cleared only by an
+        # explicit operator action.
+        self._estop = threading.Event()
         self.tempC = []
         self.time = []
         self.sp = []
@@ -26,13 +31,13 @@ class TemperatureSystem:
         self.serial_conn = serial(port, baud_rate=115200) if port and port != "None" else None
         self.continue_reading = True
         
-        if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+        if self.serial_conn and self.serial_conn.is_open():
             try:
-                self.serial_conn.ser.write(b"<0,6.0,0,0,0,0>")
+                self.serial_conn.write_command(b"<0,6.0,0,0,0,0>")
             except Exception as e:
                 from error_routing import ErrorRouter as ErrorPopupManager
                 ErrorPopupManager.report_error("Serial Write Error", f"Error writing initial state to serial:\n{e}", e)
-                
+
             self.serial_thread = threading.Thread(target=self.read_serial_data, daemon=True)
             self.serial_thread.start()
                 
@@ -67,7 +72,19 @@ class TemperatureSystem:
             ]
         }
         
+    @property
+    def estop_latched(self):
+        return self._estop.is_set()
+
+    def clear_estop(self):
+        """Explicit operator action. Nothing else may call this (RC-5)."""
+        self._estop.clear()
+        print(f"[{self.__class__.__name__}] FULL STOP latch cleared by operator")
+
     def send_settings(self):
+        if self._estop.is_set():
+            print(f"[{self.__class__.__name__}] Settings refused: FULL STOP is latched")
+            return
         # ramp_rate is spdelay (seconds per 1-degree setpoint step) directly,
         # in the firmware's own native unit -- it's sent and displayed on the
         # firmware's LCD ("RR = {spdelay}s/C") unconverted, so what's entered
@@ -81,7 +98,7 @@ class TemperatureSystem:
         except OverflowError:
             spdelay = "0"
 
-        if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+        if self.serial_conn and self.serial_conn.is_open():
             msg = f"[{self.__class__.__name__}] Sending: Setpoint={self.setpoint}C, Ramp={self.ramp_rate}s/°C (delay={spdelay}s), P={self.p_term}, I={self.i_term}, D={self.d_term}, Offset={self.offset}"
             print(msg)
             try:
@@ -91,7 +108,7 @@ class TemperatureSystem:
                 pass
             input_string = f"<{self.setpoint},{spdelay},{self.p_term},{self.i_term},{self.d_term},{self.offset}>"
             try:
-                self.serial_conn.ser.write(input_string.encode())
+                self.serial_conn.write_command(input_string)
             except Exception as e:
                 from error_routing import ErrorRouter as ErrorPopupManager
                 ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
@@ -100,8 +117,8 @@ class TemperatureSystem:
         consecutive_failures = 0
         while getattr(self, 'continue_reading', True):
             try:
-                if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
-                    raw_line = self.serial_conn.ser.readline()
+                if self.serial_conn and self.serial_conn.is_open():
+                    raw_line = self.serial_conn.read_line()
                     if raw_line:
                         line = raw_line.decode('utf-8', errors='ignore')
                         self.process_raw_data(line)
@@ -169,11 +186,11 @@ class TemperatureSystem:
         except OverflowError:
             spdelay = "0"
 
-        if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+        if self.serial_conn and self.serial_conn.is_open():
             vals = ['0', spdelay, '0', '0', '0', str(self.offset)]
             input_string = f"<{','.join(vals)}>"
             try:
-                self.serial_conn.ser.write(input_string.encode())
+                self.serial_conn.write_command(input_string)
             except Exception as e:
                 from error_routing import ErrorRouter as ErrorPopupManager
                 ErrorPopupManager.report_error("Serial Write Error", f"Error writing stop state to serial:\n{e}", e)
@@ -181,9 +198,9 @@ class TemperatureSystem:
     def close(self):
         """Cleanly terminates serial thread and closes serial connection."""
         self.continue_reading = False
-        if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+        if self.serial_conn and self.serial_conn.is_open():
             try:
-                self.serial_conn.ser.write(b"<0,6.0,0,0,0,0>")
+                self.serial_conn.write_command(b"<0,6.0,0,0,0,0>")
             except Exception:
                 pass
             try:
@@ -209,4 +226,6 @@ class TemperatureSystem:
         self.close()
 
     def emergency_stop(self):
+        """Latch first, then command the setpoint down (RC-5)."""
+        self._estop.set()
         self.stop()

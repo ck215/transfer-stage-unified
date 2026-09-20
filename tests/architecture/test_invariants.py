@@ -182,32 +182,22 @@ def test_i_1_5_active_models_written_only_by_system_manager():
 # I-2.3 — No code outside the transport touches `.ser`.  Fixed in S3 (RC-2).
 # ---------------------------------------------------------------------------
 
+# HELD since S3 (2026-09-19). What was here: 13 direct `.ser` touches outside
+# the transport — 3 in probes.py, 10 in temperature_system.py — each one a
+# write or read that bypassed the transport's lock and its error handling
+# entirely. They now go through write_command()/read_line(), which raise
+# TransportError instead of swallowing failures.
 I_2_3_PATTERN = r"\.ser\."
 I_2_3_OWNER = "controller/serial.py"
-I_2_3_BASELINE = {
-    # Raw writes that bypass the transport's command discipline entirely —
-    # no ACK, no connection-state check, no error routing.
-    "model/probes.py": 3,
-    "model/temperature_system.py": 10,
-}
 
 
 def _i_2_3_hits():
     return _scan(I_2_3_PATTERN, SRC, exclude=(I_2_3_OWNER,))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="[invariant I-2.3, owned by S3] probes.py and temperature_system.py "
-    "still write to the serial handle directly, bypassing the transport",
-)
 def test_i_2_3_serial_handle_confined_to_transport():
     hits = _i_2_3_hits()
     assert not hits, _report("I-2.3", hits)
-
-
-def test_i_2_3_no_new_violations():
-    _assert_no_new("I-2.3", _i_2_3_hits(), I_2_3_BASELINE, "S3")
 
 
 # ---------------------------------------------------------------------------

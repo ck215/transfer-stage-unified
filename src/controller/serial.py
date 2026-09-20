@@ -10,6 +10,17 @@ import sys
 import struct
 import threading
 
+class TransportError(Exception):
+    """A command did not reach the hardware (RC-2).
+
+    Raised by `write_command`. The point of it existing is that the previous
+    code swallowed every write exception and returned normally, so a caller
+    had no way to distinguish "the coils are disabled" from "the disable
+    command never left the process". Models must treat this as *unknown
+    hardware state*, never as success.
+    """
+
+
 # Updated to 42-byte format (2 bytes + 10 floats) to match unified firmware struct
 PACKET_FORMAT = '<BBffffffffff'
 START_MARKER = 0xAA
@@ -237,23 +248,79 @@ class serial:
             print(msg)
             ErrorPopupManager.report_error("Serial Write Error", msg, e)
 
-    def enable(self):
-        if not self._verify_serial(verbose=True):
-            raise ValueError("[SerialDrive] Arduino not detected. Cannot enable system.")
+    def write_command(self, payload):
+        """The one way anything reaches the hardware (RC-2, invariant I-2.3).
+
+        Takes bytes (or str, encoded as UTF-8), writes under the lock, and
+        raises TransportError if the write did not happen. It does **not**
+        report the error to the popup router: that would let a caller treat
+        a reported failure as handled and carry on. The caller decides what a
+        failed write means — for a disable, it means the hardware state is
+        now unknown and the model must fault.
+
+        In simulator mode there is no port and nothing to write; that is a
+        successful no-op, not a failure.
+        """
+        if isinstance(payload, str):
+            payload = payload.encode('utf-8')
         with self._lock:
+            if self.SERIAL_PORT in ('SIM', 'None', None):
+                return
+            if self.ser is None or not self.ser.is_open:
+                raise TransportError(
+                    f"[SerialDrive] Port {self.SERIAL_PORT} is not open; "
+                    f"{payload!r} was not sent")
             try:
-                self.ser.write("e".encode('utf-8'))
+                self.ser.write(payload)
             except Exception as e:
-                ErrorPopupManager.report_error('Serial Write', str(e))
+                raise TransportError(
+                    f"[SerialDrive] Write of {payload!r} failed: {e}") from e
+
+    def is_open(self):
+        """True when a write could actually reach hardware, or we are in SIM."""
+        if self.SERIAL_PORT in ('SIM', 'None', None):
+            return True
+        return self.ser is not None and self.ser.is_open
+
+    def read_line(self):
+        """One line from the port, or b"" when there is nothing to read.
+
+        Exists so that models never touch `.ser` directly (invariant I-2.3);
+        reads are part of the transport's job too, not just writes.
+        """
+        with self._lock:
+            if self.SERIAL_PORT in ('SIM', 'None', None):
+                return b""
+            if self.ser is None or not self.ser.is_open:
+                raise TransportError(
+                    f"[SerialDrive] Port {self.SERIAL_PORT} is not open; cannot read")
+            try:
+                return self.ser.readline()
+            except Exception as e:
+                raise TransportError(f"[SerialDrive] Read failed: {e}") from e
+
+    def enable(self):
+        """Raises TransportError if the enable did not reach the hardware.
+
+        Simulator mode is a legal, fully working configuration — it is how the
+        bench is exercised without hardware attached. `_verify_serial` returns
+        False for SIM because there is no port object, which made `enable()`
+        raise and left every SIM probe permanently un-armable (SERIAL-9).
+        """
+        if not self.is_open():
+            raise ValueError("[SerialDrive] Arduino not detected. Cannot enable system.")
+        self.write_command(b"e")
 
     def disable(self):
-        if not self._verify_serial(verbose=True):
+        """Raises TransportError if the disable did not reach the hardware.
+
+        This used to swallow the write exception and return normally, so the
+        model set system_enabled = False and the UI reported the system
+        disabled while the coils were still energized.
+        """
+        if not self.is_open():
             raise ValueError("[SerialDrive] Arduino not detected. Cannot disable system.")
-        with self._lock:
-            try:
-                self.ser.write("d".encode('utf-8'))
-            except Exception as e:
-                ErrorPopupManager.report_error('Serial Write', str(e))
+        self.write_command(b"d")
 
     # Closes serial connection
     def close(self):

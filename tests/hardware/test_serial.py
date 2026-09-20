@@ -99,20 +99,30 @@ def test_serial_read_position_corrupt_data():
         assert pos is None
 
 def test_serial_disconnect_mid_operation():
-    """Verify sudden SerialException doesn't bubble up unhandled."""
+    """A sudden disconnect must surface on writes and stay quiet on reads.
+
+    Re-authored in S3 (RC-2). This used to assert that `enable()` did *not*
+    raise when the write failed — that swallowing was the defect: the caller
+    then recorded the system as enabled (or, for `disable()`, as safe) on the
+    strength of a command that never left the process. A read returning None
+    is still correct; there is simply no position to report.
+    """
     import serial as pyserial
+    from controller.serial import TransportError
+
     with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_instance = get_mock_serial()
         mock_serial.return_value = mock_instance
         s = serial("COM1")
-        
-        # Read operation failure
+
+        # A failed read has nothing to report, and that is not an error.
         mock_instance.read.side_effect = pyserial.SerialException("Device unplugged")
         mock_instance.in_waiting = 5
-        pos = s.read_position()
-        assert pos is None
-        
-        # Write operation failure
+        assert s.read_position() is None
+
+        # A failed write is an error, and the caller has to hear about it.
         mock_instance.write.side_effect = pyserial.SerialException("Device unplugged")
-        # Ensure it doesn't crash
-        s.enable() 
+        with pytest.raises(TransportError):
+            s.enable()
+        with pytest.raises(TransportError):
+            s.disable() 

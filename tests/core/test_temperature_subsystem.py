@@ -7,9 +7,14 @@ from model.temperature_system import TemperatureSystem
 
 
 def get_mock_serial_conn():
+    """A transport double, not a raw pyserial handle.
+
+    The model no longer touches `.ser` (invariant I-2.3): every frame goes
+    through write_command()/read_line(), which raise TransportError rather
+    than swallowing a failed write. The double follows that API.
+    """
     mock_conn = MagicMock()
-    mock_conn.ser = MagicMock()
-    mock_conn.ser.is_open = True
+    mock_conn.is_open.return_value = True
     return mock_conn
 
 
@@ -20,7 +25,7 @@ def test_read_serial_data_cannot_free_spin_on_instant_readline():
     free-spun and grew RSS by multiple GB in seconds."""
     with patch("model.temperature_system.serial") as mock_serial_cls:
         mock_instance = get_mock_serial_conn()
-        mock_instance.ser.readline.return_value = b"0,20.0,20.0\n"  # never blocks, always truthy
+        mock_instance.read_line.return_value = b"0,20.0,20.0\n"  # never blocks, always truthy
         mock_serial_cls.return_value = mock_instance
 
         ts = TemperatureSystem("COM4")
@@ -32,7 +37,7 @@ def test_read_serial_data_cannot_free_spin_on_instant_readline():
 
         # At 0.01s/iteration a bound loop does ~50 iterations in 0.5s;
         # a free-spinning loop would do tens of thousands.
-        assert mock_instance.ser.readline.call_count < 200
+        assert mock_instance.read_line.call_count < 200
 
 
 def test_temperature_system_initialization_and_handshake():
@@ -43,7 +48,7 @@ def test_temperature_system_initialization_and_handshake():
 
         ts = TemperatureSystem("COM4")
         mock_serial_cls.assert_called_once_with("COM4", baud_rate=115200)
-        mock_instance.ser.write.assert_called_once_with(b"<0,6.0,0,0,0,0>")
+        mock_instance.write_command.assert_called_once_with(b"<0,6.0,0,0,0,0>")
         ts.close()
 
 
@@ -54,7 +59,7 @@ def test_temperature_system_send_settings_packet():
         mock_serial_cls.return_value = mock_instance
 
         ts = TemperatureSystem("COM4")
-        mock_instance.ser.write.reset_mock()
+        mock_instance.write_command.reset_mock()
 
         ts.setpoint = "45.5"
         ts.ramp_rate = "12"  # ramp_rate is spdelay (s/°C) directly, sent unconverted
@@ -65,7 +70,7 @@ def test_temperature_system_send_settings_packet():
 
         ts.send_settings()
 
-        mock_instance.ser.write.assert_called_once_with(b"<45.5,12.00,2.5,0.8,0.2,1.0>")
+        mock_instance.write_command.assert_called_once_with("<45.5,12.00,2.5,0.8,0.2,1.0>")
         ts.close()
 
 
@@ -79,13 +84,13 @@ def test_temperature_system_stop_logic():
         ts.setpoint = "50"
         ts.ramp_rate = "10"
         ts.offset = "0"
-        mock_instance.ser.write.reset_mock()
+        mock_instance.write_command.reset_mock()
 
         ts.stop()
 
         assert ts.setpoint == "0"
         assert ts.continue_reading is True
-        mock_instance.ser.write.assert_called_once_with(b"<0,10.0,0,0,0,0>")
+        mock_instance.write_command.assert_called_once_with("<0,10.0,0,0,0,0>")
         mock_instance.close.assert_not_called()  # Serial port should NOT be closed on Stop
 
         ts.close()
@@ -153,10 +158,11 @@ def test_temperature_system_invalid_ramp_rates():
 
         # Should have called write, and fallback logic sends '0' for spdelay when invalid
         # Let's inspect the actual write arguments
-        assert mock_serial.ser.write.called
-        write_args = mock_serial.ser.write.call_args[0][0].decode('utf-8')
+        assert mock_serial.write_command.called
+        _payload = mock_serial.write_command.call_args[0][0]
+        write_args = _payload.decode('utf-8') if isinstance(_payload, bytes) else _payload
         assert '0' in write_args, f"Failed for rate={rate}"
-        mock_serial.ser.write.reset_mock()
+        mock_serial.write_command.reset_mock()
 
 
 @patch('error_routing.ErrorRouter.report_error')
@@ -164,7 +170,7 @@ def test_temperature_system_serial_write_failure(mock_report_error):
     """Test serial write exception is routed securely to ErrorRouter."""
     ts = TemperatureSystem()
     mock_serial = MagicMock()
-    mock_serial.ser.write.side_effect = Exception("USB Disconnected")
+    mock_serial.write_command.side_effect = Exception("USB Disconnected")
     ts.serial_conn = mock_serial
     ts.ramp_rate = "12"
 
@@ -201,7 +207,7 @@ def test_read_serial_data_retry_limit():
                 raise resp
             return resp
             
-        mock_instance.ser.readline.side_effect = side_effect
+        mock_instance.read_line.side_effect = side_effect
         
         with patch('error_routing.ErrorRouter.report_error') as mock_report_error:
             ts = TemperatureSystem("COM4")
