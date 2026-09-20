@@ -28,7 +28,9 @@ def test_a_dc_probe_never_falls_back_to_the_steppers_speed(bad):
 def test_a_dc_probes_manual_jog_speed_falls_back_to_its_own(bad):
     probe = DCProbe("SIM", None)
     probe.man_full_speed = bad
-    probe.manual_flag = True
+    # `manual_flag` is read-only (I-3.4). This test is about the jog speed the
+    # frame carries, not about the mode, and send_manual_mode_command only
+    # consults the mode to notice a lost pad — so no mode is needed at all.
     sent = {}
 
     class Recorder:

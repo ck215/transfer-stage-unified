@@ -21,6 +21,12 @@ def test_stepper_probe_enter_manual():
     with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
+        # Manual mode requires a bound pad (I-3.2), so the fixture has to
+        # provide one. Before S7 this test reached MANUAL with no pad at all,
+        # which is the state that energized coils for a mode nothing drove.
+        probe.poller = MagicMock()
+        probe.poller.gamepad = MagicMock()
+
         probe.enter_manual()
         assert probe.manual_flag is True, "manual_flag should be True after enter_manual"
         assert probe.auton_flag is False
@@ -71,8 +77,15 @@ def test_send_stop_command_emits_zeros():
         
         probe.x_dist = "10"
         probe.full_speed = "500"
-        probe.manual_flag = True
-        
+        # Put the probe in a live mode, so this proves the stop frame zeroes
+        # the command codes of a probe that is actually running — not just of
+        # one that was already idle. The mode cannot be forced any more
+        # (I-3.4), so it is entered through the transition and the mock is
+        # reset afterwards to isolate the frame under test.
+        probe.enter_auton()
+        assert probe.auton_flag is True
+        probe.serial_comm.reset_mock()
+
         probe.send_stop_command()
         probe.serial_comm.send_autonomous_command.assert_called_once()
         args, _ = probe.serial_comm.send_autonomous_command.call_args

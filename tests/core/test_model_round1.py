@@ -46,6 +46,11 @@ def test_rotator_system_boundary_values():
 def test_base_probe_disarming_interlocks():
     """Verify full_stop, disable, and power_down reset auton/manual flags and stepping."""
     probe = BaseProbe(port=None, controller_id=0)
+    # Manual mode requires a bound pad (I-3.2), so the fixture has to
+    # provide one. Before S7 this test reached MANUAL with no pad at all,
+    # which is the state that energized coils for a mode nothing drove.
+    probe.poller = MagicMock()
+    probe.poller.gamepad = MagicMock()
 
     probe.enter_auton()
     assert probe.auton_flag is True
@@ -68,7 +73,12 @@ def test_base_probe_disarming_interlocks():
 def test_stepper_probe_mutual_exclusion_auton_manual():
     """Verify entering auton clears manual mode and vice versa."""
     stepper = StepperProbe(port=None, controller_id=0)
-    
+    # Manual mode requires a bound pad (I-3.2), so the fixture has to
+    # provide one. Before S7 this test reached MANUAL with no pad at all,
+    # which is the state that energized coils for a mode nothing drove.
+    stepper.poller = MagicMock()
+    stepper.poller.gamepad = MagicMock()
+
     stepper.enter_manual()
     assert stepper.manual_flag is True
     assert stepper.auton_flag is False

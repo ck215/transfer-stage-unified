@@ -80,6 +80,12 @@ def test_auton_manual_toggle_mutual_exclusivity():
         mock_serial.return_value = get_mock_serial()
         probe = StepperProbe("COM1", "Virtual Controller A")
 
+    # Manual mode requires a bound pad (I-3.2), so the fixture has to
+    # provide one. Before S7 this test reached MANUAL with no pad at all,
+    # which is the state that energized coils for a mode nothing drove.
+    probe.poller = MagicMock()
+    probe.poller.gamepad = MagicMock()
+
     probe.toggle_auton()
     assert probe.auton_flag is True
     assert probe.manual_flag is False

@@ -411,11 +411,18 @@ this stage is reached, stop and ask.
    truth and `controller_var` mirrors it.
 5. Watchdog restarts with a fresh event per generation.
 
-**Blocked on.** D-2, as in S6.
+**D-2 answered (2026-09-20): leaving a mode disables the coils.** There is
+deliberately one de-energizing path and no hold-torque variant.
 
-**Invariants.** I-3.1 through I-3.4. I-3.4 ("no schema or API write can
-change the mode") needs S10's `writable` flag to be fully enforceable; until
-then enforce it in the setter.
+**Invariants.** I-3.1 through I-3.4.
+
+**Done (2026-09-20).** All five items. `ProbeMode` + `_transition` is the only
+writer; the four booleans are read-only derived properties. I-3.4 did **not**
+need S10's `writable` flag after all: a read-only property raises on
+assignment, and `/api/set_attr` refuses any read-only property with 403 — a
+general rule S10 inherits rather than a list of names. `is_stepping` ends on
+observed arrival rather than a duration computed from units this layer does
+not get to assume. Seven `known_bad` down to two.
 
 ---
 

@@ -2,6 +2,7 @@ import math
 import time
 import copy
 import threading
+from enum import Enum
 from controller.serial import serial, PACKET_FORMAT
 from error_routing import ErrorRouter as ErrorPopupManager
 from model.numeric import num as _num
@@ -10,6 +11,41 @@ try:
     import gcodeparser
 except ImportError:
     gcodeparser = None
+
+class ProbeMode(Enum):
+    """The modes a probe can be in. Exactly one at a time (RC-3).
+
+    This replaces four independently-writable booleans — `system_enabled`,
+    `auton_flag`, `manual_flag`, `is_stepping` — which were set by different
+    methods, threads and views with no single place that owned the hardware
+    side effects. Those names survive as **read-only derived properties**, so
+    every existing schema toggle still renders, but nothing can write them.
+
+    `FAULT` is a mode, not a flag beside one. When a disable is not confirmed
+    the hardware state is genuinely unknown, and the honest answer is neither
+    "enabled" nor "disabled" — it is "treat this as live until resolved".
+    Modelling it as a mode is what stops the code reporting a guess as a fact.
+    """
+    DISABLED = "disabled"
+    ENABLED_IDLE = "enabled_idle"
+    AUTONOMOUS = "autonomous"
+    MANUAL = "manual"
+    FAULT = "fault"
+
+
+# Modes in which the coils may be energized. FAULT is included deliberately:
+# a failed disable leaves the board in an unknown state, and the safe reading
+# of unknown is "possibly live".
+_ENERGIZED = frozenset({
+    ProbeMode.ENABLED_IDLE, ProbeMode.AUTONOMOUS, ProbeMode.MANUAL,
+    ProbeMode.FAULT,
+})
+
+# Modes reached only through a *confirmed* enable (invariant I-3.1).
+_ARMED = frozenset({
+    ProbeMode.ENABLED_IDLE, ProbeMode.AUTONOMOUS, ProbeMode.MANUAL,
+})
+
 
 class BaseProbe:
     # Overridable by tests to avoid waiting on the real 5-minute timeout.
@@ -52,6 +88,10 @@ class BaseProbe:
     MANUAL_COMMAND_INTERVAL = 0.02   # s -> 50 Hz
     SAMPLE_INTERVAL = 0.10           # s -> 10 Hz
 
+    # How long the position must stay unchanged before an autonomous move is
+    # considered arrived. Sampled at SAMPLE_INTERVAL, so this is 10 samples.
+    _STEP_SETTLE = 1.0               # s
+
     def __del__(self):
         print(f"[{self.__class__.__name__}] Destructor called")
 
@@ -90,11 +130,27 @@ class BaseProbe:
         self.full_speed = "400"
         self.man_full_speed = "400"
         
-        # State flags
-        self.system_enabled = False
-        self.auton_flag = False
-        self.manual_flag = False
-        self.is_stepping = False
+        # Mode (RC-3). One value, one writer: `_transition`. The four
+        # booleans this replaces were set from `enter_auton`, `enter_manual`,
+        # `macro_start_auton`, `run_script`, `send_manual_mode_command`,
+        # `_stop_and_disarm` and the Web `set_attr` route — seven writers, no
+        # agreed ordering, and the hardware side effects scattered among them.
+        self._mode = ProbeMode.DISABLED
+        self._mode_lock = threading.RLock()
+
+        # Autonomous "stepping" is a *timed sub-state*, not a fifth boolean
+        # (RC-3 item 2). `is_stepping` used to be set by macro_start_auton and
+        # cleared only by a stop, so a move that finished normally left it True
+        # forever — and the watchdog deferred on it, which is how an energized
+        # probe could sit idle indefinitely with the interlock suppressed
+        # (STEPPER-6, DC-1, VIEW-TKINTER-3).
+        #
+        # The deadline is extended every time the position actually changes,
+        # so it expires `_STEP_SETTLE` seconds after the axis stops moving —
+        # arrival, observed, rather than a duration computed from step counts
+        # and a speed whose units this layer does not get to assume.
+        self._stepping_deadline = None
+        self._last_position = None
 
         # Fault state (RC-2). Set when a command's fate is unknown — a write
         # that failed means the hardware may be in either state, and saying
@@ -115,6 +171,10 @@ class BaseProbe:
         self.last_activity_time = time.time()
         self._interlock_stop = threading.Event()
         self._interlock_thread = None
+        # Fresh event and generation per arming (STEPPER-7, RC-3 item 5). A
+        # single reused Event meant a watchdog stopped by one disable stayed
+        # stopped for the next enable, because `_interlock_stop` was still set.
+        self._interlock_generation = 0
 
         # Model-owned loops (RC-4). These used to live in the views: Tk's
         # _route_input (50 ms) and PySide's input_timer (20 ms) each pumped
@@ -238,16 +298,49 @@ class BaseProbe:
         return []
 
     def set_controller(self, controller_id):
+        """Bind a controller. Returns True only if the bind actually happened.
+
+        `controller_var` used to be assigned *before* the bind was attempted,
+        so a failed swap left the UI naming a controller that was never bound
+        and the mode flipping lazily on some later tick — the reported
+        "toggle desync after controller swap" (GAMEPAD-3, GAMEPAD-4,
+        VIEW-TKINTER-10). The poller is the source of truth now and the model
+        mirrors it (RC-3 item 4).
+
+        A swap that fails while MANUAL is engaged leaves manual mode through
+        `_transition`, because manual mode without a bound pad is exactly the
+        state I-3.2 forbids.
+        """
         print(f"[{self.__class__.__name__}] Swapping controller to: {controller_id}")
-        self.controller_var = controller_id
-        if self.poller:
-            self.poller.set_controller(controller_id)
-        else:
+        if self.poller is None:
             try:
                 from controller.gamepad import ControllerPoller
                 self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
             except Exception as e:
                 print(f"[{self.__class__.__name__}] Gamepad still unavailable: {e}")
+                self._sync_controller_var()
+                return False
+        else:
+            try:
+                self.poller.set_controller(controller_id)
+            except Exception as e:
+                print(f"[{self.__class__.__name__}] Controller swap failed: {e}")
+                self._sync_controller_var()
+                return False
+
+        bound = self._sync_controller_var()
+        if not bound and self._mode is ProbeMode.MANUAL:
+            self._transition(ProbeMode.DISABLED, "controller swap failed")
+        return bound
+
+    def _sync_controller_var(self):
+        """Mirror the poller's actual binding into `controller_var`."""
+        gamepad = getattr(self.poller, "gamepad", None) if self.poller else None
+        if gamepad is None:
+            self.controller_var = "None"
+            return False
+        self.controller_var = getattr(self.poller, "controllerID", self.controller_var)
+        return True
 
     def open_controller_log(self):
         print(f"[{self.__class__.__name__}] Controller log window requested")
@@ -279,8 +372,15 @@ class BaseProbe:
         self._new_run_generation()
 
     def _enter_fault(self, reason):
-        """Record that the hardware state is unknown (RC-2)."""
+        """Move to FAULT: the hardware state is unknown (RC-2, RC-3).
+
+        This is a *mode*, so a fault leaving manual mode also leaves the
+        manual pump's notion of manual mode — which is how a dead input pump
+        used to keep `manual_flag` True with nothing pumping it.
+        """
         self.fault_reason = reason
+        self._mode = ProbeMode.FAULT
+        self._stepping_deadline = None
         print(f"[{self.__class__.__name__}] FAULT: {reason}")
         try:
             ErrorPopupManager.report_error(
@@ -293,10 +393,183 @@ class BaseProbe:
 
     @property
     def in_fault(self):
-        return self.fault_reason is not None
+        return self._mode is ProbeMode.FAULT
 
     def _clear_fault(self):
         self.fault_reason = None
+
+    # -- mode (RC-3) ---------------------------------------------------
+    #
+    # Read-only on purpose. `auton_flag`, `manual_flag` and `system_enabled`
+    # are what the schema toggles render and what the Web dashboard reads, so
+    # the names have to survive — but as *views onto* the mode, never as
+    # storage. Assigning to any of them now raises AttributeError, which is
+    # invariant I-3.4: no schema or API write can change the mode. The Web
+    # `set_attr` route used to write `manual_flag` directly, arming a mode
+    # without going through the gamepad check or the hardware enable
+    # (STEPPER-11, DC-11).
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @property
+    def system_enabled(self):
+        return self._mode in _ENERGIZED
+
+    @property
+    def auton_flag(self):
+        return self._mode is ProbeMode.AUTONOMOUS
+
+    @property
+    def manual_flag(self):
+        return self._mode is ProbeMode.MANUAL
+
+    @property
+    def is_stepping(self):
+        """True while an autonomous move is believed to still be moving."""
+        if self._mode is not ProbeMode.AUTONOMOUS:
+            return False
+        deadline = self._stepping_deadline
+        return deadline is not None and time.time() < deadline
+
+    def _begin_stepping(self):
+        self._stepping_deadline = time.time() + self._STEP_SETTLE
+        self._last_position = (self.pos_x, self.pos_y, self.pos_z)
+
+    def _note_position(self):
+        """Extend the stepping deadline while the axis is actually moving.
+
+        Called by the sample loop. Motion *is* activity, so a long move does
+        not age into the idle interlock; arrival starts the idle clock, which
+        is what RC-3 item 2 means by the sub-state ending with a
+        `touch_activity()`.
+        """
+        position = (self.pos_x, self.pos_y, self.pos_z)
+        moved = self._last_position is not None and position != self._last_position
+        self._last_position = position
+        if moved and self._mode is ProbeMode.AUTONOMOUS and self._stepping_deadline is not None:
+            self._stepping_deadline = time.time() + self._STEP_SETTLE
+            self.touch_activity()
+
+    def _gamepad_bound(self):
+        return bool(self.poller and self.poller.gamepad)
+
+    def _transition(self, target, reason, *, quiesce=True):
+        """Change mode and own the hardware side effects. The only writer.
+
+        Returns True when the probe ends in `target`.
+
+        The ordering is the safety property, and it is why this is one
+        function rather than six:
+
+        * **Leaving any mode sends a zeroed motion frame first.** Every exit
+          from MANUAL — controller lost, swap failed, swap to None, stop —
+          reaches the hardware through this one line, so the "last non-zero
+          command stands and the axis keeps moving" class cannot recur
+          (RC-3 item 3, VIEW-TKINTER-13).
+        * **Arming requires a confirmed enable** (I-3.1), and MANUAL
+          additionally requires a bound gamepad *before* the enable, because
+          the enable energizes coils and nothing walks that back (I-3.2).
+        * **De-energizing never skips a step because an earlier one raised.**
+          A stop frame that fails still reaches the `d`.
+
+        **D-2 (owner, 2026-09-20): leaving a mode disables the coils.** There
+        is deliberately no "stop motion but hold torque" target here. A loaded
+        or vertical axis can sag on release; that was ruled an accepted cost.
+        Adding a hold-torque variant means reopening D-2, not adding a branch.
+        """
+        with self._mode_lock:
+            if target is ProbeMode.DISABLED:
+                return self._go_disabled(reason)
+
+            if target is ProbeMode.MANUAL and not self._gamepad_bound():
+                # Before the enable, never after. Checking afterward can
+                # revert the Python flag, but the firmware has already been
+                # told to energize and nothing walks that back.
+                msg = "Cannot enter manual mode: no gamepad/controller attached."
+                print(f"[{self.__class__.__name__}] {msg}")
+                ErrorPopupManager.report_warning("Manual Mode Blocked", msg)
+                return False
+
+            if self._refuse_if_estopped(f"transition to {target.value}"):
+                return False
+
+            if not self._arm(reason):
+                return False
+
+            self._mode = target
+            self._stepping_deadline = None
+            self._clear_fault()
+            self._start_interlock_watchdog()
+            self.start_loops()
+            # Entering a mode starts from rest. `quiesce=False` is for the one
+            # caller that is entering a mode *in order to move* —
+            # macro_start_auton — where a zeroed frame immediately followed by
+            # the move is a wasted write and a stop-then-go hiccup at the
+            # board. Leaving a mode always quiesces regardless: that is the
+            # safety half, and it lives in `_go_disabled` where no caller can
+            # opt out of it.
+            if quiesce:
+                self.send_stop_command()
+            return True
+
+    def _arm(self, reason):
+        """Send the hardware enable unless the probe is already armed.
+
+        `system_enabled` moves to True **only on a successful write**. It used
+        to be set even when the write raised, because the transport swallowed
+        the exception and returned normally — so the UI showed the system
+        armed when nothing had reached the board, and vice versa.
+        """
+        if self._mode in _ARMED:
+            return True
+        if self.serial_comm:
+            try:
+                self.serial_comm.enable()
+            except Exception as e:
+                print(f"[{self.__class__.__name__}] {e}")
+                ErrorPopupManager.report_warning("Enable Failed", str(e))
+                return False
+        return True
+
+    def _go_disabled(self, reason):
+        """Stop motion, then de-energize. Each step isolated from the last."""
+        self._stepping_deadline = None
+        # Any script still running belongs to a previous generation now, so
+        # it stops at its next step instead of writing to a port that the
+        # operator believes is stopped (STEPPER-8).
+        self._new_run_generation()
+        self._stop_interlock_watchdog()
+        try:
+            self.send_stop_command()
+        except Exception as e:
+            # A zero-motion frame that failed must not prevent the hardware
+            # disable below. Same isolation rule as teardown: the step that
+            # de-energizes hardware is never skipped because an earlier step
+            # raised.
+            print(f"[{self.__class__.__name__}] Stop frame failed, continuing to disable: {e}")
+        # Always send the hardware disable, regardless of our own belief: the
+        # firmware's 'd' handler is explicitly idempotent (safe to resend any
+        # time) and its own system_enabled flag lives on the Arduino,
+        # independent of and persisting across this Python model's lifetime
+        # (e.g. across a dock close/reopen that reconstructs this model).
+        # Gating this send on the Python-side flag let the two go out of sync
+        # and left the stepper coils energized with no way to force a disable
+        # through Full Stop.
+        if self.serial_comm:
+            try:
+                self.serial_comm.disable()
+            except Exception as e:
+                # The disable did not reach the board, so the coils may still
+                # be energized. Recording DISABLED here — which is what used
+                # to happen unconditionally — would report the system safe on
+                # the strength of a command that failed.
+                self._enter_fault(f"disable not confirmed — coils may be energized: {e}")
+                return False
+        self._mode = ProbeMode.DISABLED
+        self._clear_fault()
+        return True
 
     @property
     def estop_latched(self):
@@ -325,38 +598,18 @@ class BaseProbe:
             self.serial_comm.send_autonomous_command(params)
 
     def enter_auton(self):
-        if not self.enable():
-            return
-        self.auton_flag = True
-        self.manual_flag = False
-        self.send_stop_command()
+        return self._transition(ProbeMode.AUTONOMOUS, "enter autonomous")
 
     def enter_manual(self):
-        # Check gamepad presence BEFORE enable(): enable() unconditionally
-        # sends the hardware 'e' command, energizing the coils. Checking
-        # afterward (as send_manual_mode_command's defensive gamepad check
-        # does on the next poll tick) is too late -- it can revert
-        # manual_flag in Python, but the firmware has already been told to
-        # enable and nothing walks that back, leaving coils falsely
-        # energized for a mode that never actually engaged.
-        if not self.poller or not self.poller.gamepad:
-            msg = "Cannot enter manual mode: no gamepad/controller attached."
-            print(f"[{self.__class__.__name__}] {msg}")
-            ErrorPopupManager.report_warning("Manual Mode Blocked", msg)
-            return
-        if not self.enable():
-            return
-        self.auton_flag = False
-        self.manual_flag = True
-        self.send_stop_command()
+        return self._transition(ProbeMode.MANUAL, "enter manual")
 
     def macro_start_auton(self):
-        if not self.enable():
-            return
-        self.auton_flag = True
-        self.manual_flag = False
-        self.is_stepping = True
+        if not self._transition(ProbeMode.AUTONOMOUS, "start autonomous move",
+                                quiesce=False):
+            return False
+        self._begin_stepping()
         self.send_autonomous_command()
+        return True
 
     def run_script(self, script_path=None):
         if not script_path or not self.serial_comm:
@@ -368,7 +621,7 @@ class BaseProbe:
         generation = self._new_run_generation()
 
         def _execute():
-            self.is_stepping = True
+            self._begin_stepping()
             try:
                 if gcodeparser is None:
                     e = ImportError("gcodeparser not installed")
@@ -396,9 +649,16 @@ class BaseProbe:
                     if not self._generation_is_current(generation):
                         print(f"[{self.__class__.__name__}] Script run superseded; stopping.")
                         return
-                    if not self.is_stepping or not self.auton_flag:
+                    if not self.auton_flag:
+                        # The mode left AUTONOMOUS under us — a stop, a fault,
+                        # or the idle interlock. `is_stepping` is deliberately
+                        # NOT checked here any more: it is now a timed
+                        # sub-state that expires on arrival, so a script whose
+                        # move finished would have halted itself mid-file.
                         print(f"[{self.__class__.__name__}] Script execution halted by user state override.")
                         break
+                    # Each step is real work; keep the run off the idle clock.
+                    self._begin_stepping()
                     gcode_str = getattr(line, 'gcode_str', str(line))
                     params = getattr(line, 'params', {})
                     command = getattr(line, 'command', ('', 0))
@@ -479,11 +739,16 @@ class BaseProbe:
             self.serial_comm.send_autonomous_command(self.get_params())
 
     def send_manual_mode_command(self, controller_params):
-        if self.manual_flag and (not self.poller or not self.poller.gamepad):
-            self.manual_flag = False
+        if self.manual_flag and not self._gamepad_bound():
+            # Losing the controller leaves MANUAL through the one transition,
+            # which sends the stop frame and de-energizes (RC-3 item 3). The
+            # old code cleared `manual_flag` alone and left `system_enabled`
+            # True, so the coils stayed energized in a mode nothing was
+            # driving (STEPPER-5, GAMEPAD-3, VIEW-TKINTER-4).
             msg = "Manual mode disabled: no gamepad/controller attached."
             print(f"[{self.__class__.__name__}] {msg}")
             ErrorPopupManager.report_warning("Manual Mode Blocked", msg)
+            self._transition(ProbeMode.DISABLED, "controller lost")
             controller_params = {}
             
         if self.serial_comm:
@@ -589,6 +854,7 @@ class BaseProbe:
         while not self._loops_stop.wait(self.SAMPLE_INTERVAL):
             try:
                 self.read_position()
+                self._note_position()
                 self.last_sample_time = time.time()
             except Exception as e:
                 # Sampling is best-effort: a transport hiccup must not kill
@@ -599,20 +865,50 @@ class BaseProbe:
     def touch_activity(self):
         self.last_activity_time = time.time()
 
+    def _stop_interlock_watchdog(self):
+        self._interlock_stop.set()
+
     def _start_interlock_watchdog(self):
-        if self._interlock_thread and self._interlock_thread.is_alive():
+        """Start the idle interlock for this arming (RC-3 item 5, STEPPER-7).
+
+        **Each arming gets its own Event and generation.** The old code reused
+        one `_interlock_stop` for the model's lifetime, so a disable that set
+        it left it set: the next enable started a thread that returned on its
+        first tick, and the probe ran energized with no interlock at all. The
+        generation also lets a stale thread from a previous arming retire
+        itself rather than fight the current one.
+        """
+        # `is_alive()` alone is not enough: a thread that has been told to
+        # stop stays alive until its next tick, up to `_INTERLOCK_POLL_INTERVAL`
+        # later. Re-arming inside that window would return here and leave the
+        # probe energized with a watchdog that is on its way out. A stopped
+        # thread is retired by the generation check instead.
+        if (self._interlock_thread and self._interlock_thread.is_alive()
+                and not self._interlock_stop.is_set()):
             return
-        self._interlock_stop.clear()
+        self._interlock_stop = threading.Event()
+        self._interlock_generation += 1
+        generation = self._interlock_generation
+        stop_event = self._interlock_stop
         self.touch_activity()
 
         def _watch():
-            while not self._interlock_stop.wait(self._INTERLOCK_POLL_INTERVAL):
+            while not stop_event.wait(self._INTERLOCK_POLL_INTERVAL):
+                if generation != self._interlock_generation:
+                    return
                 if not self.system_enabled:
                     return
-                if self.is_stepping or self.manual_flag:
-                    # Deferred while actively operating, matching this
-                    # refactor's existing Tkinter/PySide behavior.
-                    continue
+                # **No flag deferral.** This used to `continue` while
+                # `is_stepping or manual_flag`, which meant the interlock was
+                # suppressed in exactly the two modes that energize coils —
+                # and `is_stepping` was never cleared on normal completion, so
+                # one autonomous move disabled the interlock for the rest of
+                # the session (STEPPER-6, DC-1, VIEW-TKINTER-3).
+                #
+                # The clock is real inactivity instead: motion extends it via
+                # `_note_position`, and off-neutral gamepad input extends it
+                # via `send_manual_mode_command`. **D-3 (owner): manual mode
+                # does idle-time-out**, on real input inactivity.
                 if time.time() - self.last_activity_time > self._INTERLOCK_TIMEOUT:
                     msg = f"5 minutes of inactivity detected. Disabling {self.__class__.__name__}"
                     print(f"[Timeout] {msg}")
@@ -620,32 +916,14 @@ class BaseProbe:
                     self.disable()
                     return
 
-        self._interlock_thread = threading.Thread(target=_watch, daemon=True)
+        self._interlock_thread = threading.Thread(
+            target=_watch, daemon=True,
+            name=f"interlock-{self.__class__.__name__}-{generation}")
         self._interlock_thread.start()
 
     def enable(self):
-        """Enable the hardware. Returns False if it did not happen.
-
-        `system_enabled` moves to True **only on a successful write**. It used
-        to be set even when the write raised, because the transport swallowed
-        the exception and returned normally — so the UI showed the system
-        armed when nothing had reached the board, and vice versa.
-        """
-        if self._refuse_if_estopped("enable"):
-            return False
-        if not self.system_enabled:
-            if self.serial_comm:
-                try:
-                    self.serial_comm.enable()
-                except Exception as e:
-                    print(f"[{self.__class__.__name__}] {e}")
-                    ErrorPopupManager.report_warning("Enable Failed", str(e))
-                    return False
-            self.system_enabled = True
-            self._clear_fault()
-        self._start_interlock_watchdog()
-        self.start_loops()
-        return True
+        """Arm the hardware and sit idle. Returns False if it did not happen."""
+        return self._transition(ProbeMode.ENABLED_IDLE, "enable")
 
     def toggle_enable(self):
         if self.system_enabled:
@@ -653,53 +931,14 @@ class BaseProbe:
         else:
             self.enable()
 
-    def _stop_and_disarm(self):
-        self.manual_flag = False
-        self.auton_flag = False
-        self.is_stepping = False
-        # Any script still running belongs to a previous generation now, so
-        # it stops at its next step instead of writing to a port that the
-        # operator believes is stopped (STEPPER-8).
-        self._new_run_generation()
-        self._interlock_stop.set()
-        try:
-            self.send_stop_command()
-        except Exception as e:
-            # A zero-motion frame that failed must not prevent the hardware
-            # disable below. Same isolation rule as teardown: the step that
-            # de-energizes hardware is never skipped because an earlier step
-            # raised.
-            print(f"[{self.__class__.__name__}] Stop frame failed, continuing to disable: {e}")
-        # Always send the hardware disable, regardless of our own
-        # system_enabled belief: the firmware's 'd' handler is explicitly
-        # idempotent (safe to resend any time) and its own system_enabled
-        # flag lives on the Arduino, independent of and persisting across
-        # this Python model's lifetime (e.g. across a dock close/reopen
-        # that reconstructs this model with system_enabled defaulting back
-        # to False). Gating this send on the Python-side flag let the two
-        # go out of sync and left the stepper coils energized with no way
-        # to force a disable through Full Stop.
-        if self.serial_comm:
-            try:
-                self.serial_comm.disable()
-            except Exception as e:
-                # The disable did not reach the board, so the coils may still
-                # be energized. Recording system_enabled = False here — which
-                # is what used to happen unconditionally — would report the
-                # system safe on the strength of a command that failed.
-                self._enter_fault(f"disable not confirmed — coils may be energized: {e}")
-                return
-        self.system_enabled = False
-        self._clear_fault()
-
     def disable(self):
-        self._stop_and_disarm()
+        return self._transition(ProbeMode.DISABLED, "disable")
 
     def full_stop(self):
-        self._stop_and_disarm()
+        return self._transition(ProbeMode.DISABLED, "full stop")
 
     def power_down(self):
-        self._stop_and_disarm()
+        disabled = self._transition(ProbeMode.DISABLED, "power down")
         if self.serial_comm:
             try:
                 self.serial_comm.write_command(b'k\n', priority=True)
@@ -708,6 +947,8 @@ class BaseProbe:
                 # The kill never reached the board. Say so loudly rather than
                 # letting the caller believe the coils are dead (RC-2).
                 self._enter_fault(f"power down not confirmed: {e}")
+                return False
+        return disabled
 
     def teardown(self):
         """Safety-first, exception-safe shutdown (RC-1, invariant I-1.2).

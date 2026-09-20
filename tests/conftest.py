@@ -110,6 +110,7 @@ _FILE_MARKERS = {
     "core/test_model_round1.py": ["mode", "lifecycle"],
     "core/test_model_round2.py": ["mode"],
     "core/test_plot_data.py": ["redpercent"],
+    "core/test_probe_mode.py": ["mode"],
     "core/test_probes.py": ["mode"],
     "core/test_redpercent_datalog.py": ["redpercent"],
     "core/test_redpercent_schema.py": ["redpercent", "schema"],
@@ -168,24 +169,6 @@ _SLOW_FILES = {
 #
 #   nodeid suffix -> (reason, owning stage)
 _KNOWN_BAD = {
-    # Stale: assert pre-046533f manual-mode semantics. enter_manual() now
-    # refuses without a bound gamepad (that fix is why manual mode no longer
-    # energizes coils with no pad attached), so manual_flag stays False.
-    # RC-3 redefines the mode contract; re-author against ProbeMode then.
-    "core/test_model_round1.py::test_base_probe_disarming_interlocks":
-        ("asserts manual_flag True after enter_manual with no gamepad; "
-         "046533f made that refuse. Re-author against ProbeMode.", "S7"),
-    "core/test_model_round1.py::test_stepper_probe_mutual_exclusion_auton_manual":
-        ("same stale manual-mode assumption as the disarming-interlocks "
-         "test.", "S7"),
-    "core/test_model_interactions.py::test_stepper_probe_enter_manual":
-        ("same stale manual-mode assumption.", "S7"),
-    "edge_cases/test_edge_mvc_state_transitions.py::test_auton_manual_toggle_mutual_exclusivity":
-        ("same stale manual-mode assumption; auton_flag stays True because "
-         "the manual transition is refused.", "S7"),
-    "core/test_edge_mvc_model.py::test_mutating_state_out_of_order":
-        ("same stale manual-mode assumption; auton_flag is not cleared "
-         "because entering manual is refused without a gamepad.", "S7"),
     # Stale: asserts a system that was deliberately deleted.
     "core/test_view_round1.py::test_pyside_redpercent_sync_and_probe_controls":
         ("asserts view.sync_cbs, the duplicate hand-built QCheckBox row "

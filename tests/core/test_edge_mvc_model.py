@@ -30,8 +30,14 @@ def test_mutating_state_out_of_order():
     """Test mutating state out of order checks exact internal variables instead of just avoiding crashes."""
     probe = StepperProbe("SIM", None)
     probe.serial_comm = MagicMock()
-    probe.system_enabled = True # Force enable to succeed for flag flips
-    
+    # No forcing needed: the SIM transport acknowledges the enable, so the
+    # transitions below succeed on their own merits (I-3.1).
+    # Manual mode requires a bound pad (I-3.2), so the fixture has to
+    # provide one. Before S7 this test reached MANUAL with no pad at all,
+    # which is the state that energized coils for a mode nothing drove.
+    probe.poller = MagicMock()
+    probe.poller.gamepad = MagicMock()
+
     probe.enter_auton()
     assert probe.auton_flag is True
     assert probe.manual_flag is False
@@ -54,7 +60,6 @@ def test_mutually_exclusive_probe_flags():
     """Test that auton_flag and manual_flag can never be active at the same time."""
     probe = StepperProbe("SIM", None)
     probe.serial_comm = MagicMock()
-    probe.system_enabled = True
     
     probe.enter_auton()
     assert not (probe.auton_flag and probe.manual_flag)
@@ -62,9 +67,15 @@ def test_mutually_exclusive_probe_flags():
     probe.enter_manual()
     assert not (probe.auton_flag and probe.manual_flag)
     
-    # Simulate a malformed state assignment
-    probe.auton_flag = True
-    probe.manual_flag = True
+    # The malformed state this used to simulate is no longer constructible.
+    # Both flags are read-only views onto one mode (I-3.4), so the assignment
+    # that produced "auton and manual at once" now raises instead of being
+    # cleaned up afterwards by full_stop.
+    with pytest.raises(AttributeError):
+        probe.auton_flag = True
+    with pytest.raises(AttributeError):
+        probe.manual_flag = True
+
     probe.full_stop()
     assert not probe.auton_flag and not probe.manual_flag
 
@@ -93,14 +104,17 @@ def test_auto_disable_interlock_deferred_while_stepping():
     probe._INTERLOCK_POLL_INTERVAL = 0.02
     probe._INTERLOCK_TIMEOUT = 0.05
 
-    probe.enable()
-    probe.is_stepping = True
+    probe.macro_start_auton()
 
     time.sleep(0.3)
 
-    assert probe.system_enabled is True  # not disabled while "stepping"
-    probe.full_stop()
-    assert probe.system_enabled is False
+    # **Re-authored for S7.** This used to assert the opposite: that the
+    # interlock was deferred while stepping. That deferral is the defect
+    # (STEPPER-6, DC-1) — `is_stepping` was set by macro_start_auton and never
+    # cleared on normal completion, so one autonomous move suppressed the idle
+    # interlock for the rest of the session, in a mode that energizes coils.
+    # The watchdog measures real inactivity now and defers on nothing.
+    assert probe.system_enabled is False, "a stepping probe must still idle out"
 
 def test_stepper_probe_step_size_defaults():
     """StepperProbe must default to step size 1, matching main/src/stepper_frame.py,

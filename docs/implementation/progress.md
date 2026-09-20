@@ -54,7 +54,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
 | S5 | Input service and model-owned loops | done | | 2026-09-19 | RC-13 + RC-4. I-4.1 holds. Web has manual mode for the first time. S6 unblocked. |
 | S6 | Hide/show semantics (D-1) | todo | | | **Unblocked 2026-09-20** — D-2 answered (disable coils). |
-| S7 | Probe mode state machine (RC-3) | todo | | | **Unblocked 2026-09-20** — D-2 answered (disable coils). |
+| S7 | Probe mode state machine (RC-3) | done | | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
 | S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
 | S9 | Typed parameters (RC-6) | partial | | 2026-09-20 | Items 1 and 4 done (both speed/temperature hazards). Items 2 and 3 remain. |
 | S10 | Schema v2, three renderers (RC-7) | todo | | | |
@@ -963,6 +963,94 @@ D-8 cares about. **S7 item 2 fixes that** (the watchdog measures real
 inactivity and stops deferring on flags). S14's liveness tier is only
 trustworthy once S7 has landed — build it after, not before.
 
+### 2026-09-20 — S7: probe mode becomes a state machine
+
+Mode gate (`-m mode`): 118 passed. New `tests/core/test_probe_mode.py`: 25
+tests. **All five S7 items done.**
+
+**Four booleans had seven writers.** `system_enabled`, `auton_flag`,
+`manual_flag` and `is_stepping` were assigned from `enter_auton`,
+`enter_manual`, `macro_start_auton`, `run_script`,
+`send_manual_mode_command`, `_stop_and_disarm` and the Web `set_attr` route,
+with the hardware side effects scattered among them and no agreed ordering.
+`ProbeMode` replaces them; `_transition(target, reason)` is the only writer
+and owns the enable, the stop frame and the disable in one ordered place. The
+four names survive as **read-only derived properties**, so every schema
+toggle still renders and the Web dashboard still reads them — but assigning
+one now raises `AttributeError`. That is I-3.4, and it closed a real hole:
+`/api/set_attr` could write `manual_flag` directly, arming manual mode with
+no gamepad check and no hardware enable (STEPPER-11, DC-11). The route now
+returns **403 for any read-only property**, which is a general rule rather
+than a list of names, so S10's `writable` flag inherits it.
+
+**FAULT is a mode, not a flag beside one.** When a disable is not confirmed
+the hardware state is genuinely unknown, and `system_enabled` reports
+**True** for it — unknown reads as possibly-live, never as safe. Modelling it
+this way also fixed a defect nobody had filed: a fault in the manual input
+pump used to `return` out of the loop leaving `manual_flag` True, so the UI
+showed manual mode engaged with nothing pumping it.
+
+**`is_stepping` is now a timed sub-state, and its old form was the bug.** It
+was set by `macro_start_auton` and cleared only by a stop, so a move that
+finished normally left it True forever — and the watchdog deferred on it. One
+autonomous move disabled the idle interlock for the rest of the session, in a
+mode that energizes coils (STEPPER-6, DC-1, VIEW-TKINTER-3). It is derived
+from a deadline now, extended each time the position actually changes, so it
+expires `_STEP_SETTLE` after the axis stops.
+
+**On not inventing a units conversion.** RC-3 says stepping ends "on computed
+move duration or position arrival". Computing the duration means dividing a
+step count by a speed whose units this layer does not get to assume — exactly
+the RC-6 sin of substituting a plausible number. **Arrival is observed
+instead**, from the sample loop that already runs. If that seems less precise:
+the safety property is the watchdog no longer deferring, which holds however
+stepping ends. The sub-state's remaining job is UI truth.
+
+**The watchdog gets a fresh Event per arming** (STEPPER-7). A single reused
+`_interlock_stop` meant a disable left it set, so the next enable started a
+thread that returned on its first tick and the probe ran energized with no
+interlock at all. Writing the test for this caught a second-order version in
+my own first draft: the re-arm guard checked `thread.is_alive()`, but a
+thread told to stop stays alive until its next tick — up to
+`_INTERLOCK_POLL_INTERVAL` later — so re-arming inside that window returned
+early and left the probe watched by a thread on its way out. Guarding on the
+event as well as liveness fixed it; the stale thread retires on the
+generation check.
+
+**`set_controller` returns the bind result.** `controller_var` was assigned
+*before* the bind was attempted, so a failed swap left the UI naming a
+controller that was never bound — the reported "toggle desync after
+controller swap" (GAMEPAD-3/4, VIEW-TKINTER-10). The poller is the source of
+truth now and the model mirrors it; a swap that fails during MANUAL leaves
+manual mode, because manual mode without a bound pad is what I-3.2 forbids.
+
+**One behavior change the tests caught, and the fix is a named exception.**
+Making every mode entry send a neutral frame gave `macro_start_auton` a
+zeroed frame immediately followed by the move — a wasted write and a
+stop-then-go hiccup at the board. `_transition` takes `quiesce=False` for
+that one caller. Leaving a mode always quiesces regardless: that half lives
+in `_go_disabled`, where no caller can opt out.
+
+**Quarantine: 7 known_bad down to 2.** All five S7-owned entries re-authored
+rather than deleted — they assumed `enter_manual()` succeeds with no gamepad,
+which `046533f` had already made false. They now bind a pad, which is the
+contract. The two survivors are PySide schema tests owned by S10.
+
+**Eight more tests re-authored**, all the same shape: they forced a flag
+(`probe.manual_flag = True`, `probe.system_enabled = True`) to set up a state
+the model would not enter on its own. Every one of them now goes through the
+transition. One inverted assertion among them —
+`test_auto_disable_interlock_deferred_while_stepping` asserted the deferral
+that *is* STEPPER-6 — so it now asserts the opposite and keeps its name's
+history in a comment.
+
+**Out-of-scope edit, recorded per standing rule 1.** `web_adapter.py` wrote
+`model.system_enabled = False` after setup, falling back to `disable()` only
+when the attribute was absent — i.e. for every probe it declared the system
+disabled without telling the board. The read-only property turned that into a
+raise, so it had to change; it calls `disable()` now. It is an RC-2
+belief-vs-reality fix that S14 would otherwise have inherited.
+
 ### Still waiting on the owner
 
 1. **D-7** — firmware protocol v2. Recommendation: **adopt**. Requires
@@ -993,7 +1081,7 @@ it) · `n/a` (with a reason).
 
 | Finding | Root cause | Stage | Closed by | Status |
 |---|---|---|---|---|
-| DC-1 | RC3 | S7 | root cause | open |
+| DC-1 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |
 | DC-2 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | DC-3 | RC1 | S2 | root cause | closed (test_probe_teardown_order_is_stop_then_poller_then_transport, tests/core/test_lifecycle_teardown.py) |
 | DC-4 | RC6 | S9 | root cause | open |
@@ -1002,14 +1090,14 @@ it) · `n/a` (with a reason).
 | DC-7 | RC6 | S9 | root cause | open |
 | DC-8 | RC6 | S9 | root cause | open |
 | DC-9 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
-| DC-10 | RC3 | S7 | root cause | open |
-| DC-11 | RC7 / RC3 | S10 | root cause | open |
+| DC-10 | RC3 | S7 | root cause | closed (D-2 ruled disable; test_d_2_leaving_a_mode_disables_the_coils) |
+| DC-11 | RC7 / RC3 | S10 | root cause | open (RC-3 flags part closed in S7, same test; RC-7 part remains) |
 | DC-12 | RC9 | S12 | root cause | open |
 | DC-13 | RC2 / RC7 | S3 | root cause | closed (test_the_badge_cannot_be_faked_by_typing_SIM_into_the_port_field, tests/web/test_web_security.py) |
 | DC-14 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
 | DC-15 | RC6 | S9 | root cause | open |
 | DC-16 | RC4 | S5 | root cause | open |
-| DC-17 | RC4 / RC3 | S5 | root cause | open |
+| DC-17 | RC4 / RC3 | S5 | root cause | closed (RC-4 half in S5; RC-3 half in S7 — mode transitions own their side effects, tests/core/test_probe_mode.py) |
 | DC-18 | RC5 / RC2 | S8 | root cause | open |
 | DC-19 | RC7 | S10 | root cause | open |
 | ERRORS-1 | RC8 / RC7 | S11 | root cause | open |
@@ -1026,8 +1114,8 @@ it) · `n/a` (with a reason).
 | ERRORS-12 | RC10 | S4 | root cause | open |
 | GAMEPAD-1 | RC4 | S5 | root cause | open |
 | GAMEPAD-2 | RC13 | S5 | root cause | open |
-| GAMEPAD-3 | RC3 | S7 | root cause | open |
-| GAMEPAD-4 | RC3 | S7 | root cause | open |
+| GAMEPAD-3 | RC3 | S7 | root cause | closed (test_a_failed_controller_swap_does_not_claim_the_controller) |
+| GAMEPAD-4 | RC3 | S7 | root cause | closed (test_a_failed_controller_swap_does_not_claim_the_controller) |
 | GAMEPAD-5 | RC13 / RC7 | S5 | root cause | open |
 | GAMEPAD-6 | RC7 | S10 | root cause | open |
 | GAMEPAD-7 | RC4 | S5 | root cause | open |
@@ -1142,13 +1230,13 @@ it) · `n/a` (with a reason).
 | STEPPER-2 | RC4 | S5 | root cause | open |
 | STEPPER-3 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | STEPPER-4 | RC2 | S3 | root cause | closed (test_a_failed_disable_faults_instead_of_claiming_the_system_is_off, tests/core/test_transport_truth.py) |
-| STEPPER-5 | RC3 | S7 | root cause | open |
-| STEPPER-6 | RC3 | S7 | root cause | open |
-| STEPPER-7 | RC5 / RC3 | S8 | root cause | open |
+| STEPPER-5 | RC3 | S7 | root cause | closed (test_losing_the_controller_leaves_manual_mode_entirely, tests/core/test_probe_mode.py) |
+| STEPPER-6 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |
+| STEPPER-7 | RC5 / RC3 | S8 | root cause | closed (RC-5 half in S8; RC-3 watchdog-generation half in S7, test_the_watchdog_gets_a_fresh_event_each_arming) |
 | STEPPER-8 | RC5 | S8 | root cause | closed (test_stopping_invalidates_a_script_still_in_flight, tests/core/test_transport_truth.py) |
 | STEPPER-9 | RC2 / LOCAL-OK | S3 | explicit | open |
 | STEPPER-10 | RC7 | S10 | root cause | open |
-| STEPPER-11 | RC6 / RC7 / RC3 | S9 | root cause | open |
+| STEPPER-11 | RC6 / RC7 / RC3 | S9 | root cause | open (RC-3 flags part closed in S7: mode flags are read-only, API returns 403 — test_i_3_4_mode_flags_cannot_be_assigned. RC-6/RC-7 parts remain) |
 | STEPPER-12 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
 | STEPPER-13 | RC9 | S12 | root cause | open |
 | STEPPER-14 | RC4 | S5 | root cause | open |
@@ -1168,8 +1256,8 @@ it) · `n/a` (with a reason).
 | TEMP-13 | RC6 | S9 | root cause | open |
 | VIEW-TKINTER-1 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
 | VIEW-TKINTER-2 | RC8 | S11 | root cause | open |
-| VIEW-TKINTER-3 | RC3 | S7 | root cause | open |
-| VIEW-TKINTER-4 | RC3 | S7 | root cause | open |
+| VIEW-TKINTER-3 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |
+| VIEW-TKINTER-4 | RC3 | S7 | root cause | closed (test_losing_the_controller_leaves_manual_mode_entirely) |
 | VIEW-TKINTER-5 | RC4 | S5 | root cause | open |
 | VIEW-TKINTER-6 | RC13 | S5 | root cause | open |
 | VIEW-TKINTER-7 | RC1 | S2 | root cause | closed (verified by inspection: app.py builds before withdraw and reports failure) |
@@ -1178,7 +1266,7 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-10 | RC13 / RC7 | S5 | root cause | open |
 | VIEW-TKINTER-11 | RC4 | S5 | root cause | open |
 | VIEW-TKINTER-12 | RC4 | S5 | root cause | open |
-| VIEW-TKINTER-13 | RC3 | S7 | root cause | open |
+| VIEW-TKINTER-13 | RC3 | S7 | root cause | closed (every exit routes through _transition; test_mode_is_exactly_one_value) |
 | VIEW-TKINTER-14 | RC11 / RC7 | S13 | root cause | open |
 | VIEW-TKINTER-15 | RC11 | S13 | root cause | open |
 | VIEW-TKINTER-16 | RC1 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |

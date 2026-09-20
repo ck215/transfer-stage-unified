@@ -224,8 +224,19 @@ S3** — which is the intended direction. A retirement is forced, not optional:
 `xfail(strict=True)` turns a now-passing invariant into a failure until
 someone deletes the marker.*
 
-*Two quarantine notes for whoever picks this up. The `known_bad` list still
-names S7/S9/S10/S11 as owners, so it should keep shrinking. The
-`order_dependent` set was predicted to dissolve during S3/S8/S11; **S3 has
-landed and it has not shrunk yet** — re-check it at S8 rather than assuming
-the prediction held.*
+*After S7 (2026-09-20): fast gate **364 passed, 1 xfailed** (~58 s). Qt: 7
+passed, 2 xfailed. **`known_bad` is down from 7 to 2**, both PySide schema
+tests owned by S10 — the five S7 entries were re-authored, not deleted: they
+assumed `enter_manual()` succeeds with no gamepad, and they now bind a pad,
+which is the contract. Eight further tests were re-authored for the same
+reason: they forced a mode flag (`probe.manual_flag = True`) to reach a state
+the model will not enter on its own. Those assignments raise now (I-3.4).*
+
+*The single remaining fast-gate `xfail` is **I-7.1**, owned by S10. Three of
+the four grep invariants have now retired.*
+
+*One quarantine note for whoever picks this up. The `order_dependent` set was
+predicted to dissolve during S3/S8/S11; it fell from 10 to 3 at S8 — but for
+a reason none of the predictions named (a mock-parser import-order problem).
+Treat the remaining three the same way: **read the actual assertion values
+before believing any architectural explanation for them.***

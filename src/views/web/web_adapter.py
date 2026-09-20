@@ -195,9 +195,14 @@ class WebModelAdapter:
         for dev, model in active_models.items():
             cfg = next((c for c in configs if c["device"] == dev), {})
             model._disabled_in_setup = not cfg.get("enabled", True)
-            if hasattr(model, 'system_enabled'):
-                model.system_enabled = False
-            elif hasattr(model, 'disable'):
+            # Put the hardware in a known-disabled state rather than asserting
+            # one. This used to write `model.system_enabled = False` when the
+            # attribute existed and only fall back to `disable()` otherwise —
+            # i.e. for every probe it declared the system disabled without
+            # telling the board, which is the RC-2 belief-vs-reality defect in
+            # miniature. `system_enabled` is a read-only property now (RC-3),
+            # so the write is not merely wrong, it raises.
+            if hasattr(model, 'disable'):
                 model.disable()
         # Link Red Percent Window probes if active
         red_model = new_manager.active_models.get("Red Percent Window")
@@ -507,6 +512,16 @@ class WebModelAdapter:
         dev_lock = self._get_device_lock(device_name)
         with dev_lock:
             try:
+                # A read-only property is not writable through the API. This
+                # is invariant I-3.4: the mode flags (`manual_flag`,
+                # `auton_flag`, `system_enabled`) render as schema toggles but
+                # must not be settable, or a POST arms a mode without the
+                # gamepad check and without the hardware enable (STEPPER-11,
+                # DC-11). 403, not 500 — it is a refusal, not a crash.
+                descriptor = getattr(type(model), attr, None)
+                if isinstance(descriptor, property) and descriptor.fset is None:
+                    return {"status": "error", "code": 403,
+                            "message": f"Attribute {attr} is read-only on {device_name}"}
                 # Type cast if model attribute exists with known type
                 if hasattr(model, attr):
                     curr = getattr(model, attr)

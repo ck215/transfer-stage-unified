@@ -120,7 +120,9 @@ def test_leaving_manual_mode_sends_one_neutral_frame():
         probe.enter_manual()
         assert _wait_for(lambda: len(probe.serial_comm.manual) >= 2)
 
-        probe.manual_flag = False
+        # Leaving manual mode goes through the transition now; assigning the
+        # flag is refused (I-3.4). `disable()` is the exit the operator has.
+        probe.disable()
         probe.serial_comm.manual.clear()
         assert _wait_for(lambda: len(probe.serial_comm.manual) >= 1), (
             "leaving manual mode sent nothing")
