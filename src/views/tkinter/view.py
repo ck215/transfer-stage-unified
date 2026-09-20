@@ -113,12 +113,11 @@ class DraggableClosableNotebook(ttk.Notebook):
         self.bind("<B1-Motion>", self.on_drag)
         self.bind("<ButtonRelease-1>", self.on_release)
         
-        # INTERIM: see plan.md S6. Middle-click-to-close and the right-click
-        # "Close Tab" item are unbound. Under D-1 closing a tab means *hide*,
-        # which is not safe until S5 moves the control loops out of the views:
-        # a hidden device keeps running, and its loops must not belong to a
-        # destroyed widget. Tabs stay draggable.
-        
+        # Middle-click closes a tab again (S6). The binding was withdrawn in
+        # S2 because closing would have destroyed the widget that owned the
+        # device's control loops; S5 moved those into the model.
+        self.bind("<ButtonPress-2>", self.on_middle_press)
+
         self._active = None
         self.on_close_tab_callback = None
 
@@ -142,16 +141,29 @@ class DraggableClosableNotebook(ttk.Notebook):
     def on_release(self, event):
         self._active = None
 
-    def close_tab(self, index):
-        """INTERIM: see plan.md S6. Kept for the shutdown path only.
+    def on_middle_press(self, event):
+        try:
+            index = self.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            return
+        self.close_tab(index)
 
-        No user gesture reaches this any more. S6 replaces it with hide/show
-        once the loops belong to the models.
+    def close_tab(self, index):
+        """Hide a tab (D-1). The owner decides what that means for the device.
+
+        `on_close_tab_callback` is assigned now. It never was before — the
+        attribute existed and nothing wrote it, so this fell through to
+        `forget()`, which is a **one-way** removal: ttk keeps no way to bring
+        a forgotten tab back, so the device became unreachable while its model
+        went on running. That was the "Tk is a one-way hide that leaks" item
+        in plan.md S6.
         """
         if self.on_close_tab_callback:
             self.on_close_tab_callback(index)
         else:
-            self.forget(index)
+            # `hide`, not `forget`. ttk.Notebook.hide() keeps the tab
+            # registered, so `add()` on the same frame restores it in place.
+            self.hide(index)
 
 class DashboardWindow(tk.Toplevel):
     def _confirm_rotation_dialog(self, target_deg: float) -> bool:
@@ -185,6 +197,10 @@ class DashboardWindow(tk.Toplevel):
         self.notebook = DraggableClosableNotebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
         self.tab_metadata = {}
+        # device_name -> the frame holding its tab, so a hidden tab has a
+        # handle to be added back by (S6).
+        self.device_frames = {}
+        self.device_visible_vars = {}
 
         for device_name, model in active_models.items():
             if device_name == "SMC100 Rotator" and model:
@@ -208,8 +224,97 @@ class DashboardWindow(tk.Toplevel):
             view.pack(fill='both', expand=True)
             
             self.tab_metadata[str(frame)] = {'model': model, 'view': view}
-            
+            # Keep the frame under its device name so a hidden tab can be
+            # added back. Without this there is no handle to re-add, which is
+            # why the old close path could only `forget()`.
+            self.device_frames[device_name] = frame
+
+        self.notebook.on_close_tab_callback = self.on_tab_close_requested
+        self._build_devices_menu()
+
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _build_devices_menu(self):
+        """The re-add path Tk did not have (plan.md S6 item 3).
+
+        PySide has a sidebar of checkboxes; Tk had nothing, so a closed tab
+        was gone for the session. A menubar of checkbuttons is the same
+        contract in the idiom Tk already uses: tick to show, untick to hide,
+        and the tick state is the device's visibility, read from the manager
+        rather than remembered separately.
+        """
+        menubar = tk.Menu(self)
+        devices = tk.Menu(menubar, tearoff=0)
+        for device_name in self.device_frames:
+            var = tk.BooleanVar(value=True)
+            self.device_visible_vars[device_name] = var
+            devices.add_checkbutton(
+                label=device_name, variable=var,
+                command=lambda n=device_name: self._on_device_menu_toggled(n))
+        menubar.add_cascade(label="Devices", menu=devices)
+        # `configure`, not the `config` alias: the alias is a real-Tk
+        # convenience the test harness's Toplevel stand-in does not carry.
+        self.configure(menu=menubar)
+
+    def _on_device_menu_toggled(self, device_name):
+        if self.device_visible_vars[device_name].get():
+            self.show_device(device_name)
+        else:
+            self.hide_device(device_name)
+
+    def on_tab_close_requested(self, index):
+        """Middle-click on a tab. Resolve the tab to its device and hide it."""
+        try:
+            frame_id = self.notebook.tabs()[index]
+        except (IndexError, tk.TclError):
+            return
+        for device_name, frame in self.device_frames.items():
+            if str(frame) == frame_id:
+                self.hide_device(device_name)
+                return
+
+    def hide_device(self, device_name):
+        """D-1: the tab goes away, the device does not.
+
+        The manager owns what hiding means for the hardware (a safe stop and
+        de-energize, per D-2); the view owns only the widget.
+        """
+        frame = self.device_frames.get(device_name)
+        if frame is None:
+            return
+        self.system_manager.hide(device_name)
+        try:
+            self.notebook.hide(frame)
+        except tk.TclError:
+            pass
+        var = self.device_visible_vars.get(device_name)
+        if var is not None:
+            var.set(False)
+
+    def show_device(self, device_name):
+        """Re-add the existing tab. It never builds a second view or model."""
+        frame = self.device_frames.get(device_name)
+        if frame is None:
+            return
+        model = self.system_manager.show(device_name)
+        if model is None:
+            messagebox.showinfo(
+                "Device Not Configured",
+                f"{device_name} was not configured at startup.\n\n"
+                "Restart and select it in the setup window to use it.",
+                parent=self)
+            var = self.device_visible_vars.get(device_name)
+            if var is not None:
+                var.set(False)
+            return
+        try:
+            self.notebook.add(frame, text=device_name)
+            self.notebook.select(frame)
+        except tk.TclError:
+            pass
+        var = self.device_visible_vars.get(device_name)
+        if var is not None:
+            var.set(True)
 
     def on_close(self):
 

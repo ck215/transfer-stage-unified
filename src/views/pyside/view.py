@@ -682,13 +682,15 @@ class DeviceDock(QDockWidget):
         # longer the dock's business either way; S2 removed the model teardown
         # from this path entirely.
         self.setAttribute(Qt.WA_DeleteOnClose)
-        # INTERIM: see plan.md S6. Movable and floatable, but NOT closable.
-        # Under D-1 closing a dock means *hide*, and hide is not safe to offer
-        # yet: a hidden device keeps running, and until S5 moves the control
-        # loops into the models those loops belong to the widget that would be
-        # destroyed underneath them. A close button that silently means "keep
-        # the hardware running with no window attached" is worse than none.
-        self.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        # Closable again (S6). The affordance was withdrawn in S2 because
+        # closing would have destroyed the widget that owned the device's
+        # control loops. S5 moved those into the model, so a closed dock is
+        # now exactly what D-1 says it is — a hidden device that is still
+        # running, reachable from the sidebar, and de-energized by the
+        # manager on the way out (D-2).
+        self.setFeatures(QDockWidget.DockWidgetMovable
+                         | QDockWidget.DockWidgetFloatable
+                         | QDockWidget.DockWidgetClosable)
 
     def closeEvent(self, event):
         self.closed.emit()
@@ -798,14 +800,13 @@ class DashboardWindow(QMainWindow):
 
             dock.close()
 
-            # INTERIM: see plan.md S6. The view used to destroy the model here
-            # with its own hasattr ladder — a third copy of the teardown policy,
-            # in the wrong order, ending in a raw `del` from the manager's dict.
-            # Under D-1 closing means *hide*, so nothing is destroyed; the model
-            # keeps running and the dock can be shown again. Real hide/show
-            # lands in S6, once S5 has moved the control loops into the models
-            # (a hidden device keeps running, so its loops must not belong to a
-            # hidden widget). Teardown happens at shutdown, via the manager.
+            # D-1: closing means *hide*. The view used to destroy the model
+            # here with its own hasattr ladder — a third copy of the teardown
+            # policy, in the wrong order, ending in a raw `del` from the
+            # manager's dict. Lifetime is the manager's (I-1.5) and visibility
+            # is all the view gets to decide, so it says so and stops there.
+            # The manager brings the hardware to a safe state per D-2.
+            self.system_manager.hide(device_name)
 
     def _confirm_rotation_dialog(self, target_deg: float) -> bool:
         msg = QMessageBox(self)
@@ -817,14 +818,19 @@ class DashboardWindow(QMainWindow):
         return msg.exec() == QMessageBox.Yes
 
     def open_device_view(self, device_name):
+        # `show` is what un-hides the device; it never constructs one. A dock
+        # that is still built is reused rather than rebuilt, so reopening a
+        # device shows the *existing* model with its port and controller
+        # binding intact — which is the whole point of D-1.
+        model = self.system_manager.show(device_name)
+
         if device_name in self.active_docks:
             dock = self.active_docks[device_name]
             dock.show()
             dock.raise_()
             dock.activateWindow()
             return
-            
-        model = self.system_manager.get_model(device_name)
+
         if not model:
             # The view no longer constructs models (RC-1 item 5). It used to
             # fabricate StepperProbe(None, "None", {}) and friends here, which

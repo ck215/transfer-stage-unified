@@ -384,9 +384,17 @@ a live loop on a hidden widget or silently stop polling an energized device.
    hide that leaks. Either give it reopen or leave the affordance off.
 4. Reopen shows the existing model. It never constructs one.
 
-**Blocked on.** D-2 (does leaving a mode disable the coils, or only stop
-motion?) governs what "safe stop on hide" does. If D-2 is unanswered when
-this stage is reached, stop and ask.
+**D-2 answered (2026-09-20): hide de-energizes.** Hiding removes the
+operator's ability to watch the device, so an unwatched energized axis is
+exactly what the ruling forbids.
+
+**Done (2026-09-20).** All four items. `hide`/`show`/`is_hidden`/
+`visible_models` on the manager; both views' close affordances restored and
+routed to `hide`; Tk got the re-add path it never had — `notebook.hide()`
+plus a Devices menubar, replacing a one-way `forget()`. A failed disable
+still hides, deliberately. Retired an `order_dependent` entry along the way:
+`ttk.Notebook` was a bare MagicMock, making `DashboardWindow` constructible
+only a bounded number of times per process.
 
 ---
 

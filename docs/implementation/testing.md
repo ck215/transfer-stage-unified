@@ -235,6 +235,16 @@ the model will not enter on its own. Those assignments raise now (I-3.4).*
 *The single remaining fast-gate `xfail` is **I-7.1**, owned by S10. Three of
 the four grep invariants have now retired.*
 
+*After S6 (2026-09-20): fast gate **380 passed, 1 xfailed**; slow 57; qt 7
+passed 2 xfailed; **order-dependent 2, down from 3**. The retired entry,
+`test_dashboard_window_teardown_ordering`, had a cause nothing here had
+guessed: `sys.modules['tkinter.ttk']` was a bare MagicMock, so subclassing
+`ttk.Notebook` produced a MagicMock rather than a class, and its finite
+`side_effect` iterator capped how many times `DashboardWindow` could be
+constructed per process. `ttk.Notebook` is a real stub class now. Note the
+two bindings it needed: `from tkinter import ttk` reads the attribute off the
+module object, not `sys.modules`.*
+
 *One quarantine note for whoever picks this up. The `order_dependent` set was
 predicted to dissolve during S3/S8/S11; it fell from 10 to 3 at S8 — but for
 a reason none of the predictions named (a mock-parser import-order problem).

@@ -101,6 +101,7 @@ _FILE_MARKERS = {
     "core/test_edge_mvc_model.py": ["lifecycle", "mode"],
     "core/test_gamepad_interlock.py": ["loops", "mode"],
     "core/test_integration.py": ["integration"],
+    "core/test_hide_show.py": ["lifecycle"],
     "core/test_lifecycle_teardown.py": ["lifecycle", "estop"],
     "core/test_lifecycle_exit.py": ["lifecycle", "estop", "bootstrap"],
     "core/test_transport_truth.py": ["transport", "estop"],
@@ -195,8 +196,19 @@ _KNOWN_BAD = {
 # being process-global, most of this set should dissolve. Do not "fix" one by
 # adding a sleep or loosening a threshold.
 _ORDER_DEPENDENT = {
-    # Passes running tests/core alone; fails in a full-suite composition.
-    "core/test_tkinter_teardown.py::test_dashboard_window_teardown_ordering",
+    # `test_dashboard_window_teardown_ordering` was here. **Retired in S6, with
+    # a proven cause.** It was not process-global product state, which is what
+    # this file assumed for every entry. `sys.modules['tkinter.ttk']` was a
+    # bare MagicMock, so `class DraggableClosableNotebook(ttk.Notebook)`
+    # produced a MagicMock rather than a class — one whose `side_effect` is a
+    # finite `tuple_iterator`. DashboardWindow was therefore constructible only
+    # a bounded number of times per process, and the test that happened to be
+    # last raised StopIteration from inside unittest.mock. `ttk.Notebook` is a
+    # real stub class now (see DummyTkNotebook above).
+    #
+    # That is the second time a quarantine entry blamed the architecture and
+    # turned out to be a harness wiring mistake. Read the actual exception.
+    #
     # Wall-clock assertions (>= 0.28 s, ">= 5 reads per poller") that miss
     # when other tests' background threads are competing for the GIL.
     "web/test_web_server.py::test_thread_safety_concurrent_requests",
@@ -310,11 +322,81 @@ class DummyTkWidget:
     def columnconfigure(self, *args, **kwargs): pass
     def rowconfigure(self, *args, **kwargs): pass
     def grid(self, *args, **kwargs): pass
+class DummyTkNotebook(DummyTkWidget):
+    """A real class, because `ttk.Notebook` gets **subclassed**.
+
+    `sys.modules['tkinter.ttk']` used to be a bare MagicMock, so
+    `class DraggableClosableNotebook(ttk.Notebook)` did not produce a class at
+    all: the MagicMock base went through `__mro_entries__` and the result was
+    another MagicMock, whose `side_effect` is a finite `tuple_iterator`.
+
+    That made `DraggableClosableNotebook` **callable only a bounded number of
+    times per process** — the next construction raised `StopIteration` from
+    inside `unittest.mock`, with a traceback pointing at the view. It is the
+    real cause of `test_dashboard_window_teardown_ordering` sitting in
+    `_ORDER_DEPENDENT`: that test passes alone and fails in composition, not
+    because of process-global product state as this file long assumed, but
+    because some earlier test had already spent the iterator.
+
+    Tab bookkeeping is modelled for real here, because S6's hide/show is
+    exactly a question of whether a hidden tab can be added back.
+    """
+    def __init__(self, master=None, *args, **kwargs):
+        super().__init__(master, *args, **kwargs)
+        self._tabs = []
+        self._hidden = set()
+        self._selected = None
+
+    def add(self, child, **kwargs):
+        if child not in self._tabs:
+            self._tabs.append(child)
+        self._hidden.discard(child)
+
+    def hide(self, child):
+        self._hidden.add(self._resolve(child))
+
+    def forget(self, child):
+        child = self._resolve(child)
+        if child in self._tabs:
+            self._tabs.remove(child)
+        self._hidden.discard(child)
+
+    def select(self, child=None):
+        if child is None:
+            return self._selected
+        self._selected = self._resolve(child)
+
+    def index(self, spec):
+        return 0
+
+    def insert(self, position, child):
+        pass
+
+    def tabs(self):
+        return [str(t) for t in self._tabs if t not in self._hidden]
+
+    def _resolve(self, child):
+        if isinstance(child, int):
+            visible = [t for t in self._tabs if t not in self._hidden]
+            return visible[child] if child < len(visible) else child
+        return child
+
+
+ttk_mock = MagicMock()
+ttk_mock.Notebook = DummyTkNotebook
+ttk_mock.Frame = DummyTkWidget
+
 tkinter_mock.Toplevel = DummyTkWidget
 tkinter_mock.Frame = DummyTkWidget
 tkinter_mock.Tk = DummyTkWidget
+# Both bindings are needed, and only one of them is obvious. `import
+# tkinter.ttk` consults sys.modules; `from tkinter import ttk` — which is what
+# the views actually write — reads the *attribute* off the tkinter module
+# object, and on a MagicMock that auto-creates an unrelated child mock. Setting
+# only sys.modules leaves the views holding the auto-created one.
+tkinter_mock.ttk = ttk_mock
 sys.modules['tkinter'] = tkinter_mock
-sys.modules['tkinter.ttk'] = MagicMock()
+sys.modules['tkinter.ttk'] = ttk_mock
 sys.modules['tkinter.filedialog'] = MagicMock()
 sys.modules['tkinter.messagebox'] = MagicMock()
 

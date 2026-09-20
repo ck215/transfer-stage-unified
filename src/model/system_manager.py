@@ -14,6 +14,11 @@ class SystemManager:
     def __init__(self):
         self.active_models = {}  # device_name -> model instance
         self.configs = {}        # device_name -> the config it was built from
+        # Devices whose view is closed. **Visibility, not lifetime** (D-1):
+        # a hidden device is still in `active_models`, still holds its port,
+        # still holds its controller binding, and its model-owned loops are
+        # still running. Nothing here removes or tears down.
+        self.hidden = set()
         self.lock = threading.Lock()
 
     # -- registration --------------------------------------------------
@@ -88,9 +93,74 @@ class SystemManager:
         with self.lock:
             model = self.active_models.pop(name, None)
             self.configs.pop(name, None)
+            self.hidden.discard(name)
         if model is not None:
             self._stop_then_teardown(name, model)
         return model
+
+    # -- visibility (D-1, S6) ------------------------------------------
+
+    def hide(self, name):
+        """Close a device's view without ending the device. Returns True if hidden.
+
+        **D-1: closing a tab or dock means hide.** The model, the connection
+        and the configuration all persist; only the widget goes away. That is
+        the whole reason S5 had to land first — a hidden device keeps running,
+        so its control loops must belong to the model rather than to a widget
+        that is no longer on screen.
+
+        **The hardware is brought to a safe state first, per D-2: motion
+        stops and the coils are de-energized.** Hiding a device removes the
+        operator's ability to see what it is doing, and leaving an unwatched
+        axis energized is precisely the situation the owner ruled against.
+        The transport stays open, so showing it again costs no handshake.
+
+        A `disable()` that fails does not fail the hide: the model faults and
+        says so (RC-2), and the view still closes. Refusing to close a window
+        because a serial write failed would leave the operator stuck looking
+        at a device they cannot dismiss.
+        """
+        with self.lock:
+            model = self.active_models.get(name)
+            if model is None:
+                return False
+            self.hidden.add(name)
+        disable = getattr(model, "disable", None)
+        if callable(disable):
+            try:
+                disable()
+            except Exception as e:
+                self._report(f"Failed to stop {name} while hiding it: {e}",
+                             e, "Stop Error")
+        return True
+
+    def show(self, name):
+        """Mark a device visible again. Returns the model, or None if unknown.
+
+        **It never constructs.** A device that was not configured at startup
+        has no model, and the honest answer is that it is unavailable — not a
+        silent headless stand-in that renders every control and drives nothing
+        (PYSIDE-1, MANAGER-8). The caller renders the model this returns.
+
+        Showing does **not** re-arm the hardware. `hide` de-energized it and
+        re-energizing is an operator action, taken while looking at the
+        device — which is the state the view has only just come back to.
+        """
+        with self.lock:
+            model = self.active_models.get(name)
+            if model is None:
+                return None
+            self.hidden.discard(name)
+            return model
+
+    def is_hidden(self, name):
+        with self.lock:
+            return name in self.hidden
+
+    def visible_models(self):
+        with self.lock:
+            return {n: m for n, m in self.active_models.items()
+                    if n not in self.hidden}
 
     def shutdown_all(self):
         """Stop and tear down every model. Idempotent."""
@@ -98,6 +168,7 @@ class SystemManager:
             models = list(self.active_models.items())
             self.active_models.clear()
             self.configs.clear()
+            self.hidden.clear()
         for name, model in models:
             self._stop_then_teardown(name, model)
 

@@ -53,8 +53,8 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
 | S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
 | S5 | Input service and model-owned loops | done | | 2026-09-19 | RC-13 + RC-4. I-4.1 holds. Web has manual mode for the first time. S6 unblocked. |
-| S6 | Hide/show semantics (D-1) | todo | | | **Unblocked 2026-09-20** — D-2 answered (disable coils). |
-| S7 | Probe mode state machine (RC-3) | done | | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
+| S6 | Hide/show semantics (D-1) | done | | 2026-09-20 | All 4 items. Tk got a real re-add path. order_dependent 3 -> 2. |
+| S7 | Probe mode state machine (RC-3) | done | `8fc9f00` | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
 | S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
 | S9 | Typed parameters (RC-6) | partial | | 2026-09-20 | Items 1 and 4 done (both speed/temperature hazards). Items 2 and 3 remain. |
 | S10 | Schema v2, three renderers (RC-7) | todo | | | |
@@ -1051,6 +1051,75 @@ disabled without telling the board. The read-only property turned that into a
 raise, so it had to change; it calls `disable()` now. It is an RC-2
 belief-vs-reality fix that S14 would otherwise have inherited.
 
+### 2026-09-20 — S6: closing a view hides the device
+
+Lifecycle gate (`-m lifecycle`): all green. New `tests/core/test_hide_show.py`:
+13 tests, plus 2 Tk view tests. **All four S6 items done.**
+
+`SystemManager.hide(name)` / `show(name)` / `is_hidden` / `visible_models`.
+Hiding marks the device invisible and brings the hardware down per D-2; it
+does **not** touch `active_models`, so the model, the port and the controller
+binding all persist and the model-owned loops keep running. That last clause
+is why S5 was a hard prerequisite: before it, the loops belonged to the widget
+that closing destroys.
+
+**`show` never constructs.** A device that was not configured at startup
+returns `None` and the view says so. The old path fabricated
+`StepperProbe(None, "None", {})` — a silent headless model where every
+control rendered and nothing was attached to hardware (PYSIDE-1, MANAGER-8).
+
+**Showing does not re-arm.** `hide` de-energized; re-energizing is an
+operator action taken while looking at the device, which is the state the
+view has only just returned to.
+
+**A failed disable still hides.** The model faults and says so (RC-2), but
+the window closes. Refusing to close a window because a serial write failed
+traps the operator in front of a device they cannot dismiss.
+
+**The affordances are back in both views.** PySide docks are
+`DockWidgetClosable` again and the close routes to `manager.hide`; the view
+no longer runs its own teardown ladder. Tk gets middle-click-to-close.
+
+**Tk needed a re-add path built from nothing.** `notebook.forget()` is
+one-way — ttk keeps no handle to a forgotten tab — and
+`on_close_tab_callback` was never assigned, so the fallback ran every time.
+The close now uses `notebook.hide()`, which keeps the tab registered, and a
+**Devices menubar of checkbuttons** is the gesture that brings it back,
+mirroring what PySide's sidebar already did. The frames are kept in
+`device_frames` so a hidden tab has something to be added back *by*.
+
+**Hidden is not forgotten.** Two tests exist purely for the failure mode that
+would be worst: a hidden device is still torn down at shutdown, and still
+answers FULL STOP.
+
+#### A second quarantine entry retired, with a proven cause
+
+`test_dashboard_window_teardown_ordering` has sat in `order_dependent` since
+S0 under this file's standing theory — process-global product state. **That
+was wrong, and the real cause is one line of harness wiring.**
+
+`sys.modules['tkinter.ttk']` was a bare `MagicMock`, so
+`class DraggableClosableNotebook(ttk.Notebook)` never produced a class: a
+MagicMock base goes through `__mro_entries__` and yields another MagicMock,
+whose `side_effect` is a finite `tuple_iterator`. `DashboardWindow` was
+therefore **constructible only a bounded number of times per process**, and
+whichever test drew the empty iterator died with `StopIteration` raised from
+inside `unittest.mock`, with a traceback pointing at the view.
+
+The fix is a real `DummyTkNotebook` stub that models tab bookkeeping — which
+S6 needed anyway, since "can a hidden tab be added back" is the question.
+
+**And the fix needed two bindings, only one of which is obvious.**
+`sys.modules['tkinter.ttk']` alone did nothing: the views write
+`from tkinter import ttk`, which reads the *attribute* off the tkinter module
+object, and on a MagicMock that auto-creates an unrelated child. Setting only
+`sys.modules` left the views holding the auto-created one.
+
+`order_dependent` is **2**, both web wall-clock tests with a different cause.
+That is now twice that a quarantine entry blamed the architecture and turned
+out to be harness wiring. The lesson from the S9 session stands and should be
+applied to the last two before any architectural explanation is believed.
+
 ### Still waiting on the owner
 
 1. **D-7** — firmware protocol v2. Recommendation: **adopt**. Requires
@@ -1089,7 +1158,7 @@ it) · `n/a` (with a reason).
 | DC-6 | RC7 | S10 | root cause | open |
 | DC-7 | RC6 | S9 | root cause | open |
 | DC-8 | RC6 | S9 | root cause | open |
-| DC-9 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
+| DC-9 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model, tests/core/test_hide_show.py) |
 | DC-10 | RC3 | S7 | root cause | closed (D-2 ruled disable; test_d_2_leaving_a_mode_disables_the_coils) |
 | DC-11 | RC7 / RC3 | S10 | root cause | open (RC-3 flags part closed in S7, same test; RC-7 part remains) |
 | DC-12 | RC9 | S12 | root cause | open |
@@ -1183,7 +1252,7 @@ it) · `n/a` (with a reason).
 | REDPERCENT-9 | RC11 | S13 | root cause | open |
 | REDPERCENT-10 | RC7 | S10 | root cause | open |
 | REDPERCENT-11 | RC9 / RC1 | S12 | root cause | open |
-| REDPERCENT-12 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
+| REDPERCENT-12 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | REDPERCENT-13 | RC7 | S10 | root cause | open |
 | REDPERCENT-14 | RC6 | S9 | root cause | open |
 | REDPERCENT-15 | RC9 | S12 | root cause | open |
@@ -1201,7 +1270,7 @@ it) · `n/a` (with a reason).
 | ROTATOR-7 | RC4 / RC10 | S5 | root cause | open |
 | ROTATOR-8 | RC5 | S8 | root cause | open |
 | ROTATOR-9 | RC2 / RC7 | S3 | root cause | open |
-| ROTATOR-10 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
+| ROTATOR-10 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | ROTATOR-11 | RC2 / LOCAL-OK | S3 | explicit | open |
 | ROTATOR-12 | RC6 | S9 | root cause | open |
 | ROTATOR-13 | RC2 / RC8 | S3 | root cause | open |
@@ -1210,7 +1279,7 @@ it) · `n/a` (with a reason).
 | SERIAL-1 | RC2 | S3 | root cause | closed (test_a_failed_disable_faults_instead_of_claiming_the_system_is_off, tests/core/test_transport_truth.py) |
 | SERIAL-2 | RC1 | S2 | root cause | closed (test_probe_teardown_sends_hardware_stop_when_poller_stop_raises, tests/core/test_lifecycle_teardown.py) |
 | SERIAL-3 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
-| SERIAL-4 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
+| SERIAL-4 | RC1 | S2 | root cause | closed (hide keeps the transport open; test_hiding_does_not_release_the_model) |
 | SERIAL-5 | RC1 / RC10 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | SERIAL-6 | RC4 | S5 | root cause | open |
 | SERIAL-7 | RC2 | S3 | root cause | closed (test_an_opened_port_that_never_answered_is_unverified_not_connected, tests/core/test_transport_truth.py) |
@@ -1245,7 +1314,7 @@ it) · `n/a` (with a reason).
 | TEMP-2 | RC2 | S3 | root cause | open |
 | TEMP-3 | RC6 | S9 | root cause | closed (test_a_non_numeric_field_refuses_the_whole_frame, tests/core/test_typed_params.py) |
 | TEMP-4 | RC6 | S9 | root cause | open |
-| TEMP-5 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
+| TEMP-5 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | TEMP-6 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | TEMP-7 | RC5 | S8 | root cause | open |
 | TEMP-8 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
@@ -1254,7 +1323,7 @@ it) · `n/a` (with a reason).
 | TEMP-11 | RC1 / RC2 / doc | S2 | root cause | open |
 | TEMP-12 | RC8 | S11 | root cause | open |
 | TEMP-13 | RC6 | S9 | root cause | open |
-| VIEW-TKINTER-1 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
+| VIEW-TKINTER-1 | RC1 | S2 | root cause | closed (Tk got a real re-add path; test_tk_hide_is_reversible, tests/core/test_tkinter_teardown.py) |
 | VIEW-TKINTER-2 | RC8 | S11 | root cause | open |
 | VIEW-TKINTER-3 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |
 | VIEW-TKINTER-4 | RC3 | S7 | root cause | closed (test_losing_the_controller_leaves_manual_mode_entirely) |
