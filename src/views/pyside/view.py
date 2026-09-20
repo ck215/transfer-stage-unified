@@ -1017,22 +1017,32 @@ class DashboardWindow(QMainWindow):
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
         
-        self.stop_btn = QPushButton("FULL STOP")
-        self.stop_btn.setStyleSheet("background-color: red; color: white; font-weight: bold; font-size: 14px; padding: 10px;")
-        self.stop_btn.clicked.connect(self.system_manager.full_stop_all)
-        sidebar_layout.addWidget(self.stop_btn)
-        
         self.device_list = QListWidget()
         self.device_list.setStyleSheet("background-color: #1E1E1E; color: white; border: none;")
         sidebar_layout.addWidget(self.device_list)
-        
+
+        # Bottom-docked, not top: matches the Tk reference, whose own comment
+        # explains why — sitting directly above the tab bar (here: directly
+        # above the device checkboxes that hide/show and destroy models) made
+        # it an easy accidental-click target when reaching for something
+        # else. `fullStopButton` gets its own QSS rule so hover/pressed states
+        # read as a distinct, deliberate control rather than a checkbox.
+        self.stop_btn = QPushButton("FULL STOP")
+        self.stop_btn.setObjectName("fullStopButton")
+        self.stop_btn.clicked.connect(self.system_manager.full_stop_all)
+        sidebar_layout.addWidget(self.stop_btn)
+
         self.sidebar.setWidget(sidebar_widget)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.sidebar)
-        
+
         self.device_list.itemChanged.connect(self.on_device_item_changed)
-        
-        self.setCentralWidget(QWidget()) # Empty workspace
-        
+
+        # No central widget: one was set here only to give QMainWindow
+        # "an empty workspace", but QMainWindow does not require one, and an
+        # empty QWidget still claims a stretch share of the layout, squeezing
+        # every dock (PYSIDE-16). Leaving it unset lets the docks use the
+        # whole window, which is what this window is for.
+
         self.active_docks = {}
         self._last_added_dock = None
         self.populate_sidebar()
@@ -1100,7 +1110,15 @@ class DashboardWindow(QMainWindow):
         if device_name in self.active_docks:
             dock = self.active_docks.pop(device_name)
             if self._last_added_dock == dock:
-                self._last_added_dock = None
+                # Fall back to whichever dock is now the most recently
+                # added survivor (dict insertion order), not None — None
+                # made the *next* opened dock take the addDockWidget(Right)
+                # branch in open_device_view instead of continuing the
+                # splitDockWidget horizontal chain, so closing the
+                # rightmost dock silently changed where the next one
+                # landed (PYSIDE-16).
+                remaining = list(self.active_docks.values())
+                self._last_added_dock = remaining[-1] if remaining else None
 
             # Stop the view's QTimers before the dock's WA_DeleteOnClose
             # schedules its widget for deletion -- otherwise a timer tick

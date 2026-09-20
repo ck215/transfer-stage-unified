@@ -83,6 +83,21 @@ QPushButton#toggleFalse:hover {
     background-color: #A80000;
 }
 
+QPushButton#fullStopButton {
+    background-color: #D13438;
+    color: #FFFFFF;
+    font-weight: bold;
+    font-size: 14px;
+    padding: 10px;
+    border-radius: 4px;
+}
+QPushButton#fullStopButton:hover {
+    background-color: #A80000;
+}
+QPushButton#fullStopButton:pressed {
+    background-color: #7A0000;
+}
+
 QComboBox {
     background-color: #2D2D30;
     border: 1px solid #3E3E42;
