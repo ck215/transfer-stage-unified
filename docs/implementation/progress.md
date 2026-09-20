@@ -1310,6 +1310,15 @@ order:
 1. **`pytest tests/ -m "qt"`.** It has not completed since the renderer
    rewrite. Expect the two S10-owned `known_bad` entries to XPASS-as-failure;
    re-author both and delete their `_KNOWN_BAD` entries.
+
+   **Run it in the foreground and read the whole output.** Three attempts
+   were made and none produced a summary line. The last wrote 24 bytes —
+   `..` and nothing else — then exited 0, where the selection should be 9
+   tests. That is neither a pass nor the documented exit-134 SIGABRT, so
+   **treat it as an unknown, not as a green run.** It may be the Qt abort
+   this suite is quarantined for, or it may be that the renderer rewrite
+   broke collection in this marker. Find out which before reading anything
+   into it.
 2. **Write rendering tests for the four composites** (`plot`, `log_stream`,
    `region_select`, `file_save`). They are the least-proven code on the
    branch — nothing but the schema conformance test has touched them.
