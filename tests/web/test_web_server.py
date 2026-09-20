@@ -400,6 +400,26 @@ def test_api_set_attr_invalid_type_conversion(web_server_fixture):
     assert data["status"] == "error"
 
 
+def test_api_set_attr_refuses_a_readonly_element(web_server_fixture):
+    """REDPERCENT-20 (web half): a `readonly` schema element's model_attr
+    (e.g. RedPercentSystem's current_red/red_change) must not be settable
+    through /api/set_attr just because it happens to carry a model_attr -
+    only entry/dropdown/toggle elements are writable."""
+    server, mgr = web_server_fixture
+    stage_a = mgr.active_models["Stage_A"]
+    original = stage_a.pos_x  # "Pos:" is declared readonly in the schema
+    url = f"http://127.0.0.1:{server.port}/api/set_attr"
+
+    status, _, body = make_request(url, method="POST", json_data={
+        "device": "Stage_A", "attr": "pos_x", "value": "999"
+    })
+    assert status == 403
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert "not exposed" in data["message"]
+    assert stage_a.pos_x == original
+
+
 def test_api_logs_and_errors(web_server_fixture):
     """`/api/errors?since=<id>`, non-destructively (RC-8 item 3).
 

@@ -365,15 +365,25 @@ class WebModelAdapter:
                     allowed.add(val)
         return allowed
 
-    @staticmethod
-    def _schema_attrs(model) -> set:
+    # Element types whose model_attr is meant to be operator-writable
+    # (REDPERCENT-20, web half). `readonly` elements also carry a
+    # `model_attr` — that's how they render the value — but that is a
+    # display binding, not a write grant. Before this, `_schema_attrs`
+    # allowlisted every element with a `model_attr` regardless of type, so
+    # a client could POST /api/set_attr for a `readonly` field such as
+    # RedPercentSystem's `current_red`/`red_change` and overwrite a value
+    # the model computes from live monitoring data.
+    _WRITABLE_ELEMENT_TYPES = frozenset({"entry", "dropdown", "toggle"})
+
+    @classmethod
+    def _schema_attrs(cls, model) -> set:
         """Every model_attr a model's own ui_schema exposes for writing."""
         allowed = set()
         schema = getattr(model, "ui_schema", {"sections": []})
         for sec in schema.get("sections", []):
             for el in sec.get("elements", []):
                 attr = el.get("model_attr")
-                if attr:
+                if attr and el.get("type") in cls._WRITABLE_ELEMENT_TYPES:
                     allowed.add(attr)
         return allowed
 
