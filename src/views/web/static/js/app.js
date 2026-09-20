@@ -14,15 +14,31 @@
   const meta = document.querySelector('meta[name="stage-token"]');
   const token = meta ? meta.getAttribute('content') : '';
   const originalFetch = window.fetch.bind(window);
+
+  // WEB-22: every same-origin API call gets a bounded timeout here, once,
+  // rather than depending on each of this file's call sites to remember its
+  // own AbortController. An unbounded fetch used to hang forever on a
+  // stalled connection - inside the poll cycle specifically, that left
+  // `isPolling` stuck true and froze every future poll behind the one that
+  // never returned. Overridable so a test can shrink it instead of a
+  // 20-second sleep to prove the abort actually fires.
+  const FETCH_TIMEOUT_MS = window.__FETCH_TIMEOUT_MS_OVERRIDE__ || 20000;
+
   window.fetch = function (input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || '';
     const isOwnApi = url.startsWith('/api/') || url.startsWith(window.location.origin + '/api/');
-    if (!isOwnApi || !token) {
+    if (!isOwnApi) {
       return originalFetch(input, init);
     }
     const opts = Object.assign({}, init);
     opts.headers = new Headers((init && init.headers) || (typeof input !== 'string' && input.headers) || {});
-    opts.headers.set('X-Stage-Token', token);
+    if (token) opts.headers.set('X-Stage-Token', token);
+
+    if (!opts.signal) {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      opts.signal = controller.signal;
+    }
     return originalFetch(input, opts);
   };
 })();
@@ -724,23 +740,56 @@ class TransferStageApp {
     return '';
   }
 
+  refreshDropdownOptions(select, dev, cmd) {
+    fetch('/api/options?device=' + encodeURIComponent(dev) + '&command=' + encodeURIComponent(cmd))
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'ok' && Array.isArray(data.options)) {
+          const previous = select.value;
+          while (select.firstChild) select.removeChild(select.firstChild);
+          const placeholder = document.createElement('option');
+          placeholder.value = '';
+          placeholder.disabled = true;
+          placeholder.hidden = true;
+          placeholder.textContent = 'Select option...';
+          select.appendChild(placeholder);
+          for (const opt of data.options) {
+            const optEl = document.createElement('option');
+            optEl.value = String(opt);
+            optEl.textContent = String(opt);
+            select.appendChild(optEl);
+          }
+          if (previous && data.options.map(String).includes(previous)) {
+            select.value = previous;
+          }
+        }
+        select.dataset.populated = "true";
+      })
+      .catch(e => console.warn('Failed to load dropdown options:', e));
+  }
+
   bindCardInteractiveEvents() {
     // Dropdown selects options_command fetching
     document.querySelectorAll('select[data-options-command]').forEach(select => {
-      if (select.dataset.populated) return;
       const dev = select.dataset.device;
       const cmd = select.dataset.optionsCommand;
-      if (dev && cmd && select.options.length <= 1) { // Only placeholder exists
-        fetch('/api/options?device=' + encodeURIComponent(dev) + '&command=' + encodeURIComponent(cmd))
-          .then(r => r.json())
-          .then(data => {
-            if (data.status === 'ok' && Array.isArray(data.options)) {
-              const optionsHtml = data.options.map(opt => `<option value="${this.escapeHtml(String(opt))}">${this.escapeHtml(String(opt))}</option>`).join('');
-              select.innerHTML = '<option value="" disabled hidden>Select option...</option>' + optionsHtml;
-            }
-            select.dataset.populated = "true";
-          })
-          .catch(e => console.warn('Failed to load dropdown options:', e));
+
+      if (!select.dataset.populated && dev && cmd && select.options.length <= 1) {
+        // Only placeholder exists
+        this.refreshDropdownOptions(select, dev, cmd);
+      }
+
+      // WEB-22: options were otherwise fetched exactly once, at first
+      // render, and never again - a gamepad plugged in after the page
+      // loaded (or after the previous one was unplugged) could never
+      // appear in this list short of a full reload. Focusing the dropdown
+      // now re-fetches, so what is actually plugged in right now is what
+      // the operator sees when they go to pick one.
+      if (!select.dataset.focusRefreshBound) {
+        select.dataset.focusRefreshBound = "true";
+        select.addEventListener('focus', () => {
+          if (dev && cmd) this.refreshDropdownOptions(select, dev, cmd);
+        });
       }
     });
 
@@ -915,7 +964,13 @@ class TransferStageApp {
     this.isPolling = true;
 
     try {
-      await Promise.all([
+      // WEB-22: allSettled rather than all - each of these already catches
+      // its own errors internally, but `all` still rejects the moment any
+      // one of them does and short-circuits without waiting for the other
+      // two to finish updating the UI. With the fetch-timeout wrapper above
+      // bounding each individual call, `isPolling` can no longer get stuck
+      // true behind one endpoint that never used to return at all.
+      await Promise.allSettled([
         this.pollState(),
         this.pollLogs(),
         this.pollErrors()
@@ -927,16 +982,69 @@ class TransferStageApp {
     }
   }
 
+  // WEB-22: a device that stopped showing up in /api/state at all (pulled
+  // hardware, a crashed poller thread) used to leave its card showing the
+  // last values it ever reported with no visual difference from a live
+  // one. STALE_AFTER_CYCLES tolerates one or two missed polls (a transient
+  // blip) before graying the card out and disabling its controls.
+  static STALE_AFTER_CYCLES = 3;
+
+  _markDeviceSeen(devName) {
+    if (!this.knownDevices) this.knownDevices = new Set();
+    if (!this.deviceStaleCounts) this.deviceStaleCounts = {};
+    this.knownDevices.add(devName);
+    this.deviceStaleCounts[devName] = 0;
+    this._setDeviceStale(devName, false);
+  }
+
+  _markDeviceMissedCycle(devName) {
+    if (!this.deviceStaleCounts) this.deviceStaleCounts = {};
+    const count = (this.deviceStaleCounts[devName] || 0) + 1;
+    this.deviceStaleCounts[devName] = count;
+    if (count >= this.constructor.STALE_AFTER_CYCLES) {
+      this._setDeviceStale(devName, true);
+    }
+  }
+
+  _markAllKnownDevicesMissedCycle() {
+    if (!this.knownDevices) return;
+    for (const devName of this.knownDevices) this._markDeviceMissedCycle(devName);
+  }
+
+  _setDeviceStale(devName, stale) {
+    const sanitized = this.sanitizeId(devName);
+    const card = document.getElementById(`card-${sanitized}`);
+    if (!card) return;
+    card.classList.toggle('stale', stale);
+    if (stale) {
+      const cardBody = card.querySelector('.card-body');
+      if (cardBody) {
+        cardBody.querySelectorAll('button, input, select').forEach(ctrl => {
+          ctrl.disabled = true;
+        });
+      }
+    }
+  }
+
   async pollState() {
     try {
       const res = await fetch('/api/state');
       if (!res.ok) {
         this.setConnectionState('offline', res.status >= 500 ? 'Server Error' : `HTTP ${res.status}`);
+        this._markAllKnownDevicesMissedCycle();
         return;
       }
       const data = await res.json();
       this.deviceState = data;
       this.setConnectionState('online', 'Online');
+
+      const seenNow = new Set(Object.keys(data));
+      for (const devName of seenNow) this._markDeviceSeen(devName);
+      if (this.knownDevices) {
+        for (const devName of this.knownDevices) {
+          if (!seenNow.has(devName)) this._markDeviceMissedCycle(devName);
+        }
+      }
 
       for (const [devName, attrs] of Object.entries(data)) {
         const sanitizedDev = this.sanitizeId(devName);
@@ -1033,6 +1141,7 @@ class TransferStageApp {
       }
     } catch (err) {
       this.setConnectionState('offline', 'Connection Dropped');
+      this._markAllKnownDevicesMissedCycle();
     }
   }
 
