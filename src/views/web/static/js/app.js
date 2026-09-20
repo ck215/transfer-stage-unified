@@ -714,7 +714,7 @@ class TransferStageApp {
                   data-device="${devName}" 
                   data-attr="${el.model_attr || ''}"
                   data-command="${el.command || ''}"${optsCmdAttr}>
-            <option value="">Select option...</option>
+            <option value="" disabled hidden>Select option...</option>
             ${optionsHtml}
           </select>
         </div>
@@ -736,7 +736,7 @@ class TransferStageApp {
           .then(data => {
             if (data.status === 'ok' && Array.isArray(data.options)) {
               const optionsHtml = data.options.map(opt => `<option value="${this.escapeHtml(String(opt))}">${this.escapeHtml(String(opt))}</option>`).join('');
-              select.innerHTML = '<option value="">Select option...</option>' + optionsHtml;
+              select.innerHTML = '<option value="" disabled hidden>Select option...</option>' + optionsHtml;
             }
             select.dataset.populated = "true";
           })
@@ -818,6 +818,12 @@ class TransferStageApp {
         const cmd = select.dataset.command;
         const attr = select.dataset.attr;
         const val = e.target.value;
+        // The placeholder carries an empty value. Dispatching it sent
+        // set_controller("") and silently unbound a live controller with no
+        // feedback (GAMEPAD-6). An empty selection is not a command.
+        if (val === '') {
+          return;
+        }
         if (cmd) {
           this.dispatchCommand(dev, cmd, [val]);
         } else if (attr) {

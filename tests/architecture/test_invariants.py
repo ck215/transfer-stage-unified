@@ -710,3 +710,36 @@ def test_i_8_3_the_installer_covers_all_three_hooks():
                  "report_callback_exception"):
         assert hook in installer, (
             f"I-8.3: install_exception_hooks misses {hook}")
+
+
+# ---------------------------------------------------------------------------
+# GAMEPAD-6 — a blank selection is not a command.
+#
+# The web renderer emits a `<option value="">Select option...</option>`
+# placeholder at the top of every dropdown. It was selectable, and selecting
+# it dispatched the dropdown's command with an empty argument — for the
+# controller dropdown that is `set_controller("")`, which unbound a live
+# controller with no feedback and no way to tell it had happened.
+#
+# Two guards, because they fail differently: `disabled hidden` stops the
+# operator reaching it once a real option exists, and the handler's early
+# return is what holds if any renderer ever emits a blank option again.
+# ---------------------------------------------------------------------------
+
+
+def test_gamepad_6_the_dropdown_placeholder_cannot_be_reselected():
+    source = WEB_RENDERER.read_text()
+    placeholders = re.findall(r'<option value=""[^>]*>', source)
+    assert placeholders, "found no dropdown placeholder to check"
+    unguarded = [p for p in placeholders if "disabled" not in p]
+    assert not unguarded, (
+        "GAMEPAD-6: a selectable blank option dispatches an empty command "
+        f"({unguarded})")
+
+
+def test_gamepad_6_the_dispatch_handler_ignores_a_blank_value():
+    source = WEB_RENDERER.read_text()
+    handler = source.split(".btn-dispatch-dropdown")[-1][:900]
+    assert re.search(r"val\s*===\s*''|val\s*===\s*\"\"", handler), (
+        "GAMEPAD-6: the dropdown handler must refuse an empty value before "
+        "it dispatches")
