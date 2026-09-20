@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import MagicMock
 from model.probes import StepperProbe, DCProbe
 from model.system_manager import SystemManager
+from conftest import ManagedStub
 
 def test_assign_corrupted_dict_to_ui_schema():
     """Test passing/assigning corrupted dictionaries to ui_schema."""
@@ -109,34 +110,42 @@ def test_stepper_probe_step_size_defaults():
     assert probe.y_step == "1"
     assert probe.z_step == "1"
 
-def test_system_manager_invalid_model():
-    """Test registering an invalid model type."""
-    manager = SystemManager()
-    manager.register_model("Invalid", "Not a model")
-    assert manager.get_model("Invalid") == "Not a model"
+def test_system_manager_rejects_an_invalid_model():
+    """Registration is a contract boundary (RC-1).
 
-def test_shutdown_all_disables_probes_without_disconnect_or_stop():
-    """A MagicMock(spec=['teardown']) gets .teardown() called by shutdown_all()"""
+    This used to accept the string "Not a model" and store it, because
+    register_model was a bare dict write. A non-ManagedModel in the registry
+    is a model that will be silently skipped at shutdown.
+    """
     manager = SystemManager()
-    probe = MagicMock(spec=['teardown'])
-    manager.register_model("Stepper", probe)
+    with pytest.raises(TypeError):
+        manager.register("Invalid", "Not a model")
+    assert manager.get_model("Invalid") is None
+
+def test_shutdown_all_tears_down_registered_models():
+    manager = SystemManager()
+    probe = ManagedStub("Stepper")
+    manager.register("Stepper", probe)
     manager.shutdown_all()
-    probe.teardown.assert_called_once()
+    assert probe.teardowns == 1
 
-def test_shutdown_all_graceful_noop_without_teardown():
-    """A model with no teardown method causes no crash and nothing is called."""
+def test_shutdown_all_stops_before_tearing_down():
+    """RC-1 item 4: no model's teardown can skip the stop."""
     manager = SystemManager()
-    probe = MagicMock(spec=[])
-    manager.register_model("Stepper", probe)
+    probe = ManagedStub("Stepper", teardown_error=RuntimeError("wedged"))
+    manager.register("Stepper", probe)
     manager.shutdown_all()
+    assert probe.stops == 1
+    assert probe.teardowns == 1
 
-def test_reboot_model_disables_old_probe_without_disconnect_or_stop():
-    """A MagicMock(spec=['teardown']) gets .teardown() called by reboot_model()"""
+def test_release_tears_down_the_model_it_removes():
+    """remove_model only removed; the documentation claimed it tore down too."""
     manager = SystemManager()
-    old_probe = MagicMock(spec=['teardown'])
-    manager.active_models["Stepper"] = old_probe
-    manager.reboot_model("Stepper", lambda: MagicMock())
-    old_probe.teardown.assert_called_once()
+    probe = ManagedStub("Stepper")
+    manager.register("Stepper", probe)
+    manager.release("Stepper")
+    assert manager.get_model("Stepper") is None
+    assert probe.teardowns == 1
 
 def test_dcprobe_mutating_state_out_of_order():
     """Test mutating state out of order on the DCProbe."""

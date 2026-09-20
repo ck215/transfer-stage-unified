@@ -417,7 +417,7 @@ def run_legacy_app():
             
             system_manager = SystemManager()
             for name, model in active_models.items():
-                system_manager.register_model(name, model)
+                system_manager.register(name, model)
             
             dash = DashboardWindow(self, system_manager)
             ErrorPopupManager.initialize(dash)
@@ -745,7 +745,7 @@ def run_pyside_app():
     
             self.manager = SystemManager()
             for name, model in active_models.items():
-                self.manager.register_model(name, model)
+                self.manager.register(name, model)
     
             self.dashboard = DashboardWindow(self.manager)
             self.dashboard.show()

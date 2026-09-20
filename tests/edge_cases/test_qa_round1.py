@@ -34,6 +34,11 @@ class MockHardwareModel:
         if self.fail_on_teardown:
             raise AttributeError("Hardware stop failure simulated")
 
+    def emergency_stop(self):
+        # Part of the ManagedModel contract that register() now enforces, so
+        # the double has to honour it like every real model does.
+        self.stop()
+
     def teardown(self):
         if self.fail_on_teardown:
             raise RuntimeError("Hardware teardown failure simulated")
@@ -51,17 +56,19 @@ def test_system_manager_concurrent_reboot_and_teardown():
     def worker(worker_id):
         try:
             model_name = f"probe_{worker_id % 3}"
-            model = MockHardwareModel()
-            manager.register_model(model_name, model)
-            
-            # Fetch model
+            # Twenty threads contend for three names. register() now refuses a
+            # duplicate rather than silently overwriting a live model, so the
+            # loser of a race releases first — which is the contract, not a
+            # workaround: the old code dropped the overwritten model on the
+            # floor without ever tearing it down.
+            manager.release(model_name)
+            try:
+                manager.register(model_name, MockHardwareModel())
+            except ValueError:
+                pass  # another thread won the name; it owns teardown for it
+
             fetched = manager.get_model(model_name)
             assert fetched is not None or model_name not in manager.active_models
-
-            # Simulate reboot call with mock constructor
-            with patch("time.sleep", return_value=None):
-                rebooted = manager.reboot_model(model_name, MockHardwareModel)
-                assert rebooted is not None
         except Exception as e:
             errors.append(e)
 
@@ -84,12 +91,15 @@ def test_system_manager_teardown_exception_resilience():
     """
     manager = SystemManager()
     faulty_model = MockHardwareModel(fail_on_teardown=True)
-    manager.register_model("faulty_probe", faulty_model)
+    manager.register("faulty_probe", faulty_model)
 
-    with patch("time.sleep", return_value=None):
-        new_model = manager.reboot_model("faulty_probe", MockHardwareModel)
-        assert new_model is not None
-        assert manager.get_model("faulty_probe") == new_model
+    # A teardown that raises must not strand the registry or hold the lock.
+    manager.release("faulty_probe")
+    assert manager.get_model("faulty_probe") is None
+
+    replacement = MockHardwareModel()
+    manager.register("faulty_probe", replacement)
+    assert manager.get_model("faulty_probe") is replacement
 
     manager.shutdown_all()
     assert len(manager.active_models) == 0
@@ -101,8 +111,8 @@ def test_multi_manager_concurrent_shutdown():
     """
     managers = [SystemManager() for _ in range(5)]
     for i, mgr in enumerate(managers):
-        mgr.register_model("temp_sys", TemperatureSystem())
-        mgr.register_model("rotator_sys", RotatorSystem())
+        mgr.register("temp_sys", TemperatureSystem())
+        mgr.register("rotator_sys", RotatorSystem())
 
     def shutdown_worker(mgr):
         mgr.shutdown_all()

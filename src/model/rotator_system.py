@@ -120,6 +120,16 @@ class RotatorSystem:
                 pass
 
     def teardown(self):
+        """Stop the stage, then release the port (MANAGER-10, ROTATOR-1).
+
+        This used to call disconnect() alone, so tearing the rotator down
+        never sent ST — a stage mid-move kept moving after the port closed,
+        with nothing left able to stop it.
+        """
+        try:
+            self.stop()
+        except Exception as e:
+            print(f"[{self.__class__.__name__}] Stop failed during teardown: {e}")
         self.disconnect()
 
     def emergency_stop(self):

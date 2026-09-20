@@ -54,6 +54,38 @@ if sys.platform == "darwin":
         pass
 
 
+class ManagedStub:
+    """A minimal real ManagedModel, for tests that register something.
+
+    SystemManager.register() enforces `isinstance(model, ManagedModel)` at the
+    boundary (RC-1), and under Python 3.12+ a runtime_checkable Protocol's
+    isinstance check is stricter than hasattr — no Mock satisfies it however
+    it is spec'd. That is correct: a Mock passing a lifecycle contract check
+    was never evidence of anything. Tests that need a registrable model use
+    this instead, and read `.stops` / `.teardowns` to assert on it.
+    """
+
+    def __init__(self, name="stub", stop_error=None, teardown_error=None):
+        self.name = name
+        self.stop_error, self.teardown_error = stop_error, teardown_error
+        self.stops = self.teardowns = 0
+
+    def emergency_stop(self):
+        self.stops += 1
+        if self.stop_error:
+            raise self.stop_error
+
+    def teardown(self):
+        self.teardowns += 1
+        if self.teardown_error:
+            raise self.teardown_error
+
+
+@pytest.fixture
+def managed_stub():
+    return ManagedStub
+
+
 # ---------------------------------------------------------------------------
 # Suite organization: concern markers, slow marking, known-bad quarantine.
 # Policy and per-stage gate commands: docs/implementation/testing.md
@@ -69,6 +101,7 @@ _FILE_MARKERS = {
     "core/test_edge_mvc_model.py": ["lifecycle", "mode"],
     "core/test_gamepad_interlock.py": ["loops", "mode"],
     "core/test_integration.py": ["integration"],
+    "core/test_lifecycle_teardown.py": ["lifecycle", "estop"],
     "core/test_model_interactions.py": ["mode"],
     "core/test_model_round1.py": ["mode", "lifecycle"],
     "core/test_model_round2.py": ["mode"],

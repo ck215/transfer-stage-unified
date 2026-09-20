@@ -16,7 +16,18 @@ from model.system_manager import SystemManager
 # Mock Devices for Testing
 # ---------------------------------------------------------------------------
 
-class MockSimulatedDevice:
+class _ManagedTestDevice:
+    """Registration enforces the ManagedModel contract (RC-1), so the web
+    test doubles honour it like every real model does."""
+
+    def teardown(self):
+        pass
+
+    def emergency_stop(self):
+        pass
+
+
+class MockSimulatedDevice(_ManagedTestDevice):
     def __init__(self, name="SimStage"):
         self.name = name
         self.serial_port = "SIM"
@@ -41,7 +52,7 @@ class MockSimulatedDevice:
         return self.pos_x
 
 
-class MockHardwareDevice:
+class MockHardwareDevice(_ManagedTestDevice):
     def __init__(self, name="RealStage", port="/dev/ttyUSB0"):
         self.name = name
         self.serial_port = port
@@ -67,7 +78,7 @@ class MockHardwareDevice:
         return self.pos_x
 
 
-class MockDisconnectedDevice:
+class MockDisconnectedDevice(_ManagedTestDevice):
     def __init__(self, name="OfflineStage"):
         self.name = name
         self.serial_port = None
@@ -290,9 +301,9 @@ def test_connection_status_badging(web_setup_server):
     server, base_url, adapter = web_setup_server
 
     mgr = SystemManager()
-    mgr.register_model("SimDevice", MockSimulatedDevice("SimDevice"))
-    mgr.register_model("RealDevice", MockHardwareDevice("RealDevice", port="/dev/ttyUSB0"))
-    mgr.register_model("OfflineDevice", MockDisconnectedDevice("OfflineDevice"))
+    mgr.register("SimDevice", MockSimulatedDevice("SimDevice"))
+    mgr.register("RealDevice", MockHardwareDevice("RealDevice", port="/dev/ttyUSB0"))
+    mgr.register("OfflineDevice", MockDisconnectedDevice("OfflineDevice"))
 
     adapter.set_system_manager(mgr)
 
@@ -317,8 +328,14 @@ def test_connection_status_explicit_attribute_precedence():
         connection_status = "hardware"
         ui_schema = {"sections": []}
 
+        def teardown(self):
+            pass
+
+        def emergency_stop(self):
+            pass
+
     mgr = SystemManager()
-    mgr.register_model("CustomDevice", CustomModel())
+    mgr.register("CustomDevice", CustomModel())
     adapter.set_system_manager(mgr)
 
     state = adapter.get_state()
@@ -343,8 +360,8 @@ def test_thread_concurrency_setup_and_telemetry(web_setup_server):
 
     # Pre-populate manager with simulated devices
     mgr = SystemManager()
-    mgr.register_model("StageA", MockSimulatedDevice("StageA"))
-    mgr.register_model("StageB", MockSimulatedDevice("StageB"))
+    mgr.register("StageA", MockSimulatedDevice("StageA"))
+    mgr.register("StageB", MockSimulatedDevice("StageB"))
     adapter.set_system_manager(mgr)
 
     errors = []

@@ -892,7 +892,7 @@ class DashboardWindow(QMainWindow):
                     model.set_stepper_model(list(probe_models.keys())[0])
                 
             if model:
-                self.system_manager.register_model(device_name, model)
+                self.system_manager.register(device_name, model)
                 
                 # If a new probe was just added, and Red Percent is active, let it know
                 if hasattr(model, 'pos_x'):

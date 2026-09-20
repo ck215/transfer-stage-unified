@@ -196,6 +196,16 @@ class TemperatureSystem:
         self.close()
 
     def teardown(self):
+        """Command the setpoint down, then close (RC-1).
+
+        close() writes a stop frame of its own, but only if the port is still
+        open and the write succeeds; stop() first makes the hardware stop the
+        step that cannot be skipped by a transport failure.
+        """
+        try:
+            self.stop()
+        except Exception as e:
+            print(f"[{self.__class__.__name__}] Stop failed during teardown: {e}")
         self.close()
 
     def emergency_stop(self):

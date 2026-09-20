@@ -156,7 +156,7 @@ class WebModelAdapter:
             }
             
         for dev, model in active_models.items():
-            new_manager.register_model(dev, model)
+            new_manager.register(dev, model)
             cfg = next((c for c in configs if c["device"] == dev), {})
             model._disabled_in_setup = not cfg.get("enabled", True)
             if hasattr(model, 'system_enabled'):

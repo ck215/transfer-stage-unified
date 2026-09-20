@@ -1,37 +1,57 @@
 import pytest
 from unittest.mock import Mock, MagicMock
 from model.system_manager import SystemManager
+from conftest import ManagedStub
 
 def test_full_stop_all():
-    """full_stop_all() calls emergency_stop() on every model that has one —
-    the power_down-vs-full_stop priority decision now lives inside each
-    model's own emergency_stop() (see BaseProbe.emergency_stop), not in
-    SystemManager, which no longer arbitrates between method names."""
+    """full_stop_all() calls emergency_stop() on every registered model.
+
+    The power_down-vs-full_stop priority decision lives inside each model's
+    own emergency_stop() (see BaseProbe.emergency_stop), not in
+    SystemManager, which no longer arbitrates between method names.
+    """
     manager = SystemManager()
 
-    model1 = Mock(spec=['emergency_stop'])
-    model2 = Mock(spec=['emergency_stop'])
-    failing_model = Mock(spec=['emergency_stop'])
-    failing_model.emergency_stop.side_effect = RuntimeError("Failure")
-    no_emergency_stop_model = Mock(spec=[])
+    model1, model2 = ManagedStub("m1"), ManagedStub("m2")
+    failing = ManagedStub("failing", stop_error=RuntimeError("Failure"))
 
-    manager.register_model("m1", model1)
-    manager.register_model("m2", model2)
-    manager.register_model("failing", failing_model)
-    manager.register_model("no_op", no_emergency_stop_model)
+    manager.register("m1", model1)
+    manager.register("m2", model2)
+    manager.register("failing", failing)
 
     manager.full_stop_all()
 
-    model1.emergency_stop.assert_called_once()
-    model2.emergency_stop.assert_called_once()
-    failing_model.emergency_stop.assert_called_once()
-    # one model's failure must not stop the others from being called — already
-    # verified above (model1/model2 called regardless of registration order)
+    assert failing.stops == 1
+    # One model's failure must not stop the others. Registration order puts
+    # the failing model last, so assert it the other way round too.
+    assert model1.stops == 1
+    assert model2.stops == 1
 
 
-def test_full_stop_all_skips_models_without_emergency_stop():
-    """A model with no emergency_stop method is silently skipped — no crash."""
+def test_full_stop_all_continues_past_a_failing_model():
+    """E-stop is all-or-nothing in intent: one bad model cannot veto the rest."""
     manager = SystemManager()
-    model = Mock(spec=[])
-    manager.register_model("m1", model)
-    manager.full_stop_all()  # must not raise
+    failing = ManagedStub("failing", stop_error=RuntimeError("Failure"))
+    survivor = ManagedStub("survivor")
+    manager.register("failing", failing)
+    manager.register("survivor", survivor)
+
+    manager.full_stop_all()
+
+    assert survivor.stops == 1
+
+
+def test_a_model_without_emergency_stop_never_reaches_the_registry():
+    """This used to be "silently skipped at full stop", which is the bug.
+
+    SystemManager arbitrated over duck-typed names, so a model missing
+    emergency_stop was quietly passed over by the global FULL STOP. The
+    contract is now enforced at registration instead, where it is visible.
+    """
+    class NoStop:
+        def teardown(self):
+            pass
+
+    manager = SystemManager()
+    with pytest.raises(TypeError):
+        manager.register("m1", NoStop())

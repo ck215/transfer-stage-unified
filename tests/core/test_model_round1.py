@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from model.system_manager import SystemManager
+from conftest import ManagedStub
 from model.probes import BaseProbe, StepperProbe, DCProbe, ChuckPositioner, _num
 from model.temperature_system import TemperatureSystem
 from model.rotator_system import RotatorSystem
@@ -135,11 +136,11 @@ def test_system_manager_register_get_unregister():
     mgr = SystemManager()
     probe = StepperProbe(port=None, controller_id=0)
 
-    mgr.register_model("probe_a", probe)
+    mgr.register("probe_a", probe)
     assert mgr.get_model("probe_a") == probe
     assert "probe_a" in mgr.active_models
 
-    mgr.remove_model("probe_a")
+    mgr.release("probe_a")
     assert mgr.get_model("probe_a") is None
     assert "probe_a" not in mgr.active_models
 
@@ -147,8 +148,10 @@ def test_system_manager_register_get_unregister():
 def test_system_manager_shutdown_all_clears_models():
     """Verify shutdown_all calls disconnect/stop on registered models."""
     mgr = SystemManager()
-    mock_model = MagicMock()
-    mgr.register_model("mock_model", mock_model)
+    model = ManagedStub("mock_model")
+    mgr.register("mock_model", model)
 
     mgr.shutdown_all()
+    assert model.stops == 1
+    assert model.teardowns == 1
     assert len(mgr.active_models) == 0

@@ -49,7 +49,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 |---|---|---|---|---|---|
 | S0 | Baseline, plan, invariant harness | done | `e760615` | 2026-09-19 | Docs baseline, plan, ledger, test division, invariant harness. |
 | S1 | Purge legacy paths (D-9, D-11) | done | | 2026-09-19 | D-9 + D-11 purged. SERIAL-18's `reboot_model` half reassigned to S2. |
-| S2 | Lifecycle authority (RC-1) | todo | | | Largest stage (41 findings). Split per numbered item. |
+| S2 | Lifecycle authority (RC-1) | in progress | | 2026-09-19 | Items 1-6 done (authority + safe teardown). Remaining: 7 exit hooks, 8 build rollback, 9 views. |
 | S3 | Transport truth and E-stop latch | todo | | | SAFETY. |
 | S4 | Web AppContext and security boundary | todo | | | Live CSRF hole; independent of S5+. |
 | S5 | Input service and model-owned loops | todo | | | Highest coupling. RC-13 first, then RC-4. |
@@ -242,6 +242,55 @@ line. Four new invariant tests carry S1's closure evidence.
 
 - **Next action:** S2 — lifecycle authority (RC-1), 42 findings. Split per
   numbered item in plan.md; `reboot_model` → `reconfigure()` is part of it.
+
+### 2026-09-19 — S2 items 1-6: lifecycle authority and safe teardown
+
+Gate `-m "(lifecycle or estop) and not order_dependent and not qt"`: 46
+passed, 3 xfailed. Fast gate: 225 passed, 7 xfailed. Slow: 44 passed, 5
+xfailed. Invariants: 9 passed, 4 xfailed.
+
+**`SystemManager` is now the authority, not a dict with helpers.**
+`register(name, model, config=None)` enforces `isinstance(model,
+ManagedModel)` and refuses a duplicate name; `release(name)` removes **and**
+tears down, which `remove_model` never did despite the docs saying it did;
+`reconfigure(builder)` tears down before building; `shutdown_all()` calls
+`emergency_stop` before `teardown` for every model, so no model's teardown
+can skip the stop. `reboot_model` and its `sleep(1)` on the caller thread
+are gone, and the `hasattr(model, 'teardown')` fallback with them.
+
+**Teardown is safety-first and exception-isolated in all four models.** The
+order is hardware stop → background activity → transport close, each step
+guarded. `BaseProbe.teardown` used to stop the gamepad poller *first* with no
+try/finally: a poller cleanup that raised skipped `power_down()` entirely,
+so the port closed with **coils still energized while Python reported the
+system disabled**. `RotatorSystem.teardown` called `disconnect()` alone and
+never sent ST, so a stage mid-move kept moving after the port closed.
+`TemperatureSystem` now stops before closing. `RedPercentSystem.teardown`
+joins its monitor thread instead of only clearing the flag.
+
+Proved by fault injection at each sub-step (I-1.2), which an ordering test
+alone cannot do — it would pass on code with no `try/finally` at all.
+
+**Python 3.14 made `register`'s contract check bite harder than expected.**
+A `runtime_checkable` Protocol's `isinstance` is stricter than `hasattr`
+since 3.12, and **no Mock satisfies it however it is spec'd** — real classes
+and a plain stub do. That is the right outcome (a Mock passing a lifecycle
+contract check was never evidence of anything), but it means every test that
+registered a Mock had to be re-authored. `ManagedStub` in `conftest.py` is
+the shared replacement; the web and hardware test doubles now honour the
+contract like real models do.
+
+**15 tests re-authored, none deleted.** They encoded the old passive-dict
+contract: registering the string `"Not a model"` and asserting it came back,
+`full_stop_all` "silently skipping" a model with no `emergency_stop` (the
+bug, now refused at registration), and `reboot_model`'s build-before-release.
+The concurrency stress test now releases before re-registering, which is the
+contract rather than a workaround — the old overwrite dropped a live model
+without ever tearing it down.
+
+- **Next action:** S2 items 7-9 — one process-exit hook for all three
+  launchers, `build_models` register-as-you-go with rollback, and views off
+  `active_models` (with the INTERIM close-affordance removal per plan.md).
 
 ---
 

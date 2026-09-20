@@ -461,14 +461,35 @@ class BaseProbe:
                 print(f"[{self.__class__.__name__}] Failed to send power down: {e}")
 
     def teardown(self):
-        """Full shutdown: stop the gamepad poller, apply the strongest stop
-        (power_down — kills coils), release the serial connection."""
-        if self.poller:
-            self.poller.stop_polling()
-            self.poller.close()
-        self.power_down()
-        if self.serial_comm:
-            self.serial_comm.close()
+        """Safety-first, exception-safe shutdown (RC-1, invariant I-1.2).
+
+        Order is hardware stop -> background activity -> transport close, and
+        each step is isolated. This used to stop the gamepad poller first with
+        no guard, so a poller cleanup that raised skipped power_down()
+        entirely: the port then closed with the coils still energized while
+        Python reported the system disabled.
+
+        Residual window: the poller can still emit one manual-mode command
+        between the stop and its own shutdown. That closes in S5, when the
+        control loops move into the model and stop being the view's to drive.
+        """
+        try:
+            self.power_down()
+        except Exception as e:
+            print(f"[{self.__class__.__name__}] Hardware stop failed during teardown: {e}")
+        try:
+            if self.poller:
+                try:
+                    self.poller.stop_polling()
+                finally:
+                    self.poller.close()
+        except Exception as e:
+            print(f"[{self.__class__.__name__}] Poller cleanup failed during teardown: {e}")
+        try:
+            if self.serial_comm:
+                self.serial_comm.close()
+        except Exception as e:
+            print(f"[{self.__class__.__name__}] Transport close failed during teardown: {e}")
 
     def emergency_stop(self):
         self.power_down()

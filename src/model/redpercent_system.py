@@ -274,7 +274,21 @@ class RedPercentSystem:
         self.monitoring = False
 
     def teardown(self):
+        """Stop monitoring and wait for the thread to actually leave.
+
+        stop_monitoring() only clears the flag; the monitor thread can still
+        be inside an mss screen grab. Teardown that returns while it runs is
+        what let a torn-down RedPercent keep writing to a datalog owned by
+        the next run.
+        """
         self.stop_monitoring()
+        thread = self._monitor_thread
+        if thread is not None and thread.is_alive():
+            try:
+                thread.join(timeout=2.0)
+            except Exception as e:
+                print(f"[{self.__class__.__name__}] Monitor thread would not join: {e}")
+        self._monitor_thread = None
 
     def emergency_stop(self):
         self.stop_monitoring()
