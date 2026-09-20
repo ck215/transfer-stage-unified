@@ -1,3 +1,4 @@
+import errno
 import pytest
 import json
 import urllib.request
@@ -5,6 +6,7 @@ import urllib.parse
 import urllib.error
 import time
 import threading
+from unittest.mock import patch
 from views.web.web_server import WebDashboardServer, WebAPIHandler
 
 class MockDeviceModel:
@@ -398,6 +400,26 @@ def test_api_set_attr_invalid_type_conversion(web_server_fixture):
     assert data["status"] == "error"
 
 
+def test_api_set_attr_refuses_a_readonly_element(web_server_fixture):
+    """REDPERCENT-20 (web half): a `readonly` schema element's model_attr
+    (e.g. RedPercentSystem's current_red/red_change) must not be settable
+    through /api/set_attr just because it happens to carry a model_attr -
+    only entry/dropdown/toggle elements are writable."""
+    server, mgr = web_server_fixture
+    stage_a = mgr.active_models["Stage_A"]
+    original = stage_a.pos_x  # "Pos:" is declared readonly in the schema
+    url = f"http://127.0.0.1:{server.port}/api/set_attr"
+
+    status, _, body = make_request(url, method="POST", json_data={
+        "device": "Stage_A", "attr": "pos_x", "value": "999"
+    })
+    assert status == 403
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert "not exposed" in data["message"]
+    assert stage_a.pos_x == original
+
+
 def test_api_logs_and_errors(web_server_fixture):
     """`/api/errors?since=<id>`, non-destructively (RC-8 item 3).
 
@@ -534,6 +556,54 @@ def test_api_full_stop_all(web_server_fixture):
     assert data["status"] == "ok"
     assert mgr.full_stop_called is True
 
+
+def test_api_full_stop_all_reports_unconfirmed_device(web_server_fixture):
+    """WEB-18: a device that did not confirm its stop must show up in the
+    response body, not be swallowed into a blanket status: ok."""
+    server, mgr = web_server_fixture
+    def mock_full_stop_all():
+        return {"Stage_A": True, "Stage_B": False}
+    mgr.full_stop_all = mock_full_stop_all
+
+    url = f"http://127.0.0.1:{server.port}/api/system/full_stop"
+    status, _, body = make_request(url, method="POST", json_data={})
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert data["results"] == {"Stage_A": True, "Stage_B": False}
+    assert "Stage_B" in data["message"]
+
+
+def test_api_get_route_crash_returns_json_500_not_a_dropped_connection(web_server_fixture):
+    """WEB-14: an unhandled exception inside a GET route handler used to
+    propagate out of BaseHTTPRequestHandler and drop the connection with no
+    response body at all — the browser reports that as a bare network
+    failure, indistinguishable from the server being down. do_GET now
+    answers every route under a JSON error envelope."""
+    server, _ = web_server_fixture
+    with patch.object(server.adapter, "get_devices",
+                       side_effect=RuntimeError("schema blew up")):
+        url = f"http://127.0.0.1:{server.port}/api/devices"
+        status, _, body = make_request(url)
+    assert status == 500
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert "schema blew up" in data["message"]
+    assert "traceback" not in data
+
+
+def test_api_post_route_crash_returns_json_500_not_a_dropped_connection(web_server_fixture):
+    """Same envelope as above (WEB-14), for POST routes."""
+    server, _ = web_server_fixture
+    with patch.object(server.adapter, "full_stop_all",
+                       side_effect=RuntimeError("latch jammed")):
+        url = f"http://127.0.0.1:{server.port}/api/system/full_stop"
+        status, _, body = make_request(url, method="POST", json_data={})
+    assert status == 500
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert "latch jammed" in data["message"]
+    assert "traceback" not in data
+
 def test_api_options_success(web_server_fixture):
     server, mgr = web_server_fixture
     url = f"http://127.0.0.1:{server.port}/api/options?device=Stage_A&command=get_opts"
@@ -551,3 +621,100 @@ def test_api_options_security(web_server_fixture):
     assert status == 400
     data = json.loads(body)
     assert "not an exposed options_command" in data["message"]
+
+
+# -----------------------------------------------------------------------------
+# WEB-16: start() port exhaustion / non-EADDRINUSE bind failures
+# -----------------------------------------------------------------------------
+
+def test_start_raises_runtime_error_after_ten_busy_ports():
+    """After 10 straight EADDRINUSE failures, start() must fail with a
+    clear RuntimeError, not an AttributeError from calling
+    self.server.serve_forever on a None server."""
+    mgr = MockSystemManager()
+    server = WebDashboardServer(mgr, port=9300)
+    busy = OSError()
+    busy.errno = errno.EADDRINUSE
+    with patch("views.web.web_server.ThreadingHTTPServer", side_effect=busy):
+        with pytest.raises(RuntimeError):
+            server.start(background=True)
+    assert server.server is None
+
+
+def test_start_does_not_swallow_unrelated_os_errors():
+    """An OSError that is not "port busy" (e.g. permission denied) must
+    propagate, not be silently treated as "try the next port"."""
+    mgr = MockSystemManager()
+    server = WebDashboardServer(mgr, port=9301)
+    denied = OSError()
+    denied.errno = errno.EACCES
+    with patch("views.web.web_server.ThreadingHTTPServer", side_effect=denied):
+        with pytest.raises(OSError) as excinfo:
+            server.start(background=True)
+    assert excinfo.value.errno == errno.EACCES
+
+
+def test_start_retries_past_a_genuinely_busy_port():
+    """A real EADDRINUSE on the first port is recovered by binding the
+    next one - the mechanism this finding does not touch."""
+    mgr = MockSystemManager()
+    blocker = WebDashboardServer(mgr, port=9302)
+    blocker.start(background=True)
+    try:
+        server = WebDashboardServer(mgr, port=9302)
+        server.start(background=True)
+        try:
+            assert server.port != 9302
+        finally:
+            server.stop()
+    finally:
+        blocker.stop()
+
+
+def test_post_body_over_max_size_is_rejected_with_413(web_server_fixture):
+    """WEB-21: the body read used to be `Content-Length` bytes, unbounded -
+    a slow or malicious client could claim any size and have this handler
+    thread read all of it into memory before JSON parsing even started."""
+    server, _ = web_server_fixture
+    big_payload = {
+        "device": "Stage_A",
+        "command": "home_axis",
+        "junk": "x" * (WebAPIHandler.MAX_POST_BODY_BYTES + 100),
+    }
+    url = f"http://127.0.0.1:{server.port}/api/command"
+    status, _, body = make_request(url, method="POST", json_data=big_payload)
+    assert status == 413
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert "too large" in data["message"].lower()
+
+
+def test_screenshot_reuses_a_single_mss_instance(web_server_fixture):
+    """WEB-21: /api/screenshot used to open a brand new mss capture context
+    on every single request. mss.mss() must be constructed at most once
+    across repeated screenshot requests, with the same instance reused."""
+    server, _ = web_server_fixture
+    WebAPIHandler._mss_instance = None
+    try:
+        class FakeShot:
+            size = (10, 10)
+            bgra = b"\x00" * (10 * 10 * 4)
+
+        class FakeSct:
+            monitors = [None, {"width": 10, "height": 10, "left": 0, "top": 0}]
+
+            def grab(self, monitor):
+                return FakeShot()
+
+        fake_sct = FakeSct()
+        url = f"http://127.0.0.1:{server.port}/api/screenshot"
+        with patch("mss.mss", return_value=fake_sct) as mock_mss:
+            status1, _, _ = make_request(url)
+            status2, _, _ = make_request(url)
+
+        assert status1 == 200
+        assert status2 == 200
+        assert mock_mss.call_count == 1, "mss.mss() constructed more than once"
+        assert WebAPIHandler._mss_instance is fake_sct
+    finally:
+        WebAPIHandler._mss_instance = None

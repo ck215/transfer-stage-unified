@@ -30,6 +30,9 @@ class WebModelAdapter:
         self._device_locks: Dict[str, threading.Lock] = {}
         self.log_buffer: List[str] = []
         self.error_buffer: List[Dict[str, Any]] = []
+        # Async hardware scan state (WEB-15 residue). See start_hardware_scan.
+        self._scan_thread: Optional[threading.Thread] = None
+        self._scan_state: Optional[Dict[str, Any]] = None
 
     def _get_device_lock(self, device_name: str) -> threading.Lock:
         with self._state_lock:
@@ -74,6 +77,64 @@ class WebModelAdapter:
             "controllers": controllers,
             "status": "ok"
         }
+
+    def start_hardware_scan(self) -> Dict[str, Any]:
+        """WEB-15 residue: the async device-type probe that scan_hardware's
+        docstring above says is a follow-up, not done there. probe_device_at
+        (app_bootstrap.py) opens each port at several baud rates with its own
+        per-attempt timeouts and can take seconds per port, so it must not
+        run on the request thread of a fast GET/POST. This kicks it off on a
+        background daemon thread; get_scan_status() below is the poll side.
+
+        Single-flight: a scan already running returns a 409-shaped result
+        instead of starting a second thread over the same ports.
+        """
+        import app_bootstrap
+
+        with self._state_lock:
+            if self._scan_state is not None and self._scan_state.get("status") == "running":
+                return {
+                    "status": "error",
+                    "code": 409,
+                    "message": "A hardware scan is already running.",
+                }
+            self._scan_state = {"status": "running", "results": {}, "error": None}
+
+        def _worker():
+            try:
+                ports = [p for p in app_bootstrap.discover_ports() if p != "SIM"]
+                results: Dict[str, Optional[str]] = {}
+                for p in ports:
+                    try:
+                        results[p] = app_bootstrap.probe_device_at(p)
+                    except Exception as e:
+                        results[p] = None
+                    with self._state_lock:
+                        if self._scan_state is not None:
+                            self._scan_state["results"] = dict(results)
+                with self._state_lock:
+                    if self._scan_state is not None:
+                        self._scan_state["status"] = "done"
+            except Exception as e:
+                with self._state_lock:
+                    if self._scan_state is not None:
+                        self._scan_state["status"] = "error"
+                        self._scan_state["error"] = str(e)
+
+        self._scan_thread = threading.Thread(target=_worker, daemon=True, name="hw-scan-probe")
+        self._scan_thread.start()
+        return {"status": "ok", "code": 200, "message": "Hardware scan started."}
+
+    def get_scan_status(self) -> Dict[str, Any]:
+        """Poll side of start_hardware_scan. status is one of "not_started",
+        "running", "done", or "error"; results maps port -> probed device
+        type (or None if that port's probe failed/found nothing), filled in
+        incrementally as each port finishes so a slow last port doesn't hide
+        the ones already probed."""
+        with self._state_lock:
+            if self._scan_state is None:
+                return {"status": "not_started", "results": {}}
+            return dict(self._scan_state)
 
     def initialize_setup(self, configs: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Dict[str, Any]:
         """
@@ -166,6 +227,26 @@ class WebModelAdapter:
             # so the write is not merely wrong, it raises.
             if hasattr(model, 'disable'):
                 model.disable()
+
+        # Wire each new model's poller log to this adapter's own log buffer
+        # (WEB-5). `WebDashboardWindow.__init__` only wires models that
+        # exist at construction time, and `run_web_app` builds the window
+        # around an empty SystemManager before any device exists (the real
+        # models are built here, later, by the setup wizard) - so that
+        # wiring never ran for a model built through the web view, and the
+        # Controller Log modal stayed empty forever. `append_log` already
+        # caps the buffer at 500 under its own lock, so this closure does
+        # not need - and must not repeat - a manual pop of its own; the
+        # `WebAPIHandler.log_buffer` proxy that used to be poked directly
+        # here has no `pop`, and calling it would raise AttributeError.
+        for dev, model in active_models.items():
+            poller = getattr(model, "poller", None)
+            if poller is not None:
+                def _make_logger(device_name):
+                    def _log(message):
+                        self.append_log(f"[{device_name}] {message}")
+                    return _log
+                poller.log_updater = _make_logger(dev)
 
         # Cross-model wiring, through the registry (RC-9 item 2) — the same
         # one call the desktop launchers make.
@@ -319,17 +400,25 @@ class WebModelAdapter:
                 # sampling rate was whatever the browser happened to poll at,
                 # and a stalled read blocked the HTTP handler thread. The model
                 # samples on its own thread; this reads the cache.
-                model_state = {}
-                schema = getattr(model, "ui_schema", {"sections": []})
-                for sec in schema.get("sections", []):
-                    for el in sec.get("elements", []):
-                        attr = el.get("model_attr")
-                        if attr and hasattr(model, attr):
-                            model_state[attr] = getattr(model, attr)
+                #
+                # One device's read is isolated from the rest (WEB-14): a
+                # raising property getter or a broken ui_schema used to blow
+                # up the whole /api/state response, graying out every device
+                # card over one bad one instead of just its own.
+                try:
+                    model_state = {}
+                    schema = getattr(model, "ui_schema", {"sections": []})
+                    for sec in schema.get("sections", []):
+                        for el in sec.get("elements", []):
+                            attr = el.get("model_attr")
+                            if attr and hasattr(model, attr):
+                                model_state[attr] = getattr(model, attr)
 
-                # Attach connection_status badging
-                model_state["connection_status"] = self._determine_connection_status(model)
-                state[name] = model_state
+                    # Attach connection_status badging
+                    model_state["connection_status"] = self._determine_connection_status(model)
+                    state[name] = model_state
+                except Exception as e:
+                    state[name] = {"_error": str(e)}
         return state
 
     @staticmethod
@@ -365,15 +454,25 @@ class WebModelAdapter:
                     allowed.add(val)
         return allowed
 
-    @staticmethod
-    def _schema_attrs(model) -> set:
+    # Element types whose model_attr is meant to be operator-writable
+    # (REDPERCENT-20, web half). `readonly` elements also carry a
+    # `model_attr` — that's how they render the value — but that is a
+    # display binding, not a write grant. Before this, `_schema_attrs`
+    # allowlisted every element with a `model_attr` regardless of type, so
+    # a client could POST /api/set_attr for a `readonly` field such as
+    # RedPercentSystem's `current_red`/`red_change` and overwrite a value
+    # the model computes from live monitoring data.
+    _WRITABLE_ELEMENT_TYPES = frozenset({"entry", "dropdown", "toggle"})
+
+    @classmethod
+    def _schema_attrs(cls, model) -> set:
         """Every model_attr a model's own ui_schema exposes for writing."""
         allowed = set()
         schema = getattr(model, "ui_schema", {"sections": []})
         for sec in schema.get("sections", []):
             for el in sec.get("elements", []):
                 attr = el.get("model_attr")
-                if attr:
+                if attr and el.get("type") in cls._WRITABLE_ELEMENT_TYPES:
                     allowed.add(attr)
         return allowed
 
@@ -471,17 +570,41 @@ class WebModelAdapter:
                 }
 
     def full_stop_all(self) -> Dict[str, Any]:
+        """Broadcast FULL STOP and report what actually confirmed (WEB-18).
+
+        `SystemManager.full_stop_all` already fans the stop out to every
+        model on its own thread, lock-free, and returns `{name: ok}` without
+        raising. This used to call it and report `status: ok` unconditionally,
+        discarding that per-device result — so a model that failed to
+        confirm looked identical, over the API, to a clean stop. The
+        omission surfaced only later, and only if a toast happened to be
+        seen, through the destructive error-poll path (WEB-9).
+
+        Deliberately does NOT touch `self.system_manager.lock` or any
+        per-device lock here: the whole point of `full_stop_all` is that it
+        is not blocked by a wedged device lock, and wrapping it in one here
+        would reintroduce exactly that.
+        """
         with self._state_lock:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
-            
+            manager = self.system_manager
+
         try:
-            self.system_manager.full_stop_all()
-            return {"status": "ok", "code": 200}
+            results = manager.full_stop_all()
         except Exception as e:
-            import traceback
             print(f"[WebModelAdapter] full_stop_all failed:\n{traceback.format_exc()}")
             return {"status": "error", "code": 500, "message": str(e)}
+
+        response: Dict[str, Any] = {"status": "ok", "code": 200}
+        if isinstance(results, dict):
+            response["results"] = results
+            unconfirmed = sorted(name for name, ok in results.items() if not ok)
+            if unconfirmed:
+                response["status"] = "error"
+                response["message"] = (
+                    "FULL STOP did not confirm for: " + ", ".join(unconfirmed))
+        return response
 
     def set_device_attribute(self, device_name: str, attr: str, value: Any) -> Dict[str, Any]:
         """

@@ -1,3 +1,4 @@
+import errno
 import http.server
 import json
 import os
@@ -5,10 +6,8 @@ import mimetypes
 import secrets
 import threading
 from urllib.parse import urlparse
-import mss
 import io
 import base64
-from PIL import Image
 from typing import Optional
 
 from .web_adapter import WebModelAdapter
@@ -29,6 +28,19 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
     """
     adapter: Optional[WebModelAdapter] = WebModelAdapter()
     static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "static"))
+
+    # A POST body here is always the small JSON commands/configs this API
+    # actually accepts (WEB-21). The read used to be `Content-Length`
+    # bytes, unbounded, so a slow or malicious client claiming a huge
+    # Content-Length handed this handler thread's memory over on request.
+    MAX_POST_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+    # One mss instance, reused across /api/screenshot calls instead of
+    # opening (and platform-side registering) a fresh capture context per
+    # request (WEB-21). Grabs are serialized under _mss_lock rather than
+    # relying on mss being safe for concurrent use from multiple threads.
+    _mss_instance = None
+    _mss_lock = threading.Lock()
 
     # ---- security boundary (RC-10 item 2) -------------------------------
     #
@@ -99,7 +111,10 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             cls.adapter.set_system_manager(val)
 
     def _send_json(self, status_code, data):
-        payload = json.dumps(data).encode("utf-8")
+        # default=str: a route handing back e.g. a raw exception object or a
+        # timestamp should degrade to its string form, not take the whole
+        # response down with a raise from inside json.dumps itself.
+        payload = json.dumps(data, default=str).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -155,6 +170,24 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(500, f"Error reading file: {e}")
 
     def do_GET(self):
+        # Every route body runs under this envelope (WEB-14): an unhandled
+        # exception used to propagate out of BaseHTTPRequestHandler and drop
+        # the connection with no response at all, which the browser reports
+        # as a bare network failure indistinguishable from the server being
+        # down. A route that fails now still answers, with a 500 and a
+        # message, so the operator sees a specific error instead of a dead
+        # dashboard tile.
+        try:
+            self._do_GET_impl()
+        except Exception as e:
+            import traceback
+            print(f"[WebAPIHandler] GET {self.path} failed:\n{traceback.format_exc()}")
+            try:
+                self._send_json(500, {"status": "error", "message": str(e)})
+            except Exception:
+                pass
+
+    def _do_GET_impl(self):
         parsed = urlparse(self.path)
         route = parsed.path
 
@@ -175,6 +208,12 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
         elif route == "/api/setup/scan":
             scan_result = adapter.scan_hardware()
             self._send_json(200, scan_result)
+
+        elif route == "/api/setup/scan/status":
+            # WEB-15 residue: poll side of POST /api/setup/scan/start. Never
+            # blocks — probe_device_at runs on the adapter's background
+            # thread, this just reads whatever it has filled in so far.
+            self._send_json(200, adapter.get_scan_status())
 
         elif route == "/api/logs":
             logs = adapter.get_logs()
@@ -213,8 +252,17 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             # (minus the JSON content type, which a GET does not carry).
             if not self._authorize(require_json=False):
                 return
+            # Imported lazily (WEB-21): a headless launch, or any test that
+            # never hits this route, used to pay for mss/PIL at module import
+            # time regardless, and a machine missing either package could not
+            # import this module at all just to serve the rest of the API.
+            import mss
+            from PIL import Image
             try:
-                with mss.mss() as sct:
+                with self.__class__._mss_lock:
+                    if self.__class__._mss_instance is None:
+                        self.__class__._mss_instance = mss.mss()
+                    sct = self.__class__._mss_instance
                     monitor = sct.monitors[1]
                     sct_img = sct.grab(monitor)
                     img = Image.frombytes('RGB', sct_img.size, sct_img.bgra, 'raw', 'BGRX')
@@ -237,11 +285,40 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             self._serve_static(route)
 
     def do_POST(self):
+        # Same envelope as do_GET (WEB-14) — a raising command handler must
+        # still answer the request instead of dropping the connection.
+        try:
+            self._do_POST_impl()
+        except Exception as e:
+            import traceback
+            print(f"[WebAPIHandler] POST {self.path} failed:\n{traceback.format_exc()}")
+            try:
+                self._send_json(500, {"status": "error", "message": str(e)})
+            except Exception:
+                pass
+
+    def _do_POST_impl(self):
         if not self._authorize(require_json=True):
             return
         parsed = urlparse(self.path)
         route = parsed.path
         length = int(self.headers.get("Content-Length", 0))
+        if length > self.MAX_POST_BODY_BYTES:
+            # Drain the declared body off the wire in bounded chunks before
+            # answering, rather than reading it into one bytes object (the
+            # thing this cap exists to avoid) or leaving it unread. Bailing
+            # out here without draining races the client's still-in-flight
+            # write: the connection resets under it and the client sees a
+            # bare broken pipe instead of the 413 this is trying to deliver.
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+            return self._send_json(413, {
+                "status": "error",
+                "message": f"Request body too large (max {self.MAX_POST_BODY_BYTES} bytes)"})
         body = self.rfile.read(length) if length > 0 else b"{}"
 
         try:
@@ -282,6 +359,14 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             configs = data.get("device_configs", data.get("configs", data))
             init_func = getattr(adapter, "initialize_system", adapter.initialize_setup)
             result = init_func(configs)
+            code = result.get("code", 200)
+            return self._send_json(code, result)
+
+        if route == "/api/setup/scan/start":
+            # WEB-15 residue: kicks off the background device-type probe;
+            # /api/setup/scan/status (GET) polls it. 409 if one is already
+            # running (adapter enforces single-flight, not this route).
+            result = adapter.start_hardware_scan()
             code = result.get("code", 200)
             return self._send_json(code, result)
 
@@ -424,14 +509,32 @@ class WebDashboardServer:
     def start(self, background=True):
         handler_cls = WebAPIHandler
         handler_cls.adapter = self.adapter
-        
-        # If port is busy, find next open port
-        for attempt in range(10):
+
+        # If the port is busy, try the next one (WEB-16). Only
+        # errno.EADDRINUSE means "busy" - any other OSError (permission
+        # denied, bad host, address not available) is a real failure and
+        # must not be silently treated as "keep incrementing the port",
+        # which used to mask it. And if every attempt in the range really
+        # is EADDRINUSE, `self.server` falls out of this loop as None; the
+        # old code then let `self.server.serve_forever` raise a bare
+        # AttributeError below instead of saying what actually happened.
+        self.server = None
+        first_port = self.port
+        last_err = None
+        for _attempt in range(10):
             try:
                 self.server = ThreadingHTTPServer((self.host, self.port), handler_cls)
                 break
-            except OSError:
+            except OSError as e:
+                if e.errno != errno.EADDRINUSE:
+                    raise
+                last_err = e
                 self.port += 1
+
+        if self.server is None:
+            raise RuntimeError(
+                f"Could not bind the web dashboard to any port in "
+                f"{first_port}-{first_port + 9} on {self.host}: {last_err}")
 
         # With port=0 the OS picks an ephemeral port, so self.port has to be
         # read back from the socket or callers build URLs for port 0.
