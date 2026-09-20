@@ -534,6 +534,22 @@ def test_api_full_stop_all(web_server_fixture):
     assert data["status"] == "ok"
     assert mgr.full_stop_called is True
 
+
+def test_api_full_stop_all_reports_unconfirmed_device(web_server_fixture):
+    """WEB-18: a device that did not confirm its stop must show up in the
+    response body, not be swallowed into a blanket status: ok."""
+    server, mgr = web_server_fixture
+    def mock_full_stop_all():
+        return {"Stage_A": True, "Stage_B": False}
+    mgr.full_stop_all = mock_full_stop_all
+
+    url = f"http://127.0.0.1:{server.port}/api/system/full_stop"
+    status, _, body = make_request(url, method="POST", json_data={})
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert data["results"] == {"Stage_A": True, "Stage_B": False}
+    assert "Stage_B" in data["message"]
+
 def test_api_options_success(web_server_fixture):
     server, mgr = web_server_fixture
     url = f"http://127.0.0.1:{server.port}/api/options?device=Stage_A&command=get_opts"

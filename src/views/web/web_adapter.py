@@ -471,17 +471,41 @@ class WebModelAdapter:
                 }
 
     def full_stop_all(self) -> Dict[str, Any]:
+        """Broadcast FULL STOP and report what actually confirmed (WEB-18).
+
+        `SystemManager.full_stop_all` already fans the stop out to every
+        model on its own thread, lock-free, and returns `{name: ok}` without
+        raising. This used to call it and report `status: ok` unconditionally,
+        discarding that per-device result — so a model that failed to
+        confirm looked identical, over the API, to a clean stop. The
+        omission surfaced only later, and only if a toast happened to be
+        seen, through the destructive error-poll path (WEB-9).
+
+        Deliberately does NOT touch `self.system_manager.lock` or any
+        per-device lock here: the whole point of `full_stop_all` is that it
+        is not blocked by a wedged device lock, and wrapping it in one here
+        would reintroduce exactly that.
+        """
         with self._state_lock:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
-            
+            manager = self.system_manager
+
         try:
-            self.system_manager.full_stop_all()
-            return {"status": "ok", "code": 200}
+            results = manager.full_stop_all()
         except Exception as e:
-            import traceback
             print(f"[WebModelAdapter] full_stop_all failed:\n{traceback.format_exc()}")
             return {"status": "error", "code": 500, "message": str(e)}
+
+        response: Dict[str, Any] = {"status": "ok", "code": 200}
+        if isinstance(results, dict):
+            response["results"] = results
+            unconfirmed = sorted(name for name, ok in results.items() if not ok)
+            if unconfirmed:
+                response["status"] = "error"
+                response["message"] = (
+                    "FULL STOP did not confirm for: " + ", ".join(unconfirmed))
+        return response
 
     def set_device_attribute(self, device_name: str, attr: str, value: Any) -> Dict[str, Any]:
         """

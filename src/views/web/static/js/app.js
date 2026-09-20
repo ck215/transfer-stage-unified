@@ -1344,7 +1344,14 @@ class TransferStageApp {
   }
 
   async triggerGlobalEmergencyStop() {
-    this.showToast('GLOBAL EMERGENCY STOP BROADCASTED', 'error');
+    // WEB-18: this used to show "BROADCASTED" before the fetch even went
+    // out, so the operator saw success before the server had done
+    // anything. The pending toast says only that the request was sent;
+    // the outcome toast below is the one that speaks for the hardware,
+    // and it reads the per-device results the server now returns instead
+    // of assuming every model stopped just because the request didn't
+    // throw.
+    this.showToast('FULL STOP requested...', 'warning');
 
     try {
       const response = await fetch('/api/system/full_stop', {
@@ -1352,12 +1359,18 @@ class TransferStageApp {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
       });
+      const resData = await response.json().catch(() => null);
 
-      if (!response.ok) {
-        const resData = await response.json().catch(() => null);
-        const errorMsg = (resData && resData.message) || `HTTP ${response.status}`;
-        this.showToast(`Global stop failed: ${errorMsg}`, 'error');
+      if (!response.ok || (resData && resData.status === 'error')) {
+        const failed = (resData && resData.results)
+          ? Object.entries(resData.results).filter(([, ok]) => !ok).map(([name]) => name)
+          : [];
+        const errorMsg = (resData && resData.message) ||
+          (failed.length ? `Did not confirm: ${failed.join(', ')}` : `HTTP ${response.status}`);
+        this.showToast(`FULL STOP incomplete: ${errorMsg}`, 'error');
         console.error('Global stop error:', resData);
+      } else {
+        this.showToast('FULL STOP confirmed for all devices', 'success');
       }
     } catch (err) {
       this.showToast(`Network error executing global stop: ${err.message}`, 'error');

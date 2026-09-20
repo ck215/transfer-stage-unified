@@ -121,3 +121,31 @@ def test_web_adapter_full_stop_all():
     assert res2["status"] == "ok"
     assert res2["code"] == 200
     assert mgr.called is True
+
+
+def test_full_stop_reports_per_device_results():
+    """WEB-18: the adapter must surface SystemManager.full_stop_all's
+    per-device {name: ok} dict rather than discarding it and always
+    reporting status "ok"."""
+    from views.web.web_adapter import WebModelAdapter
+
+    class MockMgrAllConfirmed:
+        def full_stop_all(self):
+            return {"Stage_A": True, "Stage_B": True}
+
+    adapter = WebModelAdapter()
+    adapter.set_system_manager(MockMgrAllConfirmed())
+    res = adapter.full_stop_all()
+    assert res["status"] == "ok"
+    assert res["results"] == {"Stage_A": True, "Stage_B": True}
+
+    class MockMgrOneFailed:
+        def full_stop_all(self):
+            return {"Stage_A": True, "Stage_B": False}
+
+    adapter2 = WebModelAdapter()
+    adapter2.set_system_manager(MockMgrOneFailed())
+    res2 = adapter2.full_stop_all()
+    assert res2["status"] == "error"
+    assert res2["results"] == {"Stage_A": True, "Stage_B": False}
+    assert "Stage_B" in res2["message"]
