@@ -785,20 +785,30 @@ class PlotDialog(QDialog):
         self._layout.addLayout(self.plot_frame)
         self.canvas = None
         self.toolbar = None
+        self._csv_metadata = None
 
     def load_csv(self):
         from model.plot_data import parse_red_percent_csv, render_red_percent_figure
         filename, _ = QFileDialog.getOpenFileName(self, "Select Red Percent Log", "", "CSV Files (*.csv);;All Files (*)")
         if not filename: return
         try:
-            with open(filename, 'r') as f:
+            # `newline=''` matches the Tk reference and `save_to_csv`'s own
+            # writer: `csv` handles line endings itself, and opening without
+            # it lets a CRLF file be double-translated on Windows.
+            with open(filename, 'r', newline='') as f:
                 parsed = parse_red_percent_csv(f.read())
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load CSV: {e}")
             return
-        if not parsed["dims"] and not parsed["red_percents"]:
+        # A header-only CSV (or one with a dims column but zero data rows)
+        # has an empty `dims` *and* an empty `red_percents`, or a non-empty
+        # `dims` with still-empty `red_percents` — either way there is
+        # nothing to plot. Gating on `dims` alone let that case slip through
+        # and draw an empty plot instead of reporting the real problem.
+        if not parsed["red_percents"]:
             QMessageBox.critical(self, "Invalid File", "CSV missing 'Red Percent' column")
             return
+        self._csv_metadata = parsed["metadata"]
         self.select_plot_type(parsed["dims"], parsed["red_percents"], parsed["dim_data"])
 
     def select_plot_type(self, dims_found, red_percents, dim_data):
@@ -857,7 +867,25 @@ class PlotDialog(QDialog):
             self.toolbar.deleteLater()
 
         fig = render_red_percent_figure(plot_type, dim1, dim2, dim3, red_percents, dim_data)
-                
+
+        # Tk sets the plot title from the CSV's own metadata block (probe
+        # name and tilt); this renderer ignored `parsed["metadata"]`
+        # entirely. `render_red_percent_figure` is shared with the Tk and
+        # Web views and already sets a generic title per axis, so the probe
+        # identity is appended here rather than duplicating that logic.
+        meta = self._csv_metadata or {}
+        probe = meta.get("Probe Name")
+        tilt = meta.get("Probe Tilt Angle")
+        if probe or tilt:
+            parts = []
+            if probe:
+                parts.append(f"Probe: {probe}")
+            if tilt:
+                parts.append(f"Tilt: {tilt}")
+            suffix = " (" + ", ".join(parts) + ")"
+            for ax in fig.axes:
+                ax.set_title(ax.get_title() + suffix)
+
         self.canvas = FigureCanvasQTAgg(fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
         
@@ -912,6 +940,14 @@ class RedPercentDynamicView(QtDynamicView):
             self, "Save Red Detection Log", default_name, "CSV Files (*.csv);;All Files (*)"
         )
         if file_path:
+            # Tk's file_save composite passes `defaultextension=".csv"` to
+            # `asksaveasfilename`, which Tk enforces itself. Qt's
+            # `getSaveFileName` has no equivalent: the filter string is a
+            # display hint only, so a bare filename (most visibly on Linux,
+            # where the native dialog does not append the filter's
+            # extension) saves with none at all.
+            if not os.path.splitext(file_path)[1]:
+                file_path += ".csv"
             try:
                 self.model.data_log.save_to_csv(file_path)
                 print(f"[{self.__class__.__name__}] Log saved to: {file_path}")
