@@ -197,3 +197,74 @@ def test_teardown_stops_the_model_owned_loops():
     probe.teardown()
     assert _wait_for(lambda: not probe._input_thread.is_alive()), (
         "the input pump outlived the model")
+
+
+# -- D-4: the input gate ----------------------------------------------------
+
+def test_d4_a_closed_gate_stops_the_manual_pump_without_stopping_the_mode():
+    """Gating, never stopping. Losing focus must not halt the bench.
+
+    `flush_neutral` was the old answer and could not work: it zeroed the
+    cached axis state, and the poll loop — four times faster than the pump —
+    read the physical stick again and refilled it before the next send
+    (GAMEPAD-8, PYSIDE-14, VIEW-TKINTER-9). Gating the *send* is what holds
+    the axis.
+    """
+    probe = _probe()
+    try:
+        probe.enter_manual()
+        assert _wait_for(lambda: len(probe.serial_comm.manual) >= 2)
+
+        probe.set_input_gate(False)
+        assert probe.input_gate_open is False
+        # The mode is untouched: no stop packet, still in manual.
+        assert probe.manual_flag is True
+        assert probe.system_enabled is True
+
+        # One neutral frame on the closing edge, then silence.
+        time.sleep(probe.MANUAL_COMMAND_INTERVAL * 6)
+        probe.serial_comm.manual.clear()
+        time.sleep(probe.MANUAL_COMMAND_INTERVAL * 6)
+        assert probe.serial_comm.manual == [], (
+            "a closed gate must not keep writing motion")
+    finally:
+        probe.teardown()
+
+
+def test_d4_the_closing_edge_sends_one_neutral_frame():
+    """Otherwise the last non-zero command stands and the axis keeps moving."""
+    probe = _probe()
+    try:
+        probe.enter_manual()
+        assert _wait_for(lambda: len(probe.serial_comm.manual) >= 2)
+
+        probe.serial_comm.manual.clear()
+        probe.set_input_gate(False)
+        assert _wait_for(lambda: len(probe.serial_comm.manual) >= 1), (
+            "closing the gate sent nothing")
+        assert probe.serial_comm.manual[0].get("x_axisStatus", 0.0) == 0.0
+    finally:
+        probe.teardown()
+
+
+def test_d4_reopening_the_gate_resumes_the_pump():
+    probe = _probe()
+    try:
+        probe.enter_manual()
+        probe.set_input_gate(False)
+        time.sleep(probe.MANUAL_COMMAND_INTERVAL * 6)
+        probe.serial_comm.manual.clear()
+
+        probe.set_input_gate(True)
+        assert _wait_for(lambda: len(probe.serial_comm.manual) >= 1), (
+            "reopening the gate did not resume manual input")
+    finally:
+        probe.teardown()
+
+
+def test_d4_the_gate_is_open_by_default():
+    probe = _probe()
+    try:
+        assert probe.input_gate_open is True
+    finally:
+        probe.teardown()

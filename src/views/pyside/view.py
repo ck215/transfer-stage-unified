@@ -743,11 +743,33 @@ class DashboardWindow(QMainWindow):
         self.populate_sidebar()
 
     def changeEvent(self, event):
-        if event.type() == QEvent.WindowDeactivate:
-            for model_id, model in self.system_manager.active_models.items():
-                if hasattr(model, 'poller') and model.poller:
-                    model.poller.flush_neutral()
+        if event.type() in (QEvent.WindowActivate, QEvent.WindowDeactivate):
+            # Deferred by one event-loop turn on purpose. On deactivate, Qt has
+            # not yet made the *new* window active, so asking right now cannot
+            # distinguish "the operator switched to another application" from
+            # "this application opened a modal dialog" — and the second must
+            # not gate input (D-4).
+            QTimer.singleShot(0, self._sync_input_gate)
         super().changeEvent(event)
+
+    def _app_has_focus(self):
+        """True while any window of *this* application is active.
+
+        A child dialog — a file picker, a rotation confirmation, an error box
+        — keeps the application focused even though the main window is
+        deactivated. Treating that as focus loss is the defect behind
+        PYSIDE-14.
+        """
+        app = QApplication.instance()
+        return bool(app and app.activeWindow() is not None)
+
+    def _sync_input_gate(self):
+        """D-4: gate controller input while unfocused. Never stop."""
+        is_open = self._app_has_focus()
+        for model in self.system_manager.get_active_models_snapshot().values():
+            setter = getattr(model, "set_input_gate", None)
+            if callable(setter):
+                setter(is_open)
 
     def populate_sidebar(self):
         self.device_list.blockSignals(True)

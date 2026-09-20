@@ -523,6 +523,33 @@ def _reset_global_error_routing():
         pass
 
 @pytest.fixture
+def gate_model():
+    """A managed model that records the D-4 input gate and its stop calls."""
+    class GateModel:
+        def __init__(self):
+            self.gate_open = True
+            self.power_down_calls = 0
+            self.disable_calls = 0
+
+        def set_input_gate(self, is_open):
+            self.gate_open = is_open
+
+        def power_down(self):
+            self.power_down_calls += 1
+
+        def disable(self):
+            self.disable_calls += 1
+
+        def teardown(self):
+            self.power_down()
+
+        def emergency_stop(self):
+            self.power_down()
+
+    return GateModel()
+
+
+@pytest.fixture
 def dual_shutdown_model():
     class DualShutdownModel:
         def __init__(self):

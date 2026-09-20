@@ -177,13 +177,11 @@ class DashboardWindow(tk.Toplevel):
         self.title("Unified Control Dashboard")
         self.geometry("1000x800")
         
-        def on_focus_out(event):
-            if event.widget == self:
-                for model in active_models.values():
-                    if hasattr(model, 'poller') and model.poller:
-                        model.poller.flush_neutral()
-                        
-        self.bind("<FocusOut>", on_focus_out)
+        # D-4: gate controller input while the application is unfocused.
+        # Never stop — a move in flight continues, and alt-tabbing to read a
+        # value does not halt the bench.
+        self.bind("<FocusOut>", lambda e: self._sync_input_gate(e))
+        self.bind("<FocusIn>", lambda e: self._sync_input_gate(e))
         
         # tk.Button ignores bg/fg on macOS Aqua, so a red/white button renders as
         # an invisible white-on-white face. Use a Label styled as a button instead.
@@ -233,6 +231,33 @@ class DashboardWindow(tk.Toplevel):
         self._build_devices_menu()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _sync_input_gate(self, event=None):
+        """D-4. `focus_get()` is what tells a child dialog from a real loss.
+
+        Tk fires `<FocusOut>` on this window both when the operator switches
+        to another application *and* when this application opens a dialog.
+        `focus_get()` returns the widget holding focus **within this
+        application**, so a non-None answer means focus is still ours and the
+        gate stays open. Treating the dialog case as focus loss is the defect
+        behind VIEW-TKINTER-9.
+
+        This replaces `poller.flush_neutral()`, which could not work: it zeroed
+        the cached axis state and the poll loop read the physical stick again
+        before the next send (GAMEPAD-8).
+        """
+        if event is not None and getattr(event, "widget", self) is not self:
+            return
+        try:
+            is_open = self.focus_get() is not None
+        except Exception:
+            # A Tk error here means the window is going away; treat it as
+            # unfocused, which is the conservative direction.
+            is_open = False
+        for model in self.system_manager.get_active_models_snapshot().values():
+            setter = getattr(model, "set_input_gate", None)
+            if callable(setter):
+                setter(is_open)
 
     def _build_devices_menu(self):
         """The re-add path Tk did not have (plan.md S6 item 3).

@@ -362,8 +362,15 @@ stall blocks neither the render tick nor FULL STOP).
 **Done.** I-4.1 holds and its `xfail` is retired; I-4.2 and I-4.3 are covered
 by `tests/core/test_model_owned_loops.py`, which contains no GUI at all — that
 is the Web-parity proof. One rate had to win between Tk's 50 ms and PySide's
-20 ms manual pump; **20 ms** was adopted, which changes how Tk manual mode
-feels and is flagged alongside D-12 for an owner ruling.
+20 ms manual pump; **20 ms** was adopted, ratified by the owner on 2026-09-20
+alongside D-12.
+
+**Deferred item completed 2026-09-20: the D-4 input gate.** RC-4 named
+`flush_neutral`'s semantics as a decision, so it could not land with S5. The
+gate is a model-side `Event` checked in `_input_loop`; focus loss closes it,
+a child dialog does not. `flush_neutral` is superseded — it zeroed a cache
+the 5 ms poll loop refilled before the next 20 ms send, which is why it read
+as a no-op.
 
 ---
 

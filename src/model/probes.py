@@ -152,6 +152,18 @@ class BaseProbe:
         self._stepping_deadline = None
         self._last_position = None
 
+        # Input gate (D-4, RC-4). Closed while the application does not have
+        # focus: the manual pump stops sending, so a gamepad bump while the
+        # operator is in another window cannot move the stage.
+        #
+        # **Gating, never stopping.** Losing focus does not emit a stop and
+        # does not leave the mode — a move already in flight continues, and
+        # alt-tabbing to read a value does not halt the bench. It is an
+        # `Event` rather than a bool so the pump sees the change immediately
+        # from whichever thread closed it.
+        self._input_gate_open = threading.Event()
+        self._input_gate_open.set()
+
         # Fault state (RC-2). Set when a command's fate is unknown — a write
         # that failed means the hardware may be in either state, and saying
         # "disabled" would be a guess presented as a fact. It persists until
@@ -451,6 +463,23 @@ class BaseProbe:
         if moved and self._mode is ProbeMode.AUTONOMOUS and self._stepping_deadline is not None:
             self._stepping_deadline = time.time() + self._STEP_SETTLE
             self.touch_activity()
+
+    @property
+    def input_gate_open(self):
+        return self._input_gate_open.is_set()
+
+    def set_input_gate(self, is_open):
+        """Open or close the manual input gate (D-4).
+
+        Called by the views on focus change. **A child dialog deactivating the
+        main window is not focus loss** — that distinction is the actual
+        defect behind GAMEPAD-8 / PYSIDE-14 / VIEW-TKINTER-9, and each view
+        makes it before calling here.
+        """
+        if is_open:
+            self._input_gate_open.set()
+        else:
+            self._input_gate_open.clear()
 
     def _gamepad_bound(self):
         return bool(self.poller and self.poller.gamepad)
@@ -827,19 +856,26 @@ class BaseProbe:
         the timer died and manual mode simply stopped responding with no
         indication that anything had gone wrong.
         """
-        was_manual = False
+        was_pumping = False
         while not self._loops_stop.wait(self.MANUAL_COMMAND_INTERVAL):
             try:
-                manual = bool(self.manual_flag)
+                # The gate is checked here, in the one place that writes motion
+                # from controller input. `flush_neutral` used to be the answer
+                # and could not work: it zeroed the cached axis state, and the
+                # poll loop — four times faster than this pump — simply read
+                # the physical stick again and refilled it before the next
+                # send. Gating the *send* is what actually holds the axis.
+                manual = bool(self.manual_flag) and self._input_gate_open.is_set()
                 if manual and not self._estop.is_set():
                     params = self.poller.get_mapped_state() if self.poller else {}
                     self.send_manual_mode_command(params or {})
-                elif was_manual:
-                    # Neutral on exit (I-4.2). Leaving manual mode has to send
-                    # one zeroed frame, or the last non-zero command stands and
-                    # the axis keeps moving.
+                elif was_pumping:
+                    # Neutral on exit (I-4.2). Leaving manual mode — or having
+                    # the gate close under it — has to send one zeroed frame,
+                    # or the last non-zero command stands and the axis keeps
+                    # moving. One frame, not a stream: the gate is not a stop.
                     self.send_manual_mode_command({})
-                was_manual = manual
+                was_pumping = manual
             except Exception as e:
                 self._enter_fault(f"manual input pump failed: {e}")
                 return

@@ -60,3 +60,52 @@ def test_tk_hiding_a_device_does_not_tear_it_down(dual_shutdown_model):
 
     assert manager.get_model("TestModel") is dual_shutdown_model
     assert dual_shutdown_model.power_down_calls == 0
+
+
+# -- D-4: focus gating, and the child-dialog distinction --------------------
+
+def _gated_dashboard(model):
+    manager = SystemManager()
+    manager.register("TestModel", model)
+    return manager, DashboardWindow(MagicMock(), manager)
+
+
+def test_d4_losing_focus_to_another_application_closes_the_gate(gate_model):
+    manager, dash = _gated_dashboard(gate_model)
+    dash.focus_get = lambda: None          # focus left this application
+    dash._sync_input_gate()
+    assert gate_model.gate_open is False
+
+
+def test_d4_a_child_dialog_does_not_close_the_gate(gate_model):
+    """The crux of D-4.
+
+    Tk fires <FocusOut> on this window both when the operator switches to
+    another application and when this application opens a dialog — a file
+    picker, the rotation confirmation, an error box. `focus_get()` answers
+    within this application, so a non-None result means focus is still ours.
+    Treating the dialog case as focus loss is VIEW-TKINTER-9.
+    """
+    manager, dash = _gated_dashboard(gate_model)
+    dash.focus_get = lambda: MagicMock()   # a dialog of ours holds focus
+    dash._sync_input_gate()
+    assert gate_model.gate_open is True
+
+
+def test_d4_focus_loss_never_stops_the_hardware(gate_model):
+    """Gate, do not stop. A move in flight continues."""
+    manager, dash = _gated_dashboard(gate_model)
+    dash.focus_get = lambda: None
+    dash._sync_input_gate()
+    assert gate_model.power_down_calls == 0
+    assert gate_model.disable_calls == 0
+
+
+def test_d4_an_event_from_a_child_widget_is_ignored(gate_model):
+    """<FocusOut> bubbles from entry fields; only the window's own counts."""
+    manager, dash = _gated_dashboard(gate_model)
+    dash.focus_get = lambda: None
+    event = MagicMock()
+    event.widget = MagicMock()             # some entry, not the window
+    dash._sync_input_gate(event)
+    assert gate_model.gate_open is True, "a child widget's event must not gate"

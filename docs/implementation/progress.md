@@ -53,7 +53,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
 | S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
 | S5 | Input service and model-owned loops | done | | 2026-09-19 | RC-13 + RC-4. I-4.1 holds. Web has manual mode for the first time. S6 unblocked. |
-| S6 | Hide/show semantics (D-1) | done | | 2026-09-20 | All 4 items. Tk got a real re-add path. order_dependent 3 -> 2. |
+| S6 | Hide/show semantics (D-1) | done | `e9fc26f` | 2026-09-20 | All 4 items. Tk got a real re-add path. order_dependent 3 -> 2. |
 | S7 | Probe mode state machine (RC-3) | done | `8fc9f00` | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
 | S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
 | S9 | Typed parameters (RC-6) | partial | | 2026-09-20 | Items 1 and 4 done (both speed/temperature hazards). Items 2 and 3 remain. |
@@ -1120,6 +1120,47 @@ That is now twice that a quarantine entry blamed the architecture and turned
 out to be harness wiring. The lesson from the S9 session stands and should be
 applied to the last two before any architectural explanation is believed.
 
+### 2026-09-20 — D-4: the input gate (S5's deferred item)
+
+Loops gate: 11 passed. Four model tests + four Tk view tests.
+
+**This is S5 work finished late**, not a new stage. RC-4's corrective design
+named `flush_neutral`'s semantics as DECISION D-4, so the item could not land
+while the decision was open. It is recorded here rather than silently folded
+into S6.
+
+**`flush_neutral` could never have worked, and that is why it was a no-op.**
+It zeroed the poller's cached axis state — and the poll loop runs at 5 ms
+against a 20 ms pump, so it read the physical stick again and refilled the
+cache four times over before the next send. Gating the *send* is what
+actually holds the axis. The gate is a `threading.Event` on the model,
+checked in `_input_loop`, which is the one place controller input becomes
+motion.
+
+**Gating, never stopping.** A closed gate emits no stop packet and does not
+leave the mode: a move already in flight continues, and alt-tabbing to read a
+value does not halt the bench. The closing edge sends exactly one neutral
+frame — the same I-4.2 rule as leaving manual mode — because otherwise the
+last non-zero command stands.
+
+**A child dialog is not focus loss.** This is the part of D-4 that is
+actually hard, and each view answers it in its own idiom:
+
+* **Tk** — `focus_get()` answers *within this application*, so a non-None
+  result means one of our own dialogs has focus and the gate stays open.
+  Events bubbling up from entry widgets are ignored; only the window's own
+  count.
+* **PySide** — the check is deferred one event-loop turn with
+  `QTimer.singleShot(0, …)`. On `WindowDeactivate` Qt has **not yet** made
+  the new window active, so asking immediately cannot tell "switched
+  applications" from "opened a modal dialog". After the turn,
+  `QApplication.activeWindow()` is non-None exactly when the focus stayed
+  with us.
+
+Without that distinction the rotation-confirmation dialog — which exists to
+be answered before a risky move — would itself gate the input for the move it
+is confirming.
+
 ### Still waiting on the owner
 
 1. **D-7** — firmware protocol v2. Recommendation: **adopt**. Requires
@@ -1188,7 +1229,7 @@ it) · `n/a` (with a reason).
 | GAMEPAD-5 | RC13 / RC7 | S5 | root cause | open |
 | GAMEPAD-6 | RC7 | S10 | root cause | open |
 | GAMEPAD-7 | RC4 | S5 | root cause | open |
-| GAMEPAD-8 | RC4 | S5 | root cause | open |
+| GAMEPAD-8 | RC4 | S5 | root cause | closed (D-4 input gate replaces flush_neutral; test_d4_a_closed_gate_stops_the_manual_pump_without_stopping_the_mode) |
 | GAMEPAD-9 | RC1 | S2 | root cause | closed (loops moved to the models; test_manual_mode_drives_hardware_with_no_gui_at_all, tests/core/test_model_owned_loops.py) |
 | GAMEPAD-10 | RC13 | S5 | root cause | open |
 | GAMEPAD-11 | RC12 | S16 | explicit | open |
@@ -1234,7 +1275,7 @@ it) · `n/a` (with a reason).
 | PYSIDE-11 | LOCAL-OK | S15 | explicit | open |
 | PYSIDE-12 | RC7 | S10 | root cause | open |
 | PYSIDE-13 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
-| PYSIDE-14 | RC4 | S5 | root cause | open |
+| PYSIDE-14 | RC4 | S5 | root cause | closed (D-4; deferred activeWindow check distinguishes a child dialog, tests/core/test_tkinter_teardown.py + pyside _app_has_focus) |
 | PYSIDE-15 | RC8 | S11 | root cause | open |
 | PYSIDE-16 | LOCAL-OK | S15 | explicit | open |
 | PYSIDE-17 | LOCAL-OK | S15 | explicit | open |
@@ -1331,7 +1372,7 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-6 | RC13 | S5 | root cause | open |
 | VIEW-TKINTER-7 | RC1 | S2 | root cause | closed (verified by inspection: app.py builds before withdraw and reports failure) |
 | VIEW-TKINTER-8 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
-| VIEW-TKINTER-9 | RC4 | S5 | root cause | open |
+| VIEW-TKINTER-9 | RC4 | S5 | root cause | closed (D-4; test_d4_a_child_dialog_does_not_close_the_gate) |
 | VIEW-TKINTER-10 | RC13 / RC7 | S5 | root cause | open |
 | VIEW-TKINTER-11 | RC4 | S5 | root cause | open |
 | VIEW-TKINTER-12 | RC4 | S5 | root cause | open |
