@@ -47,7 +47,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 
 | Stage | Title | Status | Commit | Date | Notes |
 |---|---|---|---|---|---|
-| S0 | Baseline, plan, invariant harness | in progress | `be89d1b` | 2026-09-19 | Docs baseline + plan + ledger done. Remaining: `tests/architecture/test_invariants.py`. |
+| S0 | Baseline, plan, invariant harness | done | `bd6f205` | 2026-09-19 | Docs baseline, plan, ledger, test division, invariant harness. |
 | S1 | Purge legacy paths (D-9, D-11) | todo | | | Pure deletion. No dependencies. |
 | S2 | Lifecycle authority (RC-1) | todo | | | Largest stage (41 findings). Split per numbered item. |
 | S3 | Transport truth and E-stop latch | todo | | | SAFETY. |
@@ -146,6 +146,45 @@ Policy and commands: [testing.md](testing.md).
   executing, and `ErrorRouter`'s callbacks are process-global (RC-8). The
   suite's flakiness is a symptom of the architecture under repair. Expect
   this set to dissolve during S3/S8/S11 — do not paper over it with sleeps.
+
+### 2026-09-19 (later still) — S0 invariant harness
+
+`tests/architecture/test_invariants.py`. Gate: `-m "invariants"`, 0.2 s —
+**5 passed, 4 xfailed.**
+
+- The four grep invariants (I-1.5, I-2.3, I-4.1, I-7.1) are each
+  `xfail(strict=True)` naming their fixing stage (S2, S3, S5, S10), so the
+  stage that lands them gets an XPASS-as-failure and must delete the marker.
+- **Each invariant also has a non-xfailed `_no_new_violations` guard.** As
+  specified in plan.md the harness would have asserted nothing until S2
+  landed; the guard pins the per-file violation count now, so the leak
+  cannot spread to a fourth view while the earlier stages are in flight.
+  Measured baselines:
+
+  | Invariant | Baseline (violating lines per file) | Stage |
+  |---|---|---|
+  | I-1.5 `active_models[` | `app_bootstrap.py` 6, `pyside/view.py` 1 | S2 |
+  | I-2.3 `.ser.` | `model/probes.py` 3, `model/temperature_system.py` 10 | S3 |
+  | I-4.1 view loop calls | pyside 15, tk 13, web 4 | S5 |
+  | I-7.1 device/command literals | pyside 19, tk 3, web 4 | S10 |
+
+- **A vacuity guard runs first.** Every one of these tests passes when it
+  finds nothing, so a wrong path would turn the file green — and under
+  strict xfail that reads as four stages landing at once. `test_harness_is
+  _not_vacuous` proves the source tree and the schema command set are
+  non-empty before anything else is believed.
+- **I-7.1 covers command names, not just device names.** The 23 `command`
+  values are derived from the models' `ui_schema` at test time rather than
+  hardcoded, so the invariant cannot drift as schemas change. Checked for
+  false positives from generic words (`"stop"`, `"home"`): there are none —
+  all 7 command hits are genuine `cmd_name ==` branches in the views.
+- **The six device names had to be hardcoded**, because there is no single
+  authority to import them from: `build_models()` dispatches on them in an
+  if/elif chain, `app_bootstrap`'s `DEVICE_MAP` knows only four of the six,
+  and `pyside/view.py:786-789` keeps its own copy. That duplication *is*
+  RC-7; the test list is deliberately the fourth copy, the one that fails
+  loudly when the others drift. S10 collapses all four.
+- **Next action:** S1 — purge D-9 and D-11 legacy paths (pure deletion).
 
 ---
 

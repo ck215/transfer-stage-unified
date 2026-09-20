@@ -163,8 +163,12 @@ fix it:
 These four are cheap, brutal, and exactly track the redundancy this repair
 exists to remove. As each stage lands, its `xfail` is removed.
 
+Each invariant also carries a non-`xfail`ed `_no_new_violations` guard
+pinning its per-file baseline, so the harness has teeth before S2 lands, and
+a vacuity guard runs first so a wrong path cannot turn the file green.
+
 **Exit.** Harness committed and running; every test either passes or
-`xfail`s with a named stage.
+`xfail`s with a named stage. **Done** — 5 passed, 4 xfailed.
 
 ---
 

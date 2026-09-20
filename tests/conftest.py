@@ -64,6 +64,7 @@ if sys.platform == "darwin":
 # instead of the whole suite. Kept here, in one table, rather than as 39
 # scattered `pytestmark` lines.
 _FILE_MARKERS = {
+    "architecture/test_invariants.py": ["invariants"],
     "core/test_app_bootstrap.py": ["bootstrap"],
     "core/test_edge_mvc_model.py": ["lifecycle", "mode"],
     "core/test_gamepad_interlock.py": ["loops", "mode"],
