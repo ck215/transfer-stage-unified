@@ -56,8 +56,8 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S6 | Hide/show semantics (D-1) | done | `e9fc26f` | 2026-09-20 | All 4 items. Tk got a real re-add path. order_dependent 3 -> 2. |
 | S7 | Probe mode state machine (RC-3) | done | `8fc9f00` | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
 | S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
-| S9 | Typed parameters (RC-6) | done | | 2026-09-20 | All 4 items. `Param` table + D-5 `apply_inputs`. Landed with S10. |
-| S10 | Schema v2, three renderers (RC-7) | in progress | | 2026-09-20 | **Items 1-5 written, Qt pass UNVERIFIED.** See session log for the exact remaining check. |
+| S9 | Typed parameters (RC-6) | done | `79d2d97` | 2026-09-20 | All 4 items. `Param` table + D-5 `apply_inputs`. Landed with S10. |
+| S10 | Schema v2, three renderers (RC-7) | in progress | `79d2d97` | 2026-09-20 | **Items 1-5 written, Qt pass UNVERIFIED.** See session log for the exact remaining check. |
 | S11 | Result channel and event bus (RC-8) | todo | | | |
 | S12 | Composition root, registry events | todo | | | |
 | S13 | MonitoringRun (RC-11) | todo | | | |
@@ -1301,6 +1301,26 @@ S12 lands.
   code in this commit.
 
 Verified: fast gate **398 passed, 1 xfailed** (the xfail is I-7.1).
+
+### Resume here (next session)
+
+State at `79d2d97`, working tree clean, pushed. **S10 is mid-stage.** In
+order:
+
+1. **`pytest tests/ -m "qt"`.** It has not completed since the renderer
+   rewrite. Expect the two S10-owned `known_bad` entries to XPASS-as-failure;
+   re-author both and delete their `_KNOWN_BAD` entries.
+2. **Write rendering tests for the four composites** (`plot`, `log_stream`,
+   `region_select`, `file_save`). They are the least-proven code on the
+   branch — nothing but the schema conformance test has touched them.
+3. **Re-run the full three-pass sweep** and set S10 `done`.
+4. Then **S11** (result channel and event bus, RC-8), which is also where the
+   last two `order_dependent` tests were predicted to dissolve. Read their
+   actual assertion values before believing that prediction — it has been
+   wrong twice.
+
+S12 then deletes `web_adapter`'s Red Percent linking block, which is what
+retires the I-7.1 `xfail`.
 
 ### Still waiting on the owner
 
