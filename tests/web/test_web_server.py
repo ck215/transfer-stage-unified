@@ -399,28 +399,58 @@ def test_api_set_attr_invalid_type_conversion(web_server_fixture):
 
 
 def test_api_logs_and_errors(web_server_fixture):
+    """`/api/errors?since=<id>`, non-destructively (RC-8 item 3).
+
+    This test used to append straight into `error_buffer` and then assert
+    that a **second** read came back empty, because the route called
+    `pop_errors()` and cleared as it read. That is ERRORS-2 / WEB-17 stated
+    as a requirement: with two browser tabs open, whichever polled first
+    consumed the error and the other never saw it. The assertion is
+    inverted here, and the error is published the way one really arrives.
+    """
+    from error_routing import ErrorRouter
+
     server, _ = web_server_fixture
     WebAPIHandler.log_buffer.append("[Stage_A] Initialization complete")
-    WebAPIHandler.error_buffer.append({"type": "warning", "title": "LimitReached", "message": "Soft limit"})
+    ErrorRouter.report_warning("LimitReached", "Soft limit", source="Stage_A")
 
-    # Test /api/logs
     status, _, body = make_request(f"http://127.0.0.1:{server.port}/api/logs")
     assert status == 200
     logs_data = json.loads(body)
     assert "[Stage_A] Initialization complete" in logs_data["logs"]
 
-    # Test /api/errors
     status, _, body = make_request(f"http://127.0.0.1:{server.port}/api/errors")
     assert status == 200
     errors_data = json.loads(body)
     assert len(errors_data["errors"]) == 1
     assert errors_data["errors"][0]["title"] == "LimitReached"
+    assert errors_data["errors"][0]["severity"] == "warning"
+    latest = errors_data["latest_id"]
+    assert latest == errors_data["errors"][0]["id"]
 
-    # Subsequent error call should be empty since buffer clears upon read
+    # A second client, with its own cursor at 0, sees the same error. Under
+    # `pop_errors` this was the read that came back empty.
     status, _, body2 = make_request(f"http://127.0.0.1:{server.port}/api/errors")
     assert status == 200
-    errors_data2 = json.loads(body2)
-    assert len(errors_data2["errors"]) == 0
+    assert len(json.loads(body2)["errors"]) == 1
+
+    # The first client, having advanced its cursor, sees nothing new.
+    status, _, body3 = make_request(
+        f"http://127.0.0.1:{server.port}/api/errors?since={latest}")
+    assert status == 200
+    assert json.loads(body3)["errors"] == []
+
+
+def test_a_malformed_since_is_treated_as_zero(web_server_fixture):
+    """A bad cursor must not 500 the poll loop the whole UI depends on."""
+    server, _ = web_server_fixture
+    from error_routing import ErrorRouter
+    ErrorRouter.report_error("Boom", "something broke")
+
+    for bad in ("abc", "", "-1", "9e99"):
+        status, _, body = make_request(
+            f"http://127.0.0.1:{server.port}/api/errors?since={bad}")
+        assert status == 200, f"since={bad!r} returned {status}"
 
 
 def test_invalid_json_handling(web_server_fixture):

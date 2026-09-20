@@ -259,61 +259,159 @@ def test_serial_read_position_multiline_stream():
 # 4. Exception Interceptors & ErrorRouter
 # ==========================================
 
-def test_error_router_custom_callbacks():
-    """Verify custom error, warning, and info callbacks intercept reports."""
-    mock_err = MagicMock()
-    mock_warn = MagicMock()
-    mock_info = MagicMock()
+def test_a_subscriber_receives_every_severity():
+    """Replaces `test_error_router_custom_callbacks`.
 
-    ErrorRouter._last_messages.clear()
-    ErrorRouter.set_callbacks(mock_err, mock_warn, mock_info)
+    That test pinned `set_callbacks(err, warn, info)` — three process-global
+    slots where installing a second view silently replaced the first. RC-8
+    made subscription the mechanism, so the property under test became "a
+    subscriber sees what was published" rather than "the callback slot was
+    invoked".
+    """
+    from error_routing import ErrorRouter, bus
 
-    test_exc = RuntimeError("Test Exception")
-    ErrorRouter.report_error("ErrTitle", "ErrMessage 123", test_exc)
-    mock_err.assert_called_once_with("ErrTitle", "ErrMessage 123", test_exc)
+    seen = []
+    ErrorRouter.subscribe(seen.append)
+    try:
+        test_exc = RuntimeError("Test Exception")
+        ErrorRouter.report_error("ErrTitle", "ErrMessage 123", test_exc)
+        ErrorRouter.report_warning("WarnTitle", "WarnMessage 123")
+        ErrorRouter.report_info("InfoTitle", "InfoMessage 123")
+    finally:
+        ErrorRouter.unsubscribe(seen.append)
 
-    ErrorRouter.report_warning("WarnTitle", "WarnMessage 123")
-    mock_warn.assert_called_once_with("WarnTitle", "WarnMessage 123", None)
-
-    ErrorRouter.report_info("InfoTitle", "InfoMessage 123")
-    mock_info.assert_called_once_with("InfoTitle", "InfoMessage 123")
-
-    ErrorRouter.set_callbacks(None, None, None)
-
-
-def test_error_router_spam_suppression():
-    """Verify duplicate messages within 5 seconds are suppressed by _is_spam."""
-    mock_err = MagicMock()
-    ErrorRouter._last_messages.clear()
-    ErrorRouter.set_callbacks(mock_err, None, None)
-
-    ErrorRouter.report_error("Title", "Repeated Message")
-    assert mock_err.call_count == 1
-
-    # Second call within 5s should be suppressed
-    ErrorRouter.report_error("Title", "Repeated Message")
-    assert mock_err.call_count == 1
-
-    # Different message should be delivered
-    ErrorRouter.report_error("Title", "Different Message")
-    assert mock_err.call_count == 2
-
-    ErrorRouter.set_callbacks(None, None, None)
+    assert [e.severity for e in seen] == ["error", "warning", "info"]
+    assert [e.title for e in seen] == ["ErrTitle", "WarnTitle", "InfoTitle"]
+    assert seen[0].exception is test_exc
+    # Monotonic and gapless, which is what `/api/errors?since=` rides on.
+    assert [e.id for e in seen] == [1, 2, 3]
 
 
-def test_error_router_default_fallback_printing(capsys):
-    """Verify fallback to stdout/stderr print when no callbacks are set."""
-    ErrorRouter._last_messages.clear()
-    ErrorRouter.set_callbacks(None, None, None)
+def test_a_second_subscriber_does_not_silence_the_first():
+    """The defect `set_callbacks` made unavoidable: starting the web view
+    alongside a desktop view replaced the desktop view's callbacks, so the
+    desktop stopped reporting entirely."""
+    from error_routing import ErrorRouter
+
+    first, second = [], []
+    ErrorRouter.subscribe(first.append)
+    ErrorRouter.subscribe(second.append)
+    try:
+        ErrorRouter.report_error("Title", "Message")
+    finally:
+        ErrorRouter.unsubscribe(first.append)
+        ErrorRouter.unsubscribe(second.append)
+
+    assert len(first) == 1 and len(second) == 1
+
+
+def test_a_broken_subscriber_does_not_stop_the_others():
+    from error_routing import ErrorRouter
+
+    def explodes(event):
+        raise RuntimeError("subscriber is broken")
+
+    survived = []
+    ErrorRouter.subscribe(explodes)
+    ErrorRouter.subscribe(survived.append)
+    try:
+        ErrorRouter.report_error("Title", "Message")
+    finally:
+        ErrorRouter.unsubscribe(explodes)
+        ErrorRouter.unsubscribe(survived.append)
+
+    assert len(survived) == 1
+
+
+def test_repeats_fold_into_one_event_with_a_count():
+    """Replaces `test_error_router_spam_suppression`, and inverts it.
+
+    The old rate limit keyed on the **message text** and *dropped* the
+    repeat, so a fault that persisted for a minute left one line in the log
+    and no indication it had recurred — the log lied about duration. I-8.2
+    asks for one event and a visible state. The key is
+    `(severity, source, title)` now and the repeat increments a count.
+    """
+    from error_routing import ErrorRouter, bus
+
+    seen = []
+    ErrorRouter.subscribe(seen.append)
+    try:
+        first = ErrorRouter.report_error("Title", "Repeated Message")
+        again = ErrorRouter.report_error("Title", "Repeated Message")
+        # Same title and source, *different* text: still the same condition,
+        # where the old text key would have treated it as brand new.
+        third = ErrorRouter.report_error("Title", "Repeated, reworded")
+        other = ErrorRouter.report_error("Another Title", "Different Message")
+    finally:
+        ErrorRouter.unsubscribe(seen.append)
+
+    assert first is again is third
+    assert first.count == 3
+    assert other is not first
+    # One notification per *event*, not per report.
+    assert len(seen) == 2
+    assert len(bus.since(0)) == 2
+
+
+def test_rate_limits_are_keyed_per_severity():
+    """A warning and an error sharing a title are different conditions."""
+    from error_routing import ErrorRouter, bus
+
+    ErrorRouter.report_warning("Overheat", "approaching limit")
+    ErrorRouter.report_error("Overheat", "limit exceeded")
+    assert len(bus.since(0)) == 2
+
+
+def test_with_no_subscriber_the_bus_prints(capsys):
+    """Replaces `test_error_router_default_fallback_printing`.
+
+    The old fallback ran *after* the text dedup, so a repeated message was
+    silently dropped before anyone checked whether a callback existed —
+    ERRORS-10, a report lost with no UI involved at all.
+    """
+    from error_routing import ErrorRouter, bus
+
+    assert bus.subscriber_count == 0
 
     ErrorRouter.report_error("FallbackErr", "Unique Err Text 999")
-    captured = capsys.readouterr()
-    assert "[ERROR] FallbackErr: Unique Err Text 999" in captured.out
+    assert "[ERROR] app/FallbackErr: Unique Err Text 999" in capsys.readouterr().out
 
     ErrorRouter.report_warning("FallbackWarn", "Unique Warn Text 999")
-    captured = capsys.readouterr()
-    assert "[WARNING] FallbackWarn: Unique Warn Text 999" in captured.out
+    assert "[WARNING] app/FallbackWarn: Unique Warn Text 999" in capsys.readouterr().out
 
     ErrorRouter.report_info("FallbackInfo", "Unique Info Text 999")
-    captured = capsys.readouterr()
-    assert "[INFO] FallbackInfo: Unique Info Text 999" in captured.out
+    assert "[INFO] app/FallbackInfo: Unique Info Text 999" in capsys.readouterr().out
+
+
+def test_publishing_from_many_threads_loses_nothing():
+    """`ErrorRouter` had no lock at all. Every mutation is under one now,
+    and subscribers are invoked outside it so a subscriber that publishes
+    cannot deadlock."""
+    import threading
+    from error_routing import EventBus
+
+    local = EventBus(max_events=10000)
+    seen = []
+    lock = threading.Lock()
+
+    def collect(event):
+        with lock:
+            seen.append(event.id)
+
+    local.subscribe(collect)
+
+    def publish_many(worker):
+        for i in range(50):
+            local.publish("info", f"worker-{worker}", f"title-{i}", "msg")
+
+    threads = [threading.Thread(target=publish_many, args=(w,))
+               for w in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+
+    assert len(local.since(0)) == 400
+    assert len(seen) == 400
+    assert len(set(seen)) == 400, "ids must be unique across threads"

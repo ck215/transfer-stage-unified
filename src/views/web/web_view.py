@@ -6,37 +6,46 @@ from error_routing import ErrorRouter
 from .web_server import WebDashboardServer, WebAPIHandler
 
 class WebErrorManager:
-    """Binds ErrorRouter to the web server error queue."""
-    @classmethod
-    def initialize(cls):
-        ErrorRouter.set_callbacks(cls.report_error, cls.report_warning, cls.report_info)
+    """Mirrors bus events into the adapter buffer (RC-8 item 3).
+
+    The route serves `/api/errors?since=<id>` from the bus itself, so this
+    exists only to keep `error_buffer` — which the shutdown drain and a
+    number of tests read — populated. It subscribes rather than seizing
+    `ErrorRouter`'s three global callback slots, so starting the web view
+    alongside a desktop view no longer silences the desktop one.
+    """
+
+    _subscribed = False
 
     @classmethod
+    def initialize(cls):
+        if not cls._subscribed:
+            ErrorRouter.subscribe(cls._on_event)
+            cls._subscribed = True
+
+    @classmethod
+    def shutdown(cls):
+        ErrorRouter.unsubscribe(cls._on_event)
+        cls._subscribed = False
+
+    @classmethod
+    def _on_event(cls, event):
+        WebAPIHandler.error_buffer.append(event.to_dict())
+
+    # The three report_* names are kept: a handful of call sites and tests
+    # reach the web manager directly rather than through ErrorRouter.
+    @classmethod
     def report_error(cls, title, message, exception=None):
-        WebAPIHandler.error_buffer.append({
-            "type": "error",
-            "title": title,
-            "message": message,
-            "exception": str(exception) if exception else None
-        })
+        ErrorRouter.report_error(title, message, exception, source="web")
 
     @classmethod
     def report_warning(cls, title, message, exception=None):
-        WebAPIHandler.error_buffer.append({
-            "type": "warning",
-            "title": title,
-            "message": message,
-            "exception": str(exception) if exception else None
-        })
+        ErrorRouter.report_warning(title, message, exception, source="web")
 
     @classmethod
     def report_info(cls, title, message):
-        WebAPIHandler.error_buffer.append({
-            "type": "info",
-            "title": title,
-            "message": message,
-            "exception": None
-        })
+        ErrorRouter.report_info(title, message, source="web")
+
 
 class WebDashboardWindow:
     """

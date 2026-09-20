@@ -468,18 +468,34 @@ def test_command_execution_failures(qtbot):
     view = QtDynamicView(model)
     qtbot.addWidget(view)
 
-    # A name nothing resolves to: reported, and it names the command.
-    with patch('PySide6.QtWidgets.QMessageBox.critical') as mock_critical:
+    # A name nothing resolves to still *raises*, and deliberately: S11 made
+    # a failing command return `Failed`, but an unresolvable command name is
+    # a schema bug in this repository rather than anything the operator can
+    # act on, so it stays loud and I-7.2 catches it before a build ships.
+    with pytest.raises(AttributeError, match="does_not_exist"):
         view._execute_command("does_not_exist")
-        mock_critical.assert_called_once()
-        assert "does_not_exist" in mock_critical.call_args[0][2]
 
-    # A command that raises: caught and reported with the underlying message.
-    with patch('PySide6.QtWidgets.QMessageBox.critical') as mock_critical:
-        view._execute_command("throws_error")
-        mock_critical.assert_called_once()
-        args = mock_critical.call_args[0]
-        assert "Test error" in args[2]
+    # A command that raises: no longer a modal opened by the view. S11 has
+    # `execute_command` catch it, publish to the bus and return `Failed`, so
+    # the report reaches the operator through the event log and one
+    # acknowledged dialog raised by the subscriber. The modal this assertion
+    # used to check is one of the two that hung this suite.
+    from error_routing import ErrorRouter
+
+    seen = []
+    ErrorRouter.subscribe(seen.append)
+    try:
+        result = view._execute_command("throws_error")
+    finally:
+        ErrorRouter.unsubscribe(seen.append)
+
+    assert result.failed
+    assert "Test error" in result.reason
+    assert isinstance(result.exception, ValueError)
+    assert len(seen) == 1
+    assert seen[0].severity == "error"
+    assert seen[0].requires_ack, "a crash must be acknowledged, not just logged"
+    assert "Test error" in seen[0].message
 
 
 def test_numeric_field_validation(qtbot):
@@ -537,18 +553,28 @@ def test_numeric_field_validation(qtbot):
 
 
 def test_error_popup_manager_signal_routing(qtbot):
+    """An event published off the GUI thread is marshalled onto it.
+
+    Re-authored in S11 for the same reason as its twin in
+    `tests/core/test_view_round1.py`: a modal is now reserved for an error
+    that sets `requires_ack`. Published from a **real** background thread
+    here, which is the case the Qt signal exists for and which the original
+    only simulated.
+    """
+    import threading
+    from error_routing import ErrorRouter
     from views.pyside.view import QtErrorPopupManager
+
     manager = QtErrorPopupManager.initialize()
-    
+
     with patch('PySide6.QtWidgets.QMessageBox.critical') as mock_critical:
-        # Trigger an error using the global router (simulating a background thread error)
-        from error_routing import ErrorRouter
-        ErrorRouter.report_error("Test Title", "Test Message")
-        
-        # Give Qt event loop time to process the signal
-        import time; time.sleep(0.1)
+        t = threading.Thread(target=ErrorRouter.report_error,
+                             args=("Test Title", "Test Message"),
+                             kwargs={"source": "poller", "requires_ack": True})
+        t.start()
+        t.join(timeout=2.0)
         qtbot.wait(100)
-        
+
         mock_critical.assert_called_once()
         args = mock_critical.call_args[0]
         assert "Test Title" in args[1]

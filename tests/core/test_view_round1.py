@@ -108,18 +108,34 @@ def test_pyside_event_callbacks_and_two_way_binding(qtbot):
 
 
 def test_pyside_error_popup_manager_signal(qtbot):
-    """Test PySide thread-safe error reporting via Qt signals."""
+    """A bus event reaches the Qt GUI thread; only an acknowledged one modals.
+
+    Re-authored in S11. The manager used to open a modal `QMessageBox` for
+    **every** severity, which is TEMP-12 and is also what hung this suite
+    for three sessions — a dialog with nobody to click it. The routing
+    property this test was written for is unchanged and still asserted; what
+    is new is the second half, that an ordinary error does not modal.
+    """
+    from error_routing import ErrorRouter
+
     manager = QtErrorPopupManager.initialize()
 
+    # An ordinary error: logged, not modal.
     with patch('PySide6.QtWidgets.QMessageBox.critical') as mock_critical:
-        from error_routing import ErrorRouter
         ErrorRouter.report_error("Thread Error", "Fatal exception occurred")
-        
+        qtbot.wait(100)
+        assert not mock_critical.called
+    assert [e.title for e in manager.events()] == ["Thread Error"]
+
+    # One that asks to be acknowledged: modal, on the GUI thread.
+    with patch('PySide6.QtWidgets.QMessageBox.critical') as mock_critical:
+        ErrorRouter.report_error("Interlock", "Stage is unsafe",
+                                 source="stepper", requires_ack=True)
         qtbot.wait(100)
         mock_critical.assert_called_once()
         args = mock_critical.call_args[0]
-        assert "Thread Error" in args[1]
-        assert "Fatal exception occurred" in args[2]
+        assert "Interlock" in args[1]
+        assert "Stage is unsafe" in args[2]
 
 
 def test_pyside_redpercent_sync_and_probe_controls(qtbot):
@@ -240,19 +256,30 @@ def test_closing_a_view_does_not_close_the_models_poller(qtbot):
 # Legacy Tkinter View Tests
 # ---------------------------------------------------------------------------
 
-def test_legacy_error_popup_manager_queue():
-    """Test legacy ErrorPopupManager thread-safe queue buffering."""
+def test_tk_manager_queues_events_off_the_gui_thread():
+    """The buffering property, re-pointed at the bus (S11).
+
+    Tk is not thread-safe, so a bus callback arriving on a publisher's
+    thread may only enqueue; the drain runs on the `after` loop. That was
+    true before and is still true — what changed is that the queue carries
+    `Event` objects rather than hand-built dicts, and the manager subscribes
+    rather than owning `ErrorRouter`'s global callback slots.
+    """
+    from error_routing import ErrorRouter
     from views.tkinter.view import ErrorPopupManager
-    ErrorPopupManager._error_queue.queue.clear()
-    
-    ErrorPopupManager._root = None
-    ErrorPopupManager.report_error("Legacy Title", "Legacy error message")
-    
-    assert not ErrorPopupManager._error_queue.empty()
-    item = ErrorPopupManager._error_queue.get()
-    assert item['type'] == 'error'
-    assert item['title'] == "Legacy Title"
-    assert item['message'] == "Legacy error message"
+
+    ErrorPopupManager._event_queue.queue.clear()
+    ErrorRouter.subscribe(ErrorPopupManager._publish)
+    try:
+        ErrorRouter.report_error("Legacy Title", "Legacy error message")
+    finally:
+        ErrorRouter.unsubscribe(ErrorPopupManager._publish)
+
+    assert not ErrorPopupManager._event_queue.empty()
+    event = ErrorPopupManager._event_queue.get()
+    assert event.severity == "error"
+    assert event.title == "Legacy Title"
+    assert event.message == "Legacy error message"
 
 
 def test_legacy_dynamic_view_schema_parsing():

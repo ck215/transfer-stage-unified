@@ -96,11 +96,11 @@ def test_rotator_system_nan_inf():
     rot._run_async = lambda func, *args: func(*args)
 
     assert rot.execute_command(
-        "move_absolute", inputs={"target_deg": "inf"}) is False
+        "move_absolute", inputs={"target_deg": "inf"}).refused
     rot.smc.move_absolute_deg.assert_not_called()
 
     assert rot.execute_command(
-        "move_relative_positive", inputs={"step_deg": "nan"}) is False
+        "move_relative_positive", inputs={"step_deg": "nan"}).refused
     rot.smc.move_relative_deg.assert_not_called()
 
     # The lenient path cannot leak one either: a non-finite value already

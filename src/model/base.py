@@ -75,18 +75,42 @@ class SchemaCommands:
         ordering is the same everywhere. `args` carries what a composite
         supplies — a chosen file path, a selected region — which the operator
         produced through a dialog rather than a field.
+
+        **Always returns a `CommandResult`** (RC-8 item 1). Before S11 this
+        returned `False` on refusal and whatever the command body returned —
+        almost always `None` — otherwise, so a view could not tell a refusal
+        from a success and reported "executed" for both. `bool(result)` is
+        True only for `Ok`, which is why the call sites that tested the
+        return value directly kept working.
         """
+        from error_routing import ErrorRouter
+        from results import Refused, Failed, as_result
+
+        source = self.__class__.__name__
+
         ok, error = self.apply_inputs(inputs)
         if not ok:
-            print(f"[{self.__class__.__name__}] {name} refused: {error}")
-            try:
-                from error_routing import ErrorRouter
-                ErrorRouter.report_warning("Invalid Input", error)
-            except Exception:
-                pass
-            return False
+            ErrorRouter.report_warning("Invalid Input", error, source=source)
+            return Refused(error)
+
         command = getattr(self, name, None)
         if not callable(command):
+            # Still an exception, not a `Failed`. An undeclared command name
+            # is a schema bug in this repository, not a condition the
+            # operator can do anything about, and I-7.2 exists to catch it
+            # before a build ships.
             raise AttributeError(
-                f"{self.__class__.__name__} has no command {name!r}")
-        return command(*(args or ()))
+                f"{source} has no command {name!r}")
+
+        try:
+            return as_result(command(*(args or ())))
+        except Exception as exc:
+            # RC-8 item 1: a command that raises produces a `Failed` the view
+            # can render, rather than an exception crossing the model/view
+            # boundary for each view to catch in its own way. Both desktop
+            # views wrapped `_run_element` in `try/except QMessageBox` — and
+            # that modal is what hung the whole Qt suite for three sessions.
+            ErrorRouter.report_error(
+                "Command Failed", f"{name} failed: {exc}",
+                exception=exc, source=source, requires_ack=True)
+            return Failed(exc, reason=f"{name} failed: {exc}")

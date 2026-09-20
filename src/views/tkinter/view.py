@@ -8,103 +8,143 @@ from model import schema as sch
 from error_routing import ErrorRouter
 
 class ErrorPopupManager:
+    """Tk subscriber on the event bus (RC-8 item 3).
+
+    Three defects went with the rewrite.
+
+    * It opened a **modal** `messagebox` for every severity, info included
+      (TEMP-12). Only an `error` carrying `requires_ack` may do that now,
+      and the bus will not let anything quieter ask.
+    * `_poll_queue` returned without rescheduling when `_root` was gone and
+      never cleared `_is_polling`, so the popup loop died with the dashboard
+      and every later report vanished (ERRORS-5, VIEW-TKINTER-2,
+      MANAGER-17). It binds to the **process-lifetime root** now, and the
+      reschedule happens in a `finally`.
+    * `_queue_message` printed when there was no root and then **queued
+      anyway**, with no `return`, so messages accumulated forever in a queue
+      nobody was draining.
     """
-    Centralized error handler for receiving errors from across the application
-    and presenting them to the user via visual popups.
-    """
+
     _root = None
-    _error_queue = queue.Queue()
+    _event_queue = queue.Queue()
     _is_polling = False
+    _log = []
+    _panel = None
 
     @classmethod
     def initialize(cls, root):
-        """Initialize with the main Tk window to allow thread-safe popups."""
+        """Bind to `root` — which must outlive the dashboard — and subscribe."""
         cls._root = root
-        ErrorRouter.set_callbacks(cls.report_error, cls.report_warning, cls.report_info)
+        ErrorRouter.subscribe(cls._publish)
         if not cls._is_polling:
-            cls._poll_queue()
             cls._is_polling = True
+            cls._poll_queue()
+
+    @classmethod
+    def shutdown(cls):
+        """Unsubscribe and stop. A relaunch in the same process would
+        otherwise stack a second subscriber and double every event."""
+        ErrorRouter.unsubscribe(cls._publish)
+        cls._is_polling = False
+        cls._root = None
+
+    @classmethod
+    def _publish(cls, event):
+        """Bus callback, on the publishing thread. Queue only — Tk is not
+        thread-safe and the drain below runs on the main loop."""
+        cls._event_queue.put(event)
 
     @classmethod
     def _poll_queue(cls):
-        """Poll the error queue and display popups in the main thread."""
-        if not cls._root:
+        root = cls._root
+        if root is None:
+            cls._is_polling = False
             return
-            
-        while not cls._error_queue.empty():
-            error_data = cls._error_queue.get()
-            cls._display_popup(error_data)
-            
-        cls._root.after(100, cls._poll_queue)
-
-    @classmethod
-    def _display_popup(cls, error_data):
-        """Actually display the messagebox."""
-        title = error_data.get('title', 'Message')
-        message = error_data.get('message', '')
-        exception = error_data.get('exception')
-        msg_type = error_data.get('type', 'error')
-        
-        full_message = message
-        if exception:
-            if not full_message: full_message = ""
+        try:
+            while not cls._event_queue.empty():
+                cls._handle(cls._event_queue.get())
+        finally:
+            # In a `finally` on purpose: a raise from one popup used to kill
+            # the loop for the rest of the session.
             try:
-                full_message += f"\n\nDetails:\n{type(exception).__name__}: {str(exception)}"
+                root.after(100, cls._poll_queue)
             except Exception:
-                full_message += "\n\nDetails: <Unprintable Exception>"
-        if full_message and len(full_message) > 5000:
-            full_message = full_message[:5000] + "... [TRUNCATED]"
-            
-        if msg_type == 'error':
-            messagebox.showerror(title, full_message, parent=cls._root)
-        elif msg_type == 'warning':
-            messagebox.showwarning(title, full_message, parent=cls._root)
-        else:
-            messagebox.showinfo(title, full_message, parent=cls._root)
+                cls._is_polling = False
 
     @classmethod
-    def report_error(cls, title, message, exception=None):
-        cls._queue_message('error', title, message, exception)
+    def _handle(cls, event):
+        cls._log.append(event)
+        if len(cls._log) > 500:
+            del cls._log[:len(cls._log) - 500]
+        if cls._panel is not None:
+            cls._panel.append_event(event)
+        if event.severity == "error" and event.requires_ack:
+            messagebox.showerror(event.title, cls._format(event),
+                                 parent=cls._root)
+
+    @staticmethod
+    def _format(event):
+        # `or ""` is not decoration: a `None` message used to make this
+        # method raise `TypeError` while formatting an error, which destroys
+        # the only report of that error. There is a test for it.
+        text = event.message or ""
+        if event.exception is not None:
+            try:
+                text += (f"\n\nDetails:\n{type(event.exception).__name__}: "
+                         f"{event.exception}")
+            except Exception:
+                text += "\n\nDetails: <Unprintable Exception>"
+        if event.count > 1:
+            text += f"\n\n(repeated {event.count} times)"
+        if len(text) > 5000:
+            text = text[:5000] + "... [TRUNCATED]"
+        return text
 
     @classmethod
-    def report_warning(cls, title, message, exception=None):
-        cls._queue_message('warning', title, message, exception)
+    def attach_panel(cls, panel):
+        """Bind a non-modal log widget and replay what it missed."""
+        cls._panel = panel
+        for event in cls._log:
+            panel.append_event(event)
 
     @classmethod
-    def report_info(cls, title, message):
-        cls._queue_message('info', title, message, None)
-
-    @classmethod
-    def _queue_message(cls, msg_type, title, message, exception=None):
-        if cls._root is None:
-            # Fallback if GUI is not initialized
-            prefix = f"[{msg_type.upper()}] {title}: "
-            print(prefix + message)
-            if exception:
-                print(f"Exception details: {exception}")
-                traceback.print_exc()
-        
-        cls._error_queue.put({
-            'type': msg_type,
-            'title': title,
-            'message': message,
-            'exception': exception
-        })
+    def events(cls):
+        return list(cls._log)
 
     @classmethod
     def setup_excepthook(cls):
-        """Hook into sys.excepthook to catch all unhandled exceptions globally."""
-        def custom_excepthook(exc_type, exc_value, exc_traceback):
-            try:
-                traceback.print_exception(exc_type, exc_value, exc_traceback)
-            except Exception:
-                print(f"Exception: {exc_value}")
-            cls.report_error(
-                "Unhandled Exception",
-                f"An unexpected error occurred:\n\n{exc_value}",
-                exception=exc_value
-            )
-        sys.excepthook = custom_excepthook
+        """Kept as the name `app.py` calls; the work is shared now.
+
+        Tk missed `report_callback_exception` entirely, which is where every
+        exception raised inside a widget callback goes — so a crash in a
+        button handler printed to stderr and the operator saw a dead button
+        (ERRORS-4).
+        """
+        from error_routing import install_exception_hooks
+        install_exception_hooks(tk_root=cls._root)
+
+
+class TkEventLogPanel(tk.Frame):
+    """The non-modal half of RC-8 item 3, Tk's copy."""
+
+    _COLOURS = {"info": "#8fa3b0", "warning": "#d6a13a", "error": "#d64545"}
+
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self._text = tk.Text(self, height=8, state="disabled", wrap="word")
+        self._text.pack(fill="both", expand=True)
+        for severity, colour in self._COLOURS.items():
+            self._text.tag_configure(severity, foreground=colour)
+
+    def append_event(self, event):
+        tail = f" (x{event.count})" if event.count > 1 else ""
+        line = (f"[{event.severity.upper()}] {event.source}/{event.title}"
+                f"{tail}: {event.message}\n")
+        self._text.configure(state="normal")
+        self._text.insert("end", line, event.severity)
+        self._text.see("end")
+        self._text.configure(state="disabled")
+
 
 class DraggableClosableNotebook(ttk.Notebook):
     """A ttk.Notebook with draggable tabs and middle-click/right-click to close."""
@@ -693,29 +733,28 @@ class DynamicView(tk.Frame):
     def _run_element(self, element, args=None):
         """Run a schema element's command, with its inputs and any dialog args."""
         cmd_name = element.get("command")
-        try:
-            result = self.model.execute_command(
-                cmd_name, inputs=self._gather_inputs(element), args=args)
-        except Exception as e:
-            messagebox.showerror("Error", f"Command {cmd_name} failed:\n{e}", parent=self)
-            return
+        # No local try/except (RC-8 item 1): `execute_command` catches,
+        # publishes a `Failed` to the bus and returns it, so the report
+        # reaches the operator through the event log and one acknowledged
+        # modal — the same path PySide now takes, instead of each view
+        # catching in its own way.
+        result = self.model.execute_command(
+            cmd_name, inputs=self._gather_inputs(element), args=args)
 
         # The confirm contract (S10 item 3). One generic dialog per view,
         # replacing the `confirm_rotation_callback` the views used to inject
         # into the model — a callback the Web client never supplied, so the
         # ±30° tubing check existed there only as a silent refusal.
-        if isinstance(result, sch.NeedsConfirmation):
+        if result.needs_confirmation:
             if messagebox.askyesno("Confirm", result.prompt, parent=self):
-                try:
-                    self.model.execute_command(result.command, args=(True,))
-                except Exception as e:
-                    messagebox.showerror(
-                        "Error", f"Command {result.command} failed:\n{e}",
-                        parent=self)
+                result = self.model.execute_command(
+                    result.command, args=(True,))
+
+        return result
 
     def _execute_command(self, cmd_name):
         """Backwards-compatible entry point for a bare command name."""
-        self._run_element({"command": cmd_name})
+        return self._run_element({"command": cmd_name})
 
     def _select_region(self):
         """Ask the operator for a rectangular region. Returns (x, y, w, h).

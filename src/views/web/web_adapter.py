@@ -587,7 +587,28 @@ class WebModelAdapter:
                 self.error_buffer.pop(0)
 
     def pop_errors(self) -> List[Dict[str, Any]]:
+        """**Superseded by `errors_since` (RC-8 item 3).**
+
+        Destructive by construction: whichever client polled first consumed
+        the error and every other open tab never saw it (ERRORS-2, WEB-17).
+        Kept only because the shutdown path drains the buffer through it;
+        `/api/errors` does not call it any more.
+        """
         with self._state_lock:
             errors = list(self.error_buffer)
             self.error_buffer.clear()
             return errors
+
+    def errors_since(self, event_id: int = 0) -> List[Dict[str, Any]]:
+        """Every event newer than `event_id`, oldest first, non-destructively.
+
+        The client sends back the highest id it has seen, so two browser
+        tabs each keep their own cursor and both receive everything. This is
+        the Web half of the bus contract; the desktop views subscribe.
+        """
+        from error_routing import bus
+        return [e.to_dict() for e in bus.since(event_id)]
+
+    def latest_error_id(self) -> int:
+        from error_routing import bus
+        return bus.latest_id()

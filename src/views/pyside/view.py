@@ -20,17 +20,29 @@ from error_routing import ErrorRouter
 
 
 class QtErrorPopupManager(QObject):
+    """Qt subscriber on the event bus (RC-8 item 3).
+
+    What changed at S11. This used to own three process-global callbacks on
+    `ErrorRouter` and open a **modal** `QMessageBox` for every severity,
+    including info. That is TEMP-12 — "Temperature Send" raising a dialog on
+    every send — and it is also what hung the entire Qt test suite for three
+    sessions: a modal with nobody to click it.
+
+    Now it subscribes, and the rule is narrow: an event goes to the non-modal
+    log panel, and **only** an `error` that sets `requires_ack` additionally
+    raises a modal. Nothing quieter can, because `EventBus.publish` refuses
+    `requires_ack` on anything but an error.
     """
-    Centralized error handler for PySide6 that safely routes error popups
-    from any background thread to the main Qt GUI thread via Qt Signals.
-    """
+
     _instance = None
-    _message_signal = Signal(str, str, str, object)  # type, title, message, exception
+    _message_signal = Signal(object)  # Event, marshalled to the GUI thread
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._message_signal.connect(self._display_popup)
-        ErrorRouter.set_callbacks(self.report_error, self.report_warning, self.report_info)
+        self._message_signal.connect(self._on_event)
+        self._log = []
+        self._panel = None
+        ErrorRouter.subscribe(self._publish)
 
     @classmethod
     def initialize(cls, parent=None):
@@ -39,61 +51,86 @@ class QtErrorPopupManager(QObject):
         return cls._instance
 
     @classmethod
-    def report_error(cls, title, message, exception=None):
-        if cls._instance:
-            cls._instance._message_signal.emit('error', title, message, exception)
-        else:
-            print(f"[ERROR] {title}: {message}")
-            if exception:
-                traceback.print_exc()
+    def shutdown(cls):
+        """Unsubscribe and forget the instance. Without this a relaunch in
+        the same process stacks a second subscriber on the bus and every
+        event is handled twice."""
+        if cls._instance is not None:
+            ErrorRouter.unsubscribe(cls._instance._publish)
+            cls._instance = None
 
-    @classmethod
-    def report_warning(cls, title, message, exception=None):
-        if cls._instance:
-            cls._instance._message_signal.emit('warning', title, message, exception)
-        else:
-            print(f"[WARNING] {title}: {message}")
+    def _publish(self, event):
+        """Bus callback. Runs on whatever thread published, so it does
+        nothing but hand the event to the GUI thread through a signal."""
+        self._message_signal.emit(event)
 
-    @classmethod
-    def report_info(cls, title, message):
-        if cls._instance:
-            cls._instance._message_signal.emit('info', title, message, None)
-        else:
-            print(f"[INFO] {title}: {message}")
+    def _on_event(self, event):
+        self._log.append(event)
+        if len(self._log) > 500:
+            del self._log[:len(self._log) - 500]
+        if self._panel is not None:
+            self._panel.append_event(event)
+        if event.severity == "error" and event.requires_ack:
+            QMessageBox.critical(None, event.title, self._format(event))
 
-    def _display_popup(self, msg_type, title, message, exception):
-        full_message = message
-        if exception:
-            if not full_message:
-                full_message = ""
+    @staticmethod
+    def _format(event):
+        # `or ""` is not decoration: a `None` message used to make this
+        # method raise `TypeError` while formatting an error, which destroys
+        # the only report of that error. There is a test for it.
+        text = event.message or ""
+        if event.exception is not None:
             try:
-                full_message += f"\n\nDetails:\n{type(exception).__name__}: {str(exception)}"
+                text += (f"\n\nDetails:\n{type(event.exception).__name__}: "
+                         f"{event.exception}")
             except Exception:
-                full_message += "\n\nDetails: <Unprintable Exception>"
-        if full_message and len(full_message) > 5000:
-            full_message = full_message[:5000] + "... [TRUNCATED]"
+                text += "\n\nDetails: <Unprintable Exception>"
+        if event.count > 1:
+            text += f"\n\n(repeated {event.count} times)"
+        if len(text) > 5000:
+            text = text[:5000] + "... [TRUNCATED]"
+        return text
 
-        if msg_type == 'error':
-            QMessageBox.critical(None, title, full_message)
-        elif msg_type == 'warning':
-            QMessageBox.warning(None, title, full_message)
-        else:
-            QMessageBox.information(None, title, full_message)
+    def attach_panel(self, panel):
+        """Bind a non-modal log widget and replay what it missed."""
+        self._panel = panel
+        for event in self._log:
+            panel.append_event(event)
+
+    def events(self):
+        return list(self._log)
 
     @classmethod
-    def setup_excepthook(cls):
-        """Hook into sys.excepthook to catch all unhandled exceptions globally."""
-        def custom_excepthook(exc_type, exc_value, exc_traceback):
-            try:
-                traceback.print_exception(exc_type, exc_value, exc_traceback)
-            except Exception:
-                print(f"Exception: {exc_value}")
-            cls.report_error(
-                "Unhandled Exception",
-                f"An unexpected error occurred:\n\n{exc_value}",
-                exception=exc_value
-            )
-        sys.excepthook = custom_excepthook
+    def setup_excepthook(cls, tk_root=None):
+        """Kept as the name `app.py` calls; the work is shared now.
+
+        Each view used to install its own `sys.excepthook` and nothing else,
+        so an exception in a poller thread never reached a human
+        (ERRORS-4, PYSIDE-15).
+        """
+        from error_routing import install_exception_hooks
+        install_exception_hooks(tk_root=tk_root)
+
+
+class QtEventLogPanel(QDockWidget):
+    """The non-modal half of RC-8 item 3: everything the bus reports, in a
+    panel the operator can leave open, instead of a dialog per event."""
+
+    _COLOURS = {"info": "#8fa3b0", "warning": "#d6a13a", "error": "#d64545"}
+
+    def __init__(self, parent=None):
+        super().__init__("Event Log", parent)
+        self._text = QTextEdit()
+        self._text.setReadOnly(True)
+        self.setWidget(self._text)
+
+    def append_event(self, event):
+        colour = self._COLOURS.get(event.severity, "#8fa3b0")
+        tail = f" (x{event.count})" if event.count > 1 else ""
+        self._text.append(
+            f'<span style="color:{colour}">[{event.severity.upper()}]</span> '
+            f"<b>{event.source}/{event.title}</b>{tail}: {event.message}")
+        self._text.moveCursor(QTextCursor.MoveOperation.End)
 
 
 class ControllerLogWindow(QDialog):
@@ -286,12 +323,11 @@ class QtDynamicView(QWidget):
                             # validate-then-run ordering in this renderer
                             # only, which is the divergence schema v2 exists
                             # to end.
-                            try:
-                                self.model.execute_command(c_name, args=(text,))
-                            except Exception as e:
-                                QMessageBox.critical(
-                                    self, "Command Failed",
-                                    f"Command {c_name} failed:\n{e}")
+                            # No local try/except: `execute_command` turns a
+                            # raise into a `Failed` on the bus (RC-8 item 1).
+                            # The modal that used to sit here is the second of
+                            # the two that hung this suite.
+                            self.model.execute_command(c_name, args=(text,))
                         return handler
 
                     combo.currentTextChanged.connect(make_dropdown_cmd(cmd_name))
@@ -452,30 +488,35 @@ class QtDynamicView(QWidget):
         return values
 
     def _run_element(self, element, args=None):
+        """Run the element's command and render its `CommandResult`.
+
+        **No `try/except QMessageBox` any more** (RC-8 item 1).
+        `execute_command` catches, publishes to the bus and returns `Failed`,
+        so the failure reaches the operator through the event log — and,
+        because the bus marks it `requires_ack`, through exactly one modal
+        raised by the subscriber rather than one raised here. The modal this
+        method used to open is the one that hung the Qt suite for three
+        sessions, and deleting it without a replacement path would have lost
+        the report, so the report moved rather than went.
+        """
         cmd_name = element.get("command")
-        try:
-            result = self.model.execute_command(
-                cmd_name, inputs=self._gather_inputs(element), args=args)
-        except Exception as e:
-            QMessageBox.critical(self, "Command Failed", f"Command {cmd_name} failed:\n{e}")
-            return
+        result = self.model.execute_command(
+            cmd_name, inputs=self._gather_inputs(element), args=args)
 
         # The confirm contract (S10 item 3), one generic dialog per view.
-        if isinstance(result, sch.NeedsConfirmation):
+        if result.needs_confirmation:
             reply = QMessageBox.question(
                 self, "Confirm", result.prompt,
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
-                try:
-                    self.model.execute_command(result.command, args=(True,))
-                except Exception as e:
-                    QMessageBox.critical(
-                        self, "Command Failed",
-                        f"Command {result.command} failed:\n{e}")
+                result = self.model.execute_command(
+                    result.command, args=(True,))
+
+        return result
 
     def _execute_command(self, cmd_name):
         """Backwards-compatible entry point for a bare command name."""
-        self._run_element({"command": cmd_name})
+        return self._run_element({"command": cmd_name})
 
     def _mode_name(self):
         mode = getattr(self.model, "mode", None)

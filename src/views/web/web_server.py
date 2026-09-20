@@ -181,8 +181,21 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {"logs": logs})
 
         elif route == "/api/errors":
-            errors = adapter.pop_errors()
-            self._send_json(200, {"errors": errors})
+            # `?since=<id>` and a non-destructive read (RC-8 item 3). The
+            # route used to `pop_errors()`, so with two tabs open whichever
+            # polled first consumed the error and the other never saw it
+            # (ERRORS-2, WEB-17).
+            from urllib.parse import parse_qs
+            qs = parse_qs(parsed.query)
+            try:
+                since = int(qs.get("since", ["0"])[0])
+            except (TypeError, ValueError):
+                since = 0
+            errors = adapter.errors_since(since)
+            self._send_json(200, {
+                "errors": errors,
+                "latest_id": adapter.latest_error_id(),
+            })
 
         elif route == "/api/options":
             from urllib.parse import parse_qs

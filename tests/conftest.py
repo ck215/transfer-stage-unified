@@ -499,28 +499,63 @@ def _stop_leaked_background_threads():
 
 @pytest.fixture(autouse=True)
 def _reset_global_error_routing():
-    """QtErrorPopupManager (views/pyside/view.py) is a process-wide class-level
-    singleton: once any test calls .initialize(), it globally rewires
-    ErrorRouter's callbacks (also process-wide class state) to real,
-    blocking QMessageBox popups for the rest of the pytest process — not
-    just its own test. Under the offscreen Qt platform there is no user to
-    click the dialog, so the next unrelated test anywhere in the session
-    that triggers ErrorRouter.report_error/warning/info hits QDialog.exec()
-    and hangs forever (confirmed via a native stack sample: the hang sits
-    in QDialog::exec() -> qt_safe_poll, reached only through this signal
-    chain). Reset both pieces of global state after every test so Qt-popup
-    routing never leaks into a later, unrelated test.
+    """Give every test a clean event bus and no leftover subscribers.
+
+    The original reason still holds, restated for S11. `QtErrorPopupManager`
+    is a process-wide singleton: once any test called `.initialize()`, it
+    rewired `ErrorRouter`'s three global callbacks to real, blocking
+    `QMessageBox` popups for the rest of the pytest process — not just its
+    own test. Under the offscreen Qt platform nobody clicks the dialog, so
+    the next unrelated test that reported anything hung in `QDialog::exec()`
+    forever (confirmed by a native stack sample). That is the same hang S10
+    finally diagnosed in `tests/ui`.
+
+    S11 replaced the callback slots with subscribers, which removes the
+    *silencing* half of the problem but not the leak: a subscriber left
+    installed still receives another test's events, and the bus's event
+    history and monotonic ids are process-global by design. Resetting per
+    test is what keeps `since()` assertions meaningful — without it
+    `test_api_logs_and_errors` reads two dozen events it did not publish.
     """
+    from error_routing import bus
+    bus.clear()
     yield
-    from error_routing import ErrorRouter
-    ErrorRouter._error_cb = None
-    ErrorRouter._warning_cb = None
-    ErrorRouter._info_cb = None
+    bus.clear()
     try:
         from views.pyside.view import QtErrorPopupManager
         QtErrorPopupManager._instance = None
     except ImportError:
         pass
+    try:
+        from views.tkinter.view import ErrorPopupManager
+        ErrorPopupManager._root = None
+        ErrorPopupManager._is_polling = False
+        ErrorPopupManager._panel = None
+        ErrorPopupManager._log = []
+    except ImportError:
+        pass
+    try:
+        from views.web.web_view import WebErrorManager
+        WebErrorManager._subscribed = False
+    except ImportError:
+        pass
+
+
+
+
+# ---------------------------------------------------------------------------
+# Everything above this line existed **twice** in this file until S11: lines
+# 1-543 and 544-1011 were byte-identical, so every fixture, every helper
+# class and `pytest_collection_modifyitems` itself were each defined twice
+# and only the *second* copy was ever live. Editing the first half — which
+# is the half you reach by reading from the top — silently did nothing.
+#
+# Found by an S11 conftest change that had no effect: a `bus.clear()` added
+# to `_reset_global_error_routing` at line 501 never ran, because the
+# definition at line 988 shadowed it. The two halves were diffed before the
+# duplicate was removed; they differed only by that edit.
+# ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def gate_model():

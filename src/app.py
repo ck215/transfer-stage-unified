@@ -433,7 +433,11 @@ def run_legacy_app():
             lifecycle.install_exit_hooks()
 
             dash = DashboardWindow(self, system_manager)
-            ErrorPopupManager.initialize(dash)
+            # **Not** `ErrorPopupManager.initialize(dash)`. Binding the popup
+            # manager to the dashboard is ERRORS-5 / VIEW-TKINTER-2 /
+            # MANAGER-17: its `after` loop died when the dashboard was
+            # destroyed and every later report vanished. It is already bound
+            # to the SetupWindow below, which lives for the whole process.
             # macOS Dock "Quit" and Cmd-Q bypass window close handlers, so Tk
             # needs this one wired explicitly or the app exits with hardware
             # still enabled (VIEW-TKINTER-8).
@@ -447,8 +451,12 @@ def run_legacy_app():
 
     app = SetupWindow()
     from views.tkinter.view import ErrorPopupManager
+    from error_routing import install_exception_hooks
     ErrorPopupManager.initialize(app)
-    ErrorPopupManager.setup_excepthook()
+    # One installer for all three launchers (RC-8 item 4). Tk additionally
+    # needs `report_callback_exception`, which is where an exception raised
+    # inside a widget callback goes and which nothing used to cover.
+    install_exception_hooks(tk_root=app)
     app.mainloop()
     
     
@@ -792,8 +800,9 @@ def run_pyside_app():
     app.aboutToQuit.connect(lambda: lifecycle.shutdown("Qt aboutToQuit"))
 
     from views.pyside.view import QtErrorPopupManager
+    from error_routing import install_exception_hooks
     QtErrorPopupManager.initialize(app)
-    QtErrorPopupManager.setup_excepthook()
+    install_exception_hooks()
     
     window = SetupWindow()
     window.show()
@@ -822,19 +831,13 @@ def run_web_app(port=8080, open_browser=True):
     dashboard.show()
     print(f"[Launcher] Web View is live at http://127.0.0.1:{dashboard.server.port}")
 
-    import sys
-    import threading
-    import traceback
-    from error_routing import ErrorRouter
-
-    def _handle_exception(exc_type, exc_value, exc_traceback):
-        traceback.print_exception(exc_type, exc_value, exc_traceback)
-        ErrorRouter.report_error('Unhandled Exception', f'An unexpected error occurred:\n\n{exc_value}', exception=exc_value)
-
-    # WebDashboardServer.start() runs serve_forever() on a daemon thread;
-    # sys.excepthook alone never sees exceptions raised there.
-    sys.excepthook = _handle_exception
-    threading.excepthook = lambda args: _handle_exception(args.exc_type, args.exc_value, args.exc_traceback)
+    # The same installer the other two launchers call (RC-8 item 4). This
+    # was the only launcher that covered `threading.excepthook` at all, and
+    # it did so with a local copy that the other two did not have.
+    # `WebDashboardServer.start()` runs `serve_forever()` on a daemon thread,
+    # so `sys.excepthook` alone never sees what is raised there.
+    from error_routing import install_exception_hooks
+    install_exception_hooks()
 
     try:
         import time

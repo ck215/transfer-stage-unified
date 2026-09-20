@@ -508,3 +508,157 @@ def test_i_7_2_no_renderer_invents_an_element_type():
             invented[name] = sorted(extra)
     assert not invented, (
         f"I-7.2: renderer branches for undeclared element types: {invented}")
+
+
+# ---------------------------------------------------------------------------
+# I-8.1 / I-8.2 / I-8.3 — the result channel and the event bus.  S11 (RC-8).
+#
+# Two of the three are behavioural rather than structural, so they are
+# asserted against the real bus below rather than by grepping. The structural
+# half — that no view opens a modal on its own command path any more — is a
+# grep, because that is the shape that hung the Qt suite for three sessions
+# and a comment saying "do not do this" does not stop the next one.
+# ---------------------------------------------------------------------------
+
+def test_i_8_1_a_refused_command_is_distinguishable_from_a_successful_one():
+    """I-8.1. Before S11 both returned `None` and every view said "executed"."""
+    from model.base import SchemaCommands
+    from model.params import Param
+    from results import Ok, Refused
+
+    class Model(SchemaCommands):
+        PARAMS = {"speed": Param("speed", "float", default=1.0,
+                                 minimum=0.0, maximum=10.0, label="Speed")}
+
+        def __init__(self):
+            self.speed = 1.0
+            self.ran = 0
+
+        def go(self):
+            self.ran += 1
+
+    model = Model()
+
+    good = model.execute_command("go", inputs={"speed": "5"})
+    assert isinstance(good, Ok) and bool(good) is True
+    assert model.ran == 1
+
+    bad = model.execute_command("go", inputs={"speed": "not-a-number"})
+    assert isinstance(bad, Refused)
+    assert bool(bad) is False, (
+        "I-8.1: a refusal must not be truthy — every `if execute_command(...)` "
+        "call site would read it as success")
+    assert bad.reason, "a refusal the operator cannot read is not a refusal"
+    assert model.ran == 1, "the command body ran despite the refusal"
+
+
+def test_i_8_1_no_view_reports_a_command_outcome_from_its_own_modal():
+    """The structural half: a view's command path must not open its own
+    error dialog. `execute_command` publishes to the bus, and exactly one
+    subscriber decides whether that warrants a modal — which is what stops
+    a dialog appearing with nobody able to click it."""
+    offenders = []
+    for rel, pattern in (
+        ("views/pyside/view.py", re.compile(r"QMessageBox\.critical")),
+        ("views/tkinter/view.py", re.compile(r"messagebox\.showerror")),
+    ):
+        path = SRC / rel
+        raw = path.read_text().splitlines()
+        # Detection runs on the blanked source so the comments explaining
+        # why these calls were removed do not trip their own guard. The
+        # *window* is read from the raw source instead: `_code_lines` blanks
+        # a whole line containing any string literal, and the guard clause
+        # here — `if event.severity == "error" and event.requires_ack:` —
+        # is exactly such a line.
+        lines = _code_lines(path.read_text())
+        for n, line in enumerate(lines, 1):
+            if not pattern.search(line):
+                continue
+            # The one legitimate site per view is the bus subscriber's
+            # acknowledged-error branch, which lives in the popup manager.
+            window = "\n".join(raw[max(0, n - 25):n])
+            if "requires_ack" in window:
+                continue
+            offenders.append(f"{rel}:{n}")
+
+    assert not offenders, (
+        "I-8.1: a view opens an error modal outside the bus subscriber: "
+        f"{offenders}. Route it through `execute_command`, which publishes a "
+        "`Failed` the subscriber renders once.")
+
+
+def test_i_8_2_a_fault_persisting_for_a_minute_produces_one_event():
+    """I-8.2: one event and a visible state, not twelve popups.
+
+    Modelled on the real case — a condition re-reported every 5 s while it
+    lasts. The old text-keyed limit *dropped* the repeats, so the log said
+    the fault happened once and gave no sign it had lasted a minute. The
+    repeat folds into the original now and carries a count, so both the
+    "one event" half and the duration survive.
+    """
+    from error_routing import EventBus
+
+    now = [1000.0]
+    bus = EventBus(clock=lambda: now[0])
+    seen = []
+    bus.subscribe(seen.append)
+
+    for _ in range(12):
+        bus.publish("error", "stepper", "Motor Fault", "driver reports fault")
+        now[0] += 5.0
+
+    events = bus.since(0)
+    assert len(events) == 1, f"I-8.2: expected one event, got {events}"
+    assert len(seen) == 1, "I-8.2: one notification, not twelve"
+    assert events[0].count == 12
+    assert events[0].last_seen - events[0].first_seen == pytest.approx(55.0), (
+        "the event must record how long the fault lasted; a dropped repeat "
+        "loses that")
+
+
+def test_i_8_2_a_fault_that_recurs_after_the_window_is_a_new_event():
+    """The limit must not hide a fault that comes back later."""
+    from error_routing import EventBus
+
+    now = [1000.0]
+    bus = EventBus(clock=lambda: now[0])
+    bus.publish("error", "stepper", "Motor Fault", "driver reports fault")
+    now[0] += 3600.0
+    bus.publish("error", "stepper", "Motor Fault", "driver reports fault")
+    assert len(bus.since(0)) == 2
+
+
+def test_i_8_3_every_launcher_installs_the_same_hooks():
+    """I-8.3. Each view used to install its own `sys.excepthook` and nothing
+    else; `threading.excepthook` existed in the web launcher only, and Tk's
+    `report_callback_exception` nowhere. One installer, called by all three.
+    """
+    source = _code_lines((SRC / "app.py").read_text())
+    text = "\n".join(source)
+
+    assert text.count("install_exception_hooks(") >= 3, (
+        "I-8.3: all three launchers must call `install_exception_hooks`; "
+        f"found {text.count('install_exception_hooks(')} call(s)")
+
+    for banned, why in (
+        ("sys.excepthook =", "assign it inside install_exception_hooks"),
+        ("threading.excepthook =", "assign it inside install_exception_hooks"),
+    ):
+        assert banned not in text, (
+            f"I-8.3: app.py assigns `{banned}` directly — {why}, so the three "
+            "launchers cannot drift apart again")
+
+
+def test_i_8_3_the_installer_covers_all_three_hooks():
+    from error_routing import install_exception_hooks
+
+    # Raw source, not `_code_lines`: two of the three assignments sit on a
+    # line that also carries a string literal, and the helper blanks the
+    # whole line when it does.
+    body = (SRC / "error_routing.py").read_text()
+    start = body.index("def install_exception_hooks(")
+    installer = body[start:]
+    for hook in ("sys.excepthook", "threading.excepthook",
+                 "report_callback_exception"):
+        assert hook in installer, (
+            f"I-8.3: install_exception_hooks misses {hook}")

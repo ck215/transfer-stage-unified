@@ -228,7 +228,15 @@ def test_d5_a_refused_command_does_not_run():
         probe.reset_baseline = lambda: ran.append(True)
         result = probe.execute_command(
             "reset_baseline", inputs={"full_speed": "not-a-number"})
-        assert result is False
+        # `.refused`, not `is False`: S11 gave commands a result type, and
+        # the whole point is that a refusal is distinguishable from a crash
+        # and from a success (I-8.1). `assert not result` would pass for a
+        # `Failed` too.
+        assert result.refused
+        # The reason names the field the way the *operator* sees it
+        # ("Autonomous Speed"), not the attribute, which is what makes it
+        # printable straight into the event log.
+        assert "Autonomous Speed" in result.reason
         assert ran == [], "the command ran despite an invalid input"
     finally:
         probe.teardown()

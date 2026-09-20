@@ -38,6 +38,9 @@ class TransferStageApp {
     this.pollIntervalMs = 20;
     this.isPolling = false;
     this.logs = [];
+    // Highest event id this tab has rendered. Per-client, which is what
+    // makes `/api/errors?since=` work for more than one open tab.
+    this.lastErrorId = 0;
     this.autoScrollLogs = true;
 
     // Hardware Setup Wizard State
@@ -1116,14 +1119,26 @@ class TransferStageApp {
   }
 
   async pollErrors() {
+    // `since=<id>` rather than a destructive pop (RC-8 item 3). The route
+    // used to clear the buffer as it read it, so with two tabs open
+    // whichever polled first consumed the error and the other never saw it.
+    // Each client now carries its own cursor.
     try {
-      const res = await fetch('/api/errors');
+      const since = this.lastErrorId || 0;
+      const res = await fetch(`/api/errors?since=${since}`);
       if (!res.ok) return;
       const data = await res.json();
       const errors = data.errors || [];
 
       for (const err of errors) {
-        this.showToast(`${err.title || 'Error'}: ${err.message}`, err.type || 'error');
+        if (typeof err.id === 'number' && err.id > (this.lastErrorId || 0)) {
+          this.lastErrorId = err.id;
+        }
+        const times = err.count > 1 ? ` (x${err.count})` : '';
+        const where = err.source ? `${err.source}/` : '';
+        this.showToast(
+          `${where}${err.title || 'Error'}${times}: ${err.message}`,
+          err.severity || err.type || 'error');
       }
     } catch (err) {
       // Quiet poll failure

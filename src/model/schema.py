@@ -230,19 +230,9 @@ def elements(schema_dict):
             yield element
 
 
-class NeedsConfirmation:
-    """Returned by a command that must not proceed unattended (S10 item 3).
-
-    Each view implements one generic dialog for this, which replaces the
-    `confirm_rotation_callback` the views used to *inject into the model* —
-    a callback the Web client never supplied, so the ±30° tubing check simply
-    did not exist there. A refusal the operator never sees is not a check.
-    """
-
-    def __init__(self, prompt, command, inputs=None):
-        self.prompt = prompt
-        self.command = command
-        self.inputs = inputs or {}
-
-    def __repr__(self):
-        return f"NeedsConfirmation({self.prompt!r}, command={self.command!r})"
+# `NeedsConfirmation` lives in `results` as of S11, where it became one
+# member of the `CommandResult` family instead of a type that only the
+# confirm path understood. It is re-exported here because every view and
+# every model that S10 wrote reaches it as `schema.NeedsConfirmation`, and
+# moving those imports would have been churn with no reader benefit.
+from results import CommandResult, Ok, Refused, Failed, NeedsConfirmation, as_result
