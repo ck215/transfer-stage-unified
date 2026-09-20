@@ -73,19 +73,14 @@ class RedPercentSystem(SchemaCommands):
               label="Red Change %"),
     )
 
-    def __del__(self):
-        print(f"[{self.__class__.__name__}] Destructor called")
-
     def __init__(self):
-        self.red_percent = 0.0
-        self.is_monitoring = False
-        self.stop_event = threading.Event()
-        self.thread = None
-        self.monitor_thread = None
-        
-        self.baseline = None
+        # `red_percent`, `is_monitoring`, `stop_event`, `thread`,
+        # `monitor_thread` and `baseline` used to be assigned here and
+        # never read anywhere else (REDPERCENT-20, grep-verified against
+        # the whole tree). The live equivalents are `current_red`,
+        # `monitoring`, `_monitor_thread` and `baseline_red` below.
         self.data_log = None
-        
+
         self.stepper_model = None
         self.available_probes = {}
         self.selected_probe_name = None
@@ -105,7 +100,6 @@ class RedPercentSystem(SchemaCommands):
 
     def set_focus_area(self, x, y, w, h):
         self.focus_area = {'top': int(y), 'left': int(x), 'width': int(w), 'height': int(h)}
-        print(f"[{self.__class__.__name__}] Focus Area set to: {self.focus_area}")
         return True
 
     def set_stepper_model(self, probe_name):
