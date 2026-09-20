@@ -95,8 +95,15 @@ Stage: S2 in progress
 ```
 
 **At stage completion**, the final commit sets the stage row to `done` with
-its commit SHA and date, flips its ledger rows to `closed`, and says
-`Stage: S<n> complete`.
+its date, flips its ledger rows to `closed`, and says `Stage: S<n> complete`.
+
+**Recording the SHA: never amend to insert it.** A commit cannot contain its
+own hash, and amending to add it orphans the hash you just wrote — the
+unreachable-`addb0b8` defect this repair already had to correct once, and
+which S0 reproduced before catching it. Write the stage row with the SHA left
+blank, then fill it in the *next* commit. Verify any SHA a document cites
+with `git merge-base --is-ancestor <sha> HEAD`; if that fails, the citation
+is unreachable and therefore useless.
 
 ## Resuming with a fresh context
 

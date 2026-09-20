@@ -47,7 +47,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 
 | Stage | Title | Status | Commit | Date | Notes |
 |---|---|---|---|---|---|
-| S0 | Baseline, plan, invariant harness | done | `bd6f205` | 2026-09-19 | Docs baseline, plan, ledger, test division, invariant harness. |
+| S0 | Baseline, plan, invariant harness | done | `e760615` | 2026-09-19 | Docs baseline, plan, ledger, test division, invariant harness. |
 | S1 | Purge legacy paths (D-9, D-11) | todo | | | Pure deletion. No dependencies. |
 | S2 | Lifecycle authority (RC-1) | todo | | | Largest stage (41 findings). Split per numbered item. |
 | S3 | Transport truth and E-stop latch | todo | | | SAFETY. |
