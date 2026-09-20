@@ -51,13 +51,25 @@ def shutdown(reason="exit"):
             return
         _shutdown_done = True
         manager = _manager
-    if manager is None:
-        return
     print(f"[lifecycle] Shutting down ({reason})...")
+    if manager is not None:
+        try:
+            manager.shutdown_all()
+        except Exception as e:  # never let a teardown failure mask the exit
+            print(f"[lifecycle] shutdown_all failed: {e}")
+
+    # SDL comes down here and nowhere else (RC-13). Individual pollers used to
+    # call pygame.quit() when the last one closed, which tore SDL down under
+    # anything still running.
+    #
+    # Deliberately NOT gated on a manager existing: the setup window scans for
+    # controllers before any model is built, so a launch abandoned at the
+    # setup screen has SDL up and no manager at all.
     try:
-        manager.shutdown_all()
-    except Exception as e:  # never let a teardown failure mask the exit
-        print(f"[lifecycle] shutdown_all failed: {e}")
+        from controller.input_service import input_service
+        input_service.shutdown()
+    except Exception as e:
+        print(f"[lifecycle] input service shutdown failed: {e}")
 
 
 def install_exit_hooks():

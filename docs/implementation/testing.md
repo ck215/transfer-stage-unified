@@ -183,6 +183,13 @@ entry it owns to be removed rather than left XPASSing.
    node IDs, do not reconcile totals by arithmetic.
 5. **New tests carry a concern marker**, or they will not run in any
    targeted gate.
+6. **Run the isolation pass at every stage boundary, not just the final
+   one.** `order_dependent` tests are excluded from the fast gate, every
+   concern gate *and* the main sweep, so nothing routine touches them. In S5
+   this was found the hard way: `test_dashboard_window_teardown_ordering`
+   still called `register_model`, which S2 had renamed two stages earlier,
+   and no gate had run it since. An excluded test is not a quarantined test —
+   it is an unwatched one.
 
 ---
 
@@ -194,3 +201,15 @@ consecutive sweeps. Qt pass: 10. Order-dependent: 7. Known-bad: 10. Slow: 56.*
 *After S0 and S1: 272 collected (+9 invariant tests, −1 test deleted with the
 feature it covered). Fast gate: 206 selected — 199 pass, 7 xfail. Every delta
 accounted for by node-ID diff against `b37cc9a`.*
+
+*After S5 part 2: fast gate 272 pass, 6 xfail (~38 s). The xfail count has
+fallen from 9 as invariants started holding — **I-1.5 retired in S2, I-2.3 in
+S3** — which is the intended direction. A retirement is forced, not optional:
+`xfail(strict=True)` turns a now-passing invariant into a failure until
+someone deletes the marker.*
+
+*Two quarantine notes for whoever picks this up. The `known_bad` list still
+names S7/S9/S10/S11 as owners, so it should keep shrinking. The
+`order_dependent` set was predicted to dissolve during S3/S8/S11; **S3 has
+landed and it has not shrunk yet** — re-check it at S8 rather than assuming
+the prediction held.*

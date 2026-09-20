@@ -15,25 +15,19 @@ import re
 import ctypes
 from ctypes import wintypes
 import threading
-_poller_lock = threading.Lock()
-_active_poller_count = 0
+# The bind-counting refcount lived here: close() decremented it and called
+# pygame.quit() at zero, so closing one device tore SDL down under another
+# that was still running. Ownership is per-owner in InputService now.
 from error_routing import ErrorRouter as ErrorPopupManager
+from controller.input_service import input_service
 
 
-def _ensure_pygame_video():
-    """Every joystick operation in this module depends on a live SDL video
-    subsystem (SDL_VIDEODRIVER=dummy), but pygame.quit() -- called whenever
-    the last active poller closes -- tears that down along with everything
-    else, and nothing was guaranteed to bring it back until the next
-    ad-hoc reconnect. pygame.init() is cheap and idempotent when subsystems
-    are already up, so call this before *any* pygame.joystick use and again
-    immediately after any pygame.quit(), rather than patching call sites
-    one at a time as this recurs."""
-    if pygame:
-        pygame.init()
-
-
-_ensure_pygame_video()
+# _ensure_pygame_video() lived here. Its own docstring described it as a
+# recurring patch for SDL being torn down by whichever poller happened to
+# close last — the anti-fix root-causes.md names, because it made the symptom
+# survivable and so removed the pressure to fix the ownership. SDL now has one
+# owner (controller/input_service.py), is initialised once, and is torn down
+# only at process exit, so there is nothing left to re-establish.
 
 # Windows API structure for polling raw joystick status
 if sys.platform == "win32":
@@ -250,8 +244,14 @@ def get_gamepad_wrapper(joystick):
 
 class ControllerPoller:
     
-    # Poll 50 times per second (1000ms / 20ms = 50Hz)
-    POLL_INTERVAL = 5
+    # Poll interval in milliseconds.
+    #
+    # NOTE (S5): the comment here used to read "Poll 50 times per second
+    # (1000ms / 20ms = 50Hz)" above a value of 5, i.e. 200 Hz — four times the
+    # documented rate. The value is left alone deliberately: the manual-mode
+    # command rate is something the operator feels at the bench, so changing
+    # it is the owner's call, not a refactor's. Flagged in progress.md.
+    POLL_INTERVAL = 5  # ms -> ~200 Hz
 
     def __init__(self, controllerID, active_claims, process_name):
         # Polling control flag
@@ -266,7 +266,30 @@ class ControllerPoller:
         self.gamepad = None
         self._closed = False
 
+        # Input state, latched at poll time (RC-13 item 2).
+        #
+        # Edges used to be computed inside get_mapped_state(), which meant the
+        # *reader* detected them and consumed them by updating the latch. Two
+        # consequences: whichever caller read first swallowed the edge for
+        # everyone else, and a button tap shorter than the gap between reads
+        # was never seen at all. Edges are now latched by the poll loop and
+        # held until a single consumer drains them.
+        self._init_input_state()
+        self._thread = None
+
         self._initialize_pygame_joystick(controllerID)
+
+    def _init_input_state(self):
+        """Set up the latched-input fields.
+
+        Separate from __init__ so a poller assembled piecemeal — as several
+        tests do, to avoid touching real hardware — can set them up without
+        duplicating the field list.
+        """
+        self._state_lock = threading.RLock()
+        self._levels = {}
+        self._pending_edges = {}
+        self._latch_state = {}
 
     def _is_os_connected(self):
         """OS-level and Pygame-level check for controller connection."""
@@ -318,31 +341,15 @@ class ControllerPoller:
         ErrorPopupManager.report_warning("Controller Disconnected", msg)
         self.gamepad = None
         self.active_claims[self.process_name] = "None Detected"
-        if hasattr(self, '_latch_state'):
+        with self._state_lock:
             self._latch_state.clear()
+            self._pending_edges.clear()
+            self._levels = {}
         self.stop_polling()
     
     def get_physical_controllers(self):
         try:
-            _ensure_pygame_video()
-            if pygame:
-                pygame.joystick.init()
-        except Exception:
-            pass
-        try:
-            if pygame and not pygame.joystick.get_init():
-                pygame.joystick.init()
-            if pygame:
-                pygame.event.pump()
-            hardware_controllers = []
-            if pygame:
-                for i in range(pygame.joystick.get_count()):
-                    try:
-                        js = pygame.joystick.Joystick(i)
-                        hardware_controllers.append(f"ID {i}: {js.get_name()}")
-                    except Exception:
-                        pass
-            return hardware_controllers
+            return [f"ID {i}: {name}" for i, name in input_service.enumerate()]
         except Exception as e:
             ErrorPopupManager.report_error("Controller Scan Error", f"[{self.process_name}] Error scanning physical controllers:\n{e}", e)
             return []
@@ -356,12 +363,14 @@ class ControllerPoller:
         return success
 
     def connect_controller(self):
-        print("[controllerDrive] Restarting pygame...")
-        try:
-            if pygame:
-                pygame.quit()
-        except Exception:
-            pass
+        """Re-acquire this poller's device. Does not touch anyone else's.
+
+        This used to call pygame.quit() — a process-wide teardown — to
+        "restart pygame" for one poller, which killed every other live
+        poller's joystick handle at the same time (RC-13).
+        """
+        print(f"[{self.process_name}] Re-acquiring controller...")
+        input_service.release(self.process_name)
         success = self._initialize_pygame_joystick(self.controllerID)
         if success and self.gui_root and not self.is_polling:
             self.start_polling(self.gui_root, self.log_updater, self.activity_callback)
@@ -415,42 +424,28 @@ class ControllerPoller:
                         return False
 
         try:
-            if pygame:
-                _ensure_pygame_video()
-                # joystick.init() may raise SDL video errors under SDL_VIDEODRIVER=dummy;
-                # these are expected in headless mode and are not real failures.
-                try:
-                    pygame.joystick.init()
-                except Exception as sdl_e:
-                    sdl_msg = str(sdl_e).lower()
-                    if any(k in sdl_msg for k in ("video", "display", "no video", "no available")):
-                        print(f"[controllerDrive] SDL headless mode (expected): {sdl_e}")
-                    else:
-                        raise  # unexpected — let outer handler catch it
-        
+            input_service.ensure_init()
+
             try:
                 self.controller_index = controller_number
 
                 if not self._is_os_connected():
                     raise RuntimeError("Device not physically present at OS level.")
 
-                if not pygame:
-                    raise RuntimeError("Pygame module not available.")
-
-                joystick = pygame.joystick.Joystick(controller_number)
-                joystick.init()
+                joystick = input_service.acquire(self.process_name, controller_number)
+                if joystick is None:
+                    raise RuntimeError(
+                        f"Controller {controller_number} is unavailable or already claimed.")
 
                 self.active_claims[self.process_name] = controllerID
                 print(f"\n[controllerDrive] Attempting to initialize joystick: {joystick.get_name()}")
                 
                 # Setup polymorphic wrapper
                 self.gamepad = get_gamepad_wrapper(joystick)
-                if hasattr(self, '_latch_state'):
+                with self._state_lock:
                     self._latch_state.clear()
+                    self._pending_edges.clear()
                 print(f"[controllerDrive] Joystick initialization successful: {joystick.get_name()}")
-                global _active_poller_count
-                with _poller_lock:
-                    _active_poller_count += 1
                 return True
             except Exception as e:
                 msg = f"[controllerDrive] No joystick found ({e})."
@@ -485,73 +480,137 @@ class ControllerPoller:
         print("[controllerDrive] Starting controller polling...")
         self.is_polling = True
 
-        self._poll_loop() 
+        if self.gui_root is not None and hasattr(self.gui_root, "after"):
+            # Legacy path: driven by the Tk event loop.
+            self._poll_loop()
+        else:
+            # The poller owns its own clock (RC-13 item 2). Without this the
+            # loop ran exactly once and then called stop_polling(), because
+            # rescheduling depended on a Tk widget's `after`. That is why the
+            # Web frontend has no manual mode at all: no Tk root, no polling,
+            # so entering manual mode energized the coils and then did
+            # nothing else.
+            self._thread = threading.Thread(
+                target=self._poll_forever, daemon=True,
+                name=f"poller-{self.process_name}")
+            self._thread.start()
+
+    def _poll_forever(self):
+        while self.is_polling and not self._closed:
+            self._poll_loop()
+            time.sleep(self.POLL_INTERVAL / 1000.0)
 
     def stop_polling(self):
         if self.is_polling:
             self.is_polling = False
 
     def close(self):
+        """Release this poller's device handle. SDL stays up.
+
+        The old version decremented a process-wide poller count and called
+        pygame.quit() when it reached zero — so closing one device could tear
+        SDL down under another poller that was still running, and the next
+        reconnect had to resurrect it. Process-wide teardown belongs to
+        lifecycle.shutdown() at exit, and nowhere else (RC-13).
+        """
         if self._closed:
             return
         self._closed = True
-        
-        global _active_poller_count
-        with _poller_lock:
-            _active_poller_count -= 1
-            count = _active_poller_count
+        self.stop_polling()
+        input_service.release(self.process_name)
 
-        if count <= 0 and pygame:
-            try:
-                pygame.joystick.quit()
-                pygame.quit()
-            except Exception:
-                pass
-            # Re-establish the dummy video driver immediately rather than
-            # leaving the SDL context dead until whatever reconnects next
-            # happens to reinit it -- see _ensure_pygame_video().
-            _ensure_pygame_video()
+    EDGE_KEYS = ("dpad_LR", "dpad_UD", "LBumper", "RBumper")
 
-    def get_mapped_state(self):
-        """Returns the universally mapped input dictionary from the current gamepad."""
-        if not self.gamepad or not self.is_polling:
-            return {}
-            
+    def _read_raw(self):
+        """Raw mapped state from the wrapper, or None if the device is gone."""
+        if not self.gamepad:
+            return None
         try:
-            raw = self.gamepad.get_mapped_state()
-            result = dict(raw)
+            return self.gamepad.get_mapped_state()
         except pygame.error as e:
-            ErrorPopupManager.report_error("Gamepad Disconnected", f"Hardware error during poll:\n{e}")
+            ErrorPopupManager.report_error(
+                "Gamepad Disconnected", f"Hardware error during poll:\n{e}")
             self.gamepad = None
             self.is_polling = False
-            return {}
-        
+            return None
+
+    @staticmethod
+    def _apply_deadzones(state):
         for k in ("x_axisStatus", "y_axisStatus"):
-            if abs(result.get(k, 0.0)) < 0.12:
-                result[k] = 0.0
-                
-        if result.get("z_axisStatusL", 0.0) < -0.9:
-            result["z_axisStatusL"] = -1.0
-        if result.get("z_axisStatusR", 0.0) < -0.9:
-            result["z_axisStatusR"] = -1.0
-        
-        if not hasattr(self, '_latch_state'):
-            self._latch_state = {}
-            
-        for key in ["dpad_LR", "dpad_UD", "LBumper", "RBumper"]:
-            current_val = raw.get(key, 0)
-            last_val = self._latch_state.get(key, 0)
-            
-            if current_val != 0:
-                if current_val != last_val:
-                    result[key] = current_val
-                else:
-                    result[key] = 0
-            else:
-                result[key] = 0
-                
-            self._latch_state[key] = current_val
-            
+            if abs(state.get(k, 0.0)) < 0.12:
+                state[k] = 0.0
+        for k in ("z_axisStatusL", "z_axisStatusR"):
+            if state.get(k, 0.0) < -0.9:
+                state[k] = -1.0
+        return state
+
+    def _capture_state(self):
+        """Latch one tick of input. Called by the poll loop, never by a reader.
+
+        Edges are detected *here*, at poll time, and accumulate until drained.
+        They used to be detected inside get_mapped_state(), so the first
+        reader consumed the edge for every other reader, and a tap shorter
+        than the gap between reads was never seen at all.
+        """
+        raw = self._read_raw()
+        if raw is None:
+            return
+        levels = self._apply_deadzones(dict(raw))
+        with self._state_lock:
+            for key in self.EDGE_KEYS:
+                current = raw.get(key, 0)
+                if current != 0 and current != self._latch_state.get(key, 0):
+                    self._pending_edges[key] = current
+                self._latch_state[key] = current
+                levels[key] = 0  # levels never carry edges
+            self._levels = levels
+
+    def poll_once(self):
+        """Run exactly one poll tick. The unit of the loop, exposed for tests."""
+        self._poll_loop()
+
+    def read_levels(self):
+        """Current continuous input (axes, triggers). Non-consuming.
+
+        Any number of readers may call this; it changes nothing.
+        """
+        with self._state_lock:
+            return dict(self._levels)
+
+    def drain_edges(self):
+        """Pending discrete presses since the last drain. Single consumer.
+
+        Returns them and clears them, so exactly one caller acts on each
+        press. That caller is the model's input pump.
+        """
+        with self._state_lock:
+            edges, self._pending_edges = self._pending_edges, {}
+            return edges
+
+    def get_mapped_state(self):
+        """Levels plus any pending edges — the shape callers already expect.
+
+        Kept so existing call sites keep working while RC-4 moves the input
+        pump into the models. It *drains*, so it is still a single-consumer
+        read; the difference is that the edge was latched when it happened
+        rather than when someone got round to looking.
+        """
+        if not self.gamepad or not self.is_polling:
+            return {}
+        thread = self._thread
+        if thread is None or not thread.is_alive():
+            # Nothing is driving captures on our behalf — the Tk path is
+            # clocked by a widget, and some callers poll by reading. Sample
+            # now so the answer reflects the hardware, not the last tick.
+            # Capturing twice for one physical state produces no extra edge:
+            # _capture_state compares against the latch.
+            self._capture_state()
+        result = self.read_levels()
+        if not result:
+            return {}
+        edges = self.drain_edges()
+        for key in self.EDGE_KEYS:
+            result[key] = edges.get(key, 0)
         return result
 
     def flush_neutral(self):
@@ -567,8 +626,11 @@ class ControllerPoller:
             else:
                 self.gamepad.prev_axis_states[k] = 0.0
             
-        if hasattr(self, '_latch_state'):
+        with self._state_lock:
             self._latch_state.clear()
+            self._pending_edges.clear()
+            self._levels = {}
+
     def _poll_loop(self):
         if not self.is_polling: return
         
@@ -581,51 +643,20 @@ class ControllerPoller:
             return
         
         try:
-            if pygame:
-                pygame.event.pump()
-                pygame.event.get()
-            
-            if not self.gamepad or not self.gamepad.joystick:
-                self._handle_disconnect()
-                return
+            # One tick reads many joystick values, and each poller now has its
+            # own thread (RC-13 item 2). pygame's joystick API is not
+            # thread-safe, so the whole tick is taken under the SDL lock
+            # rather than leaving two threads to interleave inside it.
+            with input_service.lock():
+                if pygame:
+                    pygame.event.pump()
+                    pygame.event.get()
 
-            # Check Axes
-            for i in range(self.gamepad.joystick.get_numaxes()): # type: ignore
-                current_val = self.gamepad.joystick.get_axis(i)  # type: ignore
-                
-                if abs(current_val) < 0.1: 
-                    current_val = 0.0
-                
-                prev_val = self.gamepad.prev_axis_states.get(i, 0.0)
-                if round(current_val, 2) != round(prev_val, 2):
-                    _log(f"Axis {i} changed: {current_val:.2f}")
+                if not self.gamepad or not self.gamepad.joystick:
+                    self._handle_disconnect()
+                    return
 
-                    is_hard_snap = (abs(current_val) >= 1.0) and (abs(current_val - prev_val) > 0.5)
-                    if not is_hard_snap and self.activity_callback:
-                        self.activity_callback()
-
-                self.gamepad.prev_axis_states[i] = current_val
-            
-            # Apply controller-specific overrides (like T16000M buttons mapped as axes)
-            self.gamepad.update_overrides()
-
-            # Check Buttons
-            for i in range(self.gamepad.joystick.get_numbuttons()): # type: ignore
-                current_val = self.gamepad.joystick.get_button(i)   # type: ignore
-                if current_val != self.gamepad.prev_button_states.get(i, 0):
-                    _log(f"Button {i} {'pressed' if current_val else 'released'}")
-                    if self.activity_callback:
-                        self.activity_callback()
-                    self.gamepad.prev_button_states[i] = current_val
-
-            # Check Hats (DPad)
-            for i in range(self.gamepad.joystick.get_numhats()):   # type: ignore
-                current_val = self.gamepad.joystick.get_hat(i)     # type: ignore
-                if current_val != self.gamepad.prev_hat_states.get(i, (0, 0)):
-                    _log(f"Hat {i} (DPad) changed: {current_val}")
-                    if self.activity_callback:
-                        self.activity_callback()
-                    self.gamepad.prev_hat_states[i] = current_val
+                self._read_hardware_changes(_log)
 
         except Exception as e:
             msg = f"[controllerDrive] Pygame error during polling:\n{e}"
@@ -633,8 +664,56 @@ class ControllerPoller:
             ErrorPopupManager.report_error("Gamepad Polling Error", msg, e)
             self._handle_disconnect()
             return
-        
-        if self.gui_root and hasattr(self.gui_root, 'after'):
+
+        # Latch this tick's input so a consumer sees every edge (RC-13 item 2).
+        self._capture_state()
+
+        if self.gui_root is not None and hasattr(self.gui_root, "after"):
             self.gui_root.after(self.POLL_INTERVAL, self._poll_loop)
-        else:
-            self.stop_polling()
+        # Otherwise _poll_forever owns the cadence. This used to call
+        # stop_polling() here, which is what limited polling to frontends that
+        # happen to have a Tk event loop.
+
+    def _read_hardware_changes(self, _log):
+        """Log and report activity for anything that moved since the last tick.
+
+        Caller holds the SDL lock.
+        """
+        # Check Axes
+        for i in range(self.gamepad.joystick.get_numaxes()): # type: ignore
+            current_val = self.gamepad.joystick.get_axis(i)  # type: ignore
+            
+            if abs(current_val) < 0.1: 
+                current_val = 0.0
+            
+            prev_val = self.gamepad.prev_axis_states.get(i, 0.0)
+            if round(current_val, 2) != round(prev_val, 2):
+                _log(f"Axis {i} changed: {current_val:.2f}")
+
+                is_hard_snap = (abs(current_val) >= 1.0) and (abs(current_val - prev_val) > 0.5)
+                if not is_hard_snap and self.activity_callback:
+                    self.activity_callback()
+
+            self.gamepad.prev_axis_states[i] = current_val
+        
+        # Apply controller-specific overrides (like T16000M buttons mapped as axes)
+        self.gamepad.update_overrides()
+
+        # Check Buttons
+        for i in range(self.gamepad.joystick.get_numbuttons()): # type: ignore
+            current_val = self.gamepad.joystick.get_button(i)   # type: ignore
+            if current_val != self.gamepad.prev_button_states.get(i, 0):
+                _log(f"Button {i} {'pressed' if current_val else 'released'}")
+                if self.activity_callback:
+                    self.activity_callback()
+                self.gamepad.prev_button_states[i] = current_val
+
+        # Check Hats (DPad)
+        for i in range(self.gamepad.joystick.get_numhats()):   # type: ignore
+            current_val = self.gamepad.joystick.get_hat(i)     # type: ignore
+            if current_val != self.gamepad.prev_hat_states.get(i, (0, 0)):
+                _log(f"Hat {i} (DPad) changed: {current_val}")
+                if self.activity_callback:
+                    self.activity_callback()
+                self.gamepad.prev_hat_states[i] = current_val
+

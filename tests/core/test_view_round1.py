@@ -151,7 +151,7 @@ def test_pyside_dashboard_sidebar_dock_sync(qtbot):
     from model.probes import StepperProbe
     mgr = SystemManager()
     probe = StepperProbe("COM1", "None")
-    mgr.register_model("Stepper Probe", probe)
+    mgr.register("Stepper Probe", probe)
 
     dash = DashboardWindow(mgr)
     qtbot.addWidget(dash)

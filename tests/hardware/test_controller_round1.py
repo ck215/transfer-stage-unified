@@ -1,3 +1,4 @@
+import contextlib
 import pytest
 import sys
 import time
@@ -7,9 +8,51 @@ from controller.serial import serial, PACKET_FORMAT
 from controller.gamepad import ControllerPoller, BaseGamepad, XboxGamepad, get_gamepad_wrapper
 
 
+@contextlib.contextmanager
+def patched_sdl(count=2, name="Controller"):
+    """Patch SDL where it now lives: controller/input_service.py (RC-13).
+
+    Tests used to patch `controller.gamepad.pygame`, because every poller
+    talked to SDL directly. SDL has one owner now, so that is the module to
+    patch, and `input_service` is reset between tests so one test's acquired
+    handles cannot leak into the next.
+    """
+    from controller import input_service as svc
+
+    svc.input_service._handles.clear()
+    svc.input_service._initialised = False
+    with patch("controller.input_service.pygame") as mock_pygame:
+        mock_pygame.joystick.get_count.return_value = count
+        mock_pygame.joystick.get_init.return_value = True
+        js = MagicMock()
+        js.get_name.return_value = name
+        mock_pygame.joystick.Joystick.return_value = js
+        try:
+            yield mock_pygame
+        finally:
+            svc.input_service._handles.clear()
+            svc.input_service._initialised = False
+
+
+
 # ==========================================
 # 1. Disconnected Joystick & Reconnect Tests
 # ==========================================
+
+
+def _bare_poller():
+    """A poller assembled without touching hardware.
+
+    __init__ acquires a real device, so these tests build the object directly.
+    _init_input_state() sets up the latched-input fields (RC-13 item 2) that
+    __init__ would otherwise install.
+    """
+    poller = ControllerPoller.__new__(ControllerPoller)
+    poller._init_input_state()
+    poller._thread = None
+    poller._closed = False
+    return poller
+
 
 def test_poller_initialization_with_none_or_invalid_id():
     """Verify initializing poller with None, 'None', or 'Virtual' sets claim to 'None Detected'."""
@@ -26,7 +69,7 @@ def test_poller_initialization_with_none_or_invalid_id():
 def test_poller_os_disconnect_during_poll_loop():
     """Verify that OS disconnection during polling triggers _handle_disconnect and clears gamepad."""
     claims = {"TestProcess": 0}
-    poller = ControllerPoller.__new__(ControllerPoller)
+    poller = _bare_poller()
     poller.process_name = "TestProcess"
     poller.active_claims = claims
     poller.controllerID = 0
@@ -49,7 +92,7 @@ def test_poller_os_disconnect_during_poll_loop():
 def test_poller_pygame_error_during_get_mapped_state():
     """Verify pygame.error during hardware read resets gamepad gracefully."""
     import pygame
-    poller = ControllerPoller.__new__(ControllerPoller)
+    poller = _bare_poller()
     poller.is_polling = True
     poller.gamepad = MagicMock()
     poller.gamepad.get_mapped_state.side_effect = pygame.error("Joystick hardware removed")
@@ -65,13 +108,13 @@ def test_poller_pygame_error_during_get_mapped_state():
 def test_poller_reconnect_flow():
     """Verify connect_controller attempts re-initialization."""
     claims = {}
-    with patch("controller.gamepad.pygame") as mock_pygame:
+    with patched_sdl() as mock_pygame:
         mock_pygame.joystick.get_count.return_value = 1
         mock_js = MagicMock()
         mock_js.get_name.return_value = "Controller (Xbox One For Windows)"
         mock_pygame.joystick.Joystick.return_value = mock_js
 
-        poller = ControllerPoller.__new__(ControllerPoller)
+        poller = _bare_poller()
         poller.process_name = "ProbeA"
         poller.active_claims = claims
         poller.controllerID = 0
@@ -90,7 +133,7 @@ def test_poller_reconnect_flow():
 
 def test_get_mapped_state_when_disconnected():
     """Verify get_mapped_state returns empty dict when gamepad is None or unpolled."""
-    poller = ControllerPoller.__new__(ControllerPoller)
+    poller = _bare_poller()
     poller.gamepad = None
     poller.is_polling = False
     assert poller.get_mapped_state() == {}

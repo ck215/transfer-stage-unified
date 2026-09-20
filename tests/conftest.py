@@ -483,5 +483,11 @@ def dual_shutdown_model():
             
         def teardown(self):
             self.power_down()
-            
+
+        def emergency_stop(self):
+            # register() enforces the ManagedModel contract at the boundary
+            # (RC-1), and shutdown_all() stops before it tears down, so this
+            # has to be the strongest stop the model has.
+            self.power_down()
+
     return DualShutdownModel()

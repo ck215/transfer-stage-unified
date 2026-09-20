@@ -1,7 +1,10 @@
+import contextlib
 import pytest
 import sys
 from unittest.mock import MagicMock, patch
 from controller.gamepad import (
+
+
     BaseGamepad,
     XboxGamepad,
     BluetoothXboxGamepad,
@@ -10,6 +13,47 @@ from controller.gamepad import (
     ControllerPoller,
     get_gamepad_wrapper,
 )
+
+@contextlib.contextmanager
+def patched_sdl(count=2, name="Controller"):
+    """Patch SDL where it now lives: controller/input_service.py (RC-13).
+
+    Tests used to patch `controller.gamepad.pygame`, because every poller
+    talked to SDL directly. SDL has one owner now, so that is the module to
+    patch, and `input_service` is reset between tests so one test's acquired
+    handles cannot leak into the next.
+    """
+    from controller import input_service as svc
+
+    svc.input_service._handles.clear()
+    svc.input_service._initialised = False
+    with patch("controller.input_service.pygame") as mock_pygame:
+        mock_pygame.joystick.get_count.return_value = count
+        mock_pygame.joystick.get_init.return_value = True
+        js = MagicMock()
+        js.get_name.return_value = name
+        mock_pygame.joystick.Joystick.return_value = js
+        try:
+            yield mock_pygame
+        finally:
+            svc.input_service._handles.clear()
+            svc.input_service._initialised = False
+
+
+
+def _bare_poller():
+    """A poller assembled without touching hardware.
+
+    __init__ acquires a real device, so these tests build the object directly.
+    _init_input_state() sets up the latched-input fields (RC-13 item 2) that
+    __init__ would otherwise install.
+    """
+    poller = ControllerPoller.__new__(ControllerPoller)
+    poller._init_input_state()
+    poller._thread = None
+    poller._closed = False
+    return poller
+
 
 def test_xbox_gamepad_mapping():
     mock_joystick = MagicMock()
@@ -148,7 +192,7 @@ def test_get_gamepad_wrapper_rejects_unrecognized_device():
         get_gamepad_wrapper(js_unknown)
 
 def test_controller_claim_conflict():
-    with patch("controller.gamepad.pygame"):
+    with patched_sdl():
         claims = {"ProcessA": "ID 0: Xbox Controller"}
         # ProcessB attempts to claim ID 0 which is already claimed by ProcessA
         poller = ControllerPoller("ID 0: Xbox Controller", claims, "ProcessB")
@@ -163,14 +207,14 @@ def test_controller_claim_conflict_with_integer_ids():
     TypeError: argument of type 'int' is not iterable on real hardware
     when two probes were assigned integer controller IDs).
     """
-    with patch("controller.gamepad.pygame"):
+    with patched_sdl():
         claims = {"ProcessA": 0}
         poller = ControllerPoller(0, claims, "ProcessB")
         assert poller.gamepad is None
         assert claims["ProcessB"] == "None Detected"
 
 def test_controller_multi_digit_id_parsing():
-    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
+    with patched_sdl() as mock_pygame:
         mock_pygame.joystick.get_count.return_value = 15
         mock_js = MagicMock()
         mock_js.get_name.return_value = "Xbox Series X Controller"
@@ -183,7 +227,7 @@ def test_controller_multi_digit_id_parsing():
             mock_pygame.joystick.Joystick.assert_called_with(12)
 
 def test_edge_triggered_dpad_and_bumpers():
-    poller = ControllerPoller.__new__(ControllerPoller)
+    poller = _bare_poller()
     poller.gamepad = MagicMock()
     poller.is_polling = True
     
@@ -225,7 +269,7 @@ def test_edge_triggered_dpad_and_bumpers():
 
 def test_controller_claim_conflict_mixed_types():
     """Verify claim collision detection works when mixing int and string formats."""
-    with patch("controller.gamepad.pygame"):
+    with patched_sdl():
         # ProcessA claimed int 0, ProcessB tries 'ID 0: Xbox Controller'
         claims = {"ProcessA": 0}
         poller = ControllerPoller("ID 0: Xbox Controller", claims, "ProcessB")
@@ -241,7 +285,7 @@ def test_controller_claim_conflict_mixed_types():
 def test_set_controller_resumes_polling_when_active():
     """Verify set_controller automatically resumes polling loop if GUI was previously polling."""
     mock_gui = MagicMock()
-    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
+    with patched_sdl() as mock_pygame:
         mock_pygame.joystick.get_count.return_value = 2
         mock_js = MagicMock()
         mock_js.get_name.return_value = "Controller"
@@ -267,7 +311,7 @@ def test_set_controller_resumes_polling_when_active():
 
 def test_stale_cache_guard():
     """Verify get_mapped_state() returns {} when polling is stopped."""
-    poller = ControllerPoller.__new__(ControllerPoller)
+    poller = _bare_poller()
     poller.gamepad = MagicMock()
     poller.is_polling = False
     
@@ -277,7 +321,7 @@ def test_stale_cache_guard():
 
 def test_controller_claim_success_then_conflict_with_string_ids():
     """Verify claim collision behaves correctly when using string IDs from combobox."""
-    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
+    with patched_sdl() as mock_pygame:
         mock_pygame.joystick.get_count.return_value = 1
         mock_js = MagicMock()
         mock_js.get_name.return_value = "Xbox"
@@ -298,7 +342,7 @@ def test_controller_claim_success_then_conflict_with_string_ids():
                 assert poller2.gamepad is None
 
 def test_flush_neutral():
-    poller = ControllerPoller.__new__(ControllerPoller)
+    poller = _bare_poller()
     poller.gamepad = MagicMock()
     poller.gamepad.prev_axis_states = {0: 0.5, 1: -0.5, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
     
@@ -309,7 +353,7 @@ def test_flush_neutral():
         assert len(poller._latch_state) == 0
 
 def test_controller_deadzone():
-    poller = ControllerPoller.__new__(ControllerPoller)
+    poller = _bare_poller()
     poller.is_polling = True
     poller.gamepad = MagicMock()
     
@@ -355,9 +399,9 @@ def test_gamepad_disconnect_mid_session():
     from unittest.mock import patch
     import pygame
     
-    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
+    with patched_sdl() as mock_pygame:
         mock_pygame.error = type("error", (Exception,), {})
-        poller = ControllerPoller.__new__(ControllerPoller)
+        poller = _bare_poller()
         poller.is_polling = True
         poller.gamepad = MagicMock()
         
@@ -372,14 +416,21 @@ def test_gamepad_disconnect_mid_session():
             # Since the device is lost, the polling flag or object might be cleared/warned
             # (Depends on implementation, but testing it doesn't crash is primary requirement)
 
-def test_controller_pygame_teardown_refcounted():
-    """Verify ControllerPoller close() doesn't kill pygame while other pollers exist."""
-    with patch("controller.gamepad.pygame") as mock_pygame, patch("controller.gamepad._active_poller_count", 0):
-        mock_pygame.joystick.get_count.return_value = 2
-        mock_js = MagicMock()
-        mock_js.get_name.return_value = "Controller"
-        mock_pygame.joystick.Joystick.return_value = mock_js
+def test_closing_a_poller_never_tears_sdl_down():
+    """Closing a device releases that device, and nothing else (RC-13).
 
+    Re-authored in S5. This used to assert the *refcount*: close() decremented
+    a module-level poller count and called pygame.quit() when it reached zero.
+    That was the bug, not the contract — the count was a proxy for ownership
+    that could not tell "nobody is using SDL" from "nobody happens to hold a
+    poller object right now", so closing one device tore SDL down under
+    another that was still running, and the next reconnect had to resurrect it
+    via _ensure_pygame_video(). Process-wide teardown now happens once, in
+    lifecycle.shutdown(), at process exit.
+    """
+    from controller.input_service import input_service
+
+    with patched_sdl() as mock_pygame:
         claims = {}
         with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
             poller1 = ControllerPoller(0, claims, "ProcessA")
@@ -391,11 +442,163 @@ def test_controller_pygame_teardown_refcounted():
             poller1.close()
             mock_pygame.quit.assert_not_called()
             mock_pygame.joystick.quit.assert_not_called()
-            
+            assert input_service.index_for("ProcessA") is None, "A's handle should be released"
+            assert input_service.index_for("ProcessB") == 1, "B still holds its device"
+
+            # Even the last poller closing must not take SDL down.
             poller2.close()
-            mock_pygame.quit.assert_called_once()
-            mock_pygame.joystick.quit.assert_called_once()
-            
-            mock_pygame.quit.reset_mock()
+            mock_pygame.quit.assert_not_called()
+            mock_pygame.joystick.quit.assert_not_called()
+
+            # Closing twice is a no-op, not a second release.
             poller1.close()
             mock_pygame.quit.assert_not_called()
+
+
+def test_two_pollers_cannot_claim_the_same_controller():
+    """The claim registry is derived from real acquisitions, so it cannot
+    disagree with which handles actually exist."""
+    from controller.input_service import input_service
+
+    with patched_sdl():
+        claims = {}
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            first = ControllerPoller(0, claims, "ProcessA")
+            assert first.gamepad is not None
+
+            second = ControllerPoller(0, claims, "ProcessB")
+            assert second.gamepad is None, "ProcessB took a controller ProcessA holds"
+            assert input_service.index_for("ProcessA") == 0
+
+
+def test_sdl_comes_down_only_at_process_exit():
+    import lifecycle
+    from controller.input_service import input_service
+
+    with patched_sdl() as mock_pygame:
+        input_service.ensure_init()
+        lifecycle._reset_for_tests()
+        lifecycle.shutdown("test")
+        mock_pygame.quit.assert_called_once()
+    lifecycle._reset_for_tests()
+
+
+# ==========================================
+# RC-13 item 2 — edges latch at poll time
+# ==========================================
+
+def test_a_tap_shorter_than_a_read_interval_is_not_lost():
+    """Edges used to be detected inside get_mapped_state(), i.e. by the
+    reader. A press that started and ended between two reads was therefore
+    never seen: both reads observed 0 and no edge existed. The poll loop now
+    latches it when it happens, and it waits until someone drains it."""
+    poller = _bare_poller()
+    poller.is_polling = True
+    poller.gamepad = MagicMock()
+
+    neutral = {"x_axisStatus": 0.0, "y_axisStatus": 0.0, "dpad_LR": 0,
+               "dpad_UD": 0, "LBumper": 0, "RBumper": 0}
+
+    poller.gamepad.get_mapped_state.return_value = dict(neutral)
+    poller._capture_state()
+
+    # The tap: down and back up, entirely between reads.
+    poller.gamepad.get_mapped_state.return_value = dict(neutral, LBumper=1)
+    poller._capture_state()
+    poller.gamepad.get_mapped_state.return_value = dict(neutral)
+    poller._capture_state()
+
+    assert poller.drain_edges().get("LBumper") == 1, "the tap was dropped"
+
+
+def test_reading_levels_does_not_consume_edges():
+    """Whichever caller read first used to swallow the edge for everyone
+    else, because the read updated the latch."""
+    poller = _bare_poller()
+    poller.is_polling = True
+    poller.gamepad = MagicMock()
+    poller.gamepad.get_mapped_state.return_value = {
+        "x_axisStatus": 0.8, "y_axisStatus": 0.0, "dpad_LR": 1,
+        "dpad_UD": 0, "LBumper": 0, "RBumper": 0}
+    poller._capture_state()
+
+    assert poller.read_levels()["x_axisStatus"] == 0.8
+    assert poller.read_levels()["x_axisStatus"] == 0.8  # still there
+    assert poller.drain_edges().get("dpad_LR") == 1, "a level read ate the edge"
+
+
+def test_edges_drain_exactly_once():
+    """Single consumer: two actors must not both act on one press."""
+    poller = _bare_poller()
+    poller.is_polling = True
+    poller.gamepad = MagicMock()
+    poller.gamepad.get_mapped_state.return_value = {
+        "x_axisStatus": 0.0, "y_axisStatus": 0.0, "dpad_LR": 0,
+        "dpad_UD": 0, "LBumper": 0, "RBumper": 1}
+    poller._capture_state()
+
+    assert poller.drain_edges().get("RBumper") == 1
+    assert poller.drain_edges() == {}
+
+
+def test_holding_a_button_produces_one_edge_not_a_stream():
+    poller = _bare_poller()
+    poller.is_polling = True
+    poller.gamepad = MagicMock()
+    held = {"x_axisStatus": 0.0, "y_axisStatus": 0.0, "dpad_LR": 0,
+            "dpad_UD": 0, "LBumper": 1, "RBumper": 0}
+    poller.gamepad.get_mapped_state.return_value = held
+
+    for _ in range(5):
+        poller._capture_state()
+
+    assert poller.drain_edges().get("LBumper") == 1
+    for _ in range(5):
+        poller._capture_state()
+    assert poller.drain_edges() == {}, "a held button kept re-firing"
+
+
+def test_levels_never_carry_edge_keys():
+    poller = _bare_poller()
+    poller.is_polling = True
+    poller.gamepad = MagicMock()
+    poller.gamepad.get_mapped_state.return_value = {
+        "x_axisStatus": 0.0, "y_axisStatus": 0.0, "dpad_LR": 1,
+        "dpad_UD": 0, "LBumper": 0, "RBumper": 0}
+    poller._capture_state()
+    assert poller.read_levels()["dpad_LR"] == 0
+
+
+# ==========================================
+# RC-13 item 2 — the poller owns its clock
+# ==========================================
+
+def test_polling_continues_without_a_tk_event_loop():
+    """This is why the Web frontend has no manual mode.
+
+    _poll_loop rescheduled itself with `self.gui_root.after(...)` and called
+    stop_polling() when there was no such root — so with no Tk widget the
+    loop ran exactly once and stopped. Entering manual mode on the web
+    dashboard energized the coils and then did nothing else.
+    """
+    import time as _time
+
+    with patched_sdl():
+        claims = {}
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            poller = ControllerPoller(0, claims, "Headless")
+        poller.gamepad = MagicMock()
+        poller.gamepad.get_mapped_state.return_value = {
+            "x_axisStatus": 0.0, "y_axisStatus": 0.0, "dpad_LR": 0,
+            "dpad_UD": 0, "LBumper": 0, "RBumper": 0}
+        poller.gamepad.joystick.get_numaxes.return_value = 0
+        poller.gamepad.joystick.get_numbuttons.return_value = 0
+        poller.gamepad.joystick.get_numhats.return_value = 0
+
+        try:
+            poller.start_polling(gui=None)          # no Tk root at all
+            _time.sleep(0.15)
+            assert poller.is_polling, "polling stopped with no Tk event loop"
+            assert poller._thread is not None and poller._thread.is_alive()
+        finally:
+            poller.close()

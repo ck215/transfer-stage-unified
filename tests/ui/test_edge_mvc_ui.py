@@ -213,7 +213,7 @@ def test_dashboard_dock_lifecycle(qtbot):
 
     mgr = SystemManager()
     probe = StepperProbe("COM1", "None")
-    mgr.register_model("Stepper Probe", probe)
+    mgr.register("Stepper Probe", probe)
     
     dash = DashboardWindow(mgr)
     qtbot.addWidget(dash)
@@ -289,7 +289,7 @@ def test_dashboard_dock_focus_loss(qtbot):
 
     mgr = SystemManager()
     probe = StepperProbe("COM1", "None")
-    mgr.register_model("Stepper Probe", probe)
+    mgr.register("Stepper Probe", probe)
     
     dash = DashboardWindow(mgr)
     qtbot.addWidget(dash)

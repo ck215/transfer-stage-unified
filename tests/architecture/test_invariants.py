@@ -21,7 +21,9 @@ to a fourth view or a third model while the earlier stages are in flight.
 Policy and per-stage gates: ``docs/implementation/testing.md``.
 """
 
+import io
 import re
+import tokenize
 from pathlib import Path
 
 import pytest
@@ -29,7 +31,27 @@ import pytest
 SRC = Path(__file__).resolve().parents[2] / "src"
 
 
-def _scan(pattern, root, exclude=()):
+def _code_lines(source):
+    """The source with comments and string literals blanked out.
+
+    Needed because several of these invariants are *about* names that the
+    surrounding comments have to mention in order to explain why they are
+    banned. Matching prose would make the guard fire on its own explanation.
+    Falls back to the raw text if the file will not tokenize.
+    """
+    lines = source.splitlines()
+    try:
+        blanked = list(lines)
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type in (tokenize.COMMENT, tokenize.STRING):
+                for n in range(tok.start[0], tok.end[0] + 1):
+                    blanked[n - 1] = ""
+        return blanked
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return lines
+
+
+def _scan(pattern, root, exclude=(), code_only=True):
     """Every line under `root` matching `pattern`, as (relpath, lineno, text).
 
     `exclude` holds paths (relative to src/) where the name is legitimate —
@@ -42,9 +64,12 @@ def _scan(pattern, root, exclude=()):
         rel = path.relative_to(SRC)
         if rel in excluded:
             continue
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        source = path.read_text()
+        raw = source.splitlines()
+        haystack = _code_lines(source) if code_only else raw
+        for lineno, line in enumerate(haystack, 1):
             if regex.search(line):
-                hits.append((str(rel), lineno, line.strip()))
+                hits.append((str(rel), lineno, raw[lineno - 1].strip()))
     return hits
 
 
@@ -252,7 +277,10 @@ I_7_1_BASELINE = {
 def _i_7_1_hits():
     names = sorted(set(DEVICE_NAMES) | _schema_command_names())
     pattern = r"[\"'](" + "|".join(re.escape(n) for n in names) + r")[\"']"
-    return _scan(pattern, SRC / "views")
+    # This invariant is *about* string literals, so it is the one scan that
+    # must keep them. It matches quoted names only, which was measured at zero
+    # false positives against generic words like "stop" and "home".
+    return _scan(pattern, SRC / "views", code_only=False)
 
 
 @pytest.mark.xfail(
@@ -280,6 +308,9 @@ def test_i_7_1_no_new_violations():
 
 # Names that only exist to reconnect a serial port at runtime. D-11 purges the
 # feature, so every one of these must stay absent from the source tree.
+# reboot_model had an exemption here through S1, because its four lifecycle
+# tests were coverage S2 needed. S2 replaced it with reconfigure(), so the
+# exemption is gone and the name is banned outright.
 D11_NAMES = (
     r"\breconnect_serial\b",
     r"\breboot_model\b",
@@ -292,11 +323,7 @@ def test_d11_no_runtime_serial_reconnect():
     """SERIAL-14, PYSIDE-13, DC-14, STEPPER-12 — D-11 purge stays purged."""
     offenders = []
     for pattern in D11_NAMES:
-        # reboot_model survives in model/system_manager.py until S2 replaces it
-        # with reconfigure(); its four lifecycle tests are coverage S2 needs.
-        # Only its *reachability from a view* is S1's business.
-        exclude = ("model/system_manager.py",) if "reboot_model" in pattern else ()
-        offenders += _scan(pattern, SRC, exclude=exclude)
+        offenders += _scan(pattern, SRC)
     assert not offenders, _report("D-11 (runtime serial reconnect)", offenders)
 
 
@@ -335,3 +362,35 @@ def test_manager14_launcher_rejects_unknown_flags():
         "launch_web was only reachable from the unreachable 'unknown view' "
         "branch and ignored --port/--no-browser"
     )
+
+
+# ---------------------------------------------------------------------------
+# S5 / RC-13 — SDL has one owner.
+#
+# root-causes.md names `_ensure_pygame_video()` as an anti-fix: it re-inits SDL
+# after whichever poller happened to tear it down, which made the symptom
+# survivable and so removed the pressure to fix the ownership. Its own
+# docstring described it as a recurring patch. This is the guard that stops it
+# coming back, in that form or another.
+# ---------------------------------------------------------------------------
+
+SDL_OWNER = "controller/input_service.py"
+
+
+def test_pygame_quit_is_called_only_by_the_input_service():
+    """Process-wide teardown belongs to one place, reached only at exit."""
+    hits = _scan(r"pygame\.quit\(\)|pygame\.joystick\.quit\(\)", SRC,
+                 exclude=(SDL_OWNER,))
+    assert not hits, _report("RC-13 (pygame.quit outside the input service)", hits)
+
+
+def test_the_ensure_pygame_video_anti_fix_has_not_returned():
+    hits = _scan(r"def _ensure_pygame_video|_ensure_pygame_video\(\)", SRC)
+    assert not hits, _report("RC-13 (anti-fix _ensure_pygame_video)", hits)
+
+
+def test_no_module_level_poller_refcount():
+    """The refcount could not tell "nobody is using SDL" from "nobody happens
+    to hold a poller object right now"."""
+    hits = _scan(r"_active_poller_count", SRC)
+    assert not hits, _report("RC-13 (bind-counting refcount)", hits)

@@ -52,7 +52,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S2 | Lifecycle authority (RC-1) | done | | 2026-09-19 | All 9 items. I-1.5 now holds. 7 tab-close findings deferred to S6 by D-1. |
 | S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
 | S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
-| S5 | Input service and model-owned loops | todo | | | Highest coupling. RC-13 first, then RC-4. |
+| S5 | Input service and model-owned loops | in progress | | 2026-09-19 | RC-13 item 1 (InputService) done. Remaining: poller edges, model-owned loops, sampling threads. |
 | S6 | Hide/show semantics (D-1) | todo | | | Needs S5. **Blocked on D-2** when reached. |
 | S7 | Probe mode state machine (RC-3) | todo | | | **Blocked on D-2** when reached. |
 | S8 | Motion serialization, ConnectionState | todo | | | |
@@ -80,11 +80,19 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | D-9 | macOS default view | **tkinter**, until the codebase is stabilized | 2026-09-19 |
 | D-10 | Unsaved Red Percent data on exit | **autosave** to a timestamped file, plus a prompt where the UI allows | 2026-09-19 |
 | D-11 | Runtime serial reconnect | **not supported** — purged as legacy | 2026-09-19 |
+| D-12 | Gamepad poll rate: 200 Hz (code) or 50 Hz (comment)? | *open* — raised in S5; the value is unchanged at ~200 Hz pending a ruling | |
 
 D-3, D-5, D-6 and D-10 carry the recommendations recorded in
 `root-causes.md`; they were not separately re-confirmed by the owner and any
 of them can be reopened before its stage begins. D-2, D-4, D-7 and D-8 are
 genuinely open and block the stages noted above.
+
+**D-12 was raised during S5**, not by the audit. `ControllerPoller.POLL_
+INTERVAL` is 5 ms (~200 Hz) under a comment claiming 50 Hz. Nothing was
+changed: the manual-mode command rate is felt at the bench, so which number
+is right is a hardware judgement. It does not block S5 — the rate is the same
+as it has always been — but it should be settled before S8 tunes anything
+around it.
 
 ---
 
@@ -473,6 +481,115 @@ on their first run.
 - **Next action:** S5 — input service and model-owned loops (RC-13, RC-4),
   33 findings. **S6 depends on it**: D-1's hide semantics cannot ship until
   the loops belong to the models. I-4.1's xfail retires there.
+
+### 2026-09-19 — S5 part 1: SDL gets a single owner (RC-13 item 1)
+
+Gate `-m "invariants"`: 12 passed, 2 xfailed. Fast gate: 266 passed, 6
+xfailed.
+
+**pygame ownership was spread across every poller, and each one could tear
+it down under the others.** Three mechanisms, all deleted:
+
+- `connect_controller()` called `pygame.quit()` — a **process-wide**
+  teardown — to "restart pygame" for one poller, killing every other live
+  poller's joystick handle at the same moment.
+- `close()` decremented a module-level `_active_poller_count` and called
+  `pygame.quit()` at zero. That count could not tell "nobody is using SDL"
+  from "nobody happens to hold a poller object right now".
+- `_ensure_pygame_video()` existed to re-init SDL after those `quit()`s. Its
+  own docstring called it a recurring patch. It is the **anti-fix**
+  `root-causes.md` names: it made the symptom survivable and so removed the
+  pressure to fix the ownership.
+
+`src/controller/input_service.py` now owns SDL: initialised once, torn down
+**only** by `lifecycle.shutdown()` at process exit, every SDL call under one
+re-entrant lock (pygame's joystick API is not thread-safe and each poller has
+its own thread), and device handles acquired and released **per owner id**.
+Releasing one owner never touches another's handle, and the claims registry
+is derived from real acquisitions rather than kept in a parallel dict that
+can drift — so two pollers can no longer both believe they hold controller 0.
+
+**Three anti-fix guards added to the invariant harness**, because this is
+exactly the kind of thing that creeps back: no `pygame.quit()` outside the
+service, no `_ensure_pygame_video`, no module-level poller refcount.
+
+**Writing those guards exposed a flaw in the harness itself.** They fired on
+their own explanatory comments — several of these invariants are *about*
+names the surrounding prose has to mention to explain why they are banned.
+`_scan` now blanks comments and string literals with `tokenize` before
+matching. I-7.1 is the one exception and says so: it matches quoted device
+and command names, so it is the scan that must keep strings.
+
+**A real bug fell out of a test.** `lifecycle.shutdown()` returned early when
+no manager was set, which would have skipped the SDL teardown entirely — and
+the setup window scans for controllers *before* any model is built, so a
+launch abandoned at the setup screen has SDL up and no manager at all. The
+teardown is no longer gated on a manager.
+
+**Re-authored, not deleted:** `test_controller_pygame_teardown_refcounted`
+asserted the refcount behaviour that was the bug. It now asserts the
+opposite — that closing a poller, even the last one, never tears SDL down —
+plus two new cases: two pollers cannot claim one controller, and SDL comes
+down only at process exit. The SDL patch point moved from
+`controller.gamepad.pygame` to `controller.input_service.pygame`, via a
+`patched_sdl()` helper that also resets the service between tests so one
+test's handles cannot leak into the next.
+
+### 2026-09-19 — S5 part 2: the poller owns its clock, and edges latch
+
+Fast gate: 272 passed, 6 xfailed.
+
+**The poller's clock was a Tk widget.** `_poll_loop` rescheduled itself with
+`self.gui_root.after(...)`, and when there was no such root it called
+`stop_polling()`. So with no Tk event loop the loop ran **exactly once** and
+stopped. That is the whole explanation for the Web frontend having no manual
+mode: entering manual energized the coils and then nothing else happened,
+because nothing was polling. The poller now runs its own daemon thread when
+no `after`-capable root is supplied, and the Tk path is unchanged.
+
+**Edges were detected by the reader, not the poller.** `get_mapped_state()`
+computed dpad/bumper edges *and* consumed them by updating the latch. Two
+consequences, both now tested:
+
+- whichever caller read first swallowed the edge for everyone else;
+- a button tap that started and ended between two reads was never seen at
+  all — both reads observed 0, so no edge ever existed.
+
+The poll loop now latches edges when they happen and holds them until
+drained. `read_levels()` is non-consuming and any number of readers may call
+it; `drain_edges()` is the single-consumer read. `get_mapped_state()` stays
+as a compatibility wrapper (levels + drained edges) so existing call sites
+keep working until RC-4 moves the input pump into the models.
+
+**One discrepancy left alone deliberately.** `POLL_INTERVAL = 5` sat under a
+comment reading "Poll 50 times per second (1000ms / 20ms = 50Hz)" — the code
+polls at ~200 Hz, four times the documented rate. **The value is unchanged
+and the comment now states the truth.** The manual-mode command rate is
+something the operator feels at the bench, so which of the two is correct is
+an owner decision, not a refactor's. → **Needs an owner ruling.**
+
+**A stale call site survived two stages, and the reason matters.**
+`test_dashboard_window_teardown_ordering` still called `register_model`,
+renamed back in S2. It is marked `order_dependent`, which excludes it from
+the fast gate, every concern gate **and** the main sweep — so nothing
+routine had run it since S1. Found by running the isolation pass at this
+boundary rather than saving it for the end. `testing.md` now carries that as
+a rule: an excluded test is not a quarantined test, it is an unwatched one.
+Swept for other stale call sites at the same time; three more were in
+`tests/ui/` (excluded by `addopts`) and `test_view_round1.py`.
+
+**One concurrency exposure was created and then closed in the same stage.**
+Giving each poller its own thread makes two threads able to call pygame's
+joystick API at once, which is not thread-safe — previously impossible only
+because polling was serialised through one Tk event loop. A poll tick now
+holds the input service's SDL lock for the whole read rather than per call,
+and the hardware-change scan is extracted into `_read_hardware_changes()` so
+the locked region is one obvious block.
+
+- **Next action:** S5 part 3 (RC-4) — the input pump and hardware sampling
+  move into the models, deleting Tk's `_route_input` (50 ms) and PySide's
+  `input_timer` (20 ms) and PySide's extra 50 ms poll in `_poll_model`. That
+  is what retires I-4.1 and unblocks S6.
 
 ---
 

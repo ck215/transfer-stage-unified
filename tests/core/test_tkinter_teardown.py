@@ -10,7 +10,7 @@ def test_dashboard_window_teardown_ordering(dual_shutdown_model):
     if power_down() is present.
     """
     manager = SystemManager()
-    manager.register_model("TestModel", dual_shutdown_model)
+    manager.register("TestModel", dual_shutdown_model)
     
     parent = MagicMock()
     
@@ -18,5 +18,8 @@ def test_dashboard_window_teardown_ordering(dual_shutdown_model):
     
     dash.on_close()
     
-    assert dual_shutdown_model.power_down_calls == 1
+    # shutdown_all() stops before it tears down (RC-1 item 4), so power_down
+    # runs twice here: once as emergency_stop, once inside teardown. The point
+    # the test guards is unchanged — disable() is never used as a stop.
+    assert dual_shutdown_model.power_down_calls == 2
     assert dual_shutdown_model.disable_calls == 0
