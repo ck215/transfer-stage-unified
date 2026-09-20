@@ -163,45 +163,53 @@ def test_rotator_system_auto_connect():
         mock_connect.assert_not_called()
 
 def test_qt_dynamic_view_poll_model(qtbot):
+    """The render tick renders. It does no hardware I/O (RC-4, I-4.1).
+
+    Re-authored in S5. This asserted the opposite — that `_poll_model()`
+    called `read_position()` and `poll_status()`. It did, *in addition to*
+    the view's own dedicated 100 ms timers, which is how one device ended up
+    generating roughly three times the serial traffic it needed. Sampling
+    belongs to the model's own thread; the tick reads cached fields.
+    """
     from views.pyside.view import QtDynamicView
     probe_model = MagicMock()
     probe_model.ui_schema = {"sections": []}
     probe_model.read_position = MagicMock()
-    
+
     view = QtDynamicView(probe_model)
     qtbot.addWidget(view)
     view._poll_model()
-    probe_model.read_position.assert_called()
+    probe_model.read_position.assert_not_called()
 
     rot_model = MagicMock()
     rot_model.ui_schema = {"sections": []}
     rot_model.poll_status = MagicMock()
-    
+
     rot_view = QtDynamicView(rot_model)
     qtbot.addWidget(rot_view)
     rot_view._poll_model()
-    rot_model.poll_status.assert_called()
+    rot_model.poll_status.assert_not_called()
 
-def test_watchdog_do_disable_manual_mode(qtbot):
-    """The idle-disable watchdog now lives in the model (BaseProbe), not the
-    view — see model/probes.py's _start_interlock_watchdog and
-    tests/core/test_edge_mvc_model.py's test_auto_disable_interlock_*. The
-    view's only remaining responsibility is relaying real controller
-    activity into the model via touch_activity()."""
-    from views.pyside.view import QtDynamicView
-    probe_model = MagicMock()
-    probe_model.ui_schema = {"sections": []}
-    probe_model.poller = MagicMock()
-    probe_model.touch_activity = MagicMock()
+def test_the_model_not_the_view_feeds_the_idle_watchdog():
+    """The idle-disable watchdog lives in the model (BaseProbe's
+    `_start_interlock_watchdog`), and as of S5 so does the wiring that feeds
+    it.
 
-    view = QtDynamicView(probe_model)
-    qtbot.addWidget(view)
+    Re-authored in S5 (RC-4). This used to assert that the *view* passed
+    `activity_callback` into `start_polling`, which meant the watchdog only
+    got fed in frontends that started the poller — so the Web dashboard,
+    which never started one, had no idle disable at all. The model starts its
+    own poller now, so every frontend gets the same behaviour.
+    """
+    from model.probes import DCProbe
 
-    # Get the activity_callback passed to start_polling
-    args, kwargs = probe_model.poller.start_polling.call_args
-    activity_callback = kwargs.get("activity_callback")
-
-    assert activity_callback is probe_model.touch_activity
-    activity_callback()
-    probe_model.touch_activity.assert_called_once()
+    probe = DCProbe("SIM", None)
+    probe.poller = MagicMock()
+    try:
+        probe.start_loops()
+        _args, kwargs = probe.poller.start_polling.call_args
+        assert kwargs.get("activity_callback") == probe.touch_activity
+        assert _args[0] is None, "the model must not hand the poller a GUI loop"
+    finally:
+        probe.stop_loops()
 

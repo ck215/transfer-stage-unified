@@ -42,6 +42,11 @@ class FailingTransport:
     def send_manual_mode_command(self, params):
         self.write_command(b"manual")
 
+    def read_position(self):
+        # The model samples on its own thread now (RC-4); the double has to
+        # answer, even if it has nothing to report.
+        return None
+
     def close(self):
         pass
 
@@ -64,6 +69,11 @@ class RecordingTransport:
 
     def send_manual_mode_command(self, params):
         self.writes.append(("manual", params))
+
+    def read_position(self):
+        # The model samples on its own thread now (RC-4); the double has to
+        # answer, even if it has nothing to report.
+        return None
 
     def close(self):
         pass

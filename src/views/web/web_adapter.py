@@ -315,23 +315,17 @@ class WebModelAdapter:
         with self._state_lock:
             if not self.system_manager:
                 return state
-            models = dict(getattr(self.system_manager, "active_models", {}))
+            manager = self.system_manager
+        models = manager.get_active_models_snapshot()
 
         for name, model in models.items():
             dev_lock = self._get_device_lock(name)
             with dev_lock:
-                # Invoke polling/reading routines if present
-                if hasattr(model, "read_position") and callable(model.read_position):
-                    try:
-                        model.read_position()
-                    except Exception:
-                        pass
-                if hasattr(model, "poll_status") and callable(model.poll_status):
-                    try:
-                        model.poll_status()
-                    except Exception:
-                        pass
-
+                # No hardware I/O here (RC-4, invariant I-4.1). /api/state used
+                # to call read_position() and poll_status() inline, so the
+                # sampling rate was whatever the browser happened to poll at,
+                # and a stalled read blocked the HTTP handler thread. The model
+                # samples on its own thread; this reads the cache.
                 model_state = {}
                 schema = getattr(model, "ui_schema", {"sections": []})
                 for sec in schema.get("sections", []):

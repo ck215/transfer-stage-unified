@@ -52,7 +52,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S2 | Lifecycle authority (RC-1) | done | | 2026-09-19 | All 9 items. I-1.5 now holds. 7 tab-close findings deferred to S6 by D-1. |
 | S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
 | S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
-| S5 | Input service and model-owned loops | in progress | | 2026-09-19 | RC-13 item 1 (InputService) done. Remaining: poller edges, model-owned loops, sampling threads. |
+| S5 | Input service and model-owned loops | done | | 2026-09-19 | RC-13 + RC-4. I-4.1 holds. Web has manual mode for the first time. S6 unblocked. |
 | S6 | Hide/show semantics (D-1) | todo | | | Needs S5. **Blocked on D-2** when reached. |
 | S7 | Probe mode state machine (RC-3) | todo | | | **Blocked on D-2** when reached. |
 | S8 | Motion serialization, ConnectionState | todo | | | |
@@ -591,6 +591,67 @@ the locked region is one obvious block.
   `input_timer` (20 ms) and PySide's extra 50 ms poll in `_poll_model`. That
   is what retires I-4.1 and unblocks S6.
 
+### 2026-09-19 — S5 part 3 (RC-4): the loops move into the models
+
+Gate `-m "(loops or mode or transport) and not order_dependent and not qt"`:
+159 passed, 6 xfailed. Invariants: 12 passed, **1** xfailed — **I-4.1 now
+holds**, the third invariant to retire, again forced by an XPASS failure.
+
+**32 view-owned loop calls are gone**: 15 in PySide, 13 in Tk, 4 in the web
+adapter. What they were:
+
+- PySide ran a 100 ms position timer, a 100 ms status timer, a **20 ms**
+  manual-input timer, and started the gamepad poller on a QTimer-backed
+  adapter — *and* sampled position and status again from its render tick
+  every 50 ms, roughly tripling the serial traffic for one device.
+- Tk ran the same four loops, with manual input at **50 ms**. So the two
+  desktop frontends did not feel the same at the bench.
+- The web adapter sampled inline inside `/api/state`, which made the
+  sampling rate whatever the browser happened to poll at and let a stalled
+  read block the HTTP handler thread.
+- The Web dashboard had **no input pump at all**.
+
+`BaseProbe` now owns both loops, at one documented rate each:
+`MANUAL_COMMAND_INTERVAL = 20 ms` and `SAMPLE_INTERVAL = 100 ms`. The model
+also starts its own poller, with no GUI root, so the poller uses the thread
+it gained in part 2.
+
+**`tests/core/test_model_owned_loops.py` is the Web-parity proof (I-4.2) and
+contains no GUI of any kind.** That is the point: manual mode is exercised
+with no Tk, no Qt and no browser, so if it works there it works in all three
+frontends, because none of them own it any more. It also covers neutral-on-
+exit, FULL STOP cutting the pump immediately, and I-4.3 — a sampler stuck in
+a 1 s read does not delay the stop path.
+
+**Rate choice, flagged rather than buried.** Tk's 50 ms and PySide's 20 ms
+could not both survive. 20 ms is adopted: the faster of the two, and the one
+the primary GUI has been using. It changes how Tk manual mode feels. Related
+to **D-12**; if the owner rules on the gamepad poll rate, revisit this
+alongside it.
+
+**Loops start on `enable()`, not at construction**, so an idle or
+test-constructed model does not run two threads; `teardown()` stops them
+first, and that is tested.
+
+**Re-authored, not deleted:** `test_api_state` asserted that hitting
+`/api/state` incremented the model's poll counters — that reading the API
+drove the hardware. It now asserts the opposite.
+
+**Two more stale tests, caught by the Qt pass — and worth noting *where*.**
+`test_qt_dynamic_view_poll_model` asserted the render tick *did* call
+`read_position()`/`poll_status()`, and `test_watchdog_do_disable_manual_mode`
+asserted the **view** passed `activity_callback` into `start_polling`. The
+second one encodes the bug plainly: the watchdog was only fed in frontends
+that started a poller, so the Web dashboard had **no idle auto-disable at
+all**. Both re-authored to assert the opposite. They live in the Qt pass,
+which the main sweep deliberately excludes — a second reminder, after the
+`order_dependent` one earlier in this stage, that a separated pass is only
+as good as the discipline of running it.
+
+**S6 is unblocked.** D-1's hide semantics required exactly this: a hidden
+device keeps running, so its loops had to stop belonging to the widget that
+gets hidden.
+
 ---
 
 ## Finding ledger
@@ -645,7 +706,7 @@ it) · `n/a` (with a reason).
 | GAMEPAD-6 | RC7 | S10 | root cause | open |
 | GAMEPAD-7 | RC4 | S5 | root cause | open |
 | GAMEPAD-8 | RC4 | S5 | root cause | open |
-| GAMEPAD-9 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
+| GAMEPAD-9 | RC1 | S2 | root cause | closed (loops moved to the models; test_manual_mode_drives_hardware_with_no_gui_at_all, tests/core/test_model_owned_loops.py) |
 | GAMEPAD-10 | RC13 | S5 | root cause | open |
 | GAMEPAD-11 | RC12 | S16 | explicit | open |
 | GAMEPAD-12 | RC12 | S16 | explicit | open |

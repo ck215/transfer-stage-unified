@@ -104,6 +104,7 @@ _FILE_MARKERS = {
     "core/test_lifecycle_teardown.py": ["lifecycle", "estop"],
     "core/test_lifecycle_exit.py": ["lifecycle", "estop", "bootstrap"],
     "core/test_transport_truth.py": ["transport", "estop"],
+    "core/test_model_owned_loops.py": ["loops", "mode", "estop"],
     "core/test_model_interactions.py": ["mode"],
     "core/test_model_round1.py": ["mode", "lifecycle"],
     "core/test_model_round2.py": ["mode"],

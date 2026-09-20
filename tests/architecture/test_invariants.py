@@ -229,32 +229,23 @@ def test_i_2_3_serial_handle_confined_to_transport():
 # I-4.1 — No view drives a control loop.  Fixed in S5 (RC-4/RC-13).
 # ---------------------------------------------------------------------------
 
+# HELD since S5 (2026-09-19). What was here: 32 view-owned loop calls — 15 in
+# PySide, 13 in Tk, 4 in the web adapter. Each frontend ran its own gamepad
+# pump and its own position/status polling, at rates that disagreed (Tk 50 ms
+# vs PySide 20 ms for manual input), and PySide sampled *again* from its render
+# tick on top of its dedicated timers. The web adapter sampled inline in
+# /api/state, so the rate was whatever the browser polled at and a stalled read
+# blocked the HTTP handler. The loops belong to the models now.
 I_4_1_PATTERN = r"\b(" + "|".join(VIEW_FORBIDDEN_CALLS) + r")\b"
-I_4_1_BASELINE = {
-    # Each frontend runs its own copy of the polling and manual-mode loop,
-    # which is why the three disagree on rate and on neutral-on-exit.
-    "views/web/web_adapter.py": 4,
-    "views/pyside/view.py": 15,
-    "views/tkinter/view.py": 13,
-}
 
 
 def _i_4_1_hits():
     return _scan(I_4_1_PATTERN, SRC / "views")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="[invariant I-4.1, owned by S5] all three frontends still own "
-    "polling and manual-mode loops that belong to the model",
-)
 def test_i_4_1_views_do_not_drive_control_loops():
     hits = _i_4_1_hits()
     assert not hits, _report("I-4.1", hits)
-
-
-def test_i_4_1_no_new_violations():
-    _assert_no_new("I-4.1", _i_4_1_hits(), I_4_1_BASELINE, "S5")
 
 
 # ---------------------------------------------------------------------------

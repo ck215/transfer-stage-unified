@@ -85,6 +85,11 @@ class MockSystemManager:
             "Stage_B": MockDeviceModel("Stage_B")
         }
 
+    def get_active_models_snapshot(self):
+        # The adapter reads models through the manager's thread-safe accessor
+        # rather than reaching into active_models (I-1.5).
+        return dict(self.active_models)
+
 
 @pytest.fixture
 def web_server_fixture():
@@ -197,6 +202,15 @@ def test_api_devices(web_server_fixture):
 
 
 def test_api_state(web_server_fixture):
+    """/api/state reports the model's cached values and samples nothing.
+
+    Re-authored in S5 (RC-4). This used to assert the opposite — that the
+    request incremented polled_count and position_read_count, i.e. that
+    reading the API drove the hardware. Two problems with that: the sampling
+    rate became whatever the browser happened to poll at, and a stalled read
+    blocked the HTTP handler thread. The model samples on its own thread now
+    (invariant I-4.1), so a read is a read.
+    """
     server, mgr = web_server_fixture
     stage_a = mgr.active_models["Stage_A"]
     assert stage_a.polled_count == 0
@@ -212,9 +226,9 @@ def test_api_state(web_server_fixture):
     assert data["Stage_A"]["velocity"] == 5.5
     assert data["Stage_A"]["enabled"] is True
     assert data["Stage_A"]["label"] == "Sample X"
-    assert data["Stage_A"]["pos_x"] == 100.5  # read_position incremented it by 0.5
-    assert stage_a.polled_count == 1
-    assert stage_a.position_read_count == 1
+    assert data["Stage_A"]["pos_x"] == 100.0, "the cached value, unmodified by the read"
+    assert stage_a.polled_count == 0, "/api/state polled the hardware"
+    assert stage_a.position_read_count == 0, "/api/state read the hardware"
 
 
 def test_api_command_success(web_server_fixture):

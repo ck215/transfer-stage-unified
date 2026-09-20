@@ -207,10 +207,6 @@ class DashboardWindow(tk.Toplevel):
                 
             view.pack(fill='both', expand=True)
             
-            # Engage Polling
-            if hasattr(view, 'start_polling'):
-                view.start_polling(self)
-                
             self.tab_metadata[str(frame)] = {'model': model, 'view': view}
             
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -530,43 +526,12 @@ class DynamicView(tk.Frame):
                     
         self.after(self.poll_interval_ms, self._poll_model)
 
-    def start_polling(self, dashboard_window):
-        # 1. Start the controller poller if available
-        if hasattr(self.model, 'poller') and self.model.poller:
-            # Idle auto-disable now lives in the model (BaseProbe's interlock
-            # watchdog) so every frontend shares it, including the web
-            # dashboard, which previously had no auto-disable at all. The
-            # view only needs to relay real controller activity into it.
-            activity_callback = getattr(self.model, 'touch_activity', None)
-            self.model.poller.start_polling(dashboard_window, log_updater=print, activity_callback=activity_callback)
-            
-            self._prev_manual_flag = False
-            def _route_input():
-                current_manual = getattr(self.model, 'manual_flag', False)
-                if current_manual:
-                    controller_params = self.model.poller.get_mapped_state()
-                    if hasattr(self.model, 'send_manual_mode_command'):
-                        self.model.send_manual_mode_command(controller_params or {})
-                elif getattr(self, '_prev_manual_flag', False):
-                    if hasattr(self.model, 'send_manual_mode_command'):
-                        self.model.send_manual_mode_command({})
-                self._prev_manual_flag = current_manual
-                self.after(50, _route_input)
-            self.after(50, _route_input)
-            
-        # 2. Start serial position reading
-        if hasattr(self.model, 'read_position'):
-            def _poll_pos():
-                self.model.read_position()
-                self.after(100, _poll_pos)
-            self.after(100, _poll_pos)
-
-        # 3. Start hardware status / rotator polling
-        if hasattr(self.model, 'poll_status'):
-            def _poll_stat():
-                self.model.poll_status()
-                self.after(100, _poll_stat)
-            self.after(100, _poll_stat)
+    # start_polling() was here (RC-4). It started the gamepad poller on this
+    # widget's event loop, ran a 50 ms manual-input pump, and ran 100 ms
+    # position and status pumps. PySide had the same four loops at different
+    # rates, and the Web frontend had none — which is the divergence RC-4
+    # exists to remove. All four now belong to the model, so every frontend
+    # behaves the same and a closed tab cannot take a control loop with it.
 
 from tkinter import filedialog
 import csv

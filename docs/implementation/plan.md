@@ -359,6 +359,12 @@ stall blocks neither the render tick nor FULL STOP).
 
 **Risk.** Highest-coupling stage. Land RC-13 first and push, then RC-4.
 
+**Done.** I-4.1 holds and its `xfail` is retired; I-4.2 and I-4.3 are covered
+by `tests/core/test_model_owned_loops.py`, which contains no GUI at all — that
+is the Web-parity proof. One rate had to win between Tk's 50 ms and PySide's
+20 ms manual pump; **20 ms** was adopted, which changes how Tk manual mode
+feels and is flagged alongside D-12 for an owner ruling.
+
 ---
 
 ## S6 — Hide/show semantics (D-1)

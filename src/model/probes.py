@@ -16,6 +16,20 @@ class BaseProbe:
     _INTERLOCK_POLL_INTERVAL = 5
     _INTERLOCK_TIMEOUT = 300
 
+    # The one documented rate for each model-owned loop (RC-4).
+    #
+    # Manual commands: Tk drove this at 50 ms and PySide at 20 ms, so the two
+    # frontends did not feel the same. 20 ms is adopted — the faster of the
+    # two, and the one the primary GUI has been using. Related to D-12; if the
+    # owner rules on the gamepad poll rate, revisit this alongside it.
+    #
+    # Hardware sampling: both frontends had dedicated 100 ms timers, but
+    # PySide *additionally* sampled from _poll_model every 50 ms, roughly
+    # tripling the serial traffic for one device. 100 ms restores the
+    # documented rate, once, in one place.
+    MANUAL_COMMAND_INTERVAL = 0.02   # s -> 50 Hz
+    SAMPLE_INTERVAL = 0.10           # s -> 10 Hz
+
     def __del__(self):
         print(f"[{self.__class__.__name__}] Destructor called")
 
@@ -79,6 +93,17 @@ class BaseProbe:
         self.last_activity_time = time.time()
         self._interlock_stop = threading.Event()
         self._interlock_thread = None
+
+        # Model-owned loops (RC-4). These used to live in the views: Tk's
+        # _route_input (50 ms) and PySide's input_timer (20 ms) each pumped
+        # the gamepad, and each frontend ran its own position/status timers.
+        # Three copies meant three sets of rates and three chances to diverge,
+        # and the Web frontend — which has no such timers — simply had no
+        # manual mode at all.
+        self._loops_stop = threading.Event()
+        self._input_thread = None
+        self._sample_thread = None
+        self.last_sample_time = 0.0
 
     @property
     def vel_x(self):
@@ -435,6 +460,84 @@ class BaseProbe:
             if pos:
                 self.pos_x, self.pos_y, self.pos_z = str(pos[0]), str(pos[1]), str(pos[2])
 
+    # -- model-owned loops (RC-4) --------------------------------------
+
+    def start_loops(self):
+        """Start the input pump and the hardware sampler. Idempotent.
+
+        Demand-driven rather than started at construction: an idle or
+        test-constructed model should not be running two threads. `enable()`
+        starts them, because that is the point at which the model is armed
+        and something is worth pumping or sampling. Every frontend reaches
+        this through the same path — including the Web dashboard, which had
+        no input pump of its own at all.
+        """
+        self._loops_stop.clear()
+        if self.poller is not None:
+            # The model starts the poller, with no GUI root, so the poller
+            # runs its own thread. The views used to do this and hand in an
+            # adapter wrapping their own event loop — which is why the Web
+            # frontend, having no such loop to offer, never polled at all.
+            def _log(msg):
+                print(f"[controllerDrive] {msg}")
+            self.poller.start_polling(
+                None, log_updater=_log, activity_callback=self.touch_activity)
+        if self._input_thread is None or not self._input_thread.is_alive():
+            self._input_thread = threading.Thread(
+                target=self._input_loop, daemon=True,
+                name=f"input-{self.__class__.__name__}")
+            self._input_thread.start()
+        if self._sample_thread is None or not self._sample_thread.is_alive():
+            self._sample_thread = threading.Thread(
+                target=self._sample_loop, daemon=True,
+                name=f"sample-{self.__class__.__name__}")
+            self._sample_thread.start()
+
+    def stop_loops(self):
+        self._loops_stop.set()
+
+    def _input_loop(self):
+        """Pump gamepad input to the hardware while manual mode is engaged.
+
+        Exception-isolated: a failure here faults the model rather than
+        killing the thread silently, which is what a view-owned timer did —
+        the timer died and manual mode simply stopped responding with no
+        indication that anything had gone wrong.
+        """
+        was_manual = False
+        while not self._loops_stop.wait(self.MANUAL_COMMAND_INTERVAL):
+            try:
+                manual = bool(self.manual_flag)
+                if manual and not self._estop.is_set():
+                    params = self.poller.get_mapped_state() if self.poller else {}
+                    self.send_manual_mode_command(params or {})
+                elif was_manual:
+                    # Neutral on exit (I-4.2). Leaving manual mode has to send
+                    # one zeroed frame, or the last non-zero command stands and
+                    # the axis keeps moving.
+                    self.send_manual_mode_command({})
+                was_manual = manual
+            except Exception as e:
+                self._enter_fault(f"manual input pump failed: {e}")
+                return
+
+    def _sample_loop(self):
+        """Sample hardware into the model's cached fields.
+
+        Views and /api/state read the cache and never touch the transport
+        (invariant I-4.1). A stalled read therefore cannot block a render
+        tick or FULL STOP (I-4.3).
+        """
+        while not self._loops_stop.wait(self.SAMPLE_INTERVAL):
+            try:
+                self.read_position()
+                self.last_sample_time = time.time()
+            except Exception as e:
+                # Sampling is best-effort: a transport hiccup must not kill
+                # the loop, or positions freeze silently for the rest of the
+                # session.
+                print(f"[{self.__class__.__name__}] Sample failed: {e}")
+
     def touch_activity(self):
         self.last_activity_time = time.time()
 
@@ -483,6 +586,7 @@ class BaseProbe:
             self.system_enabled = True
             self._clear_fault()
         self._start_interlock_watchdog()
+        self.start_loops()
         return True
 
     def toggle_enable(self):
@@ -560,6 +664,10 @@ class BaseProbe:
             self.power_down()
         except Exception as e:
             print(f"[{self.__class__.__name__}] Hardware stop failed during teardown: {e}")
+        try:
+            self.stop_loops()
+        except Exception as e:
+            print(f"[{self.__class__.__name__}] Stopping loops failed during teardown: {e}")
         try:
             if self.poller:
                 try:

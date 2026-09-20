@@ -141,59 +141,14 @@ class QtDynamicView(QWidget):
         self.timer.timeout.connect(self._poll_model)
         self.timer.start(self.poll_interval_ms)
         
-        # 2. Hardware Live Polling Timers (read_position & poll_status)
-        if hasattr(self.model, 'read_position'):
-            self.pos_timer = QTimer(self)
-            self.pos_timer.timeout.connect(self._safe_read_position)
-            self.pos_timer.start(100)
-            
-        if hasattr(self.model, 'poll_status'):
-            self.status_timer = QTimer(self)
-            self.status_timer.timeout.connect(self._safe_poll_status)
-            self.status_timer.start(100)
-        
-        # 3. Gamepad Poller and Manual Mode Loop
-        if hasattr(self.model, 'poller') and self.model.poller:
-            class GUIAdapter:
-                def after(self, ms, func):
-                    QTimer.singleShot(ms, func)
-            
-            # Idle auto-disable now lives in the model (BaseProbe's interlock
-            # watchdog) so every frontend shares it, including the web
-            # dashboard, which previously had no auto-disable at all. The
-            # view only needs to relay real controller activity into it.
-            def print_log(msg):
-                print(f"[controllerDrive] {msg}")
-
-            activity_callback = getattr(self.model, 'touch_activity', None)
-            self.model.poller.start_polling(GUIAdapter(), log_updater=print_log, activity_callback=activity_callback)
-            
-            self.input_timer = QTimer(self)
-            self._prev_manual_flag = False
-            def _route_input():
-                current_manual = getattr(self.model, 'manual_flag', False)
-                if current_manual:
-                    controller_params = self.model.poller.get_mapped_state()
-                    if hasattr(self.model, 'send_manual_mode_command'):
-                        self.model.send_manual_mode_command(controller_params or {})
-                elif getattr(self, '_prev_manual_flag', False):
-                    if hasattr(self.model, 'send_manual_mode_command'):
-                        self.model.send_manual_mode_command({})
-                self._prev_manual_flag = current_manual
-            self.input_timer.timeout.connect(_route_input)
-            self.input_timer.start(20)
-
-    def _safe_read_position(self):
-        try:
-            self.model.read_position()
-        except Exception:
-            pass
-
-    def _safe_poll_status(self):
-        try:
-            self.model.poll_status()
-        except Exception:
-            pass
+        # The view keeps one render tick and nothing else (RC-4).
+        #
+        # Deleted from here: a 100 ms position timer, a 100 ms status timer,
+        # a 20 ms manual-input timer, and the call that started the gamepad
+        # poller on a QTimer-backed adapter. All four are loops the model
+        # owns now, so the three frontends cannot drift apart on rate or on
+        # neutral-on-exit — and the Web dashboard, which had none of them,
+        # gets the same behaviour rather than none.
 
     def _build_ui(self):
         schema = getattr(self.model, 'ui_schema', {"sections": []})
@@ -398,10 +353,10 @@ class QtDynamicView(QWidget):
                 QMessageBox.critical(self, "Command Failed", f"Command {cmd_name} failed:\n{e}")
 
     def _poll_model(self):
-        if hasattr(self.model, 'read_position'):
-            self.model.read_position()
-        if hasattr(self.model, 'poll_status'):
-            self.model.poll_status()
+        # No hardware I/O on the render tick. This used to sample position and
+        # status here *in addition to* the dedicated 100 ms timers above,
+        # roughly tripling the serial traffic for one device. The render tick
+        # reads the model's cached fields, which its own sampler fills.
 
         for attr, widget in self.vars.items():
             if hasattr(self.model, attr):
