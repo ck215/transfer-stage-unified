@@ -124,5 +124,13 @@ def test_serial_disconnect_mid_operation():
         mock_instance.write.side_effect = pyserial.SerialException("Device unplugged")
         with pytest.raises(TransportError):
             s.enable()
-        with pytest.raises(TransportError):
+
+        # ...and the link is now LOST, not merely "that one write failed"
+        # (S8, RC-5 item 3). Port loss used to be invisible: errors produced
+        # popup spam on a 5 s dedupe while the reported state never changed,
+        # so the UI kept showing the last good position of an unplugged
+        # device. Every later command now refuses up front.
+        from controller.serial import ConnectionState
+        assert s.connection_state == ConnectionState.LOST
+        with pytest.raises(ValueError, match="Arduino not detected"):
             s.disable() 

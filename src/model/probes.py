@@ -640,7 +640,7 @@ class BaseProbe:
         self._stop_and_disarm()
         if self.serial_comm:
             try:
-                self.serial_comm.write_command(b'k\n')
+                self.serial_comm.write_command(b'k\n', priority=True)
                 print(f"[{self.__class__.__name__}] Sent Power Down (Kill Coils) command 'k'")
             except Exception as e:
                 # The kill never reached the board. Say so loudly rather than
@@ -682,15 +682,47 @@ class BaseProbe:
         except Exception as e:
             print(f"[{self.__class__.__name__}] Transport close failed during teardown: {e}")
 
-    def emergency_stop(self):
-        """Latch FULL STOP, then stop the hardware (RC-5).
+    # FULL STOP must return to its caller within this budget (invariant
+    # I-5.2). The caller is frequently the UI thread, and a stop button that
+    # freezes the window is a stop button the operator stops trusting.
+    ESTOP_RETURN_BUDGET = 0.08
 
-        The latch is set *first* and before any I/O: a motion command already
-        in flight on the script or gamepad thread would otherwise be able to
-        land after the stop returned.
+    def emergency_stop(self):
+        """Latch FULL STOP, then stop the hardware. Returns promptly (RC-5).
+
+        Two separate guarantees, and it matters that they are separate:
+
+        1. **The latch is set first, before any I/O.** That is what actually
+           protects the bench — from this instant no new motion command can
+           be issued, including one already queued on the script or gamepad
+           thread. It is synchronous and cannot fail.
+        2. **The hardware stop is dispatched and joined with a bound.** The
+           write itself goes out on a worker so a stalled or wedged transport
+           cannot hold the caller. If the join times out the stop is still in
+           flight and the priority write path is still forcing it through —
+           we simply stop *waiting* for it.
+
+        Returning before the write completes is deliberate. The alternative
+        is a UI thread blocked behind a dead serial port, with a FULL STOP
+        button that appears to have done nothing.
         """
         self._estop.set()
-        self.power_down()
+
+        done = threading.Event()
+
+        def _stop():
+            try:
+                self.power_down()
+            finally:
+                done.set()
+
+        worker = threading.Thread(
+            target=_stop, daemon=True,
+            name=f"estop-{self.__class__.__name__}")
+        worker.start()
+        if not done.wait(self.ESTOP_RETURN_BUDGET):
+            print(f"[{self.__class__.__name__}] FULL STOP: latched; hardware "
+                  f"stop still in flight after {self.ESTOP_RETURN_BUDGET}s")
 
 
 class StepperProbe(BaseProbe):

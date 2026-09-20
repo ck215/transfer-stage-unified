@@ -263,7 +263,17 @@ class WebModelAdapter:
         """Determines if device is 'simulated', 'hardware', or 'disconnected'."""
         if model.__class__.__name__ == "RedPercentSystem":
             return "online"
-            
+
+        # Ask the transport first (RC-5 item 3). Everything below this is the
+        # old guessing ladder, which inferred the badge from the *editable*
+        # serial_port field — so typing "SIM" into a hardware probe's port box
+        # relabelled it as simulated while it went on driving real hardware
+        # (DC-13). It also could not distinguish "port opened" from "board
+        # answered", so a cable into a powered-off board badged as connected.
+        state = self._transport_state(model)
+        if state is not None:
+            return state
+
         if hasattr(model, "connection_status") and getattr(model, "connection_status"):
             status_val = str(getattr(model, "connection_status")).lower()
             if status_val in ("hardware", "simulated", "disconnected"):
@@ -308,6 +318,24 @@ class WebModelAdapter:
             return "disconnected"
 
         return "disconnected"
+
+    #: ConnectionState -> the badge vocabulary the dashboard already renders.
+    _BADGE_FOR_STATE = {
+        "simulated": "simulated",
+        "verified": "hardware",
+        "unverified": "unverified",
+        "connecting": "connecting",
+        "lost": "disconnected",
+        "closed": "disconnected",
+    }
+
+    def _transport_state(self, model):
+        """The transport's own account of the link, or None if it has none."""
+        transport = getattr(model, "serial_comm", None) or getattr(model, "serial_conn", None)
+        state = getattr(transport, "connection_state", None)
+        if state is None:
+            return None
+        return self._BADGE_FOR_STATE.get(str(state), None)
 
     def get_state(self) -> Dict[str, Any]:
         """Returns live hardware/device attributes (position, busy flag, status, connection_status, etc.)."""

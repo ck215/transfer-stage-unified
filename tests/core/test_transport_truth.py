@@ -26,7 +26,7 @@ class FailingTransport:
     def __init__(self):
         self.writes = []
 
-    def write_command(self, payload):
+    def write_command(self, payload, priority=False):
         self.writes.append(payload)
         raise TransportError("port is gone")
 
@@ -55,7 +55,7 @@ class RecordingTransport:
     def __init__(self):
         self.writes = []
 
-    def write_command(self, payload):
+    def write_command(self, payload, priority=False):
         self.writes.append(payload)
 
     def enable(self):
@@ -257,29 +257,41 @@ STALL = 0.4
 class StallingTransport(RecordingTransport):
     """A transport that has stopped answering — a live port with a wedged board."""
 
-    def write_command(self, payload):
+    def write_command(self, payload, priority=False):
         time.sleep(STALL)
+        self.writes.append(payload)
 
     def send_autonomous_command(self, params):
         time.sleep(STALL)
 
     def disable(self):
         time.sleep(STALL)
+        self.writes.append(b"d")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="[invariant I-5.2, owned by S8] emergency_stop does its hardware I/O "
-    "on the calling thread, so a stalled transport blocks it for as long as the "
-    "write takes. The latch is already set first (I-5.1), so no *new* motion "
-    "can be issued meanwhile — but the caller, which may be the UI thread, is "
-    "held. RC-5's worker/timeout work is S8.",
-)
 def test_emergency_stop_returns_within_100ms_against_a_stalled_transport():
+    """HELD since S8. Until then emergency_stop did its hardware I/O on the
+    calling thread, which is frequently the UI thread — so a wedged transport
+    froze the window behind a FULL STOP button that appeared to do nothing.
+    The write now goes out on a worker and the caller joins with a bound; if
+    the bound expires the stop is still in flight, we simply stop waiting."""
     probe = _probe(StallingTransport())
     start = time.monotonic()
     probe.emergency_stop()
     assert time.monotonic() - start < 0.1
+
+
+def test_emergency_stop_still_reaches_the_hardware_after_it_returns():
+    """Returning early must not mean abandoning the stop."""
+    transport = StallingTransport()
+    probe = _probe(transport)
+    probe.emergency_stop()
+    assert probe.estop_latched
+    # The worker is still running; give it room to land.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not transport.writes:
+        time.sleep(0.02)
+    assert transport.writes, "the hardware stop was dropped, not merely deferred"
 
 
 def test_the_latch_is_set_immediately_even_when_the_transport_stalls():
@@ -345,3 +357,266 @@ def test_temperature_emergency_stop_latches_and_refuses_new_setpoints():
     temp.clear_estop()
     temp.send_settings()
     assert transport.writes, "an explicit clear must restore normal operation"
+
+
+# --------------------------------------------------------------------------
+# RC-5 item 2 — FULL STOP fans out, and a stop outranks a poll for the lock.
+# --------------------------------------------------------------------------
+
+
+class SlowStopModel:
+    """A ManagedModel whose stop takes a while, the way a wedged port does."""
+
+    def __init__(self, delay=0.0, raises=None):
+        self.delay, self.raises = delay, raises
+        self.stops = 0
+
+    def emergency_stop(self):
+        self.stops += 1
+        if self.delay:
+            time.sleep(self.delay)
+        if self.raises:
+            raise self.raises
+
+    def teardown(self):
+        pass
+
+
+def test_full_stop_does_not_queue_devices_behind_a_wedged_one():
+    """Stops used to run one after another on the caller's thread, so a
+    device with a wedged transport delayed every device behind it — in
+    registration order, which has nothing to do with which axis is moving."""
+    from model.system_manager import SystemManager
+
+    manager = SystemManager()
+    slow = SlowStopModel(delay=0.4)
+    fast = SlowStopModel()
+    manager.register("slow", slow)
+    manager.register("fast", fast)
+
+    start = time.monotonic()
+    manager.full_stop_all()
+    elapsed = time.monotonic() - start
+
+    assert fast.stops == 1 and slow.stops == 1
+    assert elapsed < 0.4 + 0.25, (
+        f"FULL STOP took {elapsed:.2f}s for two devices; they ran in series")
+
+
+def test_full_stop_reports_per_model_results():
+    from model.system_manager import SystemManager
+
+    manager = SystemManager()
+    manager.register("good", SlowStopModel())
+    manager.register("bad", SlowStopModel(raises=RuntimeError("port gone")))
+
+    results = manager.full_stop_all()
+
+    assert results["good"] is True
+    assert results["bad"] is False, "a failed stop must be reported, not swallowed"
+
+
+def test_full_stop_returns_even_if_a_model_never_finishes():
+    from model.system_manager import SystemManager
+
+    manager = SystemManager()
+    manager.FULL_STOP_BUDGET = 0.2
+    manager.register("hung", SlowStopModel(delay=5.0))
+    manager.register("ok", SlowStopModel())
+
+    start = time.monotonic()
+    results = manager.full_stop_all()
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0, f"FULL STOP hung for {elapsed:.2f}s"
+    assert results["ok"] is True
+    assert results["hung"] is False, "an unconfirmed stop must not report success"
+
+
+def test_full_stop_on_an_empty_registry_is_harmless():
+    from model.system_manager import SystemManager
+
+    assert SystemManager().full_stop_all() == {}
+
+
+def test_a_stop_forces_the_transport_lock_rather_than_waiting_behind_a_poll():
+    """A poll holding the transport lock must not be able to delay 'd'/'k'."""
+    import threading
+
+    t = SerialTransport("SIM")
+    t.SERIAL_PORT = "/dev/ttyUSB0"
+
+    class FakeSer:
+        is_open = True
+
+        def __init__(self):
+            self.written = []
+
+        def write(self, data):
+            self.written.append(data)
+
+    t.ser = FakeSer()
+    t.PRIORITY_LOCK_TIMEOUT = 0.05
+
+    holder_may_release = threading.Event()
+    holding = threading.Event()
+
+    def hold_lock():
+        with t._lock:
+            holding.set()
+            holder_may_release.wait(2.0)
+
+    threading.Thread(target=hold_lock, daemon=True).start()
+    assert holding.wait(1.0)
+
+    try:
+        start = time.monotonic()
+        t.write_command(b"d", priority=True)
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.3, f"the stop waited {elapsed:.2f}s behind the lock holder"
+        assert b"d" in t.ser.written
+    finally:
+        holder_may_release.set()
+
+
+def test_an_ordinary_write_still_waits_for_the_lock():
+    """Forcing past the lock is the stop path's privilege, not everyone's."""
+    import threading
+
+    t = SerialTransport("SIM")
+    t.SERIAL_PORT = "/dev/ttyUSB0"
+
+    class FakeSer:
+        is_open = True
+
+        def __init__(self):
+            self.written = []
+
+        def write(self, data):
+            self.written.append(data)
+
+    t.ser = FakeSer()
+    order = []
+    release = threading.Event()
+
+    def hold_lock():
+        with t._lock:
+            order.append("holder-in")
+            release.wait(1.0)
+            order.append("holder-out")
+
+    threading.Thread(target=hold_lock, daemon=True).start()
+    time.sleep(0.05)
+
+    def ordinary():
+        t.write_command(b"move")
+        order.append("write")
+
+    writer = threading.Thread(target=ordinary, daemon=True)
+    writer.start()
+    time.sleep(0.1)
+    release.set()
+    writer.join(2.0)
+
+    assert order == ["holder-in", "holder-out", "write"], order
+
+
+# --------------------------------------------------------------------------
+# RC-5 item 3 — ConnectionState is what the link actually is.
+# --------------------------------------------------------------------------
+
+
+def test_simulator_mode_is_its_own_state_not_a_failure():
+    from controller.serial import ConnectionState
+
+    assert SerialTransport("SIM").connection_state == ConnectionState.SIMULATED
+
+
+def test_an_opened_port_that_never_answered_is_unverified_not_connected():
+    """Opening a port proves nothing. The old code logged "Operating blind"
+    and then treated the link as good, so a cable into a powered-off board
+    was indistinguishable from a working one (SERIAL-7)."""
+    from unittest.mock import MagicMock, patch
+
+    from controller.serial import ConnectionState
+
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
+        inst = MagicMock()
+        inst.is_open = True
+        inst.in_waiting = 0          # nothing ever answers
+        mock_serial.return_value = inst
+        t = SerialTransport("COM9")
+
+    assert t.connection_state == ConnectionState.UNVERIFIED
+    assert t.connection_state != ConnectionState.VERIFIED
+
+
+def test_the_first_write_failure_moves_the_link_to_lost_and_closes_it():
+    from unittest.mock import MagicMock, patch
+
+    from controller.serial import ConnectionState
+
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
+        inst = MagicMock()
+        inst.is_open = True
+        inst.in_waiting = 0
+        mock_serial.return_value = inst
+        t = SerialTransport("COM9")
+
+    inst.write.side_effect = OSError("unplugged")
+    with pytest.raises(TransportError):
+        t.write_command(b"x")
+
+    assert t.connection_state == ConnectionState.LOST
+    assert t.ser is None, "the handle must be released, not left dangling"
+    inst.close.assert_called_once()
+
+
+def test_loss_is_reported_once_not_on_every_subsequent_command():
+    """Port loss used to be popup spam on a 5 s dedupe while the reported
+    state never changed at all."""
+    from unittest.mock import MagicMock, patch
+
+    from controller.serial import ConnectionState
+
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
+        inst = MagicMock()
+        inst.is_open = True
+        inst.in_waiting = 0
+        mock_serial.return_value = inst
+        t = SerialTransport("COM9")
+
+    inst.write.side_effect = OSError("unplugged")
+    with patch("controller.serial.ErrorPopupManager.report_error") as report:
+        with pytest.raises(TransportError):
+            t.write_command(b"x")
+        for _ in range(3):
+            with pytest.raises(TransportError):
+                t.write_command(b"x")
+        assert report.call_count == 1, (
+            f"the loss was reported {report.call_count} times")
+    assert t.connection_state == ConnectionState.LOST
+
+
+def test_closing_deliberately_is_not_recorded_as_loss():
+    from unittest.mock import MagicMock, patch
+
+    from controller.serial import ConnectionState
+
+    with patch("controller.serial.pyserial.Serial") as mock_serial:
+        inst = MagicMock()
+        inst.is_open = True
+        inst.in_waiting = 0
+        mock_serial.return_value = inst
+        t = SerialTransport("COM9")
+
+    t.close()
+    assert t.connection_state == ConnectionState.CLOSED
+
+
+def test_simulator_stays_simulated_across_close():
+    from controller.serial import ConnectionState
+
+    t = SerialTransport("SIM")
+    t.close()
+    assert t.connection_state == ConnectionState.SIMULATED

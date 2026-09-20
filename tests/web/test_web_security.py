@@ -176,3 +176,56 @@ def test_re_setup_releases_the_single_flight_lock_on_failure():
     adapter.initialize_setup([])          # rejected: empty configs
     second = adapter.initialize_setup([])  # must be rejected for the same reason
     assert second["code"] != 409
+
+
+# --------------------------------------------------------------------------
+# DC-13 — the badge tells the truth about the link.
+# --------------------------------------------------------------------------
+
+
+def test_the_badge_cannot_be_faked_by_typing_SIM_into_the_port_field():
+    """The badge used to be inferred from the editable serial_port field, so
+    typing "SIM" into a hardware probe's port box relabelled it SIMULATED
+    while it went on driving real hardware (DC-13). It now asks the
+    transport, which knows."""
+    from controller.serial import ConnectionState
+    from views.web.web_adapter import WebModelAdapter
+
+    class FakeTransport:
+        connection_state = ConnectionState.VERIFIED
+
+    class Probe:
+        ui_schema = {"sections": []}
+        serial_port = "SIM"          # the operator typed this
+        serial_comm = FakeTransport()  # the hardware link is real
+
+    assert WebModelAdapter()._determine_connection_status(Probe()) == "hardware"
+
+
+def test_an_unverified_link_is_badged_distinctly_from_a_working_one():
+    """Opening a port is not the same as the board answering."""
+    from controller.serial import ConnectionState
+    from views.web.web_adapter import WebModelAdapter
+
+    class Probe:
+        ui_schema = {"sections": []}
+
+        class serial_comm:
+            connection_state = ConnectionState.UNVERIFIED
+
+    badge = WebModelAdapter()._determine_connection_status(Probe())
+    assert badge == "unverified"
+    assert badge != "hardware"
+
+
+def test_a_lost_link_badges_as_disconnected():
+    from controller.serial import ConnectionState
+    from views.web.web_adapter import WebModelAdapter
+
+    class Probe:
+        ui_schema = {"sections": []}
+
+        class serial_comm:
+            connection_state = ConnectionState.LOST
+
+    assert WebModelAdapter()._determine_connection_status(Probe()) == "disconnected"

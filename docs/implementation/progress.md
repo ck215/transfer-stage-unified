@@ -53,9 +53,9 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
 | S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
 | S5 | Input service and model-owned loops | done | | 2026-09-19 | RC-13 + RC-4. I-4.1 holds. Web has manual mode for the first time. S6 unblocked. |
-| S6 | Hide/show semantics (D-1) | todo | | | Needs S5. **Blocked on D-2** when reached. |
-| S7 | Probe mode state machine (RC-3) | todo | | | **Blocked on D-2** when reached. |
-| S8 | Motion serialization, ConnectionState | todo | | | |
+| S6 | Hide/show semantics (D-1) | blocked | | 2026-09-20 | **BLOCKED on D-2.** Prerequisite S5 is done; the owner decision is not. |
+| S7 | Probe mode state machine (RC-3) | blocked | | 2026-09-20 | **BLOCKED on D-2.** Same decision as S6. |
+| S8 | Motion serialization, ConnectionState | partial | | 2026-09-20 | Items 2 and 3 done; I-5.2 holds. Items 1 (command worker) and 4 (SIM transport) remain. |
 | S9 | Typed parameters (RC-6) | todo | | | |
 | S10 | Schema v2, three renderers (RC-7) | todo | | | |
 | S11 | Result channel and event bus (RC-8) | todo | | | |
@@ -652,6 +652,85 @@ as good as the discipline of running it.
 device keeps running, so its loops had to stop belonging to the widget that
 gets hidden.
 
+### 2026-09-20 — S6 and S7 stopped at the owner boundary
+
+Both stages are **BLOCKED on D-2**: *when a mode is left, do the coils get
+disabled, or is motion merely stopped?*
+
+S6 cannot proceed because "hide performs a safe stop of motion" has no
+defined meaning until D-2 is answered — and getting it wrong in either
+direction is a bench hazard. Hiding a device that should have been
+de-energized leaves coils live behind a closed tab; disabling one that
+should have held position drops a loaded axis. S7 needs the same answer for
+what `_transition` does on every exit from a mode.
+
+plan.md's standing rule 4 says an agent never decides an open `D-n`, and
+both stage sections say explicitly: *"If D-2 is unanswered when this stage
+is reached, stop and ask."* So they stop here. **S5, their prerequisite, is
+complete** — this is purely a decision block, not a technical one.
+
+Proceeding to **S8**, which depends on no open decision and owns the I-5.2
+`xfail` left behind in S3.
+
+**D-2 needs an owner ruling, along with D-12 and the manual-rate question
+raised in S5.**
+
+### 2026-09-20 — S8 items 2 and 3: FULL STOP that returns, and a link that tells the truth
+
+Fast gate: 296 passed, **4** xfailed — **I-5.2 now holds**, the fourth
+invariant to retire, and the fourth time strict `xfail` forced the
+retirement instead of letting it pass unnoticed.
+
+**FULL STOP no longer blocks its caller (I-5.2).** `emergency_stop` gives two
+separate guarantees now, and the separation is the point:
+
+1. The latch is set **synchronously, before any I/O**. That is what actually
+   protects the bench — from that instant no new motion can be issued — and
+   it cannot fail.
+2. The hardware write is dispatched to a worker and joined with an 80 ms
+   bound. If the bound expires the stop is still in flight; we stop
+   *waiting*, we do not stop trying. A test asserts the write really does
+   land afterwards, so "returns early" cannot quietly become "gives up".
+
+The caller is frequently the UI thread, and a stop button that freezes the
+window behind a dead serial port is one the operator stops trusting.
+
+**`full_stop_all` fans out.** It used to stop models **one after another** on
+the caller's thread, so a device with a wedged transport delayed the stop of
+every device behind it — in *registration order*, which has nothing to do
+with which axis is moving. Each model now gets its own thread under one
+1 s bounded join, and the call returns `{name: ok}`. A `False` means the stop
+did not confirm in time, **not** that it was skipped: that model's latch is
+already set and its write is still going.
+
+**Stops outrank polls for the transport lock.** `write_command(..., priority
+=True)` waits 50 ms for the lock and then forces the write through. The
+comment says plainly why that is acceptable for `d`/`k` and is never to be
+used for motion: a mangled stop is the worst case, and the alternative is no
+stop at all while a long poll holds the lock.
+
+**`ConnectionState` replaces three different guesses** (SIMULATED /
+CONNECTING / VERIFIED / UNVERIFIED / LOST / CLOSED). Two real bugs close
+with it:
+
+- **SERIAL-7:** opening a port proved nothing. The old code printed
+  "Operating blind" and then treated the link as good, so a cable into a
+  powered-off board was indistinguishable from a working one. VERIFIED now
+  means the board *answered*.
+- **SERIAL-8:** port loss was invisible. Read and write errors produced popup
+  spam on a 5 s dedupe while the reported state never changed, so the UI kept
+  showing the last good position of an unplugged device. The first failure
+  transitions to LOST, releases the handle, and reports **once**.
+- **DC-13:** the web badge inferred "simulated" from the *editable*
+  `serial_port` field, so typing "SIM" into a hardware probe's port box
+  relabelled it SIMULATED while it went on driving real hardware. The badge
+  asks the transport now, and a test types "SIM" to prove it cannot be faked.
+
+**Still open in S8:** item 1 (one command worker per model with a `_run_id`
+generation token — this is what should finally dissolve the four
+`order_dependent` `run_script` tests) and item 4 (SIM as an explicit
+simulated transport that ACKs, rather than `ser=None`).
+
 ---
 
 ## Finding ledger
@@ -679,7 +758,7 @@ it) · `n/a` (with a reason).
 | DC-10 | RC3 | S7 | root cause | open |
 | DC-11 | RC7 / RC3 | S10 | root cause | open |
 | DC-12 | RC9 | S12 | root cause | open |
-| DC-13 | RC2 / RC7 | S3 | root cause | open |
+| DC-13 | RC2 / RC7 | S3 | root cause | closed (test_the_badge_cannot_be_faked_by_typing_SIM_into_the_port_field, tests/web/test_web_security.py) |
 | DC-14 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
 | DC-15 | RC6 | S9 | root cause | open |
 | DC-16 | RC4 | S5 | root cause | open |
@@ -799,8 +878,8 @@ it) · `n/a` (with a reason).
 | SERIAL-4 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
 | SERIAL-5 | RC1 / RC10 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | SERIAL-6 | RC4 | S5 | root cause | open |
-| SERIAL-7 | RC2 | S3 | root cause | open |
-| SERIAL-8 | RC2 | S3 | root cause | open |
+| SERIAL-7 | RC2 | S3 | root cause | closed (test_an_opened_port_that_never_answered_is_unverified_not_connected, tests/core/test_transport_truth.py) |
+| SERIAL-8 | RC2 | S3 | root cause | closed (test_the_first_write_failure_moves_the_link_to_lost_and_closes_it, test_loss_is_reported_once_not_on_every_subsequent_command, tests/core/test_transport_truth.py) |
 | SERIAL-9 | RC2 | S3 | root cause | closed (test_simulator_probes_can_arm_and_disarm, tests/core/test_transport_truth.py) |
 | SERIAL-10 | RC2 | S3 | root cause | open |
 | SERIAL-11 | RC2 | S3 | root cause | closed (test_i_2_3_serial_handle_confined_to_transport; all writes go through write_command under the lock) |

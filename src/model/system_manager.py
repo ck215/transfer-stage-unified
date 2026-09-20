@@ -1,4 +1,5 @@
 import threading
+import time
 
 from model.base import ManagedModel
 
@@ -113,12 +114,62 @@ class SystemManager:
 
     # -- emergency stop ------------------------------------------------
 
+    # FULL STOP waits no longer than this in total, however many devices are
+    # registered (RC-5 item 2).
+    FULL_STOP_BUDGET = 1.0
+
     def full_stop_all(self):
-        for name, model in self.get_active_models_snapshot().items():
+        """Stop every model at once. Returns {name: ok} and never hangs.
+
+        This used to stop models **one after another** on the caller's
+        thread, so a device whose transport was wedged delayed the stop of
+        every device behind it in the dict — with the order decided by
+        registration, not by which axis is actually moving. Each model now
+        gets its own thread and the whole fan-out shares one bounded join.
+
+        A model reported as False is a model whose stop did not confirm in
+        time. It is not a model that was skipped: its `emergency_stop` has
+        already latched, and its hardware write is still in flight.
+        """
+        models = self.get_active_models_snapshot()
+        if not models:
+            return {}
+
+        results = {}
+        results_lock = threading.Lock()
+
+        def _stop(name, model):
+            ok = False
             try:
                 model.emergency_stop()
+                ok = True
             except Exception as e:
                 self._report(f"Failed to stop {name}: {e}", e, "Stop Error")
+            with results_lock:
+                results[name] = ok
+
+        threads = [
+            threading.Thread(target=_stop, args=(name, model), daemon=True,
+                             name=f"fullstop-{name}")
+            for name, model in models.items()
+        ]
+        for th in threads:
+            th.start()
+
+        deadline = time.monotonic() + self.FULL_STOP_BUDGET
+        for th in threads:
+            th.join(timeout=max(0.0, deadline - time.monotonic()))
+
+        with results_lock:
+            for name in models:
+                results.setdefault(name, False)
+            unconfirmed = [n for n, ok in results.items() if not ok]
+        if unconfirmed:
+            self._report(
+                "FULL STOP latched on every device, but these did not confirm "
+                f"within {self.FULL_STOP_BUDGET}s: {', '.join(sorted(unconfirmed))}",
+                None, "Stop Not Confirmed")
+        return dict(results)
 
     @staticmethod
     def _report(message, exc, title):

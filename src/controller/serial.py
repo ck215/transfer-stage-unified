@@ -10,6 +10,32 @@ import sys
 import struct
 import threading
 
+class ConnectionState:
+    """What the transport actually knows about the link (RC-5 item 3).
+
+    One vocabulary, shared by every view and the web badge, replacing three
+    different guesses. The web badge in particular inferred "simulated" from
+    the *editable* serial_port field, so typing "SIM" into a hardware probe's
+    port box relabelled it as simulated while it kept driving real hardware
+    (DC-13).
+
+    The distinction that matters most is VERIFIED vs UNVERIFIED. Opening a
+    port proves nothing: the old code logged "Operating blind" and then
+    treated the link as good, so a cable into a powered-off board looked
+    identical to a working one (SERIAL-7).
+    """
+
+    SIMULATED = "simulated"    # no hardware by design, and that is fine
+    CONNECTING = "connecting"  # open in progress
+    VERIFIED = "verified"      # opened AND the board answered
+    UNVERIFIED = "unverified"  # opened, but nothing answered — operating blind
+    LOST = "lost"              # it answered once and then failed
+    CLOSED = "closed"          # deliberately closed
+
+    #: States in which a command has any prospect of arriving.
+    USABLE = (SIMULATED, VERIFIED, UNVERIFIED)
+
+
 class TransportError(Exception):
     """A command did not reach the hardware (RC-2).
 
@@ -42,6 +68,9 @@ class serial:
         # Empty serial object
         self.ser = None
 
+        # What we actually know about the link (RC-5 item 3).
+        self.connection_state = ConnectionState.CONNECTING
+
         # Threading lock for thread-safe serial port access
         self._lock = threading.RLock()
 
@@ -53,6 +82,7 @@ class serial:
             msg = "[SerialDrive] Running in SIMULATOR mode. No serial connection will be established."
             print(msg)
             ErrorPopupManager.report_info("Simulator Mode", msg)
+            self.connection_state = ConnectionState.SIMULATED
             return
         
         try:
@@ -91,14 +121,17 @@ class serial:
                 time.sleep(0.05)
                 
             if verified:
+                self.connection_state = ConnectionState.VERIFIED
                 print(f"[SerialDrive] Serial Connection Verified! Arduino Ready on {self.SERIAL_PORT}")
             else:
+                self.connection_state = ConnectionState.UNVERIFIED
                 msg = f"[WARNING] Port {self.SERIAL_PORT} opened, but no Arduino response received. Operating blind."
                 print(msg)
                 ErrorPopupManager.report_warning("Serial Connection Warning", msg)
         
         # Exception handling
         except pyserial.SerialException as e:
+            self.connection_state = ConnectionState.LOST
             msg = f"[WARNING] Error establishing serial connection to {self.SERIAL_PORT}:\n{e}\nOperating blind without hardware."
             print(msg)
             ErrorPopupManager.report_warning("Serial Exception", msg, e)
@@ -248,7 +281,12 @@ class serial:
             print(msg)
             ErrorPopupManager.report_error("Serial Write Error", msg, e)
 
-    def write_command(self, payload):
+    # How long a priority write waits for the transport lock before forcing
+    # itself through. Short enough that FULL STOP is not held up by an
+    # in-flight poll, long enough that the ordinary case still serialises.
+    PRIORITY_LOCK_TIMEOUT = 0.05
+
+    def write_command(self, payload, priority=False):
         """The one way anything reaches the hardware (RC-2, invariant I-2.3).
 
         Takes bytes (or str, encoded as UTF-8), writes under the lock, and
@@ -263,7 +301,19 @@ class serial:
         """
         if isinstance(payload, str):
             payload = payload.encode('utf-8')
-        with self._lock:
+
+        acquired = self._lock.acquire(
+            timeout=self.PRIORITY_LOCK_TIMEOUT if priority else -1)
+        if not acquired:
+            # A stop that cannot get the lock is worse than an unsynchronised
+            # one (RC-5 item 2). A poll or a long autonomous write holding the
+            # lock must not be able to delay 'd' or 'k'. The write below can
+            # therefore interleave with whatever holds the lock; the firmware
+            # treats both commands as idempotent single bytes, so a mangled
+            # *stop* is the only thing this risks and the alternative is no
+            # stop at all. Never pass priority=True for a motion command.
+            print(f"[SerialDrive] PRIORITY: lock busy, forcing {payload!r} through")
+        try:
             if self.SERIAL_PORT in ('SIM', 'None', None):
                 return
             if self.ser is None or not self.ser.is_open:
@@ -273,8 +323,44 @@ class serial:
             try:
                 self.ser.write(payload)
             except Exception as e:
-                raise TransportError(
-                    f"[SerialDrive] Write of {payload!r} failed: {e}") from e
+                lost = e
+            else:
+                lost = None
+        finally:
+            if acquired:
+                self._lock.release()
+        if lost is not None:
+            # Outside the lock: _mark_lost takes it, and this may be the
+            # priority path, which does not hold it.
+            self._mark_lost(lost)
+            raise TransportError(
+                f"[SerialDrive] Write of {payload!r} failed: {lost}") from lost
+
+    def _mark_lost(self, why):
+        """First transport failure wins: go to LOST, close, report once.
+
+        Port loss used to be invisible — read and write errors produced popup
+        spam on a 5 s dedupe while the reported state stayed exactly as it
+        was, so the UI kept showing the last good position of a device that
+        had been unplugged (SERIAL-8). The transition is reported once; the
+        state then carries the fact.
+        """
+        with self._lock:
+            if self.connection_state == ConnectionState.LOST:
+                return
+            self.connection_state = ConnectionState.LOST
+            handle, self.ser = self.ser, None
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        msg = f"[SerialDrive] Connection to {self.SERIAL_PORT} lost: {why}"
+        print(msg)
+        try:
+            ErrorPopupManager.report_error("Connection Lost", msg, None)
+        except Exception:
+            pass
 
     def is_open(self):
         """True when a write could actually reach hardware, or we are in SIM."""
@@ -297,7 +383,9 @@ class serial:
             try:
                 return self.ser.readline()
             except Exception as e:
-                raise TransportError(f"[SerialDrive] Read failed: {e}") from e
+                read_error = e
+        self._mark_lost(read_error)
+        raise TransportError(f"[SerialDrive] Read failed: {read_error}") from read_error
 
     def enable(self):
         """Raises TransportError if the enable did not reach the hardware.
@@ -320,7 +408,7 @@ class serial:
         """
         if not self.is_open():
             raise ValueError("[SerialDrive] Arduino not detected. Cannot disable system.")
-        self.write_command(b"d")
+        self.write_command(b"d", priority=True)
 
     # Closes serial connection
     def close(self):
@@ -328,6 +416,8 @@ class serial:
             if self.ser and self.ser.is_open:
                 print("[SerialDrive] Closing serial port.")
                 self.ser.close()
+            if self.connection_state != ConnectionState.SIMULATED:
+                self.connection_state = ConnectionState.CLOSED
 
 
 # Aliases for backwards compatibility with legacy stable branch and standard naming
