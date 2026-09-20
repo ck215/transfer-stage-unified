@@ -393,13 +393,28 @@ def run_legacy_app():
                 title = "Port Collision" if "Port collision" in errors[0] else "Controller Collision"
                 messagebox.showerror(title, "\n".join(errors))
                 return
-            # Hide the setup window launcher panel
-            self.withdraw()
-            
-            # Launch the decoupled DashboardWindow
-    
             print("\n--- Launching Unified Control Dashboard ---")
-            active_models = app_bootstrap.build_models(active_configs, self.active_claims)
+
+            from model.system_manager import SystemManager
+            import lifecycle
+
+            system_manager = SystemManager()
+            try:
+                active_models = app_bootstrap.build_models(
+                    active_configs, self.active_claims, system_manager)
+            except Exception as e:
+                # The setup window used to be withdrawn *before* this call, so a
+                # failed build left the user with no setup window and no
+                # dashboard — nothing on screen at all (MANAGER-6). It is now
+                # hidden only once the build has succeeded.
+                messagebox.showerror(
+                    "Device Initialization Failed",
+                    f"Could not start the selected devices:\n\n{e}\n\n"
+                    "Nothing was left running; adjust the configuration and try again.")
+                return
+
+            # Hide the setup window launcher panel, now that launching worked.
+            self.withdraw()
 
             # Link RedPercentSystem to the active positioning probe for X/Y/Z syncing.
             red_model = active_models.get("Red Percent Window")
@@ -413,14 +428,19 @@ def run_legacy_app():
     
             # Launch Tkinter Dashboard
             from views.tkinter.view import DashboardWindow, ErrorPopupManager
-            from model.system_manager import SystemManager
-            
-            system_manager = SystemManager()
-            for name, model in active_models.items():
-                system_manager.register(name, model)
-            
+
+            lifecycle.set_current_manager(system_manager)
+            lifecycle.install_exit_hooks()
+
             dash = DashboardWindow(self, system_manager)
             ErrorPopupManager.initialize(dash)
+            # macOS Dock "Quit" and Cmd-Q bypass window close handlers, so Tk
+            # needs this one wired explicitly or the app exits with hardware
+            # still enabled (VIEW-TKINTER-8).
+            try:
+                dash.createcommand("::tk::mac::Quit", lambda: (lifecycle.shutdown("tk quit"), dash.quit()))
+            except Exception:
+                pass
             
             # We don't destroy self here, we withdrew it.
             # dash will call self.deiconify() on close.
@@ -728,7 +748,18 @@ def run_pyside_app():
                 
             print("\n--- Launching Unified Control Dashboard ---")
             import app_bootstrap
-            active_models = app_bootstrap.build_models(active_configs, self.active_claims)
+            from model.system_manager import SystemManager
+
+            self.manager = SystemManager()
+            try:
+                active_models = app_bootstrap.build_models(
+                    active_configs, self.active_claims, self.manager)
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Device Initialization Failed",
+                    f"Could not start the selected devices:\n\n{e}\n\n"
+                    "Nothing was left running; adjust the configuration and try again.")
+                return
 
             # Link RedPercentSystem to the available positioning probes for X/Y/Z syncing.
             red_model = active_models.get("Red Percent Window")
@@ -741,19 +772,25 @@ def run_pyside_app():
                     red_model.set_stepper_model(list(probe_models.keys())[0])
     
             from views.pyside.view import DashboardWindow
-            from model.system_manager import SystemManager
-    
-            self.manager = SystemManager()
-            for name, model in active_models.items():
-                self.manager.register(name, model)
-    
+
+            import lifecycle
+
+            lifecycle.set_current_manager(self.manager)
+            lifecycle.install_exit_hooks()
+
             self.dashboard = DashboardWindow(self.manager)
             self.dashboard.show()
             
             self.close()
     
     app = QApplication.instance() or QApplication(sys.argv)
-    
+
+    # Qt can quit without any window's closeEvent running (Cmd-Q, the Dock,
+    # a session logout), so the manager is torn down here rather than only in
+    # DashboardWindow.closeEvent (MANAGER-2/3).
+    import lifecycle
+    app.aboutToQuit.connect(lambda: lifecycle.shutdown("Qt aboutToQuit"))
+
     from views.pyside.view import QtErrorPopupManager
     QtErrorPopupManager.initialize(app)
     QtErrorPopupManager.setup_excepthook()
@@ -771,7 +808,11 @@ def run_web_app(port=8080, open_browser=True):
     from model.system_manager import SystemManager
     from views.web.web_view import WebDashboardWindow
 
+    import lifecycle
+
     manager = SystemManager()
+    lifecycle.set_current_manager(manager)
+    lifecycle.install_exit_hooks()
     active_claims = {}
 
     # In Web Mode, we bypass default SIM initialization so the UI can boot directly into the Setup Wizard

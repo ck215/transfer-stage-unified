@@ -137,8 +137,39 @@ def probe_device_at(port: str) -> str | None:
 
     return device_name
 
-def build_models(active_configs: list[dict], active_claims: dict) -> dict[str, object]:
-    active_models = {}
+def build_models(active_configs: list[dict], active_claims: dict,
+                 manager=None) -> dict[str, object]:
+    """Construct the configured models, all or nothing (MANAGER-5).
+
+    If a later constructor raises, every model already built is torn down
+    before the exception propagates. Without that rollback a failed launch
+    left earlier devices holding their serial ports open with no reference
+    to them anywhere, so the next attempt could not reopen those ports and
+    only a process restart recovered.
+
+    When `manager` is given, models are registered as they are built, so
+    ownership never sits in a local dict that an exception can strand.
+    """
+    built_models = {}
+
+    def _roll_back():
+        for name, model in reversed(list(built_models.items())):
+            try:
+                if manager is not None and manager.get_model(name) is not None:
+                    manager.release(name)
+                else:
+                    model.teardown()
+            except Exception as e:
+                print(f"[build_models] Rollback of {name} failed: {e}")
+
+    try:
+        return _build_each(active_configs, active_claims, manager, built_models)
+    except Exception:
+        _roll_back()
+        raise
+
+
+def _build_each(active_configs, active_claims, manager, built_models):
     for config in active_configs:
         device = config.get("device")
         port = config.get("port")
@@ -146,24 +177,28 @@ def build_models(active_configs: list[dict], active_claims: dict) -> dict[str, o
         
         if device == "Stepper Probe":
             from model.probes import StepperProbe
-            active_models[device] = StepperProbe(port, controllerID, active_claims)
+            built_models[device] = StepperProbe(port, controllerID, active_claims)
         elif device == "DC Probe":
             from model.probes import DCProbe
-            active_models[device] = DCProbe(port, controllerID, active_claims)
+            built_models[device] = DCProbe(port, controllerID, active_claims)
         elif device == "Chuck Positioner":
             from model.probes import ChuckPositioner
-            active_models[device] = ChuckPositioner(port, controllerID, active_claims)
+            built_models[device] = ChuckPositioner(port, controllerID, active_claims)
         elif device == "Temperature Controller":
             from model.temperature_system import TemperatureSystem
-            active_models[device] = TemperatureSystem(port)
+            built_models[device] = TemperatureSystem(port)
         elif device == "SMC100 Rotator":
             from model.rotator_system import RotatorSystem
-            active_models[device] = RotatorSystem(port)
+            built_models[device] = RotatorSystem(port)
         elif device == "Red Percent Window":
             from model.redpercent_system import RedPercentSystem
-            active_models[device] = RedPercentSystem()
-            
-    return active_models
+            built_models[device] = RedPercentSystem()
+
+        built = built_models.get(device)
+        if manager is not None and built is not None:
+            manager.register(device, built, config)
+
+    return built_models
 
 def validate_assignment(active_configs: list[dict]) -> list[str]:
     errors = []

@@ -198,3 +198,77 @@ def test_validate_assignment_virtual_controller_exempt():
     ]
     errors = validate_assignment(configs)
     assert len(errors) == 0
+
+
+# --- Rollback (MANAGER-5) ---
+
+class _RecordingModel:
+    """A real ManagedModel; register() enforces the contract at the boundary."""
+
+    def __init__(self, *a, **kw):
+        self.torn_down = 0
+
+    def teardown(self):
+        self.torn_down += 1
+
+    def emergency_stop(self):
+        pass
+
+
+def test_build_models_tears_down_partial_work_when_a_later_device_fails():
+    """A failed launch used to strand every already-built model holding its
+    port open, with no reference to it anywhere — only a restart recovered."""
+    from model.system_manager import SystemManager
+
+    configs = [
+        {"device": "Stepper Probe", "port": "SIM", "controller": "None"},
+        {"device": "Temperature Controller", "port": "SIM"},
+    ]
+    built = _RecordingModel()
+
+    with patch("model.probes.StepperProbe", return_value=built), \
+         patch("model.temperature_system.TemperatureSystem",
+               side_effect=RuntimeError("port busy")):
+        with pytest.raises(RuntimeError):
+            build_models(configs, {})
+
+    assert built.torn_down == 1, "the first model must not be left holding its port"
+
+
+def test_build_models_registers_as_it_goes_and_releases_on_failure():
+    from model.system_manager import SystemManager
+
+    manager = SystemManager()
+    configs = [
+        {"device": "Stepper Probe", "port": "SIM", "controller": "None"},
+        {"device": "Temperature Controller", "port": "SIM"},
+    ]
+    built = _RecordingModel()
+
+    with patch("model.probes.StepperProbe", return_value=built), \
+         patch("model.temperature_system.TemperatureSystem",
+               side_effect=RuntimeError("port busy")):
+        with pytest.raises(RuntimeError):
+            build_models(configs, {}, manager)
+
+    assert manager.get_model("Stepper Probe") is None
+    assert built.torn_down == 1
+
+
+def test_build_models_registers_every_device_on_success():
+    from model.system_manager import SystemManager
+
+    manager = SystemManager()
+    configs = [
+        {"device": "Stepper Probe", "port": "SIM", "controller": "None"},
+        {"device": "Red Percent Window"},
+    ]
+    with patch("model.probes.StepperProbe", return_value=_RecordingModel()), \
+         patch("model.redpercent_system.RedPercentSystem", return_value=_RecordingModel()):
+        models = build_models(configs, {}, manager)
+
+    assert set(models) == {"Stepper Probe", "Red Percent Window"}
+    assert manager.get_model("Stepper Probe") is not None
+    assert manager.get_model("Red Percent Window") is not None
+    # The config travels with the model, so nothing has to re-derive it later.
+    assert manager.get_config("Stepper Probe")["port"] == "SIM"

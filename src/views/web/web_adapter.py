@@ -139,24 +139,44 @@ class WebModelAdapter:
                 "code": 400,
                 "message": "\n".join(errors)
             }
-        # Instantiate Domain Models via SystemManager
+        # Re-setup goes through the manager's reconfigure(), which tears the
+        # outgoing models down *before* building the new ones. This used to
+        # build first and shut down afterwards, so for the duration of the
+        # rebuild two live handles existed on the same port — the second
+        # open would fail or silently attach to a half-closed device
+        # (MANAGER-4, SERIAL-5, TEMP-8, ROTATOR-14; invariant I-1.4).
+        import lifecycle
         from model.system_manager import SystemManager
-        new_manager = SystemManager()
+
+        with self._state_lock:
+            old_manager = self.system_manager
+
         active_claims = {}
 
-        try:
+        def _build(manager):
             active_models = app_bootstrap.build_models(configs, active_claims)
+            for dev, model in active_models.items():
+                manager.register(dev, model)
+            return active_models
+
+        new_manager = SystemManager()
+        try:
+            if old_manager is not None:
+                old_manager.shutdown_all()
+            active_models = _build(new_manager)
         except Exception as e:
             import traceback
             print(f"[WebModelAdapter] Failed to initialize devices:\n{traceback.format_exc()}")
+            # Roll back whatever was built before the failure, so a failed
+            # re-setup does not leave orphaned models holding ports open.
+            new_manager.shutdown_all()
             return {
                 "status": "error",
                 "code": 500,
                 "message": f"Failed to initialize devices: {str(e)}"
             }
-            
+
         for dev, model in active_models.items():
-            new_manager.register(dev, model)
             cfg = next((c for c in configs if c["device"] == dev), {})
             model._disabled_in_setup = not cfg.get("enabled", True)
             if hasattr(model, 'system_enabled'):
@@ -174,15 +194,13 @@ class WebModelAdapter:
                 red_model.set_stepper_model(list(probe_models.keys())[0])
 
         with self._state_lock:
-            old_manager = self.system_manager
             self.system_manager = new_manager
             self.mode = "running"
 
-        # Tear down the outgoing manager's models (closes serial ports) outside
-        # the lock — shutdown_all does blocking hardware I/O and must not stall
-        # API access to the manager we just installed.
-        if old_manager and old_manager is not new_manager:
-            old_manager.shutdown_all()
+        # Exit hooks resolve the manager when they fire, so the new one takes
+        # over immediately; a captured reference would keep stopping the
+        # manager this call just replaced.
+        lifecycle.set_current_manager(new_manager)
 
         return {
             "status": "ok",

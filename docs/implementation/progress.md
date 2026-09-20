@@ -49,7 +49,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 |---|---|---|---|---|---|
 | S0 | Baseline, plan, invariant harness | done | `e760615` | 2026-09-19 | Docs baseline, plan, ledger, test division, invariant harness. |
 | S1 | Purge legacy paths (D-9, D-11) | done | | 2026-09-19 | D-9 + D-11 purged. SERIAL-18's `reboot_model` half reassigned to S2. |
-| S2 | Lifecycle authority (RC-1) | in progress | | 2026-09-19 | Items 1-6 done (authority + safe teardown). Remaining: 7 exit hooks, 8 build rollback, 9 views. |
+| S2 | Lifecycle authority (RC-1) | done | | 2026-09-19 | All 9 items. I-1.5 now holds. 7 tab-close findings deferred to S6 by D-1. |
 | S3 | Transport truth and E-stop latch | todo | | | SAFETY. |
 | S4 | Web AppContext and security boundary | todo | | | Live CSRF hole; independent of S5+. |
 | S5 | Input service and model-owned loops | todo | | | Highest coupling. RC-13 first, then RC-4. |
@@ -292,6 +292,72 @@ without ever tearing it down.
   launchers, `build_models` register-as-you-go with rollback, and views off
   `active_models` (with the INTERIM close-affordance removal per plan.md).
 
+### 2026-09-19 — S2 items 7-9: exit hooks, build rollback, views off the registry
+
+Fast gate: 232 passed, 6 xfailed. Qt: 8 passed, 3 xfailed. Invariants: 9
+passed, **3** xfailed — down from 4, because **I-1.5 now holds**.
+
+**I-1.5 closed, and the strict `xfail` is what forced it to be noticed.**
+When the last `active_models[` write left the views, the test XPASSed, which
+`strict=True` reports as a failure — so the marker had to be retired
+deliberately rather than the invariant quietly starting to pass. The last
+six apparent violations were a red herring worth recording: `build_models`
+kept its local build buffer in a dict *named* `active_models`, so it read as
+the registry. Renaming it `built_models` was the honest fix; raising the
+baseline would have hidden that the invariant was already true.
+
+**Item 7 — process exit hooks, where there were none at all.** `src/lifecycle
+.py` installs `atexit` plus SIGINT/SIGTERM/SIGHUP, and the launchers add Qt's
+`aboutToQuit` and Tk's `::tk::mac::Quit`. Two properties matter and are
+tested: handlers resolve the manager through `current_manager()` **when they
+fire**, so a Web re-setup's replacement manager is the one that gets stopped
+(this is MANAGER-1/TEMP-1/ROTATOR-2 — the old code tore down the original
+empty manager and never touched the real models); and shutdown runs exactly
+once, so a signal arriving during `atexit` cannot tear down twice against
+half-closed transports. The signal handler restores the default action and
+re-raises, so the process still dies with the right status.
+
+**Item 8 — building is all-or-nothing.** `build_models` rolls back every
+model it has already built when a later constructor raises. Without it a
+failed launch left earlier devices holding their serial ports open with no
+reference to them anywhere, so the next attempt could not reopen those ports
+and only a process restart recovered. The Tk launcher also used to
+`withdraw()` the setup window *before* building, so a failed build left the
+user with no setup window and no dashboard — nothing on screen (MANAGER-6,
+VIEW-TKINTER-7). It now builds first and reports the failure.
+
+Web re-setup now tears the old models down **before** building the new ones.
+It did the reverse, so for the duration of a rebuild two live handles existed
+on the same port (I-1.4) — and a failed rebuild left orphans holding ports.
+
+**Item 9 — views construct and destroy nothing.** PySide's `close_device_view`
+was a third copy of the teardown policy, in the wrong order, ending in a raw
+`del` from the manager's dict. It is gone. So are the
+`StepperProbe(None, "None", {})` constructors, which fabricated a **silent
+headless model**: every control rendered and responded, nothing was attached
+to hardware, and the operator had no way to tell. An unconfigured device now
+says so.
+
+**INTERIM close affordances removed** (plan.md S2): the PySide dock is no
+longer closable and Tk's middle-click / right-click "Close Tab" are unbound.
+`WA_DeleteOnClose` deliberately stays — a programmatic close must still
+destroy the *widget*, or unchecking and re-checking a device in the sidebar
+leaks a hidden dock each time.
+
+**Seven findings are marked `open (mitigated)`, not closed.** DC-9,
+GAMEPAD-9, TEMP-5, ROTATOR-10, SERIAL-4, REDPERCENT-12 and VIEW-TKINTER-1
+all say "tab close leaves the model running invisibly". Under **D-1 that is
+the intended behavior**, so they are not S2's to close — S2 only removed the
+way to reach the bad state. They close in **S6** when hide/show ships.
+
+Still open in S2's range: TEMP-11 (`close()` has no flush/join — RC-1 lists
+it as partial), MANAGER-20 (SetupWindow closable mid-scan with its QThread
+running), WEB-1/3/20.
+
+- **Next action:** S3 — transport truth and the E-stop latch (RC-2 item 2,
+  RC-5 item 1). Gate `-m "transport or estop or scripting"`. I-2.3's xfail
+  retires there.
+
 ---
 
 ## Finding ledger
@@ -308,14 +374,14 @@ it) · `n/a` (with a reason).
 | Finding | Root cause | Stage | Closed by | Status |
 |---|---|---|---|---|
 | DC-1 | RC3 | S7 | root cause | open |
-| DC-2 | RC1 | S2 | root cause | open |
-| DC-3 | RC1 | S2 | root cause | open |
+| DC-2 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
+| DC-3 | RC1 | S2 | root cause | closed (test_probe_teardown_order_is_stop_then_poller_then_transport, tests/core/test_lifecycle_teardown.py) |
 | DC-4 | RC6 | S9 | root cause | open |
 | DC-5 | RC4 | S5 | root cause | open |
 | DC-6 | RC7 | S10 | root cause | open |
 | DC-7 | RC6 | S9 | root cause | open |
 | DC-8 | RC6 | S9 | root cause | open |
-| DC-9 | RC1 | S2 | root cause | open |
+| DC-9 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
 | DC-10 | RC3 | S7 | root cause | open |
 | DC-11 | RC7 / RC3 | S10 | root cause | open |
 | DC-12 | RC9 | S12 | root cause | open |
@@ -346,7 +412,7 @@ it) · `n/a` (with a reason).
 | GAMEPAD-6 | RC7 | S10 | root cause | open |
 | GAMEPAD-7 | RC4 | S5 | root cause | open |
 | GAMEPAD-8 | RC4 | S5 | root cause | open |
-| GAMEPAD-9 | RC1 | S2 | root cause | open |
+| GAMEPAD-9 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
 | GAMEPAD-10 | RC13 | S5 | root cause | open |
 | GAMEPAD-11 | RC12 | S16 | explicit | open |
 | GAMEPAD-12 | RC12 | S16 | explicit | open |
@@ -358,17 +424,17 @@ it) · `n/a` (with a reason).
 | GAMEPAD-18 | RC13 / RC9 | S5 | root cause | open |
 | GAMEPAD-19 | RC13 | S5 | root cause | open |
 | GAMEPAD-20 | doc | S0 | root cause | open |
-| MANAGER-1 | RC1 / RC10 | S2 | root cause | open |
-| MANAGER-2 | RC1 / RC10 | S2 | root cause | open |
-| MANAGER-3 | RC1 | S2 | root cause | open |
-| MANAGER-4 | RC1 / RC10 | S2 | root cause | open |
-| MANAGER-5 | RC1 | S2 | root cause | open |
-| MANAGER-6 | RC1 | S2 | root cause | open |
-| MANAGER-7 | RC1 | S2 | root cause | open |
-| MANAGER-8 | RC1 | S2 | root cause | open |
-| MANAGER-9 | RC1 | S2 | root cause | open |
-| MANAGER-10 | RC1 / RC5 | S2 | root cause | open |
-| MANAGER-11 | RC1 | S2 | root cause | open |
+| MANAGER-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
+| MANAGER-2 | RC1 / RC10 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
+| MANAGER-3 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
+| MANAGER-4 | RC1 / RC10 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
+| MANAGER-5 | RC1 | S2 | root cause | closed (test_build_models_tears_down_partial_work_when_a_later_device_fails, tests/core/test_app_bootstrap.py) |
+| MANAGER-6 | RC1 | S2 | root cause | closed (verified by inspection: app.py builds before withdraw and reports failure; no automated coverage of the Tk setup window) |
+| MANAGER-7 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
+| MANAGER-8 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
+| MANAGER-9 | RC1 | S2 | root cause | closed (test_i_1_5_active_models_written_only_by_system_manager) |
+| MANAGER-10 | RC1 / RC5 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
+| MANAGER-11 | RC1 | S2 | root cause | closed (reboot_model deleted; test_system_manager_reconfigure_replaces_the_model_set) |
 | MANAGER-12 | RC9 | S12 | root cause | open |
 | MANAGER-13 | RC4 / RC10 | S5 | root cause | open |
 | MANAGER-14 | LOCAL-OK | S1 | explicit | closed (test_d9_macos_defaults_to_tkinter, test_manager14_launcher_rejects_unknown_flags) |
@@ -378,8 +444,8 @@ it) · `n/a` (with a reason).
 | MANAGER-18 | RC9 | S12 | root cause | open |
 | MANAGER-19 | RC5 | S8 | root cause | open |
 | MANAGER-20 | RC4 | S5 | root cause | open |
-| PYSIDE-1 | RC1 | S2 | root cause | open |
-| PYSIDE-2 | RC1 | S2 | root cause | open |
+| PYSIDE-1 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
+| PYSIDE-2 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | PYSIDE-3 | RC9 | S12 | root cause | open |
 | PYSIDE-4 | RC11 | S13 | root cause | open |
 | PYSIDE-5 | RC6 | S9 | root cause | open |
@@ -409,7 +475,7 @@ it) · `n/a` (with a reason).
 | REDPERCENT-9 | RC11 | S13 | root cause | open |
 | REDPERCENT-10 | RC7 | S10 | root cause | open |
 | REDPERCENT-11 | RC9 / RC1 | S12 | root cause | open |
-| REDPERCENT-12 | RC1 | S2 | root cause | open |
+| REDPERCENT-12 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
 | REDPERCENT-13 | RC7 | S10 | root cause | open |
 | REDPERCENT-14 | RC6 | S9 | root cause | open |
 | REDPERCENT-15 | RC9 | S12 | root cause | open |
@@ -418,26 +484,26 @@ it) · `n/a` (with a reason).
 | REDPERCENT-18 | RC7 | S10 | root cause | open |
 | REDPERCENT-19 | RC7 | S10 | root cause | open |
 | REDPERCENT-20 | LOCAL-OK | S15 | explicit | open |
-| ROTATOR-1 | RC1 / RC5 | S2 | root cause | open |
-| ROTATOR-2 | RC10 | S14 | root cause | open |
+| ROTATOR-1 | RC1 / RC5 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
+| ROTATOR-2 | RC10 | S14 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | ROTATOR-3 | RC8 / RC7 | S11 | root cause | open |
 | ROTATOR-4 | RC5 | S8 | root cause | open |
-| ROTATOR-5 | RC1 | S2 | root cause | open |
+| ROTATOR-5 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | ROTATOR-6 | RC4 | S5 | root cause | open |
 | ROTATOR-7 | RC4 / RC10 | S5 | root cause | open |
 | ROTATOR-8 | RC5 | S8 | root cause | open |
 | ROTATOR-9 | RC2 / RC7 | S3 | root cause | open |
-| ROTATOR-10 | RC1 | S2 | root cause | open |
+| ROTATOR-10 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
 | ROTATOR-11 | RC2 / LOCAL-OK | S3 | explicit | open |
 | ROTATOR-12 | RC6 | S9 | root cause | open |
 | ROTATOR-13 | RC2 / RC8 | S3 | root cause | open |
-| ROTATOR-14 | RC1 | S2 | root cause | open |
+| ROTATOR-14 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | ROTATOR-15 | RC8 / doc | S11 | root cause | open |
 | SERIAL-1 | RC2 | S3 | root cause | open |
-| SERIAL-2 | RC1 | S2 | root cause | open |
-| SERIAL-3 | RC1 | S2 | root cause | open |
-| SERIAL-4 | RC1 | S2 | root cause | open |
-| SERIAL-5 | RC1 / RC10 | S2 | root cause | open |
+| SERIAL-2 | RC1 | S2 | root cause | closed (test_probe_teardown_sends_hardware_stop_when_poller_stop_raises, tests/core/test_lifecycle_teardown.py) |
+| SERIAL-3 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
+| SERIAL-4 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
+| SERIAL-5 | RC1 / RC10 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | SERIAL-6 | RC4 | S5 | root cause | open |
 | SERIAL-7 | RC2 | S3 | root cause | open |
 | SERIAL-8 | RC2 | S3 | root cause | open |
@@ -447,14 +513,14 @@ it) · `n/a` (with a reason).
 | SERIAL-12 | RC4 | S5 | root cause | open |
 | SERIAL-13 | RC2 | S3 | root cause | open |
 | SERIAL-14 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
-| SERIAL-15 | RC1 | S2 | root cause | open |
+| SERIAL-15 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
 | SERIAL-16 | RC8 | S11 | root cause | open |
 | SERIAL-17 | RC2 / LOCAL-OK | S3 | explicit | open |
-| SERIAL-18 | RC1 | S2 | root cause | open |
+| SERIAL-18 | RC1 | S2 | root cause | closed (reboot_model deleted; test_system_manager_reconfigure_replaces_the_model_set) |
 | SERIAL-19 | doc | S0 | root cause | open |
-| STEPPER-1 | RC1 | S2 | root cause | open |
+| STEPPER-1 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | STEPPER-2 | RC4 | S5 | root cause | open |
-| STEPPER-3 | RC1 | S2 | root cause | open |
+| STEPPER-3 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | STEPPER-4 | RC2 | S3 | root cause | open |
 | STEPPER-5 | RC3 | S7 | root cause | open |
 | STEPPER-6 | RC3 | S7 | root cause | open |
@@ -467,27 +533,27 @@ it) · `n/a` (with a reason).
 | STEPPER-13 | RC9 | S12 | root cause | open |
 | STEPPER-14 | RC4 | S5 | root cause | open |
 | STEPPER-15 | RC4 | S5 | root cause | open |
-| TEMP-1 | RC1 / RC10 | S2 | root cause | open |
+| TEMP-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | TEMP-2 | RC2 | S3 | root cause | open |
 | TEMP-3 | RC6 | S9 | root cause | open |
 | TEMP-4 | RC6 | S9 | root cause | open |
-| TEMP-5 | RC1 | S2 | root cause | open |
-| TEMP-6 | RC1 | S2 | root cause | open |
+| TEMP-5 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
+| TEMP-6 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | TEMP-7 | RC5 | S8 | root cause | open |
-| TEMP-8 | RC1 | S2 | root cause | open |
+| TEMP-8 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | TEMP-9 | LOCAL-OK | S15 | explicit | open |
 | TEMP-10 | RC2 / RC8 | S3 | root cause | open |
 | TEMP-11 | RC1 / RC2 / doc | S2 | root cause | open |
 | TEMP-12 | RC8 | S11 | root cause | open |
 | TEMP-13 | RC6 | S9 | root cause | open |
-| VIEW-TKINTER-1 | RC1 | S2 | root cause | open |
+| VIEW-TKINTER-1 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
 | VIEW-TKINTER-2 | RC8 | S11 | root cause | open |
 | VIEW-TKINTER-3 | RC3 | S7 | root cause | open |
 | VIEW-TKINTER-4 | RC3 | S7 | root cause | open |
 | VIEW-TKINTER-5 | RC4 | S5 | root cause | open |
 | VIEW-TKINTER-6 | RC13 | S5 | root cause | open |
-| VIEW-TKINTER-7 | RC1 | S2 | root cause | open |
-| VIEW-TKINTER-8 | RC1 | S2 | root cause | open |
+| VIEW-TKINTER-7 | RC1 | S2 | root cause | closed (verified by inspection: app.py builds before withdraw and reports failure) |
+| VIEW-TKINTER-8 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
 | VIEW-TKINTER-9 | RC4 | S5 | root cause | open |
 | VIEW-TKINTER-10 | RC13 / RC7 | S5 | root cause | open |
 | VIEW-TKINTER-11 | RC4 | S5 | root cause | open |
@@ -495,7 +561,7 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-13 | RC3 | S7 | root cause | open |
 | VIEW-TKINTER-14 | RC11 / RC7 | S13 | root cause | open |
 | VIEW-TKINTER-15 | RC11 | S13 | root cause | open |
-| VIEW-TKINTER-16 | RC1 | S2 | root cause | open |
+| VIEW-TKINTER-16 | RC1 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
 | VIEW-TKINTER-17 | RC7 / RC9 | S10 | root cause | open |
 | VIEW-TKINTER-18 | LOCAL-OK | S15 | explicit | open |
 | WEB-1 | RC1 / RC10 | S2 | root cause | open |

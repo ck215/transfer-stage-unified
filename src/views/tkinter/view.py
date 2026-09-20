@@ -113,8 +113,11 @@ class DraggableClosableNotebook(ttk.Notebook):
         self.bind("<B1-Motion>", self.on_drag)
         self.bind("<ButtonRelease-1>", self.on_release)
         
-        self.bind("<Button-2>", self.on_middle_click) # Middle click to close on some systems
-        self.bind("<Button-3>", self.on_right_click)  # Right click to close
+        # INTERIM: see plan.md S6. Middle-click-to-close and the right-click
+        # "Close Tab" item are unbound. Under D-1 closing a tab means *hide*,
+        # which is not safe until S5 moves the control loops out of the views:
+        # a hidden device keeps running, and its loops must not belong to a
+        # destroyed widget. Tabs stay draggable.
         
         self._active = None
         self.on_close_tab_callback = None
@@ -139,23 +142,12 @@ class DraggableClosableNotebook(ttk.Notebook):
     def on_release(self, event):
         self._active = None
 
-    def on_middle_click(self, event):
-        try:
-            index = self.index(f"@{event.x},{event.y}")
-            self.close_tab(index)
-        except tk.TclError:
-            pass
-
-    def on_right_click(self, event):
-        try:
-            index = self.index(f"@{event.x},{event.y}")
-            menu = tk.Menu(self, tearoff=0)
-            menu.add_command(label="Close Tab", command=lambda: self.close_tab(index))
-            menu.tk_popup(event.x_root, event.y_root)
-        except tk.TclError:
-            pass
-
     def close_tab(self, index):
+        """INTERIM: see plan.md S6. Kept for the shutdown path only.
+
+        No user gesture reaches this any more. S6 replaces it with hide/show
+        once the loops belong to the models.
+        """
         if self.on_close_tab_callback:
             self.on_close_tab_callback(index)
         else:

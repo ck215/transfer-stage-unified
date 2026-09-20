@@ -102,6 +102,7 @@ _FILE_MARKERS = {
     "core/test_gamepad_interlock.py": ["loops", "mode"],
     "core/test_integration.py": ["integration"],
     "core/test_lifecycle_teardown.py": ["lifecycle", "estop"],
+    "core/test_lifecycle_exit.py": ["lifecycle", "estop", "bootstrap"],
     "core/test_model_interactions.py": ["mode"],
     "core/test_model_round1.py": ["mode", "lifecycle"],
     "core/test_model_round2.py": ["mode"],

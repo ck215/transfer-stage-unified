@@ -155,35 +155,27 @@ def test_harness_is_not_vacuous():
 # I-1.5 — Only SystemManager writes to active_models.  Fixed in S2 (RC-1).
 # ---------------------------------------------------------------------------
 
+# HELD since S2 (2026-09-19). The xfail is retired — strict xfail reported the
+# fix as an XPASS failure, which is what forced this marker to be removed and
+# the stage to be closed rather than the invariant quietly passing unnoticed.
+#
+# What was here: bootstrap populated a bare dict named `active_models` and
+# handed it over (the manager was a passive container, not the thing that owned
+# registration), and the PySide view reached into the manager's dict to `del` a
+# model on tab close. S2 replaced both with register()/release(), and renamed
+# bootstrap's local build buffer to `built_models` — it was named after the
+# manager's field, which is what made it read as a violation.
 I_1_5_PATTERN = r"active_models\["
 I_1_5_OWNER = "model/system_manager.py"
-I_1_5_BASELINE = {
-    # build_models() populates a bare dict and hands it over — the manager is
-    # a passive container rather than the thing that owns registration.
-    "app_bootstrap.py": 6,
-    # The view reaches into the manager's dict to delete a model on tab close
-    # (pyside/view.py:846). S2 replaces this with release(); S6 makes closing
-    # a tab mean hide, so nothing is deleted here at all.
-    "views/pyside/view.py": 1,
-}
 
 
 def _i_1_5_hits():
     return _scan(I_1_5_PATTERN, SRC, exclude=(I_1_5_OWNER,))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="[invariant I-1.5, owned by S2] bootstrap builds the dict and the "
-    "PySide view deletes from it; SystemManager is not yet the only writer",
-)
 def test_i_1_5_active_models_written_only_by_system_manager():
     hits = _i_1_5_hits()
     assert not hits, _report("I-1.5", hits)
-
-
-def test_i_1_5_no_new_violations():
-    _assert_no_new("I-1.5", _i_1_5_hits(), I_1_5_BASELINE, "S2")
 
 
 # ---------------------------------------------------------------------------

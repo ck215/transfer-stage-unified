@@ -720,7 +720,20 @@ class DeviceDock(QDockWidget):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # WA_DeleteOnClose stays: a programmatic close still destroys the
+        # *widget*, which is correct and necessary — without it, unchecking and
+        # re-checking a device in the sidebar builds a fresh dock each time and
+        # leaves the old one alive as a hidden child. What the model does is no
+        # longer the dock's business either way; S2 removed the model teardown
+        # from this path entirely.
         self.setAttribute(Qt.WA_DeleteOnClose)
+        # INTERIM: see plan.md S6. Movable and floatable, but NOT closable.
+        # Under D-1 closing a dock means *hide*, and hide is not safe to offer
+        # yet: a hidden device keeps running, and until S5 moves the control
+        # loops into the models those loops belong to the widget that would be
+        # destroyed underneath them. A close button that silently means "keep
+        # the hardware running with no window attached" is worse than none.
+        self.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
 
     def closeEvent(self, event):
         self.closed.emit()
@@ -830,20 +843,14 @@ class DashboardWindow(QMainWindow):
 
             dock.close()
 
-            # Destroy the model completely
-            model = self.system_manager.get_model(device_name)
-            if model:
-                if hasattr(model, 'disable'):
-                    model.disable()
-                if hasattr(model, 'poller') and model.poller:
-                    model.poller.stop_polling()
-                    model.poller.close()
-                if hasattr(model, 'disconnect'):
-                    model.disconnect()
-                
-                if device_name in self.system_manager.active_models:
-                    del self.system_manager.active_models[device_name]
-                    print(f"[DashboardWindow] Unregistered and destroyed model: {device_name}")
+            # INTERIM: see plan.md S6. The view used to destroy the model here
+            # with its own hasattr ladder — a third copy of the teardown policy,
+            # in the wrong order, ending in a raw `del` from the manager's dict.
+            # Under D-1 closing means *hide*, so nothing is destroyed; the model
+            # keeps running and the dock can be shown again. Real hide/show
+            # lands in S6, once S5 has moved the control loops into the models
+            # (a hidden device keeps running, so its loops must not belong to a
+            # hidden widget). Teardown happens at shutdown, via the manager.
 
     def _confirm_rotation_dialog(self, target_deg: float) -> bool:
         msg = QMessageBox(self)
@@ -864,43 +871,19 @@ class DashboardWindow(QMainWindow):
             
         model = self.system_manager.get_model(device_name)
         if not model:
-            # Dynamically instantiate missing models with empty/None connections
-            if device_name == "Stepper Probe":
-                from model.probes import StepperProbe
-                model = StepperProbe(None, "None", {})
-            elif device_name == "DC Probe":
-                from model.probes import DCProbe
-                model = DCProbe(None, "None", {})
-            elif device_name == "Chuck Positioner":
-                from model.probes import ChuckPositioner
-                model = ChuckPositioner(None, "None", {})
-            elif device_name == "Temperature Controller":
-                from model.temperature_system import TemperatureSystem
-                model = TemperatureSystem(None)
-            elif device_name == "SMC100 Rotator":
-                from model.rotator_system import RotatorSystem
-                model = RotatorSystem(None)
-            elif device_name == "Red Percent Window":
-                from model.redpercent_system import RedPercentSystem
-                model = RedPercentSystem()
-                # Link any active positioning probes
-                probe_models = {n: m for n, m in self.system_manager.active_models.items() if hasattr(m, 'pos_x')}
-                model.available_probes = probe_models
-                if "Stepper Probe" in probe_models:
-                    model.set_stepper_model("Stepper Probe")
-                elif probe_models:
-                    model.set_stepper_model(list(probe_models.keys())[0])
-                
-            if model:
-                self.system_manager.register(device_name, model)
-                
-                # If a new probe was just added, and Red Percent is active, let it know
-                if hasattr(model, 'pos_x'):
-                    red_model = self.system_manager.get_model("Red Percent Window")
-                    if red_model:
-                        red_model.available_probes[device_name] = model
-            else:
-                return
+            # The view no longer constructs models (RC-1 item 5). It used to
+            # fabricate StepperProbe(None, "None", {}) and friends here, which
+            # produced a *silent headless model*: every control rendered and
+            # responded, but nothing was attached to any hardware, and the
+            # operator had no way to tell (PYSIDE-1, MANAGER-8, ROTATOR-5,
+            # TEMP-6). A device that was not configured at setup is simply not
+            # available; say so and leave the checkbox unticked.
+            QMessageBox.information(
+                self, "Device Not Configured",
+                f"{device_name} was not configured at startup.\n\n"
+                "Restart and select it in the setup window to use it.")
+            self._set_sidebar_checked(device_name, False)
+            return
             
         if device_name == "SMC100 Rotator" and model:
             model.confirm_rotation_callback = self._confirm_rotation_dialog
@@ -924,17 +907,20 @@ class DashboardWindow(QMainWindow):
         self._last_added_dock = dock
         self.active_docks[device_name] = dock
         
-    def on_dock_closed(self, device_name):
-        # Synchronize sidebar checkbox
+    def _set_sidebar_checked(self, device_name, checked):
+        """Set a sidebar checkbox without re-entering on_device_item_changed."""
         self.device_list.blockSignals(True)
-        for i in range(self.device_list.count()):
-            item = self.device_list.item(i)
-            if item.text() == device_name:
-                item.setCheckState(Qt.Unchecked)
-                break
-        self.device_list.blockSignals(False)
-        
-        # If the dock wasn't already popped by the checkbox, close it and clean up the model
+        try:
+            for i in range(self.device_list.count()):
+                item = self.device_list.item(i)
+                if item.text() == device_name:
+                    item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                    break
+        finally:
+            self.device_list.blockSignals(False)
+
+    def on_dock_closed(self, device_name):
+        self._set_sidebar_checked(device_name, False)
         if device_name in self.active_docks:
             self.close_device_view(device_name)
 

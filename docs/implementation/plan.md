@@ -252,6 +252,11 @@ injection on each teardown sub-step; I-1.5 is the grep test from S0.
 **Risk.** This is the largest stage (41 findings). Split it into commits per
 numbered item above; each one pushes.
 
+**Done.** All nine items. I-1.5 holds and its `xfail` is retired. Seven of the
+42 findings are `open (mitigated)` rather than closed: they describe tab close
+leaving a model running, which **D-1 makes correct** — S2 removed the
+affordance, S6 ships the semantics.
+
 ---
 
 ## S3 — Transport truth and E-stop latch (RC-2 item 2, RC-5 item 1)
