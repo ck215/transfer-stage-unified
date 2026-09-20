@@ -6,10 +6,8 @@ import mimetypes
 import secrets
 import threading
 from urllib.parse import urlparse
-import mss
 import io
 import base64
-from PIL import Image
 from typing import Optional
 
 from .web_adapter import WebModelAdapter
@@ -30,6 +28,19 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
     """
     adapter: Optional[WebModelAdapter] = WebModelAdapter()
     static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "static"))
+
+    # A POST body here is always the small JSON commands/configs this API
+    # actually accepts (WEB-21). The read used to be `Content-Length`
+    # bytes, unbounded, so a slow or malicious client claiming a huge
+    # Content-Length handed this handler thread's memory over on request.
+    MAX_POST_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+    # One mss instance, reused across /api/screenshot calls instead of
+    # opening (and platform-side registering) a fresh capture context per
+    # request (WEB-21). Grabs are serialized under _mss_lock rather than
+    # relying on mss being safe for concurrent use from multiple threads.
+    _mss_instance = None
+    _mss_lock = threading.Lock()
 
     # ---- security boundary (RC-10 item 2) -------------------------------
     #
@@ -235,8 +246,17 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             # (minus the JSON content type, which a GET does not carry).
             if not self._authorize(require_json=False):
                 return
+            # Imported lazily (WEB-21): a headless launch, or any test that
+            # never hits this route, used to pay for mss/PIL at module import
+            # time regardless, and a machine missing either package could not
+            # import this module at all just to serve the rest of the API.
+            import mss
+            from PIL import Image
             try:
-                with mss.mss() as sct:
+                with self.__class__._mss_lock:
+                    if self.__class__._mss_instance is None:
+                        self.__class__._mss_instance = mss.mss()
+                    sct = self.__class__._mss_instance
                     monitor = sct.monitors[1]
                     sct_img = sct.grab(monitor)
                     img = Image.frombytes('RGB', sct_img.size, sct_img.bgra, 'raw', 'BGRX')
@@ -277,6 +297,22 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         route = parsed.path
         length = int(self.headers.get("Content-Length", 0))
+        if length > self.MAX_POST_BODY_BYTES:
+            # Drain the declared body off the wire in bounded chunks before
+            # answering, rather than reading it into one bytes object (the
+            # thing this cap exists to avoid) or leaving it unread. Bailing
+            # out here without draining races the client's still-in-flight
+            # write: the connection resets under it and the client sees a
+            # bare broken pipe instead of the 413 this is trying to deliver.
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+            return self._send_json(413, {
+                "status": "error",
+                "message": f"Request body too large (max {self.MAX_POST_BODY_BYTES} bytes)"})
         body = self.rfile.read(length) if length > 0 else b"{}"
 
         try:

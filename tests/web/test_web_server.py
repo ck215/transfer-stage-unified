@@ -669,3 +669,52 @@ def test_start_retries_past_a_genuinely_busy_port():
             server.stop()
     finally:
         blocker.stop()
+
+
+def test_post_body_over_max_size_is_rejected_with_413(web_server_fixture):
+    """WEB-21: the body read used to be `Content-Length` bytes, unbounded -
+    a slow or malicious client could claim any size and have this handler
+    thread read all of it into memory before JSON parsing even started."""
+    server, _ = web_server_fixture
+    big_payload = {
+        "device": "Stage_A",
+        "command": "home_axis",
+        "junk": "x" * (WebAPIHandler.MAX_POST_BODY_BYTES + 100),
+    }
+    url = f"http://127.0.0.1:{server.port}/api/command"
+    status, _, body = make_request(url, method="POST", json_data=big_payload)
+    assert status == 413
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert "too large" in data["message"].lower()
+
+
+def test_screenshot_reuses_a_single_mss_instance(web_server_fixture):
+    """WEB-21: /api/screenshot used to open a brand new mss capture context
+    on every single request. mss.mss() must be constructed at most once
+    across repeated screenshot requests, with the same instance reused."""
+    server, _ = web_server_fixture
+    WebAPIHandler._mss_instance = None
+    try:
+        class FakeShot:
+            size = (10, 10)
+            bgra = b"\x00" * (10 * 10 * 4)
+
+        class FakeSct:
+            monitors = [None, {"width": 10, "height": 10, "left": 0, "top": 0}]
+
+            def grab(self, monitor):
+                return FakeShot()
+
+        fake_sct = FakeSct()
+        url = f"http://127.0.0.1:{server.port}/api/screenshot"
+        with patch("mss.mss", return_value=fake_sct) as mock_mss:
+            status1, _, _ = make_request(url)
+            status2, _, _ = make_request(url)
+
+        assert status1 == 200
+        assert status2 == 200
+        assert mock_mss.call_count == 1, "mss.mss() constructed more than once"
+        assert WebAPIHandler._mss_instance is fake_sct
+    finally:
+        WebAPIHandler._mss_instance = None
