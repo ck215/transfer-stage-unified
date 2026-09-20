@@ -1,3 +1,4 @@
+import errno
 import pytest
 import json
 import urllib.request
@@ -5,6 +6,7 @@ import urllib.parse
 import urllib.error
 import time
 import threading
+from unittest.mock import patch
 from views.web.web_server import WebDashboardServer, WebAPIHandler
 
 class MockDeviceModel:
@@ -567,3 +569,51 @@ def test_api_options_security(web_server_fixture):
     assert status == 400
     data = json.loads(body)
     assert "not an exposed options_command" in data["message"]
+
+
+# -----------------------------------------------------------------------------
+# WEB-16: start() port exhaustion / non-EADDRINUSE bind failures
+# -----------------------------------------------------------------------------
+
+def test_start_raises_runtime_error_after_ten_busy_ports():
+    """After 10 straight EADDRINUSE failures, start() must fail with a
+    clear RuntimeError, not an AttributeError from calling
+    self.server.serve_forever on a None server."""
+    mgr = MockSystemManager()
+    server = WebDashboardServer(mgr, port=9300)
+    busy = OSError()
+    busy.errno = errno.EADDRINUSE
+    with patch("views.web.web_server.ThreadingHTTPServer", side_effect=busy):
+        with pytest.raises(RuntimeError):
+            server.start(background=True)
+    assert server.server is None
+
+
+def test_start_does_not_swallow_unrelated_os_errors():
+    """An OSError that is not "port busy" (e.g. permission denied) must
+    propagate, not be silently treated as "try the next port"."""
+    mgr = MockSystemManager()
+    server = WebDashboardServer(mgr, port=9301)
+    denied = OSError()
+    denied.errno = errno.EACCES
+    with patch("views.web.web_server.ThreadingHTTPServer", side_effect=denied):
+        with pytest.raises(OSError) as excinfo:
+            server.start(background=True)
+    assert excinfo.value.errno == errno.EACCES
+
+
+def test_start_retries_past_a_genuinely_busy_port():
+    """A real EADDRINUSE on the first port is recovered by binding the
+    next one - the mechanism this finding does not touch."""
+    mgr = MockSystemManager()
+    blocker = WebDashboardServer(mgr, port=9302)
+    blocker.start(background=True)
+    try:
+        server = WebDashboardServer(mgr, port=9302)
+        server.start(background=True)
+        try:
+            assert server.port != 9302
+        finally:
+            server.stop()
+    finally:
+        blocker.stop()

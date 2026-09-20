@@ -1,3 +1,4 @@
+import errno
 import http.server
 import json
 import os
@@ -424,14 +425,32 @@ class WebDashboardServer:
     def start(self, background=True):
         handler_cls = WebAPIHandler
         handler_cls.adapter = self.adapter
-        
-        # If port is busy, find next open port
-        for attempt in range(10):
+
+        # If the port is busy, try the next one (WEB-16). Only
+        # errno.EADDRINUSE means "busy" - any other OSError (permission
+        # denied, bad host, address not available) is a real failure and
+        # must not be silently treated as "keep incrementing the port",
+        # which used to mask it. And if every attempt in the range really
+        # is EADDRINUSE, `self.server` falls out of this loop as None; the
+        # old code then let `self.server.serve_forever` raise a bare
+        # AttributeError below instead of saying what actually happened.
+        self.server = None
+        first_port = self.port
+        last_err = None
+        for _attempt in range(10):
             try:
                 self.server = ThreadingHTTPServer((self.host, self.port), handler_cls)
                 break
-            except OSError:
+            except OSError as e:
+                if e.errno != errno.EADDRINUSE:
+                    raise
+                last_err = e
                 self.port += 1
+
+        if self.server is None:
+            raise RuntimeError(
+                f"Could not bind the web dashboard to any port in "
+                f"{first_port}-{first_port + 9} on {self.host}: {last_err}")
 
         # With port=0 the OS picks an ephemeral port, so self.port has to be
         # read back from the socket or callers build URLs for port 0.
