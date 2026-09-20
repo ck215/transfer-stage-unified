@@ -436,10 +436,11 @@ then enforce it in the setter.
 
 **Invariants.** I-5.1, I-5.3, I-2.2.
 
-**Partially done (2026-09-20).** Items 2 and 3 landed; **I-5.2 holds** and its
-`xfail` is retired. Items 1 and 4 remain — item 1 (command worker with a
-`_run_id` generation token) is the one expected to dissolve the four
-`order_dependent` `run_script` tests, so re-check that set when it lands.
+**Done (2026-09-20).** All four items; **I-5.2 holds** and its `xfail` is
+retired. The expectation that item 1 would dissolve the `order_dependent`
+`run_script` family was **wrong** — the generation token fixes a script
+outliving its own run, not `ErrorRouter`'s class-level callbacks. Expect that
+family at **S11**.
 
 ---
 

@@ -656,3 +656,40 @@ def test_cancel_running_script_is_explicit_and_idempotent():
     probe.cancel_running_script()
     probe.cancel_running_script()
     assert not probe._generation_is_current(generation)
+
+
+# --------------------------------------------------------------------------
+# RC-2 item 4 — SIM is a device, not a different code path.
+# --------------------------------------------------------------------------
+
+
+def test_simulator_mode_acknowledges_writes_instead_of_short_circuiting():
+    """SIM used to be `ser = None` plus an early exit in every method, so the
+    paths exercised headlessly were not the paths run with hardware attached
+    — and each new method had to remember its own early exit, which is
+    exactly how SERIAL-9 happened."""
+    t = SerialTransport("SIM")
+    assert t.is_open()
+    t.write_command(b"hello")
+    assert t.ser.writes == [b"hello"], "the simulated port did not see the write"
+
+
+def test_simulator_and_hardware_take_the_same_route_through_the_transport():
+    """The point of item 4: one code path, two devices."""
+    sim = SerialTransport("SIM")
+    sim.enable()
+    sim.disable()
+    sim.write_command("a string payload")
+    assert sim.ser.writes == [b"e", b"d", b"a string payload"], sim.ser.writes
+
+
+def test_simulator_reads_return_nothing_rather_than_raising():
+    t = SerialTransport("SIM")
+    assert t.read_line() == b""
+
+
+def test_a_closed_simulator_refuses_writes_like_a_closed_port():
+    t = SerialTransport("SIM")
+    t.close()
+    with pytest.raises(TransportError):
+        t.write_command(b"x")

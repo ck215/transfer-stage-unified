@@ -36,6 +36,47 @@ class ConnectionState:
     USABLE = (SIMULATED, VERIFIED, UNVERIFIED)
 
 
+class SimulatedPort:
+    """A stand-in for a pyserial handle that acknowledges everything (RC-2 item 4).
+
+    Simulator mode used to be expressed as `ser = None` plus a
+    `if SERIAL_PORT in ('SIM', ...): return` early-exit in every method. That
+    made SIM a *different code path* rather than a different device, so the
+    paths the bench exercises headlessly were not the paths it runs with
+    hardware attached — and each new method had to remember to add its own
+    early exit, which is how SERIAL-9 happened (`enable()` forgot, and every
+    SIM probe became permanently un-armable).
+
+    This ACKs instead: writes succeed, reads return nothing, and the port
+    reports itself open. The transport above it then takes exactly one route
+    whether or not a board is plugged in.
+    """
+
+    def __init__(self):
+        self.is_open = True
+        self.in_waiting = 0
+        self.writes = []
+
+    def write(self, payload):
+        self.writes.append(payload)
+        return len(payload)
+
+    def read(self, _size=1):
+        return b""
+
+    def readline(self):
+        return b""
+
+    def reset_input_buffer(self):
+        pass
+
+    def reset_output_buffer(self):
+        pass
+
+    def close(self):
+        self.is_open = False
+
+
 class TransportError(Exception):
     """A command did not reach the hardware (RC-2).
 
@@ -79,9 +120,12 @@ class serial:
         self.device_type = None
 
         if self.SERIAL_PORT in ('SIM', 'None', None):
-            msg = "[SerialDrive] Running in SIMULATOR mode. No serial connection will be established."
+            msg = "[SerialDrive] Running in SIMULATOR mode. Commands are acknowledged locally."
             print(msg)
             ErrorPopupManager.report_info("Simulator Mode", msg)
+            # An explicit simulated port, not `ser = None` (RC-2 item 4), so
+            # every method below takes one route regardless of hardware.
+            self.ser = SimulatedPort()
             self.connection_state = ConnectionState.SIMULATED
             return
         
@@ -314,8 +358,6 @@ class serial:
             # stop at all. Never pass priority=True for a motion command.
             print(f"[SerialDrive] PRIORITY: lock busy, forcing {payload!r} through")
         try:
-            if self.SERIAL_PORT in ('SIM', 'None', None):
-                return
             if self.ser is None or not self.ser.is_open:
                 raise TransportError(
                     f"[SerialDrive] Port {self.SERIAL_PORT} is not open; "
@@ -363,9 +405,7 @@ class serial:
             pass
 
     def is_open(self):
-        """True when a write could actually reach hardware, or we are in SIM."""
-        if self.SERIAL_PORT in ('SIM', 'None', None):
-            return True
+        """True when a command has somewhere to go — a real port or the simulator."""
         return self.ser is not None and self.ser.is_open
 
     def read_line(self):
@@ -375,8 +415,6 @@ class serial:
         reads are part of the transport's job too, not just writes.
         """
         with self._lock:
-            if self.SERIAL_PORT in ('SIM', 'None', None):
-                return b""
             if self.ser is None or not self.ser.is_open:
                 raise TransportError(
                     f"[SerialDrive] Port {self.SERIAL_PORT} is not open; cannot read")

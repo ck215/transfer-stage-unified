@@ -55,7 +55,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S5 | Input service and model-owned loops | done | | 2026-09-19 | RC-13 + RC-4. I-4.1 holds. Web has manual mode for the first time. S6 unblocked. |
 | S6 | Hide/show semantics (D-1) | blocked | | 2026-09-20 | **BLOCKED on D-2.** Prerequisite S5 is done; the owner decision is not. |
 | S7 | Probe mode state machine (RC-3) | blocked | | 2026-09-20 | **BLOCKED on D-2.** Same decision as S6. |
-| S8 | Motion serialization, ConnectionState | partial | | 2026-09-20 | Items 2 and 3 done; I-5.2 holds. Items 1 (command worker) and 4 (SIM transport) remain. |
+| S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
 | S9 | Typed parameters (RC-6) | todo | | | |
 | S10 | Schema v2, three renderers (RC-7) | todo | | | |
 | S11 | Result channel and event bus (RC-8) | todo | | | |
@@ -775,6 +775,33 @@ note demanded: it was watching `serial_comm.ser.write`, one of the 11 raw
 bypasses S3 deleted. The model writes through `write_command()` now, so
 `.ser.write` is never called and the assertion saw silence. **The behaviour
 was correct the whole time; the test was watching the wrong object.**
+
+### 2026-09-20 — S8 item 4: the simulator becomes a device, not a branch
+
+Fast gate: 303 passed, 4 xfailed. **S8 is complete.**
+
+Simulator mode was `ser = None` plus an `if SERIAL_PORT in ('SIM', ...):
+return` early exit in **every** transport method. That made SIM a *different
+code path* rather than a different device, so the paths the bench exercises
+headlessly were not the paths it runs with hardware attached — and each new
+method had to remember to add its own early exit. That is precisely how
+SERIAL-9 happened: `enable()` forgot, so every simulator probe was
+permanently un-armable, in the mode that exists to run the bench without
+hardware.
+
+`SimulatedPort` now stands in for the pyserial handle and acknowledges
+everything: writes succeed and are recorded, reads return nothing, the port
+reports itself open. The transport above it takes exactly one route whether
+or not a board is plugged in, and a closed simulator refuses writes exactly
+as a closed port does.
+
+**S8 summary.** All four items done. `I-5.2` retired. `known_bad` is down
+from 10 entries to 7; `order_dependent` is up to 10, three of which arrived
+from `known_bad` because their outcome was conditional rather than broken.
+
+**Next available stage is S9** (typed parameters, RC-6). **S6 and S7 remain
+BLOCKED on D-2**, and D-12 plus the S5 manual-rate change are still waiting
+on an owner ruling.
 
 ---
 
