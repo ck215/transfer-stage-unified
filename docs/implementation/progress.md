@@ -876,6 +876,50 @@ reading the actual assertion values instead of reasoning from the audit's
 list of process-global suspects. Two plausible root causes, both real
 defects in their own right, both innocent here.
 
+### 2026-09-20 — session close
+
+**Pushed and in sync at `44c67a0`.** 14 commits. Working tree clean.
+
+| | Stage | State |
+|---|---|---|
+| S0–S5 | harness, purge, lifecycle, transport, security, loops | **done** |
+| S6, S7 | hide/show, probe mode | **BLOCKED on D-2** |
+| S8 | motion serialization, ConnectionState | **done** |
+| S9 | typed parameters | items 1, 4 done; 2, 3 remain |
+| S10–S16 | — | todo |
+
+**Suite:** 390 passed / 6 xfailed on the main pass, **identical across three
+consecutive sweeps**; Qt 7 passed; 3 order-dependent tests, each passing in
+isolation. `known_bad` is 7 — five gamepad/mode tests owned by S7 (itself
+blocked on D-2) and two PySide schema tests owned by S10. `order_dependent`
+is 3, down from 10.
+
+**Ledger:** 50 of 213 findings closed with named test evidence, 6 recorded as
+`open (mitigated)` rather than claimed, 157 open.
+
+**Invariants holding:** I-1.5, I-2.3, I-4.1, I-5.2. Each retirement was
+forced by `xfail(strict=True)` reporting the fix as a failure — none was
+noticed by looking.
+
+### Waiting on the owner
+
+1. **D-2** — leaving a mode: disable the coils, or stop motion only? Blocks
+   S6 and S7. Hazardous in both directions, which is why it stops here.
+2. **D-12** — gamepad poll rate: the code runs ~200 Hz under a comment
+   claiming 50 Hz. **Unchanged** pending a ruling.
+3. **Manual pump rate** — Tk's 50 ms and PySide's 20 ms could not both
+   survive S5. 20 ms was adopted; **this changes how Tk manual mode feels at
+   the bench.**
+
+### For whoever picks this up
+
+S9 items 2–3 overlap S10's schema v2 — do them together. **RC-6's
+script-path coverage does not exist**: the test that appeared to provide it
+was passing on a mock artefact (see the entry above). Write it fresh.
+
+Do not trust this file's older claims about *why* the suite was flaky; the
+entry above corrects them.
+
 ---
 
 ## Finding ledger
