@@ -149,3 +149,41 @@ def test_full_stop_reports_per_device_results():
     assert res2["status"] == "error"
     assert res2["results"] == {"Stage_A": True, "Stage_B": False}
     assert "Stage_B" in res2["message"]
+
+
+def test_get_state_isolates_a_raising_device():
+    """WEB-14: one device's cache read must not take the whole /api/state
+    response down with it. A property that raises used to propagate out of
+    get_state() and empty the response for every device, not just the
+    broken one."""
+    from views.web.web_adapter import WebModelAdapter
+
+    class HealthyModel:
+        def __init__(self):
+            self.pos = 1.0
+
+        @property
+        def ui_schema(self):
+            return {"sections": [{"elements": [
+                {"type": "readonly", "model_attr": "pos"}]}]}
+
+    class BrokenModel:
+        @property
+        def ui_schema(self):
+            raise RuntimeError("board fell off the bus")
+
+    class MockMgr:
+        def __init__(self):
+            self.active_models = {"Good": HealthyModel(), "Bad": BrokenModel()}
+
+        def get_active_models_snapshot(self):
+            return dict(self.active_models)
+
+    adapter = WebModelAdapter()
+    adapter.set_system_manager(MockMgr())
+    state = adapter.get_state()
+
+    assert state["Good"]["pos"] == 1.0
+    assert "connection_status" in state["Good"]
+    assert "_error" in state["Bad"]
+    assert "board fell off the bus" in state["Bad"]["_error"]

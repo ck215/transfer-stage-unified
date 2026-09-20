@@ -572,6 +572,38 @@ def test_api_full_stop_all_reports_unconfirmed_device(web_server_fixture):
     assert data["results"] == {"Stage_A": True, "Stage_B": False}
     assert "Stage_B" in data["message"]
 
+
+def test_api_get_route_crash_returns_json_500_not_a_dropped_connection(web_server_fixture):
+    """WEB-14: an unhandled exception inside a GET route handler used to
+    propagate out of BaseHTTPRequestHandler and drop the connection with no
+    response body at all — the browser reports that as a bare network
+    failure, indistinguishable from the server being down. do_GET now
+    answers every route under a JSON error envelope."""
+    server, _ = web_server_fixture
+    with patch.object(server.adapter, "get_devices",
+                       side_effect=RuntimeError("schema blew up")):
+        url = f"http://127.0.0.1:{server.port}/api/devices"
+        status, _, body = make_request(url)
+    assert status == 500
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert "schema blew up" in data["message"]
+    assert "traceback" not in data
+
+
+def test_api_post_route_crash_returns_json_500_not_a_dropped_connection(web_server_fixture):
+    """Same envelope as above (WEB-14), for POST routes."""
+    server, _ = web_server_fixture
+    with patch.object(server.adapter, "full_stop_all",
+                       side_effect=RuntimeError("latch jammed")):
+        url = f"http://127.0.0.1:{server.port}/api/system/full_stop"
+        status, _, body = make_request(url, method="POST", json_data={})
+    assert status == 500
+    data = json.loads(body)
+    assert data["status"] == "error"
+    assert "latch jammed" in data["message"]
+    assert "traceback" not in data
+
 def test_api_options_success(web_server_fixture):
     server, mgr = web_server_fixture
     url = f"http://127.0.0.1:{server.port}/api/options?device=Stage_A&command=get_opts"

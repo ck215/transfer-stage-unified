@@ -339,17 +339,25 @@ class WebModelAdapter:
                 # sampling rate was whatever the browser happened to poll at,
                 # and a stalled read blocked the HTTP handler thread. The model
                 # samples on its own thread; this reads the cache.
-                model_state = {}
-                schema = getattr(model, "ui_schema", {"sections": []})
-                for sec in schema.get("sections", []):
-                    for el in sec.get("elements", []):
-                        attr = el.get("model_attr")
-                        if attr and hasattr(model, attr):
-                            model_state[attr] = getattr(model, attr)
+                #
+                # One device's read is isolated from the rest (WEB-14): a
+                # raising property getter or a broken ui_schema used to blow
+                # up the whole /api/state response, graying out every device
+                # card over one bad one instead of just its own.
+                try:
+                    model_state = {}
+                    schema = getattr(model, "ui_schema", {"sections": []})
+                    for sec in schema.get("sections", []):
+                        for el in sec.get("elements", []):
+                            attr = el.get("model_attr")
+                            if attr and hasattr(model, attr):
+                                model_state[attr] = getattr(model, attr)
 
-                # Attach connection_status badging
-                model_state["connection_status"] = self._determine_connection_status(model)
-                state[name] = model_state
+                    # Attach connection_status badging
+                    model_state["connection_status"] = self._determine_connection_status(model)
+                    state[name] = model_state
+                except Exception as e:
+                    state[name] = {"_error": str(e)}
         return state
 
     @staticmethod

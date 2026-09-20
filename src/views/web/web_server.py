@@ -100,7 +100,10 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             cls.adapter.set_system_manager(val)
 
     def _send_json(self, status_code, data):
-        payload = json.dumps(data).encode("utf-8")
+        # default=str: a route handing back e.g. a raw exception object or a
+        # timestamp should degrade to its string form, not take the whole
+        # response down with a raise from inside json.dumps itself.
+        payload = json.dumps(data, default=str).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -156,6 +159,24 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(500, f"Error reading file: {e}")
 
     def do_GET(self):
+        # Every route body runs under this envelope (WEB-14): an unhandled
+        # exception used to propagate out of BaseHTTPRequestHandler and drop
+        # the connection with no response at all, which the browser reports
+        # as a bare network failure indistinguishable from the server being
+        # down. A route that fails now still answers, with a 500 and a
+        # message, so the operator sees a specific error instead of a dead
+        # dashboard tile.
+        try:
+            self._do_GET_impl()
+        except Exception as e:
+            import traceback
+            print(f"[WebAPIHandler] GET {self.path} failed:\n{traceback.format_exc()}")
+            try:
+                self._send_json(500, {"status": "error", "message": str(e)})
+            except Exception:
+                pass
+
+    def _do_GET_impl(self):
         parsed = urlparse(self.path)
         route = parsed.path
 
@@ -238,6 +259,19 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             self._serve_static(route)
 
     def do_POST(self):
+        # Same envelope as do_GET (WEB-14) — a raising command handler must
+        # still answer the request instead of dropping the connection.
+        try:
+            self._do_POST_impl()
+        except Exception as e:
+            import traceback
+            print(f"[WebAPIHandler] POST {self.path} failed:\n{traceback.format_exc()}")
+            try:
+                self._send_json(500, {"status": "error", "message": str(e)})
+            except Exception:
+                pass
+
+    def _do_POST_impl(self):
         if not self._authorize(require_json=True):
             return
         parsed = urlparse(self.path)
