@@ -60,7 +60,16 @@ class WebDashboardWindow:
         # Connect ErrorRouter to web reporting
         WebErrorManager.initialize()
 
-        # Connect poller logs if present
+        # Connect poller logs for any models already present at construction
+        # time (WEB-5). This only ever covers a manager built before the
+        # window - in practice that is an empty manager in `run_web_app`,
+        # since real models are built later by the setup wizard, which is
+        # why `WebModelAdapter._initialize_setup_locked` also wires this for
+        # every model it builds. `WebAPIHandler.log_buffer` is a
+        # backward-compatible proxy over `adapter.append_log`, which already
+        # caps the buffer at 500 under its own lock - it has no `pop`, so
+        # this used to raise AttributeError the moment its own manual size
+        # check ever tripped.
         models = (self.system_manager.get_active_models_snapshot()
                   if self.system_manager else {})
         for name, model in models.items():
@@ -68,8 +77,6 @@ class WebDashboardWindow:
                 def make_logger(p_name):
                     def append_log(msg):
                         WebAPIHandler.log_buffer.append(f"[{p_name}] {msg}")
-                        if len(WebAPIHandler.log_buffer) > 500:
-                            WebAPIHandler.log_buffer.pop(0)
                     return append_log
                 model.poller.log_updater = make_logger(name)
 

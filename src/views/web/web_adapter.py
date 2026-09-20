@@ -167,6 +167,26 @@ class WebModelAdapter:
             if hasattr(model, 'disable'):
                 model.disable()
 
+        # Wire each new model's poller log to this adapter's own log buffer
+        # (WEB-5). `WebDashboardWindow.__init__` only wires models that
+        # exist at construction time, and `run_web_app` builds the window
+        # around an empty SystemManager before any device exists (the real
+        # models are built here, later, by the setup wizard) - so that
+        # wiring never ran for a model built through the web view, and the
+        # Controller Log modal stayed empty forever. `append_log` already
+        # caps the buffer at 500 under its own lock, so this closure does
+        # not need - and must not repeat - a manual pop of its own; the
+        # `WebAPIHandler.log_buffer` proxy that used to be poked directly
+        # here has no `pop`, and calling it would raise AttributeError.
+        for dev, model in active_models.items():
+            poller = getattr(model, "poller", None)
+            if poller is not None:
+                def _make_logger(device_name):
+                    def _log(message):
+                        self.append_log(f"[{device_name}] {message}")
+                    return _log
+                poller.log_updater = _make_logger(dev)
+
         # Cross-model wiring, through the registry (RC-9 item 2) — the same
         # one call the desktop launchers make.
         app_bootstrap.link_models(new_manager)

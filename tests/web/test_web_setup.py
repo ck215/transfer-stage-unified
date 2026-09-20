@@ -292,6 +292,29 @@ def test_setup_initialize_sim_ports_do_not_collide(web_setup_server):
     assert adapter.mode == "running"
 
 
+def test_setup_initialize_wires_poller_log_to_the_adapter(web_setup_server):
+    """WEB-5: a model built by the setup wizard (as opposed to one already
+    present when WebDashboardWindow was constructed) must still have its
+    poller's log_updater wired to the adapter's log buffer, or the
+    Controller Log modal never shows anything for a device set up through
+    the web view - which is every device, in production, since
+    run_web_app constructs the window around an empty SystemManager."""
+    server, base_url, adapter = web_setup_server
+
+    configs = [
+        {"device": "Stepper Probe", "port": "SIM", "controller": "None"},
+    ]
+    status, resp = _post(f"{base_url}/api/setup/initialize", {"configs": configs})
+    assert status == 200
+
+    stepper = adapter.system_manager.active_models["Stepper Probe"]
+    assert stepper.poller is not None
+    assert stepper.poller.log_updater is not None
+
+    stepper.poller.log_updater("Step completed: 42")
+    assert "[Stepper Probe] Step completed: 42" in adapter.get_logs()
+
+
 # ---------------------------------------------------------------------------
 # Tests: Connection Status Badging in GET /api/state
 # ---------------------------------------------------------------------------
