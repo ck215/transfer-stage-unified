@@ -221,7 +221,8 @@ accounted for by node-ID diff against `b37cc9a`.*
 three consecutive sweeps (~3:15). Qt: 7 passed, 2 xfailed. Order-dependent:
 **3**, down from 10 — seven retired when the `run_script` family turned out
 to be a mock-parser import-order problem, not the process-global state this
-file had blamed. `known_bad`: 5.*
+file had blamed. `known_bad`: **7** — five gamepad/mode tests owned by S7
+(itself blocked on D-2) and two PySide schema tests owned by S10.*
 
 *After S5 part 2: fast gate 272 pass, 6 xfail (~38 s). The xfail count has
 fallen from 9 as invariants started holding — **I-1.5 retired in S2, I-2.3 in
