@@ -397,6 +397,7 @@ class DynamicView(tk.Frame):
         self._gated = []
         self._plots = []
         self._log_streams = []
+        self._regions = []
 
         self._build_ui()
         self._poll_model()
@@ -539,7 +540,7 @@ class DynamicView(tk.Frame):
                         row=row_counter, column=0, padx=5, pady=2, sticky='w')
 
                     options_func = getattr(self.model, options_cmd, None) if options_cmd else None
-                    current_val = str(getattr(self.model, attr, ""))
+                    current_val = sch.current_text(self.model, el)
                     options = list(options_func()) if callable(options_func) else []
                     if current_val and current_val not in options:
                         options = [current_val] + options
@@ -615,6 +616,20 @@ class DynamicView(tk.Frame):
                     region_btn.bind("<Button-1>", make_region(el))
                     region_btn.grid(row=row_counter, column=0, columnspan=2,
                                     padx=5, pady=5, sticky='ew')
+
+                    # The captured region, shown rather than announced. See
+                    # `schema.format_region` — PySide confirmed a capture with
+                    # a modal and Tk showed nothing at all once D-6 deleted
+                    # the hand-built label that used to carry it.
+                    if el.get("model_attr"):
+                        row_counter += 1
+                        region_var = tk.StringVar(value=sch.format_region(
+                            getattr(self.model, el["model_attr"], None)))
+                        tk.Label(container, textvariable=region_var,
+                                 bg=self.bg_main, fg=self.fg_accent).grid(
+                            row=row_counter, column=0, columnspan=2,
+                            padx=5, sticky='w')
+                        self._regions.append({"element": el, "var": region_var})
 
                 elif el_type == "plot":
                     # **D-6: the plot is schema-driven now.** Tk hand-built a
@@ -801,6 +816,11 @@ class DynamicView(tk.Frame):
                     var.set(current_val)
 
         self._sync_gates()
+        for entry in self._regions:
+            text = sch.format_region(
+                getattr(self.model, entry["element"]["model_attr"], None))
+            if entry["var"].get() != text:
+                entry["var"].set(text)
         for entry in self._plots:
             self._redraw_plot(entry)
         for entry in self._log_streams:

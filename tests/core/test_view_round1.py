@@ -8,9 +8,10 @@ from views.pyside.view import (
     ControllerLogWindow, PlotDialog, SelectionOverlay, DashboardWindow
 )
 from model.system_manager import SystemManager
+from model.base import SchemaCommands
 
 
-class DummyPySideModel:
+class DummyPySideModel(SchemaCommands):
     """Mock model providing a complete ui_schema for testing PySide component loading."""
     def __init__(self):
         self.step_size = "10"
@@ -122,7 +123,15 @@ def test_pyside_error_popup_manager_signal(qtbot):
 
 
 def test_pyside_redpercent_sync_and_probe_controls(qtbot):
-    """Test RedPercentDynamicView checkbox toggles and probe dropdown selection."""
+    """Sync toggles and the position-source dropdown, driven from the schema.
+
+    Re-authored in S10. It used to assert `view.sync_cbs` and
+    `view.probe_combo` — a hand-built QCheckBox row and QComboBox that
+    duplicated what the schema already declares, existed in this frontend
+    only, and were deleted with D-6. The behavior they guarded is unchanged;
+    it is reached through the rendered widgets now, so what this asserts is
+    the contract all three renderers share rather than one view's furniture.
+    """
     from model.redpercent_system import RedPercentSystem
     model = RedPercentSystem()
     mock_probe = MagicMock()
@@ -131,18 +140,31 @@ def test_pyside_redpercent_sync_and_probe_controls(qtbot):
     # getattr(..., False) default, incorrectly filtering this probe out of
     # get_available_probe_names() as "disabled".
     model.available_probes = {"Stepper Probe": mock_probe}
-    
+
     view = RedPercentDynamicView(model)
     qtbot.addWidget(view)
 
-    # Test sync checkboxes
-    assert 'X' in view.sync_cbs
-    view.sync_cbs['X'].setChecked(True)
-    view.sync_cbs['Z'].setChecked(True)
-    assert model.sync_dimensions == ['X', 'Z']
+    # One schema toggle per dimension, rendered as a command button.
+    toggles = {tb["attr"]: tb["widget"] for tb in view.toggle_buttons}
+    assert set(toggles) == {"sync_x", "sync_y", "sync_z"}
 
-    # Test probe selection dropdown
-    assert view.probe_combo.currentText() == "Stepper Probe"
+    toggles["sync_x"].click()
+    toggles["sync_z"].click()
+    assert model.sync_dimensions == ["X", "Z"]
+
+    # Clicking again removes the dimension. The toggle issues a command and
+    # never writes the attribute, so the model stays the list's only owner.
+    toggles["sync_x"].click()
+    assert model.sync_dimensions == ["Z"]
+
+    # The caption follows the model only on a poll, as it does in the app.
+    view._poll_model()
+    assert toggles["sync_z"].text() == "Sync Z: ON"
+    assert toggles["sync_x"].text() == "Sync X: OFF"
+
+    # Position source: the schema's dropdown, filled by its options_command.
+    combo = view.vars["selected_probe_name"]
+    assert combo.currentText() == "Stepper Probe"
     view.cleanup()
 
 
@@ -169,6 +191,49 @@ def test_pyside_dashboard_sidebar_dock_sync(qtbot):
     assert item.checkState() == Qt.Unchecked
 
     dash.close()
+
+
+def test_closing_a_view_does_not_close_the_models_poller(qtbot):
+    """D-1: a hide must leave the device able to work when it comes back.
+
+    `QtDynamicView.cleanup()` used to call `poller.stop_polling()` and
+    `poller.close()`. Closing a dock is a *hide*, and `ControllerPoller.close`
+    is terminal — `_closed` is never cleared — so hiding a device and showing
+    it again produced a model whose manual mode could never arm, silently,
+    for the rest of the session. Ending the device belongs to `teardown()`,
+    reached through the manager.
+    """
+    class FakePoller:
+        def __init__(self):
+            self.stopped = False
+            self.closed = False
+
+        def get_mapped_state(self):
+            return {}
+
+        def stop_polling(self):
+            self.stopped = True
+
+        def close(self):
+            self.closed = True
+
+    class ModelWithPoller(SchemaCommands):
+        def __init__(self):
+            self.poller = FakePoller()
+
+        @property
+        def ui_schema(self):
+            return {"sections": []}
+
+    model = ModelWithPoller()
+    view = QtDynamicView(model)
+    qtbot.addWidget(view)
+
+    view.cleanup()
+
+    assert not view.timer.isActive()
+    assert model.poller.stopped is False
+    assert model.poller.closed is False
 
 
 # ---------------------------------------------------------------------------

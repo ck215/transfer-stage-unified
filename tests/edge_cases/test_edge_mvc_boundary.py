@@ -81,21 +81,31 @@ def test_temperature_system_nan_ramp_rate():
         pytest.fail(f"TemperatureSystem send_settings crashed on nan ramp rate: {e}")
 
 def test_rotator_system_nan_inf():
+    """A non-finite target is refused, and never reaches the stage.
+
+    Re-authored in S10: `_move_abs_ui` and `_move_rel_pos_ui` were the
+    view-facing wrappers that S9/S10 replaced with `move_absolute` and
+    `move_relative_positive` reached through `execute_command`. Going through
+    that entry point is the point of the re-authoring rather than an
+    incidental rename — D-5 puts the strict parse *before* the command, so
+    "inf" is refused by name at the field and the command body never runs.
+    """
     rot = RotatorSystem()
     rot.smc = MagicMock()
     # Override async wrapper to run synchronously for the test
     rot._run_async = lambda func, *args: func(*args)
-    
+
+    assert rot.execute_command(
+        "move_absolute", inputs={"target_deg": "inf"}) is False
+    rot.smc.move_absolute_deg.assert_not_called()
+
+    assert rot.execute_command(
+        "move_relative_positive", inputs={"step_deg": "nan"}) is False
+    rot.smc.move_relative_deg.assert_not_called()
+
+    # The lenient path cannot leak one either: a non-finite value already
+    # sitting in the field coerces to this parameter's own default instead of
+    # being handed to the stage.
     rot.target_deg = "inf"
-    try:
-        rot._move_abs_ui()
-        rot.smc.move_absolute_deg.assert_not_called()
-    except Exception as e:
-        pytest.fail(f"RotatorSystem crashed on inf target: {e}")
-        
-    rot.step_deg = "nan"
-    try:
-        rot._move_rel_pos_ui()
-        rot.smc.move_relative_deg.assert_not_called()
-    except Exception as e:
-        pytest.fail(f"RotatorSystem crashed on nan step: {e}")
+    rot.move_absolute(confirmed=True)
+    rot.smc.move_absolute_deg.assert_called_once_with(0)

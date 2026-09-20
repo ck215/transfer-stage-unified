@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 # Add mvc-refactor/src to path
 
 from views.pyside.view import PlotDialog, ControllerLogWindow, RedPercentDynamicView, QtDynamicView, DashboardWindow
+from model.base import SchemaCommands
 
 def test_plot_dialog_invalid_args(qtbot):
     # Pass invalid parent
@@ -62,7 +63,7 @@ def test_multiple_spawn_same_parent(qtbot):
 
 
 def test_two_way_data_binding_pyside(qtbot):
-    class MockModel:
+    class MockModel(SchemaCommands):
         def __init__(self):
             self.step_size = "16"
             self.pos_x = "0"
@@ -112,96 +113,131 @@ def test_two_way_data_binding_pyside(qtbot):
     view.cleanup()
 
 
-def test_live_polling_loops(qtbot):
-    class PollingModel:
+def test_view_keeps_one_render_tick_and_no_device_loops(qtbot):
+    """Re-authored in S10. It used to assert `view.pos_timer` and
+    `view.status_timer`, two of the four device loops the *view* owned and
+    drove with `_safe_read_position` / `_safe_poll_status`. S5 moved every
+    such loop into the model (RC-4), which is what I-4.1 pins; the view keeps
+    a single render tick that copies model state onto widgets.
+
+    Asserting the absence matters as much as the presence: a renderer that
+    quietly re-grows its own device loop is the defect I-4.1 exists to catch,
+    and this says so at the widget level where the grep invariant cannot.
+    """
+    class PollingModel(SchemaCommands):
         def __init__(self):
             self.pos_count = 0
-            self.stat_count = 0
-            
+            self.readout = "idle"
+
         @property
         def ui_schema(self):
-            return {"sections": []}
-            
+            return {"sections": [{
+                "title": "Readout",
+                "elements": [
+                    {"type": "readonly", "text": "State:",
+                     "model_attr": "readout"},
+                ],
+            }]}
+
         def read_position(self):
             self.pos_count += 1
-            
-        def poll_status(self):
-            self.stat_count += 1
 
     model = PollingModel()
     view = QtDynamicView(model)
     qtbot.addWidget(view)
-    
-    assert hasattr(view, 'pos_timer') and view.pos_timer.isActive()
-    assert hasattr(view, 'status_timer') and view.status_timer.isActive()
-    
-    # Trigger timers
-    view._safe_read_position()
-    view._safe_poll_status()
-    
-    assert model.pos_count >= 1
-    assert model.stat_count >= 1
-    
+
+    assert view.timer.isActive()
+    for owned_by_the_model in ("pos_timer", "status_timer", "input_timer",
+                               "disable_timer"):
+        assert not hasattr(view, owned_by_the_model), (
+            f"{owned_by_the_model} is a device loop; it belongs to the model "
+            "(I-4.1)")
+
+    # The render tick reads the model and never drives it.
+    model.readout = "running"
+    view._poll_model()
+    assert view.vars["readout"].text() == "running"
+    assert model.pos_count == 0
+
     view.cleanup()
-    assert not view.pos_timer.isActive()
-    assert not view.status_timer.isActive()
+    assert not view.timer.isActive()
 
 
-def test_controller_log_window_lifecycle(qtbot):
-    class MockPoller:
+def test_controller_log_renders_as_a_log_stream(qtbot):
+    """Re-authored in S10. The controller log used to be a
+    `cmd_name == "open_controller_log"` branch opening a Toplevel/QDialog —
+    an element type the schema could not express, so only the two desktop
+    frontends had it and the Web client had none. It is a `log_stream`
+    composite now: the model buffers the lines, every renderer shows them.
+
+    The original test guarded reopening the detached window after
+    WA_DeleteOnClose. There is no window in this path to reopen; the
+    equivalent hazard is the inline view going stale, so this asserts the
+    render tick keeps following the model's buffer.
+    """
+    class LoggingModel(SchemaCommands):
         def __init__(self):
-            self.log_updater = None
-        def get_mapped_state(self):
-            return {}
-        def start_polling(self, *args, **kwargs): pass
-        def stop_polling(self): pass
-        def close(self): pass
+            self.lines = []
 
-    class ModelWithPoller:
-        def __init__(self):
-            self.poller = MockPoller()
         @property
         def ui_schema(self):
-            return {"sections": []}
+            return {"sections": [{
+                "title": "Controller",
+                "elements": [
+                    {"type": "log_stream", "text": "Controller Log:",
+                     "source_command": "controller_log", "role": "neutral"},
+                ],
+            }]}
 
-    model = ModelWithPoller()
+        def controller_log(self):
+            return list(self.lines)
+
+    model = LoggingModel()
     view = QtDynamicView(model)
     qtbot.addWidget(view)
-    
-    # Open log window
-    view._execute_command("open_controller_log")
-    assert view.log_window is not None
-    view.log_window.append_log("Test Log Entry")
-    assert "Test Log Entry" in view.log_window.text_edit.toPlainText()
-    
-    # Close log window
-    view.log_window.close()
-    
-    # Reopen log window (must not raise RuntimeError from WA_DeleteOnClose)
-    view._execute_command("open_controller_log")
-    assert view.log_window is not None
-    view.log_window.close()
+
+    assert len(view._log_streams) == 1
+    widget = view._log_streams[0]["widget"]
+    assert widget.isReadOnly()
+
+    model.lines.append("Test Log Entry")
+    view._poll_model()
+    assert "Test Log Entry" in widget.toPlainText()
+
+    model.lines.append("Second Entry")
+    view._poll_model()
+    assert "Second Entry" in widget.toPlainText()
+
+    # Only the last 40 lines are shown, and the oldest fall off rather than
+    # growing the widget without bound.
+    model.lines.extend(f"line {i}" for i in range(60))
+    view._poll_model()
+    assert "Test Log Entry" not in widget.toPlainText()
+    assert "line 59" in widget.toPlainText()
+
     view.cleanup()
 
 
 def test_redpercent_sync_dimensions(qtbot):
+    """Re-authored in S10: `view.sync_cbs` was a hand-built checkbox row that
+    duplicated the schema's own toggles and existed in this frontend only.
+    D-6 deleted it; the dimensions are driven through the rendered toggles.
+    """
     from model.redpercent_system import RedPercentSystem
     model = RedPercentSystem()
     view = RedPercentDynamicView(model)
     qtbot.addWidget(view)
-    
-    assert hasattr(view, 'sync_cbs')
-    assert 'X' in view.sync_cbs
-    assert 'Y' in view.sync_cbs
-    assert 'Z' in view.sync_cbs
-    
-    view.sync_cbs['X'].setChecked(True)
-    view.sync_cbs['Y'].setChecked(True)
-    assert model.sync_dimensions == ['X', 'Y']
-    
-    view.sync_cbs['X'].setChecked(False)
-    assert model.sync_dimensions == ['Y']
-    
+
+    toggles = {tb["attr"]: tb["widget"] for tb in view.toggle_buttons}
+    assert set(toggles) == {"sync_x", "sync_y", "sync_z"}
+
+    toggles["sync_x"].click()
+    toggles["sync_y"].click()
+    assert model.sync_dimensions == ["X", "Y"]
+
+    toggles["sync_x"].click()
+    assert model.sync_dimensions == ["Y"]
+
     view.cleanup()
 
 
@@ -245,18 +281,29 @@ def test_dashboard_dock_lifecycle(qtbot):
     dash.close()
 
 def test_red_percent_dock_close_stops_timers(qtbot):
-    """Regression test: closing a device dock (via the sidebar checkbox,
-    i.e. "disabling" it) must stop its QtDynamicView's QTimers immediately.
-    Previously only whole-app shutdown (DashboardWindow.closeEvent) called
-    widget.cleanup() -- closing a single dock left its 50ms _poll_model
-    timer running against a widget Qt had scheduled for deletion, raising
-    "Internal C++ object already deleted" once the timer next fired.
-    Red Percent surfaces this fastest since its readonly fields
-    (Current Red %, Red Change %) are updated by a live background thread."""
+    """Closing a device dock stops that view's render tick — and, since S6,
+    leaves the device itself alive.
+
+    The original hazard stands: only whole-app shutdown used to call
+    `widget.cleanup()`, so closing one dock left its 50 ms `_poll_model`
+    timer running against a widget Qt had scheduled for deletion, and the
+    next tick raised "Internal C++ object already deleted". Red Percent
+    surfaces it fastest because its readonly fields are written by a live
+    background thread.
+
+    Two things changed underneath it and both are asserted here. The view no
+    longer fabricates a model when the manager has none (RC-1 item 5), so the
+    device has to be registered rather than conjured by ticking a box; and
+    D-1 made closing a *hide*, so the model survives the dock.
+    """
     from model.system_manager import SystemManager
+    from model.redpercent_system import RedPercentSystem
     from PySide6.QtCore import Qt
 
     mgr = SystemManager()
+    model = RedPercentSystem()
+    mgr.register("Red Percent Window", model)
+
     dash = DashboardWindow(mgr)
     qtbot.addWidget(dash)
     dash.show()
@@ -278,7 +325,13 @@ def test_red_percent_dock_close_stops_timers(qtbot):
 
     assert not widget.timer.isActive()
 
+    # D-1: the dock is gone, the device is not. Its model is still the
+    # manager's, marked hidden, so re-ticking the box shows the same one.
+    assert mgr.get_model("Red Percent Window") is model
+    assert mgr.is_hidden("Red Percent Window")
+
     dash.close()
+
 
 def test_dashboard_dock_focus_loss(qtbot):
     from model.system_manager import SystemManager
@@ -310,7 +363,7 @@ def test_dashboard_dock_focus_loss(qtbot):
     dash.close()
 
 def test_negative_numeric_entry_not_blocked_by_validator(qtbot):
-    class MockModel:
+    class MockModel(SchemaCommands):
         def __init__(self):
             self.target_deg = "0"
             
@@ -339,7 +392,7 @@ def test_negative_numeric_entry_not_blocked_by_validator(qtbot):
     view.cleanup()
 
 def test_dropdown_binding_and_refresh(qtbot):
-    class MockModel:
+    class MockModel(SchemaCommands):
         def __init__(self):
             self.selected_port = "COM1"
             self.ports = ["COM1", "COM2"]
@@ -384,7 +437,18 @@ def test_dropdown_binding_and_refresh(qtbot):
 from unittest.mock import patch
 
 def test_command_execution_failures(qtbot):
-    class BadModel:
+    """A command that cannot run is reported, never silently dropped.
+
+    Re-authored in S10. The old version asserted that a command name with no
+    method behind it "should safely ignore without crashing" — the view
+    looked up `getattr(model, name, None)` and returned when it found
+    nothing, so a schema typo produced a button that did nothing at all, with
+    no message anywhere. `execute_command` raises for an unresolvable name
+    now and the renderer shows it, which is what makes
+    `tests/ui/test_schema_v2.py`'s conformance checks enforceable rather than
+    advisory.
+    """
+    class BadModel(SchemaCommands):
         @property
         def ui_schema(self):
             return {
@@ -403,11 +467,14 @@ def test_command_execution_failures(qtbot):
     model = BadModel()
     view = QtDynamicView(model)
     qtbot.addWidget(view)
-    
-    # Trigger missing command (should safely ignore without crashing)
-    view._execute_command("does_not_exist")
-    
-    # Trigger throwing command (should catch and show message box)
+
+    # A name nothing resolves to: reported, and it names the command.
+    with patch('PySide6.QtWidgets.QMessageBox.critical') as mock_critical:
+        view._execute_command("does_not_exist")
+        mock_critical.assert_called_once()
+        assert "does_not_exist" in mock_critical.call_args[0][2]
+
+    # A command that raises: caught and reported with the underlying message.
     with patch('PySide6.QtWidgets.QMessageBox.critical') as mock_critical:
         view._execute_command("throws_error")
         mock_critical.assert_called_once()
@@ -416,32 +483,58 @@ def test_command_execution_failures(qtbot):
 
 
 def test_numeric_field_validation(qtbot):
-    class NumericModel:
+    """The validator follows the schema's declared `value_type`.
+
+    Re-authored in S10. The old version set `x_dist = "0.0"` and commented
+    that it was "mock[ing] is_numeric checking in view" — it was exercising
+    the inference RC-6 item 2 deleted, where the renderer called `float()` on
+    a field's *current contents* and treated the exception as "this is text".
+    A cleared box was reclassified and silently lost its validator for the
+    rest of the session. The type is declared now, so an empty field is still
+    a numeric field.
+    """
+    from model.params import Param
+    from model import schema as sch
+    from PySide6.QtGui import QDoubleValidator
+
+    class NumericModel(SchemaCommands):
+        PARAMS = {
+            "x_dist": Param("x_dist", "float", 0.0, minimum=-50, maximum=50),
+            "label": Param("label", "text", ""),
+        }
+
         def __init__(self):
-            self.x_dist = "0"
-            
+            self.x_dist = 0.0
+            self.label = ""
+
         @property
         def ui_schema(self):
-            return {
-                "sections": [{
-                    "title": "Numbers",
-                    "elements": [
-                        {"type": "entry", "text": "X:", "model_attr": "x_dist"}
-                    ]
-                }]
-            }
-            
+            return sch.schema(sch.section(
+                "Numbers",
+                sch.entry("X:", "x_dist", self.PARAMS["x_dist"]),
+                sch.entry("Label:", "label", self.PARAMS["label"]),
+            ))
+
     model = NumericModel()
-    # Mock is_numeric checking in view to treat x_dist as numeric
-    model.x_dist = "0.0" 
-    
     view = QtDynamicView(model)
     qtbot.addWidget(view)
-    
-    entry = view.vars["x_dist"]
-    # It should have a QDoubleValidator attached
-    from PySide6.QtGui import QDoubleValidator
-    assert isinstance(entry.validator(), QDoubleValidator)
+
+    validator = view.vars["x_dist"].validator()
+    assert isinstance(validator, QDoubleValidator)
+    assert validator.bottom() == -50
+    assert validator.top() == 50
+
+    # A text field declares itself text and gets no numeric validator.
+    assert view.vars["label"].validator() is None
+
+    # Clearing the numeric field does not reclassify it: this is the exact
+    # state the old float()-the-contents inference got wrong.
+    view.vars["x_dist"].setText("")
+    view._poll_model()
+    assert isinstance(view.vars["x_dist"].validator(), QDoubleValidator)
+
+    view.cleanup()
+
 
 def test_error_popup_manager_signal_routing(qtbot):
     from views.pyside.view import QtErrorPopupManager
@@ -462,86 +555,101 @@ def test_error_popup_manager_signal_routing(qtbot):
         assert "Test Message" in args[2]
 
 def test_selection_overlay_mouse_drag(qtbot):
-    from views.pyside.view import SelectionOverlay
-    from PySide6.QtGui import QMouseEvent, QScreen
-    from PySide6.QtCore import Qt, QPoint, QPointF
-    
-    class MockModel:
-        def __init__(self):
-            self.focus_area = None
-            
-    model = MockModel()
-    overlay = SelectionOverlay(model)
-    qtbot.addWidget(overlay)
-    
-    # Simulate a drag
-    # Mouse Press
-    press_event = QMouseEvent(
-        QMouseEvent.Type.MouseButtonPress,
-        QPointF(100, 100), QPointF(100, 100),
-        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
-    )
-    overlay.mousePressEvent(press_event)
-    assert overlay.start_pos_global.x() == 100
-    
-    # Mouse Move
-    move_event = QMouseEvent(
-        QMouseEvent.Type.MouseMove,
-        QPointF(250, 300), QPointF(250, 300),
-        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
-    )
-    overlay.mouseMoveEvent(move_event)
-    
-    # Mouse Release
-    release_event = QMouseEvent(
-        QMouseEvent.Type.MouseButtonRelease,
-        QPointF(250, 300), QPointF(250, 300),
-        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
-    )
-    overlay.mouseReleaseEvent(release_event)
-    
-    assert model.focus_area is not None
-    assert model.focus_area['left'] == 100
-    assert model.focus_area['top'] == 100
-    assert model.focus_area['width'] == 150
-    assert model.focus_area['height'] == 200
+    """A drag reports its rectangle to the composite; it never writes it.
 
-def test_dynamic_view_inactivity_timer_expiration(qtbot):
+    Re-authored in S10. The overlay used to be handed the model, assign
+    `model.focus_area` itself and pop a modal confirming the drag — so the
+    declared `set_focus_area` command never ran in this renderer, and the
+    modal blocked the suite. It reports to a callback now, the way the
+    `region_select` composite expects.
+    """
+    from views.pyside.view import SelectionOverlay
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import Qt, QPointF
+
+    captured = []
+    overlay = SelectionOverlay(lambda x, y, w, h: captured.append((x, y, w, h)))
+    qtbot.addWidget(overlay)
+
+    def drag(overlay, points):
+        types = (QMouseEvent.Type.MouseButtonPress,
+                 QMouseEvent.Type.MouseMove,
+                 QMouseEvent.Type.MouseButtonRelease)
+        handlers = (overlay.mousePressEvent, overlay.mouseMoveEvent,
+                    overlay.mouseReleaseEvent)
+        for kind, handler, (x, y) in zip(types, handlers, points):
+            handler(QMouseEvent(
+                kind, QPointF(x, y), QPointF(x, y),
+                Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier))
+
+    drag(overlay, [(100, 100), (250, 300), (250, 300)])
+
+    assert overlay.start_pos_global.x() == 100
+    assert captured == [(100, 100, 150, 200)]
+
+    # A stray click is not a region, and nothing is reported for one.
+    captured.clear()
+    overlay2 = SelectionOverlay(lambda x, y, w, h: captured.append((x, y, w, h)))
+    qtbot.addWidget(overlay2)
+    drag(overlay2, [(10, 10), (14, 14), (14, 14)])
+    assert captured == []
+
+
+def test_the_view_does_not_wire_itself_into_the_input_poller(qtbot):
+    """Re-authored in S10. It used to call
+    `model.poller.activity_callback()` — a callback the *view* installed by
+    calling `poller.start_polling(adapter, log_updater, activity_callback)`
+    from its own constructor. S5 moved that wiring into the model's input
+    service (RC-4): the view never starts, stops or subscribes to the poller,
+    so a hidden device keeps its input alive and two open views cannot fight
+    over one gamepad.
+
+    The idle-timeout behavior this used to reach is owned by the model and
+    tested there; what is view-side is the absence of the wiring.
+    """
     class MockPoller:
         def __init__(self):
+            self.started = False
             self.activity_callback = None
+
         def get_mapped_state(self):
             return {}
-        def start_polling(self, adapter, log_updater, activity_callback):
-            self.activity_callback = activity_callback
-        def stop_polling(self): pass
-        def close(self): pass
-        
-    class MockModelWithPoller:
+
+        def start_polling(self, *args, **kwargs):
+            self.started = True
+
+        def stop_polling(self):
+            pass
+
+        def close(self):
+            pass
+
+    class MockModelWithPoller(SchemaCommands):
         def __init__(self):
             self.poller = MockPoller()
-            self.system_enabled = True
-            self.disable_called = False
-            self.is_stepping = False
-            self.manual_flag = False
             self.touch_called = False
+
         @property
-        def ui_schema(self): return {"sections": []}
-        def disable(self):
-            self.disable_called = True
-            self.system_enabled = False
+        def ui_schema(self):
+            return {"sections": []}
+
         def touch_activity(self):
             self.touch_called = True
-            
+
     model = MockModelWithPoller()
     view = QtDynamicView(model)
     qtbot.addWidget(view)
-    
-    # Fake gamepad activity to start the timer (now routed to model.touch_activity)
-    model.poller.activity_callback()
-    
-    # Assert model was touched
-    assert model.touch_called is True
+
+    assert model.poller.started is False
+    assert model.poller.activity_callback is None
+
+    view._poll_model()
+    assert model.touch_called is False, (
+        "a render tick is not operator activity; treating it as such is what "
+        "kept the idle interlock from ever firing")
+
+    view.cleanup()
 
 
 def test_pyside_dashboard_full_stop_wiring(qtbot):

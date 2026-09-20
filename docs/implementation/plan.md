@@ -513,14 +513,22 @@ Tk's `focus_set()` flush is deleted.
 **Invariants.** I-7.1 (grep, from S0), I-7.2 (golden structure per
 renderer), I-7.3.
 
-**In progress (2026-09-20).** All five items written; `model/schema.py`,
-`model/params.py` and `model/devices.py` are new, and
-`tests/ui/test_schema_v2.py` checks every schema against its model (81
-checks, all six models). **Not finished:** the Qt pass is unverified and its
-two S10-owned `known_bad` entries are expected to XPASS and need
-re-authoring; the composites have no rendering test. **I-7.1 is 26 -> 8 but
-stays xfailed**; the remainder is `web_adapter`'s Red Percent linking block,
-which **S12 item 2** deletes. Do not bump the baseline to make it green.
+**Done (2026-09-20).** All five items. `model/schema.py`, `model/params.py`
+and `model/devices.py` are new; `tests/ui/test_schema_v2.py` checks every
+schema against its model (81 checks, all six models) and
+`tests/ui/test_composites.py` renders each composite in both desktop
+renderers.
+
+**I-7.2 was built during the close, having had no harness at all** — the
+heading in `test_schema_v2.py` that claimed it was over the writability
+checks, which are I-7.3. It now lives with the other structural invariants
+and asserts that every type in `schema.ELEMENT_TYPES` is handled by all three
+renderer switches, and that no renderer branches on a type the schema cannot
+emit. It holds.
+
+**I-7.1 is 26 -> 8 and stays xfailed**; the remainder is `web_adapter`'s Red
+Percent linking block, which **S12 item 2** deletes. Do not bump the baseline
+to make it green.
 
 ---
 

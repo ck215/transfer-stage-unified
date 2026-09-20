@@ -184,6 +184,45 @@ def is_enabled(element, mode_name):
     return True
 
 
+def current_text(model, element):
+    """The element's current value as display text — **absent stays absent**.
+
+    `str(getattr(model, attr))` turns an unset `None` into the four-character
+    string `"None"`, and the two desktop dropdown renderers then prepended
+    that to their option list as a selectable entry. An operator saw a probe
+    named "None" selected, and choosing it called `set_stepper_model("None")`,
+    which matches nothing and returns silently. The Web client was the only
+    one to get this right, with an empty placeholder — so the three renderers
+    disagreed about what "nothing is selected" looks like, which is the RC-7
+    shape schema v2 exists to remove.
+
+    Returning "" for an absent value lets every renderer's existing
+    `if current_val` guard do the right thing without repeating this rule.
+    """
+    raw = getattr(model, element.get("model_attr"), None)
+    return "" if raw is None else str(raw)
+
+
+def format_region(value):
+    """A captured region as the operator reads it. One wording, three views.
+
+    `region_select` has always declared `model_attr`, and no renderer showed
+    it. PySide confirmed a capture with a modal `QMessageBox` instead —
+    known-issues #9's fix for "the drag gave zero on-screen confirmation" —
+    and that modal, raised over an always-on-top frameless overlay, is
+    PYSIDE-12's deadlock and one of the two dialogs that hung the test suite.
+    A value the schema already carries does not need a dialog to announce it;
+    it needs a renderer that draws it.
+    """
+    if not value:
+        return "not set"
+    try:
+        return (f"{value['width']}x{value['height']} at "
+                f"({value['left']}, {value['top']})")
+    except (KeyError, TypeError):
+        return str(value)
+
+
 def elements(schema_dict):
     """Every element in the schema, flattened. Order preserved."""
     for section_dict in schema_dict.get("sections", []):

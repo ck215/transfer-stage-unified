@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox, QTextEdit, QCheckBox
 )
 from PySide6.QtCore import Qt, QTimer, QObject, Signal, QEvent
-from PySide6.QtGui import QPainter, QColor, QPen, QDoubleValidator
+from PySide6.QtGui import QPainter, QColor, QPen, QDoubleValidator, QTextCursor
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
@@ -136,10 +136,10 @@ class QtDynamicView(QWidget):
         # (enabled_when / disabled_when), plus composites refreshed on tick.
         self._gated = []
         self._log_streams = []
+        self._plots = []
+        self._regions = []
         self.log_window = None
-        
-        self.log_window = None
-        
+
         self._build_ui()
         
         # 1. UI Polling Timer (syncs UI fields from model)
@@ -264,7 +264,7 @@ class QtDynamicView(QWidget):
                     row_layout.addWidget(lbl)
 
                     options_func = getattr(self.model, options_cmd, None) if options_cmd else None
-                    current_val = str(getattr(self.model, attr, ""))
+                    current_val = sch.current_text(self.model, el)
                     options = list(options_func()) if callable(options_func) else []
                     if current_val and current_val not in options:
                         options = [current_val] + options
@@ -281,12 +281,17 @@ class QtDynamicView(QWidget):
                         def handler(text):
                             if not text:
                                 return
-                            func = getattr(self.model, c_name, None)
-                            if func and callable(func):
-                                try:
-                                    func(text)
-                                except Exception as e:
-                                    QMessageBox.critical(self, "Command Failed", f"Command {c_name} failed:\n{e}")
+                            # Through `execute_command`, as Tk does. Calling
+                            # the bound method directly skipped the D-5
+                            # validate-then-run ordering in this renderer
+                            # only, which is the divergence schema v2 exists
+                            # to end.
+                            try:
+                                self.model.execute_command(c_name, args=(text,))
+                            except Exception as e:
+                                QMessageBox.critical(
+                                    self, "Command Failed",
+                                    f"Command {c_name} failed:\n{e}")
                         return handler
 
                     combo.currentTextChanged.connect(make_dropdown_cmd(cmd_name))
@@ -340,18 +345,52 @@ class QtDynamicView(QWidget):
 
                     def make_region(element):
                         def handler():
-                            self.overlay = SelectionOverlay(self.model)
+                            # The overlay supplies the region; the *model*
+                            # supplies the command (S10 item 2), which is what
+                            # Tk already did. This arm still handed the
+                            # overlay the model and let it assign
+                            # `model.focus_area` itself, so the declared
+                            # `set_focus_area` command never ran in PySide —
+                            # one composite, two behaviours, which is the RC-7
+                            # shape the composites exist to remove.
+                            self.overlay = SelectionOverlay(
+                                lambda x, y, w, h: self._run_element(
+                                    element, args=(x, y, w, h)))
                             self.overlay.show()
                         return handler
 
                     btn.clicked.connect(make_region(el))
                     row_layout.addWidget(btn)
 
+                    # known-issues #9: the drag used to give no on-screen
+                    # confirmation of what it had captured, and the fix for
+                    # that was the modal this arm just stopped raising. The
+                    # composite already declares `model_attr`; showing it is
+                    # the answer that does not block, and that the other two
+                    # renderers can give as well.
+                    if el.get("model_attr"):
+                        region_label = QLabel(
+                            sch.format_region(
+                                getattr(self.model, el["model_attr"], None)))
+                        row_layout.addWidget(region_label)
+                        self._regions.append(
+                            {"element": el, "widget": region_label})
+
                 elif el_type == "plot":
-                    # **D-6.** The plot is a schema composite now; PySide's
-                    # bolt-on duplicate of Tk's hand-built plotting is gone.
-                    btn = QPushButton(label_text)
-                    btn.setProperty("role", el.get("role", "neutral"))
+                    # **D-6.** `plot` is "a live series the model supplies
+                    # through `data_command`" — which Tk draws on a canvas and
+                    # the Web client draws on a <canvas>, while this arm
+                    # rendered a button that opened a dialog for loading a CSV
+                    # off disk and never read `data_command` at all. One
+                    # composite, two meanings: the RC-7 shape again. The
+                    # series is drawn inline here now, like the other two.
+                    #
+                    # Reviewing a *past* run from a CSV is a different
+                    # feature, it is PySide-only, and it is kept as its own
+                    # button rather than being conflated with the live plot.
+                    series_widget = SeriesPlot()
+                    row_layout.addWidget(series_widget)
+                    self._plots.append({"element": el, "widget": series_widget})
 
                     def make_plot(element):
                         def handler():
@@ -361,8 +400,10 @@ class QtDynamicView(QWidget):
                             self.plot_dialog.show()
                         return handler
 
-                    btn.clicked.connect(make_plot(el))
-                    row_layout.addWidget(btn)
+                    csv_btn = QPushButton("Load CSV…")
+                    csv_btn.setToolTip("Plot a saved run from a CSV file")
+                    csv_btn.clicked.connect(make_plot(el))
+                    row_layout.addWidget(csv_btn)
 
                 elif el_type == "log_stream":
                     view = QTextEdit()
@@ -450,6 +491,17 @@ class QtDynamicView(QWidget):
         for gate in self._gated:
             gate["widget"].setEnabled(sch.is_enabled(gate["element"], mode))
 
+    def _redraw_plot(self, entry):
+        """Hand the widget the model's current series. Same source as Tk."""
+        source = getattr(self.model, entry["element"].get("data_command"), None)
+        if not callable(source):
+            return
+        try:
+            series = source() or {}
+        except Exception:
+            return
+        entry["widget"].set_series(list(series.get("y", [])))
+
     def _refresh_log(self, entry):
         source = getattr(self.model, entry["element"].get("source_command"), None)
         if not callable(source):
@@ -462,7 +514,12 @@ class QtDynamicView(QWidget):
         widget = entry["widget"]
         if widget.toPlainText() != text:
             widget.setPlainText(text)
-            widget.moveCursor(widget.textCursor().End)
+            # `QTextCursor.MoveOperation.End`, not `cursor.End`: the latter is
+            # not an instance attribute in PySide6, so this line raised
+            # AttributeError on the first refresh that had anything to show —
+            # out of `_poll_model`, which is a timer slot, so it also skipped
+            # every widget after it in the same tick.
+            widget.moveCursor(QTextCursor.MoveOperation.End)
 
     def _display(self, attr):
         """Render at the parameter's declared precision, not `str()`'s repr."""
@@ -479,6 +536,15 @@ class QtDynamicView(QWidget):
         # reads the model's cached fields, which its own sampler fills.
 
         self._sync_gates()
+        for entry in self._regions:
+            text = sch.format_region(
+                getattr(self.model, entry["element"]["model_attr"], None))
+            if entry["widget"].text() != text:
+                entry["widget"].setText(text)
+
+        for entry in self._plots:
+            self._redraw_plot(entry)
+
         for entry in self._log_streams:
             self._refresh_log(entry)
 
@@ -513,28 +579,97 @@ class QtDynamicView(QWidget):
                 widget.setProperty("toggle_state", val)
 
     def cleanup(self):
-        """Stop all timers and release poller/hardware references."""
-        if hasattr(self, 'timer') and self.timer:
+        """Stop what this widget owns: its render tick and its own windows.
+
+        **It used to close the model's gamepad poller**, and since D-1 made
+        closing a dock a *hide*, that quietly ended the device's controller
+        for the rest of the session — `ControllerPoller.close()` is terminal,
+        `_closed` is never cleared and `start_polling` does not reset it, so
+        re-showing the device brought back a model whose manual mode could
+        never arm again. The model persisting through a hide is the whole
+        content of D-1, and a poller is part of the model.
+
+        Ending the device is `teardown()`'s job, reached through the manager
+        (`release`, `shutdown_all`), which already stops and closes the poller
+        in the right order relative to `power_down`. This was the second copy
+        of that policy, in a place that had no business running it.
+
+        The `pos_timer` / `status_timer` / `input_timer` / `disable_timer`
+        branches went with it: those loops moved into the model in S5 and the
+        attributes have not existed since, so the guards were dead code
+        implying the view still had loops to stop.
+        """
+        if self.timer:
             self.timer.stop()
-        if hasattr(self, 'pos_timer') and self.pos_timer:
-            self.pos_timer.stop()
-        if hasattr(self, 'status_timer') and self.status_timer:
-            self.status_timer.stop()
-        if hasattr(self, 'input_timer') and self.input_timer:
-            self.input_timer.stop()
-        if hasattr(self, 'disable_timer') and self.disable_timer:
-            self.disable_timer.stop()
-        if hasattr(self, 'log_window') and self.log_window:
+        if self.log_window:
             self.log_window.close()
-        if hasattr(self.model, 'poller') and self.model.poller:
-            self.model.poller.stop_polling()
-            self.model.poller.close()
+
+
+class SeriesPlot(QWidget):
+    """The `plot` composite's inline drawing surface.
+
+    Deliberately a polyline over `QPainter` rather than an embedded
+    matplotlib canvas: this is the live readout that ticks at the render
+    rate, and Tk draws the same thing on a `tk.Canvas`. Reviewing a saved run
+    is `PlotDialog`'s job, where matplotlib's axes and toolbar earn their
+    cost.
+    """
+
+    _MARGIN_PX = 5
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(160)
+        self.setMinimumWidth(360)
+        self._ys = []
+
+    def set_series(self, ys):
+        if ys != self._ys:
+            self._ys = list(ys)
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#111111"))
+        if len(self._ys) < 2:
+            return
+
+        width = self.width()
+        height = self.height()
+        low, high = min(self._ys), max(self._ys)
+        span = (high - low) or 1.0
+        step = width / max(len(self._ys) - 1, 1)
+        usable = height - 2 * self._MARGIN_PX
+
+        pen = QPen(QColor("red"))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        previous = None
+        for i, y in enumerate(self._ys):
+            point = (i * step,
+                     height - ((y - low) / span) * usable - self._MARGIN_PX)
+            if previous is not None:
+                painter.drawLine(int(previous[0]), int(previous[1]),
+                                 int(point[0]), int(point[1]))
+            previous = point
 
 
 class SelectionOverlay(QWidget):
-    def __init__(self, model):
+    """A full-screen drag to pick a rectangle. It reports; it does not write.
+
+    It used to hold the model and assign `model.focus_area` on release, then
+    pop an informational modal confirming what the operator had just drawn
+    with their own mouse. Both are gone: the region goes to `on_region`,
+    which the `region_select` composite wires to the model's declared
+    command.
+    """
+
+    #: A drag smaller than this in either axis is a stray click, not a region.
+    MIN_SIDE_PX = 10
+
+    def __init__(self, on_region):
         super().__init__()
-        self.model = model
+        self.on_region = on_region
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background-color: rgba(0, 0, 0, 100);")
@@ -568,11 +703,8 @@ class SelectionOverlay(QWidget):
             y1, y2 = sorted([self.start_pos_global.y(), self.end_pos_global.y()])
             w = x2 - x1
             h = y2 - y1
-            if w > 10 and h > 10:
-                self.model.focus_area = {'top': int(y1), 'left': int(x1), 'width': int(w), 'height': int(h)}
-                print(f"Captured Focus Area: {self.model.focus_area}")
-                QMessageBox.information(None, "Focus Area Set",
-                                         f"Focus area set: {w}x{h} at ({x1}, {y1})")
+            if w > self.MIN_SIDE_PX and h > self.MIN_SIDE_PX:
+                self.on_region(int(x1), int(y1), int(w), int(h))
         self.close()
 
     def keyPressEvent(self, event):

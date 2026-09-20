@@ -137,6 +137,7 @@ _FILE_MARKERS = {
     "hardware/test_serial.py": ["transport"],
     "scripting/test_edge_mvc_parser.py": ["scripting"],
     "scripting/test_edge_mvc_scripting.py": ["scripting"],
+    "ui/test_composites.py": ["schema"],
     "ui/test_edge_mvc_ui.py": ["schema", "qt"],
     "ui/test_schema_v2.py": ["schema"],
     "ui/test_ui_schema.py": ["schema"],
@@ -170,19 +171,17 @@ _SLOW_FILES = {
 # quarantine that goes stale silently is how suites rot.
 #
 #   nodeid suffix -> (reason, owning stage)
-_KNOWN_BAD = {
-    # Stale: asserts a system that was deliberately deleted.
-    "core/test_view_round1.py::test_pyside_redpercent_sync_and_probe_controls":
-        ("asserts view.sync_cbs, the duplicate hand-built QCheckBox row "
-         "deleted in 046533f as known-issues #5. The test guards the "
-         "redundancy, not the behavior. Re-author against the schema "
-         "toggles.", "S10"),
-    # Real product bugs. These SHOULD fail; the stage fixes the product.
-    "core/test_view_round1.py::test_pyside_dashboard_sidebar_dock_sync":
-        ("real bug PYSIDE-7: a dropdown with model_attr and no command "
-         "reaches getattr(self.model, None) and raises TypeError "
-         "(pyside/view.py:315). Schema v2 makes command required.", "S10"),
-}
+# **Both S10 entries left this list in S10 and the quarantine is now empty.**
+# `test_pyside_redpercent_sync_and_probe_controls` was re-authored against
+# the schema toggles that replaced the hand-built checkbox row (D-6), and
+# `test_pyside_dashboard_sidebar_dock_sync` XPASSed the moment schema v2
+# made PYSIDE-7 inexpressible — `sch.dropdown()` refuses to build a dropdown
+# with no command, so `getattr(self.model, None)` can no longer be reached.
+# The five gamepad/mode entries retired in S7.
+#
+# An empty quarantine is the goal, not an invitation: add an entry rather
+# than skip or delete a failing test, and give it an owning stage.
+_KNOWN_BAD = {}
 
 
 # Order-dependent tests: they PASS in isolation and FAIL in composition, so

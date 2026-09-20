@@ -22,7 +22,7 @@ the end.
 | Fast gate (default working loop) | `pytest tests/ -m "not slow and not order_dependent and not qt"` | ~30 s |
 | One concern (e.g. S3) | `pytest tests/ -m "transport and not slow and not order_dependent"` | ~3 s |
 | Full sweep, main pass | `pytest tests/ -m "not order_dependent and not qt"` | ~2.5 min |
-| Full sweep, Qt pass | `pytest tests/ -m "qt and not order_dependent"` | ~2 s |
+| Full sweep, Qt pass | `pytest tests/ -m "qt and not order_dependent"` | ~5 s |
 | Full sweep, isolation pass | each `order_dependent` test, one at a time | ~5 s |
 
 Run the fast gate constantly. Run the full sweep at stage boundaries and
@@ -68,9 +68,16 @@ the stage lands and the test starts passing, pytest reports XPASS **as a
 failure**, which forces someone to re-author the test and update the ledger.
 A quarantine that goes stale silently is how suites rot.
 
-**Seven tests**, all of one kind now: **stale tests asserting behavior that
-was deliberately removed.** Re-author them when their stage lands; the
-product is right and the test is wrong.
+**The quarantine is empty as of S10**, and keeping it that way is the point
+of the policy rather than a milestone. The five gamepad/mode entries retired
+in S7; the two S10 entries retired in S10 — one XPASSed the moment schema v2
+made PYSIDE-7 inexpressible, the other had to be re-authored against the
+schema toggles that replaced the control it asserted. The history below is
+kept because the *reasons* entries left the list are the useful part.
+
+The seven were all of one kind: **stale tests asserting behavior that was
+deliberately removed.** Re-author them when their stage lands; the product is
+right and the test is wrong.
 
 - Five assert `manual_flag` becomes True after `enter_manual()` with no
   gamepad bound. Commit `046533f` made that refuse — that fix is *why* manual
@@ -131,12 +138,33 @@ the assertion.
 
 ### Qt is isolated, not disabled
 
-`tests/ui/` stays excluded via `addopts` (a native SIGABRT the existing
-chflags self-heal does not fully prevent). Separately, every test using
-`qapp`/`qtbot` is auto-marked `qt` by fixture — exactly, not by filename —
-so the main sweep can run `-m "not qt"` and survive a Qt abort with its
-results intact. The Qt pass is 7 tests and about 3 seconds; if it aborts,
-rerun just that pass.
+Every test using `qapp`/`qtbot` is auto-marked `qt` by fixture — exactly,
+not by filename — so the main sweep can run `-m "not qt"` and survive a Qt
+abort with its results intact. If the Qt pass aborts, rerun just that pass.
+
+**`tests/ui/` is no longer excluded.** It was, from S0 to S10, on the stated
+grounds of "a native SIGABRT (qt_check_pointer inside QApplication()) that
+the chflags self-heal does not fully prevent". That was wrong. The directory
+**hung** — on a modal `QMessageBox` opened in a view's command-failure path,
+with nobody to click it — and each attempt to run it was killed and filed as
+an abort, because a killed pytest prints no summary and leaves only its
+buffered dots behind. The whole directory now runs in about 4 seconds.
+
+The cost of that mistake is worth stating plainly, because it is the reason
+rule 6 exists: `tests/ui/test_schema_v2.py`, the 81-check conformance suite
+written in S10 as schema v2's safety net, lived in the excluded directory and
+had **never run in any documented gate**.
+
+### A hang is not a result
+
+`faulthandler_timeout = 60` in `pytest.ini`. Any test that stops making
+progress for a minute dumps every thread's stack and fails the run. The
+slowest test in the suite is about 5 s, so this cannot fire on slowness.
+
+Three consecutive sessions failed to get a result out of the Qt pass and
+recorded the killed runs as an unknown, then as an abort. A killed pytest
+prints no summary line — **if you have no summary line, you have no
+result**, whatever the exit code says.
 
 ## Per-stage gates
 
@@ -185,14 +213,21 @@ entry it owns to be removed rather than left XPASSing.
    node IDs, do not reconcile totals by arithmetic.
 5. **New tests carry a concern marker**, or they will not run in any
    targeted gate.
-6. **A test whose *outcome* is order-dependent belongs in
+6. **Never exclude a directory or file from collection.** A marker excludes
+   a test from *this* run and the sweep picks it up later; `--ignore` and
+   `--deselect` exclude it from every run, and nothing reports what is
+   missing. `tests/ui/` sat outside the suite from S0 to S10 on a
+   misdiagnosis, taking S10's own 81-check conformance suite with it. If
+   something genuinely cannot run, quarantine it per rule 1 so it has an
+   owning stage and a name.
+7. **A test whose *outcome* is order-dependent belongs in
    `order_dependent`, never in `known_bad`.** Strict `xfail` reports such a
    test as XPASS-as-failure when run alone and as a clean xfail when run in
    composition — so the marker asserts "known broken" about something that is
    only conditionally broken, and the composed sweep stays silent. Three
    `run_script` tests sat like that until S8. If a `known_bad` entry passes
    when you run its file alone, it is in the wrong list.
-7. **Run the isolation pass at every stage boundary, not just the final
+8. **Run the isolation pass at every stage boundary, not just the final
    one.** `order_dependent` tests are excluded from the fast gate, every
    concern gate *and* the main sweep, so nothing routine touches them. In S5
    this was found the hard way: `test_dashboard_window_teardown_ordering`
@@ -257,3 +292,23 @@ predicted to dissolve during S3/S8/S11; it fell from 10 to 3 at S8 — but for
 a reason none of the predictions named (a mock-parser import-order problem).
 Treat the remaining three the same way: **read the actual assertion values
 before believing any architectural explanation for them.***
+
+*After S10 (2026-09-20), **all four passes verified in one session** for the
+first time since S0. Fast gate **491 passed, 1 xfailed** (~59 s); main sweep
+**548 passed, 1 xfailed** (~3 min 17 s); Qt pass **35 passed** (~6 s);
+`order_dependent` pass **2 passed** (~2 s). The single xfail is I-7.1, owned
+by S12.*
+
+*Three numbers here correct earlier entries. The Qt pass had not completed
+since S0 — it hung rather than aborting, and `--ignore=tests/ui` had hidden
+103 tests including the schema-v2 conformance suite; both are fixed, which is
+most of the 390 → 491 fast-gate jump. The `order_dependent` set is **2**, not
+the 3 the note above records: S8 left 3, S6's `ttk.Notebook` fix retired one
+more. And the quarantine is genuinely empty — `_KNOWN_BAD = {}` in
+`conftest.py`, no entries, so nothing is being held green by an xfail.*
+
+*The standing warning still applies to the remaining two. Both are
+wall-clock assertions and both were predicted to dissolve at S11. **Read
+their actual assertion values before believing that.** A timing threshold
+that misses under GIL contention is not obviously an `ErrorRouter` problem,
+and this prediction has now been wrong three times.*

@@ -134,7 +134,13 @@ def test_an_interactive_dropdown_always_has_a_command(model):
                 "PySide would reach getattr(model, None)")
 
 
-# -- I-7.2: writability is declared, and defaults closed -------------------
+# -- I-7.3: writability is declared, and defaults closed -------------------
+#
+# This block was headed `I-7.2` until S10's close. I-7.2 is the cross-renderer
+# structure invariant ("the same schema renders the same set of controls in
+# Tk, PySide and Web"); writability is I-7.3, which is what these actually
+# check. The mislabel mattered: it made I-7.2 read as covered, and it had no
+# harness at all until `tests/architecture/test_invariants.py` grew one.
 
 def test_readonly_and_toggle_elements_are_never_writable(model):
     """I-3.4 expressed in the schema.

@@ -420,3 +420,91 @@ def test_no_module_level_poller_refcount():
     to hold a poller object right now"."""
     hits = _scan(r"_active_poller_count", SRC)
     assert not hits, _report("RC-13 (bind-counting refcount)", hits)
+
+
+# ---------------------------------------------------------------------------
+# I-7.2 — The same schema renders in all three views.  S10 (RC-7).
+#
+# Stated in root-causes.md as "the same schema renders the same set of
+# controls in Tk, PySide, and Web, checked by a golden-structure test per
+# renderer", and named as an S10 exit invariant in plan.md. **It had no
+# harness.** `tests/ui/test_schema_v2.py` carried an `I-7.2` heading over its
+# writability checks, which are I-7.3 — so the invariant read as covered
+# while the thing it actually asserts was never tested.
+#
+# What that cost, concretely: two element types were declared in
+# `schema.ELEMENT_TYPES`, resolved by the conformance test, rendered by two
+# renderers, and quietly meant something else in the third. PySide's
+# `region_select` wrote `model.focus_area` itself instead of running the
+# declared command, and its `plot` opened a CSV file dialog without ever
+# reading `data_command`. Both were found by hand.
+#
+# Behavioural parity per composite is `tests/ui/test_composites.py`. This is
+# the cheaper half: every declared type is handled by every renderer, so a
+# type added to the schema cannot be rendered by two views and silently
+# fall through in the third.
+# ---------------------------------------------------------------------------
+
+WEB_RENDERER = SRC / "views/web/static/js/app.js"
+
+
+def _types_handled_by(path, pattern):
+    return set(re.findall(pattern, path.read_text()))
+
+
+def _python_renderer_types(relpath):
+    """Element types the renderer's `el_type` switch names."""
+    source = (SRC / relpath).read_text()
+    # `el_type == "x"` and `el_type in ["x", "y"]` both count as handling.
+    handled = set(re.findall(r'el_type\s*==\s*["\'](\w+)["\']', source))
+    for group in re.findall(r'el_type\s+in\s*[\[\(]([^\]\)]+)[\]\)]', source):
+        handled.update(re.findall(r'["\'](\w+)["\']', group))
+    return handled
+
+
+RENDERERS = {
+    "pyside": lambda: _python_renderer_types("views/pyside/view.py"),
+    "tkinter": lambda: _python_renderer_types("views/tkinter/view.py"),
+    "web": lambda: _types_handled_by(
+        WEB_RENDERER, r"el\.type\s*===\s*['\"](\w+)['\"]"),
+}
+
+
+def test_i_7_2_harness_is_not_vacuous():
+    """Each scan must find a renderer switch before its silence means
+    anything — the same trap `test_harness_is_not_vacuous` exists for."""
+    from model import schema as sch
+
+    assert sch.ELEMENT_TYPES, "schema declares no element types"
+    for name, scan in RENDERERS.items():
+        assert scan(), f"found no element-type switch in the {name} renderer"
+
+
+def test_i_7_2_every_renderer_handles_every_declared_element_type():
+    from model import schema as sch
+
+    missing = {}
+    for name, scan in RENDERERS.items():
+        gap = set(sch.ELEMENT_TYPES) - scan()
+        if gap:
+            missing[name] = sorted(gap)
+    assert not missing, (
+        "I-7.2: element types declared in schema.ELEMENT_TYPES that a "
+        f"renderer does not handle: {missing}. A type no renderer branch "
+        "names is a control that silently does not appear in that frontend."
+    )
+
+
+def test_i_7_2_no_renderer_invents_an_element_type():
+    """The other direction: a branch for a type the schema cannot emit is
+    dead code, which is what PYSIDE-11's `continue`-first `file_picker` arm
+    was for as long as anyone can date it."""
+    from model import schema as sch
+
+    invented = {}
+    for name, scan in RENDERERS.items():
+        extra = scan() - set(sch.ELEMENT_TYPES)
+        if extra:
+            invented[name] = sorted(extra)
+    assert not invented, (
+        f"I-7.2: renderer branches for undeclared element types: {invented}")

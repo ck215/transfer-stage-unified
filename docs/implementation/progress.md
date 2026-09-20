@@ -57,7 +57,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S7 | Probe mode state machine (RC-3) | done | `8fc9f00` | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
 | S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
 | S9 | Typed parameters (RC-6) | done | `79d2d97` | 2026-09-20 | All 4 items. `Param` table + D-5 `apply_inputs`. Landed with S10. |
-| S10 | Schema v2, three renderers (RC-7) | in progress | `79d2d97` | 2026-09-20 | **Items 1-5 written, Qt pass UNVERIFIED.** See session log for the exact remaining check. |
+| S10 | Schema v2, three renderers (RC-7) | done | | 2026-09-20 | All 5 items. Qt pass resolved (it hung, it did not abort). `tests/ui` un-excluded: +83 tests in the fast gate. I-7.2 built; known_bad now empty. |
 | S11 | Result channel and event bus (RC-8) | todo | | | |
 | S12 | Composition root, registry events | todo | | | |
 | S13 | MonitoringRun (RC-11) | todo | | | |
@@ -1302,34 +1302,189 @@ S12 lands.
 
 Verified: fast gate **398 passed, 1 xfailed** (the xfail is I-7.1).
 
+### 2026-09-20 — S10 closed: the Qt pass was a hang, and a whole test directory was never running
+
+**The unknown from the last entry is resolved, and it was neither of the two
+readings offered.** Not the documented exit-134 SIGABRT, and not broken
+collection: `pytest tests/ -m "qt"` **hung**, indefinitely, on the third of
+nine tests. The 24 bytes recorded last time are `..` — the two tests before
+it — and the exit 0 came from the *kill*, not from pytest. A killed pytest
+prints no summary line, so three sessions in a row read a timeout as a
+result.
+
+`test_pyside_event_callbacks_and_two_way_binding` calls
+`view._execute_command("run_cmd")`. Its `DummyPySideModel` predates S9 item 3
+and has no `execute_command`, so `_run_element` raised `AttributeError`,
+landed in its own `except`, and opened a **modal** `QMessageBox.critical`
+with nobody to click it. The renderer rewrite did not break the test; the
+test double was never updated to the contract all three renderers now
+require.
+
+Nine test doubles across two files now mix in `SchemaCommands`, which is what
+the real models do.
+
+#### The directory nobody was running
+
+`tests/pytest.ini` carried `--ignore=tests/ui`, added at S0 on the grounds
+that including it "triggers a native SIGABRT (qt_check_pointer inside
+QApplication())". **It does not, and the evidence says it never did.** The
+directory hangs — same modal, same cause — and each attempt to run it was
+killed and filed as an abort. With the doubles fixed it runs in **4 seconds,
+103 tests, no abort**, and the exclusion is gone.
+
+This matters more than the Qt pass did. `tests/ui/test_schema_v2.py` is the
+81-check conformance suite S10 wrote as schema v2's safety net, and the last
+entry described it as "the test the codebase most needed and did not have".
+It was in the ignored directory. **It had never run in any documented gate.**
+The fast gate goes 398 → 481 passing for that reason alone, at the same ~59 s.
+
+#### A hang now says so
+
+`faulthandler_timeout = 60` in `pytest.ini`. The slowest test in the suite is
+about 5 s, so 60 is far outside normal; any test that stops making progress
+now dumps every thread's stack and fails the run instead of sitting silently
+until somebody kills it. Three sessions were spent on the absence of that
+line.
+
+#### Six product defects, all in code that had never been executed
+
+The composites were flagged last time as "the least-proven code in this
+commit". That was accurate.
+
+* **`log_stream` raised on every refresh that had content.**
+  `widget.moveCursor(widget.textCursor().End)` — `End` is not an instance
+  attribute in PySide6. It threw `AttributeError` out of `_poll_model`, which
+  is a timer slot, so it also skipped every widget after it in the same tick.
+  The controller log, the composite's only user, would have been broken the
+  first time a line arrived.
+* **PySide's `region_select` never ran its declared command.** The overlay
+  was handed the model and assigned `model.focus_area` itself, so
+  `set_focus_area` was dead in this renderer while Tk called it. This is
+  **PYSIDE-12**, whose audit entry called the modal-behind-the-overlay
+  deadlock a *hypothesis* needing a run to confirm — it is confirmed: that
+  modal is one of the two that hung this suite.
+
+  **Deleting that modal would have removed a fix, so it did not just go.**
+  `known-issues.md` #9 records it as the 2026-09-18 fix for "the drag gave
+  zero on-screen confirmation of what was captured" — the overlay used to
+  only `print()`. The confirmation is real and the operator needs it; a
+  blocking dialog over an always-on-top frameless window was the wrong way
+  to give it. `region_select` has declared `model_attr` since S10 and **no
+  renderer drew it**: PySide announced the capture in a dialog, and Tk
+  showed nothing at all once D-6 deleted the hand-built "Focus Area:" label
+  that used to carry it (PYSIDE-8 lists that loss). Both renderers now show
+  the region beside the button, refreshed on the poll tick, worded by one
+  shared `schema.format_region` — `30x40 at (10, 20)`, or `not set`.
+* **PySide's `plot` ignored `data_command`.** It rendered a button that
+  opened a CSV file loader, while Tk drew the model's live series on a canvas
+  and the Web client drew it on a `<canvas>`. One composite, two meanings.
+  The series is drawn inline now (`SeriesPlot`, a `QPainter` polyline like
+  Tk's); loading a saved CSV is kept as its own button, since it is a
+  different feature and PySide is the only view that has it.
+* **An unset dropdown offered "None" as a choice.** Both desktop renderers
+  did `str(getattr(model, attr, ""))`, so a `selected_probe_name` of `None`
+  became the four-character string `"None"`, was prepended to the option list
+  as not-already-present, and came up selected. Choosing it called
+  `set_stepper_model("None")`, which matches no probe and returns silently.
+  The Web client was the only one that got this right, with an empty
+  placeholder. `schema.current_text` is now the single rule and both desktop
+  renderers ask it.
+* **PySide's dropdown bypassed the D-5 contract**, calling the bound method
+  directly where Tk goes through `execute_command`. Same declaration, two
+  orderings.
+* **Closing a PySide dock killed the device's gamepad, permanently.**
+  `QtDynamicView.cleanup()` called `poller.stop_polling()` then
+  `poller.close()`. Since D-1 made closing a dock a *hide*,
+  and `ControllerPoller.close()` is terminal — `_closed` is never cleared and
+  `start_polling` does not reset it — hiding a device and showing it again
+  produced a model whose manual mode could never arm, silently, for the rest
+  of the session. Ending a device is `teardown()`'s job, reached through the
+  manager, which already does it in the right order relative to
+  `power_down`. This was a second copy of the teardown policy in a place with
+  no business running it; the same method also carried `hasattr` guards for
+  four timers that S5 moved into the model, which is dead code implying the
+  view still had loops to stop.
+
+Every one of these was found by running code, not by reading it. Five of the
+six are in element types that a *conformance* test had already declared
+sound — it proved the names resolve, which cannot see a renderer that ignores
+the field it resolved.
+
+#### I-7.2 had no harness, and was wearing another invariant's name
+
+`plan.md` names I-7.2 as an S10 exit invariant: "the same schema renders the
+same set of controls in Tk, PySide and Web". `tests/ui/test_schema_v2.py`
+carried an `I-7.2` heading over its **writability** checks, which are I-7.3.
+So the invariant that would have caught `region_select` and `plot` read as
+covered while not existing.
+
+It exists now, in `tests/architecture/test_invariants.py`: every type in
+`schema.ELEMENT_TYPES` is handled by all three renderer switches, and no
+renderer branches on a type the schema cannot emit — which is the shape of
+PYSIDE-11's `continue`-first `file_picker` arm. It holds today (10 types,
+three renderers, no gaps either way) with a vacuity guard in front of it, so
+it is a regression guard rather than a discovery. Behavioural parity per
+composite is `tests/ui/test_composites.py`.
+
+#### Tests
+
+* **`tests/ui/test_composites.py`** — new, 10 checks. Each of the four
+  composites asserted **twice**, once per desktop renderer, with the same
+  expectation, plus a JSON round-trip standing in for the Web client. This is
+  the file the resume note asked for; it is also the file that would have
+  caught three of the six defects above.
+* **Both S10 `known_bad` entries retired, and the quarantine is now empty.**
+  `test_pyside_dashboard_sidebar_dock_sync` XPASSed as predicted — schema v2
+  makes PYSIDE-7 inexpressible. `test_pyside_redpercent_sync_and_probe_controls`
+  did **not** XPASS, and the last entry's prediction that it would was wrong:
+  it asserts `view.sync_cbs`, which D-6 deleted, so it had to be re-authored
+  against the schema toggles rather than merely un-quarantined.
+* **Nine stale tests re-authored, none deleted** — six in `tests/ui` that had
+  not run since S0 (view-owned poll loops from before S5, the detached
+  controller-log window from before S10, a dock-close that expected the view
+  to fabricate a model, `sync_cbs`, a validator test that was exercising the
+  `float()`-the-contents inference RC-6 deleted, and a poller callback the
+  view no longer installs), plus `test_rotator_system_nan_inf`, which called
+  `_move_abs_ui` and now goes through `execute_command` — where D-5's strict
+  parse refuses `"inf"` before the command body runs, which is the safety
+  property it was written for.
+* One new test pins the D-1 poller fix:
+  `test_closing_a_view_does_not_close_the_models_poller`.
+
 ### Resume here (next session)
 
-State at `79d2d97`, working tree clean, pushed. **S10 is mid-stage.** In
-order:
+**S10 is done.** Working tree state and commit are in the stage table above.
+In order:
 
-1. **`pytest tests/ -m "qt"`.** It has not completed since the renderer
-   rewrite. Expect the two S10-owned `known_bad` entries to XPASS-as-failure;
-   re-author both and delete their `_KNOWN_BAD` entries.
+1. **S11 — result channel and event bus (RC-8).** The last two
+   `order_dependent` tests were predicted to dissolve here. **Read their
+   actual assertion values before believing that prediction — it has now been
+   wrong three times.** Both are wall-clock assertions
+   (`test_thread_safety_concurrent_requests`,
+   `test_thread_concurrency_setup_and_telemetry`); a timing threshold that
+   misses under load is not obviously an `ErrorRouter` problem, and the last
+   two quarantine diagnoses that blamed the architecture turned out to be
+   harness wiring.
+2. S11 is also where the view-side `QMessageBox.critical` calls in
+   `_run_element` and the dropdown handler should stop being the error path.
+   They are what hung this suite, and a result channel is the thing that
+   replaces them. Do not simply patch the modals away in tests.
+3. **S12** deletes `web_adapter`'s Red Percent linking block, which is what
+   retires the I-7.1 `xfail`. Do **not** bump the I-7.1 baseline to make it
+   green in the meantime.
 
-   **Run it in the foreground and read the whole output.** Three attempts
-   were made and none produced a summary line. The last wrote 24 bytes —
-   `..` and nothing else — then exited 0, where the selection should be 9
-   tests. That is neither a pass nor the documented exit-134 SIGABRT, so
-   **treat it as an unknown, not as a green run.** It may be the Qt abort
-   this suite is quarantined for, or it may be that the renderer rewrite
-   broke collection in this marker. Find out which before reading anything
-   into it.
-2. **Write rendering tests for the four composites** (`plot`, `log_stream`,
-   `region_select`, `file_save`). They are the least-proven code on the
-   branch — nothing but the schema conformance test has touched them.
-3. **Re-run the full three-pass sweep** and set S10 `done`.
-4. Then **S11** (result channel and event bus, RC-8), which is also where the
-   last two `order_dependent` tests were predicted to dissolve. Read their
-   actual assertion values before believing that prediction — it has been
-   wrong twice.
+Two S10 threads deliberately left open rather than widened into this stage:
 
-S12 then deletes `web_adapter`'s Red Percent linking block, which is what
-retires the I-7.1 `xfail`.
+* **PYSIDE-12 is `open (mitigated)`,** not closed. The direct `focus_area`
+  write and the modal over the always-on-top overlay are fixed and tested;
+  the instruction label, crosshair cursor and `setFocus`/`activateWindow` are
+  not, and the Linux transparency issue in `known-issues.md` needs a bench
+  run either way.
+* **Reviewing a saved run from a CSV is PySide-only.** The `plot` composite
+  is the *live* series in all three renderers now, and the CSV loader sits
+  beside it as its own button. Whether Tk and the Web client should have it
+  too is a schema question — it wants an element type — and it belongs to
+  **S13**, with the rest of Red Percent.
 
 ### Still waiting on the owner
 
@@ -1339,12 +1494,17 @@ retires the I-7.1 `xfail`.
 
 ### For whoever picks this up
 
-S9 items 2–3 overlap S10's schema v2 — do them together. **RC-6's
-script-path coverage does not exist**: the test that appeared to provide it
-was passing on a mock artefact (see the entry above). Write it fresh.
+**RC-6's script-path coverage still does not exist.** The test that appeared
+to provide it was passing on a mock artefact; S9 recorded that it had to be
+written fresh, and it has not been. It is the one piece of S9 outstanding.
 
-Do not trust this file's older claims about *why* the suite was flaky; the
-entry above corrects them.
+Do not trust this file's older claims about *why* the suite was flaky, or
+about the Qt abort. Three separate diagnoses in this file — process-global
+`ErrorRouter` callbacks, an untracked script thread, and a native Qt SIGABRT
+— were each confidently recorded and each wrong. The pattern in all three:
+the symptom was read against the audit's list of plausible architectural
+suspects instead of against what the run actually produced. Two were mock
+wiring; the third was a modal dialog. **Read the failure, then the audit.**
 
 ---
 
@@ -1438,12 +1598,12 @@ it) · `n/a` (with a reason).
 | PYSIDE-4 | RC11 | S13 | root cause | open |
 | PYSIDE-5 | RC6 | S9 | root cause | closed (S9 item 2: views read value_type instead of calling float() on the current value) |
 | PYSIDE-6 | RC6 | S9 | root cause | closed (S9 item 2, same) |
-| PYSIDE-7 | RC7 | S10 | root cause | open |
+| PYSIDE-7 | RC7 | S10 | root cause | closed (schema v2 makes the shape inexpressible: test_a_dropdown_cannot_be_declared_without_a_command; the quarantined test XPASSed and was re-authored) |
 | PYSIDE-8 | RC7 | S10 | root cause | open |
 | PYSIDE-9 | RC4 | S5 | root cause | open |
 | PYSIDE-10 | RC8 / RC4 | S11 | root cause | open |
 | PYSIDE-11 | LOCAL-OK | S15 | explicit | closed (S10: the unreachable `continue`-first file_picker branch replaced by the file_save composite) |
-| PYSIDE-12 | RC7 | S10 | root cause | open |
+| PYSIDE-12 | RC7 | S10 | root cause | open (mitigated) — the direct `focus_area` write and the modal-behind-the-overlay are closed (test_pyside_region_select_runs_the_declared_command, test_selection_overlay_mouse_drag); the instruction label, crosshair cursor and setFocus/activateWindow remain, and the Linux transparency issue is bench work |
 | PYSIDE-13 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | PYSIDE-14 | RC4 | S5 | root cause | closed (D-4; deferred activeWindow check distinguishes a child dialog, tests/core/test_tkinter_teardown.py + pyside _app_has_focus) |
 | PYSIDE-15 | RC8 | S11 | root cause | open |
