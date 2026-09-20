@@ -55,7 +55,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S5 | Input service and model-owned loops | done | `9a70834` | 2026-09-20 | RC-13 + RC-4. Deferred D-4 input gate landed 2026-09-20. |
 | S6 | Hide/show semantics (D-1) | done | `e9fc26f` | 2026-09-20 | All 4 items. Tk got a real re-add path. order_dependent 3 -> 2. |
 | S7 | Probe mode state machine (RC-3) | done | `8fc9f00` | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
-| S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
+| S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. known_bad down 10 -> 7. **I-5.2 holds for the probes only** — its test builds a probe. `RotatorSystem.emergency_stop` still blocks on the SMC100 `_serial_lock` (ROTATOR-8), and TEMP-7/DC-18 are unguarded too. Found 2026-09-20. |
 | S9 | Typed parameters (RC-6) | done | `79d2d97` | 2026-09-20 | All 4 items. `Param` table + D-5 `apply_inputs`. Landed with S10. |
 | S10 | Schema v2, three renderers (RC-7) | done | `7cc5f3c` | 2026-09-20 | All 5 items. Qt pass resolved (it hung, it did not abort). `tests/ui` un-excluded: +83 tests in the fast gate. I-7.2 built; known_bad now empty. |
 | S11 | Result channel and event bus (RC-8) | done | `409c859` | 2026-09-20 | All 4 items. `CommandResult` + `EventBus`; one `install_exception_hooks`. I-8.1–I-8.3 hold. conftest.py was duplicated end to end; half of it was dead. |
@@ -1704,6 +1704,65 @@ three-pass sweep was **skipped** at the owner's instruction — it was costing
 more wall-clock than it was buying, and the three gates cover the same
 tests.
 
+### 2026-09-20 — ledger reconciliation: the backlog was overstated, and S8 was understated
+
+**Why.** Every stage row S0–S12 says `done`, most say "All N items", and 66
+of their ledger rows still said `open`. The ledger drifts one way: fixes
+land, rows are not flipped, because flipping needs a verified test name and
+that is slower than moving on. Planning off those counts means re-deriving
+state that is already in the code.
+
+**Method.** Six read-only haiku subagents, split by audit file, each writing
+verdicts to scratch — none of them touched this file, so write conflicts
+were impossible rather than merely coordinated. A second wave of two found
+the test names. Every `closed` below was verified here with
+`grep -rn "def <name>" tests/` before the row moved. The procedure and the
+prompts are now the `reconcile-ledger` skill.
+
+**Result: 30 rows closed, 35 genuinely open, 3 unsure.** Roughly half the
+apparent backlog was bookkeeping.
+
+**The finding that matters most, and it goes the other way.** S8's row said
+"I-5.2 holds". It holds **for the probes only** —
+`test_emergency_stop_returns_within_100ms_against_a_stalled_transport`
+builds a probe, and nothing exercises the rotator or the temperature
+controller. `RotatorSystem.emergency_stop` calls `stop()` calls
+`smc.sendcmd('ST')`, which takes `_serial_lock` — so a FULL STOP on the
+rotator still blocks behind any in-flight move, which is exactly the defect
+S8 existed to remove. `TEMP-7` (full_stop racing `send_settings`) and
+`DC-18` (unguarded emergency `k` write) are the same shape. **These are
+safety-path items in a stage marked done.** They should be next; the
+standing rule is safety paths before feature paths.
+
+**Corrections to individual verdicts, so the method is judged honestly.**
+
+* The agents' own tallies disagreed with their own lists in three of six
+  cases. Read the verdict files, never the summary.
+* 19 of 28 first-wave `CLOSED` verdicts cited a test **file** rather than a
+  test **name**. That is why there is a second wave.
+* One agent cited `progress.md` as corroboration — circular, since that is
+  the artefact under audit. The prompt now forbids it.
+* **DC-16 was a false OPEN.** `pyside/view.py` has exactly one `QTimer`;
+  the position, status and manual-input timers are gone, and
+  `test_view_keeps_one_render_tick_and_no_device_loops` pins it. Closed.
+* **GAMEPAD-5 was a false CLOSED.** It is four sub-items. The `None` entry
+  and claim filtering are done; live refresh and rebind-after-disconnect are
+  not. Left `open (partly closed)`.
+* **GAMEPAD-16 does not close by test.** It closes by **D-12** — the owner
+  ruled the cadences deliberately unequal. A test there would pin a number
+  the owner may retune. Recorded as a verification note instead.
+
+**Fixed in passing.** GAMEPAD-6 / DC-19 — the web dropdown's
+`<option value="">` placeholder was selectable, and picking it dispatched
+`set_controller("")`, silently unbinding a live controller. Assigned to S10
+and survived it. Now `disabled hidden`, with the handler refusing a blank
+value, and two structural tests.
+
+**Also added.** A project `CLAUDE.md`, and three skills under
+`.claude/skills/` — `verify`, `stage-close`, `reconcile-ledger` — encoding
+what every session so far re-derived from `plan.md` and `testing.md` by
+hand.
+
 ---
 
 ## Finding ledger
@@ -1734,40 +1793,40 @@ it) · `n/a` (with a reason).
 | DC-13 | RC2 / RC7 | S3 | root cause | closed (test_the_badge_cannot_be_faked_by_typing_SIM_into_the_port_field, tests/web/test_web_security.py) |
 | DC-14 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
 | DC-15 | RC6 | S9 | root cause | closed (S9 item 2, same) |
-| DC-16 | RC4 | S5 | root cause | open |
+| DC-16 | RC4 | S5 | root cause | closed (S5: `pyside/view.py` keeps exactly one QTimer; the position, status and manual-input timers are deleted. test_view_keeps_one_render_tick_and_no_device_loops) |
 | DC-17 | RC4 / RC3 | S5 | root cause | closed (RC-4 half in S5; RC-3 half in S7 — mode transitions own their side effects, tests/core/test_probe_mode.py) |
 | DC-18 | RC5 / RC2 | S8 | root cause | open |
-| DC-19 | RC7 | S10 | root cause | open |
+| DC-19 | RC7 | S10 | root cause | closed (same fix as GAMEPAD-6: the blank option is `disabled hidden` and the handler refuses an empty value; test_gamepad_6_the_dropdown_placeholder_cannot_be_reselected, test_gamepad_6_the_dispatch_handler_ignores_a_blank_value) |
 | ERRORS-1 | RC8 / RC7 | S11 | root cause | closed (`CommandResult`; test_i_8_1_a_refused_command_is_distinguishable_from_a_successful_one) |
 | ERRORS-2 | RC8 / RC10 | S11 | root cause | closed (`/api/errors?since=`; test_api_logs_and_errors, re-authored — it used to assert the destructive read) |
 | ERRORS-3 | RC8 | S11 | root cause | open (mitigated) — the single-consumer pop is closed; **no console echo once a subscriber exists** and **flood-on-first-connect** both remain, the second now by way of a `since=0` cursor pulling all history |
 | ERRORS-4 | RC8 | S11 | root cause | closed (`install_exception_hooks`; test_i_8_3_every_launcher_installs_the_same_hooks, test_a_thread_exception_reaches_the_bus) |
 | ERRORS-5 | RC8 | S11 | root cause | closed (manager binds to the process-lifetime root, never the dashboard; the `after` loop reschedules in a `finally`) |
-| ERRORS-6 | RC2 | S3 | root cause | open |
+| ERRORS-6 | RC2 | S3 | root cause | closed (S3: serial write failures raise TransportError and the models fault rather than swallow; test_an_unconfirmed_disable_is_a_fault_not_a_disabled_claim, test_a_failed_disable_still_hides) |
 | ERRORS-7 | RC2 / RC8 / RC11 | S3 | root cause | open |
 | ERRORS-8 | RC8 | S11 | root cause | closed (locked bus, key is `(severity, source, title)`; test_publishing_from_many_threads_loses_nothing, test_repeats_fold_into_one_event_with_a_count) |
 | ERRORS-9 | RC8 | S11 | root cause | open (mitigated) — command failures route identically in all three views now; the **view-level** surfaces the finding actually names (PySide's CSV-column checks, and Web having no equivalent) are still direct dialogs that bypass the bus |
 | ERRORS-10 | RC8 | S11 | root cause | closed (the rate limit no longer runs ahead of the no-subscriber print; test_with_no_subscriber_the_bus_prints) |
 | ERRORS-11 | doc | S0 | root cause | open |
 | ERRORS-12 | RC10 | S4 | root cause | open — but the failure it describes (an error published before the dashboard exists, lost when a second `WebModelAdapter` replaces the first) can no longer happen: S11 made the bus, not the adapter buffer, the source of truth for `/api/errors`. Left to S4 to retire the `_BufferProxy` structure itself |
-| GAMEPAD-1 | RC4 | S5 | root cause | open |
-| GAMEPAD-2 | RC13 | S5 | root cause | open |
+| GAMEPAD-1 | RC4 | S5 | root cause | closed (S5: the model owns the input loop and the poller; test_polling_continues_without_a_tk_event_loop) |
+| GAMEPAD-2 | RC13 | S5 | root cause | closed (S5: the refcount is gone, SDL is per-owner in InputService; test_closing_a_poller_never_tears_sdl_down, test_sdl_comes_down_only_at_process_exit) |
 | GAMEPAD-3 | RC3 | S7 | root cause | closed (test_a_failed_controller_swap_does_not_claim_the_controller) |
 | GAMEPAD-4 | RC3 | S7 | root cause | closed (test_a_failed_controller_swap_does_not_claim_the_controller) |
-| GAMEPAD-5 | RC13 / RC7 | S5 | root cause | open |
-| GAMEPAD-6 | RC7 | S10 | root cause | open |
+| GAMEPAD-5 | RC13 / RC7 | S5 | root cause | open (partly closed: the `None` entry is back — `discover_controllers` returns `["None"] + input_service.names()` — and claim filtering is tested by test_controller_claim_conflict. **Live refresh and rebind-after-disconnect are not verified**; they need S14 or a bench run.) |
+| GAMEPAD-6 | RC7 | S10 | root cause | closed (the placeholder is `disabled hidden` and the handler refuses a blank value; test_gamepad_6_the_dropdown_placeholder_cannot_be_reselected, test_gamepad_6_the_dispatch_handler_ignores_a_blank_value) |
 | GAMEPAD-7 | RC4 | S5 | root cause | open |
 | GAMEPAD-8 | RC4 | S5 | root cause | closed (D-4 input gate replaces flush_neutral; test_d4_a_closed_gate_stops_the_manual_pump_without_stopping_the_mode) |
 | GAMEPAD-9 | RC1 | S2 | root cause | closed (loops moved to the models; test_manual_mode_drives_hardware_with_no_gui_at_all, tests/core/test_model_owned_loops.py) |
-| GAMEPAD-10 | RC13 | S5 | root cause | open |
+| GAMEPAD-10 | RC13 | S5 | root cause | closed (S12: one claims dict per build, derived from real acquisitions; test_build_models_owns_its_claims_dict, test_two_pollers_cannot_claim_the_same_controller) |
 | GAMEPAD-11 | RC12 | S16 | explicit | open |
 | GAMEPAD-12 | RC12 | S16 | explicit | open |
 | GAMEPAD-13 | RC12 | S16 | explicit | open |
 | GAMEPAD-14 | RC12 | S16 | explicit | open |
-| GAMEPAD-15 | RC13 / RC11 | S5 | root cause | open |
-| GAMEPAD-16 | RC4 | S5 | root cause | open |
+| GAMEPAD-15 | RC13 / RC11 | S5 | root cause | closed (S5: edges latch under `_state_lock` and drain once; test_a_tap_shorter_than_a_read_interval_is_not_lost, test_edges_drain_exactly_once, test_reading_levels_does_not_consume_edges, test_levels_never_carry_edge_keys) |
+| GAMEPAD-16 | RC4 | S5 | root cause | closed by **D-12** — the owner ruled the 200 Hz poll and the 20 ms manual pump deliberately unequal. Verification note: `gamepad.py` POLL_INTERVAL and `probes.py` MANUAL_COMMAND_INTERVAL carry the ruling in comments. No test; none is wanted, since a test would pin a number the owner may retune. |
 | GAMEPAD-17 | LOCAL-OK | S15 | explicit | open |
-| GAMEPAD-18 | RC13 / RC9 | S5 | root cause | open |
+| GAMEPAD-18 | RC13 / RC9 | S5 | root cause | closed (S12: in-process enumeration through InputService; test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing) |
 | GAMEPAD-19 | RC13 | S5 | root cause | open |
 | GAMEPAD-20 | doc | S0 | root cause | open |
 | MANAGER-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
@@ -1788,7 +1847,7 @@ it) · `n/a` (with a reason).
 | MANAGER-16 | RC13 | S5 | root cause | closed in S12 (`build_models` owns one claims dict per build, so no dict survives a relaunch; test_build_models_owns_its_claims_dict). `ControllerPoller.close()` still does not pop its own entry, which is now unreachable: the only paths that release a model rebuild with a fresh dict.) |
 | MANAGER-17 | RC8 | S11 | root cause | closed (same fix as ERRORS-5) |
 | MANAGER-18 | RC9 | S12 | root cause | closed (S12 item 1: one composition root; test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing, test_i_9_2_the_same_configs_produce_the_same_manager) |
-| MANAGER-19 | RC5 | S8 | root cause | open |
+| MANAGER-19 | RC5 | S8 | root cause | closed (S8: test_full_stop_returns_even_if_a_model_never_finishes) |
 | MANAGER-20 | RC4 | S5 | root cause | open |
 | PYSIDE-1 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | PYSIDE-2 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
@@ -1797,8 +1856,8 @@ it) · `n/a` (with a reason).
 | PYSIDE-5 | RC6 | S9 | root cause | closed (S9 item 2: views read value_type instead of calling float() on the current value) |
 | PYSIDE-6 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | PYSIDE-7 | RC7 | S10 | root cause | closed (schema v2 makes the shape inexpressible: test_a_dropdown_cannot_be_declared_without_a_command; the quarantined test XPASSed and was re-authored) |
-| PYSIDE-8 | RC7 | S10 | root cause | open |
-| PYSIDE-9 | RC4 | S5 | root cause | open |
+| PYSIDE-8 | RC7 | S10 | root cause | closed (S10: test_pyside_file_save_passes_the_chosen_path_and_respects_cancel) |
+| PYSIDE-9 | RC4 | S5 | root cause | closed (S5: test_qt_dynamic_view_poll_model) |
 | PYSIDE-10 | RC8 / RC4 | S11 | root cause | closed (the storm is unreachable: a repeating timer exception folds into one event for 60 s, so one modal, not one per tick. `_poll_model` still has no local try/except — it no longer needs one) |
 | PYSIDE-11 | LOCAL-OK | S15 | explicit | closed (S10: the unreachable `continue`-first file_picker branch replaced by the file_save composite) |
 | PYSIDE-12 | RC7 | S10 | root cause | open (mitigated) — the direct `focus_area` write and the modal-behind-the-overlay are closed (test_pyside_region_select_runs_the_declared_command, test_selection_overlay_mouse_drag); the instruction label, crosshair cursor and setFocus/activateWindow remain, and the Linux transparency issue is bench work |
@@ -1809,7 +1868,7 @@ it) · `n/a` (with a reason).
 | PYSIDE-17 | LOCAL-OK | S15 | explicit | open |
 | PYSIDE-18 | LOCAL-OK | S15 | explicit | open |
 | PYSIDE-19 | RC6 | S9 | root cause | closed (S9 item 2, same) |
-| PYSIDE-20 | RC7 / RC13 | S10 | root cause | open |
+| PYSIDE-20 | RC7 / RC13 | S10 | root cause | closed (S1: test_d11_serial_port_is_readonly_in_every_schema) |
 | REDPERCENT-1 | RC11 | S13 | root cause | open |
 | REDPERCENT-2 | RC11 | S13 | root cause | open |
 | REDPERCENT-3 | RC11 / RC5 | S13 | root cause | open |
@@ -1817,9 +1876,9 @@ it) · `n/a` (with a reason).
 | REDPERCENT-5 | RC11 | S13 | root cause | open |
 | REDPERCENT-6 | RC7 | S10 | root cause | open |
 | REDPERCENT-7 | RC8 / RC7 | S11 | root cause | closed (result part: refusals are `Refused` and render as refusals) |
-| REDPERCENT-8 | RC7 | S10 | root cause | open |
+| REDPERCENT-8 | RC7 | S10 | root cause | closed (S10: the web probe dropdown carries `command="set_stepper_model"`; test_all_ui_schemas, test_an_interactive_dropdown_always_has_a_command) |
 | REDPERCENT-9 | RC11 | S13 | root cause | open |
-| REDPERCENT-10 | RC7 | S10 | root cause | open |
+| REDPERCENT-10 | RC7 | S10 | root cause | closed (S10: the hand-built duplicate Position Source and Save Log controls are gone, the schema provides both; test_pyside_redpercent_sync_and_probe_controls) |
 | REDPERCENT-11 | RC9 / RC1 | S12 | root cause | closed (S12 item 2, same tests; I-9.1 holds by construction — test_i_9_1_only_the_dependent_model_writes_available_probes) |
 | REDPERCENT-12 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | REDPERCENT-13 | RC7 | S10 | root cause | open |
@@ -1857,15 +1916,15 @@ it) · `n/a` (with a reason).
 | SERIAL-10 | RC2 | S3 | root cause | open |
 | SERIAL-11 | RC2 | S3 | root cause | closed (test_i_2_3_serial_handle_confined_to_transport; all writes go through write_command under the lock) |
 | SERIAL-12 | RC4 | S5 | root cause | open |
-| SERIAL-13 | RC2 | S3 | root cause | open |
+| SERIAL-13 | RC2 | S3 | root cause | closed (test_serial_send_manual_mode_command asserts the 42-byte packet format) |
 | SERIAL-14 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | SERIAL-15 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
 | SERIAL-16 | RC8 | S11 | root cause | open (mitigated) — the misleading throttle is gone (repeats fold and carry a count); the per-site audit of which `serial.py` conditions should report rather than print is not done |
 | SERIAL-17 | RC2 / LOCAL-OK | S3 | explicit | open |
 | SERIAL-18 | RC1 | S2 | root cause | closed (reboot_model deleted; test_system_manager_reconfigure_replaces_the_model_set) |
-| SERIAL-19 | doc | S0 | root cause | open |
+| SERIAL-19 | doc | S0 | root cause | closed (verification note: doc inaccuracy only; `pyside/view.py:886` passes `None` to serial as documented. No test applicable.) |
 | STEPPER-1 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
-| STEPPER-2 | RC4 | S5 | root cause | open |
+| STEPPER-2 | RC4 | S5 | root cause | closed (S5: the model owns the input pump; test_manual_mode_drives_hardware_with_no_gui_at_all) |
 | STEPPER-3 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | STEPPER-4 | RC2 | S3 | root cause | closed (test_a_failed_disable_faults_instead_of_claiming_the_system_is_off, tests/core/test_transport_truth.py) |
 | STEPPER-5 | RC3 | S7 | root cause | closed (test_losing_the_controller_leaves_manual_mode_entirely, tests/core/test_probe_mode.py) |
@@ -1873,12 +1932,12 @@ it) · `n/a` (with a reason).
 | STEPPER-7 | RC5 / RC3 | S8 | root cause | closed (RC-5 half in S8; RC-3 watchdog-generation half in S7, test_the_watchdog_gets_a_fresh_event_each_arming) |
 | STEPPER-8 | RC5 | S8 | root cause | closed (test_stopping_invalidates_a_script_still_in_flight, tests/core/test_transport_truth.py) |
 | STEPPER-9 | RC2 / LOCAL-OK | S3 | explicit | open |
-| STEPPER-10 | RC7 | S10 | root cause | open |
+| STEPPER-10 | RC7 | S10 | root cause | closed (S10: every schema command exists on its model; test_every_command_exists_on_the_model) |
 | STEPPER-11 | RC6 / RC7 / RC3 | S9 | root cause | open (RC-3 flags part closed in S7: mode flags are read-only, API returns 403 — test_i_3_4_mode_flags_cannot_be_assigned. RC-6/RC-7 parts remain) |
 | STEPPER-12 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
 | STEPPER-13 | RC9 | S12 | root cause | closed (S12 item 2: `released` clears the reference before teardown; test_releasing_the_selected_probe_falls_back_to_a_live_one) |
-| STEPPER-14 | RC4 | S5 | root cause | open |
-| STEPPER-15 | RC4 | S5 | root cause | open |
+| STEPPER-14 | RC4 | S5 | root cause | closed (test_serial_read_position) |
+| STEPPER-15 | RC4 | S5 | root cause | closed (S5: test_manual_mode_drives_hardware_with_no_gui_at_all, test_the_model_starts_the_poller_itself) |
 | TEMP-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | TEMP-2 | RC2 | S3 | root cause | open |
 | TEMP-3 | RC6 | S9 | root cause | closed (test_a_non_numeric_field_refuses_the_whole_frame, tests/core/test_typed_params.py) |
@@ -1896,14 +1955,14 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-2 | RC8 | S11 | root cause | closed (same fix as ERRORS-5) |
 | VIEW-TKINTER-3 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |
 | VIEW-TKINTER-4 | RC3 | S7 | root cause | closed (test_losing_the_controller_leaves_manual_mode_entirely) |
-| VIEW-TKINTER-5 | RC4 | S5 | root cause | open |
+| VIEW-TKINTER-5 | RC4 | S5 | root cause | closed (S5: test_a_fault_in_the_input_pump_leaves_manual_mode) |
 | VIEW-TKINTER-6 | RC13 | S5 | root cause | closed in S12 (same as MANAGER-16; test_build_models_owns_its_claims_dict) |
 | VIEW-TKINTER-7 | RC1 | S2 | root cause | closed (verified by inspection: app.py builds before withdraw and reports failure) |
 | VIEW-TKINTER-8 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
 | VIEW-TKINTER-9 | RC4 | S5 | root cause | closed (D-4; test_d4_a_child_dialog_does_not_close_the_gate) |
-| VIEW-TKINTER-10 | RC13 / RC7 | S5 | root cause | open |
-| VIEW-TKINTER-11 | RC4 | S5 | root cause | open |
-| VIEW-TKINTER-12 | RC4 | S5 | root cause | open |
+| VIEW-TKINTER-10 | RC13 / RC7 | S5 | root cause | closed (S5: test_a_failed_controller_swap_does_not_claim_the_controller) |
+| VIEW-TKINTER-11 | RC4 | S5 | root cause | closed (S5: test_a_tap_shorter_than_a_read_interval_is_not_lost) |
+| VIEW-TKINTER-12 | RC4 | S5 | root cause | closed (S5: test_the_model_not_the_view_feeds_the_idle_watchdog) |
 | VIEW-TKINTER-13 | RC3 | S7 | root cause | closed (every exit routes through _transition; test_mode_is_exactly_one_value) |
 | VIEW-TKINTER-14 | RC11 / RC7 | S13 | root cause | open |
 | VIEW-TKINTER-15 | RC11 | S13 | root cause | open |
@@ -1911,15 +1970,15 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-17 | RC7 / RC9 | S10 | root cause | open (RC-9 wiring part closed in S12: probe linking moved into `app_bootstrap.link_models` and is no longer duplicated per view — test_red_percent_built_after_its_probes_still_sees_them. The RC-7 parts — hard-coded device names, `open_controller_log`, the dead `serial_port` entry, rotator formatting — remain.) |
 | VIEW-TKINTER-18 | LOCAL-OK | S15 | explicit | open |
 | WEB-1 | RC1 / RC10 | S2 | root cause | closed (tests/web/test_web_security.py: token, Origin and Content-Type checks on every POST) |
-| WEB-2 | RC4 | S5 | root cause | open |
+| WEB-2 | RC4 | S5 | root cause | closed (S5: polling moved into the models, so all three frontends share it; test_manual_mode_drives_hardware_with_no_gui_at_all, test_the_model_starts_the_poller_itself) |
 | WEB-3 | RC1 / RC10 | S2 | root cause | closed (tests/web/test_web_security.py: /api/screenshot now requires the session token) |
 | WEB-4 | RC9 | S12 | root cause | closed (S12 item 3, same as DC-12/MANAGER-12) |
 | WEB-5 | RC10 | S14 | root cause | open |
-| WEB-6 | RC7 | S10 | root cause | open |
+| WEB-6 | RC7 | S10 | root cause | closed (S10: test_an_interactive_dropdown_always_has_a_command) |
 | WEB-7 | RC7 | S10 | root cause | open |
-| WEB-8 | RC4 / RC10 | S5 | root cause | open |
+| WEB-8 | RC4 / RC10 | S5 | root cause | closed (S5: /api/state reads the model caches; test_thread_safety_concurrent_requests) |
 | WEB-9 | RC8 | S11 | root cause | closed (`/api/errors?since=`; the destructive pop is gone and each tab keeps its own cursor). **The replay half survives**: a tab connecting with `since=0` still pulls the whole history as toasts — see ERRORS-3 |
-| WEB-10 | RC10 | S4 | root cause | open |
+| WEB-10 | RC10 | S4 | root cause | closed (S4: token, Content-Type and Origin validation; test_a_post_from_another_origin_is_refused_even_with_json) |
 | WEB-11 | RC7 | S10 | root cause | open |
 | WEB-12 | RC8 | S11 | root cause | closed (`CommandResult`; a refusal is never rendered as success) |
 | WEB-13 | RC11 | S13 | root cause | open |
