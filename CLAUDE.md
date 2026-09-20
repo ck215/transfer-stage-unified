@@ -19,6 +19,8 @@ audited findings. It is not feature work.
    invariants that prove it fixed and an **anti-fix table** naming the
    patches that must *not* be applied.
 4. **`docs/architecture/audit/*.md`** — the 213 findings, by subsystem.
+5. **`docs/architecture/safety-pattern.md`** — the emergency-stop contract
+   every motion/heat subsystem must match, and how to test it.
 
 ## Skills
 
@@ -29,6 +31,8 @@ Invoke these rather than re-deriving the procedure from the docs:
 | `verify` | after any change to `src/` or `tests/`; before closing a stage |
 | `stage-close` | a stage is green and needs to land, or any commit touches `progress.md` |
 | `reconcile-ledger` | open-finding counts look inflated, or before planning off them |
+| `fix-a-finding` | before fixing any one finding — checks the audit is still true |
+| `parallel-stage` | several independent findings are open and one-at-a-time is the bottleneck |
 
 ## Standing rules
 

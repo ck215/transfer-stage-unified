@@ -53,6 +53,38 @@ by fixture (`qapp`/`qtbot`), not by filename.
 `order_dependent` is two web wall-clock tests. They are excluded from the
 gates by design; run them alone if you touched web timing.
 
+## Never read a result through a pipe
+
+```
+pytest ... | tail -4          # WRONG: $? is tail's, not pytest's
+```
+
+A gate was reported green this way on 2026-09-20; the run proved nothing.
+Redirect, capture the code, then grep:
+
+```
+pytest tests/ -m "not slow and not order_dependent and not qt" -q > "$S/gate.log" 2>&1
+echo "EXIT=$?"; grep -E "passed|failed" "$S/gate.log" | tail -1
+```
+
+## qt tests you did not run are not evidence
+
+The qt pass cannot run inside a session that must survive — a native Qt
+`SIGABRT` kills pytest and discards every already-passed result. Run it as a
+**background** job so the abort cannot take the session with it, and only
+then close a row that depends on it.
+
+Any qt-marked test written but not yet run is `## UNVERIFIED`, never
+`closed`. On 2026-09-20 eleven came back from a parallel round and **two
+failed** — both bad tests, one asserting on a `matplotlib` that
+`tests/conftest.py` replaces with a MagicMock, so it would have passed
+against code that did nothing.
+
+Which leads to the general trap: `matplotlib`, `PIL`, `mss`, `serial` and the
+Qt backends are all `MagicMock` for the whole suite. **Iterating a MagicMock
+yields nothing**, so a loop-based assertion over one passes vacuously. Check
+what you are really asserting on before believing a green test.
+
 ## Reading a result
 
 - **XPASS is a failure**, deliberately. `xfail(strict=True)` markers in

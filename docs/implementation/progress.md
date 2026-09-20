@@ -1877,6 +1877,41 @@ history across all three views, or delete the dead arrays) and **WEB-19 /
 D-8** (the client-liveness FULL STOP tier, spanning `probes.py` and the web
 adapter).
 
+### 2026-09-20 — tooling: two skills, an agent definition, and the stop pattern written down
+
+Codifies the two procedures that consumed the most reasoning this session and
+that each went wrong at least once. Nothing here changes `src/`.
+
+- **`fix-a-finding`** — the per-finding loop, starting with the question that
+  actually matters: *is this still true?* DC-18 was already fixed and agent B
+  hit the same staleness three more times. Also carries the safe
+  prove-the-defect recipe (scratch copy, `git checkout --`, `timeout`, restore
+  chained with `;`) that replaces `git stash` — the stash variant hung and left
+  the repo stashed until a monitor caught it.
+- **`parallel-stage`** + `brief-template.md` + `partition-check.sh` — the
+  write-set partition that produced zero collisions across S14, S15 and the
+  lead's own commit. The script reproduces that check and also fails an agent
+  that touched a lead-only file.
+- **`.claude/agents/worktree-fixer.md`** — the first agent definition. Hoists
+  ~100 invariant lines out of every hand-written brief so briefs carry only
+  write set and findings.
+- **`docs/architecture/safety-pattern.md`** — the emergency-stop contract, so
+  the fourth subsystem matches the first three. Records why the priority write
+  is safe (single idempotent frames only, never a motion command) and names
+  the six sites where its constants are duplicated.
+- **`verify`** gained two rules earned today: never read a pytest result
+  through `| tail` (the exit code is the pipe's), and qt-marked tests that were
+  never run are `## UNVERIFIED`, not `closed`. It also names the
+  mocked-module trap — `matplotlib`, `PIL`, `mss`, `serial` and the Qt backends
+  are MagicMock suite-wide, and iterating a MagicMock yields nothing, so a
+  loop-based assertion over one passes vacuously.
+
+Verified: `partition-check.sh` re-run against the two real branches reproduces
+the clean result; `fix-a-finding`'s preflight dry-run on GAMEPAD-17's
+`probes.py` sub-item reached a verdict (construct present, the audit's
+dead-path reasoning now rests on code S15 changed — needs its own pass)
+without editing anything. Gate unchanged at 576 passed.
+
 ## Finding ledger
 
 All 213 audit findings. `Closed by` is `root cause` when the finding closes
