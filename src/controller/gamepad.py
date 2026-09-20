@@ -663,7 +663,18 @@ class ControllerPoller:
         self._capture_state()
 
         if self.gui_root is not None and hasattr(self.gui_root, "after"):
-            self.gui_root.after(self.POLL_INTERVAL, self._poll_loop)
+            try:
+                self.gui_root.after(self.POLL_INTERVAL, self._poll_loop)
+            except Exception as e:
+                # gui_root can be destroyed between the is_polling check at
+                # the top of this method and this call (dashboard/tab torn
+                # down mid-poll) — Tk raises TclError. This used to sit
+                # outside the try/except above and propagate straight out of
+                # the scheduled callback (GAMEPAD-17). Treat it like any
+                # other lost-device signal instead.
+                msg = f"[controllerDrive] Poll re-arm failed (widget destroyed?):\n{e}"
+                print(msg)
+                self._handle_disconnect()
         # Otherwise _poll_forever owns the cadence. This used to call
         # stop_polling() here, which is what limited polling to frontends that
         # happen to have a Tk event loop.

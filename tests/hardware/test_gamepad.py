@@ -602,3 +602,40 @@ def test_polling_continues_without_a_tk_event_loop():
             assert poller._thread is not None and poller._thread.is_alive()
         finally:
             poller.close()
+
+
+def test_poll_loop_rearm_failure_is_treated_as_a_disconnect():
+    """GAMEPAD-17: the Tk re-arm call used to sit outside _poll_loop's
+    try/except.
+
+    A destroyed `gui_root` (dashboard/tab torn down mid-poll) makes Tk's
+    `after()` raise TclError. That used to propagate straight out of the
+    scheduled callback instead of being handled like any other lost-device
+    signal. This stands a plain exception in for TclError (this test file
+    never imports real tkinter) — the re-arm call itself doesn't care what
+    exception `after()` raises, only that one was raised.
+    """
+    claims = {"TestProcess": 0}
+    poller = _bare_poller()
+    poller.process_name = "TestProcess"
+    poller.active_claims = claims
+    poller.gamepad = MagicMock()
+    poller.gamepad.joystick.get_numaxes.return_value = 0
+    poller.gamepad.joystick.get_numbuttons.return_value = 0
+    poller.gamepad.joystick.get_numhats.return_value = 0
+    poller.is_polling = True
+    poller.log_updater = None
+    poller.activity_callback = None
+
+    class DestroyedRoot:
+        def after(self, *args, **kwargs):
+            raise RuntimeError("invalid command name (destroyed widget)")
+
+    poller.gui_root = DestroyedRoot()
+
+    with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+        poller._poll_loop()  # must not raise
+
+    assert poller.gamepad is None
+    assert poller.is_polling is False
+    assert claims["TestProcess"] == "None Detected"
