@@ -55,7 +55,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S5 | Input service and model-owned loops | done | `9a70834` | 2026-09-20 | RC-13 + RC-4. Deferred D-4 input gate landed 2026-09-20. |
 | S6 | Hide/show semantics (D-1) | done | `e9fc26f` | 2026-09-20 | All 4 items. Tk got a real re-add path. order_dependent 3 -> 2. |
 | S7 | Probe mode state machine (RC-3) | done | `8fc9f00` | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
-| S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. known_bad down 10 -> 7. **I-5.2 holds for the probes only** — its test builds a probe. `RotatorSystem.emergency_stop` still blocks on the SMC100 `_serial_lock` (ROTATOR-8), and TEMP-7/DC-18 are unguarded too. Found 2026-09-20. |
+| S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. known_bad down 10 -> 7. The S8 `emergency_stop` contract — latch first, never block the caller — was implemented for the probes only; the rotator and the heater ran their stop I/O on the calling thread and the rotator had no latch at all. Residue closed 2026-09-20: ROTATOR-8, ROTATOR-4, TEMP-7 fixed, DC-18 found already-fixed and pinned. **I-5.2 now holds for all three subsystems.** |
 | S9 | Typed parameters (RC-6) | done | `79d2d97` | 2026-09-20 | All 4 items. `Param` table + D-5 `apply_inputs`. Landed with S10. |
 | S10 | Schema v2, three renderers (RC-7) | done | `7cc5f3c` | 2026-09-20 | All 5 items. Qt pass resolved (it hung, it did not abort). `tests/ui` un-excluded: +83 tests in the fast gate. I-7.2 built; known_bad now empty. |
 | S11 | Result channel and event bus (RC-8) | done | `409c859` | 2026-09-20 | All 4 items. `CommandResult` + `EventBus`; one `install_exception_hooks`. I-8.1–I-8.3 hold. conftest.py was duplicated end to end; half of it was dead. |
@@ -1765,6 +1765,61 @@ hand.
 
 ---
 
+### 2026-09-20 — the S8 safety residue: the stop contract held for one subsystem out of three
+
+S8 built a real emergency-stop contract — latch before any I/O, dispatch the
+hardware write on a worker, join against a bound so a wedged transport cannot
+hold the caller, and take the transport lock with a short timeout and force the
+byte through on failure. It was implemented for the probes. The ledger recorded
+that as "I-5.2 holds for the probes only", which undersold it: the rotator and
+the heater did not have a weaker version of the contract, they had none.
+
+**ROTATOR-8.** `RotatorSystem` had no `_estop` at all, and `stop()` called
+`SMC100.stop()`, which is `sendcmd('ST')` under `_serial_lock` — the same lock a
+position poll holds for a whole transaction. A FULL STOP issued from the UI
+thread waited on the poll. The old-code check for this did not produce a test
+failure; it **deadlocked and had to be killed by timeout**, with the repo left
+stashed until a monitor caught it. That is a stronger result than red tests.
+
+**ROTATOR-4** turned out to be arithmetic, not staleness. `_current_position()`
+returned `0.0` when the position was unknown, and a relative target computed
+from the last *polled* position cannot see a move already in flight. Five +4°
+clicks from 20° each looked like a move to ≤26°, so the soft limit never
+prompted and the stage arrived at 40°. Fixed by tracking `_commanded_target` —
+the running sum of accepted moves, committed *before* dispatch — and by making
+"unknown" a state the guard can see rather than a silent zero.
+
+**TEMP-7** was a textbook check-then-act. `send_settings` tested `_estop` at the
+top, then did ~40 lines of validation and frame-building, then wrote. A FULL
+STOP landing in that window was overwritten by the frame already in flight: the
+operator pressed stop, the heater went back to setpoint, and nothing said so.
+The latch is now re-checked inside the write lock immediately before the write,
+which is what actually orders the two.
+
+**DC-18 was already fixed** and needed tests, not a change. `power_down` has
+gone through the locked priority path since S8, and the four racing booleans the
+audit named died in S7 when `_mode`/`_mode_lock` replaced them. This is trap #1
+from `CLAUDE.md` in its purest form — the audit text described code that no
+longer exists. Closing it on inspection alone would have been the right call for
+the wrong reason, so it is pinned with three tests including a structural scan
+for model writes that bypass the transport lock.
+
+Every fix reuses the S8 pattern verbatim rather than inventing a second one;
+`PRIORITY_LOCK_TIMEOUT` and `ESTOP_RETURN_BUDGET` now appear with the same
+values and the same justification in all three subsystems.
+
+Two items were deliberately *not* decided here, and go to the owner:
+
+- **TEMP-9** — the history arrays are dead and the firmware comment says "PLOT
+  THIS". The two fix directions are "add a temperature plot to all three views"
+  or "delete the arrays". That is a product call, not a repair.
+- **WEB-19 / D-8** — the client-liveness FULL STOP tier needs the watchdog to
+  live in `src/model/probes.py`, so it spans model and web and belongs in a
+  dedicated pass rather than either parallel worktree.
+
+Gate: `547 passed, 94 deselected, 1 xfailed`, then 55 in
+`tests/core/test_transport_truth.py` after the TEMP-7 tests landed.
+
 ## Finding ledger
 
 All 213 audit findings. `Closed by` is `root cause` when the finding closes
@@ -1795,7 +1850,7 @@ it) · `n/a` (with a reason).
 | DC-15 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | DC-16 | RC4 | S5 | root cause | closed (S5: `pyside/view.py` keeps exactly one QTimer; the position, status and manual-input timers are deleted. test_view_keeps_one_render_tick_and_no_device_loops) |
 | DC-17 | RC4 / RC3 | S5 | root cause | closed (RC-4 half in S5; RC-3 half in S7 — mode transitions own their side effects, tests/core/test_probe_mode.py) |
-| DC-18 | RC5 / RC2 | S8 | root cause | open |
+| DC-18 | RC5 / RC2 | S8 | root cause | closed (already fixed in code by S7/S8 and only unpinned: `power_down` writes `k` through the locked priority path, and the four racing booleans the audit named were replaced by the single `_mode` under `_mode_lock`. Pinned by test_dc_18_kill_coils_goes_through_the_locked_priority_path, test_dc_18_no_model_writes_around_the_transport_lock, test_dc_18_the_probe_mode_has_one_writer_under_one_lock) |
 | DC-19 | RC7 | S10 | root cause | closed (same fix as GAMEPAD-6: the blank option is `disabled hidden` and the handler refuses an empty value; test_gamepad_6_the_dropdown_placeholder_cannot_be_reselected, test_gamepad_6_the_dispatch_handler_ignores_a_blank_value) |
 | ERRORS-1 | RC8 / RC7 | S11 | root cause | closed (`CommandResult`; test_i_8_1_a_refused_command_is_distinguishable_from_a_successful_one) |
 | ERRORS-2 | RC8 / RC10 | S11 | root cause | closed (`/api/errors?since=`; test_api_logs_and_errors, re-authored — it used to assert the destructive read) |
@@ -1892,11 +1947,11 @@ it) · `n/a` (with a reason).
 | ROTATOR-1 | RC1 / RC5 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
 | ROTATOR-2 | RC10 | S14 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | ROTATOR-3 | RC8 / RC7 | S11 | root cause | closed (a >30° refusal is a `Refused` carrying its reason, not a silent `None`) |
-| ROTATOR-4 | RC5 | S8 | root cause | open |
+| ROTATOR-4 | RC5 | S8 | root cause | closed (`_current_position` turned an *unknown* position into `0.0`, and a relative target read from the last poll could not see a move already in flight, so stacked clicks walked past the soft limit unprompted. Replaced by `_reference_position` returning `(value, known)` plus a `_commanded_target` committed before dispatch; unknown now raises NeedsConfirmation instead of assuming the origin. test_rotator_4_an_unknown_position_is_not_the_origin, test_rotator_4_stacked_clicks_accumulate_toward_the_guard, test_rotator_4_the_commanded_target_tracks_accepted_moves, test_rotator_4_a_full_stop_makes_the_position_unknown_again, test_rotator_4_an_absolute_move_past_the_limit_still_asks) |
 | ROTATOR-5 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | ROTATOR-6 | RC4 | S5 | root cause | open |
 | ROTATOR-7 | RC4 / RC10 | S5 | root cause | open |
-| ROTATOR-8 | RC5 | S8 | root cause | open |
+| ROTATOR-8 | RC5 | S8 | root cause | closed (the rotator had no `_estop` latch at all and ran its stop I/O on the calling thread, so a FULL STOP blocked on the SMC100 `_serial_lock` held by an in-flight poll. Now the S8 probe pattern: latch first, hardware stop on a daemon worker joined against ESTOP_RETURN_BUDGET, and `SMC100.stop(priority=True)` taking `_serial_lock` with PRIORITY_LOCK_TIMEOUT and forcing ST through on failure. test_rotator_emergency_stop_returns_within_100ms_behind_a_held_serial_lock, test_rotator_emergency_stop_still_reaches_the_hardware, test_rotator_latches_so_a_queued_move_cannot_land_after_the_stop, test_only_an_explicit_operator_action_clears_the_rotator_latch, test_the_rotator_stop_path_takes_the_priority_write) |
 | ROTATOR-9 | RC2 / RC7 | S3 | root cause | open |
 | ROTATOR-10 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | ROTATOR-11 | RC2 / LOCAL-OK | S3 | explicit | open |
@@ -1944,7 +1999,7 @@ it) · `n/a` (with a reason).
 | TEMP-4 | RC6 | S9 | root cause | closed (S9 item 2: temperature params typed) |
 | TEMP-5 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | TEMP-6 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
-| TEMP-7 | RC5 | S8 | root cause | open |
+| TEMP-7 | RC5 | S8 | root cause | closed (`send_settings` was a check-then-act: it tested `_estop` at the top, then built the frame, so a FULL STOP landing in that window was overwritten and the heater returned to setpoint silently. The latch is now re-checked inside a new `_write_lock` immediately before the write, and `emergency_stop` uses the latch-worker-bounded-join pattern with a forced priority frame. test_temp_7_a_stop_landing_mid_build_is_not_overwritten, test_temp_7_emergency_stop_returns_promptly_behind_a_held_write_lock, test_temp_7_the_stop_frame_forces_through_a_busy_write_lock, test_temp_7_an_ordinary_send_takes_the_lock_without_a_timeout) |
 | TEMP-8 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | TEMP-9 | LOCAL-OK | S15 | explicit | open |
 | TEMP-10 | RC2 / RC8 | S3 | root cause | open |

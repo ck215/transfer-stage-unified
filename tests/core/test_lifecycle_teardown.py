@@ -102,10 +102,13 @@ def test_rotator_teardown_sends_stop_before_disconnecting():
     rotator = RotatorSystem()
     rotator.smc = MagicMock()
     order = []
-    rotator.smc.stop.side_effect = lambda: order.append("stop")
+    # `stop` takes `priority` since ROTATOR-8; teardown is a stop path and
+    # passes it, so a wedged serial lock cannot hold shutdown open.
+    rotator.smc.stop.side_effect = lambda *a, **k: order.append(
+        ("stop", k.get("priority")))
     rotator.smc.close.side_effect = lambda: order.append("close")
     rotator.teardown()
-    assert order == ["stop", "close"], order
+    assert order == [("stop", True), "close"], order
 
 
 def test_rotator_teardown_disconnects_when_stop_raises():

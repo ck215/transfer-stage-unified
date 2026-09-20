@@ -90,7 +90,10 @@ def test_temperature_system_stop_logic():
 
         assert ts.setpoint == "0"
         assert ts.continue_reading is True
-        mock_instance.write_command.assert_called_once_with("<0,10.0,0,0,0,0>")
+        # `priority` is explicit since TEMP-7: the ordinary stop still waits
+        # for the write lock; only emergency_stop forces past it.
+        mock_instance.write_command.assert_called_once_with(
+            "<0,10.0,0,0,0,0>", priority=False)
         mock_instance.close.assert_not_called()  # Serial port should NOT be closed on Stop
 
         ts.close()

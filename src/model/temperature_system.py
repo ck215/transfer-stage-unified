@@ -52,6 +52,14 @@ class TemperatureSystem(SchemaCommands):
         # stepper that can be re-commanded to move. Cleared only by an
         # explicit operator action.
         self._estop = threading.Event()
+
+        # `send_settings` and `stop` both build a frame from `self.*` fields
+        # and then write it. Under the Web view those run on concurrent
+        # `ThreadingHTTPServer` request threads, so Enter Settings could read
+        # `self.setpoint` *before* stop assigned "0" and land its write
+        # *after* stop's -- re-arming the heater the operator just stopped
+        # (TEMP-7). Read-and-write is one critical section, not two steps.
+        self._write_lock = threading.Lock()
         self.tempC = []
         self.time = []
         self.sp = []
@@ -166,12 +174,24 @@ class TemperatureSystem(SchemaCommands):
                 ErrorRouter.report_info("Temperature Send", msg)
             except Exception:
                 pass
-            input_string = f"<{self.setpoint},{spdelay},{self.p_term},{self.i_term},{self.d_term},{self.offset}>"
-            try:
-                self.serial_conn.write_command(input_string)
-            except Exception as e:
-                from error_routing import ErrorRouter as ErrorPopupManager
-                ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
+            with self._write_lock:
+                # Re-checked *inside* the lock, immediately before the write.
+                # The check at the top of this method is a check-then-act: a
+                # FULL STOP landing after it and before this write would be
+                # overwritten by the frame we are about to send. The latch is
+                # set before any of the stop's I/O, so testing it here is what
+                # actually orders the two (TEMP-7).
+                if self._estop.is_set():
+                    print(f"[{self.__class__.__name__}] Settings refused at "
+                          f"the write: FULL STOP latched while the frame was "
+                          f"being built")
+                    return
+                input_string = f"<{self.setpoint},{spdelay},{self.p_term},{self.i_term},{self.d_term},{self.offset}>"
+                try:
+                    self.serial_conn.write_command(input_string)
+                except Exception as e:
+                    from error_routing import ErrorRouter as ErrorPopupManager
+                    ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
                 
     def read_serial_data(self):
         consecutive_failures = 0
@@ -234,8 +254,19 @@ class TemperatureSystem(SchemaCommands):
         with self._lock:
             return list(self.time), list(self.tempC), list(self.sp)
 
-    def stop(self):
-        """Stops heating immediately by setting target setpoint to 0 while keeping serial monitoring active."""
+    #: A stop that cannot get the write lock is worse than an unsynchronised
+    #: one. Mirrors the probes' and the rotator's priority paths (RC-5 item 2).
+    PRIORITY_LOCK_TIMEOUT = 0.05
+    ESTOP_RETURN_BUDGET = 0.08
+
+    def stop(self, priority=False):
+        """Stops heating immediately by setting target setpoint to 0 while keeping serial monitoring active.
+
+        With `priority`, the write lock is taken with a timeout and the frame
+        is forced through if an Enter Settings is mid-write. A zero-setpoint
+        frame is idempotent, so the worst case is one mangled *stop* and the
+        alternative is a FULL STOP that waits on the heater (TEMP-7).
+        """
         self.setpoint = "0"
         rate_float = num(self.ramp_rate, 0.0)
 
@@ -249,11 +280,19 @@ class TemperatureSystem(SchemaCommands):
         if self.serial_conn and self.serial_conn.is_open():
             vals = ['0', spdelay, '0', '0', '0', str(self.offset)]
             input_string = f"<{','.join(vals)}>"
+            acquired = self._write_lock.acquire(
+                timeout=self.PRIORITY_LOCK_TIMEOUT if priority else -1)
+            if not acquired:
+                print(f"[{self.__class__.__name__}] PRIORITY: write lock busy, "
+                      f"forcing the stop frame through")
             try:
-                self.serial_conn.write_command(input_string)
+                self.serial_conn.write_command(input_string, priority=priority)
             except Exception as e:
                 from error_routing import ErrorRouter as ErrorPopupManager
                 ErrorPopupManager.report_error("Serial Write Error", f"Error writing stop state to serial:\n{e}", e)
+            finally:
+                if acquired:
+                    self._write_lock.release()
 
     def close(self):
         """Cleanly terminates serial thread and closes serial connection."""
@@ -286,6 +325,28 @@ class TemperatureSystem(SchemaCommands):
         self.close()
 
     def emergency_stop(self):
-        """Latch first, then command the setpoint down (RC-5)."""
+        """Latch first, then dispatch the setpoint-down with a bounded wait.
+
+        The latch was already here; the dispatch was not. `stop()` writes
+        through the serial wrapper, whose lock is held for whole transactions,
+        so an emergency stop on the heater ran its I/O on the calling thread
+        -- frequently a UI thread -- exactly like the probe defect S8 fixed
+        and the rotator defect S8 missed (I-5.2, TEMP-7).
+        """
         self._estop.set()
-        self.stop()
+
+        done = threading.Event()
+
+        def _stop():
+            try:
+                self.stop(priority=True)
+            finally:
+                done.set()
+
+        worker = threading.Thread(
+            target=_stop, daemon=True,
+            name=f"estop-{self.__class__.__name__}")
+        worker.start()
+        if not done.wait(self.ESTOP_RETURN_BUDGET):
+            print(f"[{self.__class__.__name__}] FULL STOP: latched; heater "
+                  f"stop still in flight after {self.ESTOP_RETURN_BUDGET}s")

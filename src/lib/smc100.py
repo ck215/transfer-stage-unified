@@ -185,8 +185,44 @@ class SMC100(object):
     else:
       self.move_absolute_mdeg(0, waitStop=False)
 
-  def stop(self):
-    self.sendcmd('ST')
+  #: A stop that cannot get the serial lock is worse than an unsynchronised
+  #: one. Mirrors `controller/serial.SerialTransport.PRIORITY_LOCK_TIMEOUT`.
+  PRIORITY_LOCK_TIMEOUT = 0.05
+
+  def stop(self, priority=False):
+    """Send ST. With `priority`, never block behind an in-flight transaction.
+
+    `ManagedModel.emergency_stop` "must be fast and must never block", but
+    `_serial_lock` is held for whole transactions here -- a `TS?` poll with
+    retry=10 can hold it for about half a second -- so the ordinary path made
+    a FULL STOP on the rotator queue behind whatever the poller was doing.
+    That is exactly the defect S8 existed to remove, and it survived S8
+    because S8's test built a probe, not a rotator (ROTATOR-8).
+
+    ST takes no argument and expects no response, and the controller treats a
+    repeated stop as a stop, so forcing it through an already-held lock risks
+    a mangled *stop* at worst -- and the alternative is no stop at all. This
+    is the same trade already made for 'd' and 'k' in
+    `controller/serial.write_command` (RC-5 item 2). Never take this path for
+    a motion command.
+    """
+    if not priority:
+      self.sendcmd('ST')
+      return
+
+    acquired = self._serial_lock.acquire(timeout=self.PRIORITY_LOCK_TIMEOUT)
+    if not acquired:
+      print("[SMC100] PRIORITY: lock busy, forcing ST through")
+    try:
+      port = self._port
+      if port is None:
+        return
+      port.write((self._smcID + 'ST').encode('ascii'))
+      port.write(b'\r\n')
+      port.flush()
+    finally:
+      if acquired:
+        self._serial_lock.release()
 
   def get_status(self, silent=False):
     """

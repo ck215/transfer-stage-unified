@@ -693,3 +693,351 @@ def test_a_closed_simulator_refuses_writes_like_a_closed_port():
     t.close()
     with pytest.raises(TransportError):
         t.write_command(b"x")
+
+
+# --------------------------------------------------------------------------
+# ROTATOR-8 — the same contract, on the device S8's test did not cover.
+#
+# S8 was recorded as closing I-5.2 for every device. Its test builds a probe,
+# so the rotator kept the original defect: `emergency_stop` called `stop()`
+# called `smc.stop()` called `sendcmd('ST')`, which takes the SMC100's
+# `_serial_lock` — held for whole poll transactions, up to about half a second
+# each with retry=10. FULL STOP queued behind the poller while the stage
+# turned.
+# --------------------------------------------------------------------------
+
+
+class StallingSMC:
+    """An SMC100 whose serial lock is held by a poll that has stopped answering."""
+
+    def __init__(self):
+        self.stops = []
+        self._serial_lock = threading.Lock()
+
+    def stop(self, priority=False):
+        # The real priority path refuses to wait on the lock; the ordinary one
+        # blocks on it. Model exactly that difference.
+        if priority:
+            self.stops.append("ST")
+            return
+        with self._serial_lock:
+            self.stops.append("ST")
+
+    def move_relative_deg(self, step):
+        time.sleep(STALL)
+
+    def move_absolute_deg(self, target):
+        time.sleep(STALL)
+
+
+def _rotator(smc, position="0"):
+    from model.rotator_system import RotatorSystem
+
+    rotator = RotatorSystem(default_port=None)
+    rotator.smc = smc
+    rotator.is_connected = True
+    # A freshly built rotator has never been polled, so its position is
+    # unknown and ROTATOR-4 makes every relative move ask first. These tests
+    # are about the FULL STOP latch, so give them a known stage.
+    rotator.position = position
+    return rotator
+
+
+def test_rotator_emergency_stop_returns_within_100ms_behind_a_held_serial_lock():
+    """ROTATOR-8. The lock stands in for an in-flight poll transaction."""
+    smc = StallingSMC()
+    rotator = _rotator(smc)
+    smc._serial_lock.acquire()
+    try:
+        start = time.monotonic()
+        rotator.emergency_stop()
+        assert time.monotonic() - start < 0.1
+    finally:
+        smc._serial_lock.release()
+
+
+def test_rotator_emergency_stop_still_reaches_the_hardware():
+    """Returning early must not mean abandoning the stop."""
+    smc = StallingSMC()
+    rotator = _rotator(smc)
+    rotator.emergency_stop()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not smc.stops:
+        time.sleep(0.02)
+    assert smc.stops, "the rotator stop was dropped, not merely deferred"
+
+
+def test_rotator_latches_so_a_queued_move_cannot_land_after_the_stop():
+    """The ST-then-PA race: a move click spawns a worker, FULL STOP is pressed,
+    and the worker then reaches sendcmd and turns the stage anyway."""
+    smc = StallingSMC()
+    rotator = _rotator(smc)
+    rotator.emergency_stop()
+    assert rotator.estop_latched
+    rotator.step_deg = "5"
+    assert rotator.move_relative_positive() is False
+
+
+def test_only_an_explicit_operator_action_clears_the_rotator_latch():
+    rotator = _rotator(StallingSMC())
+    rotator.emergency_stop()
+    rotator.clear_estop()
+    assert not rotator.estop_latched
+    rotator.step_deg = "5"
+    assert rotator.move_relative_positive() is True
+
+
+def test_the_rotator_stop_path_takes_the_priority_write():
+    """A stop that waits on the serial lock is the whole defect. Pin the flag."""
+    calls = []
+
+    class Recorder(StallingSMC):
+        def stop(self, priority=False):
+            calls.append(priority)
+
+    _rotator(Recorder()).emergency_stop()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not calls:
+        time.sleep(0.02)
+    assert calls == [True], f"emergency_stop used priority={calls}"
+
+
+# --------------------------------------------------------------------------
+# DC-18 — the kill-coils write goes through the locked transport, not around it.
+#
+# `power_down` used to call `serial_comm.ser.write(b'k\n')` directly, which
+# bypasses the RLock every other write takes, so a 'k' from a Web request or
+# the interlock watchdog could interleave with a multi-byte manual packet and
+# corrupt a frame. The audit's second half — a watchdog flipping mode
+# booleans while the GUI thread read them — went away with the four booleans
+# themselves in S7; the mode is now one value behind `_mode_lock`.
+# --------------------------------------------------------------------------
+
+
+def test_dc_18_kill_coils_goes_through_the_locked_priority_path():
+    class Recorder(RecordingTransport):
+        def __init__(self):
+            super().__init__()
+            self.priorities = []
+
+        def write_command(self, payload, priority=False):
+            self.priorities.append((payload, priority))
+            self.writes.append(payload)
+
+    transport = Recorder()
+    probe = _probe(transport)
+    probe.power_down()
+    assert (b"k\n", True) in transport.priorities, (
+        "'k' must go through write_command on the priority path, never "
+        f"around the lock via ser.write: {transport.priorities}")
+
+
+def test_dc_18_no_model_writes_around_the_transport_lock():
+    """The structural half: nothing under src/model reaches `.ser.write`."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "src" / "model"
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if re.search(r"\.ser\s*\.\s*write\b", code):
+                offenders.append(f"{path.name}:{lineno}: {line.strip()}")
+    assert not offenders, (
+        "a model wrote to the raw port, bypassing the transport lock "
+        "(DC-18):\n" + "\n".join(offenders))
+
+
+def test_dc_18_the_probe_mode_has_one_writer_under_one_lock():
+    """The flag race is gone because the flags are gone: four booleans set from
+    seven places became one `_mode` written only by `_transition`."""
+    probe = _probe(RecordingTransport())
+    assert hasattr(probe, "_mode_lock")
+    assert not hasattr(probe, "auton_flag_lock")
+    for gone in ("_stop_and_disarm",):
+        assert not hasattr(probe, gone), f"{gone} came back"
+
+
+# --------------------------------------------------------------------------
+# ROTATOR-4 — the +/-30 degree tubing guard cannot be walked past.
+#
+# `move_relative` computed its target from `self.position`, which is whatever
+# the last poll wrote. That is None until the first poll and None again after
+# a reconnect, and the old code turned None into 0.0 — so an unknown position
+# became a known one at the origin. It also could not see a move already in
+# flight, so a stack of clicks each looked safe on its own.
+# --------------------------------------------------------------------------
+
+
+def test_rotator_4_an_unknown_position_is_not_the_origin():
+    """Failure scenario A: the stage is really at 25, the model has never
+    polled, and a +10 step computes to 10 against a default of 0."""
+    from model.rotator_system import RotatorSystem
+
+    rotator = RotatorSystem(default_port=None)
+    rotator.smc = StallingSMC()
+    rotator.step_deg = "10"
+    result = rotator.move_relative_positive()
+    assert result is not True, "an unpolled stage moved without confirmation"
+    assert "unknown" in str(result).lower()
+
+
+def test_rotator_4_stacked_clicks_accumulate_toward_the_guard():
+    """Failure scenario B: at 20 with step 4, five clicks land at 40 because
+    each one recomputes from a position that has not moved yet."""
+    smc = StallingSMC()
+    rotator = _rotator(smc, position="20")
+    rotator.step_deg = "4"
+
+    accepted, confirmations = 0, 0
+    for _ in range(5):
+        result = rotator.move_relative_positive()
+        if result is True:
+            accepted += 1
+        else:
+            confirmations += 1
+    assert confirmations, (
+        f"five +4 clicks from 20 reach 40 and none asked ({accepted} accepted)")
+
+
+def test_rotator_4_the_commanded_target_tracks_accepted_moves():
+    rotator = _rotator(StallingSMC(), position="0")
+    rotator.step_deg = "10"
+    assert rotator.move_relative_positive() is True
+    assert rotator._commanded_target == 10.0
+    assert rotator.move_relative_positive() is True
+    assert rotator._commanded_target == 20.0
+    # 30 is the limit, so the third click is the one that must ask.
+    assert rotator.move_relative_positive() is True   # -> 30, still within
+    assert rotator.move_relative_positive() is not True
+
+
+def test_rotator_4_a_full_stop_makes_the_position_unknown_again():
+    """The stage halts wherever it was, not at the commanded target."""
+    rotator = _rotator(StallingSMC(), position="0")
+    rotator.step_deg = "5"
+    assert rotator.move_relative_positive() is True
+    rotator.emergency_stop()
+    assert rotator._commanded_target is None
+
+
+def test_rotator_4_an_absolute_move_past_the_limit_still_asks():
+    """The case that already worked. Pin it so the ROTATOR-4 fix did not
+    trade one hole for another."""
+    rotator = _rotator(StallingSMC(), position="0")
+    rotator.target_deg = "40"
+    assert rotator.move_absolute() is not True
+    assert rotator.move_absolute(confirmed=True) is True
+
+
+# ---------------------------------------------------------------------------
+# TEMP-7 — the heater's FULL STOP is a latch, not a hope
+#
+# `send_settings` checked `_estop` at the top and then did ~40 lines of work
+# before writing. A FULL STOP landing in that window was overwritten by the
+# frame that was already being built: the operator hit stop, the heater went
+# back to its setpoint, and nothing in the logs said so.
+# ---------------------------------------------------------------------------
+
+
+class StallingHeaterTransport:
+    """A transport whose ordinary writes block until released.
+
+    `is_open()` is the hook the tests use to land a FULL STOP *after*
+    `send_settings` has passed its top-of-method check — that call sits
+    between the check and the write lock.
+    """
+
+    def __init__(self, on_is_open=None):
+        self.writes = []
+        self.gate = threading.Event()
+        self._on_is_open = on_is_open
+
+    def is_open(self):
+        if self._on_is_open is not None:
+            self._on_is_open()
+        return True
+
+    def write_command(self, payload, priority=False):
+        self.writes.append((payload, priority))
+        if not priority:
+            self.gate.wait(2.0)
+
+
+def _heater(transport):
+    from model.temperature_system import TemperatureSystem
+    heater = TemperatureSystem(None)
+    heater.continue_reading = False
+    heater.serial_conn = transport
+    return heater
+
+
+def test_temp_7_a_stop_landing_mid_build_is_not_overwritten():
+    """The check-then-act: latch the stop between the top check and the write."""
+    heater = _heater(None)
+    transport = StallingHeaterTransport(on_is_open=lambda: heater._estop.set())
+    heater.serial_conn = transport
+    heater.setpoint = "300"
+
+    heater.send_settings()
+
+    assert transport.writes == [], (
+        "a settings frame was written after FULL STOP latched: %r"
+        % (transport.writes,))
+
+
+def test_temp_7_emergency_stop_returns_promptly_behind_a_held_write_lock():
+    transport = StallingHeaterTransport()
+    heater = _heater(transport)
+
+    holder = threading.Thread(target=heater.send_settings, daemon=True)
+    holder.start()
+    time.sleep(0.05)          # let it reach the blocking write inside the lock
+
+    start = time.monotonic()
+    heater.emergency_stop()
+    elapsed = time.monotonic() - start
+
+    transport.gate.set()
+    holder.join(2.0)
+
+    assert elapsed < 0.5, f"emergency_stop blocked the caller for {elapsed:.3f}s"
+    assert heater._estop.is_set()
+
+
+def test_temp_7_the_stop_frame_forces_through_a_busy_write_lock():
+    transport = StallingHeaterTransport()
+    heater = _heater(transport)
+
+    holder = threading.Thread(target=heater.send_settings, daemon=True)
+    holder.start()
+    time.sleep(0.05)
+
+    heater.emergency_stop()
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if any(priority for _payload, priority in transport.writes):
+            break
+        time.sleep(0.01)
+
+    transport.gate.set()
+    holder.join(2.0)
+
+    priority_writes = [p for p, priority in transport.writes if priority]
+    assert priority_writes, (
+        "the stop frame never reached the transport: %r" % (transport.writes,))
+    assert priority_writes[-1].startswith("<0,"), priority_writes[-1]
+
+
+def test_temp_7_an_ordinary_send_takes_the_lock_without_a_timeout():
+    """Only the stop path forces. A normal Enter Settings must still queue."""
+    transport = StallingHeaterTransport()
+    heater = _heater(transport)
+    transport.gate.set()
+    heater.setpoint = "20"
+    heater.send_settings()
+    assert len(transport.writes) == 1, transport.writes
+    payload, priority = transport.writes[0]
+    assert priority is False, "an ordinary send must not take the priority path"
+    assert payload.startswith("<20,"), payload
