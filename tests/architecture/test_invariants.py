@@ -212,7 +212,9 @@ def test_i_1_5_active_models_written_only_by_system_manager():
 # write or read that bypassed the transport's lock and its error handling
 # entirely. They now go through write_command()/read_line(), which raise
 # TransportError instead of swallowing failures.
-I_2_3_PATTERN = r"\.ser\."
+# Matches `.ser.` and also `"ser"`/`'ser'` as an attribute name, which is how
+# a getattr(transport, 'ser', None) check slipped past this guard until S8.
+I_2_3_PATTERN = r"\.ser\.|getattr\([^)]*['\"]ser['\"]"
 I_2_3_OWNER = "controller/serial.py"
 
 

@@ -620,3 +620,39 @@ def test_simulator_stays_simulated_across_close():
     t = SerialTransport("SIM")
     t.close()
     assert t.connection_state == ConnectionState.SIMULATED
+
+
+# --------------------------------------------------------------------------
+# RC-5 item 1 / STEPPER-8 — a run that has been superseded stops.
+# --------------------------------------------------------------------------
+
+
+def test_stopping_invalidates_a_script_still_in_flight():
+    """run_script used to spawn an untracked thread with no way to tell it to
+    stop and no way to know it had. Halting relied on the thread noticing that
+    is_stepping/auton_flag had been flipped — flags any other caller could
+    flip back, and which said nothing about *which* run they belonged to."""
+    probe = _probe(RecordingTransport())
+    generation = probe._new_run_generation()
+    assert probe._generation_is_current(generation)
+
+    probe.full_stop()
+    assert not probe._generation_is_current(generation), (
+        "a stopped run still believed it was the current one")
+
+
+def test_a_second_run_supersedes_the_first():
+    probe = _probe(RecordingTransport())
+    first = probe._new_run_generation()
+    second = probe._new_run_generation()
+    assert first != second
+    assert not probe._generation_is_current(first)
+    assert probe._generation_is_current(second)
+
+
+def test_cancel_running_script_is_explicit_and_idempotent():
+    probe = _probe(RecordingTransport())
+    generation = probe._new_run_generation()
+    probe.cancel_running_script()
+    probe.cancel_running_script()
+    assert not probe._generation_is_current(generation)

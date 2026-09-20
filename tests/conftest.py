@@ -196,17 +196,6 @@ _KNOWN_BAD = {
         ("real bug PYSIDE-7: a dropdown with model_attr and no command "
          "reaches getattr(self.model, None) and raises TypeError "
          "(pyside/view.py:315). Schema v2 makes command required.", "S10"),
-    "scripting/test_edge_mvc_scripting.py::test_run_script_gcode_execution_path":
-        ("real bug RC-6: params are untyped strings, so '20' is sent where "
-         "'20.0' is expected. Typed params fix the formatting.", "S9"),
-    "scripting/test_edge_mvc_scripting.py::test_run_script_malformed_gcode":
-        ("real gap RC-8: malformed G-code is swallowed instead of reported; "
-         "no result channel exists yet to carry the refusal.", "S11"),
-    "scripting/test_edge_mvc_scripting.py::test_run_script_unrecognized_actions":
-        ("expects a raw .ser.write passthrough — one of the 11 transport "
-         "bypasses S3 deletes. It currently writes nothing at all; that "
-         "cause is NOT yet diagnosed. Re-author against write_command and "
-         "diagnose the silence then.", "S3"),
 }
 
 
@@ -222,6 +211,22 @@ _KNOWN_BAD = {
 # being process-global, most of this set should dissolve. Do not "fix" one by
 # adding a sleep or loosening a threshold.
 _ORDER_DEPENDENT = {
+    # Three run_script tests moved here from _KNOWN_BAD in S8, because their
+    # *outcome* is order-dependent and a strict xfail cannot express that.
+    # Run alone or per-file they PASS; run in a full composition they fail.
+    # Strict xfail then reports the lone run as XPASS-as-failure and the
+    # composed run as a clean xfail — the marker says "known broken" about a
+    # test that is only conditionally broken, which is worse than silence
+    # because it looks deliberate.
+    #
+    # This also retires a prediction that turned out to be wrong: S8's run
+    # generation token was expected to dissolve this family, and it did not.
+    # The token fixes a script outliving its own run; it does not touch the
+    # remaining shared state, which is ErrorRouter's class-level callbacks
+    # (RC-8). Expect these at S11, not before.
+    "scripting/test_edge_mvc_scripting.py::test_run_script_gcode_execution_path",
+    "scripting/test_edge_mvc_scripting.py::test_run_script_malformed_gcode",
+    "scripting/test_edge_mvc_scripting.py::test_run_script_unrecognized_actions",
     # Passes running tests/core alone; fails in a full-suite composition.
     "core/test_tkinter_teardown.py::test_dashboard_window_teardown_ordering",
     # Wall-clock assertions (>= 0.28 s, ">= 5 reads per poller") that miss

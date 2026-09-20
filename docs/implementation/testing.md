@@ -183,7 +183,14 @@ entry it owns to be removed rather than left XPASSing.
    node IDs, do not reconcile totals by arithmetic.
 5. **New tests carry a concern marker**, or they will not run in any
    targeted gate.
-6. **Run the isolation pass at every stage boundary, not just the final
+6. **A test whose *outcome* is order-dependent belongs in
+   `order_dependent`, never in `known_bad`.** Strict `xfail` reports such a
+   test as XPASS-as-failure when run alone and as a clean xfail when run in
+   composition — so the marker asserts "known broken" about something that is
+   only conditionally broken, and the composed sweep stays silent. Three
+   `run_script` tests sat like that until S8. If a `known_bad` entry passes
+   when you run its file alone, it is in the wrong list.
+7. **Run the isolation pass at every stage boundary, not just the final
    one.** `order_dependent` tests are excluded from the fast gate, every
    concern gate *and* the main sweep, so nothing routine touches them. In S5
    this was found the hard way: `test_dashboard_window_teardown_ordering`

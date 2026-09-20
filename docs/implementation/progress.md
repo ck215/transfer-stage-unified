@@ -731,6 +731,51 @@ generation token — this is what should finally dissolve the four
 `order_dependent` `run_script` tests) and item 4 (SIM as an explicit
 simulated transport that ACKs, rather than `ser=None`).
 
+### 2026-09-20 — S8 item 1: run generation tokens, and a prediction that was wrong
+
+Fast gate: 296 passed, 4 xfailed. Scripting gate: 6 passed.
+
+**`run_script` spawned an untracked thread with no way to stop it and no way
+to know it had.** Halting relied on the thread noticing that `is_stepping` or
+`auton_flag` had been flipped — flags any *other* caller could flip back, and
+which said nothing about **which run** they belonged to. Starting a second
+script, or stopping and starting again, left the first thread still writing
+to the port while the operator believed the device was stopped (STEPPER-8).
+
+Every run now carries a generation. `_stop_and_disarm` bumps it, so a stop
+invalidates whatever is in flight; the run notices at its next step and
+returns. `teardown` cancels and joins the script thread. The old
+`getattr(self.serial_comm, 'ser', None)` check went with it — and **that
+getattr is how a transport bypass slipped past I-2.3 until now**, since the
+invariant only matched `.ser.` with a trailing dot. The pattern now catches
+the getattr form too.
+
+**The prediction I recorded in S5 was wrong, and that matters more than the
+token.** I wrote that item 1 would dissolve the four `order_dependent`
+`run_script` tests. It did not. The token fixes a script outliving its own
+run; it does not touch the remaining shared state, which is `ErrorRouter`'s
+class-level callbacks (RC-8). **Expect that family at S11, not before.**
+
+**Three tests moved from `known_bad` to `order_dependent`, and the reason is
+a policy point worth keeping.** `test_run_script_gcode_execution_path`,
+`test_run_script_malformed_gcode` and `test_run_script_unrecognized_actions`
+**pass when run alone and fail only in composition** — their *outcome* is
+order-dependent. A strict `xfail` cannot express that: it reports the lone
+run as XPASS-as-failure and the composed run as a clean xfail, so the marker
+asserts "known broken" about a test that is only conditionally broken. That
+is worse than no marker, because it looks deliberate.
+
+Verified they XPASS at `87b34a1` too, so this predates today's work. **The
+main sweep never showed it** — the composed run xfails quietly, and only a
+per-file run reveals the XPASS. That is the third time this stage that a
+defect hid inside a separated pass.
+
+`test_run_script_unrecognized_actions` also got the diagnosis its quarantine
+note demanded: it was watching `serial_comm.ser.write`, one of the 11 raw
+bypasses S3 deleted. The model writes through `write_command()` now, so
+`.ser.write` is never called and the assertion saw silence. **The behaviour
+was correct the whole time; the test was watching the wrong object.**
+
 ---
 
 ## Finding ledger
@@ -898,7 +943,7 @@ it) · `n/a` (with a reason).
 | STEPPER-5 | RC3 | S7 | root cause | open |
 | STEPPER-6 | RC3 | S7 | root cause | open |
 | STEPPER-7 | RC5 / RC3 | S8 | root cause | open |
-| STEPPER-8 | RC5 | S8 | root cause | open |
+| STEPPER-8 | RC5 | S8 | root cause | closed (test_stopping_invalidates_a_script_still_in_flight, tests/core/test_transport_truth.py) |
 | STEPPER-9 | RC2 / LOCAL-OK | S3 | explicit | open |
 | STEPPER-10 | RC7 | S10 | root cause | open |
 | STEPPER-11 | RC6 / RC7 / RC3 | S9 | root cause | open |

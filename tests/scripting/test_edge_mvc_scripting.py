@@ -98,8 +98,10 @@ def test_run_script_non_utf8(probe, tmp_path):
         assert isinstance(exc, UnicodeDecodeError)
 
 def test_run_script_no_serial_port_sim(probe, tmp_path):
-    # In SIM mode, serial_comm might exist but serial_comm.ser is None
-    probe.serial_comm.ser = None
+    # A transport that exists but has no usable link. This used to be
+    # expressed as `serial_comm.ser = None`, reaching past the transport to
+    # the pyserial handle; the model asks is_open() now (invariant I-2.3).
+    probe.serial_comm.is_open.return_value = False
     file_path = tmp_path / "valid.gcode"
     file_path.write_text("G0 X10")
     
@@ -144,21 +146,31 @@ def test_run_script_macro_halting(probe, tmp_path):
         assert probe.serial_comm.send_autonomous_command.call_count < 4
 
 def test_run_script_unrecognized_actions(probe, tmp_path):
+    """Non-G-code lines go out through the transport, not around it.
+
+    Re-authored in S8, and the diagnosis the quarantine note asked for is
+    this: the test was watching `serial_comm.ser.write`, one of the 11 raw
+    transport bypasses S3 deleted. The model writes through
+    `write_command()` now, so `.ser.write` is never called and the assertion
+    saw silence. The behaviour was correct the whole time; the test was
+    watching the wrong object.
+    """
     # Test fallback path for comma separated strings
     file_path = tmp_path / "raw.gcode"
     file_path.write_text("raw,command,str")
-    
-    probe.run_script(str(file_path))
-    _wait_until(lambda: probe.serial_comm.ser.write.called)
 
-    probe.serial_comm.ser.write.assert_called_once_with(b"raw,command,str\n")
+    probe.serial_comm.write_command.reset_mock()
+    probe.run_script(str(file_path))
+    _wait_until(lambda: probe.serial_comm.write_command.called)
+
+    probe.serial_comm.write_command.assert_called_once_with("raw,command,str\n")
 
     # Test M-codes fallback
-    probe.serial_comm.ser.write.reset_mock()
+    probe.serial_comm.write_command.reset_mock()
     file_path2 = tmp_path / "mcode.gcode"
     file_path2.write_text("M104 S200")
 
     probe.run_script(str(file_path2))
-    _wait_until(lambda: probe.serial_comm.ser.write.called)
+    _wait_until(lambda: probe.serial_comm.write_command.called)
 
-    probe.serial_comm.ser.write.assert_called_once_with(b"M104 S200\n")
+    probe.serial_comm.write_command.assert_called_once_with("M104 S200\n")

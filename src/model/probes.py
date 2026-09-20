@@ -105,6 +105,20 @@ class BaseProbe:
         self._sample_thread = None
         self.last_sample_time = 0.0
 
+        # Run generation token (RC-5 item 1, STEPPER-8).
+        #
+        # run_script used to spawn an untracked thread with no way to tell it
+        # to stop and no way to know it had. Halting depended on the thread
+        # noticing that is_stepping/auton_flag had been flipped — which any
+        # *other* caller could flip back, and which said nothing about *which*
+        # run those flags belonged to. Starting a second script, or stopping
+        # and starting again, left the first thread still writing to the port.
+        # Every run now carries a generation; a run whose generation is stale
+        # stops at its next step.
+        self._run_lock = threading.Lock()
+        self._run_id = 0
+        self._script_thread = None
+
     @property
     def vel_x(self):
         state = self.poller.get_mapped_state() if self.poller else {}
@@ -228,6 +242,20 @@ class BaseProbe:
         else:
             self.enter_auton()
 
+    def _new_run_generation(self):
+        """Invalidate any run in flight and return a token for the new one."""
+        with self._run_lock:
+            self._run_id += 1
+            return self._run_id
+
+    def _generation_is_current(self, generation):
+        with self._run_lock:
+            return self._run_id == generation
+
+    def cancel_running_script(self):
+        """Invalidate any script in flight. It stops at its next step."""
+        self._new_run_generation()
+
     def _enter_fault(self, reason):
         """Record that the hardware state is unknown (RC-2)."""
         self.fault_reason = reason
@@ -315,6 +343,8 @@ class BaseProbe:
         print(f"[{self.__class__.__name__}] Parsing and executing script: {script_path}")
         self.enter_auton()
 
+        generation = self._new_run_generation()
+
         def _execute():
             self.is_stepping = True
             try:
@@ -327,7 +357,7 @@ class BaseProbe:
                     gcode_content = f.read()
                 
                 # Check if serial connection is active
-                if not getattr(self.serial_comm, 'ser', None):
+                if not self.serial_comm.is_open():
                     raise AttributeError("Serial connection not active.")
                 
                 # Support both GcodeParser and parse_gcode_lines
@@ -341,6 +371,9 @@ class BaseProbe:
                     lines = []
 
                 for line in lines:
+                    if not self._generation_is_current(generation):
+                        print(f"[{self.__class__.__name__}] Script run superseded; stopping.")
+                        return
                     if not self.is_stepping or not self.auton_flag:
                         print(f"[{self.__class__.__name__}] Script execution halted by user state override.")
                         break
@@ -396,7 +429,10 @@ class BaseProbe:
             finally:
                 self.full_stop()
 
-        threading.Thread(target=_execute, daemon=True).start()
+        self._script_thread = threading.Thread(
+            target=_execute, daemon=True,
+            name=f"script-{self.__class__.__name__}-{generation}")
+        self._script_thread.start()
 
     def get_params(self):
         return {
@@ -599,6 +635,10 @@ class BaseProbe:
         self.manual_flag = False
         self.auton_flag = False
         self.is_stepping = False
+        # Any script still running belongs to a previous generation now, so
+        # it stops at its next step instead of writing to a port that the
+        # operator believes is stopped (STEPPER-8).
+        self._new_run_generation()
         self._interlock_stop.set()
         try:
             self.send_stop_command()
@@ -664,6 +704,13 @@ class BaseProbe:
             self.power_down()
         except Exception as e:
             print(f"[{self.__class__.__name__}] Hardware stop failed during teardown: {e}")
+        try:
+            self.cancel_running_script()
+            thread = self._script_thread
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=2.0)
+        except Exception as e:
+            print(f"[{self.__class__.__name__}] Cancelling script failed during teardown: {e}")
         try:
             self.stop_loops()
         except Exception as e:
