@@ -1,18 +1,16 @@
 import sys
 import os
-import csv
 import traceback
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QDockWidget, QListWidget, QWidget, 
-    QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout, QFrame, 
-    QMessageBox, QListWidgetItem, QDialog, QFileDialog, QFormLayout, 
-    QComboBox, QTextEdit, QCheckBox
+    QApplication, QMainWindow, QDockWidget, QListWidget, QWidget,
+    QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout, QFrame,
+    QMessageBox, QListWidgetItem, QDialog, QFileDialog, QFormLayout,
+    QComboBox, QTextEdit
 )
 from PySide6.QtCore import Qt, QTimer, QObject, Signal, QEvent
 from PySide6.QtGui import QPainter, QColor, QPen, QDoubleValidator, QTextCursor
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
-from matplotlib.figure import Figure
 
 from model import schema as sch
 from model import devices
@@ -141,10 +139,10 @@ class ControllerLogWindow(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle("Controller Log Window")
         self.resize(500, 400)
-        self.layout = QVBoxLayout(self)
+        self._layout = QVBoxLayout(self)
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
-        self.layout.addWidget(self.text_edit)
+        self._layout.addWidget(self.text_edit)
 
     def append_log(self, message):
         self.text_edit.append(message)
@@ -166,7 +164,7 @@ class QtDynamicView(QWidget):
         super().__init__(parent)
         self.model = model
         self.poll_interval_ms = 50
-        self.layout = QVBoxLayout(self)
+        self._layout = QVBoxLayout(self)
         self.vars = {}  # attr -> QLineEdit/QLabel
         self.toggle_buttons = []
         # Controls whose availability depends on the model's mode
@@ -450,12 +448,15 @@ class QtDynamicView(QWidget):
 
                 elif el_type == "internal":
                     # Registers a command in the schema-derived allowlist
-                    # without rendering anything.
-                    pass
+                    # without rendering anything. `row_layout` was never
+                    # populated for this type, so it must not reach
+                    # `addRow` below — an empty QHBoxLayout still adds a
+                    # blank spaced row to the QFormLayout (PYSIDE-17).
+                    continue
 
                 card_layout.addRow(row_layout)
-            self.layout.addWidget(card)
-        self.layout.addStretch()
+            self._layout.addWidget(card)
+        self._layout.addStretch()
 
     #: `role` -> stylesheet. The schema names the meaning; the palette is
     #: this renderer's business. Elements used to carry raw bg/fg hex that
@@ -771,17 +772,17 @@ class PlotDialog(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle("Data Plotter")
         self.resize(800, 600)
-        self.layout = QVBoxLayout(self)
+        self._layout = QVBoxLayout(self)
 
         self.top_frame = QHBoxLayout()
-        self.layout.addLayout(self.top_frame)
+        self._layout.addLayout(self.top_frame)
 
         self.load_btn = QPushButton("Select & Load CSV File")
         self.load_btn.clicked.connect(self.load_csv)
         self.top_frame.addWidget(self.load_btn)
 
         self.plot_frame = QVBoxLayout()
-        self.layout.addLayout(self.plot_frame)
+        self._layout.addLayout(self.plot_frame)
         self.canvas = None
         self.toolbar = None
 
