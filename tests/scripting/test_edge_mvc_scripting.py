@@ -51,10 +51,30 @@ class MockGcodeParser:
             self.lines.append(MockLine(("G", 0), {}, "G0"))
 
 mock_gcodeparser.GcodeParser = MockGcodeParser
-sys.modules['gcodeparser'] = mock_gcodeparser
 
 from model.probes import BaseProbe
 from error_routing import ErrorRouter
+
+
+@pytest.fixture(autouse=True)
+def _mock_parser():
+    """Patch the name `model.probes` actually uses, not `sys.modules`.
+
+    This file used to install the mock with `sys.modules['gcodeparser'] =
+    mock_gcodeparser` at import time and then import model.probes. That works
+    only when this file is what *first* imports model.probes. Any earlier
+    test file that imports it — and several do — binds `probes.gcodeparser`
+    to the real library, and this file's mock is then never seen.
+
+    The consequence was not a clean failure. The real parser yields
+    `{'X': 10.5, 'Y': 20, 'F': 100}` with Y as an **int**, so `str(Y)` is
+    '20'; the mock yields `20.0`, so it is '20.0'. Tests here passed alone
+    and failed in composition, and the difference looked like flakiness
+    rather than what it was: two different parsers.
+    """
+    with patch.object(sys.modules["model.probes"], "gcodeparser", mock_gcodeparser):
+        yield
+
 
 @pytest.fixture
 def probe():

@@ -836,6 +836,46 @@ commands-carry-their-inputs, which kills the stale-value class in all three
 views at once). Item 2 overlaps S10's schema v2; do them together if S10 is
 near.
 
+### 2026-09-20 — the flaky-test diagnosis was wrong, and here is what it actually was
+
+**Seven `order_dependent` tests are gone.** The quarantine is down from ten
+entries to three. And the cause was **neither** of the two things this trail
+has been asserting since the first session.
+
+It was not `ErrorRouter`'s process-global callbacks (RC-8). It was not
+STEPPER-8's untracked script thread — S8's generation token did not move
+them, which was the first clue that the diagnosis was wrong.
+
+`tests/scripting/test_edge_mvc_scripting.py` installed its mock parser with
+`sys.modules['gcodeparser'] = mock_gcodeparser` **at import time**, then
+imported `model.probes`. That works only if this file is what *first*
+imports `model.probes`. Several earlier test files import it, and when they
+do, `probes.gcodeparser` is already bound to the real library — the mock is
+never seen.
+
+**It did not look like a wiring mistake because the two parsers disagree
+subtly.** The real parser yields `{'X': 10.5, 'Y': 20, 'F': 100}` with Y as
+an **int**, so `str(Y)` is `'20'`. The mock yields `20.0`, so it is `'20.0'`.
+Same test, two parsers, different answers, decided by import order. The
+symptom was an assertion about *number formatting*, which is exactly what
+RC-6 is about — so it read as a real product bug and was quarantined as one.
+Two of these tests sat in `known_bad` blaming RC-6 and RC-8 respectively.
+
+The fix is one autouse fixture patching `model.probes.gcodeparser` — the
+name the module actually uses — instead of mutating `sys.modules`. All
+thirteen tests in the file now pass identically across repeated runs.
+
+**What this costs, honestly:** `test_run_script_gcode_execution_path` was
+quarantined as covering RC-6 and it never did. Under the mock it asserts
+`'20.0'` and passes; the `'20'` it produced in composition came from the real
+parser, not from the untyped-parameter defect. **RC-6's script-path coverage
+has to be written fresh in S9 item 3** — it was never there.
+
+**The method that found it was the one that should have been used first:**
+reading the actual assertion values instead of reasoning from the audit's
+list of process-global suspects. Two plausible root causes, both real
+defects in their own right, both innocent here.
+
 ---
 
 ## Finding ledger

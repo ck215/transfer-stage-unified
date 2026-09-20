@@ -212,46 +212,28 @@ _KNOWN_BAD = {
 # being process-global, most of this set should dissolve. Do not "fix" one by
 # adding a sleep or loosening a threshold.
 _ORDER_DEPENDENT = {
-    # Three run_script tests moved here from _KNOWN_BAD in S8, because their
-    # *outcome* is order-dependent and a strict xfail cannot express that.
-    # Run alone or per-file they PASS; run in a full composition they fail.
-    # Strict xfail then reports the lone run as XPASS-as-failure and the
-    # composed run as a clean xfail — the marker says "known broken" about a
-    # test that is only conditionally broken, which is worse than silence
-    # because it looks deliberate.
-    #
-    # This also retires a prediction that turned out to be wrong: S8's run
-    # generation token was expected to dissolve this family, and it did not.
-    # The token fixes a script outliving its own run; it does not touch the
-    # remaining shared state, which is ErrorRouter's class-level callbacks
-    # (RC-8). Expect these at S11, not before.
-    "scripting/test_edge_mvc_scripting.py::test_run_script_gcode_execution_path",
-    "scripting/test_edge_mvc_scripting.py::test_run_script_malformed_gcode",
-    "scripting/test_edge_mvc_scripting.py::test_run_script_unrecognized_actions",
     # Passes running tests/core alone; fails in a full-suite composition.
     "core/test_tkinter_teardown.py::test_dashboard_window_teardown_ordering",
     # Wall-clock assertions (>= 0.28 s, ">= 5 reads per poller") that miss
     # when other tests' background threads are competing for the GIL.
     "web/test_web_server.py::test_thread_safety_concurrent_requests",
     "web/test_web_setup.py::test_thread_concurrency_setup_and_telemetry",
-    # The run_script family. All four pass alone and per-directory, and fail
-    # nondeterministically in a full composition: across four identical
-    # sweeps, missing_file and no_serial_port_sim failed once each, then
-    # macro_halting and non_utf8 failed once each.
     #
-    # Two process-global mechanisms, both of them findings:
-    #   - run_script spawns an untracked thread with no run token or
-    #     generation (STEPPER-8, RC-5), so a previous test's script thread
-    #     can still be executing during the next test's assertions.
-    #   - ErrorRouter's callbacks are class-level process state that the
-    #     _reset_global_error_routing fixture clears after every test
-    #     (RC-8), so whether a report lands depends on what ran before.
-    # Expect this set to dissolve when S3/S8 give run_script a generation
-    # token and S11 makes the router an instance-scoped bus.
-    "scripting/test_edge_mvc_scripting.py::test_run_script_missing_file",
-    "scripting/test_edge_mvc_scripting.py::test_run_script_no_serial_port_sim",
-    "scripting/test_edge_mvc_scripting.py::test_run_script_macro_halting",
-    "scripting/test_edge_mvc_scripting.py::test_run_script_non_utf8",
+    # The seven run_script tests that lived here are GONE as of S9, and the
+    # cause was not what this file predicted. It was not ErrorRouter's
+    # process-global callbacks and it was not STEPPER-8's untracked thread.
+    # The test file installed its mock parser with
+    # `sys.modules['gcodeparser'] = mock` at import time, which only works if
+    # that file is what *first* imports model.probes — and several earlier
+    # files import it, binding probes.gcodeparser to the real library.
+    #
+    # The failure did not look like a wiring mistake because the two parsers
+    # disagree *subtly*: the real one yields Y as an int, so str(Y) is '20',
+    # while the mock yields 20.0, so it is '20.0'. Same test, two parsers,
+    # different answers, decided by import order.
+    #
+    # Patching `model.probes.gcodeparser` directly made all thirteen tests in
+    # that file pass identically across repeated runs.
 }
 
 

@@ -99,6 +99,14 @@ the product):
 
 ### `order_dependent` — the test is fine, the harness leaks
 
+> **Seven of these were retired in S9, and the recorded cause was wrong.**
+> The `run_script` family was blamed on `ErrorRouter`'s process-global
+> callbacks and on STEPPER-8's untracked thread. It was neither: the test
+> file installed its mock parser via `sys.modules` at import time, so it only
+> took effect when that file happened to import `model.probes` first. Two
+> parsers, one test, outcome decided by import order. Read the assertion
+> values before reaching for the audit's list of usual suspects.
+
 Registry: `_ORDER_DEPENDENT` in `tests/conftest.py`. These **pass in
 isolation and fail in composition**, so `xfail` would be wrong — it would
 XPASS the moment anyone ran the test alone. They are excluded from targeted
@@ -208,6 +216,12 @@ consecutive sweeps. Qt pass: 10. Order-dependent: 7. Known-bad: 10. Slow: 56.*
 *After S0 and S1: 272 collected (+9 invariant tests, −1 test deleted with the
 feature it covered). Fast gate: 206 selected — 199 pass, 7 xfail. Every delta
 accounted for by node-ID diff against `b37cc9a`.*
+
+*After S9 (2026-09-20): main pass **390 passed, 6 xfailed**, identical across
+three consecutive sweeps (~3:15). Qt: 7 passed, 2 xfailed. Order-dependent:
+**3**, down from 10 — seven retired when the `run_script` family turned out
+to be a mock-parser import-order problem, not the process-global state this
+file had blamed. `known_bad`: 5.*
 
 *After S5 part 2: fast gate 272 pass, 6 xfail (~38 s). The xfail count has
 fallen from 9 as invariants started holding — **I-1.5 retired in S2, I-2.3 in
