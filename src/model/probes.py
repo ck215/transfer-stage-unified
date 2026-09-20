@@ -16,6 +16,27 @@ class BaseProbe:
     _INTERLOCK_POLL_INTERVAL = 5
     _INTERLOCK_TIMEOUT = 300
 
+    # Per-class fallbacks for motion parameters (RC-6 item 1).
+    #
+    # These were hardcoded at each `_num(...)` call site — `_num(self.x_step,
+    # 16)`, `_num(self.full_speed, 400)` — which are BaseProbe's numbers. A
+    # DCProbe declares full_speed "120" and man_full_speed "120", but if its
+    # value failed to parse (an empty field is enough) the fallback handed
+    # the firmware **400**: more than three times the speed that probe is
+    # configured for. The fallback has to belong to the class, not to the
+    # call site.
+    PARAM_DEFAULTS = {
+        "x_step": 16, "y_step": 16, "z_step": 16,
+        "full_speed": 400, "man_full_speed": 400,
+        "x_dist": 0, "y_dist": 0, "z_dist": 0,
+        "slow_speed": 0, "brake_distance": 0,
+    }
+
+    def _param(self, name, *, minimum=None, integer=False):
+        """A motion parameter, coerced against *this class's* default."""
+        return _num(getattr(self, name), self.PARAM_DEFAULTS[name],
+                    minimum=minimum, integer=integer)
+
     # The one documented rate for each model-owned loop (RC-4).
     #
     # Manual commands: Tk drove this at 50 ms and PySide at 20 ms, so the two
@@ -436,15 +457,15 @@ class BaseProbe:
 
     def get_params(self):
         return {
-            "x_step_size": _num(self.x_step, 16, minimum=1, integer=True),             
-            "y_step_size": _num(self.y_step, 16, minimum=1, integer=True),              
-            "z_step_size": _num(self.z_step, 16, minimum=1, integer=True),              
-            "full_speed": _num(self.full_speed, 400, minimum=1),           
+            "x_step_size": self._param("x_step", minimum=1, integer=True),
+            "y_step_size": self._param("y_step", minimum=1, integer=True),
+            "z_step_size": self._param("z_step", minimum=1, integer=True),
+            "full_speed": self._param("full_speed", minimum=1),
             "slow_speed": 0,           
             "brake_distance": 0,   
-            "x_dist": _num(self.x_dist, 0),                   
-            "y_dist": _num(self.y_dist, 0),                   
-            "z_dist": _num(self.z_dist, 0),  
+            "x_dist": self._param("x_dist"),
+            "y_dist": self._param("y_dist"),
+            "z_dist": self._param("z_dist"),
             "command_code_manual": int(self.manual_flag),               
             "command_code_auton": int(self.auton_flag)                      
         }
@@ -476,14 +497,14 @@ class BaseProbe:
                 "y_axisStatus": controller_params.get("y_axisStatus", 0.0),
                 "z_axisStatusR": controller_params.get("z_axisStatusR", -1.0),
                 "z_axisStatusL": controller_params.get("z_axisStatusL", -1.0),
-                "x_stepSize": _num(self.x_step, 16, minimum=1, integer=True),
-                "y_stepSize": _num(self.y_step, 16, minimum=1, integer=True),
-                "z_stepSize": _num(self.z_step, 16, minimum=1, integer=True),
+                "x_stepSize": self._param("x_step", minimum=1, integer=True),
+                "y_stepSize": self._param("y_step", minimum=1, integer=True),
+                "z_stepSize": self._param("z_step", minimum=1, integer=True),
                 "dpad_LR": controller_params.get("dpad_LR", 0),
                 "dpad_UD": controller_params.get("dpad_UD", 0),
                 "LBumper": controller_params.get("LBumper", 0),
                 "RBumper": controller_params.get("RBumper", 0),
-                "manual_jog_speed": _num(self.man_full_speed, 400, minimum=1),
+                "manual_jog_speed": self._param("man_full_speed", minimum=1),
                 "packet_format": self.packet_format
             }
             if self._refuse_if_estopped("manual command"):
@@ -773,6 +794,8 @@ class BaseProbe:
 
 
 class StepperProbe(BaseProbe):
+    PARAM_DEFAULTS = dict(BaseProbe.PARAM_DEFAULTS, **{"x_step": 1, "y_step": 1, "z_step": 1})
+
     def __init__(self, port, controller_id, active_claims=None):
         super().__init__(port, controller_id, active_claims)
         self.x_step = "1"
@@ -781,6 +804,14 @@ class StepperProbe(BaseProbe):
 
 
 class DCProbe(BaseProbe):
+    # A DC probe runs at 120, not the stepper's 400. Before this table the
+    # fallback was the stepper's number at every call site.
+    PARAM_DEFAULTS = dict(
+        BaseProbe.PARAM_DEFAULTS,
+        x_step=1, y_step=1, z_step=1,
+        full_speed=120, man_full_speed=120,
+    )
+
     def __init__(self, port, controller_id, active_claims=None):
         super().__init__(port, controller_id, active_claims)
         self.packet_format = PACKET_FORMAT
@@ -805,12 +836,14 @@ class DCProbe(BaseProbe):
 
     def get_params(self):
         params = super().get_params()
-        params["slow_speed"] = _num(self.slow_speed, 0)
-        params["brake_distance"] = _num(self.brake_distance, 0)
+        params["slow_speed"] = self._param("slow_speed")
+        params["brake_distance"] = self._param("brake_distance")
         return params
 
 
 class ChuckPositioner(BaseProbe):
+    PARAM_DEFAULTS = dict(BaseProbe.PARAM_DEFAULTS, **{"x_step": 2, "y_step": 2, "z_step": 2})
+
     def __init__(self, port, controller_id, active_claims=None):
         super().__init__(port, controller_id, active_claims)
         self.x_step = "2"

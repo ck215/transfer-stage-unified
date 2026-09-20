@@ -1,5 +1,5 @@
 from controller.serial import serial
-from model.numeric import num
+from model.numeric import num, safe_float
 import threading
 import time
 
@@ -97,6 +97,35 @@ class TemperatureSystem:
                 spdelay = "0"
         except OverflowError:
             spdelay = "0"
+
+        # Every field is validated before the frame is built (RC-6 item 4).
+        #
+        # These values used to be interpolated raw. An empty field is enough
+        # to produce "<,6.0,2.0,0.5,.1,0>", and the firmware parses that
+        # with strtok — which does not see an empty field, it sees the *next*
+        # one. Every parameter after the blank shifts left, so the board is
+        # handed the ramp rate as its setpoint and the gains as everything
+        # else. A blank box silently commands the wrong temperature with the
+        # wrong gains; refusing is the only safe answer.
+        fields = {
+            "Setpoint": self.setpoint,
+            "P": self.p_term,
+            "I": self.i_term,
+            "D": self.d_term,
+            "Offset": self.offset,
+        }
+        invalid = [name for name, value in fields.items()
+                   if safe_float(value) is None]
+        if invalid:
+            msg = (f"[{self.__class__.__name__}] Refusing to send: "
+                   f"{', '.join(invalid)} is not a number. Nothing was sent.")
+            print(msg)
+            try:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_warning("Temperature Settings Invalid", msg)
+            except Exception:
+                pass
+            return
 
         if self.serial_conn and self.serial_conn.is_open():
             msg = f"[{self.__class__.__name__}] Sending: Setpoint={self.setpoint}C, Ramp={self.ramp_rate}s/°C (delay={spdelay}s), P={self.p_term}, I={self.i_term}, D={self.d_term}, Offset={self.offset}"

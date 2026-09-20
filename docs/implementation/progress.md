@@ -56,7 +56,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S6 | Hide/show semantics (D-1) | blocked | | 2026-09-20 | **BLOCKED on D-2.** Prerequisite S5 is done; the owner decision is not. |
 | S7 | Probe mode state machine (RC-3) | blocked | | 2026-09-20 | **BLOCKED on D-2.** Same decision as S6. |
 | S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
-| S9 | Typed parameters (RC-6) | todo | | | |
+| S9 | Typed parameters (RC-6) | partial | | 2026-09-20 | Items 1 and 4 done (both speed/temperature hazards). Items 2 and 3 remain. |
 | S10 | Schema v2, three renderers (RC-7) | todo | | | |
 | S11 | Result channel and event bus (RC-8) | todo | | | |
 | S12 | Composition root, registry events | todo | | | |
@@ -803,6 +803,39 @@ from `known_bad` because their outcome was conditional rather than broken.
 BLOCKED on D-2**, and D-12 plus the S5 manual-rate change are still waiting
 on an owner ruling.
 
+### 2026-09-20 — S9 items 1 and 4: two silent wrong-value hazards
+
+Params gate: 10 passed. New `tests/core/test_typed_params.py`: 32 tests.
+
+**A DC probe could be handed the stepper's speed.** `get_params` coerced
+every value with hardcoded fallbacks — `_num(self.x_step, 16)`,
+`_num(self.full_speed, 400)` — which are *BaseProbe's* numbers. A `DCProbe`
+declares `full_speed = "120"` and `man_full_speed = "120"`, but an empty or
+unparseable field was enough for the fallback to send the firmware **400**:
+more than three times the speed that probe is configured for, with nothing
+on screen indicating a substitution had happened. The fallback now belongs to
+the class (`PARAM_DEFAULTS`), not to the call site, and a parametrised test
+checks every probe class against every flavour of bad input.
+
+**A blank temperature field commanded the wrong temperature.** The setpoint
+and gains were interpolated raw into the frame, so an empty box produced
+`"<,6.0,2.0,0.5,.1,0>"`. The firmware parses that with `strtok`, and
+**strtok does not see an empty field — it sees the next one.** Every
+parameter after the blank shifts left, so the board takes the ramp rate as
+its setpoint and the gains as everything else. This is a heater. The frame is
+now validated field by field and refused as a whole, with the offending field
+named.
+
+Both are the same shape: a value that failed to parse was silently replaced
+with something plausible rather than refused, and the operator had no way to
+tell. That is the RC-6 thesis in two concrete cases.
+
+**Remaining in S9:** item 2 (type and bounds declared in the schema so views
+stop inferring numeric-ness by trying `float()`) and item 3 (D-5's
+commands-carry-their-inputs, which kills the stale-value class in all three
+views at once). Item 2 overlaps S10's schema v2; do them together if S10 is
+near.
+
 ---
 
 ## Finding ledger
@@ -980,7 +1013,7 @@ it) · `n/a` (with a reason).
 | STEPPER-15 | RC4 | S5 | root cause | open |
 | TEMP-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | TEMP-2 | RC2 | S3 | root cause | open |
-| TEMP-3 | RC6 | S9 | root cause | open |
+| TEMP-3 | RC6 | S9 | root cause | closed (test_a_non_numeric_field_refuses_the_whole_frame, tests/core/test_typed_params.py) |
 | TEMP-4 | RC6 | S9 | root cause | open |
 | TEMP-5 | RC1 | S2 | root cause | open (mitigated S2 INTERIM: close affordance removed; D-1 hide/show lands in S6) |
 | TEMP-6 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
