@@ -139,10 +139,17 @@ unintended state).
   request. See that doc for the prioritized subset and the `__del__`
   caveat (destructor-triggered popups are **not recommended** — interpreter
   shutdown timing risk).
-- Two independently-maintained `ErrorPopupManager`/`QtErrorPopupManager`
+- ~~Two independently-maintained `ErrorPopupManager`/`QtErrorPopupManager`
   implementations (PySide6 vs. Tkinter) with the same truncation/exception-
-  formatting logic duplicated, not shared. Small maintainability risk, not
-  an active bug.
+  formatting logic duplicated, not shared.~~ **Partly closed at S11
+  (`409c859`).** Both are thin subscribers on one `EventBus` now rather
+  than two owners of the same global callback slots, and the routing,
+  rate-limiting and severity rules they used to each implement live in
+  `error_routing.py`. The `_format` truncation helper is still written
+  twice, once per toolkit — and it was "not an active bug" until the
+  rewrite dropped an `or ""` guard from one copy and a `None` message made
+  it raise *while formatting an error*. Duplicated formatting logic is now
+  covered by a test, which is the cheaper half of de-duplicating it.
 
 ## Design questions raised but not decided
 

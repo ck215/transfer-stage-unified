@@ -312,3 +312,28 @@ wall-clock assertions and both were predicted to dissolve at S11. **Read
 their actual assertion values before believing that.** A timing threshold
 that misses under GIL contention is not obviously an `ErrorRouter` problem,
 and this prediction has now been wrong three times.*
+
+*After S11 (2026-09-20): fast gate **505 passed, 1 xfailed** (~59 s); full
+sweep **564 passed, 1 xfailed** (~3 min 18 s, `order_dependent` included);
+Qt **35 passed** (~6 s). Quarantine still empty. The one xfail is I-7.1,
+owned by S12.*
+
+*Two things about this file's own machinery changed at S11.*
+
+*First, **`tests/conftest.py` was duplicated end to end** — lines 1-543 and
+544-1011 byte-identical, so every fixture and `pytest_collection_modifyitems`
+itself were defined twice and only the **second** copy was live. The marker
+logic that decides what `slow`, `qt`, `known_bad` and `order_dependent` mean
+was in the duplicated region. **Any conftest change made between S0 and S10
+that landed in the first half never ran.** If a fixture does not behave the
+way its source says, check that first. The duplicate is gone and a comment
+marks the join.*
+
+*Second, the **`order_dependent` pair passed in full composition five times
+running** — three of those at `7cc5f3c`, before S11 existed. They are
+deliberately **still marked**. Both are wall-clock assertions about the HTTP
+server (a request under 0.25 s; four pollers over five reads each), neither
+has anything to do with the `ErrorRouter` change that was predicted to fix
+them, and passing on an idle machine is not evidence of a fix. The likeliest
+cause is that S10's un-ignoring of `tests/ui` changed what runs alongside
+them. Do not retire the marker without knowing which.*

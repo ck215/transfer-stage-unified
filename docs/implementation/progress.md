@@ -58,7 +58,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
 | S9 | Typed parameters (RC-6) | done | `79d2d97` | 2026-09-20 | All 4 items. `Param` table + D-5 `apply_inputs`. Landed with S10. |
 | S10 | Schema v2, three renderers (RC-7) | done | `7cc5f3c` | 2026-09-20 | All 5 items. Qt pass resolved (it hung, it did not abort). `tests/ui` un-excluded: +83 tests in the fast gate. I-7.2 built; known_bad now empty. |
-| S11 | Result channel and event bus (RC-8) | todo | | | |
+| S11 | Result channel and event bus (RC-8) | done | `409c859` | 2026-09-20 | All 4 items. `CommandResult` + `EventBus`; one `install_exception_hooks`. I-8.1–I-8.3 hold. conftest.py was duplicated end to end; half of it was dead. |
 | S12 | Composition root, registry events | todo | | | |
 | S13 | MonitoringRun (RC-11) | todo | | | |
 | S14 | Remaining web work | todo | | | **Unblocked 2026-09-20** — D-8 answered (warn/FULL STOP tiers). |
@@ -1451,40 +1451,163 @@ composite is `tests/ui/test_composites.py`.
 * One new test pins the D-1 poller fix:
   `test_closing_a_view_does_not_close_the_models_poller`.
 
+### 2026-09-20 — S11 closed: the result channel, the bus, and a conftest that was half dead
+
+**The order-dependent prediction was wrong again, and this time in the
+useful direction.** The resume note said to read the two remaining
+`order_dependent` tests' assertions before believing they would dissolve at
+S11, because that prediction had already failed three times. Read: neither
+touches error routing. `test_thread_safety_concurrent_requests` asserts a
+fast HTTP request finishes in under 0.25 s while a slow one sleeps 0.3 s;
+`test_thread_concurrency_setup_and_telemetry` asserts each of four poller
+threads got more than five reads. Both are wall-clock assertions about the
+HTTP server, and no `ErrorRouter` change could touch either.
+
+Then they both **passed in full composition**, five runs out of five — three
+at `7cc5f3c` before any S11 code existed, twice more after. So the fourth
+prediction was wrong in its reasoning and accidentally right in its
+conclusion: they no longer fail in composition, and nothing in S11 is why.
+**They are still marked `order_dependent` and they should stay that way
+until somebody knows what changed.** A wall-clock threshold that passes on
+an idle machine is not a fixed test; the most likely explanation is that
+S10's un-ignoring of `tests/ui` reshuffled what runs alongside them. Do not
+retire the marker on the strength of five green runs.
+
+#### `tests/conftest.py` was duplicated end to end, and half of it was dead
+
+Lines 1-543 and 544-1011 were **byte-identical**. Every fixture, every
+helper class, `DummyTkWidget`, `DummyTkNotebook`, `ManagedStub`, and
+`pytest_collection_modifyitems` itself were each defined twice, and Python
+keeps the last binding — so only the second copy was ever live. The first
+half is the half you reach by reading the file from the top.
+
+Found by accident: a `bus.clear()` added to `_reset_global_error_routing`
+at line 501 had no effect, because the definition at line 988 shadowed it.
+The halves were diffed before either was removed; they differed only by
+that one edit, so the deletion was safe. A comment now sits at the join.
+
+This is worth more than the line count suggests. Any conftest edit made in
+S0 through S10 that happened to land in the first half did nothing, silently,
+and the marker logic that decides what `slow`, `qt`, `known_bad` and
+`order_dependent` mean was among the duplicated code.
+
+#### What S11 built
+
+* **`src/results.py`** — `Ok` / `Refused(reason)` / `Failed(exc)` /
+  `NeedsConfirmation`. `execute_command` always returns one, and `bool()`
+  is true only for `Ok`, so call sites that tested the return value kept
+  their meaning. S10's `NeedsConfirmation` moved into the family keeping
+  its constructor and attribute names, so no S10 dialog code moved.
+* **`error_routing.py` is an `EventBus`** — an instance with a module-level
+  default, not class state, so a test can build its own. Monotonic ids,
+  many subscribers instead of one callback trio, every mutation under a
+  lock, and subscriber callbacks invoked **outside** the lock so a
+  subscriber that publishes cannot deadlock.
+* **The rate limit folds rather than drops.** Keyed on
+  `(severity, source, title)` rather than the message text, and a repeat
+  inside the window increments `count` on the existing event instead of
+  vanishing. The old behaviour left one line in the log for a fault that
+  had lasted a minute, with nothing to say it had recurred — the log lied
+  about duration. I-8.2 is asserted against a fake clock: twelve reports
+  over 55 s produce one event, one notification, and a recorded span.
+* **A modal needs `requires_ack`, and only an `error` may set it** —
+  `publish` raises otherwise. That makes TEMP-12, the info popup on every
+  "Temperature Send", inexpressible rather than merely fixed. Both desktop
+  views gained a non-modal event log panel for everything else.
+* **`install_exception_hooks()`** replaces three divergent copies.
+  `threading.excepthook` existed in the web launcher only;
+  `report_callback_exception` nowhere.
+
+#### Two defects neither RC-8 nor the plan named
+
+* **A `None` message made the popup formatter raise while formatting an
+  error** — `text = event.message` then `text +=`. The old code had an
+  `or ""` guard and the rewrite dropped it. Caught immediately by a
+  re-authored test, which is the second time this stage that re-pointing an
+  old test at the new API found a live bug instead of just moving an
+  assertion. (The first: `/api/errors`.)
+* **The Tk manager was re-bound to the dashboard** at `app.py:436` after
+  already being bound to the process-lifetime `SetupWindow`. That is
+  ERRORS-5 / VIEW-TKINTER-2 / MANAGER-17 in the launcher rather than in the
+  manager, and no amount of rewriting `ErrorPopupManager` would have fixed
+  it.
+
+#### Tests
+
+Thirteen re-authored, none deleted. Three pinned `set_callbacks` and the
+text-keyed dedup; one asserted that a second read of `/api/errors` comes
+back empty — ERRORS-2 written down as a requirement; four expected a modal
+for every severity; five read `assert ... is False` for a refusal. Nine new
+tests cover the bus itself, including 8 threads × 50 publishes asserting
+400 unique ids.
+
+**PYSIDE-10 closed without the fix its audit proposed.** That entry asked
+for try/except around `_poll_model` and `_route_input` plus dedup in the
+excepthook. Neither was added. A repeating timer exception now folds into
+one event for 60 s, so it produces one modal rather than one per tick, and
+the popup storm is unreachable — the guard the audit wanted would be
+protecting against something that can no longer happen.
+
+Verified, all four passes this session: fast gate **505 passed, 1 xfailed**
+(~59 s); Qt **35 passed** (~6 s); full sweep with `order_dependent`
+included **564 passed, 1 xfailed** (~3 min 18 s). The xfail is I-7.1,
+owned by S12.
+
+#### Left open on purpose
+
+* **ERRORS-3 and WEB-9's replay half.** The destructive pop is gone, but a
+  tab connecting with `since=0` still pulls the entire history as toasts,
+  which is the flood-on-connect the audit describes. The shape of the
+  answer is probably that the event log panel carries history and only new
+  events raise toasts — that is a UI decision, and it belongs with the rest
+  of the web work in **S14**.
+* **ERRORS-3's console echo.** Once any subscriber exists the bus stops
+  printing. Tk and PySide both print through their own paths; Web does not.
+* **ERRORS-9's view-level surfaces.** PySide's CSV-column checks still open
+  `QMessageBox` directly, and Web still has no equivalent.
+* **Plan item 2 is only half done.** The consequence — no text-keyed dedup
+  — is in. The audit of *which* call sites should publish only on a
+  transition rather than on every tick was not done; the rate limit is
+  currently absorbing that, which is a backstop standing in for a design.
+
 ### Resume here (next session)
 
-**S10 is done.** Working tree state and commit are in the stage table above.
+**S11 is done** (`409c859`). S10 is `7cc5f3c`. Working tree clean.
+
 In order:
 
-1. **S11 — result channel and event bus (RC-8).** The last two
-   `order_dependent` tests were predicted to dissolve here. **Read their
-   actual assertion values before believing that prediction — it has now been
-   wrong three times.** Both are wall-clock assertions
-   (`test_thread_safety_concurrent_requests`,
-   `test_thread_concurrency_setup_and_telemetry`); a timing threshold that
-   misses under load is not obviously an `ErrorRouter` problem, and the last
-   two quarantine diagnoses that blamed the architecture turned out to be
-   harness wiring.
-2. S11 is also where the view-side `QMessageBox.critical` calls in
-   `_run_element` and the dropdown handler should stop being the error path.
-   They are what hung this suite, and a result channel is the thing that
-   replaces them. Do not simply patch the modals away in tests.
-3. **S12** deletes `web_adapter`'s Red Percent linking block, which is what
-   retires the I-7.1 `xfail`. Do **not** bump the I-7.1 baseline to make it
-   green in the meantime.
+1. **S12 — composition root and registry events (RC-9).** `app_bootstrap`
+   becomes the single composition root all three launchers call, and
+   `SystemManager` emits `registered`/`released` so `RedPercentSystem`
+   maintains `available_probes` itself. That deletes the Red Percent
+   linking block currently copy-pasted at **five** sites, which is what
+   retires the I-7.1 `xfail` — the one remaining xfail in the suite.
+   **Do not bump the I-7.1 baseline to make it green in the meantime.**
+2. Item 3 of S12 — disabled devices are not constructed, and
+   `_disabled_in_setup` goes. Note `tests/core/test_view_round1.py` sets
+   that attribute on a mock probe explicitly; it will need updating.
+3. **S13 (Red Percent)** then picks up the CSV-review question S10 left:
+   reviewing a saved run is PySide-only, and whether Tk and Web should
+   have it wants a new element type.
 
-Two S10 threads deliberately left open rather than widened into this stage:
+**Two standing warnings, both earned.**
 
-* **PYSIDE-12 is `open (mitigated)`,** not closed. The direct `focus_area`
-  write and the modal over the always-on-top overlay are fixed and tested;
-  the instruction label, crosshair cursor and `setFocus`/`activateWindow` are
-  not, and the Linux transparency issue in `known-issues.md` needs a bench
-  run either way.
-* **Reviewing a saved run from a CSV is PySide-only.** The `plot` composite
-  is the *live* series in all three renderers now, and the CSV loader sits
-  beside it as its own button. Whether Tk and the Web client should have it
-  too is a schema question — it wants an element type — and it belongs to
-  **S13**, with the rest of Red Percent.
+* **The `order_dependent` pair passed five times in a row this session,
+  three of them before S11 existed.** They are still marked. Read the S11
+  log entry before deciding what that means — the honest reading is that
+  nobody knows what changed, and a wall-clock threshold passing on an idle
+  machine is not a fixed test.
+* **Any conftest edit older than S11 may never have run.** The file was
+  duplicated end to end and only the second half was live. If a fixture
+  seems not to behave the way its code says, that is why — and check
+  whether the S0-S10 change you are relying on landed in the dead half.
+
+Two S10 threads still open, unchanged by this stage:
+
+* **PYSIDE-12 is `open (mitigated)`.** The instruction label, crosshair
+  cursor and `setFocus`/`activateWindow` are not done, and the Linux
+  transparency issue needs a bench run.
+* **Reviewing a saved run from a CSV is PySide-only** — see S13 above.
 
 ### Still waiting on the owner
 
@@ -1540,18 +1663,18 @@ it) · `n/a` (with a reason).
 | DC-17 | RC4 / RC3 | S5 | root cause | closed (RC-4 half in S5; RC-3 half in S7 — mode transitions own their side effects, tests/core/test_probe_mode.py) |
 | DC-18 | RC5 / RC2 | S8 | root cause | open |
 | DC-19 | RC7 | S10 | root cause | open |
-| ERRORS-1 | RC8 / RC7 | S11 | root cause | open |
-| ERRORS-2 | RC8 / RC10 | S11 | root cause | open |
-| ERRORS-3 | RC8 | S11 | root cause | open |
-| ERRORS-4 | RC8 | S11 | root cause | open |
-| ERRORS-5 | RC8 | S11 | root cause | open |
+| ERRORS-1 | RC8 / RC7 | S11 | root cause | closed (`CommandResult`; test_i_8_1_a_refused_command_is_distinguishable_from_a_successful_one) |
+| ERRORS-2 | RC8 / RC10 | S11 | root cause | closed (`/api/errors?since=`; test_api_logs_and_errors, re-authored — it used to assert the destructive read) |
+| ERRORS-3 | RC8 | S11 | root cause | open (mitigated) — the single-consumer pop is closed; **no console echo once a subscriber exists** and **flood-on-first-connect** both remain, the second now by way of a `since=0` cursor pulling all history |
+| ERRORS-4 | RC8 | S11 | root cause | closed (`install_exception_hooks`; test_i_8_3_every_launcher_installs_the_same_hooks, test_a_thread_exception_reaches_the_bus) |
+| ERRORS-5 | RC8 | S11 | root cause | closed (manager binds to the process-lifetime root, never the dashboard; the `after` loop reschedules in a `finally`) |
 | ERRORS-6 | RC2 | S3 | root cause | open |
 | ERRORS-7 | RC2 / RC8 / RC11 | S3 | root cause | open |
-| ERRORS-8 | RC8 | S11 | root cause | open |
-| ERRORS-9 | RC8 | S11 | root cause | open |
-| ERRORS-10 | RC8 | S11 | root cause | open |
+| ERRORS-8 | RC8 | S11 | root cause | closed (locked bus, key is `(severity, source, title)`; test_publishing_from_many_threads_loses_nothing, test_repeats_fold_into_one_event_with_a_count) |
+| ERRORS-9 | RC8 | S11 | root cause | open (mitigated) — command failures route identically in all three views now; the **view-level** surfaces the finding actually names (PySide's CSV-column checks, and Web having no equivalent) are still direct dialogs that bypass the bus |
+| ERRORS-10 | RC8 | S11 | root cause | closed (the rate limit no longer runs ahead of the no-subscriber print; test_with_no_subscriber_the_bus_prints) |
 | ERRORS-11 | doc | S0 | root cause | open |
-| ERRORS-12 | RC10 | S4 | root cause | open |
+| ERRORS-12 | RC10 | S4 | root cause | open — but the failure it describes (an error published before the dashboard exists, lost when a second `WebModelAdapter` replaces the first) can no longer happen: S11 made the bus, not the adapter buffer, the source of truth for `/api/errors`. Left to S4 to retire the `_BufferProxy` structure itself |
 | GAMEPAD-1 | RC4 | S5 | root cause | open |
 | GAMEPAD-2 | RC13 | S5 | root cause | open |
 | GAMEPAD-3 | RC3 | S7 | root cause | closed (test_a_failed_controller_swap_does_not_claim_the_controller) |
@@ -1588,7 +1711,7 @@ it) · `n/a` (with a reason).
 | MANAGER-14 | LOCAL-OK | S1 | explicit | closed (test_d9_macos_defaults_to_tkinter, test_manager14_launcher_rejects_unknown_flags) |
 | MANAGER-15 | RC10 | S4 | root cause | closed (test_window_and_server_read_the_live_manager_not_a_stored_copy, tests/web/test_web_security.py) |
 | MANAGER-16 | RC13 | S5 | root cause | open |
-| MANAGER-17 | RC8 | S11 | root cause | open |
+| MANAGER-17 | RC8 | S11 | root cause | closed (same fix as ERRORS-5) |
 | MANAGER-18 | RC9 | S12 | root cause | open |
 | MANAGER-19 | RC5 | S8 | root cause | open |
 | MANAGER-20 | RC4 | S5 | root cause | open |
@@ -1601,12 +1724,12 @@ it) · `n/a` (with a reason).
 | PYSIDE-7 | RC7 | S10 | root cause | closed (schema v2 makes the shape inexpressible: test_a_dropdown_cannot_be_declared_without_a_command; the quarantined test XPASSed and was re-authored) |
 | PYSIDE-8 | RC7 | S10 | root cause | open |
 | PYSIDE-9 | RC4 | S5 | root cause | open |
-| PYSIDE-10 | RC8 / RC4 | S11 | root cause | open |
+| PYSIDE-10 | RC8 / RC4 | S11 | root cause | closed (the storm is unreachable: a repeating timer exception folds into one event for 60 s, so one modal, not one per tick. `_poll_model` still has no local try/except — it no longer needs one) |
 | PYSIDE-11 | LOCAL-OK | S15 | explicit | closed (S10: the unreachable `continue`-first file_picker branch replaced by the file_save composite) |
 | PYSIDE-12 | RC7 | S10 | root cause | open (mitigated) — the direct `focus_area` write and the modal-behind-the-overlay are closed (test_pyside_region_select_runs_the_declared_command, test_selection_overlay_mouse_drag); the instruction label, crosshair cursor and setFocus/activateWindow remain, and the Linux transparency issue is bench work |
 | PYSIDE-13 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | PYSIDE-14 | RC4 | S5 | root cause | closed (D-4; deferred activeWindow check distinguishes a child dialog, tests/core/test_tkinter_teardown.py + pyside _app_has_focus) |
-| PYSIDE-15 | RC8 | S11 | root cause | open |
+| PYSIDE-15 | RC8 | S11 | root cause | closed (`threading.excepthook` now installed by every launcher) |
 | PYSIDE-16 | LOCAL-OK | S15 | explicit | open |
 | PYSIDE-17 | LOCAL-OK | S15 | explicit | open |
 | PYSIDE-18 | LOCAL-OK | S15 | explicit | open |
@@ -1618,7 +1741,7 @@ it) · `n/a` (with a reason).
 | REDPERCENT-4 | RC11 | S13 | root cause | open |
 | REDPERCENT-5 | RC11 | S13 | root cause | open |
 | REDPERCENT-6 | RC7 | S10 | root cause | open |
-| REDPERCENT-7 | RC8 / RC7 | S11 | root cause | open |
+| REDPERCENT-7 | RC8 / RC7 | S11 | root cause | closed (result part: refusals are `Refused` and render as refusals) |
 | REDPERCENT-8 | RC7 | S10 | root cause | open |
 | REDPERCENT-9 | RC11 | S13 | root cause | open |
 | REDPERCENT-10 | RC7 | S10 | root cause | open |
@@ -1634,7 +1757,7 @@ it) · `n/a` (with a reason).
 | REDPERCENT-20 | LOCAL-OK | S15 | explicit | open |
 | ROTATOR-1 | RC1 / RC5 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
 | ROTATOR-2 | RC10 | S14 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
-| ROTATOR-3 | RC8 / RC7 | S11 | root cause | open |
+| ROTATOR-3 | RC8 / RC7 | S11 | root cause | closed (a >30° refusal is a `Refused` carrying its reason, not a silent `None`) |
 | ROTATOR-4 | RC5 | S8 | root cause | open |
 | ROTATOR-5 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | ROTATOR-6 | RC4 | S5 | root cause | open |
@@ -1646,7 +1769,7 @@ it) · `n/a` (with a reason).
 | ROTATOR-12 | RC6 | S9 | root cause | closed (S9 item 2: rotator params typed and bounded) |
 | ROTATOR-13 | RC2 / RC8 | S3 | root cause | open |
 | ROTATOR-14 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
-| ROTATOR-15 | RC8 / doc | S11 | root cause | open |
+| ROTATOR-15 | RC8 / doc | S11 | root cause | open — routing is uniform now, but the dead `error_callback` hook and the doc errors are untouched |
 | SERIAL-1 | RC2 | S3 | root cause | closed (test_a_failed_disable_faults_instead_of_claiming_the_system_is_off, tests/core/test_transport_truth.py) |
 | SERIAL-2 | RC1 | S2 | root cause | closed (test_probe_teardown_sends_hardware_stop_when_poller_stop_raises, tests/core/test_lifecycle_teardown.py) |
 | SERIAL-3 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
@@ -1662,7 +1785,7 @@ it) · `n/a` (with a reason).
 | SERIAL-13 | RC2 | S3 | root cause | open |
 | SERIAL-14 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | SERIAL-15 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
-| SERIAL-16 | RC8 | S11 | root cause | open |
+| SERIAL-16 | RC8 | S11 | root cause | open (mitigated) — the misleading throttle is gone (repeats fold and carry a count); the per-site audit of which `serial.py` conditions should report rather than print is not done |
 | SERIAL-17 | RC2 / LOCAL-OK | S3 | explicit | open |
 | SERIAL-18 | RC1 | S2 | root cause | closed (reboot_model deleted; test_system_manager_reconfigure_replaces_the_model_set) |
 | SERIAL-19 | doc | S0 | root cause | open |
@@ -1692,10 +1815,10 @@ it) · `n/a` (with a reason).
 | TEMP-9 | LOCAL-OK | S15 | explicit | open |
 | TEMP-10 | RC2 / RC8 | S3 | root cause | open |
 | TEMP-11 | RC1 / RC2 / doc | S2 | root cause | open |
-| TEMP-12 | RC8 | S11 | root cause | open |
+| TEMP-12 | RC8 | S11 | root cause | closed (an info popup is inexpressible: `publish` raises on `requires_ack` for anything but an error; test_a_quiet_event_raises_no_modal) |
 | TEMP-13 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | VIEW-TKINTER-1 | RC1 | S2 | root cause | closed (Tk got a real re-add path; test_tk_hide_is_reversible, tests/core/test_tkinter_teardown.py) |
-| VIEW-TKINTER-2 | RC8 | S11 | root cause | open |
+| VIEW-TKINTER-2 | RC8 | S11 | root cause | closed (same fix as ERRORS-5) |
 | VIEW-TKINTER-3 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |
 | VIEW-TKINTER-4 | RC3 | S7 | root cause | closed (test_losing_the_controller_leaves_manual_mode_entirely) |
 | VIEW-TKINTER-5 | RC4 | S5 | root cause | open |
@@ -1720,15 +1843,15 @@ it) · `n/a` (with a reason).
 | WEB-6 | RC7 | S10 | root cause | open |
 | WEB-7 | RC7 | S10 | root cause | open |
 | WEB-8 | RC4 / RC10 | S5 | root cause | open |
-| WEB-9 | RC8 | S11 | root cause | open |
+| WEB-9 | RC8 | S11 | root cause | closed (`/api/errors?since=`; the destructive pop is gone and each tab keeps its own cursor). **The replay half survives**: a tab connecting with `since=0` still pulls the whole history as toasts — see ERRORS-3 |
 | WEB-10 | RC10 | S4 | root cause | open |
 | WEB-11 | RC7 | S10 | root cause | open |
-| WEB-12 | RC8 | S11 | root cause | open |
+| WEB-12 | RC8 | S11 | root cause | closed (`CommandResult`; a refusal is never rendered as success) |
 | WEB-13 | RC11 | S13 | root cause | open |
 | WEB-14 | RC10 | S14 | root cause | open |
 | WEB-15 | RC9 | S12 | root cause | open |
 | WEB-16 | LOCAL-OK | S15 | explicit | open |
-| WEB-17 | RC10 | S14 | root cause | open |
+| WEB-17 | RC10 | S14 | root cause | closed early in S11 (the destructive pop was the RC-8 half; `?since=` fixed it) |
 | WEB-18 | RC5 / RC8 | S8 | root cause | open |
 | WEB-19 | RC10 | S14 | root cause | open |
 | WEB-20 | RC1 | S2 | root cause | open |

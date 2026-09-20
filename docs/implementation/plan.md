@@ -549,7 +549,12 @@ to make it green.
    `threading.excepthook` and Tk `report_callback_exception`, called by
    every launcher, bound to the process-lifetime root.
 
-**Invariants.** I-8.1, I-8.2, I-8.3.
+**Invariants.** I-8.1, I-8.2, I-8.3. **Done 2026-09-20, `409c859`.** Items
+1, 3 and 4 in full. Item 2 in part: the *consequence* — no text-keyed dedup
+— is in, because the rate limit keys on `(severity, source, title)` and
+folds repeats into one event with a count. The audit of which call sites
+should publish only on a transition rather than on every tick was not done,
+so the rate limit is currently a backstop standing in for that design.
 
 ---
 
