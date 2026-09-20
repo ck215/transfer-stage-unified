@@ -68,72 +68,66 @@ the stage lands and the test starts passing, pytest reports XPASS **as a
 failure**, which forces someone to re-author the test and update the ledger.
 A quarantine that goes stale silently is how suites rot.
 
-Ten tests, in two kinds:
+**Seven tests**, all of one kind now: **stale tests asserting behavior that
+was deliberately removed.** Re-author them when their stage lands; the
+product is right and the test is wrong.
 
-**Stale — asserting behavior that was deliberately removed** (re-author them;
-the product is right and the test is wrong):
-
-- Five tests assert `manual_flag` becomes True after `enter_manual()` with
-  no gamepad bound. Commit `046533f` made that refuse — that fix is *why*
-  manual mode no longer energizes coils with no pad attached. Owned by
-  **S7**, which redefines the mode contract as `ProbeMode`.
+- Five assert `manual_flag` becomes True after `enter_manual()` with no
+  gamepad bound. Commit `046533f` made that refuse — that fix is *why* manual
+  mode no longer energizes coils with no pad attached. Owned by **S7**, which
+  redefines the mode contract as `ProbeMode`. **S7 is blocked on D-2**, so
+  expect these to sit for a while.
 - `test_pyside_redpercent_sync_and_probe_controls` asserts `view.sync_cbs`,
-  the duplicate hand-built checkbox row deleted in `046533f` as
-  known-issues #5. The test guards a redundancy we removed on purpose.
-  Owned by **S10**.
-
-**Real product bugs — the test is right and fails honestly** (the stage fixes
-the product):
-
+  the duplicate hand-built checkbox row deleted in `046533f` as known-issues
+  #5. It guards a redundancy removed on purpose. **S10**.
 - `test_pyside_dashboard_sidebar_dock_sync` — PYSIDE-7: a dropdown with
   `model_attr` and no `command` reaches `getattr(self.model, None)` and
-  raises `TypeError` (`pyside/view.py:315`). **S10**.
-- `test_run_script_gcode_execution_path` — RC-6: untyped string params send
-  `'20'` where `'20.0'` is expected. **S9**.
-- `test_run_script_malformed_gcode` — RC-8: malformed G-code is swallowed;
-  there is no result channel to carry a refusal. **S11**.
-- `test_run_script_unrecognized_actions` — expects a raw `.ser.write`
-  passthrough, one of the 11 transport bypasses S3 deletes. It currently
-  writes nothing at all, and **that silence is not yet diagnosed** — do that
-  in S3 rather than assuming.
+  raises `TypeError`. This one is a real product bug. **S10**.
+
+Three entries left this list in S8 and S9 and the reasons are worth keeping:
+
+- `test_run_script_unrecognized_actions` was quarantined with "the silence is
+  **not yet diagnosed**". It is now: the test watched `serial_comm.ser.write`,
+  one of the 11 raw bypasses S3 deleted. The model writes through
+  `write_command()`, so `.ser.write` is never called. The behavior was correct
+  all along; the test was watching the wrong object.
+- `test_run_script_gcode_execution_path` (blamed on RC-6) and
+  `test_run_script_malformed_gcode` (blamed on RC-8) were **not product bugs
+  at all** — see the correction below. Both were mock-parser artefacts.
+  **`test_run_script_gcode_execution_path` therefore never provided the RC-6
+  script-path coverage it was credited with. That coverage has to be written
+  fresh in S9 item 3.**
 
 ### `order_dependent` — the test is fine, the harness leaks
 
-> **Seven of these were retired in S9, and the recorded cause was wrong.**
-> The `run_script` family was blamed on `ErrorRouter`'s process-global
-> callbacks and on STEPPER-8's untracked thread. It was neither: the test
-> file installed its mock parser via `sys.modules` at import time, so it only
-> took effect when that file happened to import `model.probes` first. Two
-> parsers, one test, outcome decided by import order. Read the assertion
-> values before reaching for the audit's list of usual suspects.
+> **Seven of these were retired in S9, and the cause recorded here was
+> wrong.** The `run_script` family was blamed on `ErrorRouter`'s
+> process-global callbacks (RC-8) and on STEPPER-8's untracked thread. It was
+> neither — S8's generation token landing without moving them was the first
+> clue. The test file installed its mock parser with
+> `sys.modules['gcodeparser'] = mock` at import time, which only takes effect
+> when that file is what *first* imports `model.probes`; several earlier
+> files import it.
+>
+> It did not read as a wiring mistake because the two parsers disagree
+> subtly: the real one yields `Y` as an **int**, so `str(Y)` is `'20'`, while
+> the mock yields `20.0`, so it is `'20.0'`. Same test, two parsers, outcome
+> decided by import order — and the symptom was an assertion about number
+> formatting, which is exactly what RC-6 looks like.
+>
+> **Read the actual assertion values before reaching for the audit's list of
+> process-global suspects.**
 
 Registry: `_ORDER_DEPENDENT` in `tests/conftest.py`. These **pass in
 isolation and fail in composition**, so `xfail` would be wrong — it would
 XPASS the moment anyone ran the test alone. They are excluded from targeted
 and default runs and get their own pass at the end.
 
-Seven tests: a Tk teardown-ordering test; two web tests with wall-clock
-assertions (`>= 0.28 s`, "at least 5 reads per poller") that miss when other
-tests' threads compete for the GIL; and the four `run_script` tests.
-
-The `run_script` set was found by running four identical sweeps and
-collecting which tests failed: `missing_file` and `no_serial_port_sim`
-failed once each, then `macro_halting` and `non_utf8` failed once each —
-never the same pair twice. Two process-global mechanisms explain it, and
-**both are findings in the audit, not test defects**:
-
-- `run_script` spawns an untracked thread with **no run token or
-  generation** (STEPPER-8, RC-5), so a previous test's script thread can
-  still be executing during the next test's assertions.
-- `ErrorRouter`'s callbacks are class-level process state that the
-  `_reset_global_error_routing` fixture clears after every test (RC-8), so
-  whether a report lands depends on what ran before.
-
-That is the same process-global theme as **RC-5**, **RC-8** and **RC-13**,
-so this set should largely dissolve as those stages land — the suite's
-flakiness is a symptom of the architecture under repair, which is worth
-remembering before blaming the tests. **Do not "fix" one by adding a sleep
-or loosening a threshold.**
+**Three tests** remain: a Tk teardown-ordering test, and two web tests with
+wall-clock assertions (`>= 0.28 s`, "at least 5 reads per poller") that miss
+when other tests' threads compete for the GIL. **Do not "fix" one by adding a
+sleep or loosening a threshold** — for the wall-clock pair the threshold *is*
+the assertion.
 
 ### Qt is isolated, not disabled
 
@@ -141,7 +135,7 @@ or loosening a threshold.**
 chflags self-heal does not fully prevent). Separately, every test using
 `qapp`/`qtbot` is auto-marked `qt` by fixture — exactly, not by filename —
 so the main sweep can run `-m "not qt"` and survive a Qt abort with its
-results intact. The Qt pass is 8 tests and about 2 seconds; if it aborts,
+results intact. The Qt pass is 7 tests and about 3 seconds; if it aborts,
 rerun just that pass.
 
 ## Per-stage gates
