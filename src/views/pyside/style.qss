@@ -39,11 +39,6 @@ QLabel#valueLabel {
     padding: 4px;
 }
 
-QLabel#fileLabel {
-    color: #E5B567;
-    font-size: 10px;
-}
-
 QLineEdit {
     background-color: #2D2D30;
     border: 1px solid #3E3E42;
@@ -88,12 +83,19 @@ QPushButton#toggleFalse:hover {
     background-color: #A80000;
 }
 
-QPushButton#filePicker {
-    background-color: #CA5010;
+QPushButton#fullStopButton {
+    background-color: #D13438;
     color: #FFFFFF;
+    font-weight: bold;
+    font-size: 14px;
+    padding: 10px;
+    border-radius: 4px;
 }
-QPushButton#filePicker:hover {
-    background-color: #A93C08;
+QPushButton#fullStopButton:hover {
+    background-color: #A80000;
+}
+QPushButton#fullStopButton:pressed {
+    background-color: #7A0000;
 }
 
 QComboBox {
@@ -149,19 +151,4 @@ QTextEdit {
     color: #73D073;
     font-family: 'Courier New', monospace;
     border-radius: 4px;
-}
-
-QCheckBox {
-    spacing: 8px;
-}
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1px solid #3E3E42;
-    border-radius: 3px;
-    background-color: #2D2D30;
-}
-QCheckBox::indicator:checked {
-    background-color: #0078D4;
-    border-color: #0078D4;
 }

@@ -1,18 +1,16 @@
 import sys
 import os
-import csv
 import traceback
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QDockWidget, QListWidget, QWidget, 
-    QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout, QFrame, 
-    QMessageBox, QListWidgetItem, QDialog, QFileDialog, QFormLayout, 
-    QComboBox, QTextEdit, QCheckBox
+    QApplication, QMainWindow, QDockWidget, QListWidget, QWidget,
+    QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout, QFrame,
+    QMessageBox, QListWidgetItem, QDialog, QFileDialog, QFormLayout,
+    QComboBox, QTextEdit
 )
 from PySide6.QtCore import Qt, QTimer, QObject, Signal, QEvent
 from PySide6.QtGui import QPainter, QColor, QPen, QDoubleValidator, QTextCursor
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
-from matplotlib.figure import Figure
 
 from model import schema as sch
 from model import devices
@@ -141,10 +139,10 @@ class ControllerLogWindow(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle("Controller Log Window")
         self.resize(500, 400)
-        self.layout = QVBoxLayout(self)
+        self._layout = QVBoxLayout(self)
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
-        self.layout.addWidget(self.text_edit)
+        self._layout.addWidget(self.text_edit)
 
     def append_log(self, message):
         self.text_edit.append(message)
@@ -166,7 +164,7 @@ class QtDynamicView(QWidget):
         super().__init__(parent)
         self.model = model
         self.poll_interval_ms = 50
-        self.layout = QVBoxLayout(self)
+        self._layout = QVBoxLayout(self)
         self.vars = {}  # attr -> QLineEdit/QLabel
         self.toggle_buttons = []
         # Controls whose availability depends on the model's mode
@@ -450,12 +448,15 @@ class QtDynamicView(QWidget):
 
                 elif el_type == "internal":
                     # Registers a command in the schema-derived allowlist
-                    # without rendering anything.
-                    pass
+                    # without rendering anything. `row_layout` was never
+                    # populated for this type, so it must not reach
+                    # `addRow` below — an empty QHBoxLayout still adds a
+                    # blank spaced row to the QFormLayout (PYSIDE-17).
+                    continue
 
                 card_layout.addRow(row_layout)
-            self.layout.addWidget(card)
-        self.layout.addStretch()
+            self._layout.addWidget(card)
+        self._layout.addStretch()
 
     #: `role` -> stylesheet. The schema names the meaning; the palette is
     #: this renderer's business. Elements used to carry raw bg/fg hex that
@@ -771,33 +772,43 @@ class PlotDialog(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle("Data Plotter")
         self.resize(800, 600)
-        self.layout = QVBoxLayout(self)
+        self._layout = QVBoxLayout(self)
 
         self.top_frame = QHBoxLayout()
-        self.layout.addLayout(self.top_frame)
+        self._layout.addLayout(self.top_frame)
 
         self.load_btn = QPushButton("Select & Load CSV File")
         self.load_btn.clicked.connect(self.load_csv)
         self.top_frame.addWidget(self.load_btn)
 
         self.plot_frame = QVBoxLayout()
-        self.layout.addLayout(self.plot_frame)
+        self._layout.addLayout(self.plot_frame)
         self.canvas = None
         self.toolbar = None
+        self._csv_metadata = None
 
     def load_csv(self):
         from model.plot_data import parse_red_percent_csv, render_red_percent_figure
         filename, _ = QFileDialog.getOpenFileName(self, "Select Red Percent Log", "", "CSV Files (*.csv);;All Files (*)")
         if not filename: return
         try:
-            with open(filename, 'r') as f:
+            # `newline=''` matches the Tk reference and `save_to_csv`'s own
+            # writer: `csv` handles line endings itself, and opening without
+            # it lets a CRLF file be double-translated on Windows.
+            with open(filename, 'r', newline='') as f:
                 parsed = parse_red_percent_csv(f.read())
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load CSV: {e}")
             return
-        if not parsed["dims"] and not parsed["red_percents"]:
+        # A header-only CSV (or one with a dims column but zero data rows)
+        # has an empty `dims` *and* an empty `red_percents`, or a non-empty
+        # `dims` with still-empty `red_percents` — either way there is
+        # nothing to plot. Gating on `dims` alone let that case slip through
+        # and draw an empty plot instead of reporting the real problem.
+        if not parsed["red_percents"]:
             QMessageBox.critical(self, "Invalid File", "CSV missing 'Red Percent' column")
             return
+        self._csv_metadata = parsed["metadata"]
         self.select_plot_type(parsed["dims"], parsed["red_percents"], parsed["dim_data"])
 
     def select_plot_type(self, dims_found, red_percents, dim_data):
@@ -856,7 +867,25 @@ class PlotDialog(QDialog):
             self.toolbar.deleteLater()
 
         fig = render_red_percent_figure(plot_type, dim1, dim2, dim3, red_percents, dim_data)
-                
+
+        # Tk sets the plot title from the CSV's own metadata block (probe
+        # name and tilt); this renderer ignored `parsed["metadata"]`
+        # entirely. `render_red_percent_figure` is shared with the Tk and
+        # Web views and already sets a generic title per axis, so the probe
+        # identity is appended here rather than duplicating that logic.
+        meta = self._csv_metadata or {}
+        probe = meta.get("Probe Name")
+        tilt = meta.get("Probe Tilt Angle")
+        if probe or tilt:
+            parts = []
+            if probe:
+                parts.append(f"Probe: {probe}")
+            if tilt:
+                parts.append(f"Tilt: {tilt}")
+            suffix = " (" + ", ".join(parts) + ")"
+            for ax in fig.axes:
+                ax.set_title(ax.get_title() + suffix)
+
         self.canvas = FigureCanvasQTAgg(fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
         
@@ -911,6 +940,14 @@ class RedPercentDynamicView(QtDynamicView):
             self, "Save Red Detection Log", default_name, "CSV Files (*.csv);;All Files (*)"
         )
         if file_path:
+            # Tk's file_save composite passes `defaultextension=".csv"` to
+            # `asksaveasfilename`, which Tk enforces itself. Qt's
+            # `getSaveFileName` has no equivalent: the filter string is a
+            # display hint only, so a bare filename (most visibly on Linux,
+            # where the native dialog does not append the filter's
+            # extension) saves with none at all.
+            if not os.path.splitext(file_path)[1]:
+                file_path += ".csv"
             try:
                 self.model.data_log.save_to_csv(file_path)
                 print(f"[{self.__class__.__name__}] Log saved to: {file_path}")
@@ -980,22 +1017,32 @@ class DashboardWindow(QMainWindow):
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
         
-        self.stop_btn = QPushButton("FULL STOP")
-        self.stop_btn.setStyleSheet("background-color: red; color: white; font-weight: bold; font-size: 14px; padding: 10px;")
-        self.stop_btn.clicked.connect(self.system_manager.full_stop_all)
-        sidebar_layout.addWidget(self.stop_btn)
-        
         self.device_list = QListWidget()
         self.device_list.setStyleSheet("background-color: #1E1E1E; color: white; border: none;")
         sidebar_layout.addWidget(self.device_list)
-        
+
+        # Bottom-docked, not top: matches the Tk reference, whose own comment
+        # explains why — sitting directly above the tab bar (here: directly
+        # above the device checkboxes that hide/show and destroy models) made
+        # it an easy accidental-click target when reaching for something
+        # else. `fullStopButton` gets its own QSS rule so hover/pressed states
+        # read as a distinct, deliberate control rather than a checkbox.
+        self.stop_btn = QPushButton("FULL STOP")
+        self.stop_btn.setObjectName("fullStopButton")
+        self.stop_btn.clicked.connect(self.system_manager.full_stop_all)
+        sidebar_layout.addWidget(self.stop_btn)
+
         self.sidebar.setWidget(sidebar_widget)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.sidebar)
-        
+
         self.device_list.itemChanged.connect(self.on_device_item_changed)
-        
-        self.setCentralWidget(QWidget()) # Empty workspace
-        
+
+        # No central widget: one was set here only to give QMainWindow
+        # "an empty workspace", but QMainWindow does not require one, and an
+        # empty QWidget still claims a stretch share of the layout, squeezing
+        # every dock (PYSIDE-16). Leaving it unset lets the docks use the
+        # whole window, which is what this window is for.
+
         self.active_docks = {}
         self._last_added_dock = None
         self.populate_sidebar()
@@ -1063,7 +1110,15 @@ class DashboardWindow(QMainWindow):
         if device_name in self.active_docks:
             dock = self.active_docks.pop(device_name)
             if self._last_added_dock == dock:
-                self._last_added_dock = None
+                # Fall back to whichever dock is now the most recently
+                # added survivor (dict insertion order), not None — None
+                # made the *next* opened dock take the addDockWidget(Right)
+                # branch in open_device_view instead of continuing the
+                # splitDockWidget horizontal chain, so closing the
+                # rightmost dock silently changed where the next one
+                # landed (PYSIDE-16).
+                remaining = list(self.active_docks.values())
+                self._last_added_dock = remaining[-1] if remaining else None
 
             # Stop the view's QTimers before the dock's WA_DeleteOnClose
             # schedules its widget for deletion -- otherwise a timer tick
