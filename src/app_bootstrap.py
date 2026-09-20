@@ -1,3 +1,23 @@
+"""The composition root (RC-9 item 1).
+
+Every launcher — Tk, PySide, Web — assembles a running system by calling the
+same six functions in the same order:
+
+    discover_ports() / discover_controllers()   what hardware is attached
+    normalize_config(raw)                       operator choices -> configs
+    validate_assignment(configs)                refuse impossible assignments
+    build_models(configs, manager)              construct and register
+    link_models(manager)                        wire cross-model dependencies
+
+There is no per-view setup logic beyond collecting the operator's choices.
+Before this, each launcher had its own version of the last four steps, and
+they disagreed: Web dropped the `enabled` flag so disabled devices were
+built and wired anyway, Web enumerated controllers in a `python3` subprocess
+that fabricated placeholder controller entries the desktop views never
+and Tk reused one claims dict across every relaunch so the second launch
+collided with the first one's stale claims.
+"""
+
 import sys
 import time
 import re
@@ -37,6 +57,27 @@ def discover_ports() -> list[str]:
         detected_ports = ["Headless", "COM1", "COM2", "COM3", "COM4"]
         
     return detected_ports
+
+def discover_controllers() -> list[str]:
+    """Attached game controllers as `["None", "ID 0: <name>", ...]`.
+
+    **In-process, through the one SDL owner** (`InputService`, RC-13). The
+    three enumerations this replaces disagreed in ways an operator could see:
+    Tk and PySide each ran their own `pygame.joystick` block, and Web shelled
+    out to a literal `python3` — not `sys.executable`, so in a virtualenv it
+    was a different interpreter that usually had no pygame — then, finding
+    nothing, **invented** two placeholder entries named after virtual
+    controllers (MANAGER-18, GAMEPAD-18, WEB-15). Those are not controllers.
+    They were offered in the web wizard only, they were special-cased out of
+    the collision check in `validate_assignment`, and a device assigned one
+    got no input at all.
+
+    An empty list here means no controller is attached, and every frontend
+    now says so the same way.
+    """
+    from controller.input_service import input_service
+    return ["None"] + input_service.names()
+
 
 def probe_device_at(port: str) -> str | None:
     try:
@@ -135,8 +176,83 @@ def probe_device_at(port: str) -> str | None:
 
     return device_name
 
-def build_models(active_configs: list[dict], active_claims: dict,
-                 manager=None) -> dict[str, object]:
+def normalize_config(raw) -> list[dict]:
+    """Operator choices -> the canonical config list every stage below wants.
+
+    Accepts what each frontend actually has: a list of per-device dicts, or
+    a `{device_name: config}` mapping (the shape the web wizard posts).
+    Returns `[{"device", "port", "controller", "mode"}]`.
+
+    **Disabled devices are dropped here** (RC-9 item 3). Tk and PySide never
+    built an unchecked device; Web discarded the `enabled` flag during its
+    own normalization and then read it back off the normalized dict, where
+    it no longer existed — so `_disabled_in_setup` was computed as
+    `not True` for every model and nothing was ever treated as disabled
+    (WEB-4, MANAGER-12). A full set of probes was constructed, polled, shown
+    as live cards, and offered to Red Percent as sync sources, for an
+    operator who had enabled one device. Not constructing them is the fix
+    the audit asked for; the flag goes with it.
+    """
+    if isinstance(raw, dict):
+        items = [dict(cfg, device=name) for name, cfg in raw.items()
+                 if isinstance(cfg, dict)]
+    elif isinstance(raw, list):
+        items = []
+        for cfg in raw:
+            if not isinstance(cfg, dict):
+                raise TypeError("each configuration must be a dictionary")
+            items.append(cfg)
+    else:
+        raise TypeError("configs must be a list or a dictionary")
+
+    configs = []
+    for cfg in items:
+        if not cfg.get("enabled", True):
+            continue
+        mode = str(cfg.get("mode", "") or "").lower()
+        port = cfg.get("port")
+        # "Headless" is the desktop wizard's word and "SIM" is the models',
+        # and the translation used to happen at three different points in
+        # three different launchers — once *after* validate_assignment, so
+        # a headless device could be reported as colliding with itself.
+        if mode == "simulation" or port == "Headless":
+            port = "SIM"
+        configs.append({
+            "device": cfg.get("device"),
+            "port": port,
+            "controller": cfg.get("controller_id", cfg.get("controller", "None")),
+            # Derived, never carried through. `mode` is an input the web
+            # wizard sends and the desktop wizards do not, and nothing
+            # downstream reads it — so carrying it verbatim made two
+            # launchers produce different configs for the same system while
+            # meaning the same thing (I-9.2). The port is the truth.
+            "mode": "simulation" if port == "SIM" else "hardware",
+        })
+    return configs
+
+
+def link_models(manager) -> None:
+    """Wire cross-model dependencies through the registry (RC-9 item 2).
+
+    A model that needs to follow other models implements `bind_registry`
+    and maintains its own references from `registered`/`released`. The
+    launcher's job ends at calling this once.
+
+    What this replaces: six lines of "find the Red Percent model, collect
+    everything with a `pos_x`, assign `available_probes`, prefer the stepper"
+    pasted into Tk's launcher, PySide's launcher and the web adapter. It was
+    a snapshot taken at launch that nothing ever refreshed, so a released
+    probe stayed selected and Red Percent logged its frozen last position
+    for the rest of the run.
+    """
+    for _name, model in manager.get_active_models_snapshot().items():
+        bind = getattr(model, "bind_registry", None)
+        if callable(bind):
+            bind(manager)
+
+
+def build_models(active_configs: list[dict], manager=None,
+                 claims: dict | None = None) -> dict[str, object]:
     """Construct the configured models, all or nothing (MANAGER-5).
 
     If a later constructor raises, every model already built is torn down
@@ -147,7 +263,16 @@ def build_models(active_configs: list[dict], active_claims: dict,
 
     When `manager` is given, models are registered as they are built, so
     ownership never sits in a local dict that an exception can strand.
+
+    **The claims dict belongs to the build, not to the caller** (MANAGER-16).
+    Tk passed one `SetupWindow.active_claims` to every launch and nothing
+    ever cleared it, so a second launch from the same setup window saw the
+    first launch's claims and refused the controller as already taken — by a
+    model that no longer existed. PySide and Web each passed a fresh `{}`,
+    which is why only Tk had the bug and why nobody noticed the divergence.
+    One dict per build, created here, for all three.
     """
+    active_claims = {} if claims is None else claims
     built_models = {}
 
     def _roll_back():
@@ -209,7 +334,12 @@ def validate_assignment(active_configs: list[dict]) -> list[str]:
                 errors.append(f"Port collision: Port '{port}' is assigned to multiple devices")
             assigned_ports.add(port)
 
-        if ctrl and "None" not in ctrl and "Virtual" not in ctrl and "N/A" not in ctrl and dev != "Red Percent Window":
+        # The `"Virtual" not in ctrl` exemption that was here existed for the
+        # placeholder names the web wizard used to invent when it could not
+        # enumerate anything. Nothing produces those names now, so the
+        # exemption only served to let two devices claim one controller
+        # without complaint if a caller posted one by hand.
+        if ctrl and "None" not in ctrl and "N/A" not in ctrl and dev != "Red Percent Window":
             if ctrl in assigned_controllers:
                 errors.append(f"Controller collision: Controller '{ctrl}' is assigned to multiple devices")
             assigned_controllers.add(ctrl)

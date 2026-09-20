@@ -25,7 +25,20 @@ The rules here are the fix:
    from real acquisitions rather than kept in a parallel dict that can drift.
 """
 
+import os
 import threading
+
+# SDL configuration belongs to SDL's one owner, and must be set **before**
+# pygame is imported. Four copies of this block existed — `gamepad.py`, both
+# desktop launchers, and the string of Python the web adapter handed to a
+# subprocess — and they did not agree: the subprocess set the video driver
+# but not `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS`, so the controllers it
+# enumerated were the ones an unfocused window could not have read anyway
+# (MANAGER-18).
+os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 try:
     import pygame
@@ -99,10 +112,46 @@ class InputService:
             except Exception:
                 return []
 
+    def names(self):
+        """Attached controllers as the operator-facing `"ID 0: <name>"` strings.
+
+        One formatter. The index in the label is the SDL index `acquire()`
+        takes, so a name that came from here can be resolved back to a
+        handle without parsing conventions that differ per caller.
+        """
+        return [f"ID {index}: {name}" for index, name in self.enumerate()]
+
+    @property
+    def initialised(self):
+        """Is SDL up? Callers that have their own OS-level presence check
+        need this to know whether an SDL answer is available at all."""
+        return self._initialised
+
+    def count(self):
+        """How many controllers SDL currently sees. Locked, and cheap.
+
+        `enumerate()` constructs a `Joystick` per device, which is too much
+        for a 200 Hz poll tick — `is_index_connected` below is the one the
+        pollers call, and this is what makes it cost a single SDL read.
+        """
+        if pygame is None or not self._initialised:
+            return 0
+        with self._lock:
+            try:
+                return pygame.joystick.get_count()
+            except Exception:
+                return 0
+
     def is_index_connected(self, index):
+        """Is `index` still attached? The presence check every poller shares.
+
+        `ControllerPoller._is_os_connected` read `pygame.joystick.get_count()`
+        at four sites **outside this lock**, from its own thread, while other
+        pollers were mid-read of the same non-thread-safe API (RC-13).
+        """
         if index is None:
             return False
-        return any(i == index for i, _ in self.enumerate())
+        return 0 <= index < self.count()
 
     # -- per-owner device handles --------------------------------------
 

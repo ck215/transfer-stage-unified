@@ -148,7 +148,7 @@ def test_build_models():
         MockTemp.return_value.__class__.__name__ = 'TemperatureSystem'
         MockRed.return_value.__class__.__name__ = 'RedPercentSystem'
         
-        models = build_models(configs, {})
+        models = build_models(configs)
         
         assert "Stepper Probe" in models
         assert "Temperature Controller" in models
@@ -190,14 +190,31 @@ def test_validate_assignment_red_percent_window_exempt():
     errors = validate_assignment(configs)
     assert len(errors) == 0
 
-def test_validate_assignment_virtual_controller_exempt():
-    configs = [
-        {"device": "Stepper Probe", "port": "SIM", "controller": "Virtual Controller A"},
-        {"device": "DC Probe", "port": "SIM", "controller": "Virtual Controller A"},
-        {"device": "Chuck Positioner", "port": "SIM", "controller": "N/A"}
-    ]
-    errors = validate_assignment(configs)
-    assert len(errors) == 0
+def test_validate_assignment_two_devices_cannot_share_one_controller():
+    """Re-authored in S12 (RC-9).
+
+    What this used to assert: that a controller name containing "Virtual" was
+    exempt from the collision check. Those names came from one place — the
+    web wizard invented two of them whenever its subprocess enumeration found
+    nothing — and a device assigned one received no input at all. Nothing
+    produces them now, so the exemption did nothing except let two devices
+    claim one controller without complaint.
+
+    "None" and "N/A" stay exempt: they mean *no* controller, and any number
+    of devices can have no controller.
+    """
+    errors = validate_assignment([
+        {"device": "Stepper Probe", "port": "SIM", "controller": "ID 0: Pad"},
+        {"device": "DC Probe", "port": "SIM", "controller": "ID 0: Pad"},
+    ])
+    assert len(errors) == 1 and "Controller collision" in errors[0]
+
+    errors = validate_assignment([
+        {"device": "Stepper Probe", "port": "SIM", "controller": "None"},
+        {"device": "DC Probe", "port": "SIM", "controller": "None"},
+        {"device": "Chuck Positioner", "port": "SIM", "controller": "N/A"},
+    ])
+    assert errors == []
 
 
 # --- Rollback (MANAGER-5) ---
@@ -230,7 +247,7 @@ def test_build_models_tears_down_partial_work_when_a_later_device_fails():
          patch("model.temperature_system.TemperatureSystem",
                side_effect=RuntimeError("port busy")):
         with pytest.raises(RuntimeError):
-            build_models(configs, {})
+            build_models(configs)
 
     assert built.torn_down == 1, "the first model must not be left holding its port"
 
@@ -249,7 +266,7 @@ def test_build_models_registers_as_it_goes_and_releases_on_failure():
          patch("model.temperature_system.TemperatureSystem",
                side_effect=RuntimeError("port busy")):
         with pytest.raises(RuntimeError):
-            build_models(configs, {}, manager)
+            build_models(configs, manager)
 
     assert manager.get_model("Stepper Probe") is None
     assert built.torn_down == 1
@@ -265,7 +282,7 @@ def test_build_models_registers_every_device_on_success():
     ]
     with patch("model.probes.StepperProbe", return_value=_RecordingModel()), \
          patch("model.redpercent_system.RedPercentSystem", return_value=_RecordingModel()):
-        models = build_models(configs, {}, manager)
+        models = build_models(configs, manager)
 
     assert set(models) == {"Stepper Probe", "Red Percent Window"}
     assert manager.get_model("Stepper Probe") is not None

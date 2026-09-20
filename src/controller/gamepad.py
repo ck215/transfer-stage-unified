@@ -1,9 +1,8 @@
 # Libraries
 import os
-os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
-os.environ["SDL_VIDEODRIVER"] = "dummy"
-os.environ["SDL_AUDIODRIVER"] = "dummy"
-os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+# The SDL environment is configured by `controller.input_service`, which is
+# imported below and is the one owner of SDL (RC-13). It was set here too,
+# and in three other places, with the copies disagreeing (MANAGER-18).
 
 try:
     import pygame
@@ -297,20 +296,18 @@ class ControllerPoller:
         if self.controller_index is None:
             return False
         
-        # Pygame joystick count / presence check
-        try:
-            if pygame and pygame.joystick.get_init():
-                if self.controller_index >= pygame.joystick.get_count():
-                    return False
-        except Exception:
-            pass
+        # SDL presence check, through SDL's one owner and under its lock.
+        # Behaviour is unchanged: SDL gets to say "gone", and where it is not
+        # up the OS-level checks below answer alone. What changed is that the
+        # four `pygame.joystick.get_count()` reads this replaces ran on the
+        # poller's own thread, outside the lock, against an API that is not
+        # thread-safe and that every other poller was reading at the same
+        # time (RC-13).
+        if input_service.initialised and \
+                not input_service.is_index_connected(self.controller_index):
+            return False
 
         if sys.platform.startswith("linux"):
-            js_path = f"/dev/input/js{self.controller_index}"
-            if os.path.exists(js_path):
-                return True
-            if pygame and pygame.joystick.get_init():
-                return self.controller_index < pygame.joystick.get_count()
             return True
         elif sys.platform == "win32":
             try:
@@ -321,8 +318,6 @@ class ControllerPoller:
                     return True
             except Exception:
                 pass
-            if pygame and pygame.joystick.get_init():
-                return self.controller_index < pygame.joystick.get_count()
             return True
         elif sys.platform == "darwin":
             if getattr(self, 'gamepad', None) and getattr(self.gamepad, 'joystick', None):
@@ -331,8 +326,6 @@ class ControllerPoller:
                     return True
                 except Exception:
                     return False
-            if pygame and pygame.joystick.get_init():
-                return self.controller_index < pygame.joystick.get_count()
             return True
         return True
 
@@ -350,7 +343,7 @@ class ControllerPoller:
     
     def get_physical_controllers(self):
         try:
-            return [f"ID {i}: {name}" for i, name in input_service.enumerate()]
+            return input_service.names()
         except Exception as e:
             ErrorPopupManager.report_error("Controller Scan Error", f"[{self.process_name}] Error scanning physical controllers:\n{e}", e)
             return []

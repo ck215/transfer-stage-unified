@@ -89,6 +89,7 @@ class RedPercentSystem(SchemaCommands):
         self.stepper_model = None
         self.available_probes = {}
         self.selected_probe_name = None
+        self._registry = None
         
         self.sync_dimensions = []
         self.monitoring = False
@@ -112,6 +113,84 @@ class RedPercentSystem(SchemaCommands):
             self.stepper_model = self.available_probes[probe_name]
             self.selected_probe_name = probe_name
             print(f"[{self.__class__.__name__}] Active position probe set to: {probe_name}")
+
+    # -- the probe registry (RC-9 item 2) -------------------------------
+    #
+    # `available_probes` used to be assigned from outside, by whichever
+    # launcher had just finished building models — the same six lines
+    # copy-pasted into Tk's launcher, PySide's launcher and the web adapter.
+    # Nothing updated it afterwards, so a released probe stayed in the dict
+    # and stayed selected: `_monitor_colors` went on reading `pos_x` off a
+    # torn-down model and logged its last value forever, with zero velocity
+    # and no warning (PYSIDE-3, STEPPER-13, REDPERCENT-11).
+    #
+    # The dependent model owns the reference now. It learns about probes
+    # from the registry, which is the only thing that knows when one arrives
+    # or goes away.
+
+    #: What makes a model usable as a position source. A duck-type, not a
+    #: device name: this is the same test all three launchers used, and it
+    #: belongs here rather than in each of them.
+    POSITION_ATTR = "pos_x"
+
+    @classmethod
+    def is_position_source(cls, model):
+        return hasattr(model, cls.POSITION_ATTR)
+
+    def bind_registry(self, manager):
+        """Track `manager`'s position sources for as long as this model lives.
+
+        Seeds from what is registered *now* and subscribes for the rest, so
+        it does not matter whether Red Percent is built before or after the
+        probes it syncs against — which is exactly the ordering the launchers
+        each guessed at differently.
+        """
+        self.unbind_registry()
+        self._registry = manager
+        for name, model in manager.get_active_models_snapshot().items():
+            self.probe_registered(name, model)
+        manager.subscribe("registered", self.probe_registered)
+        manager.subscribe("released", self.probe_released)
+
+    def unbind_registry(self):
+        manager, self._registry = self._registry, None
+        if manager is not None:
+            manager.unsubscribe(self.probe_registered)
+            manager.unsubscribe(self.probe_released)
+
+    def probe_registered(self, name, model):
+        """A model appeared. Track it if it can report a position."""
+        if not self.is_position_source(model):
+            return
+        self.available_probes[name] = model
+        self._reselect()
+
+    def probe_released(self, name, model=None):
+        """A model went away. Drop it, and stop pointing at it."""
+        if self.available_probes.pop(name, None) is None:
+            return
+        if self.selected_probe_name == name:
+            self.stepper_model = None
+            self.selected_probe_name = None
+        self._reselect()
+
+    def _reselect(self):
+        """Hold a live selection whenever one is available.
+
+        Ties break in device-registry order, so the choice is the same in
+        every frontend and does not depend on build order. That preference
+        used to be `if "Stepper Probe" in probe_models` written out at each
+        launch site.
+        """
+        if self.selected_probe_name in self.available_probes:
+            self.stepper_model = self.available_probes[self.selected_probe_name]
+            return
+        names = self.get_available_probe_names()
+        if not names:
+            self.stepper_model = None
+            self.selected_probe_name = None
+            return
+        self.set_stepper_model(names[0])
 
     def capture_focus_area(self, sct):
         if not self.focus_area:
@@ -207,12 +286,21 @@ class RedPercentSystem(SchemaCommands):
         self.sync_z = not self.sync_z
 
     def get_available_probe_names(self) -> list:
-        if not self.available_probes:
-            return []
-        return [
-            name for name, probe in self.available_probes.items()
-            if not getattr(probe, "_disabled_in_setup", False)
-        ]
+        """Live position sources, in device-registry order.
+
+        The `_disabled_in_setup` filter that was here is gone with the
+        attribute (RC-9 item 3): a disabled device is not constructed, so it
+        cannot be registered, so it cannot be listed. The filter only ever
+        did anything on the web path, where it read a flag that normalization
+        had already forced to False (WEB-4, MANAGER-12) — it excluded nothing.
+        """
+        from model import devices
+        order = devices.names()
+        return sorted(
+            self.available_probes,
+            key=lambda name: (order.index(name) if name in order else len(order),
+                              name),
+        )
 
     @property
     def has_unsaved_data(self) -> bool:
@@ -321,6 +409,7 @@ class RedPercentSystem(SchemaCommands):
         what let a torn-down RedPercent keep writing to a datalog owned by
         the next run.
         """
+        self.unbind_registry()
         self.stop_monitoring()
         thread = self._monitor_thread
         if thread is not None and thread.is_alive():

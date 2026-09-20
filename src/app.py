@@ -65,19 +65,12 @@ def run_legacy_app():
     except ImportError:
         SERIAL_AVAILABLE = False
     
-    # Try to import pygame for physical joystick/gamepad detection.
-    try:
-        import os
-        os.environ["SDL_VIDEODRIVER"] = "dummy"
-        os.environ["SDL_AUDIODRIVER"] = "dummy"
-        os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
-        import pygame
-        if not pygame.get_init():
-            pygame.init()
-        PYGAME_AVAILABLE = True
-    except ImportError:
-        PYGAME_AVAILABLE = False
-    
+    # No pygame here. Controller enumeration is `app_bootstrap.
+    # discover_controllers()`, which goes through the one SDL owner
+    # (RC-9 item 1, RC-13). A launcher that calls `pygame.init()` itself is
+    # a second owner, and the SDL environment it set was one of four copies
+    # that had already drifted apart.
+
     class SetupWindow(tk.Tk):
         """Configuration interface to select systems and assign COM ports & physical joysticks."""
         def __init__(self):
@@ -86,7 +79,11 @@ def run_legacy_app():
             self.geometry("850x650")
             self.resizable(True, True)
             
-            self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller", "SMC100 Rotator", "Red Percent Window"]
+            # The one registry (RC-7/RC-9 item 1). Both setup windows kept
+            # their own copy of this list, so "which devices exist, in what
+            # order" was answered in three places for two frontends.
+            from model import devices as _devices
+            self.devices = _devices.names()
             self.device_vars = {}        
             self.port_vars = {}          
             self.controller_vars = {}    
@@ -97,7 +94,6 @@ def run_legacy_app():
             self.detected_ports = []
             self.detected_controllers = []
             
-            self.active_claims = {}
             
             self.get_available_ports()
             self.get_available_controllers()
@@ -134,23 +130,8 @@ def run_legacy_app():
             self.detected_ports = app_bootstrap.discover_ports()
 
         def get_available_controllers(self):
-            self.detected_controllers = ["None"]
-            if PYGAME_AVAILABLE:
-                if not pygame.get_init():
-                    pygame.init()
-                pygame.joystick.init()
-                pygame.event.pump()
-                joystick_count = pygame.joystick.get_count()
-                for i in range(joystick_count):
-                    try:
-                        js = pygame.joystick.Joystick(i)
-                        name = f"ID {i}: {js.get_name()}"
-                        self.detected_controllers.append(name)
-                    except Exception:
-                        pass
-                        
-            if not self.detected_controllers:
-                self.detected_controllers = ["None", "Virtual Controller A", "Virtual Controller B"]
+            import app_bootstrap
+            self.detected_controllers = app_bootstrap.discover_controllers()
     
         def refresh_devices(self):
             if getattr(self, 'is_scanning', False):
@@ -360,34 +341,26 @@ def run_legacy_app():
             if getattr(self, 'is_scanning', False):
                 return
                 
-            active_configs = []
-            assigned_ports = set()
-            assigned_controllers = set()
-            
-            for device in self.devices:
-                if self.device_vars[device].get():
-                    port = self.port_vars[device].get()
-                    controller = self.controller_vars[device].get()
+            import app_bootstrap
 
-                    if port == "Headless":
-                        port = "SIM"
-    
-                    active_configs.append({
-                        "device": device, 
-                        "port": port, 
-                        "controller": controller
-                    })
-                    if device != "Red Percent Window" and port != "SIM":
-                        assigned_ports.add(port)
-                    
-                    if "None" not in controller and "Virtual" not in controller and "N/A" not in controller and device != "Red Percent Window":
-                        assigned_controllers.add(controller)
-                    
+            # Collect choices; the composition root does the rest (RC-9).
+            # The two `assigned_ports`/`assigned_controllers` sets that used
+            # to be accumulated here were a second, unread copy of the
+            # collision check `validate_assignment` performs below.
+            active_configs = app_bootstrap.normalize_config([
+                {
+                    "device": device,
+                    "port": self.port_vars[device].get(),
+                    "controller": self.controller_vars[device].get(),
+                    "enabled": bool(self.device_vars[device].get()),
+                }
+                for device in self.devices
+            ])
+
             if not active_configs:
                 messagebox.showwarning("No Devices Selected", "Please select at least one device to launch.")
                 return
                 
-            import app_bootstrap
             errors = app_bootstrap.validate_assignment(active_configs)
             if errors:
                 title = "Port Collision" if "Port collision" in errors[0] else "Controller Collision"
@@ -400,8 +373,7 @@ def run_legacy_app():
 
             system_manager = SystemManager()
             try:
-                active_models = app_bootstrap.build_models(
-                    active_configs, self.active_claims, system_manager)
+                app_bootstrap.build_models(active_configs, system_manager)
             except Exception as e:
                 # The setup window used to be withdrawn *before* this call, so a
                 # failed build left the user with no setup window and no
@@ -416,16 +388,12 @@ def run_legacy_app():
             # Hide the setup window launcher panel, now that launching worked.
             self.withdraw()
 
-            # Link RedPercentSystem to the active positioning probe for X/Y/Z syncing.
-            red_model = active_models.get("Red Percent Window")
-            if red_model:
-                probe_models = {name: model for name, model in active_models.items() if hasattr(model, 'pos_x')}
-                red_model.available_probes = probe_models
-                if "Stepper Probe" in probe_models:
-                    red_model.set_stepper_model("Stepper Probe")
-                elif probe_models:
-                    red_model.set_stepper_model(list(probe_models.keys())[0])
-    
+            # Cross-model wiring, through the registry (RC-9 item 2). The
+            # hand-written Red Percent linking block that stood here is gone
+            # from all three launchers; `RedPercentSystem` follows
+            # registered/released itself.
+            app_bootstrap.link_models(system_manager)
+
             # Launch Tkinter Dashboard
             from views.tkinter.view import DashboardWindow, ErrorPopupManager
 
@@ -474,18 +442,7 @@ def run_pyside_app():
     except ImportError:
         SERIAL_AVAILABLE = False
     
-    try:
-        import os
-        os.environ["SDL_VIDEODRIVER"] = "dummy"
-        os.environ["SDL_AUDIODRIVER"] = "dummy"
-        os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
-        os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
-        import pygame
-        if not pygame.get_init():
-            pygame.init()
-        PYGAME_AVAILABLE = True
-    except ImportError:
-        PYGAME_AVAILABLE = False
+    # See the note in run_tkinter_app: SDL belongs to InputService.
     
     from PySide6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -536,7 +493,11 @@ def run_pyside_app():
             self.setWindowTitle("Device Configuration Setup (PySide6)")
             self.resize(850, 400)
     
-            self.devices = ["Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller", "SMC100 Rotator", "Red Percent Window"]
+            # The one registry (RC-7/RC-9 item 1). Both setup windows kept
+            # their own copy of this list, so "which devices exist, in what
+            # order" was answered in three places for two frontends.
+            from model import devices as _devices
+            self.devices = _devices.names()
             self.device_vars = {}        
             self.port_vars = {}          
             self.controller_vars = {}    
@@ -546,7 +507,6 @@ def run_pyside_app():
             self.detected_ports = []
             self.detected_controllers = []
             
-            self.active_claims = {}
             self.is_scanning = False
     
             self.get_available_ports()
@@ -562,18 +522,8 @@ def run_pyside_app():
             self.detected_ports = app_bootstrap.discover_ports()
 
         def get_available_controllers(self):
-            self.detected_controllers = ["None"]
-            if PYGAME_AVAILABLE:
-                if not pygame.get_init():
-                    pygame.init()
-                pygame.joystick.init()
-                for i in range(pygame.joystick.get_count()):
-                    try:
-                        js = pygame.joystick.Joystick(i)
-                        js.init()
-                        self.detected_controllers.append(f"ID {i}: {js.get_name()}")
-                    except Exception:
-                        pass
+            import app_bootstrap
+            self.detected_controllers = app_bootstrap.discover_controllers()
     
         def create_widgets(self):
             central = QWidget()
@@ -721,33 +671,24 @@ def run_pyside_app():
         def launch_unified(self):
             if self.is_scanning: return
     
-            active_configs = []
-            assigned_ports = set()
-            assigned_controllers = set()
-            
-            for device in self.devices:
-                if self.device_vars[device].isChecked():
-                    port = self.port_vars[device].currentText()
-                    controller = self.controller_vars[device].currentText()
-    
-                    if port == "Headless":
-                        port = "SIM"
-    
-                    active_configs.append({
-                        "device": device, 
-                        "port": port, 
-                        "controller": controller
-                    })
-                    if device != "Red Percent Window" and port != "SIM":
-                        assigned_ports.add(port)
-                    if "None" not in controller and "Virtual" not in controller and "N/A" not in controller and device != "Red Percent Window":
-                        assigned_controllers.add(controller)
-    
+            import app_bootstrap
+
+            # Identical to Tk's collection step, and deliberately so: the two
+            # used to differ only in accidents (I-9.2).
+            active_configs = app_bootstrap.normalize_config([
+                {
+                    "device": device,
+                    "port": self.port_vars[device].currentText(),
+                    "controller": self.controller_vars[device].currentText(),
+                    "enabled": self.device_vars[device].isChecked(),
+                }
+                for device in self.devices
+            ])
+
             if not active_configs:
                 QMessageBox.warning(self, "No Devices Selected", "Please select at least one device to launch.")
                 return
-    
-            import app_bootstrap
+
             errors = app_bootstrap.validate_assignment(active_configs)
             if errors:
                 title = "Port Collision" if "Port collision" in errors[0] else "Controller Collision"
@@ -755,13 +696,11 @@ def run_pyside_app():
                 return
                 
             print("\n--- Launching Unified Control Dashboard ---")
-            import app_bootstrap
             from model.system_manager import SystemManager
 
             self.manager = SystemManager()
             try:
-                active_models = app_bootstrap.build_models(
-                    active_configs, self.active_claims, self.manager)
+                app_bootstrap.build_models(active_configs, self.manager)
             except Exception as e:
                 QMessageBox.critical(
                     self, "Device Initialization Failed",
@@ -769,16 +708,8 @@ def run_pyside_app():
                     "Nothing was left running; adjust the configuration and try again.")
                 return
 
-            # Link RedPercentSystem to the available positioning probes for X/Y/Z syncing.
-            red_model = active_models.get("Red Percent Window")
-            if red_model:
-                probe_models = {name: model for name, model in active_models.items() if hasattr(model, 'pos_x')}
-                red_model.available_probes = probe_models
-                if "Stepper Probe" in probe_models:
-                    red_model.set_stepper_model("Stepper Probe")
-                elif probe_models:
-                    red_model.set_stepper_model(list(probe_models.keys())[0])
-    
+            app_bootstrap.link_models(self.manager)
+
             from views.pyside.view import DashboardWindow
 
             import lifecycle
@@ -822,7 +753,6 @@ def run_web_app(port=8080, open_browser=True):
     manager = SystemManager()
     lifecycle.set_current_manager(manager)
     lifecycle.install_exit_hooks()
-    active_claims = {}
 
     # In Web Mode, we bypass default SIM initialization so the UI can boot directly into the Setup Wizard
     # Models will be registered dynamically via WebModelAdapter.initialize_setup()

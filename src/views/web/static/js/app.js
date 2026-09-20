@@ -440,19 +440,16 @@ class TransferStageApp {
     if (!this.dom.sidebarNav) return;
     this.dom.sidebarNav.innerHTML = '';
 
-    const activeDevs = [];
-    const disabledDevs = [];
-    Object.keys(this.devices).forEach(name => {
-      if (this.devices[name]._disabled) disabledDevs.push(name);
-      else activeDevs.push(name);
-    });
-    
-    const sortedDevNames = [...activeDevs, ...disabledDevs];
-    
-    for (const devName of sortedDevNames) {
-      const isDisabled = this.devices[devName]._disabled;
+    // Every device here is a live one. The server used to build the devices
+    // the operator had disabled too, and flag them with `_disabled` so this
+    // list could sort them last and grey them out — except the flag was
+    // computed from a key that normalization had already dropped, so it was
+    // never set and the styling below never ran (WEB-4). Disabled devices
+    // are no longer constructed at all (RC-9 item 3), so they simply are not
+    // in `this.devices`.
+    for (const devName of Object.keys(this.devices)) {
       const li = document.createElement('li');
-      li.className = 'nav-item' + (isDisabled ? ' disabled-tab' : '');
+      li.className = 'nav-item';
 
       const button = document.createElement('button');
       const isSelected = this.activeFilter === devName;

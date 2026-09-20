@@ -52,27 +52,22 @@ class WebModelAdapter:
         needs an async scan flow (background task + poll/websocket), not a
         loop bolted onto this handler; tracked as a follow-up, not done here.
         """
-        ports = ["SIM"]
         import app_bootstrap
+
+        ports = ["SIM"]
         discovered = app_bootstrap.discover_ports()
         for p in discovered:
             if p not in ports:
                 ports.append(p)
 
-        controllers = ["None"]
-        try:
-            import subprocess
-            code = "import os; os.environ['SDL_VIDEODRIVER']='dummy'; os.environ['PYGAME_HIDE_SUPPORT_PROMPT']='1'; import pygame; pygame.joystick.init(); count = pygame.joystick.get_count(); print(','.join([pygame.joystick.Joystick(i).get_name() for i in range(count)]))"
-            res = subprocess.run(["python3", "-c", code], capture_output=True, text=True, timeout=3)
-            if res.returncode == 0 and res.stdout.strip():
-                names = res.stdout.strip().split(',')
-                for i, name in enumerate(names):
-                    controllers.append(f"ID {i}: {name}")
-        except Exception:
-            pass
-
-        if len(controllers) == 1:
-            controllers.extend(["Virtual Controller A", "Virtual Controller B"])
+        # The same enumeration the desktop launchers use (RC-9 item 1). This
+        # was a `subprocess.run(["python3", ...])` — not `sys.executable`, so
+        # inside a virtualenv it ran an interpreter that usually had no
+        # pygame, silently produced nothing, and then **fabricated** two
+        # placeholder entries so the wizard had something to show
+        # (WEB-15, MANAGER-18, GAMEPAD-18). Assigning one of those names got
+        # a device no input at all.
+        controllers = app_bootstrap.discover_controllers()
 
         return {
             "ports": ports,
@@ -101,54 +96,23 @@ class WebModelAdapter:
         if not configs:
             return {"status": "error", "code": 400, "message": "Configs must be non-empty"}
 
-        normalized_configs = []
-        if isinstance(configs, dict):
-            for dev_name, cfg in configs.items():
-                if not isinstance(cfg, dict):
-                    continue
-                # Support enabled flag (default True if not specified)
-                is_enabled = cfg.get("enabled", True)
-                mode = cfg.get("mode", "").lower() if is_enabled else "simulation"
-                port = cfg.get("port") if is_enabled else "None"
-                if mode == "simulation":
-                    port = "SIM" if is_enabled else "None"
-                ctrl = cfg.get("controller_id", cfg.get("controller", "None")) if is_enabled else "None" 
-                normalized_configs.append({
-                    "device": dev_name,
-                    "port": port,
-                    "controller": ctrl,
-                    "mode": mode
-                })
-        elif isinstance(configs, list):
-            for c in configs:
-                if not isinstance(c, dict):
-                    return {"status": "error", "code": 400, "message": "Each configuration must be a dictionary"}
-                is_enabled = c.get("enabled", True)
-                mode = c.get("mode", "").lower() if is_enabled else "simulation"
-                port = c.get("port") if is_enabled else "None"
-                if mode == "simulation":
-                    port = "SIM" if is_enabled else "None"
-                ctrl = c.get("controller_id", c.get("controller", "None")) if is_enabled else "None" 
-                normalized_configs.append({
-                    "device": c.get("device"),
-                    "port": port,
-                    "controller": ctrl,
-                    "mode": mode
-                })
-        else:
-            return {"status": "error", "code": 400, "message": "Configs must be a list or dictionary"}
+        import app_bootstrap
 
-        if not normalized_configs:
+        # One normalizer for all three frontends (RC-9 item 1). The version
+        # that stood here kept disabled devices — with port "None" and a
+        # controller of "None" — and then set `_disabled_in_setup` from the
+        # dict it had just stripped the `enabled` key out of, so the flag was
+        # always False and every unchecked device was built, polled, shown as
+        # a live card and offered to Red Percent as a sync source
+        # (WEB-4, MANAGER-12). `normalize_config` drops them instead.
+        try:
+            configs = app_bootstrap.normalize_config(configs)
+        except TypeError as e:
+            return {"status": "error", "code": 400, "message": str(e)}
+
+        if not configs:
             return {"status": "error", "code": 400, "message": "No active devices configured"}
 
-        configs = normalized_configs
-        import app_bootstrap
-        
-        # We need to map Headless to SIM for configs
-        for c in configs:
-            if c.get("port") == "Headless":
-                c["port"] = "SIM"
-                
         errors = app_bootstrap.validate_assignment(configs)
         if errors:
             return {
@@ -168,13 +132,12 @@ class WebModelAdapter:
         with self._state_lock:
             old_manager = self.system_manager
 
-        active_claims = {}
-
         def _build(manager):
-            active_models = app_bootstrap.build_models(configs, active_claims)
-            for dev, model in active_models.items():
-                manager.register(dev, model)
-            return active_models
+            # Registering as it builds, like the desktop launchers, so the
+            # manager carries each model's config too (I-9.2). This used to
+            # build into a local dict and register afterwards, which left
+            # `manager.configs` empty on the web path only.
+            return app_bootstrap.build_models(configs, manager)
 
         new_manager = SystemManager()
         try:
@@ -194,8 +157,6 @@ class WebModelAdapter:
             }
 
         for dev, model in active_models.items():
-            cfg = next((c for c in configs if c["device"] == dev), {})
-            model._disabled_in_setup = not cfg.get("enabled", True)
             # Put the hardware in a known-disabled state rather than asserting
             # one. This used to write `model.system_enabled = False` when the
             # attribute existed and only fall back to `disable()` otherwise —
@@ -205,15 +166,10 @@ class WebModelAdapter:
             # so the write is not merely wrong, it raises.
             if hasattr(model, 'disable'):
                 model.disable()
-        # Link Red Percent Window probes if active
-        red_model = new_manager.active_models.get("Red Percent Window")
-        if red_model:
-            probe_models = {k: v for k, v in new_manager.active_models.items() if hasattr(v, 'pos_x')}
-            red_model.available_probes = probe_models
-            if "Stepper Probe" in probe_models:
-                red_model.set_stepper_model("Stepper Probe")
-            elif probe_models:
-                red_model.set_stepper_model(list(probe_models.keys())[0])
+
+        # Cross-model wiring, through the registry (RC-9 item 2) — the same
+        # one call the desktop launchers make.
+        app_bootstrap.link_models(new_manager)
 
         with self._state_lock:
             self.system_manager = new_manager
@@ -259,10 +215,13 @@ class WebModelAdapter:
             if self.system_manager:
                 models = getattr(self.system_manager, "active_models", {})
                 for name, model in models.items():
-                    schema = getattr(model, "ui_schema", {"sections": []}).copy()
-                    if getattr(model, "_disabled_in_setup", False):
-                        schema["_disabled"] = True
-                    devices[name] = schema
+                    # No `_disabled` flag any more (RC-9 item 3). A device the
+                    # operator disabled is not constructed, so it is not
+                    # registered and does not appear here at all — which is
+                    # what Tk and PySide have always done. The flag it
+                    # replaced was computed from a key normalization had
+                    # already dropped, so it was never once set (WEB-4).
+                    devices[name] = getattr(model, "ui_schema", {"sections": []}).copy()
         return devices
 
     def _determine_connection_status(self, model) -> str:

@@ -52,20 +52,44 @@ def test_redpercent_toggle_methods():
     assert 'Z' not in rp.sync_dimensions
 
 def test_redpercent_get_available_probe_names():
-    rp = RedPercentSystem()
-    assert rp.get_available_probe_names() == []
-    
-    class MockProbe:
-        def __init__(self, disabled=False):
-            if disabled:
-                self._disabled_in_setup = True
+    """Re-authored in S12 (RC-9).
 
-    rp.available_probes = {
-        "Probe A": MockProbe(disabled=False), 
-        "Probe B": MockProbe(disabled=False),
-        "Probe C (Disabled)": MockProbe(disabled=True)
-    }
-    assert set(rp.get_available_probe_names()) == {"Probe A", "Probe B"}
+    What this used to assert: that `get_available_probe_names` filtered out
+    probes carrying `_disabled_in_setup`. That filter never excluded anything
+    in practice — only the web path ever set the flag, and it set it from a
+    key normalization had already dropped, so it was False for every model
+    ever built (WEB-4, MANAGER-12). A disabled device is not constructed now,
+    so it is never registered and the list cannot contain it; the flag and
+    the filter are both gone.
+
+    The list is also no longer assigned from outside. It is maintained from
+    the manager's `registered`/`released` events (I-9.1), which is what this
+    test now drives.
+    """
+    from app_bootstrap import link_models
+    from model.system_manager import SystemManager
+
+    class MockProbe:
+        pos_x = 0.0
+
+        def teardown(self):
+            pass
+
+        def emergency_stop(self):
+            pass
+
+    manager = SystemManager()
+    rp = RedPercentSystem()
+    manager.register("Red Percent Window", rp)
+    link_models(manager)
+    assert rp.get_available_probe_names() == []
+
+    manager.register("Stepper Probe", MockProbe())
+    manager.register("DC Probe", MockProbe())
+    assert set(rp.get_available_probe_names()) == {"Stepper Probe", "DC Probe"}
+
+    manager.release("DC Probe")
+    assert rp.get_available_probe_names() == ["Stepper Probe"]
 def test_redpercent_has_unsaved_data():
     rp = RedPercentSystem()
     assert rp.has_unsaved_data is False

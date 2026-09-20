@@ -20,6 +20,48 @@ class SystemManager:
         # still running. Nothing here removes or tears down.
         self.hidden = set()
         self.lock = threading.Lock()
+        # Registry subscribers (RC-9 item 2). `registered` and `released`
+        # are how a model that depends on *another* model learns it exists,
+        # instead of whichever launcher happened to build them wiring the
+        # two together by hand. That wiring was copy-pasted at three sites
+        # and drifted at every one of them.
+        self._subscribers = {"registered": [], "released": []}
+
+    # -- registry events (RC-9 item 2) ----------------------------------
+
+    EVENTS = ("registered", "released")
+
+    def subscribe(self, event, callback):
+        """Call `callback(name, model)` on every `event` from now on.
+
+        Subscribers are invoked **outside** the manager's lock, for the same
+        reason the S11 event bus does it: a subscriber that calls back into
+        the manager (to read the snapshot it is reacting to, say) would
+        otherwise deadlock against the mutation that notified it.
+        """
+        if event not in self.EVENTS:
+            raise ValueError(f"unknown registry event {event!r}")
+        with self.lock:
+            self._subscribers[event].append(callback)
+        return callback
+
+    def unsubscribe(self, callback):
+        """Drop `callback` from every event. Safe to call when unsubscribed."""
+        with self.lock:
+            for subs in self._subscribers.values():
+                while callback in subs:
+                    subs.remove(callback)
+
+    def _emit(self, event, name, model):
+        with self.lock:
+            subscribers = list(self._subscribers[event])
+        for callback in subscribers:
+            try:
+                callback(name, model)
+            except Exception as e:
+                self._report(
+                    f"Registry subscriber failed on {event} of {name}: {e}",
+                    e, "Registry Error")
 
     # -- registration --------------------------------------------------
 
@@ -48,6 +90,7 @@ class SystemManager:
             self.active_models[name] = model
             if config is not None:
                 self.configs[name] = config
+        self._emit("registered", name, model)
         return model
 
     def get_model(self, name):
@@ -95,6 +138,10 @@ class SystemManager:
             self.configs.pop(name, None)
             self.hidden.discard(name)
         if model is not None:
+            # Announce the release *before* teardown, so a dependent model
+            # drops its reference while the model is still coherent rather
+            # than reading a half-torn-down one (I-9.1).
+            self._emit("released", name, model)
             self._stop_then_teardown(name, model)
         return model
 
@@ -169,6 +216,8 @@ class SystemManager:
             self.active_models.clear()
             self.configs.clear()
             self.hidden.clear()
+        for name, model in models:
+            self._emit("released", name, model)
         for name, model in models:
             self._stop_then_teardown(name, model)
 

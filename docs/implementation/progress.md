@@ -59,7 +59,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S9 | Typed parameters (RC-6) | done | `79d2d97` | 2026-09-20 | All 4 items. `Param` table + D-5 `apply_inputs`. Landed with S10. |
 | S10 | Schema v2, three renderers (RC-7) | done | `7cc5f3c` | 2026-09-20 | All 5 items. Qt pass resolved (it hung, it did not abort). `tests/ui` un-excluded: +83 tests in the fast gate. I-7.2 built; known_bad now empty. |
 | S11 | Result channel and event bus (RC-8) | done | `409c859` | 2026-09-20 | All 4 items. `CommandResult` + `EventBus`; one `install_exception_hooks`. I-8.1–I-8.3 hold. conftest.py was duplicated end to end; half of it was dead. |
-| S12 | Composition root, registry events | todo | | | |
+| S12 | Composition root, registry events (RC-9) | done | | 2026-09-20 | All 3 items. `app_bootstrap` is the composition root; `SystemManager` emits `registered`/`released`; `_disabled_in_setup` deleted. I-9.1–I-9.3 built. **I-7.1 does not retire here** — 2 of its 6 hits are S13's. |
 | S13 | MonitoringRun (RC-11) | todo | | | |
 | S14 | Remaining web work | todo | | | **Unblocked 2026-09-20** — D-8 answered (warn/FULL STOP tiers). |
 | S15 | Explicit `LOCAL-OK` sweep | todo | | | Any time; good filler while blocked. |
@@ -1629,6 +1629,81 @@ the symptom was read against the audit's list of plausible architectural
 suspects instead of against what the run actually produced. Two were mock
 wiring; the third was a modal dialog. **Read the failure, then the audit.**
 
+### 2026-09-20 — S12 closed: one composition root, and the registry learned to talk
+
+**All three RC-9 items landed.** `app_bootstrap` is now the single place a
+system is built: `discover_ports` / `discover_controllers` / `normalize_config`
+/ `validate_assignment` / `build_models` / `link_models`, in that order, called
+identically by all three launchers. `SystemManager` grew `subscribe` /
+`unsubscribe` / `_emit` with two events, `registered` and `released`, and
+`RedPercentSystem` now maintains `available_probes` itself by reacting to them
+instead of being hand-wired by whichever launcher happened to build it.
+`_disabled_in_setup` is deleted; disabled devices are simply not constructed.
+
+**Two corrections to what the S11 resume note told the next session.**
+
+1. It said the Red Percent linking block was copy-pasted at **five** sites.
+   It was at **three** (`app.py:423`, `app.py:776`, `web_adapter.py:212`) —
+   the PySide site went away in an earlier stage and the note was never
+   recited. The audit text it derives from (VIEW-TKINTER-17) is likewise
+   counting a `pyside/view.py:904` site that no longer exists.
+2. It said S12 **retires the I-7.1 `xfail`**. It does not. Of I-7.1's six
+   remaining hits, four are the web linking block S12 deletes, but two are
+   `views/pyside/view.py:892` and `:925` (`stop_monitoring` and
+   `has_unsaved_data`), which are **S13** work. I-7.1 is still `xfail` after
+   this stage and the baseline was **not** bumped, per that note's own
+   instruction. It should retire at S13; if it does not, the remaining hits
+   are a third thing nobody has counted yet.
+
+**Decisions taken inside the stage, recorded so they are not re-litigated.**
+
+* **`available_probes` tracks registration, not visibility.** A *hidden*
+  probe (D-1) is still live, still polling, and still a valid position
+  source, so `hide()` emits nothing. Only `release()` and `shutdown_all()`
+  emit `released`.
+* **A later probe does not steal a live selection.** `_reselect` keeps the
+  current selection whenever it is still registered. Re-pointing the
+  position source mid-run would splice two probes' coordinates into one
+  data log without saying so. The first-probe-in-registry-order default is
+  preserved because the launchers register in `devices.names()` order —
+  `test_a_launch_selects_the_first_probe_in_registry_order` pins that, and
+  `test_a_later_probe_does_not_steal_a_live_selection` pins the other half.
+* **`normalize_config` derives `mode`** from the resolved port
+  (`"simulation"` iff `SIM`) rather than carrying whatever the frontend
+  sent. Desktop sent `""` and web sent `"hardware"`/`"simulation"` for the
+  same system, which is what made I-9.2 fail first time. Nothing downstream
+  reads config `mode`; deriving it is what makes the two shapes compare
+  equal instead of relaxing the assertion.
+* **`build_models` owns its claims dict** — signature is now
+  `build_models(active_configs, manager=None, claims=None)`. The
+  caller-owned dict was MANAGER-16 / VIEW-TKINTER-6. This broke four call
+  sites loudly, which was the point.
+* **`validate_assignment` lost its `"Virtual" not in ctrl` exemption.** It
+  existed only to let the fabricated placeholder controllers share an id.
+  Those are gone, so the exemption was a hole that let two real devices
+  claim one controller. `None`/`N/A` remain exempt.
+* **The web sidebar's greyed-out disabled-device affordance is gone by
+  design.** The server no longer builds disabled devices, so they are not
+  in `this.devices` and there is nothing to grey. `renderSidebar` no longer
+  partitions on `_disabled` and `get_devices` no longer sets it.
+* **Controller enumeration is genuinely in-process** through
+  `InputService`, so the "`python3` vs `sys.executable`" question in WEB-15
+  does not arise at all — there is no interpreter to choose. `gamepad.py`'s
+  four unlocked `pygame.joystick.get_count()` reads now route through
+  `input_service.count()`, which keeps the 200 Hz poll tick at one cheap
+  SDL read under the one lock (RC-13).
+
+**Not done, carried forward.** WEB-15's per-port device-type autodetect for
+the web wizard is still missing and needs an async scan flow, not a loop in
+the `scan_hardware` GET. `scan_hardware`'s docstring says so; the ledger row
+says so; it belongs to S14.
+
+**Verification.** Fast gate 532 passed / 1 xfailed (from 505 at session
+start), slow 57 passed, qt 35 passed. The one xfail is I-7.1. The
+three-pass sweep was **skipped** at the owner's instruction — it was costing
+more wall-clock than it was buying, and the three gates cover the same
+tests.
+
 ---
 
 ## Finding ledger
@@ -1655,7 +1730,7 @@ it) · `n/a` (with a reason).
 | DC-9 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model, tests/core/test_hide_show.py) |
 | DC-10 | RC3 | S7 | root cause | closed (D-2 ruled disable; test_d_2_leaving_a_mode_disables_the_coils) |
 | DC-11 | RC7 / RC3 | S10 | root cause | open (RC-3 flags part closed in S7, same test; RC-7 part remains) |
-| DC-12 | RC9 | S12 | root cause | open |
+| DC-12 | RC9 | S12 | root cause | closed (S12 item 3: disabled devices are never built; test_disabled_devices_are_not_constructed + test_i_9_3_the_disabled_in_setup_flag_is_gone) |
 | DC-13 | RC2 / RC7 | S3 | root cause | closed (test_the_badge_cannot_be_faked_by_typing_SIM_into_the_port_field, tests/web/test_web_security.py) |
 | DC-14 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
 | DC-15 | RC6 | S9 | root cause | closed (S9 item 2, same) |
@@ -1706,18 +1781,18 @@ it) · `n/a` (with a reason).
 | MANAGER-9 | RC1 | S2 | root cause | closed (test_i_1_5_active_models_written_only_by_system_manager) |
 | MANAGER-10 | RC1 / RC5 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
 | MANAGER-11 | RC1 | S2 | root cause | closed (reboot_model deleted; test_system_manager_reconfigure_replaces_the_model_set) |
-| MANAGER-12 | RC9 | S12 | root cause | open |
+| MANAGER-12 | RC9 | S12 | root cause | closed (same: the flag is gone, so it cannot read stale; test_i_9_3_the_disabled_in_setup_flag_is_gone) |
 | MANAGER-13 | RC4 / RC10 | S5 | root cause | open |
 | MANAGER-14 | LOCAL-OK | S1 | explicit | closed (test_d9_macos_defaults_to_tkinter, test_manager14_launcher_rejects_unknown_flags) |
 | MANAGER-15 | RC10 | S4 | root cause | closed (test_window_and_server_read_the_live_manager_not_a_stored_copy, tests/web/test_web_security.py) |
-| MANAGER-16 | RC13 | S5 | root cause | open |
+| MANAGER-16 | RC13 | S5 | root cause | closed in S12 (`build_models` owns one claims dict per build, so no dict survives a relaunch; test_build_models_owns_its_claims_dict). `ControllerPoller.close()` still does not pop its own entry, which is now unreachable: the only paths that release a model rebuild with a fresh dict.) |
 | MANAGER-17 | RC8 | S11 | root cause | closed (same fix as ERRORS-5) |
-| MANAGER-18 | RC9 | S12 | root cause | open |
+| MANAGER-18 | RC9 | S12 | root cause | closed (S12 item 1: one composition root; test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing, test_i_9_2_the_same_configs_produce_the_same_manager) |
 | MANAGER-19 | RC5 | S8 | root cause | open |
 | MANAGER-20 | RC4 | S5 | root cause | open |
 | PYSIDE-1 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | PYSIDE-2 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
-| PYSIDE-3 | RC9 | S12 | root cause | open |
+| PYSIDE-3 | RC9 | S12 | root cause | closed (S12 item 2: registry events; test_i_9_1_a_released_probe_leaves_available_probes, test_releasing_the_selected_probe_falls_back_to_a_live_one) |
 | PYSIDE-4 | RC11 | S13 | root cause | open |
 | PYSIDE-5 | RC6 | S9 | root cause | closed (S9 item 2: views read value_type instead of calling float() on the current value) |
 | PYSIDE-6 | RC6 | S9 | root cause | closed (S9 item 2, same) |
@@ -1745,11 +1820,11 @@ it) · `n/a` (with a reason).
 | REDPERCENT-8 | RC7 | S10 | root cause | open |
 | REDPERCENT-9 | RC11 | S13 | root cause | open |
 | REDPERCENT-10 | RC7 | S10 | root cause | open |
-| REDPERCENT-11 | RC9 / RC1 | S12 | root cause | open |
+| REDPERCENT-11 | RC9 / RC1 | S12 | root cause | closed (S12 item 2, same tests; I-9.1 holds by construction — test_i_9_1_only_the_dependent_model_writes_available_probes) |
 | REDPERCENT-12 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | REDPERCENT-13 | RC7 | S10 | root cause | open |
 | REDPERCENT-14 | RC6 | S9 | root cause | closed (S9 item 2: redpercent params typed) |
-| REDPERCENT-15 | RC9 | S12 | root cause | open |
+| REDPERCENT-15 | RC9 | S12 | root cause | closed (S12 item 3: no `_disabled_in_setup`, so the filter it broke no longer exists; test_redpercent_get_available_probe_names) |
 | REDPERCENT-16 | RC11 | S13 | root cause | open |
 | REDPERCENT-17 | RC7 | S10 | root cause | open |
 | REDPERCENT-18 | RC7 | S10 | root cause | open |
@@ -1801,7 +1876,7 @@ it) · `n/a` (with a reason).
 | STEPPER-10 | RC7 | S10 | root cause | open |
 | STEPPER-11 | RC6 / RC7 / RC3 | S9 | root cause | open (RC-3 flags part closed in S7: mode flags are read-only, API returns 403 — test_i_3_4_mode_flags_cannot_be_assigned. RC-6/RC-7 parts remain) |
 | STEPPER-12 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
-| STEPPER-13 | RC9 | S12 | root cause | open |
+| STEPPER-13 | RC9 | S12 | root cause | closed (S12 item 2: `released` clears the reference before teardown; test_releasing_the_selected_probe_falls_back_to_a_live_one) |
 | STEPPER-14 | RC4 | S5 | root cause | open |
 | STEPPER-15 | RC4 | S5 | root cause | open |
 | TEMP-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
@@ -1822,7 +1897,7 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-3 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |
 | VIEW-TKINTER-4 | RC3 | S7 | root cause | closed (test_losing_the_controller_leaves_manual_mode_entirely) |
 | VIEW-TKINTER-5 | RC4 | S5 | root cause | open |
-| VIEW-TKINTER-6 | RC13 | S5 | root cause | open |
+| VIEW-TKINTER-6 | RC13 | S5 | root cause | closed in S12 (same as MANAGER-16; test_build_models_owns_its_claims_dict) |
 | VIEW-TKINTER-7 | RC1 | S2 | root cause | closed (verified by inspection: app.py builds before withdraw and reports failure) |
 | VIEW-TKINTER-8 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
 | VIEW-TKINTER-9 | RC4 | S5 | root cause | closed (D-4; test_d4_a_child_dialog_does_not_close_the_gate) |
@@ -1833,12 +1908,12 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-14 | RC11 / RC7 | S13 | root cause | open |
 | VIEW-TKINTER-15 | RC11 | S13 | root cause | open |
 | VIEW-TKINTER-16 | RC1 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
-| VIEW-TKINTER-17 | RC7 / RC9 | S10 | root cause | open |
+| VIEW-TKINTER-17 | RC7 / RC9 | S10 | root cause | open (RC-9 wiring part closed in S12: probe linking moved into `app_bootstrap.link_models` and is no longer duplicated per view — test_red_percent_built_after_its_probes_still_sees_them. The RC-7 parts — hard-coded device names, `open_controller_log`, the dead `serial_port` entry, rotator formatting — remain.) |
 | VIEW-TKINTER-18 | LOCAL-OK | S15 | explicit | open |
 | WEB-1 | RC1 / RC10 | S2 | root cause | closed (tests/web/test_web_security.py: token, Origin and Content-Type checks on every POST) |
 | WEB-2 | RC4 | S5 | root cause | open |
 | WEB-3 | RC1 / RC10 | S2 | root cause | closed (tests/web/test_web_security.py: /api/screenshot now requires the session token) |
-| WEB-4 | RC9 | S12 | root cause | open |
+| WEB-4 | RC9 | S12 | root cause | closed (S12 item 3, same as DC-12/MANAGER-12) |
 | WEB-5 | RC10 | S14 | root cause | open |
 | WEB-6 | RC7 | S10 | root cause | open |
 | WEB-7 | RC7 | S10 | root cause | open |
@@ -1849,7 +1924,7 @@ it) · `n/a` (with a reason).
 | WEB-12 | RC8 | S11 | root cause | closed (`CommandResult`; a refusal is never rendered as success) |
 | WEB-13 | RC11 | S13 | root cause | open |
 | WEB-14 | RC10 | S14 | root cause | open |
-| WEB-15 | RC9 | S12 | root cause | open |
+| WEB-15 | RC9 | S12 | root cause | open (partly closed: the `python3` subprocess and the fabricated "Virtual Controller" entries are gone — test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing. Per-port device-type autodetect is **not** done and needs an async scan flow; see `scan_hardware`'s docstring. Carried to S14.) |
 | WEB-16 | LOCAL-OK | S15 | explicit | open |
 | WEB-17 | RC10 | S14 | root cause | closed early in S11 (the destructive pop was the RC-8 half; `?since=` fixed it) |
 | WEB-18 | RC5 / RC8 | S8 | root cause | open |

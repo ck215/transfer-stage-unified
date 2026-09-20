@@ -98,6 +98,7 @@ def managed_stub():
 _FILE_MARKERS = {
     "architecture/test_invariants.py": ["invariants"],
     "core/test_app_bootstrap.py": ["bootstrap"],
+    "core/test_composition_root.py": ["bootstrap", "lifecycle", "redpercent"],
     "core/test_edge_mvc_model.py": ["lifecycle", "mode"],
     "core/test_gamepad_interlock.py": ["loops", "mode"],
     "core/test_integration.py": ["integration"],

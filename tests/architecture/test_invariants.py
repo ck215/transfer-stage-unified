@@ -423,6 +423,54 @@ def test_no_module_level_poller_refcount():
 
 
 # ---------------------------------------------------------------------------
+# I-9.1 / I-9.2 — One composition root, and cross-model wiring by event.
+# S12 (RC-9).
+#
+# The behavioural halves are `tests/core/test_composition_root.py`. These are
+# the structural ones: the wiring cannot come back as a fourth hand-written
+# copy, and no launcher can grow its own device enumeration again.
+#
+# `root-causes.md` names "add Red Percent linking to a fifth call site" as an
+# anti-fix in so many words. This is the guard that makes adding one fail.
+# ---------------------------------------------------------------------------
+
+REGISTRY_OWNER = "model/redpercent_system.py"
+
+
+def test_i_9_1_only_the_dependent_model_writes_available_probes():
+    """The assignment was pasted into Tk's launcher, PySide's launcher and
+    the web adapter, and nothing anywhere refreshed it afterwards."""
+    hits = _scan(r"available_probes\s*=[^=]|\.available_probes", SRC,
+                 exclude=(REGISTRY_OWNER,))
+    assert not hits, _report("I-9.1 (available_probes written outside the model)", hits)
+
+
+def test_i_9_2_controller_enumeration_has_one_implementation():
+    """Three enumerations, and the web one shelled out to a literal `python3`
+    and then invented controllers when it found none (MANAGER-18, WEB-15)."""
+    hits = _scan(r"pygame\.joystick\.get_count|joystick\.Joystick\(", SRC,
+                 exclude=(SDL_OWNER,))
+    assert not hits, _report("I-9.2 (controller enumeration outside the input service)", hits)
+
+
+def test_i_9_2_no_fabricated_controllers():
+    """A name no enumeration produced, offered in one frontend's wizard only.
+
+    Quoted literals, so the comments that have to name the defect in order to
+    explain it do not trip their own guard.
+    """
+    hits = _scan(r"""["']Virtual Controller""", SRC, code_only=False)
+    assert not hits, _report("I-9.2 (fabricated controller names)", hits)
+
+
+def test_i_9_3_the_disabled_in_setup_flag_is_gone():
+    """RC-9 item 3. It was computed from a key normalization had already
+    dropped, so it was False for every model ever built (WEB-4)."""
+    hits = _scan(r"_disabled_in_setup", SRC)
+    assert not hits, _report("RC-9 item 3 (_disabled_in_setup)", hits)
+
+
+# ---------------------------------------------------------------------------
 # I-7.2 — The same schema renders in all three views.  S10 (RC-7).
 #
 # Stated in root-causes.md as "the same schema renders the same set of
