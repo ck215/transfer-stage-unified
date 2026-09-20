@@ -187,3 +187,83 @@ def test_get_state_isolates_a_raising_device():
     assert "connection_status" in state["Good"]
     assert "_error" in state["Bad"]
     assert "board fell off the bus" in state["Bad"]["_error"]
+
+
+def test_hardware_scan_runs_async_and_is_polled_to_completion(monkeypatch):
+    """WEB-15 residue: scan_hardware()'s own docstring says device-type
+    probing needs an async scan (background thread + poll), not a loop
+    bolted onto a fast GET, because probe_device_at blocks for seconds per
+    port. start_hardware_scan must return immediately (not block on the
+    probes), and get_scan_status must observe "running" then "done" with
+    the per-port results filled in."""
+    import app_bootstrap
+    import threading
+    from views.web.web_adapter import WebModelAdapter
+
+    release_probe = threading.Event()
+
+    def fake_discover_ports():
+        return ["SIM", "/dev/fake0", "/dev/fake1"]
+
+    def fake_probe_device_at(port):
+        release_probe.wait(timeout=2)
+        return {"/dev/fake0": "stepper", "/dev/fake1": "chuck"}.get(port)
+
+    monkeypatch.setattr(app_bootstrap, "discover_ports", fake_discover_ports)
+    monkeypatch.setattr(app_bootstrap, "probe_device_at", fake_probe_device_at)
+
+    adapter = WebModelAdapter()
+
+    assert adapter.get_scan_status()["status"] == "not_started"
+
+    start_result = adapter.start_hardware_scan()
+    assert start_result["status"] == "ok"
+
+    # The probes are still blocked on release_probe, so this must observe
+    # "running" rather than having waited for them - proving the call above
+    # did not block the caller.
+    status = adapter.get_scan_status()
+    assert status["status"] == "running"
+
+    release_probe.set()
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        status = adapter.get_scan_status()
+        if status["status"] != "running":
+            break
+        time.sleep(0.01)
+
+    assert status["status"] == "done"
+    assert status["results"] == {"/dev/fake0": "stepper", "/dev/fake1": "chuck"}
+    # SIM is never probed - it isn't a real port to open.
+    assert "SIM" not in status["results"]
+
+
+def test_hardware_scan_is_single_flight(monkeypatch):
+    """A second start while one is already running must not spin up a
+    second thread walking the same ports; it gets a 409-shaped refusal."""
+    import app_bootstrap
+    import threading
+    from views.web.web_adapter import WebModelAdapter
+
+    block_forever = threading.Event()
+
+    def fake_discover_ports():
+        return ["/dev/fake0"]
+
+    def fake_probe_device_at(port):
+        block_forever.wait(timeout=2)
+        return None
+
+    monkeypatch.setattr(app_bootstrap, "discover_ports", fake_discover_ports)
+    monkeypatch.setattr(app_bootstrap, "probe_device_at", fake_probe_device_at)
+
+    adapter = WebModelAdapter()
+    first = adapter.start_hardware_scan()
+    assert first["status"] == "ok"
+
+    second = adapter.start_hardware_scan()
+    assert second["status"] == "error"
+    assert second["code"] == 409
+
+    block_forever.set()

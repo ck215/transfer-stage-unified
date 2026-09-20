@@ -209,6 +209,12 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             scan_result = adapter.scan_hardware()
             self._send_json(200, scan_result)
 
+        elif route == "/api/setup/scan/status":
+            # WEB-15 residue: poll side of POST /api/setup/scan/start. Never
+            # blocks — probe_device_at runs on the adapter's background
+            # thread, this just reads whatever it has filled in so far.
+            self._send_json(200, adapter.get_scan_status())
+
         elif route == "/api/logs":
             logs = adapter.get_logs()
             self._send_json(200, {"logs": logs})
@@ -353,6 +359,14 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             configs = data.get("device_configs", data.get("configs", data))
             init_func = getattr(adapter, "initialize_system", adapter.initialize_setup)
             result = init_func(configs)
+            code = result.get("code", 200)
+            return self._send_json(code, result)
+
+        if route == "/api/setup/scan/start":
+            # WEB-15 residue: kicks off the background device-type probe;
+            # /api/setup/scan/status (GET) polls it. 409 if one is already
+            # running (adapter enforces single-flight, not this route).
+            result = adapter.start_hardware_scan()
             code = result.get("code", 200)
             return self._send_json(code, result)
 

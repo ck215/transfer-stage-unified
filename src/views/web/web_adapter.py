@@ -30,6 +30,9 @@ class WebModelAdapter:
         self._device_locks: Dict[str, threading.Lock] = {}
         self.log_buffer: List[str] = []
         self.error_buffer: List[Dict[str, Any]] = []
+        # Async hardware scan state (WEB-15 residue). See start_hardware_scan.
+        self._scan_thread: Optional[threading.Thread] = None
+        self._scan_state: Optional[Dict[str, Any]] = None
 
     def _get_device_lock(self, device_name: str) -> threading.Lock:
         with self._state_lock:
@@ -74,6 +77,64 @@ class WebModelAdapter:
             "controllers": controllers,
             "status": "ok"
         }
+
+    def start_hardware_scan(self) -> Dict[str, Any]:
+        """WEB-15 residue: the async device-type probe that scan_hardware's
+        docstring above says is a follow-up, not done there. probe_device_at
+        (app_bootstrap.py) opens each port at several baud rates with its own
+        per-attempt timeouts and can take seconds per port, so it must not
+        run on the request thread of a fast GET/POST. This kicks it off on a
+        background daemon thread; get_scan_status() below is the poll side.
+
+        Single-flight: a scan already running returns a 409-shaped result
+        instead of starting a second thread over the same ports.
+        """
+        import app_bootstrap
+
+        with self._state_lock:
+            if self._scan_state is not None and self._scan_state.get("status") == "running":
+                return {
+                    "status": "error",
+                    "code": 409,
+                    "message": "A hardware scan is already running.",
+                }
+            self._scan_state = {"status": "running", "results": {}, "error": None}
+
+        def _worker():
+            try:
+                ports = [p for p in app_bootstrap.discover_ports() if p != "SIM"]
+                results: Dict[str, Optional[str]] = {}
+                for p in ports:
+                    try:
+                        results[p] = app_bootstrap.probe_device_at(p)
+                    except Exception as e:
+                        results[p] = None
+                    with self._state_lock:
+                        if self._scan_state is not None:
+                            self._scan_state["results"] = dict(results)
+                with self._state_lock:
+                    if self._scan_state is not None:
+                        self._scan_state["status"] = "done"
+            except Exception as e:
+                with self._state_lock:
+                    if self._scan_state is not None:
+                        self._scan_state["status"] = "error"
+                        self._scan_state["error"] = str(e)
+
+        self._scan_thread = threading.Thread(target=_worker, daemon=True, name="hw-scan-probe")
+        self._scan_thread.start()
+        return {"status": "ok", "code": 200, "message": "Hardware scan started."}
+
+    def get_scan_status(self) -> Dict[str, Any]:
+        """Poll side of start_hardware_scan. status is one of "not_started",
+        "running", "done", or "error"; results maps port -> probed device
+        type (or None if that port's probe failed/found nothing), filled in
+        incrementally as each port finishes so a slow last port doesn't hide
+        the ones already probed."""
+        with self._state_lock:
+            if self._scan_state is None:
+                return {"status": "not_started", "results": {}}
+            return dict(self._scan_state)
 
     def initialize_setup(self, configs: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Dict[str, Any]:
         """
