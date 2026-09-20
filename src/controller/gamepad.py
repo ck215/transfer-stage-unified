@@ -356,19 +356,12 @@ class ControllerPoller:
             self.start_polling(self.gui_root, self.log_updater, self.activity_callback)
         return success
 
-    def connect_controller(self):
-        """Re-acquire this poller's device. Does not touch anyone else's.
-
-        This used to call pygame.quit() — a process-wide teardown — to
-        "restart pygame" for one poller, which killed every other live
-        poller's joystick handle at the same time (RC-13).
-        """
-        print(f"[{self.process_name}] Re-acquiring controller...")
-        input_service.release(self.process_name)
-        success = self._initialize_pygame_joystick(self.controllerID)
-        if success and self.gui_root and not self.is_polling:
-            self.start_polling(self.gui_root, self.log_updater, self.activity_callback)
-        return success
+    # connect_controller() lived here: no callers in src (GAMEPAD-17,
+    # grep-verified against this commit), and it called pygame.quit()
+    # unconditionally — a process-wide teardown that would have killed every
+    # other live poller's joystick handle at the same time (RC-13).
+    # set_controller() above is the live duplicate: same re-initialization
+    # path, without the SDL-wide teardown.
 
     def _initialize_pygame_joystick(self, controllerID):
         self.stop_polling()
@@ -516,12 +509,23 @@ class ControllerPoller:
     EDGE_KEYS = ("dpad_LR", "dpad_UD", "LBumper", "RBumper")
 
     def _read_raw(self):
-        """Raw mapped state from the wrapper, or None if the device is gone."""
+        """Raw mapped state from the wrapper, or None if the device is gone.
+
+        Every wrapper's get_mapped_state() (BaseGamepad and its subclasses,
+        above) only does dict lookups against its own prev_*_states caches —
+        no pygame calls — so this except clause is unreachable today
+        (GAMEPAD-17). Kept as a guard for a future wrapper that does touch
+        hardware directly, but scoped so the guard itself cannot crash: if
+        pygame failed to import, `except pygame.error` used to evaluate
+        `None.error` the moment anything else in the try block raised,
+        replacing that exception with an unrelated AttributeError instead of
+        just letting it propagate.
+        """
         if not self.gamepad:
             return None
         try:
             return self.gamepad.get_mapped_state()
-        except pygame.error as e:
+        except (pygame.error if pygame else ()) as e:
             ErrorPopupManager.report_error(
                 "Gamepad Disconnected", f"Hardware error during poll:\n{e}")
             self.gamepad = None

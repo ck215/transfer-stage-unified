@@ -412,9 +412,28 @@ def test_gamepad_disconnect_mid_session():
         with patch("controller.gamepad.ErrorPopupManager") as mock_error:
             state = poller.get_mapped_state()
             assert state == {}
-            
+
             # Since the device is lost, the polling flag or object might be cleared/warned
             # (Depends on implementation, but testing it doesn't crash is primary requirement)
+
+
+def test_read_raw_pygame_error_guard_does_not_attributeerror_when_pygame_is_none():
+    """GAMEPAD-17: `except pygame.error` evaluates the attribute `pygame.error`
+    only when something in the try block actually raises. If pygame failed
+    to import (`pygame = None` at module scope), that attribute access
+    itself raised AttributeError, replacing whatever exception the wrapper
+    had raised with a confusing, unrelated one. `_read_raw` is unreachable
+    in practice — every wrapper's get_mapped_state() only does dict lookups
+    against its own prev_*_states caches, never touches pygame — but the
+    guard against a missing pygame module needs to hold regardless.
+    """
+    poller = _bare_poller()
+    poller.gamepad = MagicMock()
+    poller.gamepad.get_mapped_state.side_effect = RuntimeError("wrapper boom")
+
+    with patch("controller.gamepad.pygame", None):
+        with pytest.raises(RuntimeError, match="wrapper boom"):
+            poller._read_raw()
 
 def test_closing_a_poller_never_tears_sdl_down():
     """Closing a device releases that device, and nothing else (RC-13).

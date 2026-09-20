@@ -106,7 +106,14 @@ def test_poller_pygame_error_during_get_mapped_state():
 
 
 def test_poller_reconnect_flow():
-    """Verify connect_controller attempts re-initialization."""
+    """Verify re-initialization re-acquires a device via set_controller.
+
+    Was written against `connect_controller`, deleted in GAMEPAD-17: it had
+    no callers in src (grep-verified) and would call pygame.quit()
+    unconditionally, the process-wide teardown RC-13 built InputService to
+    eliminate. `set_controller` is the live duplicate — same
+    re-initialization path, without the SDL-wide teardown.
+    """
     claims = {}
     with patched_sdl() as mock_pygame:
         mock_pygame.joystick.get_count.return_value = 1
@@ -125,7 +132,7 @@ def test_poller_reconnect_flow():
         poller.activity_callback = None
 
         with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
-            success = poller.connect_controller()
+            success = poller.set_controller(0)
             assert success is True
             assert poller.gamepad is not None
             assert claims["ProbeA"] == 0
