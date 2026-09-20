@@ -34,7 +34,11 @@ coordination.
 
 Give each agent: the repo path, its exact finding-ID list with the audit
 file each lives in, the read-only rule, the trap below, the evidence rule,
-and its output path.
+and its output path. **Copy the prompt from
+[agent-prompt.md](agent-prompt.md)** rather than writing one — it carries
+the failure modes this pass has already hit, including a second wave that
+exists solely because wave-1 agents cite test *files* instead of test
+*names*.
 
 ### The trap every agent must be warned about
 
@@ -62,6 +66,17 @@ NOTE: <one sentence on what was actually found>
 ```
 
 ## Applying the verdicts
+
+Verify every cited test name yourself before flipping anything:
+
+```
+grep -rn "def <name>" tests/
+```
+
+A false OPEN costs one verification. A false CLOSED erases a real defect
+from the backlog permanently — so the burden of proof is asymmetric, and
+the agents' CLOSED verdicts are a shortlist for you to check, not a
+result to apply.
 
 Apply `CLOSED` rows with a script, matching the exact existing row text so a
 miss raises rather than silently no-ops. Leave every `UNSURE` alone and
