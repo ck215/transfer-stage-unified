@@ -123,9 +123,14 @@ def _get(url):
         return resp.status, json.loads(resp.read().decode("utf-8"))
 
 
-def _post(url, data):
+def _post(url, data, token=True):
+    from views.web.web_server import SESSION_TOKEN, TOKEN_HEADER
+
     body = json.dumps(data).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers[TOKEN_HEADER] = SESSION_TOKEN
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))

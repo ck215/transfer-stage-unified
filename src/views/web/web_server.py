@@ -2,6 +2,7 @@ import http.server
 import json
 import os
 import mimetypes
+import secrets
 import threading
 from urllib.parse import urlparse
 import mss
@@ -13,6 +14,13 @@ from typing import Optional
 from .web_adapter import WebModelAdapter
 
 
+# One token per launch. It is injected into the served HTML, so the dashboard
+# has it and a cross-site page does not (RC-10). Regenerated per process, never
+# persisted — this is a same-machine boundary, not an account system.
+SESSION_TOKEN = secrets.token_urlsafe(32)
+TOKEN_HEADER = "X-Stage-Token"
+
+
 class WebAPIHandler(http.server.BaseHTTPRequestHandler):
     """
     Standard-library HTTP handler providing REST endpoints and static file serving
@@ -21,6 +29,62 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
     """
     adapter: Optional[WebModelAdapter] = WebModelAdapter()
     static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "static"))
+
+    # ---- security boundary (RC-10 item 2) -------------------------------
+    #
+    # This server drives physical hardware from an unauthenticated localhost
+    # port. Before this, any page the operator's browser happened to visit
+    # could issue a cross-site form POST to /api/command and move the stage,
+    # and could GET /api/screenshot to read the operator's screen. Browsers
+    # send such "simple" requests without a preflight and without asking.
+    #
+    # Three checks, each of which alone defeats the common case:
+    #   1. application/json content type — a cross-site form cannot set it,
+    #      so requiring it forces a preflight the browser will refuse;
+    #   2. Origin/Referer must match the address we are bound to;
+    #   3. a per-launch token that only the served HTML carries.
+
+    def _bound_hosts(self):
+        host, port = self.server.server_address[:2]
+        names = {host, "127.0.0.1", "localhost", "[::1]", "::1"}
+        return {f"{n}:{port}" for n in names} | names
+
+    def _origin_ok(self):
+        origin = self.headers.get("Origin")
+        if origin is None:
+            referer = self.headers.get("Referer")
+            if referer is None:
+                # No Origin and no Referer: not a browser-initiated cross-site
+                # request. The token check still has to pass.
+                return True
+            origin = referer
+        parsed = urlparse(origin)
+        return parsed.netloc in self._bound_hosts()
+
+    def _token_ok(self):
+        return secrets.compare_digest(
+            self.headers.get(TOKEN_HEADER, ""), SESSION_TOKEN)
+
+    def _authorize(self, require_json):
+        """Returns True if the request may proceed; otherwise answers it."""
+        if require_json:
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+            if ctype != "application/json":
+                self._send_json(415, {
+                    "status": "error",
+                    "message": "Content-Type: application/json is required"})
+                return False
+        if not self._origin_ok():
+            self._send_json(403, {
+                "status": "error",
+                "message": "Cross-origin request refused"})
+            return False
+        if not self._token_ok():
+            self._send_json(403, {
+                "status": "error",
+                "message": "Missing or invalid session token"})
+            return False
+        return True
 
     # Maintain backward compatibility if external code references system_manager directly
     @classmethod
@@ -72,6 +136,16 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
         try:
             with open(full_path, "rb") as f:
                 content = f.read()
+            if content_type == "text/html":
+                # The dashboard learns the token by being served it. A
+                # cross-site page cannot read this because it cannot read our
+                # HTML (same-origin policy) — which is the whole mechanism.
+                meta = (f'<meta name="stage-token" content="{SESSION_TOKEN}">'
+                        ).encode("utf-8")
+                if b"<head>" in content:
+                    content = content.replace(b"<head>", b"<head>" + meta, 1)
+                else:
+                    content = meta + content
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
@@ -122,6 +196,10 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(result.get("code", 200), result)
 
         elif route == "/api/screenshot":
+            # Reads the operator's actual screen, so it is guarded like a POST
+            # (minus the JSON content type, which a GET does not carry).
+            if not self._authorize(require_json=False):
+                return
             try:
                 with mss.mss() as sct:
                     monitor = sct.monitors[1]
@@ -146,6 +224,8 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             self._serve_static(route)
 
     def do_POST(self):
+        if not self._authorize(require_json=True):
+            return
         parsed = urlparse(self.path)
         route = parsed.path
         length = int(self.headers.get("Content-Length", 0))
@@ -310,11 +390,15 @@ class WebDashboardServer:
             else:
                 self.adapter = WebModelAdapter(system_manager)
 
-        self.system_manager = self.adapter.system_manager
         self.host = host
         self.port = port
         self.server = None
         self.thread = None
+
+    @property
+    def system_manager(self):
+        """The adapter is the one place a manager lives (RC-10 item 1)."""
+        return self.adapter.system_manager if self.adapter else None
 
     def start(self, background=True):
         handler_cls = WebAPIHandler
@@ -327,6 +411,10 @@ class WebDashboardServer:
                 break
             except OSError:
                 self.port += 1
+
+        # With port=0 the OS picks an ephemeral port, so self.port has to be
+        # read back from the socket or callers build URLs for port 0.
+        self.port = self.server.server_address[1]
 
         if background:
             self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

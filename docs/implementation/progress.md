@@ -51,7 +51,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S1 | Purge legacy paths (D-9, D-11) | done | | 2026-09-19 | D-9 + D-11 purged. SERIAL-18's `reboot_model` half reassigned to S2. |
 | S2 | Lifecycle authority (RC-1) | done | | 2026-09-19 | All 9 items. I-1.5 now holds. 7 tab-close findings deferred to S6 by D-1. |
 | S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
-| S4 | Web AppContext and security boundary | todo | | | Live CSRF hole; independent of S5+. |
+| S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
 | S5 | Input service and model-owned loops | todo | | | Highest coupling. RC-13 first, then RC-4. |
 | S6 | Hide/show semantics (D-1) | todo | | | Needs S5. **Blocked on D-2** when reached. |
 | S7 | Probe mode state machine (RC-3) | todo | | | **Blocked on D-2** when reached. |
@@ -421,6 +421,59 @@ from a raw pyserial handle to the transport API.
   items 1-2). Gate `-m "web"`. **Note the live CSRF / no-origin-check hole
   and `/api/screenshot` exposure are this stage's.**
 
+### 2026-09-19 — S4: the web security boundary and one live manager
+
+Gate `-m "web"`: 48 passed. New file `tests/web/test_web_security.py`
+(12 tests) acts as the cross-site caller.
+
+**The hole was real and reachable.** This server drives physical hardware
+from an unauthenticated localhost port. Any page the operator's browser
+happened to visit could issue a cross-site form POST to `/api/command` and
+move the stage, and could `GET /api/screenshot` to read the operator's
+screen. Browsers send such "simple" requests with no preflight and no prompt.
+
+Three checks now guard every POST and the screenshot endpoint, each of which
+alone defeats the common case:
+
+1. **`Content-Type: application/json` required.** A cross-site `<form>` can
+   only send `text/plain`, `form-urlencoded` or `multipart`, so requiring
+   JSON forces a preflight the browser will refuse. This alone kills the
+   classic no-JS CSRF.
+2. **`Origin`/`Referer` must match the bound address.**
+3. **A per-launch token**, generated with `secrets.token_urlsafe` and
+   injected into the served HTML. A cross-site page cannot read it because it
+   cannot read our HTML — that same-origin restriction *is* the mechanism.
+   Compared with `secrets.compare_digest`.
+
+Reads (`/api/state`, `/api/devices`) stay open deliberately: locking them
+would break the first paint before the page has run any script, and the
+boundary that matters is on commands and on the screen grab.
+
+The client side wraps `window.fetch` once rather than editing 13 call sites,
+so a new call site cannot forget the header. Checked that nothing reaches the
+API another way — the one `new Image()` is fed a `data:` URI.
+
+**One manager, read through (item 1).** `WebDashboardWindow.system_manager`
+and `WebDashboardServer.system_manager` are now properties reading through to
+the adapter, which is the only place a manager is stored. Five objects used
+to hold one and only the adapter's stayed live, because re-setup replaces it
+— the window's stale copy is why `close()` shut down the *original, empty*
+manager on Ctrl-C and left the real models running.
+
+Re-setup is **single-flight**: a second concurrent rebuild gets 409 instead
+of racing the first onto the same serial ports, where the loser would leave
+orphaned models holding them. The lock is released on the failure path too,
+so a rejected rebuild cannot wedge the endpoint for the session.
+
+**Found in passing:** `WebDashboardServer.start()` never read the bound port
+back from the socket, so `port=0` (let the OS choose) left `self.port` at 0
+and every URL built from it was wrong. That is why the security tests failed
+on their first run.
+
+- **Next action:** S5 — input service and model-owned loops (RC-13, RC-4),
+  33 findings. **S6 depends on it**: D-1's hide semantics cannot ship until
+  the loops belong to the models. I-4.1's xfail retires there.
+
 ---
 
 ## Finding ledger
@@ -501,7 +554,7 @@ it) · `n/a` (with a reason).
 | MANAGER-12 | RC9 | S12 | root cause | open |
 | MANAGER-13 | RC4 / RC10 | S5 | root cause | open |
 | MANAGER-14 | LOCAL-OK | S1 | explicit | closed (test_d9_macos_defaults_to_tkinter, test_manager14_launcher_rejects_unknown_flags) |
-| MANAGER-15 | RC10 | S4 | root cause | open |
+| MANAGER-15 | RC10 | S4 | root cause | closed (test_window_and_server_read_the_live_manager_not_a_stored_copy, tests/web/test_web_security.py) |
 | MANAGER-16 | RC13 | S5 | root cause | open |
 | MANAGER-17 | RC8 | S11 | root cause | open |
 | MANAGER-18 | RC9 | S12 | root cause | open |
@@ -627,9 +680,9 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-16 | RC1 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
 | VIEW-TKINTER-17 | RC7 / RC9 | S10 | root cause | open |
 | VIEW-TKINTER-18 | LOCAL-OK | S15 | explicit | open |
-| WEB-1 | RC1 / RC10 | S2 | root cause | open |
+| WEB-1 | RC1 / RC10 | S2 | root cause | closed (tests/web/test_web_security.py: token, Origin and Content-Type checks on every POST) |
 | WEB-2 | RC4 | S5 | root cause | open |
-| WEB-3 | RC1 / RC10 | S2 | root cause | open |
+| WEB-3 | RC1 / RC10 | S2 | root cause | closed (tests/web/test_web_security.py: /api/screenshot now requires the session token) |
 | WEB-4 | RC9 | S12 | root cause | open |
 | WEB-5 | RC10 | S14 | root cause | open |
 | WEB-6 | RC7 | S10 | root cause | open |

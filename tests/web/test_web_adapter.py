@@ -27,6 +27,11 @@ class MockSystemManager:
     def shutdown_all(self):
         self.shutdown_called = True
 
+    def get_active_models_snapshot(self):
+        # The view reads models through the manager's thread-safe accessor
+        # rather than reaching into active_models (I-1.5).
+        return dict(self.active_models)
+
 
 def test_web_error_manager_routing():
     WebAPIHandler.error_buffer.clear()

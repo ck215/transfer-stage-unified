@@ -314,6 +314,11 @@ WEB-20, ERRORS-12.
 **Why early.** A cross-site "simple" POST can drive the stage today. This
 does not depend on S5 or later.
 
+**Done.** Both holes closed, with `tests/web/test_web_security.py` acting as
+the cross-site caller. Reads stay open on purpose — locking them would break
+the first paint before the page runs any script. WEB-10, WEB-20 and ERRORS-12
+remain open: they are the rest of RC-10's web work, not the boundary.
+
 ---
 
 ## S5 — Input service and model-owned loops (RC-13, RC-4)

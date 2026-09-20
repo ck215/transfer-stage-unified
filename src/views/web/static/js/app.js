@@ -4,6 +4,29 @@
  * command dispatch, and interactive modal dialogs.
  */
 
+// Session token (RC-10). The server injects this into the HTML it serves, so
+// this page has it and a cross-site page does not — a cross-site page cannot
+// read our HTML. Every same-origin /api/ call carries it, so the server can
+// refuse requests that did not come from the dashboard it served. Wrapping
+// fetch here rather than editing 13 call sites means a new call site cannot
+// forget it.
+(function attachSessionToken() {
+  const meta = document.querySelector('meta[name="stage-token"]');
+  const token = meta ? meta.getAttribute('content') : '';
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const isOwnApi = url.startsWith('/api/') || url.startsWith(window.location.origin + '/api/');
+    if (!isOwnApi || !token) {
+      return originalFetch(input, init);
+    }
+    const opts = Object.assign({}, init);
+    opts.headers = new Headers((init && init.headers) || (typeof input !== 'string' && input.headers) || {});
+    opts.headers.set('X-Stage-Token', token);
+    return originalFetch(input, opts);
+  };
+})();
+
 class TransferStageApp {
   constructor() {
     this.devices = {};          // device_name -> schema

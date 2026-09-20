@@ -20,6 +20,10 @@ class WebModelAdapter:
 
     def __init__(self, system_manager=None, mode="setup"):
         self.system_manager = system_manager
+        # Re-setup is single-flight (RC-10 item 1). Two concurrent rebuilds
+        # would each tear down and re-open the same ports, and the loser would
+        # leave orphaned models holding them. A second caller gets 409.
+        self._reconfiguring = threading.Lock()
         self.mode = mode  # "setup" or "running"
         self._state_lock = threading.RLock()
         self._device_locks: Dict[str, threading.Lock] = {}
@@ -80,7 +84,19 @@ class WebModelAdapter:
         Validates device configs, checks port/controller collisions,
         initializes models into SystemManager, and transitions mode to 'running'.
         Supports both list of configs and dict of device_name -> config.
+
+        Single-flight: a second concurrent re-setup gets 409 rather than
+        racing the first one onto the same serial ports (RC-10 item 1).
         """
+        if not self._reconfiguring.acquire(blocking=False):
+            return {"status": "error", "code": 409,
+                    "message": "A device re-setup is already in progress"}
+        try:
+            return self._initialize_setup_locked(configs)
+        finally:
+            self._reconfiguring.release()
+
+    def _initialize_setup_locked(self, configs):
         if not configs:
             return {"status": "error", "code": 400, "message": "Configs must be non-empty"}
 

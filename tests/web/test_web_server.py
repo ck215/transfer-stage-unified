@@ -100,9 +100,21 @@ def web_server_fixture():
     WebAPIHandler.error_buffer.clear()
 
 
-def make_request(url, method="GET", json_data=None):
+def make_request(url, method="GET", json_data=None, token=True, extra_headers=None):
+    """Issue a request the way the dashboard does.
+
+    The server requires a per-launch session token on every POST and on
+    /api/screenshot (RC-10). Tests that exercise the boundary itself pass
+    token=False to act as a cross-site caller would.
+    """
+    from views.web.web_server import SESSION_TOKEN, TOKEN_HEADER
+
     data = json.dumps(json_data).encode("utf-8") if json_data is not None else None
     headers = {"Content-Type": "application/json"} if json_data is not None else {}
+    if token:
+        headers[TOKEN_HEADER] = SESSION_TOKEN
+    if extra_headers:
+        headers.update(extra_headers)
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req) as resp:
@@ -400,7 +412,11 @@ def test_api_logs_and_errors(web_server_fixture):
 def test_invalid_json_handling(web_server_fixture):
     server, _ = web_server_fixture
     url = f"http://127.0.0.1:{server.port}/api/command"
-    req = urllib.request.Request(url, data=b"{corrupted_json: true", headers={"Content-Type": "application/json"}, method="POST")
+    from views.web.web_server import SESSION_TOKEN, TOKEN_HEADER
+    req = urllib.request.Request(
+        url, data=b"{corrupted_json: true",
+        headers={"Content-Type": "application/json", TOKEN_HEADER: SESSION_TOKEN},
+        method="POST")
     try:
         with urllib.request.urlopen(req) as resp:
             assert resp.status == 400
