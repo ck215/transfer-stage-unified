@@ -52,12 +52,12 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S2 | Lifecycle authority (RC-1) | done | | 2026-09-19 | All 9 items. I-1.5 now holds. 7 tab-close findings deferred to S6 by D-1. |
 | S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
 | S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
-| S5 | Input service and model-owned loops | done | | 2026-09-19 | RC-13 + RC-4. I-4.1 holds. Web has manual mode for the first time. S6 unblocked. |
+| S5 | Input service and model-owned loops | done | `9a70834` | 2026-09-20 | RC-13 + RC-4. Deferred D-4 input gate landed 2026-09-20. |
 | S6 | Hide/show semantics (D-1) | done | `e9fc26f` | 2026-09-20 | All 4 items. Tk got a real re-add path. order_dependent 3 -> 2. |
 | S7 | Probe mode state machine (RC-3) | done | `8fc9f00` | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
 | S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
-| S9 | Typed parameters (RC-6) | partial | | 2026-09-20 | Items 1 and 4 done (both speed/temperature hazards). Items 2 and 3 remain. |
-| S10 | Schema v2, three renderers (RC-7) | todo | | | |
+| S9 | Typed parameters (RC-6) | done | | 2026-09-20 | All 4 items. `Param` table + D-5 `apply_inputs`. Landed with S10. |
+| S10 | Schema v2, three renderers (RC-7) | in progress | | 2026-09-20 | **Items 1-5 written, Qt pass UNVERIFIED.** See session log for the exact remaining check. |
 | S11 | Result channel and event bus (RC-8) | todo | | | |
 | S12 | Composition root, registry events | todo | | | |
 | S13 | MonitoringRun (RC-11) | todo | | | |
@@ -1161,6 +1161,147 @@ Without that distinction the rotation-confirmation dialog — which exists to
 be answered before a risky move — would itself gate the input for the move it
 is confirming.
 
+### 2026-09-20 — S9 items 2-3 + S10 (IN PROGRESS, paused mid-stage)
+
+**Read this before touching anything.** The work below is committed and
+pushed, the fast gate is green, but **the Qt pass was never verified**. Do
+that first — see "What is unverified" at the end of this entry.
+
+#### S9 item 2: parameters are declared, not inferred
+
+New `src/model/params.py`. `Param(name, type, default, minimum, maximum,
+decimals, unit, label)` with two deliberately different coercion paths:
+
+* `coerce` is **lenient** — falls back to this class's own default. For
+  building a frame from whatever is stored.
+* `parse` is **strict** — refuses and names the field. For accepting operator
+  input.
+
+That split is RC-6 in one class. A value that cannot be read is an error to
+report, not a number to invent.
+
+`BaseProbe.PARAMS` replaces `PARAM_DEFAULTS`, and `_param(name)` no longer
+takes `minimum=`/`integer=` per call site — those bounds lived in however
+many places happened to read a parameter, and the class default lived
+nowhere. `RedPercentSystem`, `RotatorSystem` and `TemperatureSystem` got
+tables too.
+
+#### S9 item 3 / D-5: commands carry their inputs
+
+`SchemaCommands` mixin in `model/base.py`, shared by all four models so the
+validate-then-run ordering cannot differ between them. `apply_inputs` is
+**atomic**: every declared field parses, or none is committed. `execute_command`
+refuses the command outright if any input fails, naming the offending field.
+
+**Tk's `focus_set()` flush is deleted.** It was the named anti-fix: forcing
+focus away before every command so a pending `<FocusOut>` would commit. It
+worked only in Tk, only for the widget that happened to hold focus, and not
+at all for the Web client — which had no way to commit an edit and run a
+command atomically, only `set_attr` per field and hope.
+
+#### S10: schema v2
+
+New `src/model/schema.py`. Builders return plain dicts, so the schema stays
+serialisable and the Web client receives the same description the desktop
+views render.
+
+What the views had to guess and now do not: `value_type` (both called
+`float()` on the *current contents*, so a cleared box was reclassified as
+text and lost its validator), `writable` (defaults **False**; a control has
+to ask), `role` instead of `bg`/`fg` hex only Tk could honour, and
+`enabled_when`/`disabled_when` evaluated by one shared `schema.is_enabled`.
+
+**Composites** with one contract and three renderers: `region_select`,
+`file_save`, `plot`, `log_stream`. These replace three view-side shims
+(`set_focus_area_ui`, `plot_data_ui`, `save_log_web`) that stood in for
+element types the schema could not express.
+
+**The confirm contract.** `NeedsConfirmation` is a value the model returns.
+This replaces `confirm_rotation_callback`, which the *views injected into the
+model* — and the Web client never injected one, so `_confirm_rotation` fell
+through to "blocked automatically" and the ±30° tubing check existed there
+only as a refusal nobody was shown. A guard that silently declines is not a
+guard the operator can answer.
+
+**PYSIDE-7 is now inexpressible.** `sch.dropdown()` raises if `command` is
+missing, so the shape that reached `getattr(self.model, None)` cannot be
+written.
+
+**D-6: Red Percent is schema-driven in all three views.** Tk's hand-built
+`RedPercentView` — about 240 lines of its own entries, checkboxes, buttons,
+matplotlib window and CSV dialog — is deleted, as is PySide's parallel
+bolt-on (`_add_position_source_control`, `_add_custom_buttons`). What remains
+in each is only what the schema genuinely cannot express: stopping the run
+when the view goes away, and D-10's unsaved-data prompt.
+
+**The controller log became a `log_stream`.** It used to be a
+`cmd_name == "open_controller_log"` branch opening a Toplevel only two
+frontends could build. The model buffers it now, so **the Web client has a
+controller log for the first time.**
+
+#### The device registry: four copies collapsed into one
+
+New `src/model/devices.py`. The device list existed **four** times and they
+disagreed: `_build_each`'s if/elif chain, `app_bootstrap.DEVICE_MAP` (which
+knew four of the six), PySide's sidebar literal, and the S0 invariant
+harness's deliberate fourth copy. That last one is the tell — a list
+duplicated four ways where one copy exists purely to catch the others
+drifting is exactly the shape RC-7 describes. `IDENTITY_CHARS` is now derived
+from the registry rather than declared again.
+
+View routing moved from device-name literals to a model-declared `VIEW_HINT`,
+because Tk and PySide need different classes for the same device.
+
+#### New conformance test: `tests/ui/test_schema_v2.py` (81 checks)
+
+Every schema checked against the model it describes, over *all six* models,
+so a schema added later is covered without anyone remembering. Commands,
+`options_command`s, `model_attr`s, `param` references and D-5 `inputs` must
+all resolve. This is the test the codebase most needed and did not have:
+nothing verified that the contract three renderers work from referred to
+anything real.
+
+#### The vacuity guard earned its keep
+
+`test_harness_is_not_vacuous` failed the moment schema v2 landed. The I-7.1
+extractor greps `src/model/` for `"command": "..."` literals, and v2 moved
+commands into builder *keyword arguments* — so the pattern silently matched
+nothing and the invariant would have passed vacuously. It introspects the
+built models now, which is what its docstring always claimed and the regex
+only approximated.
+
+**I-7.1 is down from 26 violations to 8** but is **not retired**. The
+remainder:
+
+| Location | Owner |
+|---|---|
+| `web_adapter.py` Red Percent linking block (3 hits + a docstring) | **S12 item 2**, which deletes it outright |
+| `pyside/view.py` `stop_monitoring` unsaved-data prompt (2 hits) | genuinely view-side (D-10); decide at S13 whether it can be expressed |
+| `tkinter`/`pyside` `cmd_name` fallbacks | S12 |
+
+Do **not** bump the I-7.1 baseline to make it green. Retire the `xfail` when
+S12 lands.
+
+#### What is unverified — do this first
+
+* **The Qt pass never completed.** Two `known_bad` entries are S10-owned
+  (`test_pyside_redpercent_sync_and_probe_controls`,
+  `test_pyside_dashboard_sidebar_dock_sync`) and both are expected to **XPASS
+  now** — S10 deleted the duplicate row the first guards, and schema v2 makes
+  the second's `TypeError` inexpressible. Under `xfail(strict=True)` an XPASS
+  reports as a failure, which is the mechanism forcing them to be
+  re-authored. **Run `pytest tests/ -m "qt"` and expect two failures, then
+  re-author both and remove their `_KNOWN_BAD` entries.**
+* **The slow and order-dependent passes were not re-run** after the renderer
+  work.
+* **No frontend has been run against hardware.** Three renderers were
+  rewritten; only the schema conformance test and the fast gate have
+  exercised them. The composites (`plot`, `log_stream`, `region_select`,
+  `file_save`) have **no rendering test at all** — they are the least-proven
+  code in this commit.
+
+Verified: fast gate **398 passed, 1 xfailed** (the xfail is I-7.1).
+
 ### Still waiting on the owner
 
 1. **D-7** — firmware protocol v2. Recommendation: **adopt**. Requires
@@ -1194,18 +1335,18 @@ it) · `n/a` (with a reason).
 | DC-1 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |
 | DC-2 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | DC-3 | RC1 | S2 | root cause | closed (test_probe_teardown_order_is_stop_then_poller_then_transport, tests/core/test_lifecycle_teardown.py) |
-| DC-4 | RC6 | S9 | root cause | open |
+| DC-4 | RC6 | S9 | root cause | closed (S9 item 2: Param table declares type and bounds; tests/core/test_typed_params.py) |
 | DC-5 | RC4 | S5 | root cause | open |
 | DC-6 | RC7 | S10 | root cause | open |
-| DC-7 | RC6 | S9 | root cause | open |
-| DC-8 | RC6 | S9 | root cause | open |
+| DC-7 | RC6 | S9 | root cause | closed (S9 item 2, same) |
+| DC-8 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | DC-9 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model, tests/core/test_hide_show.py) |
 | DC-10 | RC3 | S7 | root cause | closed (D-2 ruled disable; test_d_2_leaving_a_mode_disables_the_coils) |
 | DC-11 | RC7 / RC3 | S10 | root cause | open (RC-3 flags part closed in S7, same test; RC-7 part remains) |
 | DC-12 | RC9 | S12 | root cause | open |
 | DC-13 | RC2 / RC7 | S3 | root cause | closed (test_the_badge_cannot_be_faked_by_typing_SIM_into_the_port_field, tests/web/test_web_security.py) |
 | DC-14 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
-| DC-15 | RC6 | S9 | root cause | open |
+| DC-15 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | DC-16 | RC4 | S5 | root cause | open |
 | DC-17 | RC4 / RC3 | S5 | root cause | closed (RC-4 half in S5; RC-3 half in S7 — mode transitions own their side effects, tests/core/test_probe_mode.py) |
 | DC-18 | RC5 / RC2 | S8 | root cause | open |
@@ -1266,13 +1407,13 @@ it) · `n/a` (with a reason).
 | PYSIDE-2 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | PYSIDE-3 | RC9 | S12 | root cause | open |
 | PYSIDE-4 | RC11 | S13 | root cause | open |
-| PYSIDE-5 | RC6 | S9 | root cause | open |
-| PYSIDE-6 | RC6 | S9 | root cause | open |
+| PYSIDE-5 | RC6 | S9 | root cause | closed (S9 item 2: views read value_type instead of calling float() on the current value) |
+| PYSIDE-6 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | PYSIDE-7 | RC7 | S10 | root cause | open |
 | PYSIDE-8 | RC7 | S10 | root cause | open |
 | PYSIDE-9 | RC4 | S5 | root cause | open |
 | PYSIDE-10 | RC8 / RC4 | S11 | root cause | open |
-| PYSIDE-11 | LOCAL-OK | S15 | explicit | open |
+| PYSIDE-11 | LOCAL-OK | S15 | explicit | closed (S10: the unreachable `continue`-first file_picker branch replaced by the file_save composite) |
 | PYSIDE-12 | RC7 | S10 | root cause | open |
 | PYSIDE-13 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | PYSIDE-14 | RC4 | S5 | root cause | closed (D-4; deferred activeWindow check distinguishes a child dialog, tests/core/test_tkinter_teardown.py + pyside _app_has_focus) |
@@ -1280,7 +1421,7 @@ it) · `n/a` (with a reason).
 | PYSIDE-16 | LOCAL-OK | S15 | explicit | open |
 | PYSIDE-17 | LOCAL-OK | S15 | explicit | open |
 | PYSIDE-18 | LOCAL-OK | S15 | explicit | open |
-| PYSIDE-19 | RC6 | S9 | root cause | open |
+| PYSIDE-19 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | PYSIDE-20 | RC7 / RC13 | S10 | root cause | open |
 | REDPERCENT-1 | RC11 | S13 | root cause | open |
 | REDPERCENT-2 | RC11 | S13 | root cause | open |
@@ -1295,7 +1436,7 @@ it) · `n/a` (with a reason).
 | REDPERCENT-11 | RC9 / RC1 | S12 | root cause | open |
 | REDPERCENT-12 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | REDPERCENT-13 | RC7 | S10 | root cause | open |
-| REDPERCENT-14 | RC6 | S9 | root cause | open |
+| REDPERCENT-14 | RC6 | S9 | root cause | closed (S9 item 2: redpercent params typed) |
 | REDPERCENT-15 | RC9 | S12 | root cause | open |
 | REDPERCENT-16 | RC11 | S13 | root cause | open |
 | REDPERCENT-17 | RC7 | S10 | root cause | open |
@@ -1313,7 +1454,7 @@ it) · `n/a` (with a reason).
 | ROTATOR-9 | RC2 / RC7 | S3 | root cause | open |
 | ROTATOR-10 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | ROTATOR-11 | RC2 / LOCAL-OK | S3 | explicit | open |
-| ROTATOR-12 | RC6 | S9 | root cause | open |
+| ROTATOR-12 | RC6 | S9 | root cause | closed (S9 item 2: rotator params typed and bounded) |
 | ROTATOR-13 | RC2 / RC8 | S3 | root cause | open |
 | ROTATOR-14 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | ROTATOR-15 | RC8 / doc | S11 | root cause | open |
@@ -1354,7 +1495,7 @@ it) · `n/a` (with a reason).
 | TEMP-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | TEMP-2 | RC2 | S3 | root cause | open |
 | TEMP-3 | RC6 | S9 | root cause | closed (test_a_non_numeric_field_refuses_the_whole_frame, tests/core/test_typed_params.py) |
-| TEMP-4 | RC6 | S9 | root cause | open |
+| TEMP-4 | RC6 | S9 | root cause | closed (S9 item 2: temperature params typed) |
 | TEMP-5 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | TEMP-6 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | TEMP-7 | RC5 | S8 | root cause | open |
@@ -1363,7 +1504,7 @@ it) · `n/a` (with a reason).
 | TEMP-10 | RC2 / RC8 | S3 | root cause | open |
 | TEMP-11 | RC1 / RC2 / doc | S2 | root cause | open |
 | TEMP-12 | RC8 | S11 | root cause | open |
-| TEMP-13 | RC6 | S9 | root cause | open |
+| TEMP-13 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | VIEW-TKINTER-1 | RC1 | S2 | root cause | closed (Tk got a real re-add path; test_tk_hide_is_reversible, tests/core/test_tkinter_teardown.py) |
 | VIEW-TKINTER-2 | RC8 | S11 | root cause | open |
 | VIEW-TKINTER-3 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |

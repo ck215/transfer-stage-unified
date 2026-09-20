@@ -245,6 +245,13 @@ constructed per process. `ttk.Notebook` is a real stub class now. Note the
 two bindings it needed: `from tkinter import ttk` reads the attribute off the
 module object, not `sys.modules`.*
 
+*Mid-S10 (2026-09-20), **partially verified**: fast gate **390 passed, 1
+xfailed** (~59 s). The **Qt pass was not run to completion**, and its two
+`known_bad` entries are S10-owned and expected to XPASS — which
+`xfail(strict=True)` reports as a failure, on purpose, to force
+re-authoring. Run it before trusting this stage. The slow and
+order-dependent passes were also not re-run after the renderer rewrite.*
+
 *One quarantine note for whoever picks this up. The `order_dependent` set was
 predicted to dissolve during S3/S8/S11; it fell from 10 to 3 at S8 — but for
 a reason none of the predictions named (a mock-parser import-order problem).

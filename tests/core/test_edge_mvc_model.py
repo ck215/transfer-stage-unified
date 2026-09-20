@@ -187,6 +187,7 @@ def test_dcprobe_invalid_speed():
         pass  # It's okay if it raises an exception, we just don't want a hard crash
 
 from model.rotator_system import RotatorSystem
+from model.schema import NeedsConfirmation
 
 def test_rotator_state_code_map():
     """Test that the RotatorSystem correctly maps SMC100 state codes to human strings."""
@@ -198,22 +199,52 @@ def test_rotator_state_code_map():
     assert rotator._map_state_code("3C") == "Disabled"
     assert rotator._map_state_code("UNKNOWN") == "UNKNOWN"
 
-def test_rotator_confirm_rotation_default():
+def _rotator_with_stage():
     rotator = RotatorSystem()
-    assert rotator._confirm_rotation(30.0) is True
-    assert rotator._confirm_rotation(-30.0) is True
-    # Default without callback denies > 30
-    assert rotator._confirm_rotation(30.1) is False
-    assert rotator._confirm_rotation(-30.1) is False
+    rotator.smc = MagicMock()
+    return rotator
 
-def test_rotator_confirm_rotation_with_callback():
-    rotator = RotatorSystem()
-    mock_cb = MagicMock(return_value=True)
-    rotator.confirm_rotation_callback = mock_cb
-    
-    assert rotator._confirm_rotation(40.0) is True
-    mock_cb.assert_called_once_with(40.0)
-    
-    mock_cb.return_value = False
-    assert rotator._confirm_rotation(-40.0) is False
-    mock_cb.assert_called_with(-40.0)
+
+def test_rotator_moves_within_the_safe_range_without_asking():
+    rotator = _rotator_with_stage()
+    rotator.target_deg = "30"
+    assert rotator.move_absolute() is True
+    rotator.target_deg = "-30"
+    assert rotator.move_absolute() is True
+
+
+def test_rotator_asks_before_moving_past_the_safe_range():
+    """**Re-authored for S10.** The check is a returned value now, not a callback.
+
+    `_confirm_rotation` consulted `confirm_rotation_callback`, which the
+    *views* injected into the model — and the Web client never injected one,
+    so the branch these tests exercised was the "blocked automatically" one.
+    A guard that silently declines is not a guard the operator can answer.
+    """
+    from model.schema import NeedsConfirmation
+
+    rotator = _rotator_with_stage()
+    rotator.target_deg = "30.1"
+    result = rotator.move_absolute()
+    assert isinstance(result, NeedsConfirmation)
+    assert result.command == "move_absolute"
+    assert "30.10" in result.prompt
+    rotator.smc.move_absolute_deg.assert_not_called()
+
+
+def test_rotator_proceeds_once_the_operator_confirms():
+    rotator = _rotator_with_stage()
+    rotator.target_deg = "40"
+    assert isinstance(rotator.move_absolute(), NeedsConfirmation)
+    assert rotator.move_absolute(confirmed=True) is True
+
+
+def test_a_relative_move_is_judged_on_where_it_lands():
+    """A small step from a large angle still leaves the safe range."""
+    rotator = _rotator_with_stage()
+    rotator.position = "29"
+    rotator.step_deg = "5"
+    assert isinstance(rotator.move_relative_positive(), NeedsConfirmation)
+
+    rotator.step_deg = "1"
+    assert rotator.move_relative_positive() is True

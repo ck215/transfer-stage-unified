@@ -4,6 +4,7 @@ import queue
 import sys
 import traceback
 
+from model import schema as sch
 from error_routing import ErrorRouter
 
 class ErrorPopupManager:
@@ -201,23 +202,17 @@ class DashboardWindow(tk.Toplevel):
         self.device_visible_vars = {}
 
         for device_name, model in active_models.items():
-            if device_name == "SMC100 Rotator" and model:
-                model.confirm_rotation_callback = self._confirm_rotation_dialog
-                
+            # The rotation-confirmation callback the view used to inject here
+            # is gone (S10 item 3): the model returns NeedsConfirmation and
+            # every renderer asks it with one generic dialog.
             frame = ttk.Frame(self.notebook)
             self.notebook.add(frame, text=device_name)
             
-            # View Routing Logic
-            if device_name == "Red Percent Window":
-                view = RedPercentView(frame, model)
-            elif hasattr(model, 'custom_view_class'):
-                view_class = model.custom_view_class
-                view = view_class(frame, model)
-            elif hasattr(model, 'ui_schema'):
-                view = DynamicView(frame, model)
-            else:
-                # Fallback to DynamicView with introspection
-                view = DynamicView(frame, model)
+            # Routing by the hint the *model* declares, rather than by a
+            # device-name literal here (RC-7, I-7.1).
+            view_class = VIEW_CLASSES.get(
+                getattr(model, "VIEW_HINT", None), DynamicView)
+            view = view_class(frame, model)
                 
             view.pack(fill='both', expand=True)
             
@@ -396,7 +391,13 @@ class DynamicView(tk.Frame):
         self.configure(bg=self.bg_main)
         
         self.toggle_buttons = [] # Store references to dynamic toggle buttons
-        
+        # Controls whose availability depends on the model's mode
+        # (enabled_when / disabled_when), plus the composites that need
+        # refreshing on each poll tick.
+        self._gated = []
+        self._plots = []
+        self._log_streams = []
+
         self._build_ui()
         self._poll_model()
 
@@ -449,12 +450,13 @@ class DynamicView(tk.Frame):
                         tk.Label(container, textvariable=str_var, bg=self.bg_main, fg='lightgreen',
                                  font=('Arial', 10, 'bold')).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w')
                     else: # entry
-                        is_numeric = False
-                        try:
-                            float(val)
-                            is_numeric = True
-                        except ValueError:
-                            pass
+                        # **Declared, not guessed.** This used to call
+                        # `float(val)` on the field's *current contents* and
+                        # treat a raised exception as "this is text" — so a
+                        # box the operator had cleared was reclassified as
+                        # text and silently lost its validator for the rest of
+                        # the session (RC-6 item 2).
+                        is_numeric = el.get("value_type") in ("int", "float")
 
                         if is_numeric:
                             vcmd = (self.register(lambda P: P == "" or (self._is_valid_float(P))), '%P')
@@ -488,8 +490,7 @@ class DynamicView(tk.Frame):
                         
                 elif el_type == "button":
                     cmd_name = el.get("command")
-                    bg_color = el.get("bg", "darkgreen")
-                    fg_color = el.get("fg", "black")
+                    bg_color, fg_color = self._role_colors(el.get("role"))
 
                     # tk.Button ignores bg/fg on macOS's native Aqua theme (the face
                     # stays system white/gray regardless of the option), which made
@@ -500,11 +501,12 @@ class DynamicView(tk.Frame):
                                         font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5,
                                         cursor="hand2")
 
-                    def make_cmd(c_name):
-                        return lambda e: self._execute_command(c_name)
+                    def make_cmd(element):
+                        return lambda e: self._run_element(element)
 
-                    btn_lbl.bind("<Button-1>", make_cmd(cmd_name))
+                    btn_lbl.bind("<Button-1>", make_cmd(el))
                     btn_lbl.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
+                    self._gated.append({"widget": btn_lbl, "element": el})
                         
                 elif el_type == "toggle":
                     attr = el.get("model_attr")
@@ -513,11 +515,12 @@ class DynamicView(tk.Frame):
                     cmd_name = el.get("command")
                     
                     lbl = tk.Label(container, font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5, cursor="hand2")
-                    
-                    def make_cmd(c_name):
-                        return lambda e: self._execute_command(c_name)
-                        
-                    lbl.bind("<Button-1>", make_cmd(cmd_name))
+
+                    def make_cmd(element):
+                        return lambda e: self._run_element(element)
+
+                    lbl.bind("<Button-1>", make_cmd(el))
+                    self._gated.append({"widget": lbl, "element": el})
                     lbl.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
                     
                     self.toggle_buttons.append({
@@ -547,9 +550,10 @@ class DynamicView(tk.Frame):
 
                     def make_dropdown_cmd(c_name, var):
                         def handler(event=None):
-                            func = getattr(self.model, c_name, None)
-                            if func:
-                                func(var.get())
+                            # `command` is mandatory in schema v2, so the
+                            # getattr(model, None) that raised TypeError in
+                            # PySide (PYSIDE-7) has no shape to occur in.
+                            self.model.execute_command(c_name, args=(var.get(),))
                         return handler
 
                     combo.bind("<<ComboboxSelected>>", make_dropdown_cmd(cmd_name, combo_var))
@@ -569,62 +573,215 @@ class DynamicView(tk.Frame):
                               command=make_refresh(options_func, combo, combo_var)).grid(
                         row=row_counter, column=2, padx=2, pady=2)
 
-                elif el_type == "file_picker":
-                    cmd_name = el.get("command")
-                    lbl = tk.Label(container, text="No Script Selected", bg=self.bg_main, fg='yellow', font=('Arial', 8))
-                    lbl.grid(row=row_counter, column=1, padx=5, pady=2, sticky='w')
+                elif el_type == "file_save":
+                    # Composite (S10 item 2): the *view* supplies the dialog,
+                    # the model supplies the command. One contract, three
+                    # renderers — Tk had a bespoke file_picker, PySide had an
+                    # unreachable branch, and the Web client had neither.
+                    bg_color, fg_color = self._role_colors(el.get("role"))
+                    save_btn = tk.Label(container, text=label_text, bg=bg_color,
+                                        fg=fg_color, font=('Arial', 10, 'bold'),
+                                        relief=tk.RAISED, pady=5, cursor="hand2")
 
-                    def make_file_cmd(c_name, label_widget):
-                        def wrapped():
+                    def make_save(element):
+                        def handler(_event=None):
                             from tkinter import filedialog
-                            path = filedialog.askopenfilename(
-                                title="Select Script File",
-                                filetypes=[("Text and GCode files", "*.txt *.gcode *.nc"), ("All files", "*.*")]
-                            )
+                            exts = element.get("extensions", ["csv"])
+                            path = filedialog.asksaveasfilename(
+                                title=element.get("text", "Save"),
+                                defaultextension="." + exts[0],
+                                filetypes=[(e.upper(), "*." + e) for e in exts])
                             if path:
-                                label_widget.config(text=path.split('/')[-1])
-                                func = getattr(self.model, c_name, None)
-                                if func: func(path)
-                        return wrapped
+                                self._run_element(element, args=(path,))
+                        return handler
 
-                    # Same Aqua-ignores-bg issue as the "button" element type above;
-                    # use the Label-styled-button pattern instead of tk.Button.
-                    file_btn = tk.Label(container, text=label_text, bg="darkorange", fg="black",
-                                         font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5, cursor="hand2")
-                    file_btn.bind("<Button-1>", lambda e, c=cmd_name, w=lbl: make_file_cmd(c, w)())
-                    file_btn.grid(row=row_counter, column=0, padx=5, pady=2, sticky='w')
-                              
+                    save_btn.bind("<Button-1>", make_save(el))
+                    save_btn.grid(row=row_counter, column=0, columnspan=2,
+                                  padx=5, pady=5, sticky='ew')
+
+                elif el_type == "region_select":
+                    bg_color, fg_color = self._role_colors(el.get("role"))
+                    region_btn = tk.Label(container, text=label_text, bg=bg_color,
+                                          fg=fg_color, font=('Arial', 10, 'bold'),
+                                          relief=tk.RAISED, pady=5, cursor="hand2")
+
+                    def make_region(element):
+                        def handler(_event=None):
+                            region = self._select_region()
+                            if region:
+                                self._run_element(element, args=region)
+                        return handler
+
+                    region_btn.bind("<Button-1>", make_region(el))
+                    region_btn.grid(row=row_counter, column=0, columnspan=2,
+                                    padx=5, pady=5, sticky='ew')
+
+                elif el_type == "plot":
+                    # **D-6: the plot is schema-driven now.** Tk hand-built a
+                    # RedPercentView around matplotlib and PySide bolted on a
+                    # duplicate, each reaching into the data log directly;
+                    # neither was reachable from the Web client at all. The
+                    # model publishes a series and each renderer draws it.
+                    self._plots.append({
+                        "element": el,
+                        "widget": self._build_plot(container, el, row_counter),
+                    })
+
+                elif el_type == "log_stream":
+                    text = tk.Text(container, height=8, width=48, bg='#111111',
+                                   fg='lightgreen', state='disabled')
+                    text.grid(row=row_counter, column=0, columnspan=3,
+                              padx=5, pady=5, sticky='ew')
+                    self._log_streams.append({"element": el, "widget": text})
+
+                elif el_type == "internal":
+                    # Registers a command in the schema-derived allowlist
+                    # without rendering anything.
+                    pass
+
                 row_counter += 1
 
-    def _execute_command(self, cmd_name):
-        # Buttons/toggles render as tk.Label (see _build_from_schema -- real
-        # tk.Button ignores bg/fg on macOS Aqua), and Labels don't take
-        # keyboard focus. Clicking one therefore never fires <FocusOut> on
-        # whatever Entry the user was just typing into, so a numeric field's
-        # commit-on-FocusOut handler never ran -- the command below would
-        # read the model's PREVIOUS value, one edit-cycle behind whatever
-        # was just typed (e.g. Temperature Controller's Ramp Rate sending
-        # the prior value instead of the one just entered). Force focus
-        # away first so any pending edit commits before we read model state.
-        self.focus_set()
-        if cmd_name == "open_controller_log":
-            poller = getattr(self.model, 'poller', None)
-            if not hasattr(self, 'log_window') or self.log_window is None or not self.log_window.winfo_exists():
-                self.log_window = ControllerLogWindow(poller=poller, master=self)
-                if poller:
-                    poller.log_updater = self.log_window.append_log
-            else:
-                if poller:
-                    poller.log_updater = self.log_window.append_log
-                self.log_window.lift()
+    #: `role` -> (background, foreground). The schema names the *meaning*;
+    #: mapping it to a palette is each renderer's own business. Elements used
+    #: to carry raw `bg`/`fg` hex that only Tk could honour, so the same
+    #: control looked different in every frontend for no stated reason.
+    ROLE_COLORS = {
+        "neutral": ("gray25", "white"),
+        "go": ("darkgreen", "white"),
+        "danger": ("darkred", "white"),
+        "warning": ("darkorange", "black"),
+        "info": ("darkblue", "white"),
+    }
+
+    def _role_colors(self, role):
+        return self.ROLE_COLORS.get(role or "neutral", self.ROLE_COLORS["neutral"])
+
+    def _gather_inputs(self, element):
+        """The current *widget* text for each input the command declared (D-5).
+
+        Reading the widgets rather than the model is the whole point: the
+        model holds the value as of the last committed edit, which is one
+        edit-cycle behind whatever was just typed. Tk used to hide that by
+        calling `focus_set()` before every command to force a pending
+        `<FocusOut>` to fire — **a named anti-fix**, because it worked only in
+        Tk, only for the widget that happened to hold focus, and not at all
+        for the Web client. The values travel with the command now and the
+        model validates them as a set.
+        """
+        values = {}
+        for name in element.get("inputs", []):
+            var = self.vars.get(name)
+            values[name] = var.get() if var is not None else getattr(
+                self.model, name, "")
+        return values
+
+    def _run_element(self, element, args=None):
+        """Run a schema element's command, with its inputs and any dialog args."""
+        cmd_name = element.get("command")
+        try:
+            result = self.model.execute_command(
+                cmd_name, inputs=self._gather_inputs(element), args=args)
+        except Exception as e:
+            messagebox.showerror("Error", f"Command {cmd_name} failed:\n{e}", parent=self)
             return
 
-        func = getattr(self.model, cmd_name, None)
-        if func and callable(func):
-            try:
-                func()
-            except Exception as e:
-                messagebox.showerror("Error", f"Command {cmd_name} failed:\n{e}", parent=self)
+        # The confirm contract (S10 item 3). One generic dialog per view,
+        # replacing the `confirm_rotation_callback` the views used to inject
+        # into the model — a callback the Web client never supplied, so the
+        # ±30° tubing check existed there only as a silent refusal.
+        if isinstance(result, sch.NeedsConfirmation):
+            if messagebox.askyesno("Confirm", result.prompt, parent=self):
+                try:
+                    self.model.execute_command(result.command, args=(True,))
+                except Exception as e:
+                    messagebox.showerror(
+                        "Error", f"Command {result.command} failed:\n{e}",
+                        parent=self)
+
+    def _execute_command(self, cmd_name):
+        """Backwards-compatible entry point for a bare command name."""
+        self._run_element({"command": cmd_name})
+
+    def _select_region(self):
+        """Ask the operator for a rectangular region. Returns (x, y, w, h).
+
+        Tk has no native region picker, so this is a modal prompt rather than
+        a drag selection. Returning None declines, which the caller treats as
+        a cancelled command.
+        """
+        from tkinter import simpledialog
+        raw = simpledialog.askstring(
+            "Focus Area", "Region as x,y,width,height:", parent=self)
+        if not raw:
+            return None
+        try:
+            parts = [int(p.strip()) for p in raw.split(",")]
+        except ValueError:
+            messagebox.showerror("Focus Area",
+                                 "Expected four numbers: x,y,width,height",
+                                 parent=self)
+            return None
+        if len(parts) != 4:
+            messagebox.showerror("Focus Area",
+                                 "Expected four numbers: x,y,width,height",
+                                 parent=self)
+            return None
+        return tuple(parts)
+
+    def _build_plot(self, container, element, row):
+        """A plot the model feeds through its `data_command` (D-6)."""
+        canvas = tk.Canvas(container, height=160, width=360, bg='#111111',
+                           highlightthickness=0)
+        canvas.grid(row=row, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
+        return canvas
+
+    def _refresh_log(self, entry):
+        source = getattr(self.model, entry["element"].get("source_command"), None)
+        if not callable(source):
+            return
+        try:
+            lines = list(source() or [])
+        except Exception:
+            return
+        widget = entry["widget"]
+        text = "\n".join(lines[-40:])
+        try:
+            if widget.get("1.0", "end-1c") == text:
+                return
+            widget.configure(state="normal")
+            widget.delete("1.0", "end")
+            widget.insert("1.0", text)
+            widget.configure(state="disabled")
+            widget.see("end")
+        except Exception:
+            pass
+
+    def _redraw_plot(self, entry):
+        canvas = entry["widget"]
+        element = entry["element"]
+        source = getattr(self.model, element.get("data_command"), None)
+        if not callable(source):
+            return
+        try:
+            series = source() or {}
+            ys = list(series.get("y", []))
+        except Exception:
+            return
+        try:
+            canvas.delete("all")
+        except Exception:
+            return
+        if len(ys) < 2:
+            return
+        width, height = 360, 160
+        low, high = min(ys), max(ys)
+        span = (high - low) or 1.0
+        step = width / max(len(ys) - 1, 1)
+        points = []
+        for i, y in enumerate(ys):
+            points.append(i * step)
+            points.append(height - ((y - low) / span) * (height - 10) - 5)
+        canvas.create_line(*points, fill='red', width=2)
 
     def _poll_model(self):
         # Sync StringVars from model by polling (if model is updated elsewhere)
@@ -639,10 +796,16 @@ class DynamicView(tk.Frame):
                 # second character), making entry fields unmodifiable.
                 continue
             if hasattr(self.model, attr):
-                current_val = str(getattr(self.model, attr))
+                current_val = self._display(attr)
                 if var.get() != current_val:
                     var.set(current_val)
-                    
+
+        self._sync_gates()
+        for entry in self._plots:
+            self._redraw_plot(entry)
+        for entry in self._log_streams:
+            self._refresh_log(entry)
+
         # Update toggle buttons
         for tb in self.toggle_buttons:
             val = getattr(self.model, tb["attr"], False)
@@ -655,6 +818,48 @@ class DynamicView(tk.Frame):
                     widget.config(text=tb["false_text"], bg='darkred', fg='white')
                     
         self.after(self.poll_interval_ms, self._poll_model)
+
+    def _display(self, attr):
+        """Render an attribute at its declared precision.
+
+        A float rendered by `str()` shows whatever repr it happens to have,
+        which is why the same reading appeared as `20` in one view and `20.0`
+        in another. `decimals` is declared per parameter now.
+        """
+        value = getattr(self.model, attr)
+        param = getattr(self.model, "PARAMS", {}).get(attr)
+        if param is not None and param.is_numeric:
+            return param.format(value)
+        return str(value)
+
+    def _mode_name(self):
+        """The model's current mode, as the schema's gates name it."""
+        mode = getattr(self.model, "mode", None)
+        if mode is not None:
+            return getattr(mode, "value", str(mode))
+        if getattr(self.model, "monitoring", False):
+            return "monitoring"
+        return "idle"
+
+    def _sync_gates(self):
+        """Grey out controls the current mode forbids.
+
+        One rule, evaluated by `schema.is_enabled`, so "disabled during a run"
+        cannot mean three different things in three frontends — which is what
+        it meant when each view hardcoded its own list, where it had one.
+        """
+        mode = self._mode_name()
+        for gate in self._gated:
+            enabled = sch.is_enabled(gate["element"], mode)
+            widget = gate["widget"]
+            try:
+                widget.configure(state=("normal" if enabled else "disabled"))
+            except Exception:
+                # tk.Label styled as a button has no state option; dim it.
+                try:
+                    widget.configure(cursor="hand2" if enabled else "X_cursor")
+                except Exception:
+                    pass
 
     # start_polling() was here (RC-4). It started the gamepad poller on this
     # widget's event loop, ran a 50 ms manual-input pump, and ran 100 ms
@@ -673,249 +878,35 @@ except ImportError:
     FigureCanvasTkAgg = None
     LinearSegmentedColormap = None
 
-class RedPercentView(tk.Frame):
-    def __init__(self, master=None, system=None):
-        super().__init__(master)
-        self.system = system
+class RedPercentView(DynamicView):
+    """Red Percent, rendered from the schema like every other device (D-6).
 
-        # GUI Setup
-        control_frame = ttk.Frame(self)
-        control_frame.pack(pady=10)
+    **About 240 lines of hand-built widgets used to live here**: its own
+    metadata entries, its own sync-dimension checkboxes, its own Start/Stop
+    and Save buttons, its own matplotlib plot window and its own CSV dialog —
+    each reaching into the model directly and each drifting from the schema
+    the other views rendered. PySide carried a parallel bolt-on of the same
+    controls, and the Web client had none of them.
 
-        self.select_btn = ttk.Button(control_frame, text="Select Focus Area", command=self.select_focus_area)
-        self.select_btn.pack(side=tk.LEFT, padx=5)
-
-        self.start_btn = ttk.Button(control_frame, text="Start Monitoring", command=self.start_monitoring)
-        self.start_btn.pack(side=tk.LEFT, padx=5)
-
-        self.stop_btn = ttk.Button(control_frame, text="Stop Monitoring", state=tk.DISABLED, command=self.stop_monitoring)
-        self.stop_btn.pack(side=tk.LEFT, padx=5)
-
-        self.plot_btn = ttk.Button(control_frame, text="Plot CSV", command=self.open_plot_window)
-        self.plot_btn.pack(side=tk.LEFT, padx=5)
-
-        status_frame = ttk.Frame(self)
-        status_frame.pack(pady=10)
-
-        ttk.Label(status_frame, text="Focus Area:").grid(row=0, column=0, sticky=tk.W)
-        self.area_label = ttk.Label(status_frame, text="Not selected")
-        self.area_label.grid(row=0, column=1, sticky=tk.W)
-
-        meta_frame = ttk.LabelFrame(self, text="Probe Metadata")
-        meta_frame.pack(pady=10, padx=10, fill=tk.X)
-        meta_frame.columnconfigure(1, weight=1)
-
-        ttk.Label(meta_frame, text="Probe Name:").grid(row=0, column=0, padx=5, pady=2, sticky=tk.W)
-        self.probe_name_var = tk.StringVar(value=getattr(self.system, "probe_name", ""))
-        ttk.Entry(meta_frame, textvariable=self.probe_name_var).grid(
-            row=0, column=1, padx=5, pady=2, sticky=tk.EW)
-
-        ttk.Label(meta_frame, text="Probe Tilt Angle:").grid(row=1, column=0, padx=5, pady=2, sticky=tk.W)
-        self.probe_tilt_angle_var = tk.StringVar(value=getattr(self.system, "probe_tilt_angle", ""))
-        ttk.Entry(meta_frame, textvariable=self.probe_tilt_angle_var).grid(
-            row=1, column=1, padx=5, pady=2, sticky=tk.EW)
-
-        self.probe_name_var.trace_add(
-            "write", lambda *args: setattr(self.system, "probe_name", self.probe_name_var.get()))
-        self.probe_tilt_angle_var.trace_add(
-            "write", lambda *args: setattr(self.system, "probe_tilt_angle", self.probe_tilt_angle_var.get()))
-
-        color_frame = ttk.LabelFrame(self, text="Red Detection")
-        color_frame.pack(pady=10, padx=10, fill=tk.X)
-
-        ttk.Label(color_frame, text="Red %:").grid(row=0, column=0, sticky=tk.W)
-        self.red_label = ttk.Label(color_frame, text="0.0%")
-        self.red_label.grid(row=0, column=1, sticky=tk.W)
-
-        ttk.Label(color_frame, text="Red Change:").grid(row=1, column=0, sticky=tk.W)
-        self.red_change_label = tk.Label(color_frame, text="0.0%", fg="black")
-        self.red_change_label.grid(row=1, column=1, sticky=tk.W)
-
-        self.reset_btn = ttk.Button(color_frame, text="Reset Baseline", state=tk.DISABLED, command=self.reset_baseline)
-        self.reset_btn.grid(row=2, column=0, columnspan=2, pady=5)
-        
-        self.sync_vars = {
-            'X': tk.BooleanVar(value=False),
-            'Y': tk.BooleanVar(value=False),
-            'Z': tk.BooleanVar(value=False)
-        }
-        
-        sync_frame = ttk.Frame(color_frame)
-        sync_frame.grid(row=3, column=0, columnspan=2, pady=5, sticky=tk.W)
-        ttk.Label(sync_frame, text="Sync Dimensions:").pack(side=tk.LEFT)
-        for dim in ['X', 'Y', 'Z']:
-            chk = ttk.Checkbutton(sync_frame, text=dim, variable=self.sync_vars[dim], command=getattr(self.system, f"toggle_sync_{dim.lower()}"))
-            chk.pack(side=tk.LEFT, padx=2)
-
-        probe_frame = ttk.Frame(color_frame)
-        probe_frame.grid(row=4, column=0, columnspan=2, pady=5, sticky=tk.W)
-        ttk.Label(probe_frame, text="Position Source:").pack(side=tk.LEFT)
-        
-        self.probe_var = tk.StringVar()
-        self.probe_dropdown = ttk.Combobox(probe_frame, textvariable=self.probe_var, state="readonly")
-        self.probe_dropdown.pack(side=tk.LEFT, padx=5)
-        self.probe_dropdown.bind("<<ComboboxSelected>>", self._on_probe_selected)
-        
-        self._update_probe_dropdown()
-        self.poll_display()
-
-    def _update_probe_dropdown(self):
-        probes = self.system.get_available_probe_names()
-        if probes:
-            self.probe_dropdown['values'] = probes
-            if hasattr(self.system, 'selected_probe_name') and self.system.selected_probe_name in probes:
-                self.probe_var.set(self.system.selected_probe_name)
-            else:
-                self.probe_var.set(probes[0])
-                self.system.set_stepper_model(probes[0])
-        else:
-            self.probe_dropdown['values'] = ["None Available"]
-            self.probe_var.set("None Available")
-
-    def _on_probe_selected(self, event=None):
-        selected = self.probe_var.get()
-        if hasattr(self.system, 'set_stepper_model'):
-            self.system.set_stepper_model(selected)
-
-    def select_focus_area(self):
-        selection_window = tk.Toplevel(self.winfo_toplevel())
-        screen_width = selection_window.winfo_screenwidth()
-        screen_height = selection_window.winfo_screenheight()
-        selection_window.geometry(f"{screen_width}x{screen_height}+0+0")
-        selection_window.attributes('-alpha', 0.3)
-        selection_window.configure(bg='gray10')
-        selection_window.attributes('-topmost', True)
-        try:
-            selection_window.overrideredirect(True)
-        except Exception:
-            pass
-
-        self.start_x = None
-        self.start_y = None
-        self.rect_id = None
-        self.dragging = False
-
-        canvas = tk.Canvas(selection_window, highlightthickness=0, width=screen_width, height=screen_height, cursor="crosshair")
-        canvas.pack(fill=tk.BOTH, expand=True)
-
-        def start_selection(event):
-            self.start_x = event.x
-            self.start_y = event.y
-            self.dragging = True
-            if self.rect_id:
-                canvas.delete(self.rect_id)
-
-        def update_selection(event):
-            if self.dragging:
-                if self.rect_id:
-                    canvas.delete(self.rect_id)
-                self.rect_id = canvas.create_rectangle(self.start_x, self.start_y, event.x, event.y, outline='red', width=3)
-
-        def end_selection(event):
-            if self.dragging:
-                self.dragging = False
-                end_x = event.x
-                end_y = event.y
-                left = min(self.start_x, end_x)
-                top = min(self.start_y, end_y)
-                width = abs(end_x - self.start_x)
-                height = abs(end_y - self.start_y)
-                if width > 10 and height > 10:
-                    self.system.focus_area = {'left': int(left), 'top': int(top), 'width': int(width), 'height': int(height)}
-                    selection_window.destroy()
-                    self.area_label.config(text=f"{int(width)}x{int(height)} at ({int(left)},{int(top)})")
-                    self.start_btn.config(state=tk.NORMAL)
-
-        def cancel_selection(event):
-            selection_window.destroy()
-
-        canvas.bind('<Button-1>', start_selection)
-        canvas.bind('<B1-Motion>', update_selection)
-        canvas.bind('<ButtonRelease-1>', end_selection)
-        canvas.bind('<Escape>', cancel_selection)
-        selection_window.bind('<Escape>', cancel_selection)
-
-        instruction = tk.Label(selection_window, text="Click and drag to select focus area. Press ESC to cancel.", fg='red', bg='black', font=('Arial', 24, 'bold'))
-        instruction.place(relx=0.5, rely=0.05, anchor=tk.CENTER)
-        canvas.focus_set()
-
-    def start_monitoring(self):
-        self.system.start_monitoring()
-        self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        self.reset_btn.config(state=tk.NORMAL)
-
-    def stop_monitoring(self):
-        self.system.stop_monitoring()
-        self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
-        
-        if self.system.has_unsaved_data:
-            if messagebox.askyesno("Save Log", "Monitoring stopped. Would you like to save the data to a CSV?"):
-                self.save_log_to_file()
-
-    def reset_baseline(self):
-        self.system.reset_baseline()
-
-    def save_log_to_file(self):
-        if not self.system.data_log or not self.system.data_log.red_values:
-            print("[color_test] No data to save.")
-            return
-        file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV Files", "*.csv")], title="Save Red Detection Log")
-        if file_path:
-            self.system.save_log(file_path)
-
-    def poll_display(self):
-        if not self.winfo_exists():
-            return
-        red_pct = self.system.current_red
-        red_change = self.system.red_change
-        self.red_label.config(text=f"{red_pct:.1f}%")
-        color = "green" if red_change > 0 else "red" if red_change < 0 else "black"
-        self.red_change_label.config(text=f"{red_change:+.1f}%", fg=color)
-        self.after(100, self.poll_display)
-
-    def open_plot_window(self):
-        if FigureCanvasTkAgg is None:
-            messagebox.showerror("Plotting Unavailable",
-                                  "matplotlib's Tk backend is not installed.", parent=self)
-            return
-
-        file_path = filedialog.askopenfilename(
-            title="Select Red Detection Log",
-            filetypes=[("CSV Files", "*.csv"), ("All files", "*.*")])
-        if not file_path:
-            return
-
-        from model.plot_data import parse_red_percent_csv, render_red_percent_figure
-        try:
-            with open(file_path, newline='') as csvfile:
-                parsed = parse_red_percent_csv(csvfile.read())
-        except Exception as e:
-            messagebox.showerror("Error", f"Could not read CSV file:\n{e}", parent=self)
-            return
-
-        if not parsed["red_percents"]:
-            messagebox.showwarning("No Data", "The selected file has no plottable Red % data.", parent=self)
-            return
-
-        fig = render_red_percent_figure("0D", None, None, None, parsed["red_percents"], parsed["dim_data"])
-        metadata = parsed["metadata"]
-        if metadata:
-            title_bits = [f"{k}: {v}" for k, v in metadata.items() if v]
-            if title_bits:
-                fig.axes[0].set_title(" | ".join(title_bits))
-
-        plot_win = tk.Toplevel(self.winfo_toplevel())
-        plot_win.title(f"Red % Plot — {file_path.split('/')[-1]}")
-        plot_win.geometry("800x500")
-
-        canvas = FigureCanvasTkAgg(fig, master=plot_win)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    All of it is schema v2 now: `entry`, `toggle`, `button`, plus the
+    `plot`, `file_save` and `region_select` composites. What is left is the
+    one thing that is genuinely this view's own — stopping the run when the
+    tab goes away.
+    """
 
     def destroy(self):
         print("[color_test] Cleaning up and closing RedPercentView...")
-        self.system.stop_monitoring()
+        try:
+            self.model.stop_monitoring()
+        except Exception:
+            pass
         super().destroy()
         print("[color_test] Cleanup complete.")
+
+
+#: Hint -> Tk widget. The only reason a device needs an entry here is
+#: behaviour the schema genuinely cannot express; everything else renders
+#: with DynamicView.
+VIEW_CLASSES = {
+    "red_percent": RedPercentView,
+}

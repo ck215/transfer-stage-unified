@@ -9,6 +9,7 @@ Ensures zero coupling to Qt/PySide6.
 import sys
 import threading
 import traceback
+from model.schema import NeedsConfirmation
 from typing import Dict, Any, Optional, List, Union
 
 
@@ -381,7 +382,8 @@ class WebModelAdapter:
         schema = getattr(model, "ui_schema", {"sections": []})
         for sec in schema.get("sections", []):
             for el in sec.get("elements", []):
-                for key in ("command", "options_command"):
+                for key in ("command", "options_command", "data_command",
+                            "source_command"):
                     val = el.get(key)
                     if val:
                         allowed.add(val)
@@ -437,11 +439,19 @@ class WebModelAdapter:
             except Exception as e:
                 return {"status": "error", "code": 500, "message": str(e)}
 
-    def dispatch_command(self, device_name: str, command_name: str, args: Any = None) -> Dict[str, Any]:
+    def dispatch_command(self, device_name: str, command_name: str,
+                         args: Any = None, inputs: Any = None) -> Dict[str, Any]:
         """
         Thread-safely dispatches a command (move, stop, home, calibrate, etc.)
         to the target device model using per-device locking. Only commands the
         device's own ui_schema declares are eligible for dispatch.
+
+        **`inputs` is D-5.** The client sends the current value of every field
+        the command declared, and the model validates them as a set before
+        running anything. Before this the Web client had no way at all to
+        commit an edit and run a command atomically — it issued a `set_attr`
+        per field and hoped, which is the same stale-value class the desktop
+        views had, minus even Tk's focus flush.
         """
         if args is None:
             args = []
@@ -463,12 +473,35 @@ class WebModelAdapter:
         dev_lock = self._get_device_lock(device_name)
         with dev_lock:
             try:
-                if isinstance(args, list):
+                runner = getattr(model, "execute_command", None)
+                if callable(runner):
+                    call_args = args if isinstance(args, list) else [args]
+                    res = runner(command_name, inputs=inputs or {},
+                                 args=call_args)
+                elif isinstance(args, list):
                     res = func(*args)
                 elif isinstance(args, dict):
                     res = func(**args)
                 else:
                     res = func(args)
+
+                # The confirm contract (S10 item 3). A command that must not
+                # proceed unattended comes back as a question rather than a
+                # silent refusal — which is what it was here, because the
+                # ±30° check depended on a callback only the desktop views
+                # ever injected into the model.
+                if isinstance(res, NeedsConfirmation):
+                    return {
+                        "status": "ok", "code": 200,
+                        "needs_confirmation": {
+                            "prompt": res.prompt,
+                            "command": res.command,
+                        },
+                    }
+                if res is False:
+                    # A refused command is not an executed one.
+                    return {"status": "error", "code": 400,
+                            "message": f"{command_name} was refused"}
                 return {"status": "ok", "code": 200, "result": str(res)}
             except Exception as e:
                 print(f"[WebModelAdapter] dispatch_command({device_name}.{command_name}) failed:\n{traceback.format_exc()}")

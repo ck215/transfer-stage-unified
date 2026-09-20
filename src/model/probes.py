@@ -1,11 +1,15 @@
 import math
 import time
+from collections import deque
 import copy
 import threading
 from enum import Enum
 from controller.serial import serial, PACKET_FORMAT
 from error_routing import ErrorRouter as ErrorPopupManager
 from model.numeric import num as _num
+from model.params import Param, table as _param_table, extend as _extend_params
+from model import schema as sch
+from model.base import SchemaCommands
 
 try:
     import gcodeparser
@@ -47,7 +51,7 @@ _ARMED = frozenset({
 })
 
 
-class BaseProbe:
+class BaseProbe(SchemaCommands):
     # Overridable by tests to avoid waiting on the real 5-minute timeout.
     _INTERLOCK_POLL_INTERVAL = 5
     _INTERLOCK_TIMEOUT = 300
@@ -61,17 +65,38 @@ class BaseProbe:
     # the firmware **400**: more than three times the speed that probe is
     # configured for. The fallback has to belong to the class, not to the
     # call site.
-    PARAM_DEFAULTS = {
-        "x_step": 16, "y_step": 16, "z_step": 16,
-        "full_speed": 400, "man_full_speed": 400,
-        "x_dist": 0, "y_dist": 0, "z_dist": 0,
-        "slow_speed": 0, "brake_distance": 0,
-    }
+    PARAMS = _param_table(
+        Param("x_step", "int", default=16, minimum=1, label="X Step Size"),
+        Param("y_step", "int", default=16, minimum=1, label="Y Step Size"),
+        Param("z_step", "int", default=16, minimum=1, label="Z Step Size"),
+        Param("x_dist", "float", default=0, label="Target X Dist"),
+        Param("y_dist", "float", default=0, label="Target Y Dist"),
+        Param("z_dist", "float", default=0, label="Target Z Dist"),
+        Param("full_speed", "float", default=400, minimum=1,
+              label="Autonomous Speed"),
+        Param("man_full_speed", "float", default=400, minimum=1,
+              label="Manual Speed"),
+        Param("slow_speed", "float", default=0, label="Brake Speed (Slow)"),
+        Param("brake_distance", "float", default=0,
+              label="Brake Distance (steps)"),
+    )
 
-    def _param(self, name, *, minimum=None, integer=False):
-        """A motion parameter, coerced against *this class's* default."""
-        return _num(getattr(self, name), self.PARAM_DEFAULTS[name],
-                    minimum=minimum, integer=integer)
+    # Kept as a derived view for the handful of call sites that want only the
+    # numbers. The table is the authority; this is never edited directly.
+    @classmethod
+    def _defaults(cls):
+        return {name: param.default for name, param in cls.PARAMS.items()}
+
+    def _param(self, name):
+        """A motion parameter, coerced against *this class's* declaration.
+
+        The bounds used to be passed per call site — `minimum=1, integer=True`
+        repeated at every use — so a parameter's type lived in however many
+        places happened to read it, and the class default lived nowhere. Both
+        are in `PARAMS` now, which is also what the schema publishes to the
+        views (RC-6 item 2).
+        """
+        return self.PARAMS[name].coerce(getattr(self, name))
 
     # The one documented rate for each model-owned loop (RC-4).
     #
@@ -194,6 +219,13 @@ class BaseProbe:
         # Three copies meant three sets of rates and three chances to diverge,
         # and the Web frontend — which has no such timers — simply had no
         # manual mode at all.
+        # Controller log, owned by the model (RC-7). It used to exist only as
+        # a Tk/Qt Toplevel the view opened on a `cmd_name == "open_controller_
+        # log"` branch, so the Web client had no way to see controller
+        # activity at all. Buffered here, it is a `log_stream` element that
+        # all three renderers draw.
+        self._controller_log = deque(maxlen=200)
+
         self._loops_stop = threading.Event()
         self._input_thread = None
         self._sample_thread = None
@@ -241,68 +273,62 @@ class BaseProbe:
 
     @property
     def ui_schema(self):
-        return {
-            "sections": [
-                {
-                    "title": "Coordinate Frame",
-                    "elements": [
-                        {"type": "readonly", "text": "X Position:", "model_attr": "pos_x"},
-                        {"type": "readonly", "text": "Y Position:", "model_attr": "pos_y"},
-                        {"type": "readonly", "text": "Z Position:", "model_attr": "pos_z"}
-                    ]
-                },
-                {
-                    "title": "Configuration",
-                    "elements": [
-                        {"type": "readonly", "text": "Serial Port:", "model_attr": "serial_port"},
-                        {"type": "dropdown", "text": "Controller ID:", "model_attr": "controller_var",
-                         "options_command": "get_available_controllers", "command": "set_controller"},
-                        {"type": "entry", "text": "X Step Size:", "model_attr": "x_step"},
-                        {"type": "entry", "text": "Y Step Size:", "model_attr": "y_step"},
-                        {"type": "entry", "text": "Z Step Size:", "model_attr": "z_step"},
-                        {"type": "entry", "text": "Target X Dist:", "model_attr": "x_dist"},
-                        {"type": "entry", "text": "Target Y Dist:", "model_attr": "y_dist"},
-                        {"type": "entry", "text": "Target Z Dist:", "model_attr": "z_dist"},
-                        {"type": "entry", "text": "Autonomous Speed:", "model_attr": "full_speed"},
-                        {"type": "entry", "text": "Manual Speed:", "model_attr": "man_full_speed"}
-                    ]
-                },
-                {
-                    "title": "System Control",
-                    "elements": [
-                        # Per-device "System Power" toggle removed: enable/disable is already
-                        # reachable via the Autonomous/Manual mode toggles below (both call
-                        # enable() on entry, full_stop() on exit), and a separate System Power
-                        # control was a redundant, easy-to-desync third way to the same state.
-                        {"type": "toggle", "text": "Autonomous:", "model_attr": "auton_flag",
-                         "true_text": "AUTONOMOUS MODE (Click to Stop)",
-                         "false_text": "Enter Autonomous Mode", "command": "toggle_auton"},
-                        {"type": "toggle", "text": "Manual / Gamepad:", "model_attr": "manual_flag",
-                         "true_text": "MANUAL MODE (Click to Stop)",
-                         "false_text": "Enter Manual Mode", "command": "toggle_manual"},
-                        {"type": "button", "text": "Start Stepping", "command": "macro_start_auton", "bg": "darkgreen", "fg": "white"},
-                        # Per-device "Full Stop" removed: SystemManager.full_stop_all() (the
-                        # dashboard's global FULL STOP bar) already calls this model's
-                        # full_stop() directly, so a dedicated per-tab button was a redundant,
-                        # confusing second E-stop. Per-device stop is still reachable by
-                        # toggling Autonomous/Manual mode off (both call full_stop()).
-                        #
-                        # "Run Script" (file_picker) removed from the live dashboard: the
-                        # underlying run_script() framework stays in place for future
-                        # development, but isn't exposed as a UI entry point yet.
-                        #
-                        # Runtime serial reconnect is purged (owner decision D-11).
-                        # Serial port assignment happens once, at setup; the port is
-                        # readonly above. Unlike gamepads (designed to hot-swap), a live
-                        # serial reconnect desyncs Python-side enable/disable state from
-                        # the firmware, which persists its enabled state across a reopen —
-                        # Python would report disabled while coils stayed energized.
-                        # Recovering from a lost port means relaunching.
-                        {"type": "button", "text": "Controller Log Window", "command": "open_controller_log", "bg": "black", "fg": "white"}
-                    ]
-                }
-            ]
-        }
+        P = self.PARAMS
+        return sch.schema(
+            sch.section(
+                "Coordinate Frame",
+                sch.readonly("X Position:", "pos_x"),
+                sch.readonly("Y Position:", "pos_y"),
+                sch.readonly("Z Position:", "pos_z"),
+                sch.readonly("Connection:", "connection_state", role="info"),
+            ),
+            sch.section(
+                "Configuration",
+                sch.readonly("Serial Port:", "serial_port"),
+                sch.dropdown("Controller ID:", "controller_var",
+                             command="set_controller",
+                             options_command="get_available_controllers"),
+                *[sch.entry(P[name].label + ":", name, P[name],
+                            disabled_when=("autonomous", "manual"))
+                  for name in ("x_step", "y_step", "z_step",
+                               "x_dist", "y_dist", "z_dist",
+                               "full_speed", "man_full_speed")],
+            ),
+            sch.section(
+                "System Control",
+                # Per-device "System Power" toggle removed: enable/disable is
+                # already reachable via the mode toggles below, and a separate
+                # control was a redundant, easy-to-desync third way to the
+                # same state.
+                sch.toggle("Autonomous:", "auton_flag", "toggle_auton",
+                           "AUTONOMOUS MODE (Click to Stop)",
+                           "Enter Autonomous Mode"),
+                sch.toggle("Manual / Gamepad:", "manual_flag", "toggle_manual",
+                           "MANUAL MODE (Click to Stop)",
+                           "Enter Manual Mode"),
+                # **D-5.** The distances and the speed travel with the
+                # command and are validated as a set. Before this the model
+                # read whatever it happened to hold, which is one edit behind
+                # what was just typed — and Tk papered over it by forcing
+                # focus away first, which is a named anti-fix because it only
+                # ever worked in Tk.
+                sch.button("Start Stepping", "macro_start_auton",
+                           inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
+                           role="go"),
+                # Per-device "Full Stop" removed: the dashboard's global FULL
+                # STOP already calls this model's full_stop() directly, so a
+                # per-tab button was a redundant second E-stop.
+                #
+                # Runtime serial reconnect is purged (D-11). The port is
+                # assigned once, at setup, and is readonly above: a live
+                # reconnect desyncs Python's enable/disable state from the
+                # firmware, which persists its own across a reopen.
+                # A `log_stream` composite rather than a button that opens
+                # a Toplevel only two of the three frontends can build. The
+                # Web client gets the controller log for the first time.
+                sch.log_stream("Controller Log:", "controller_log"),
+            ),
+        )
 
     def get_available_controllers(self):
         if self.poller:
@@ -354,7 +380,12 @@ class BaseProbe:
         self.controller_var = getattr(self.poller, "controllerID", self.controller_var)
         return True
 
+    def controller_log(self):
+        """The buffered controller log, oldest first. The `log_stream` source."""
+        return list(self._controller_log)
+
     def open_controller_log(self):
+        """Kept for the detached log window the desktop views still offer."""
         print(f"[{self.__class__.__name__}] Controller log window requested")
 
     def toggle_manual(self):
@@ -463,6 +494,21 @@ class BaseProbe:
         if moved and self._mode is ProbeMode.AUTONOMOUS and self._stepping_deadline is not None:
             self._stepping_deadline = time.time() + self._STEP_SETTLE
             self.touch_activity()
+
+    @property
+    def connection_state(self):
+        """The transport's link state, as a string, for every renderer.
+
+        S8 introduced `ConnectionState` and wired it to the Web badge; the
+        desktop views had no way to see it because it lives on the transport
+        and the schema only addresses model attributes. Exposing it here is
+        what makes it "a schema readonly field shared by all views" rather
+        than a web-only badge.
+        """
+        state = getattr(self.serial_comm, "connection_state", None)
+        if state is None:
+            return "CLOSED"
+        return getattr(state, "name", str(state))
 
     @property
     def input_gate_open(self):
@@ -747,10 +793,10 @@ class BaseProbe:
 
     def get_params(self):
         return {
-            "x_step_size": self._param("x_step", minimum=1, integer=True),
-            "y_step_size": self._param("y_step", minimum=1, integer=True),
-            "z_step_size": self._param("z_step", minimum=1, integer=True),
-            "full_speed": self._param("full_speed", minimum=1),
+            "x_step_size": self._param("x_step"),
+            "y_step_size": self._param("y_step"),
+            "z_step_size": self._param("z_step"),
+            "full_speed": self._param("full_speed"),
             "slow_speed": 0,           
             "brake_distance": 0,   
             "x_dist": self._param("x_dist"),
@@ -792,14 +838,14 @@ class BaseProbe:
                 "y_axisStatus": controller_params.get("y_axisStatus", 0.0),
                 "z_axisStatusR": controller_params.get("z_axisStatusR", -1.0),
                 "z_axisStatusL": controller_params.get("z_axisStatusL", -1.0),
-                "x_stepSize": self._param("x_step", minimum=1, integer=True),
-                "y_stepSize": self._param("y_step", minimum=1, integer=True),
-                "z_stepSize": self._param("z_step", minimum=1, integer=True),
+                "x_stepSize": self._param("x_step"),
+                "y_stepSize": self._param("y_step"),
+                "z_stepSize": self._param("z_step"),
                 "dpad_LR": controller_params.get("dpad_LR", 0),
                 "dpad_UD": controller_params.get("dpad_UD", 0),
                 "LBumper": controller_params.get("LBumper", 0),
                 "RBumper": controller_params.get("RBumper", 0),
-                "manual_jog_speed": self._param("man_full_speed", minimum=1),
+                "manual_jog_speed": self._param("man_full_speed"),
                 "packet_format": self.packet_format
             }
             if self._refuse_if_estopped("manual command"):
@@ -832,6 +878,7 @@ class BaseProbe:
             # frontend, having no such loop to offer, never polled at all.
             def _log(msg):
                 print(f"[controllerDrive] {msg}")
+                self._controller_log.append(str(msg))
             self.poller.start_polling(
                 None, log_updater=_log, activity_callback=self.touch_activity)
         if self._input_thread is None or not self._input_thread.is_alive():
@@ -1072,7 +1119,12 @@ class BaseProbe:
 
 
 class StepperProbe(BaseProbe):
-    PARAM_DEFAULTS = dict(BaseProbe.PARAM_DEFAULTS, **{"x_step": 1, "y_step": 1, "z_step": 1})
+    PARAMS = _extend_params(
+        BaseProbe.PARAMS,
+        Param("x_step", "int", default=1, minimum=1, label="X Step Size"),
+        Param("y_step", "int", default=1, minimum=1, label="Y Step Size"),
+        Param("z_step", "int", default=1, minimum=1, label="Z Step Size"),
+    )
 
     def __init__(self, port, controller_id, active_claims=None):
         super().__init__(port, controller_id, active_claims)
@@ -1084,10 +1136,15 @@ class StepperProbe(BaseProbe):
 class DCProbe(BaseProbe):
     # A DC probe runs at 120, not the stepper's 400. Before this table the
     # fallback was the stepper's number at every call site.
-    PARAM_DEFAULTS = dict(
-        BaseProbe.PARAM_DEFAULTS,
-        x_step=1, y_step=1, z_step=1,
-        full_speed=120, man_full_speed=120,
+    PARAMS = _extend_params(
+        BaseProbe.PARAMS,
+        Param("x_step", "int", default=1, minimum=1, label="X Step Size"),
+        Param("y_step", "int", default=1, minimum=1, label="Y Step Size"),
+        Param("z_step", "int", default=1, minimum=1, label="Z Step Size"),
+        Param("full_speed", "float", default=120, minimum=1,
+              label="Autonomous Speed"),
+        Param("man_full_speed", "float", default=120, minimum=1,
+              label="Manual Speed"),
     )
 
     def __init__(self, port, controller_id, active_claims=None):
@@ -1104,11 +1161,13 @@ class DCProbe(BaseProbe):
     @property
     def ui_schema(self):
         schema = copy.deepcopy(super().ui_schema)
-        # Find the Configuration section and insert the two new fields
         for section in schema["sections"]:
             if section["title"] == "Configuration":
-                section["elements"].append({"type": "entry", "text": "Brake Speed (Slow):", "model_attr": "slow_speed"})
-                section["elements"].append({"type": "entry", "text": "Brake Distance (steps):", "model_attr": "brake_distance"})
+                for name in ("slow_speed", "brake_distance"):
+                    param = self.PARAMS[name]
+                    section["elements"].append(
+                        sch.entry(param.label + ":", name, param,
+                                  disabled_when=("autonomous", "manual")))
                 break
         return schema
 
@@ -1120,7 +1179,12 @@ class DCProbe(BaseProbe):
 
 
 class ChuckPositioner(BaseProbe):
-    PARAM_DEFAULTS = dict(BaseProbe.PARAM_DEFAULTS, **{"x_step": 2, "y_step": 2, "z_step": 2})
+    PARAMS = _extend_params(
+        BaseProbe.PARAMS,
+        Param("x_step", "int", default=2, minimum=1, label="X Step Size"),
+        Param("y_step", "int", default=2, minimum=1, label="Y Step Size"),
+        Param("z_step", "int", default=2, minimum=1, label="Z Step Size"),
+    )
 
     def __init__(self, port, controller_id, active_claims=None):
         super().__init__(port, controller_id, active_claims)

@@ -14,6 +14,8 @@ from PySide6.QtGui import QPainter, QColor, QPen, QDoubleValidator
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 
+from model import schema as sch
+from model import devices
 from error_routing import ErrorRouter
 
 
@@ -130,6 +132,10 @@ class QtDynamicView(QWidget):
         self.layout = QVBoxLayout(self)
         self.vars = {}  # attr -> QLineEdit/QLabel
         self.toggle_buttons = []
+        # Controls whose availability depends on the model's mode
+        # (enabled_when / disabled_when), plus composites refreshed on tick.
+        self._gated = []
+        self._log_streams = []
         self.log_window = None
         
         self.log_window = None
@@ -187,15 +193,20 @@ class QtDynamicView(QWidget):
                         val_widget.setToolTip(f"Edit {label_text.replace(':', '')}")
                         self.vars[attr] = val_widget
                         
-                        is_numeric = False
-                        try:
-                            float(val)
-                            is_numeric = True
-                        except ValueError:
-                            pass
-                        
+                        # **Declared, not guessed.** This used to call
+                        # `float(val)` on the field's current contents and
+                        # treat a raised exception as "this is text", so a
+                        # cleared box silently lost its validator for the rest
+                        # of the session (RC-6 item 2).
+                        is_numeric = el.get("value_type") in ("int", "float")
+
                         if is_numeric:
-                            val_widget.setValidator(QDoubleValidator(-1e9, 1e9, 3, val_widget))
+                            low = el.get("min")
+                            high = el.get("max")
+                            val_widget.setValidator(QDoubleValidator(
+                                -1e9 if low is None else float(low),
+                                1e9 if high is None else float(high),
+                                int(el.get("decimals", 3)), val_widget))
 
                         def make_editor(attr_name, widget, num):
                             def commit():
@@ -209,7 +220,7 @@ class QtDynamicView(QWidget):
                                 else:
                                     setattr(self.model, attr_name, text)
                             return commit
-                            
+
                         val_widget.editingFinished.connect(make_editor(attr, val_widget, is_numeric))
                         row_layout.addWidget(val_widget)
                         
@@ -218,12 +229,15 @@ class QtDynamicView(QWidget):
                     btn = QPushButton(label_text)
                     btn.setToolTip(f"Execute {label_text.replace(':', '')}")
                     
-                    def make_cmd(c_name):
-                        return lambda: self._execute_command(c_name)
-                        
-                    btn.clicked.connect(make_cmd(cmd_name))
+                    btn.setProperty("role", el.get("role", "neutral"))
+
+                    def make_cmd(element):
+                        return lambda: self._run_element(element)
+
+                    btn.clicked.connect(make_cmd(el))
                     row_layout.addWidget(btn)
-                    
+                    self._gated.append({"widget": btn, "element": el})
+
                 elif el_type == "toggle":
                     attr = el.get("model_attr")
                     cmd_name = el.get("command")
@@ -231,10 +245,11 @@ class QtDynamicView(QWidget):
                     btn.setObjectName("toggleFalse")
                     btn.setToolTip(f"Toggle {label_text.replace(':', '')}")
                     
-                    def make_cmd(c_name):
-                        return lambda: self._execute_command(c_name)
-                        
-                    btn.clicked.connect(make_cmd(cmd_name))
+                    def make_cmd(element):
+                        return lambda: self._run_element(element)
+
+                    btn.clicked.connect(make_cmd(el))
+                    self._gated.append({"widget": btn, "element": el})
                     self.toggle_buttons.append({
                         "widget": btn, "attr": attr,
                         "true_text": el.get("true_text", "True"), "false_text": el.get("false_text", "False")
@@ -296,61 +311,166 @@ class QtDynamicView(QWidget):
                     refresh_btn.clicked.connect(make_refresh(options_func, combo))
                     row_layout.addWidget(refresh_btn)
 
-                elif el_type == "file_picker":
-                    continue
-                    cmd_name = el.get("command")
+                elif el_type == "file_save":
+                    # Composite (S10 item 2): the view supplies the dialog,
+                    # the model supplies the command. This replaces a
+                    # `file_picker` branch whose first statement was
+                    # `continue` — dead code that had rendered nothing since
+                    # it was written (PYSIDE-11).
                     btn = QPushButton(label_text)
-                    btn.setObjectName("filePicker")
-                    btn.setToolTip("Select a script file")
-                    file_lbl = QLabel("No Script Selected")
-                    file_lbl.setObjectName("fileLabel")
-                    
-                    def make_file_cmd(c_name, lbl_widget):
-                        def wrapped():
-                            path, _ = QFileDialog.getOpenFileName(
-                                self, 
-                                "Select Script File", 
-                                "", 
-                                "Text and GCode files (*.txt *.gcode *.nc);;All Files (*)"
-                            )
+                    btn.setProperty("role", el.get("role", "neutral"))
+
+                    def make_save(element):
+                        def handler():
+                            exts = element.get("extensions", ["csv"])
+                            filt = ";;".join(
+                                f"{e.upper()} files (*.{e})" for e in exts)
+                            path, _ = QFileDialog.getSaveFileName(
+                                self, element.get("text", "Save"), "", filt)
                             if path:
-                                lbl_widget.setText(os.path.basename(path))
-                                func = getattr(self.model, c_name, None)
-                                if func and callable(func):
-                                    func(path)
-                        return wrapped
-                        
-                    btn.clicked.connect(make_file_cmd(cmd_name, file_lbl))
+                                self._run_element(element, args=(path,))
+                        return handler
+
+                    btn.clicked.connect(make_save(el))
                     row_layout.addWidget(btn)
-                    row_layout.addWidget(file_lbl)
-                    
+
+                elif el_type == "region_select":
+                    btn = QPushButton(label_text)
+                    btn.setProperty("role", el.get("role", "neutral"))
+
+                    def make_region(element):
+                        def handler():
+                            self.overlay = SelectionOverlay(self.model)
+                            self.overlay.show()
+                        return handler
+
+                    btn.clicked.connect(make_region(el))
+                    row_layout.addWidget(btn)
+
+                elif el_type == "plot":
+                    # **D-6.** The plot is a schema composite now; PySide's
+                    # bolt-on duplicate of Tk's hand-built plotting is gone.
+                    btn = QPushButton(label_text)
+                    btn.setProperty("role", el.get("role", "neutral"))
+
+                    def make_plot(element):
+                        def handler():
+                            if getattr(self, "plot_dialog", None):
+                                self.plot_dialog.deleteLater()
+                            self.plot_dialog = PlotDialog(self, element=element)
+                            self.plot_dialog.show()
+                        return handler
+
+                    btn.clicked.connect(make_plot(el))
+                    row_layout.addWidget(btn)
+
+                elif el_type == "log_stream":
+                    view = QTextEdit()
+                    view.setReadOnly(True)
+                    view.setMinimumHeight(140)
+                    row_layout.addWidget(view)
+                    self._log_streams.append({"element": el, "widget": view})
+
+                elif el_type == "internal":
+                    # Registers a command in the schema-derived allowlist
+                    # without rendering anything.
+                    pass
+
                 card_layout.addRow(row_layout)
             self.layout.addWidget(card)
         self.layout.addStretch()
 
-    def _execute_command(self, cmd_name):
-        if cmd_name == "open_controller_log":
-            poller = getattr(self.model, 'poller', None)
-            if not hasattr(self, 'log_window') or self.log_window is None:
-                self.log_window = ControllerLogWindow(poller=poller, parent=self)
-                self.log_window.destroyed.connect(lambda: setattr(self, 'log_window', None))
-                if poller:
-                    poller.log_updater = self.log_window.append_log
-                self.log_window.show()
+    #: `role` -> stylesheet. The schema names the meaning; the palette is
+    #: this renderer's business. Elements used to carry raw bg/fg hex that
+    #: only Tk could honour.
+    ROLE_STYLES = {
+        "neutral": "",
+        "go": "background-color: #1b5e20; color: white;",
+        "danger": "background-color: #7f0000; color: white;",
+        "warning": "background-color: #e65100; color: black;",
+        "info": "background-color: #0d47a1; color: white;",
+    }
+
+    def _gather_inputs(self, element):
+        """The current *widget* text for each input the command declared (D-5).
+
+        Reading the widgets rather than the model is the point: the model
+        holds the last committed edit, which is one cycle behind what was just
+        typed. Tk hid that with a `focus_set()` flush; copying it here was a
+        named anti-fix, and the values travel with the command instead.
+        """
+        values = {}
+        for name in element.get("inputs", []):
+            widget = self.vars.get(name)
+            if widget is not None and hasattr(widget, "text"):
+                values[name] = widget.text()
+            elif widget is not None and hasattr(widget, "currentText"):
+                values[name] = widget.currentText()
             else:
-                if poller:
-                    poller.log_updater = self.log_window.append_log
-                self.log_window.show()
-                self.log_window.raise_()
-                self.log_window.activateWindow()
+                values[name] = getattr(self.model, name, "")
+        return values
+
+    def _run_element(self, element, args=None):
+        cmd_name = element.get("command")
+        try:
+            result = self.model.execute_command(
+                cmd_name, inputs=self._gather_inputs(element), args=args)
+        except Exception as e:
+            QMessageBox.critical(self, "Command Failed", f"Command {cmd_name} failed:\n{e}")
             return
-            
-        func = getattr(self.model, cmd_name, None)
-        if func and callable(func):
-            try:
-                func()
-            except Exception as e:
-                QMessageBox.critical(self, "Command Failed", f"Command {cmd_name} failed:\n{e}")
+
+        # The confirm contract (S10 item 3), one generic dialog per view.
+        if isinstance(result, sch.NeedsConfirmation):
+            reply = QMessageBox.question(
+                self, "Confirm", result.prompt,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                try:
+                    self.model.execute_command(result.command, args=(True,))
+                except Exception as e:
+                    QMessageBox.critical(
+                        self, "Command Failed",
+                        f"Command {result.command} failed:\n{e}")
+
+    def _execute_command(self, cmd_name):
+        """Backwards-compatible entry point for a bare command name."""
+        self._run_element({"command": cmd_name})
+
+    def _mode_name(self):
+        mode = getattr(self.model, "mode", None)
+        if mode is not None:
+            return getattr(mode, "value", str(mode))
+        if getattr(self.model, "monitoring", False):
+            return "monitoring"
+        return "idle"
+
+    def _sync_gates(self):
+        """One rule, `schema.is_enabled`, shared with the other two views."""
+        mode = self._mode_name()
+        for gate in self._gated:
+            gate["widget"].setEnabled(sch.is_enabled(gate["element"], mode))
+
+    def _refresh_log(self, entry):
+        source = getattr(self.model, entry["element"].get("source_command"), None)
+        if not callable(source):
+            return
+        try:
+            lines = list(source() or [])
+        except Exception:
+            return
+        text = "\n".join(lines[-40:])
+        widget = entry["widget"]
+        if widget.toPlainText() != text:
+            widget.setPlainText(text)
+            widget.moveCursor(widget.textCursor().End)
+
+    def _display(self, attr):
+        """Render at the parameter's declared precision, not `str()`'s repr."""
+        value = getattr(self.model, attr)
+        param = getattr(self.model, "PARAMS", {}).get(attr)
+        if param is not None and param.is_numeric:
+            return param.format(value)
+        return str(value)
 
     def _poll_model(self):
         # No hardware I/O on the render tick. This used to sample position and
@@ -358,9 +478,13 @@ class QtDynamicView(QWidget):
         # roughly tripling the serial traffic for one device. The render tick
         # reads the model's cached fields, which its own sampler fills.
 
+        self._sync_gates()
+        for entry in self._log_streams:
+            self._refresh_log(entry)
+
         for attr, widget in self.vars.items():
             if hasattr(self.model, attr):
-                current_val = str(getattr(self.model, attr))
+                current_val = self._display(attr)
                 if isinstance(widget, QLineEdit):
                     if not widget.hasFocus() and widget.text() != current_val:
                         widget.setText(current_val)
@@ -468,7 +592,8 @@ class SelectionOverlay(QWidget):
 
 
 class PlotDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, element=None):
+        self.element = element
         super().__init__(parent)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle("Data Plotter")
@@ -567,77 +692,37 @@ class PlotDialog(QDialog):
 
 
 class RedPercentDynamicView(QtDynamicView):
-    def __init__(self, model, parent=None):
-        super().__init__(model, parent)
-        self._add_position_source_control()
-        self._add_custom_buttons()
-        
+    """Red Percent, rendered from the schema like every other device (D-6).
 
-    def _add_custom_buttons(self):
-        btn_frame = QFrame()
-        btn_layout = QHBoxLayout(btn_frame)
-        
-        save_btn = QPushButton("Save Log")
-        save_btn.clicked.connect(self._save_log)
-        btn_layout.addWidget(save_btn)
-        
-        self.layout.insertWidget(self.layout.count() - 1, btn_frame)
+    **What used to be here is gone.** A hand-built "Position Source" combo
+    duplicated the schema's dropdown, and a hand-built "Save Log" button
+    duplicated what is now a `file_save` composite — each reaching into the
+    model directly, each drifting from the schema, and neither reachable from
+    the Web client. The schema publishes both.
 
-    def _save_log(self):
-        self.save_log_ui()
-    def _add_position_source_control(self):
-        probe_frame = QFrame()
-        probe_layout = QHBoxLayout(probe_frame)
-        lbl_probe = QLabel("Position Source:")
-        lbl_probe.setProperty("class", "header")
-        probe_layout.addWidget(lbl_probe)
-        
-        self.probe_combo = QComboBox()
-        probes = self.model.get_available_probe_names()
-        if probes:
-            self.probe_combo.addItems(probes)
-            if hasattr(self.model, 'selected_probe_name') and self.model.selected_probe_name in probes:
-                self.probe_combo.setCurrentText(self.model.selected_probe_name)
-            else:
-                self.probe_combo.setCurrentIndex(0)
-                if hasattr(self.model, 'set_stepper_model'):
-                    self.model.set_stepper_model(probes[0])
-        else:
-            self.probe_combo.addItem("None Available")
-            
-        self.probe_combo.currentTextChanged.connect(self._on_probe_selected)
-        probe_layout.addWidget(self.probe_combo)
-        probe_layout.addStretch()
-        self.layout.insertWidget(self.layout.count() - 1, probe_frame)
+    What remains is the one thing the schema cannot express: **D-10's prompt
+    on stopping a run with unsaved data.** That is a view-side question about
+    a modal the operator must answer, not a control.
+    """
 
-    def _on_probe_selected(self, text):
-        if hasattr(self.model, 'set_stepper_model'):
-            self.model.set_stepper_model(text)
+    def _run_element(self, element, args=None):
+        """Only D-10's unsaved-data prompt is special here.
 
-    def _execute_command(self, cmd_name):
-        if cmd_name == "set_focus_area_ui":
-            self.overlay = SelectionOverlay(self.model)
-            self.overlay.show()
-        elif cmd_name == "plot_data_ui":
-            if hasattr(self, 'plot_dialog') and self.plot_dialog:
-                self.plot_dialog.deleteLater()
-            self.plot_dialog = PlotDialog(self)
-            self.plot_dialog.show()
-        elif cmd_name == "save_log_web":
-            self.save_log_ui()
-        elif cmd_name == "stop_monitoring":
-            super()._execute_command(cmd_name)
-            if self.model.has_unsaved_data:
-                reply = QMessageBox.question(
-                    self, 
-                    "Save Log", 
-                    "Monitoring stopped. Would you like to save the data to a CSV?", 
-                    QMessageBox.Yes | QMessageBox.No
-                )
-                if reply == QMessageBox.Yes:
-                    self.save_log_ui()
-        else:
-            super()._execute_command(cmd_name)
+        `set_focus_area_ui`, `plot_data_ui` and `save_log_web` used to be
+        intercepted by name in this method — three view-side shims standing in
+        for element types the schema had no way to express. They are
+        `region_select`, `plot` and `file_save` composites now, handled by the
+        base renderer, so this override is down to one genuinely view-side
+        question.
+        """
+        super()._run_element(element, args=args)
+        if element.get("command") == "stop_monitoring" and self.model.has_unsaved_data:
+            reply = QMessageBox.question(
+                self, "Save Log",
+                "Monitoring stopped. Would you like to save the data to a CSV?",
+                QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.save_log_ui()
 
     def save_log_ui(self):
         if not self.model.data_log or not self.model.data_log.red_values:
@@ -775,11 +860,11 @@ class DashboardWindow(QMainWindow):
         self.device_list.blockSignals(True)
         self.device_list.clear()
         
-        all_devices = [
-            "Stepper Probe", "DC Probe", "Chuck Positioner", 
-            "Temperature Controller", "SMC100 Rotator", "Red Percent Window"
-        ]
-        
+        # The one registry (RC-7). This was a fourth copy of the device
+        # list, which is why the sidebar could offer a device the builder had
+        # never heard of.
+        all_devices = devices.names()
+
         for name in all_devices:
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -868,16 +953,20 @@ class DashboardWindow(QMainWindow):
             self._set_sidebar_checked(device_name, False)
             return
             
-        if device_name == "SMC100 Rotator" and model:
-            model.confirm_rotation_callback = self._confirm_rotation_dialog
-            
+        # The rotation-confirmation callback the view used to inject here is
+        # gone (S10 item 3): the model returns NeedsConfirmation and every
+        # renderer asks it with one generic dialog. Injecting it meant the
+        # check only existed in whichever frontend remembered to inject —
+        # never the Web client.
         dock = DeviceDock(device_name, self)
         dock.setAllowedAreas(Qt.AllDockWidgetAreas)
         
-        if device_name == "Red Percent Window":
-            view_widget = RedPercentDynamicView(model)
-        else:
-            view_widget = QtDynamicView(model)
+        # Routing by a `custom_view_class` the *model* declares, rather than
+        # by a device-name literal here. One fewer copy of the device list
+        # (RC-7, I-7.1).
+        view_class = VIEW_CLASSES.get(
+            getattr(model, "VIEW_HINT", None), QtDynamicView)
+        view_widget = view_class(model)
         dock.setWidget(view_widget)
         
         dock.closed.connect(lambda: self.on_dock_closed(device_name))
@@ -918,3 +1007,10 @@ class DashboardWindow(QMainWindow):
                     pass
         self.system_manager.shutdown_all()
         event.accept()
+
+
+#: Hint -> Qt widget. See the Tk module's twin: a device earns an entry only
+#: for behaviour the schema cannot express.
+VIEW_CLASSES = {
+    "red_percent": RedPercentDynamicView,
+}

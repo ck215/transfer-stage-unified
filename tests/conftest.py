@@ -138,6 +138,7 @@ _FILE_MARKERS = {
     "scripting/test_edge_mvc_parser.py": ["scripting"],
     "scripting/test_edge_mvc_scripting.py": ["scripting"],
     "ui/test_edge_mvc_ui.py": ["schema", "qt"],
+    "ui/test_schema_v2.py": ["schema"],
     "ui/test_ui_schema.py": ["schema"],
     "web/test_web_adapter.py": ["web"],
     "web/test_web_security.py": ["web"],

@@ -140,12 +140,45 @@ def _schema_command_names():
     Derived rather than hardcoded so the invariant cannot drift as schemas
     change: a command added to a model is a command views are forbidden to
     name, from the moment it is added.
+
+    Read by **introspecting the built models**, which is what this docstring
+    always claimed and what a regex over the source only approximated. Schema
+    v2 (S10) moved commands from dict literals (`"command": "toggle_auton"`)
+    to builder keyword arguments, and the old pattern silently matched
+    nothing — caught by the vacuity guard below, which is the entire reason
+    that guard exists.
     """
+    from unittest.mock import patch
+    from model import schema as sch
+    from model.probes import BaseProbe, StepperProbe, DCProbe, ChuckPositioner
+    from model.redpercent_system import RedPercentSystem
+    from model.rotator_system import RotatorSystem
+    from model.temperature_system import TemperatureSystem
+
     commands = set()
-    for path in sorted((SRC / "model").glob("*.py")):
-        commands |= set(
-            re.findall(r'"command"\s*:\s*"([a-zA-Z_]+)"', path.read_text())
-        )
+    with patch('model.probes.serial'), patch('controller.serial.serial'), \
+         patch('model.probes.ErrorPopupManager'), \
+         patch('controller.gamepad.ControllerPoller'):
+        for cls in (StepperProbe, DCProbe, ChuckPositioner, RedPercentSystem,
+                    RotatorSystem, TemperatureSystem):
+            if issubclass(cls, BaseProbe):
+                model = cls("SIM", "None")
+            elif cls is TemperatureSystem:
+                model = cls(port=None)
+            else:
+                model = cls()
+            for element in sch.elements(model.ui_schema):
+                for key in ("command", "options_command", "data_command",
+                            "source_command"):
+                    name = element.get(key)
+                    if name:
+                        commands.add(name)
+            teardown = getattr(model, "teardown", None)
+            if callable(teardown):
+                try:
+                    teardown()
+                except Exception:
+                    pass
     return commands
 
 

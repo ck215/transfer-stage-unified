@@ -485,6 +485,12 @@ family at **S11**.
 
 **Invariants.** I-6.1 (per view, plus the API), I-6.2, I-6.3.
 
+**Done (2026-09-20).** All four items; 2 and 3 landed with S10 as the trail
+advised. `model/params.py` holds the `Param` table — `coerce` is lenient and
+falls back to the class's own default, `parse` is strict and refuses by
+field name. D-5 is the `SchemaCommands` mixin: `apply_inputs` is atomic, and
+Tk's `focus_set()` flush is deleted.
+
 ---
 
 ## S10 — Schema v2 and three renderers (RC-7)
@@ -506,6 +512,15 @@ family at **S11**.
 
 **Invariants.** I-7.1 (grep, from S0), I-7.2 (golden structure per
 renderer), I-7.3.
+
+**In progress (2026-09-20).** All five items written; `model/schema.py`,
+`model/params.py` and `model/devices.py` are new, and
+`tests/ui/test_schema_v2.py` checks every schema against its model (81
+checks, all six models). **Not finished:** the Qt pass is unverified and its
+two S10-owned `known_bad` entries are expected to XPASS and need
+re-authoring; the composites have no rendering test. **I-7.1 is 26 -> 8 but
+stays xfailed**; the remainder is `web_adapter`'s Red Percent linking block,
+which **S12 item 2** deletes. Do not bump the baseline to make it green.
 
 ---
 

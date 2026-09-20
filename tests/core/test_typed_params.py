@@ -133,3 +133,113 @@ def test_the_refusal_is_reported_rather_than_silent():
         ts.send_settings()
     warn.assert_called_once()
     assert "Setpoint" in warn.call_args[0][1]
+
+
+# -- S9 item 2: the type is declared, not inferred -------------------------
+
+def test_a_param_declares_its_own_type_and_bounds():
+    from model.probes import StepperProbe, DCProbe
+
+    assert StepperProbe.PARAMS["x_step"].type == "int"
+    assert StepperProbe.PARAMS["x_step"].minimum == 1
+    # A DC probe runs at 120, not the stepper's 400 — the defect that made
+    # the fallback a per-class fact rather than a call-site constant.
+    assert DCProbe.PARAMS["full_speed"].default == 120
+    assert StepperProbe.PARAMS["full_speed"].default == 400
+
+
+def test_the_schema_publishes_the_type_so_views_stop_guessing():
+    """Both desktop views called `float(current_value)` to classify a field.
+
+    An empty box — what an operator leaves after clearing one — was therefore
+    classified as text and silently lost its validator for the session.
+    """
+    from model import schema as sch
+    from model.probes import StepperProbe
+
+    probe = StepperProbe("SIM", None)
+    try:
+        entries = [e for e in sch.elements(probe.ui_schema)
+                   if e["type"] == "entry"]
+        assert entries
+        for element in entries:
+            assert element["value_type"] in ("int", "float", "text")
+    finally:
+        probe.teardown()
+
+
+def test_parse_refuses_rather_than_substituting():
+    """The RC-6 thesis in one method: an unreadable value is an error."""
+    from model.probes import StepperProbe
+
+    param = StepperProbe.PARAMS["full_speed"]
+    ok, reason = param.parse("")
+    assert ok is False and "empty" in reason
+    ok, reason = param.parse("abc")
+    assert ok is False and "not a number" in reason
+    ok, reason = param.parse("0")
+    assert ok is False and "at least" in reason
+    assert param.parse("250") == (True, 250.0)
+
+
+def test_coerce_falls_back_to_this_classs_own_default():
+    from model.probes import DCProbe, StepperProbe
+
+    assert DCProbe.PARAMS["full_speed"].coerce("") == 120
+    assert StepperProbe.PARAMS["full_speed"].coerce("") == 400
+
+
+# -- S9 item 3 / D-5: commands carry their inputs --------------------------
+
+def test_d5_inputs_are_committed_before_the_command_runs():
+    from model.probes import StepperProbe
+
+    probe = StepperProbe("SIM", None)
+    try:
+        ok, error = probe.apply_inputs({"x_dist": "12", "full_speed": "300"})
+        assert (ok, error) == (True, None)
+        assert probe.x_dist == 12.0
+        assert probe.full_speed == 300.0
+    finally:
+        probe.teardown()
+
+
+def test_d5_a_bad_field_refuses_the_whole_set():
+    """Atomic. Committing field by field is the stale-value class itself."""
+    from model.probes import StepperProbe
+
+    probe = StepperProbe("SIM", None)
+    try:
+        probe.x_dist = "1"
+        ok, error = probe.apply_inputs({"x_dist": "5", "full_speed": ""})
+        assert ok is False
+        assert "Autonomous Speed" in error, "the refusal must name the field"
+        assert probe.x_dist == "1", "no field may be committed when one fails"
+    finally:
+        probe.teardown()
+
+
+def test_d5_a_refused_command_does_not_run():
+    from model.probes import StepperProbe
+
+    probe = StepperProbe("SIM", None)
+    try:
+        ran = []
+        probe.reset_baseline = lambda: ran.append(True)
+        result = probe.execute_command(
+            "reset_baseline", inputs={"full_speed": "not-a-number"})
+        assert result is False
+        assert ran == [], "the command ran despite an invalid input"
+    finally:
+        probe.teardown()
+
+
+def test_d5_an_undeclared_input_is_refused():
+    from model.probes import StepperProbe
+
+    probe = StepperProbe("SIM", None)
+    try:
+        ok, error = probe.apply_inputs({"nonsense": "1"})
+        assert ok is False and "not a parameter" in error
+    finally:
+        probe.teardown()

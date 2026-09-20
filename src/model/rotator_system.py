@@ -1,11 +1,25 @@
 import threading
 import time
+from model import schema as sch
+from model.params import Param, table as _param_table
+from model.base import SchemaCommands
 try:
     from lib import smc100
 except ImportError:
     smc100 = None
 
-class RotatorSystem:
+class RotatorSystem(SchemaCommands):
+    #: Past this, moving risks damaging physical tubing.
+    SAFE_ROTATION_DEG = 30.0
+
+    PARAMS = _param_table(
+        Param("target_deg", "float", default=0, minimum=-175, maximum=175,
+              decimals=2, unit="deg", label="Target (deg)"),
+        Param("step_deg", "float", default=0, minimum=-175, maximum=175,
+              decimals=2, unit="deg", label="Step (deg)"),
+        Param("position", "text", default="0", label="Position (deg)"),
+    )
+
     def __del__(self):
         print(f"[{self.__class__.__name__}] Destructor called")
 
@@ -21,7 +35,6 @@ class RotatorSystem:
         self.smc = None
         self.is_connected = False
         self.error_callback = None
-        self.confirm_rotation_callback = None  # Optional[Callable[[float], bool]]
         
         self.target_deg = "0"
         self.step_deg = "0"
@@ -139,59 +152,98 @@ class RotatorSystem:
         if self.smc:
             self._run_async(self.smc.home)
 
-    def _move_abs_ui(self):
-        from model.numeric import safe_float
-        val = safe_float(self.target_deg)
-        if val is None:
-            return
-        self.move_absolute(val)
+    # -- schema commands (D-5): the values are already validated ---------
+    #
+    # These take no arguments. `execute_command` has committed the declared
+    # inputs to the model before calling, so there is nothing left to parse
+    # here — which is why the three `safe_float`-then-bail shims these replace
+    # are gone. A value that could not be parsed never reaches a command now;
+    # it is refused by name, at the field, where the operator can see it.
 
-    def _move_rel_pos_ui(self):
-        from model.numeric import safe_float
-        val = safe_float(self.step_deg)
-        if val is None:
-            return
-        self.move_relative(val)
+    def move_absolute(self, confirmed=False):
+        return self._guarded_move(
+            self.PARAMS["target_deg"].coerce(self.target_deg),
+            lambda target: self.smc.move_absolute_deg(target),
+            "move_absolute", confirmed)
 
-    def _move_rel_neg_ui(self):
-        from model.numeric import safe_float
-        val = safe_float(self.step_deg)
-        if val is None:
-            return
-        self.move_relative(-val)
+    def move_relative_positive(self, confirmed=False):
+        step = self.PARAMS["step_deg"].coerce(self.step_deg)
+        return self._guarded_move(
+            self._current_position() + step,
+            lambda _target: self.smc.move_relative_deg(step),
+            "move_relative_positive", confirmed)
+
+    def move_relative_negative(self, confirmed=False):
+        step = self.PARAMS["step_deg"].coerce(self.step_deg)
+        return self._guarded_move(
+            self._current_position() - step,
+            lambda _target: self.smc.move_relative_deg(-step),
+            "move_relative_negative", confirmed)
+
+    def _current_position(self):
+        try:
+            return float(self.position)
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _guarded_move(self, target, run, command_name, confirmed):
+        """The ±30° tubing check, in one place, for all three frontends.
+
+        **Returns `NeedsConfirmation` rather than calling back into a view.**
+        The old `confirm_rotation_callback` was injected into the model by
+        whichever view happened to build it — and the Web client never
+        injected one, so `_confirm_rotation` fell through to its "blocked
+        automatically" branch and the check existed only as a refusal nobody
+        was shown. A guard that silently declines is not the same as a guard
+        the operator can answer (S10 item 3).
+        """
+        if not self.smc:
+            return False
+        if abs(target) > self.SAFE_ROTATION_DEG and not confirmed:
+            return sch.NeedsConfirmation(
+                f"Target rotation {target:.2f}\u00b0 exceeds the safe "
+                f"\u00b1{self.SAFE_ROTATION_DEG:.0f}\u00b0 range.\n\n"
+                "Moving past this limit risks damaging physical tubing.\n\n"
+                "Proceed?",
+                command_name)
+        self._run_async(run, target)
+        return True
 
     @property
     def ui_schema(self):
-        return {
-            "sections": [
-                {
-                    "title": "Device Status",
-                    "elements": [
-                        {"type": "readonly", "text": "Position (deg):", "model_attr": "position"},
-                        {"type": "readonly", "text": "State Code:", "model_attr": "state"},
-                        {"type": "readonly", "text": "Error Code:", "model_attr": "error"},
-                    ]
-                },
-                {
-                    "title": "Commands",
-                    "elements": [
-                        {"type": "button", "text": "Home Stage", "command": "home"},
-                        {"type": "button", "text": "STOP", "command": "stop"},
-                        {"type": "button", "text": "Reset & Config", "command": "reset_and_configure"}
-                    ]
-                },
-                {
-                    "title": "Motion Control",
-                    "elements": [
-                        {"type": "entry", "text": "Target (deg):", "model_attr": "target_deg"},
-                        {"type": "button", "text": "Move Absolute", "command": "_move_abs_ui"},
-                        {"type": "entry", "text": "Step (deg):", "model_attr": "step_deg"},
-                        {"type": "button", "text": "Move +", "command": "_move_rel_pos_ui"},
-                        {"type": "button", "text": "Move -", "command": "_move_rel_neg_ui"}
-                    ]
-                }
-            ]
-        }
+        P = self.PARAMS
+        return sch.schema(
+            sch.section(
+                "Device Status",
+                sch.readonly("Position (deg):", "position", param=P["position"]),
+                sch.readonly("State Code:", "state"),
+                sch.readonly("Error Code:", "error", role="warning"),
+            ),
+            sch.section(
+                "Commands",
+                sch.button("Home Stage", "home", role="go"),
+                sch.button("STOP", "stop", role="danger"),
+                sch.button("Reset & Config", "reset_and_configure"),
+            ),
+            sch.section(
+                "Motion Control",
+                sch.entry("Target (deg):", "target_deg", P["target_deg"]),
+                # **D-5 + the confirm contract.** The target travels with the
+                # command, and a target outside +/-30 deg comes back as
+                # NeedsConfirmation rather than going through a callback the
+                # view injected into the model. That callback was never
+                # supplied by the Web client, so the tubing check simply did
+                # not exist there — a refusal the operator never sees is not
+                # a check (S10 item 3).
+                sch.button("Move Absolute", "move_absolute",
+                           inputs=("target_deg",), role="go"),
+                sch.entry("Step (deg):", "step_deg", P["step_deg"]),
+                sch.button("Move +", "move_relative_positive",
+                           inputs=("step_deg",)),
+                sch.button("Move -", "move_relative_negative",
+                           inputs=("step_deg",)),
+            ),
+        )
 
     def stop(self):
         if self.smc:
@@ -211,30 +263,11 @@ class RotatorSystem:
         if self.smc:
             self._run_async(self.smc.reset_and_configure)
 
-    def _confirm_rotation(self, target_deg: float) -> bool:
-        if abs(target_deg) <= 30.0:
-            return True
-        if self.confirm_rotation_callback:
-            return self.confirm_rotation_callback(target_deg)
-        print(f"[{self.__class__.__name__}] Rotation past ±30 blocked automatically (no confirmation handler registered).")
-        return False
-
-    def move_absolute(self, target_deg: float):
-        if self.smc:
-            if not self._confirm_rotation(target_deg):
-                return
-            self._run_async(self.smc.move_absolute_deg, target_deg)
-
-    def move_relative(self, step_deg: float):
-        if self.smc:
-            try:
-                current = float(self.position)
-            except (ValueError, TypeError):
-                current = 0.0
-            target = current + step_deg
-            if not self._confirm_rotation(target):
-                return
-            self._run_async(self.smc.move_relative_deg, step_deg)
+    # `_confirm_rotation`, `move_absolute(target_deg)` and
+    # `move_relative(step_deg)` are gone, replaced by the guarded schema
+    # commands above. The view-injected `confirm_rotation_callback` went with
+    # them: the confirmation is a value the model returns, which every
+    # frontend renders with one generic dialog.
 
     def _map_state_code(self, code: str) -> str:
         code = str(code).upper()

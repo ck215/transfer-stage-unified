@@ -2,8 +2,37 @@ from controller.serial import serial
 from model.numeric import num, safe_float
 import threading
 import time
+from model import schema as sch
+from model.params import Param, table as _param_table
+from model.base import SchemaCommands
 
-class TemperatureSystem:
+
+class TemperatureSystem(SchemaCommands):
+    PARAMS = _param_table(
+        Param("setpoint", "float", default=0, decimals=1, unit="C",
+              label="Setpoint"),
+        Param("ramp_rate", "float", default=10, minimum=0, decimals=2,
+              unit="s/C", label="Ramp Rate (s/\u00b0C)"),
+        Param("p_term", "float", default=2.0, decimals=3,
+              label="Proportional Term (P)"),
+        Param("i_term", "float", default=0.5, decimals=3,
+              label="Integral Term (I)"),
+        Param("d_term", "float", default=0.1, decimals=3,
+              label="Derivative Term (D)"),
+        Param("offset", "float", default=0, decimals=2, label="Offset"),
+        Param("current_temp", "text", default="N/A",
+              label="Current Temperature"),
+    )
+
+    @property
+    def connection_state(self):
+        """The transport's link state, as a string, for every renderer."""
+        state = getattr(getattr(self, "serial_conn", None),
+                        "connection_state", None)
+        if state is None:
+            return "CLOSED"
+        return getattr(state, "name", str(state))
+
     def __del__(self):
         print(f"[{self.__class__.__name__}] Destructor called")
 
@@ -43,35 +72,37 @@ class TemperatureSystem:
                 
     @property
     def ui_schema(self):
-        return {
-            "sections": [
-                {
-                    "title": "Temperature Readings",
-                    "elements": [
-                        {"type": "readonly", "text": "Current Temperature:", "model_attr": "current_temp"}
-                    ]
-                },
-                {
-                    "title": "Control Parameters",
-                    "elements": [
-                        {"type": "entry", "text": "Setpoint:", "model_attr": "setpoint"},
-                        {"type": "entry", "text": "Ramp Rate (s/°C):", "model_attr": "ramp_rate"},
-                        {"type": "entry", "text": "Proportional Term (P):", "model_attr": "p_term"},
-                        {"type": "entry", "text": "Integral Term (I):", "model_attr": "i_term"},
-                        {"type": "entry", "text": "Derivative Term (D):", "model_attr": "d_term"},
-                        {"type": "entry", "text": "Offset:", "model_attr": "offset"}
-                    ]
-                },
-                {
-                    "title": "System Control",
-                    "elements": [
-                        {"type": "button", "text": "Enter Settings", "command": "send_settings", "bg": "darkgreen", "fg": "white"},
-                        {"type": "button", "text": "Stop System", "command": "stop", "bg": "darkred", "fg": "white"}
-                    ]
-                }
-            ]
-        }
-        
+        P = self.PARAMS
+        return sch.schema(
+            sch.section(
+                "Temperature Readings",
+                sch.readonly("Current Temperature:", "current_temp",
+                             param=P["current_temp"]),
+                sch.readonly("Connection:", "connection_state", role="info"),
+            ),
+            sch.section(
+                "Control Parameters",
+                *[sch.entry(P[name].label + ":", name, P[name])
+                  for name in ("setpoint", "ramp_rate", "p_term", "i_term",
+                               "d_term", "offset")],
+            ),
+            sch.section(
+                "System Control",
+                # **D-5.** Every field of the frame travels with the command
+                # and is validated as a set. This is the heater case from S9:
+                # the firmware parses the frame with `strtok`, which does not
+                # see an empty field — it sees the next one. A blank box shifts
+                # every later parameter left, so the board takes the ramp rate
+                # as its setpoint. Refusing the whole frame is the only
+                # correct answer.
+                sch.button("Enter Settings", "send_settings",
+                           inputs=("setpoint", "ramp_rate", "p_term",
+                                   "i_term", "d_term", "offset"),
+                           role="go"),
+                sch.button("Stop System", "stop", role="danger"),
+            ),
+        )
+
     @property
     def estop_latched(self):
         return self._estop.is_set()

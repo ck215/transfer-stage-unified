@@ -610,11 +610,25 @@ class TransferStageApp {
     }
 
     if (el.type === 'entry') {
+      // The input type comes from the schema (`value_type`), not from
+      // sniffing the current value -- which is what the desktop views used to
+      // do, and what silently reclassified a cleared box as text (RC-6).
+      const numeric = el.value_type === 'int' || el.value_type === 'float';
+      const inputType = numeric ? 'number' : 'text';
+      const step = el.value_type === 'int' ? '1'
+        : (numeric ? String(Math.pow(10, -(el.decimals ?? 3))) : '');
+      const bounds =
+        (el.min !== null && el.min !== undefined ? ` min="${el.min}"` : '') +
+        (el.max !== null && el.max !== undefined ? ` max="${el.max}"` : '');
+      const unit = el.unit ? `<span class="schema-unit">${this.escapeHtml(el.unit)}</span>` : '';
       return `
         <div class="schema-row">
           <span class="schema-label">${label}</span>
           <div class="schema-input-group">
-            <input type="text" class="schema-input" id="input-${sanitizedDev}-${cleanAttr}" placeholder="Value" />
+            <input type="${inputType}"${bounds}${step ? ` step="${step}"` : ''}
+                   class="schema-input" data-param="${el.param || el.model_attr}"
+                   id="input-${sanitizedDev}-${cleanAttr}" placeholder="Value" />
+            ${unit}
             <button type="button" class="btn btn-sm btn-secondary btn-set-attr" 
                     data-device="${devName}" data-attr="${el.model_attr}">Set</button>
           </div>
@@ -622,15 +636,53 @@ class TransferStageApp {
       `;
     }
 
-    if (el.type === 'button') {
-      const isHalt = el.command && (el.command.toLowerCase().includes('stop') || el.command.toLowerCase().includes('halt'));
-      const btnClass = isHalt ? 'btn btn-danger btn-full' : 'btn btn-secondary btn-full';
+    if (el.type === 'button' || el.type === 'file_save' || el.type === 'region_select') {
+      // `role` names the meaning; this renderer maps it to a class. The old
+      // rule sniffed the command name for "stop"/"halt" to decide whether a
+      // button was dangerous, which made colour depend on spelling.
+      const roleClass = {
+        go: 'btn-success', danger: 'btn-danger', warning: 'btn-warning',
+        info: 'btn-info', neutral: 'btn-secondary',
+      }[el.role || 'neutral'] || 'btn-secondary';
+      // D-5: the command carries the current value of each declared input.
+      const inputs = Array.isArray(el.inputs) ? el.inputs.join(',') : '';
       return `
         <div class="schema-row">
-          <button type="button" class="${btnClass} btn-dispatch-cmd" 
-                  data-device="${devName}" data-command="${el.command}">${label}</button>
+          <button type="button" class="btn ${roleClass} btn-full btn-dispatch-cmd" 
+                  data-device="${devName}" data-command="${el.command}"
+                  data-kind="${el.type}"
+                  data-extensions="${(el.extensions || []).join(',')}"
+                  data-inputs="${inputs}">${label}</button>
         </div>
       `;
+    }
+
+    if (el.type === 'plot') {
+      // **D-6: the plot is schema-driven in all three views.** The Web client
+      // previously had no plot at all -- Tk hand-built one and PySide bolted
+      // on a duplicate, both reaching into the data log directly.
+      return `
+        <div class="schema-row schema-plot-row">
+          <span class="schema-label">${label}</span>
+          <canvas class="schema-plot" id="plot-${sanitizedDev}-${this.sanitizeId(el.data_command)}"
+                  data-device="${devName}" data-command="${el.data_command}"
+                  width="360" height="160"></canvas>
+        </div>
+      `;
+    }
+
+    if (el.type === 'log_stream') {
+      return `
+        <div class="schema-row">
+          <span class="schema-label">${label}</span>
+          <pre class="schema-log" id="log-${sanitizedDev}-${this.sanitizeId(el.source_command)}"
+               data-device="${devName}" data-command="${el.source_command}"></pre>
+        </div>
+      `;
+    }
+
+    if (el.type === 'internal') {
+      return '';
     }
 
     if (el.type === 'toggle') {
@@ -722,7 +774,31 @@ class TransferStageApp {
       btn.addEventListener('click', () => {
         const dev = btn.dataset.device;
         const cmd = btn.dataset.command;
-        this.dispatchCommand(dev, cmd, [], btn);
+        // D-5: gather the *current* field values the command declared and
+        // send them with it, so the model never acts on a value one edit
+        // behind what is on screen. Tk forced focus away to achieve the same
+        // thing, which is a named anti-fix and never worked here at all.
+        const inputs = this.gatherInputs(dev, btn.dataset.inputs);
+        const kind = btn.dataset.kind || 'button';
+        if (kind === 'file_save') {
+          const exts = (btn.dataset.extensions || 'csv').split(',');
+          const name = prompt('Save as file name:', `export.${exts[0]}`);
+          if (!name) return;
+          this.dispatchCommand(dev, cmd, [name], btn, inputs);
+          return;
+        }
+        if (kind === 'region_select') {
+          const raw = prompt('Region as x,y,width,height:');
+          if (!raw) return;
+          const parts = raw.split(',').map(v => parseInt(v.trim(), 10));
+          if (parts.length !== 4 || parts.some(Number.isNaN)) {
+            this.showToast('Expected four numbers: x,y,width,height', 'warning');
+            return;
+          }
+          this.dispatchCommand(dev, cmd, parts, btn, inputs);
+          return;
+        }
+        this.dispatchCommand(dev, cmd, [], btn, inputs);
       });
     });
 
@@ -1095,7 +1171,18 @@ class TransferStageApp {
   // =========================================================================
   // Command & Attribute Dispatch API
   // =========================================================================
-  async dispatchCommand(deviceName, commandName, args = [], triggerBtn = null) {
+  gatherInputs(deviceName, inputsAttr) {
+    const names = (inputsAttr || '').split(',').filter(Boolean);
+    const values = {};
+    const dev = this.sanitizeId(deviceName);
+    names.forEach(name => {
+      const field = document.getElementById(`input-${dev}-${this.sanitizeId(name)}`);
+      if (field) values[name] = field.value;
+    });
+    return values;
+  }
+
+  async dispatchCommand(deviceName, commandName, args = [], triggerBtn = null, inputs = null) {
     if (commandName === 'plot_data_ui') {
       const modal = document.getElementById('plot-dialog-modal');
       this.toggleModal(modal, true);
@@ -1161,7 +1248,8 @@ class TransferStageApp {
         body: JSON.stringify({
           device: deviceName,
           command: commandName,
-          args: args
+          args: args,
+          inputs: inputs || {}
         })
       });
 
@@ -1175,6 +1263,16 @@ class TransferStageApp {
         const errorMsg = (resData && resData.message) || `Command ${commandName} failed (HTTP ${response.status})`;
         this.showToast(`[${deviceName}] ${errorMsg}`, 'error');
         console.error(`Command error on ${deviceName}.${commandName}:`, resData);
+      } else if (resData && resData.needs_confirmation) {
+        // The confirm contract (S10 item 3). The ±30° tubing check used to
+        // be a callback the *views* injected into the model — and this
+        // client never injected one, so the check existed here only as a
+        // silent refusal. The model returns the question now and every
+        // frontend asks it.
+        if (window.confirm(resData.needs_confirmation.prompt)) {
+          await this.dispatchCommand(
+            deviceName, resData.needs_confirmation.command, [true], triggerBtn);
+        }
       } else {
         this.showToast(`[${deviceName}] ${commandName} executed`, 'success');
       }

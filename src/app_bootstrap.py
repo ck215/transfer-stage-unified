@@ -44,12 +44,10 @@ def probe_device_at(port: str) -> str | None:
     except ImportError:
         return None
 
-    DEVICE_MAP = {
-        's': "Stepper Probe",
-        'd': "DC Probe",
-        'c': "Chuck Positioner",
-        't': "Temperature Controller"
-    }
+    # Derived from the one registry (RC-7). This used to be a separate
+    # literal that knew four of the six devices, which is how the sidebar,
+    # the builder and the identity map came to disagree.
+    from model.devices import IDENTITY_CHARS as DEVICE_MAP
     DEV_PATTERN = re.compile(r"(?:DEV:\s*|<)([sdct])>?", re.IGNORECASE)
     
     device_found = False
@@ -175,24 +173,13 @@ def _build_each(active_configs, active_claims, manager, built_models):
         port = config.get("port")
         controllerID = config.get("controller")
         
-        if device == "Stepper Probe":
-            from model.probes import StepperProbe
-            built_models[device] = StepperProbe(port, controllerID, active_claims)
-        elif device == "DC Probe":
-            from model.probes import DCProbe
-            built_models[device] = DCProbe(port, controllerID, active_claims)
-        elif device == "Chuck Positioner":
-            from model.probes import ChuckPositioner
-            built_models[device] = ChuckPositioner(port, controllerID, active_claims)
-        elif device == "Temperature Controller":
-            from model.temperature_system import TemperatureSystem
-            built_models[device] = TemperatureSystem(port)
-        elif device == "SMC100 Rotator":
-            from model.rotator_system import RotatorSystem
-            built_models[device] = RotatorSystem(port)
-        elif device == "Red Percent Window":
-            from model.redpercent_system import RedPercentSystem
-            built_models[device] = RedPercentSystem()
+        # One registry, one dispatch (RC-7). The if/elif chain this replaces
+        # was the copy of the device list that actually constructed things,
+        # and it silently skipped any name the chain did not mention.
+        from model import devices
+        model = devices.build(device, port, controllerID, active_claims)
+        if model is not None:
+            built_models[device] = model
 
         built = built_models.get(device)
         if manager is not None and built is not None:

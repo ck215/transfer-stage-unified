@@ -279,11 +279,19 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             device_name = data.get("device")
             command_name = data.get("command")
             args = data.get("args", [])
+            # D-5: the field values the command declared travel with it, so
+            # the model validates them as a set instead of acting on whatever
+            # a prior set_attr happened to leave behind.
+            inputs = data.get("inputs", {})
+            if not isinstance(inputs, dict):
+                return self._send_json(400, {"status": "error",
+                                             "message": "inputs must be an object"})
 
             if not device_name or not command_name:
                 return self._send_json(400, {"status": "error", "message": "Missing device or command"})
 
-            result = adapter.dispatch_command(device_name, command_name, args)
+            result = adapter.dispatch_command(device_name, command_name, args,
+                                              inputs=inputs)
             code = result.get("code", 200)
             return self._send_json(code, result)
 

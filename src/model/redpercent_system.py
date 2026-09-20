@@ -1,4 +1,7 @@
 import threading
+from model import schema as sch
+from model.params import Param, table as _param_table
+from model.base import SchemaCommands
 import time
 try:
     from PIL import Image
@@ -53,7 +56,23 @@ class RedPercentDataLog:
                         row.append(self.vel_values[dim][i])
                     writer.writerow(row)
 
-class RedPercentSystem:
+class RedPercentSystem(SchemaCommands):
+    #: A hint, not a class: Tk and PySide need different widgets for the same
+    #: device. Each frontend maps the hint to its own class, so neither has to
+    #: branch on the device's *name* to find the right view (RC-7, I-7.1).
+    #: A model with no hint renders with the generic schema renderer.
+    VIEW_HINT = "red_percent"
+
+    PARAMS = _param_table(
+        Param("probe_name", "text", default="", label="Probe Name"),
+        Param("probe_tilt_angle", "float", default=0.0, decimals=2,
+              unit="deg", label="Probe Tilt Angle"),
+        Param("current_red", "float", default=0.0, decimals=2, unit="%",
+              label="Current Red %"),
+        Param("red_change", "float", default=0.0, decimals=2, unit="%",
+              label="Red Change %"),
+    )
+
     def __del__(self):
         print(f"[{self.__class__.__name__}] Destructor called")
 
@@ -154,18 +173,29 @@ class RedPercentSystem:
         elif not value and 'Z' in self.sync_dimensions:
             self.sync_dimensions.remove('Z')
 
-    def save_log_web(self):
-        self.save_log(f"redpercent_log_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+    def autosave_log(self):
+        """D-10: autosave to a timestamped file.
 
-    def plot_data_ui(self):
-        pass
+        Kept as the unattended path — shutdown, and any client that cannot
+        raise a file dialog. The `file_save` composite is the attended one and
+        passes the operator's chosen path to `save_log`.
+        """
+        path = f"redpercent_log_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        self.save_log(path)
+        return path
 
-    def set_focus_area_ui(self):
-        """Invoked by the web/PySide UI to open the client-side focus-area
-        selector. The actual ROI coordinates land via set_focus_area() once
-        the user finishes the drag selection; this call itself is a no-op
-        on the model."""
-        pass
+    def plot_series(self):
+        """The data behind the `plot` composite (D-6).
+
+        Returns `{"x": [...], "y": [...]}`. This is the whole of what a plot
+        renderer needs, and it is the reason the plot can now be schema-driven
+        in all three views: Tk hand-built a `RedPercentView` around matplotlib
+        and PySide bolted on its own duplicate, each reaching into the data
+        log directly. Neither was reachable from the Web client at all.
+        """
+        log = self.data_log
+        values = list(getattr(log, "red_values", []) or []) if log else []
+        return {"x": list(range(len(values))), "y": values}
 
     def toggle_sync_x(self):
         self.sync_x = not self.sync_x
@@ -190,52 +220,62 @@ class RedPercentSystem:
 
     @property
     def ui_schema(self):
-        return {
-            "sections": [
-                {
-                    "title": "Probe Metadata",
-                    "elements": [
-                        {"type": "entry", "text": "Probe Name:", "model_attr": "probe_name"},
-                        {"type": "entry", "text": "Probe Tilt Angle:", "model_attr": "probe_tilt_angle"},
-                        {"type": "dropdown", "text": "Position Source:", "model_attr": "selected_probe_name", "options_command": "get_available_probe_names"}
-                    ]
-                },
-                {
-                    "title": "Sync Dimensions",
-                    "elements": [
-                        {"type": "toggle", "text": "Sync X", "model_attr": "sync_x", "command": "toggle_sync_x",
-                         "true_text": "Sync X: ON", "false_text": "Sync X: OFF"},
-                        {"type": "toggle", "text": "Sync Y", "model_attr": "sync_y", "command": "toggle_sync_y",
-                         "true_text": "Sync Y: ON", "false_text": "Sync Y: OFF"},
-                        {"type": "toggle", "text": "Sync Z", "model_attr": "sync_z", "command": "toggle_sync_z",
-                         "true_text": "Sync Z: ON", "false_text": "Sync Z: OFF"}
-                    ]
-                },
-                {
-                    "title": "Red Detection",
-                    "elements": [
-                        {"type": "readonly", "text": "Current Red %:", "model_attr": "current_red"},
-                        {"type": "readonly", "text": "Red Change %:", "model_attr": "red_change"}
-                    ]
-                },
-                {
-                    "title": "System Control",
-                    "elements": [
-                        {"type": "button", "text": "Start Monitoring", "command": "start_monitoring", "bg": "darkgreen", "fg": "white"},
-                        {"type": "button", "text": "Stop Monitoring", "command": "stop_monitoring", "bg": "darkred", "fg": "white"},
-                        {"type": "button", "text": "Reset Baseline", "command": "reset_baseline", "bg": "gray", "fg": "white"},
-                        {"type": "button", "text": "Set Focus Area", "command": "set_focus_area_ui", "bg": "darkblue", "fg": "white"},
-                        # Not rendered (unknown element type to the UI renderers): registers
-                        # set_focus_area in the schema-derived command allowlist. The button
-                        # above only opens the client-side selector; the real coordinates are
-                        # submitted via this command once the user finishes the drag selection.
-                        {"type": "internal", "command": "set_focus_area"},
-                        {"type": "button", "text": "Save Log", "command": "save_log_web", "bg": "blue", "fg": "white"},
-                        {"type": "button", "text": "Plot Data", "command": "plot_data_ui", "bg": "purple", "fg": "white"}
-                    ]
-                }
-            ]
-        }
+        P = self.PARAMS
+        return sch.schema(
+            sch.section(
+                "Probe Metadata",
+                sch.entry("Probe Name:", "probe_name", P["probe_name"]),
+                sch.entry("Probe Tilt Angle:", "probe_tilt_angle",
+                          P["probe_tilt_angle"]),
+                # **PYSIDE-7.** This dropdown had `model_attr` and no
+                # `command`, so PySide reached `getattr(self.model, None)` and
+                # raised TypeError. The v2 builder makes `command` mandatory:
+                # the broken shape is not expressible.
+                sch.dropdown("Position Source:", "selected_probe_name",
+                             command="set_stepper_model",
+                             options_command="get_available_probe_names"),
+            ),
+            sch.section(
+                "Sync Dimensions",
+                # Locked during a run: toggling one mid-run used to raise
+                # KeyError inside the monitor thread and kill it, while
+                # `monitoring` stayed True (RC-11).
+                sch.toggle("Sync X", "sync_x", "toggle_sync_x",
+                           "Sync X: ON", "Sync X: OFF",
+                           disabled_when=("monitoring",)),
+                sch.toggle("Sync Y", "sync_y", "toggle_sync_y",
+                           "Sync Y: ON", "Sync Y: OFF",
+                           disabled_when=("monitoring",)),
+                sch.toggle("Sync Z", "sync_z", "toggle_sync_z",
+                           "Sync Z: ON", "Sync Z: OFF",
+                           disabled_when=("monitoring",)),
+            ),
+            sch.section(
+                "Red Detection",
+                sch.readonly("Current Red %:", "current_red",
+                             param=P["current_red"]),
+                sch.readonly("Red Change %:", "red_change",
+                             param=P["red_change"]),
+                # **D-6: schema-driven in all three views.** Tk hand-built a
+                # RedPercentView and PySide bolted on duplicates; the plot is
+                # a composite with one contract now.
+                sch.plot("Red % over time", "plot_series",
+                         x_label="sample", y_label="red %"),
+            ),
+            sch.section(
+                "System Control",
+                sch.button("Start Monitoring", "start_monitoring",
+                           inputs=("probe_name", "probe_tilt_angle"),
+                           role="go", disabled_when=("monitoring",)),
+                sch.button("Stop Monitoring", "stop_monitoring", role="danger",
+                           enabled_when=("monitoring",)),
+                sch.button("Reset Baseline", "reset_baseline"),
+                sch.region_select("Set Focus Area", "set_focus_area",
+                                  model_attr="focus_area", role="info"),
+                sch.file_save("Save Log", "save_log", extensions=("csv",),
+                              role="info"),
+            ),
+        )
 
     def save_log(self, file_path=None):
         if not self.data_log or not self.data_log.red_values:
