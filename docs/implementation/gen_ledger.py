@@ -34,6 +34,14 @@ RC10_EARLY = {"MANAGER-1", "MANAGER-4", "MANAGER-15", "WEB-1", "WEB-3",
 # D-11 purge (runtime serial reconnect) and D-9 default-view: Stage 1.
 STAGE1 = {"SERIAL-14", "PYSIDE-13", "DC-14", "STEPPER-12", "MANAGER-14"}
 SPECIAL = {"LOCAL-OK": "S15", "doc": "S0"}
+# Findings whose stage was reassigned during execution, against what the RC
+# mapping would compute. Without this, regeneration silently reverts the
+# reassignment and the ledger disagrees with the session log that recorded it.
+STAGE_OVERRIDE = {
+    # Shares `web_server.py` with WEB-14/21, so it could not sit in the
+    # S15 write set; moved S15 -> S14 when S14/S15 were partitioned.
+    "WEB-16": "S14",
+}
 
 
 def audit_ids():
@@ -70,6 +78,8 @@ def parse_xref():
 
 def stage_for(fid, raw):
     tags = re.findall(r"RC\d+|LOCAL-OK|doc", raw)
+    if fid in STAGE_OVERRIDE:
+        return STAGE_OVERRIDE[fid], tags
     if fid in STAGE1:
         return "S1", tags
     for t in tags:

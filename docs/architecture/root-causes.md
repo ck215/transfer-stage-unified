@@ -802,8 +802,18 @@ silently lost or corrupted.
 4. **Velocity is derived from position deltas and timestamps.** Add a
    timestamp column. Invalid samples are flagged, never replaced with 0.0.
 
-**Closes.** REDPERCENT-1,2,3,4,5,9,16; PYSIDE-4; WEB-13; VIEW-TKINTER-14,15;
-known-issues "RedPercent monitor race", "Dead State".
+5. **A run is an addressable artifact set, not a loose file.** The run
+   snapshots a `run_id` and an `output_root` resolved once — never from the
+   process CWD — and emits `<run_id>_position.csv` (a plain rectangle, no
+   comment block) plus `<run_id>_station_meta.json` (the configuration
+   snapshot: baseline, focus-area px, threshold, cadence, start/stop times)
+   under `output_root/<run_id>/`. Operator annotation — what was *intended*
+   — is a `Param`-declared table rendered by all three views (D-6) and
+   emitted under its own key, never merged with what the station *did*.
+   (REDPERCENT-21,22,23 — **owner-added 2026-09-20, not audit findings**.)
+
+**Closes.** REDPERCENT-1,2,3,4,5,9,16,21,22,23; PYSIDE-4; WEB-13;
+VIEW-TKINTER-14,15; known-issues "RedPercent monitor race", "Dead State".
 
 ---
 
@@ -1088,7 +1098,7 @@ parentheses):
 | DC | 1 RC3 · 2 RC1 · 3 RC1 · 4 RC6 · 5 RC4 · 6 RC7 · 7 RC6 · 8 RC6 · 9 RC1 · 10 RC3 (D-2) · 11 RC7/RC3 · 12 RC9 · 13 RC2/RC7 · 14 RC7 (D-11) · 15 RC6 · 16 RC4 · 17 RC4/RC3 · 18 RC5/RC2 · 19 RC7 |
 | ROTATOR | 1 RC1/RC5 · 2 RC10 · 3 RC8/RC7 · 4 RC5 · 5 RC1 · 6 RC4 · 7 RC4/RC10 · 8 RC5 · 9 RC2/RC7 · 10 RC1 · 11 RC2 (LOCAL-OK) · 12 RC6 · 13 RC2/RC8 · 14 RC1 · 15 RC8 + doc |
 | TEMP | 1 RC1/RC10 · 2 RC2 · 3 RC6 · 4 RC6 · 5 RC1 · 6 RC1 · 7 RC5 · 8 RC1 · 9 LOCAL-OK (feature decision) · 10 RC2/RC8 · 11 RC1/RC2 + doc · 12 RC8 · 13 RC6 |
-| REDPERCENT | 1 RC11 · 2 RC11 · 3 RC11/RC5 · 4 RC11 · 5 RC11 · 6 RC7 (single save path) · 7 RC8/RC7 · 8 RC7 · 9 RC11 · 10 RC7 · 11 RC9/RC1 · 12 RC1 · 13 RC7 · 14 RC6 · 15 RC9 · 16 RC11 · 17 RC7 · 18 RC7 · 19 RC7 · 20 LOCAL-OK |
+| REDPERCENT | 1 RC11 · 2 RC11 · 3 RC11/RC5 · 4 RC11 · 5 RC11 · 6 RC7 (single save path) · 7 RC8/RC7 · 8 RC7 · 9 RC11 · 10 RC7 · 11 RC9/RC1 · 12 RC1 · 13 RC7 · 14 RC6 · 15 RC9 · 16 RC11 · 17 RC7 · 18 RC7 · 19 RC7 · 20 LOCAL-OK · 21 RC11 · 22 RC11 · 23 RC11 |
 | PYSIDE | 1 RC1 · 2 RC1 · 3 RC9 · 4 RC11 · 5 RC6 · 6 RC6 · 7 RC7 · 8 RC7 · 9 RC4 · 10 RC8/RC4 · 11 LOCAL-OK · 12 RC7 · 13 RC1 · 14 RC4 (D-4) · 15 RC8 · 16 LOCAL-OK · 17 LOCAL-OK · 18 LOCAL-OK · 19 RC6 · 20 RC7/RC13 |
 | VIEW-TKINTER | 1 RC1 (D-1) · 2 RC8 · 3 RC3 · 4 RC3 · 5 RC4 · 6 RC13 · 7 RC1 · 8 RC1 · 9 RC4 (D-4) · 10 RC13/RC7 · 11 RC4 · 12 RC4 · 13 RC3 · 14 RC11/RC7 · 15 RC11 · 16 RC1 · 17 RC7/RC9 · 18 LOCAL-OK |
 | WEB | 1 RC1/RC10 · 2 RC4 · 3 RC1/RC10 · 4 RC9 · 5 RC10 · 6 RC7 · 7 RC7 · 8 RC4/RC10 · 9 RC8 · 10 RC10 · 11 RC7 · 12 RC8 · 13 RC11 · 14 RC10 · 15 RC9 · 16 LOCAL-OK · 17 RC10 · 18 RC5/RC8 · 19 RC10 (D-8) · 20 RC1 · 21 RC10 · 22 RC10 |

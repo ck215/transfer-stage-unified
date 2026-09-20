@@ -230,6 +230,43 @@
 - Proposed fix direction: Delete unused fields; use `stop_event` for REDPERCENT-3; restrict `_schema_attrs` writes to `entry`/`dropdown`/`toggle` element types.
 - Confidence: verified
 
+### REDPERCENT-21
+- Title: A monitoring run has no identity and no addressable output location; the autosave path is relative to the process CWD.
+- Severity: high (data integrity — runs are not attributable to the physical trial that produced them)
+- Source: **owner instruction, 2026-09-20** — not from the 2026-09-19 audit pass. Recorded here so it moves through the same ledger as the audited findings.
+- Views affected: Model (all three views inherit it)
+- Reference behavior: an external experiment record (one row per physical trial, with a trial ID) has to join to the run this app produced. The join key must be written by the app at capture time; a filename assigned afterwards by a human is the thing that goes wrong at the bench.
+- Actual behavior: `RedPercentDataLog` carries `probe_name` and `probe_tilt_angle` and nothing else identifying (`redpercent_system.py:18-25`). `autosave_log` (:249-257) builds `redpercent_log_%Y%m%d_%H%M%S.csv` as a **bare relative path** and hands it to `save_log`, so an unattended stop writes into whatever directory the launcher happened to start in — different for `run.sh`, `run_macos.sh` and the web server. The attended path is the `file_save` composite (:357), where the operator types a name by hand. Nothing in the model knows which physical trial a run belongs to, so the mapping from CSV to trial exists only in the operator's memory between the bench and the analysis machine.
+- Failure scenario: ten runs in an afternoon, two of them autosaved after a FULL STOP. Three `redpercent_log_*.csv` files sit in `~`, four in the repo root, three named by hand. The timestamps are the only evidence of which is which, and the two autosaved ones are precisely the runs whose bench notes are least complete.
+- Proposed fix direction: `MonitoringRun` (RC-11 item 1) snapshots a `run_id` alongside its configuration — an operator-set string, defaulting to a timestamp slug when unset — and an `output_root` directory resolved once at construction, never from CWD. Every artifact the run emits is named `<run_id>_<kind>.<ext>` under `output_root/<run_id>/`, so a file is self-describing after it is moved. `autosave_log` writes into that directory rather than a bare name. `run_id` is a schema `entry` with `disabled_when: monitoring`, so it is fixed for the run's duration like the rest of the configuration.
+- Confidence: verified (code read :18-25, :249-257, :304-380)
+
+---
+
+### REDPERCENT-22
+- Title: Run configuration is written as CSV comment rows, and the parameters that make red percent interpretable as a force proxy are not recorded at all.
+- Severity: high (data integrity — a saved run cannot be re-interpreted without the operator present)
+- Source: **owner instruction, 2026-09-20** — not from the 2026-09-19 audit pass.
+- Views affected: Model
+- Reference behavior: a saved run is readable by a standard CSV reader without special-casing, and carries enough of its own configuration that its red-percent column can be converted to the quantity the experiment actually wants.
+- Actual behavior: `save_to_csv` (:36-57) prepends `["# Metadata"]`, `["# Probe Name", ...]`, `["# Probe Tilt Angle", ...]` and a blank row *before* the header row. This is not a CSV comment convention — it is four data rows with a `#` in the first cell. `pandas.read_csv` on this file takes `# Metadata` as the header and every real column name as data; it needs `skiprows=4`, a magic number that changes the moment a metadata field is added. Worse, the fields that determine what a red-percent number *means* are never written anywhere: `baseline_red` (:93), the `focus_area` rectangle and its pixel dimensions (:101-103), the `detect_red` threshold (:203), the sample cadence of `_monitor_colors`, and the run's start and stop wall-clock times. Two runs with the same red percent and different focus-area sizes are not comparable, and nothing in the artifact says so.
+- Failure scenario: a run is saved on Saturday and analyzed on Monday. The analyst reads it with a default `read_csv`, gets a one-column frame of strings, fixes that with `skiprows=4`, then finds the red-percent column cannot be normalized because neither the baseline nor the ROI size was recorded. The run is not wrong, it is un-interpretable, which is the more expensive failure because it looks like data.
+- Proposed fix direction: split the artifact. The CSV becomes a plain rectangle — header row, then samples, no comment block — so any reader opens it correctly. The configuration goes to a sibling `<run_id>_station_meta.json` written by `MonitoringRun` at **stop**, holding the snapshot it already owns: `run_id`, probe name, tilt angle, sync dimensions, focus area (including width/height in px), `baseline_red`, red threshold, nominal sample interval, start/stop ISO-8601 timestamps, sample count, and the source revision. JSON because it is the format the analysis side already reads without a schema. This composes with RC-11 item 4 (timestamp column, flagged invalid samples) rather than competing with it: item 4 makes each row trustworthy, this makes the file interpretable.
+- Confidence: verified (code read :36-57, :93-103, :189-216)
+
+---
+
+### REDPERCENT-23
+- Title: Per-run specimen annotation has nowhere to live, so it is recorded on paper and re-keyed later.
+- Severity: medium (data integrity — the re-keying step is where trials get mislabelled)
+- Source: **owner instruction, 2026-09-20** — not from the 2026-09-19 audit pass. This one is a **scope addition**, not a repair: the app never had this field set and nothing today is broken by its absence.
+- Views affected: Model, and all three views through the schema (RC-7 / D-6)
+- Reference behavior: the facts only the operator knows at the bench — which specimen, which consumable, where on the stage, what was *planned* versus what the station actually did — are captured in the same act as the run, not transcribed afterwards.
+- Actual behavior: the model has exactly two operator fields, `probe_name` and `probe_tilt_angle` (:98-99), both free text (`probe_tilt_angle` is declared `float` in `PARAMS` but initialized to `""`, :57-58 vs :99 — worth fixing with this). There is no field for a specimen identifier, no field for the consumable/tip in use, no field for stage position, and no distinction anywhere between a *planned* setpoint and the value the station actually ran at. The operator therefore keeps a paper sheet, and the paper sheet is joined to the CSVs by filename — see REDPERCENT-21 for why that join is unreliable.
+- Failure scenario: a batch of trials is run across several consumables. Two weeks later a result looks anomalous and the question is whether that trial was late in a worn consumable's life. The answer is on a sheet of paper, keyed to a filename that was typed by hand at 11pm.
+- Proposed fix direction: one extensible annotation block on the run rather than a fixed column list, because the fields are experiment-specific and hardcoding this weekend's set guarantees the next experiment needs a code change. Concretely: a `run_annotations` dict on `MonitoringRun`, declared through the RC-9 `Param` table so all three views render it from one schema (D-6), snapshotted at start with the rest of the configuration, and emitted into the `<run_id>_station_meta.json` of REDPERCENT-22 under its own key. Ship it with the fields the current experiment needs as the default set — specimen id, consumable/tip id, stage X/Y, and a free-text note — and make the set a table, not a set of attributes, so adding a field is a one-line edit. **Planned-versus-actual is the load-bearing part:** the annotation block holds what the operator *intended*, while REDPERCENT-22's meta block holds what the station *did*, and the two are never merged into one field.
+- Confidence: verified (code read :57-58, :98-99, :304-360)
+
 ---
 
 ## Coverage

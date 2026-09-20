@@ -589,6 +589,22 @@ for the same config).
    timestamped file, plus a prompt where the UI allows.**
 4. Velocity derives from position deltas and timestamps, with a timestamp
    column. Invalid samples are flagged, never written as 0.0.
+5. **Run identity and output root** (REDPERCENT-21). `run_id` and
+   `output_root` are part of the snapshot; artifacts land in
+   `output_root/<run_id>/` named `<run_id>_*`; `autosave_log` stops writing
+   a bare relative path.
+6. **The CSV becomes a plain rectangle** and the configuration moves to a
+   sibling `<run_id>_station_meta.json` (REDPERCENT-22). The `# Metadata`
+   rows come out of `save_to_csv`. The meta file carries what item 4's
+   columns cannot: baseline, focus-area px, threshold, cadence, start/stop.
+7. **Operator annotation as a `Param` table** (REDPERCENT-23), rendered by
+   all three views (D-6), snapshotted at start, emitted under its own key in
+   the meta file. Intended-versus-actual stay separate fields.
+
+**Items 5-7 are owner-added scope (2026-09-20), not audit findings.** They
+are sequenced last within the stage because each depends on `MonitoringRun`
+from item 1 owning a configuration snapshot. Item 6 also fixes
+`probe_tilt_angle`, declared `float` in `PARAMS` and initialized to `""`.
 
 ---
 

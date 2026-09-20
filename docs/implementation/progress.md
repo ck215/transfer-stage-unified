@@ -1912,13 +1912,74 @@ the clean result; `fix-a-finding`'s preflight dry-run on GAMEPAD-17's
 dead-path reasoning now rests on code S15 changed — needs its own pass)
 without editing anything. Gate unchanged at 576 passed.
 
+### 2026-09-20 — three owner-added Red Percent findings, and a generator that reverted history
+
+**Owner instruction:** a monitoring run has to be joinable to the physical
+trial that produced it. That is not an audit finding — the audit asked
+whether the code does what it claims, and on this point the code makes no
+claim. Recorded as scope, through the same ledger, with provenance attached.
+
+- **REDPERCENT-21** — a run has no identity and no addressable output
+  location. `autosave_log` builds a **bare relative path**, so an unattended
+  stop writes into whatever directory the launcher started in, which differs
+  between `run.sh`, `run_macos.sh` and the web server. The CSV-to-trial
+  mapping exists only in the operator's memory.
+- **REDPERCENT-22** — the `# Metadata` block in `save_to_csv` is not a
+  comment convention, it is four data rows before the header. A default
+  `pandas.read_csv` takes `# Metadata` as the header row; the workaround is
+  `skiprows=4`, a magic number that breaks when a field is added. Separately,
+  the values that make red percent *mean* anything — `baseline_red`, the
+  focus-area rectangle and its pixel size, the `detect_red` threshold, the
+  sample cadence, the start/stop times — are written nowhere at all.
+- **REDPERCENT-23** — scope addition, not a repair: there is nowhere to
+  record the facts only the operator knows (specimen, consumable, stage
+  position, intended setpoint), so they live on paper and are joined to the
+  data by filename. Proposed as a `Param`-declared annotation table rather
+  than fixed columns, so the next experiment does not need a code change.
+  Intended and actual stay separate fields by construction.
+
+All three are RC-11, so the ledger placed them in **S13**, which is correct —
+each one needs `MonitoringRun` to own a configuration snapshot first. Added
+as plan items 5-7 with that dependency written down. Item 6 also picks up
+`probe_tilt_angle`, declared `float` in `PARAMS` and initialized to `""`.
+
+**The ledger generator was reverting a recorded decision.** Regenerating
+flipped **WEB-16** from S14 back to S15, because it computes the stage from
+the RC mapping (`LOCAL-OK` -> S15) and knows nothing about the reassignment
+the S14/S15 partition made — WEB-16 shares `web_server.py` with WEB-14/21 and
+could not sit in the S15 write set. The row's own note said "Moved S15 ->
+S14" while its Stage cell said S15. Fixed in `gen_ledger.py` with a
+`STAGE_OVERRIDE` table rather than by editing the row, so the next
+regeneration is idempotent. Anyone reassigning a finding mid-flight must add
+it there.
+
+**A caught process error, recorded because the rule already existed.** The
+first gate run was backgrounded as `pytest ... | tail -5`, and reported exit
+0 — which was `tail`'s exit code. The `verify` skill names this exact trap.
+Re-run unpiped: **576 passed, 105 deselected, 1 xfailed**, exit 0, matching
+the baseline. A rule written down is not the same as a rule followed; the
+pipe went in because the output is noisy with teardown prints. Redirect to a
+file and grep the file.
+
+Ledger is now **216 rows** — 213 audited plus these three. Nothing in `src/`
+changed in this session.
+
+**Next action:** S13. It is now the only `todo` stage before the owner-only
+S16, and it carries both the RC-11 repair and the three new items.
+
 ## Finding ledger
 
-All 213 audit findings. `Closed by` is `root cause` when the finding closes
-because the structure changed, `explicit` when it is fixed and named
-individually. Generated from `root-causes.md`'s cross-reference table — if
-you add a finding there, regenerate rather than hand-editing, so nothing is
-dropped.
+216 rows: the 213 findings of the 2026-09-19 audit, plus **REDPERCENT-21,
+22 and 23**, added by owner instruction on 2026-09-20. The three carry a
+`Source:` line in `audit/redpercent.md` saying so — they were not produced by
+the audit pass and must not be cited as its evidence.
+
+`Closed by` is `root cause` when the finding closes because the structure
+changed, `explicit` when it is fixed and named individually. Generated from
+`root-causes.md`'s cross-reference table — if you add a finding there,
+regenerate rather than hand-editing, so nothing is dropped. A finding whose
+stage was reassigned during execution goes in `gen_ledger.py`'s
+`STAGE_OVERRIDE`, or the next regeneration reverts it.
 
 Status: `open` · `closed` (with the test or verification note that proves
 it) · `n/a` (with a reason).
@@ -2036,6 +2097,9 @@ it) · `n/a` (with a reason).
 | REDPERCENT-18 | RC7 | S10 | root cause | open |
 | REDPERCENT-19 | RC7 | S10 | root cause | open |
 | REDPERCENT-20 | LOCAL-OK | S15 | explicit | closed (both halves. Model: the six dead fields, the `__del__` that only printed, and the per-call `set_focus_area` print are gone — test_construction_has_no_dead_fields, test_construction_keeps_the_live_equivalents, test_del_prints_nothing, test_set_focus_area_does_not_print, test_no_plot_data_ui_or_set_focus_area_ui_stub_exists. Web: `set_attr` writes only entry/dropdown/toggle elements — test_api_set_attr_refuses_a_readonly_element) |
+| REDPERCENT-21 | RC11 | S13 | root cause | open |
+| REDPERCENT-22 | RC11 | S13 | root cause | open |
+| REDPERCENT-23 | RC11 | S13 | root cause | open |
 | ROTATOR-1 | RC1 / RC5 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
 | ROTATOR-2 | RC10 | S14 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | ROTATOR-3 | RC8 / RC7 | S11 | root cause | closed (a >30° refusal is a `Refused` carrying its reason, not a silent `None`) |
