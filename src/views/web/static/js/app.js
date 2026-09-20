@@ -894,7 +894,9 @@ class TransferStageApp {
         if (cardBody) {
           const controls = cardBody.querySelectorAll('button, input, select');
           controls.forEach(ctrl => {
-            const isEnableBtn = ctrl.innerText.includes('Enable') || ctrl.innerText.includes('Serial Reconnect') || ctrl.dataset.command === 'toggle_enable' || ctrl.dataset.command === 'reconnect_serial';
+            // 'Serial Reconnect'/'reconnect_serial' dropped: runtime serial
+            // reconnect is purged (D-11), so no such control can be rendered.
+            const isEnableBtn = ctrl.innerText.includes('Enable') || ctrl.dataset.command === 'toggle_enable';
             const isPowerDown = ctrl.innerText.includes('Power Down') || ctrl.dataset.command === 'power_down';
             const isStop = ctrl.innerText.includes('Full Stop') || ctrl.dataset.command === 'full_stop';
             const isAutonToggle = ctrl.dataset.attr === 'auton_flag' || ctrl.dataset.command === 'toggle_auton';

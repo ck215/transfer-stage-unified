@@ -816,10 +816,28 @@ def launch_legacy():
 def launch_pyside():
     run_pyside_app()
 
-def launch_web():
-    print("[Launcher] Starting Cross-Platform Web Dashboard...")
-    sys.stdout.flush()
-    run_web_app()
+
+def select_view(requested, platform=None, pyside_available=None):
+    """Resolve the view to launch. Pure, so the defaults are testable.
+
+    `requested` is the parsed --view value, or None for "no flag given".
+    """
+    if requested is not None:
+        return requested
+    if platform is None:
+        platform = sys.platform
+    # Owner decision D-9: Tkinter is the macOS default until this codebase is
+    # stabilized. The Web view stays available with --web, but it is not what
+    # an unqualified launch on a lab Mac should start.
+    if platform == "darwin":
+        return "legacy"
+    if pyside_available is None:
+        try:
+            from PySide6.QtWidgets import QApplication  # noqa: F401
+            pyside_available = True
+        except ImportError:
+            pyside_available = False
+    return "pyside" if pyside_available else "web"
 
 def main():
     import argparse
@@ -829,9 +847,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Views:
-  web       Modern browser-based dashboard (cross-platform, recommended for macOS)
+  web       Modern browser-based dashboard (cross-platform)
   pyside    Native Qt desktop GUI (PySide6)
-  legacy    Original Tkinter interface
+  legacy    Tkinter interface (the default on macOS)
 
 Examples:
   python3 src/app.py --view web
@@ -882,23 +900,16 @@ Examples:
         help="Do not automatically open the web dashboard in a browser"
     )
 
-    args, unknown = parser.parse_known_args()
+    # parse_args, not parse_known_args: an unrecognized flag must be an error.
+    # Under parse_known_args a typo like `--pyside6` was silently dropped and
+    # the platform default took over — on a lab Mac that started a
+    # hardware-capable web server instead of the view the operator asked for
+    # (MANAGER-14).
+    args = parser.parse_args()
 
-    selected_view = args.view
-
-    if selected_view is None:
-        # Default behavior:
-        # Default to web on macOS or if PySide6 is unavailable; otherwise default to pyside
-        if sys.platform == "darwin":
-            print("[Launcher] Detected macOS environment - defaulting to Web View.")
-            selected_view = "web"
-        else:
-            try:
-                from PySide6.QtWidgets import QApplication
-                selected_view = "pyside"
-            except ImportError:
-                print("[Launcher] PySide6 not available - falling back to Web View.")
-                selected_view = "web"
+    selected_view = select_view(args.view)
+    if args.view is None:
+        print(f"[Launcher] No view requested - defaulting to {selected_view}.")
 
     if selected_view == "legacy":
         launch_legacy()
@@ -906,12 +917,8 @@ Examples:
         print("[Launcher] Starting Cross-Platform Web Dashboard...")
         sys.stdout.flush()
         run_web_app(port=args.port, open_browser=not args.no_browser)
-    elif selected_view == "pyside":
-        # Pass remaining arguments to PySide if needed
-        launch_pyside()
     else:
-        print(f"[Launcher] Unknown view: {selected_view}. Launching default.")
-        launch_web()
+        launch_pyside()
 
 
 if __name__ == "__main__":

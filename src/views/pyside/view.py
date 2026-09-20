@@ -233,12 +233,11 @@ class QtDynamicView(QWidget):
                         self.vars[attr] = val_widget
                         
                         is_numeric = False
-                        if attr != "serial_port":
-                            try:
-                                float(val)
-                                is_numeric = True
-                            except ValueError:
-                                pass
+                        try:
+                            float(val)
+                            is_numeric = True
+                        except ValueError:
+                            pass
                         
                         if is_numeric:
                             val_widget.setValidator(QDoubleValidator(-1e9, 1e9, 3, val_widget))
@@ -861,21 +860,6 @@ class DashboardWindow(QMainWindow):
             dock.show()
             dock.raise_()
             dock.activateWindow()
-            
-            # Ensure serial port is checked/reconnected when reopened to avoid unexpected state
-            model = self.system_manager.get_model(device_name)
-            if model and hasattr(model, 'reconnect_serial'):
-                msg = QMessageBox(self)
-                msg.setWindowTitle("Serial Scan")
-                msg.setText(f"Scanning and reconnecting serial port for {device_name}...\nPlease wait.")
-                msg.setStandardButtons(QMessageBox.NoButton)
-                msg.show()
-                QApplication.processEvents()
-                
-                model.reconnect_serial()
-                
-                msg.accept()
-                
             return
             
         model = self.system_manager.get_model(device_name)

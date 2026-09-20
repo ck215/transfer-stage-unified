@@ -332,12 +332,11 @@ class DynamicView(tk.Frame):
                                  font=('Arial', 10, 'bold')).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w')
                     else: # entry
                         is_numeric = False
-                        if attr != "serial_port":
-                            try:
-                                float(val)
-                                is_numeric = True
-                            except ValueError:
-                                pass
+                        try:
+                            float(val)
+                            is_numeric = True
+                        except ValueError:
+                            pass
 
                         if is_numeric:
                             vcmd = (self.register(lambda P: P == "" or (self._is_valid_float(P))), '%P')

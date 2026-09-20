@@ -3,6 +3,15 @@
 Mechanical: every audit finding ID must appear exactly once, mapped to the
 stage where it is expected to close. Fails loudly on any ID it cannot map,
 so a finding can never be silently dropped from the ledger.
+
+Recorded statuses survive regeneration. The first version of this script
+emitted every row as `open`, which meant regenerating after a stage landed
+would silently erase every closure the trail had recorded — the exact thing
+the ledger exists to prevent. Statuses are now read back out of the target
+file and carried forward; a row that had a non-`open` status and can no
+longer be mapped is an error, not a silent drop.
+
+Usage: python3 gen_ledger.py   (rewrites the ledger table inside progress.md)
 """
 import re
 import sys
@@ -23,8 +32,7 @@ RC_STAGE = {
 RC10_EARLY = {"MANAGER-1", "MANAGER-4", "MANAGER-15", "WEB-1", "WEB-3",
               "WEB-10", "WEB-20", "ERRORS-12"}
 # D-11 purge (runtime serial reconnect) and D-9 default-view: Stage 1.
-STAGE1 = {"SERIAL-14", "SERIAL-18", "PYSIDE-13", "DC-14", "STEPPER-12",
-          "MANAGER-14"}
+STAGE1 = {"SERIAL-14", "PYSIDE-13", "DC-14", "STEPPER-12", "MANAGER-14"}
 SPECIAL = {"LOCAL-OK": "S15", "doc": "S0"}
 
 
@@ -75,6 +83,21 @@ def stage_for(fid, raw):
     return None, tags
 
 
+LEDGER_ROW = re.compile(r"^\|\s*([A-Z][A-Z-]*-\d+)\s*\|[^|]*\|[^|]*\|[^|]*\|\s*(.+?)\s*\|$")
+
+
+def existing_statuses(path):
+    """Statuses already recorded in the ledger, so regeneration preserves them."""
+    if not path.exists():
+        return {}
+    statuses = {}
+    for line in path.read_text().splitlines():
+        m = LEDGER_ROW.match(line)
+        if m:
+            statuses[m.group(1)] = m.group(2)
+    return statuses
+
+
 def main():
     ids, xref = audit_ids(), parse_xref()
     missing = ids - set(xref)
@@ -96,10 +119,25 @@ def main():
     if unresolved:
         sys.exit(f"No stage for: {unresolved}")
 
-    out = ["| Finding | Root cause | Stage | Closed by | Status |",
-           "|---|---|---|---|---|"]
-    out += [f"| {f} | {t} | {s} | {h} | open |" for f, t, s, h in rows]
-    Path(sys.argv[1]).write_text("\n".join(out) + "\n")
+    target = Path(__file__).resolve().parent / "progress.md"
+    prior = existing_statuses(target)
+    lost = {f: s for f, s in prior.items() if s != "open" and f not in ids}
+    if lost:
+        sys.exit(f"recorded closures would be dropped: {sorted(lost)}")
+
+    table = ["| Finding | Root cause | Stage | Closed by | Status |",
+             "|---|---|---|---|---|"]
+    table += [f"| {f} | {t} | {s} | {h} | {prior.get(f, 'open')} |"
+              for f, t, s, h in rows]
+
+    doc = target.read_text().splitlines()
+    start = next(i for i, ln in enumerate(doc) if ln.startswith("| Finding |"))
+    end = start
+    while end < len(doc) and doc[end].startswith("|"):
+        end += 1
+    target.write_text("\n".join(doc[:start] + table + doc[end:]) + "\n")
+    kept = sum(1 for f, *_ in rows if prior.get(f, "open") != "open")
+    print(f"{kept} recorded closures preserved")
 
     counts = {}
     for _, _, s, _ in rows:

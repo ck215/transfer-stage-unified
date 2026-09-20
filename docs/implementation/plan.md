@@ -200,6 +200,15 @@ has to reason about, and neither depends on the refactor.
 **Exit.** `grep -rn reconnect_serial src/` is empty; launching with no flag
 on macOS gives Tkinter; no schema exposes a writable `serial_port`.
 
+**Done.** All three, enforced by `test_d11_no_runtime_serial_reconnect`,
+`test_d9_macos_defaults_to_tkinter` and
+`test_d11_serial_port_is_readonly_in_every_schema`.
+
+**Scope correction.** SERIAL-18 was listed here but has two halves. The D-11
+half (no view offers a reconnect) closed in S1. `reboot_model` having no
+callers is RC-1 work — **S2** replaces it with `reconfigure()`, and its four
+lifecycle tests are coverage S2 needs — so the ledger maps SERIAL-18 to S2.
+
 ---
 
 ## S2 — Lifecycle authority (RC-1)

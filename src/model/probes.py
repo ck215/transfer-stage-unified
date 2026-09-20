@@ -108,7 +108,7 @@ class BaseProbe:
                 {
                     "title": "Configuration",
                     "elements": [
-                        {"type": "entry", "text": "Serial Port:", "model_attr": "serial_port"},
+                        {"type": "readonly", "text": "Serial Port:", "model_attr": "serial_port"},
                         {"type": "dropdown", "text": "Controller ID:", "model_attr": "controller_var",
                          "options_command": "get_available_controllers", "command": "set_controller"},
                         {"type": "entry", "text": "X Step Size:", "model_attr": "x_step"},
@@ -145,34 +145,18 @@ class BaseProbe:
                         # underlying run_script() framework stays in place for future
                         # development, but isn't exposed as a UI entry point yet.
                         #
-                        # "Serial Reconnect" removed from the live dashboard: serial port
-                        # assignment should happen once, in the setup/configuration wizard,
-                        # not be re-triggerable mid-session. Unlike gamepads (designed to
-                        # hot-swap), a live serial reconnect risks desyncing Python-side
-                        # enable/disable state from the firmware (see the serial ACK-
-                        # verification gap tracked separately). reconnect_serial() itself
-                        # stays available for the setup wizard to call directly.
+                        # Runtime serial reconnect is purged (owner decision D-11).
+                        # Serial port assignment happens once, at setup; the port is
+                        # readonly above. Unlike gamepads (designed to hot-swap), a live
+                        # serial reconnect desyncs Python-side enable/disable state from
+                        # the firmware, which persists its enabled state across a reopen —
+                        # Python would report disabled while coils stayed energized.
+                        # Recovering from a lost port means relaunching.
                         {"type": "button", "text": "Controller Log Window", "command": "open_controller_log", "bg": "black", "fg": "white"}
                     ]
                 }
             ]
         }
-
-    def reconnect_serial(self):
-        print(f"[{self.__class__.__name__}] Reconnecting serial port {self.serial_port}...")
-        if self.serial_comm:
-            try:
-                self.serial_comm.close()
-            except Exception as e:
-                print(f"[{self.__class__.__name__}] Error closing existing serial connection: {e}")
-        time.sleep(1)
-        if self.serial_port and self.serial_port != "None":
-            self.serial_comm = serial(self.serial_port)
-        else:
-            self.serial_comm = None
-        self.system_enabled = False
-        self.auton_flag = False
-        self.manual_flag = False
 
     def get_available_controllers(self):
         if self.poller:

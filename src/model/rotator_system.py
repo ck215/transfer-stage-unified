@@ -160,7 +160,6 @@ class RotatorSystem:
                         {"type": "readonly", "text": "Position (deg):", "model_attr": "position"},
                         {"type": "readonly", "text": "State Code:", "model_attr": "state"},
                         {"type": "readonly", "text": "Error Code:", "model_attr": "error"},
-                        {"type": "button", "text": "Reconnect", "command": "reconnect"},
                     ]
                 },
                 {
@@ -183,10 +182,6 @@ class RotatorSystem:
                 }
             ]
         }
-
-    def reconnect(self):
-        self.disconnect()
-        self.connect(self.port, self.smc_id)
 
     def stop(self):
         if self.smc:

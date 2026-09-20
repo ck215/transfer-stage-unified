@@ -19,7 +19,7 @@ the end.
 
 | Run | Command | Time |
 |---|---|---|
-| Fast gate (default working loop) | `pytest tests/ -m "not slow and not order_dependent and not qt"` | ~28 s |
+| Fast gate (default working loop) | `pytest tests/ -m "not slow and not order_dependent and not qt"` | ~30 s |
 | One concern (e.g. S3) | `pytest tests/ -m "transport and not slow and not order_dependent"` | ~3 s |
 | Full sweep, main pass | `pytest tests/ -m "not order_dependent and not qt"` | ~2.5 min |
 | Full sweep, Qt pass | `pytest tests/ -m "qt and not order_dependent"` | ~2 s |
@@ -175,12 +175,22 @@ entry it owns to be removed rather than left XPASSing.
    The leak is the bug.
 4. **Re-measure rather than trust this file.** `--durations=40` tells you
    what is actually slow now; these figures are from 2026-09-19.
+
+   This is not hypothetical: the first version of this file reported the fast
+   gate as "200 passed, 5 xfailed" when the commit it cited actually gave
+   **194 passed, 3 xfailed**. The error was caught in S1 by diffing collected
+   node IDs against the commit rather than trusting the written number. Diff
+   node IDs, do not reconcile totals by arithmetic.
 5. **New tests carry a concern marker**, or they will not run in any
    targeted gate.
 
 ---
 
-*Measured 2026-09-19 against commit `fd26a2b`. 264 collected (`tests/ui`
-excluded on top of that). Main pass: 247 selected — 239 pass, 8 xfail
-(known-bad), identical across four consecutive sweeps. Qt pass:
-10. Order-dependent: 7. Known-bad: 10. Slow: 56.*
+*Baseline at `b37cc9a` (2026-09-19, pre-S0): 264 collected (`tests/ui`
+excluded on top of that). Fast gate: 197 selected — 194 pass, 3 xfail. Main
+pass: 247 selected — 239 pass, 8 xfail (known-bad), identical across four
+consecutive sweeps. Qt pass: 10. Order-dependent: 7. Known-bad: 10. Slow: 56.*
+
+*After S0 and S1: 272 collected (+9 invariant tests, −1 test deleted with the
+feature it covered). Fast gate: 206 selected — 199 pass, 7 xfail. Every delta
+accounted for by node-ID diff against `b37cc9a`.*

@@ -147,7 +147,6 @@ def test_dcprobe_mutating_state_out_of_order():
         probe.disable()
         probe.enter_auton()
         probe.enable()
-        probe.reconnect_serial()
         probe.disable()
         probe.enter_manual()
     except Exception as e:

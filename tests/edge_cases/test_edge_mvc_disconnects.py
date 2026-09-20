@@ -139,13 +139,3 @@ def test_rotator_connect_failure_sets_disconnected():
             mock_err.assert_called_once()
             assert "Mock connection failure" in mock_err.call_args[0][1]
 
-def test_rotator_reconnect():
-    """Test that reconnect() successfully disconnects and re-opens."""
-    rotator = RotatorSystem()
-    rotator.port = "COM1"
-    
-    with patch.object(rotator, 'disconnect') as mock_disconnect:
-        with patch.object(rotator, 'connect') as mock_connect:
-            rotator.reconnect()
-            mock_disconnect.assert_called_once()
-            mock_connect.assert_called_once_with("COM1", 1)

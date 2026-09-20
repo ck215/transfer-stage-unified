@@ -285,3 +285,71 @@ def test_i_7_1_views_name_no_device_or_command():
 
 def test_i_7_1_no_new_violations():
     _assert_no_new("I-7.1", _i_7_1_hits(), I_7_1_BASELINE, "S10")
+
+
+# ---------------------------------------------------------------------------
+# S1 — owner decisions D-9 and D-11, closed by deletion.
+#
+# These pass now. They are here rather than in a feature test file because
+# what they assert is an *absence*, and an absence is only durable if
+# something keeps checking for it. Each one is the closure evidence for the
+# findings named beside it.
+# ---------------------------------------------------------------------------
+
+# Names that only exist to reconnect a serial port at runtime. D-11 purges the
+# feature, so every one of these must stay absent from the source tree.
+D11_NAMES = (
+    r"\breconnect_serial\b",
+    r"\breboot_model\b",
+    r"Serial Reconnect",
+    r'"command"\s*:\s*"reconnect"',
+)
+
+
+def test_d11_no_runtime_serial_reconnect():
+    """SERIAL-14, PYSIDE-13, DC-14, STEPPER-12 — D-11 purge stays purged."""
+    offenders = []
+    for pattern in D11_NAMES:
+        # reboot_model survives in model/system_manager.py until S2 replaces it
+        # with reconfigure(); its four lifecycle tests are coverage S2 needs.
+        # Only its *reachability from a view* is S1's business.
+        exclude = ("model/system_manager.py",) if "reboot_model" in pattern else ()
+        offenders += _scan(pattern, SRC, exclude=exclude)
+    assert not offenders, _report("D-11 (runtime serial reconnect)", offenders)
+
+
+def test_d11_serial_port_is_readonly_in_every_schema():
+    """DC-14, STEPPER-12 — an editable port that nothing reads is a dead control."""
+    hits = _scan(
+        r'"type"\s*:\s*"entry".*"model_attr"\s*:\s*"serial_port"', SRC / "model"
+    )
+    assert not hits, _report("D-11 (serial_port must be readonly)", hits)
+
+
+def test_d9_macos_defaults_to_tkinter():
+    """MANAGER-14 — D-9: Tkinter is the macOS default until things stabilize."""
+    import app
+
+    assert app.select_view(None, "darwin") == "legacy"
+    # An explicit flag still wins on macOS.
+    assert app.select_view("web", "darwin") == "web"
+    assert app.select_view("pyside", "darwin") == "pyside"
+    # Other platforms are unchanged: PySide when importable, Web otherwise.
+    assert app.select_view(None, "linux", pyside_available=True) == "pyside"
+    assert app.select_view(None, "linux", pyside_available=False) == "web"
+
+
+def test_manager14_launcher_rejects_unknown_flags():
+    """MANAGER-14 — a typo must error, not fall through to a platform default.
+
+    Under parse_known_args, `--pyside6` was silently dropped and the macOS
+    default started a hardware-capable web server instead.
+    """
+    import app
+
+    # The word appears in the comment explaining why it is gone; match a call.
+    assert not re.search(r"parse_known_args\s*\(", (SRC / "app.py").read_text())
+    assert not hasattr(app, "launch_web"), (
+        "launch_web was only reachable from the unreachable 'unknown view' "
+        "branch and ignored --port/--no-browser"
+    )

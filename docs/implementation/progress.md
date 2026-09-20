@@ -48,7 +48,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | Stage | Title | Status | Commit | Date | Notes |
 |---|---|---|---|---|---|
 | S0 | Baseline, plan, invariant harness | done | `e760615` | 2026-09-19 | Docs baseline, plan, ledger, test division, invariant harness. |
-| S1 | Purge legacy paths (D-9, D-11) | todo | | | Pure deletion. No dependencies. |
+| S1 | Purge legacy paths (D-9, D-11) | done | | 2026-09-19 | D-9 + D-11 purged. SERIAL-18's `reboot_model` half reassigned to S2. |
 | S2 | Lifecycle authority (RC-1) | todo | | | Largest stage (41 findings). Split per numbered item. |
 | S3 | Transport truth and E-stop latch | todo | | | SAFETY. |
 | S4 | Web AppContext and security boundary | todo | | | Live CSRF hole; independent of S5+. |
@@ -186,6 +186,63 @@ Policy and commands: [testing.md](testing.md).
   loudly when the others drift. S10 collapses all four.
 - **Next action:** S1 — purge D-9 and D-11 legacy paths (pure deletion).
 
+### 2026-09-19 — S1: purge D-9 and D-11 legacy paths
+
+Gate `-m "bootstrap or schema"`: 39 passed, 2 xfailed, 25 s.
+Gate `-m "invariants"`: 9 passed, 4 xfailed.
+Full sweep green: main **247 passed / 12 xfailed** (2:32), Qt **8 passed /
+2 xfailed** (2.2 s), all 7 order-dependent tests pass in isolation. Every
+delta from `b37cc9a` accounted for: +9 new passing, +4 xfail, −1 deleted.
+
+**D-11 — runtime serial reconnect, purged.** Deleted `BaseProbe.
+reconnect_serial()`, the PySide dock-reopen branch that was its only caller
+(a modal + `processEvents()` + a ~6 s blocking reconnect that closed the port
+without sending a stop), the rotator's schema `Reconnect` button and its
+`reconnect()` method, and the web JS `'Serial Reconnect'`/`'reconnect_serial'`
+interlock special-cases. `serial_port` is now a `readonly` schema element, so
+the `attr != "serial_port"` numeric-validation special case disappears from
+both the Tk and PySide renderers.
+
+**D-9 — Tkinter is the macOS default.** View selection is extracted into a
+pure `select_view(requested, platform, pyside_available)` so the decision is
+testable rather than buried in `main()`. `run.sh` hard-coded `--tkinter`,
+which meant the documented default never applied to the wrapper and no other
+view was reachable through it; it now passes `"$@"` through.
+
+**MANAGER-14 also closed.** `parse_known_args` → `parse_args`: a typo like
+`--pyside6` used to be silently dropped, and on a lab Mac the platform
+default then started a hardware-capable web server instead of the view the
+operator asked for. The unreachable `else: "Unknown view"` branch and
+`launch_web()` (which ignored `--port`/`--no-browser`) are deleted.
+
+**Three things worth carrying forward:**
+
+- **SERIAL-18 was split, not closed.** Its D-11 half (no view offers a
+  reconnect) is done. Its other half — `reboot_model` has no callers — is
+  RC-1 work: S2 replaces it with `reconfigure()`, and its four lifecycle
+  tests are coverage S2 needs. Deleting it here to close a row would have
+  destroyed that coverage. The ledger now maps SERIAL-18 to **S2**.
+- **`gen_ledger.py` would have erased every closure.** It emitted `open` for
+  all 213 rows unconditionally, so the first regeneration after any stage
+  landed would have wiped the trail the ledger exists to keep. It now reads
+  statuses back, carries them forward, rewrites the table inside this file in
+  place, and errors if a recorded closure would be dropped. Verified by
+  regenerating: 213 mapped, 5 closures preserved.
+- **testing.md's fast-gate figure was wrong.** It claimed 200 passed / 5
+  xfailed; `b37cc9a` actually gives **194 passed / 3 xfailed**. Found by
+  diffing collected node IDs against that commit instead of reconciling
+  totals by arithmetic. Everything now reconciles exactly: 194+5 = 199
+  passed, 3+4 = 7 xfailed, 197+9 = 206 selected. The file now says to diff
+  node IDs rather than trust the written totals.
+
+**Tests changed, none deleted to go green:** `test_rotator_reconnect` was
+deleted along with the feature it covered (D-11); `test_dcprobe_mutating
+_state_out_of_order` kept its subject and lost only its `reconnect_serial()`
+line. Four new invariant tests carry S1's closure evidence.
+
+- **Next action:** S2 — lifecycle authority (RC-1), 42 findings. Split per
+  numbered item in plan.md; `reboot_model` → `reconfigure()` is part of it.
+
 ---
 
 ## Finding ledger
@@ -214,7 +271,7 @@ it) · `n/a` (with a reason).
 | DC-11 | RC7 / RC3 | S10 | root cause | open |
 | DC-12 | RC9 | S12 | root cause | open |
 | DC-13 | RC2 / RC7 | S3 | root cause | open |
-| DC-14 | RC7 | S1 | root cause | open |
+| DC-14 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
 | DC-15 | RC6 | S9 | root cause | open |
 | DC-16 | RC4 | S5 | root cause | open |
 | DC-17 | RC4 / RC3 | S5 | root cause | open |
@@ -265,7 +322,7 @@ it) · `n/a` (with a reason).
 | MANAGER-11 | RC1 | S2 | root cause | open |
 | MANAGER-12 | RC9 | S12 | root cause | open |
 | MANAGER-13 | RC4 / RC10 | S5 | root cause | open |
-| MANAGER-14 | LOCAL-OK | S1 | explicit | open |
+| MANAGER-14 | LOCAL-OK | S1 | explicit | closed (test_d9_macos_defaults_to_tkinter, test_manager14_launcher_rejects_unknown_flags) |
 | MANAGER-15 | RC10 | S4 | root cause | open |
 | MANAGER-16 | RC13 | S5 | root cause | open |
 | MANAGER-17 | RC8 | S11 | root cause | open |
@@ -284,7 +341,7 @@ it) · `n/a` (with a reason).
 | PYSIDE-10 | RC8 / RC4 | S11 | root cause | open |
 | PYSIDE-11 | LOCAL-OK | S15 | explicit | open |
 | PYSIDE-12 | RC7 | S10 | root cause | open |
-| PYSIDE-13 | RC1 | S1 | root cause | open |
+| PYSIDE-13 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | PYSIDE-14 | RC4 | S5 | root cause | open |
 | PYSIDE-15 | RC8 | S11 | root cause | open |
 | PYSIDE-16 | LOCAL-OK | S15 | explicit | open |
@@ -340,11 +397,11 @@ it) · `n/a` (with a reason).
 | SERIAL-11 | RC2 | S3 | root cause | open |
 | SERIAL-12 | RC4 | S5 | root cause | open |
 | SERIAL-13 | RC2 | S3 | root cause | open |
-| SERIAL-14 | RC1 | S1 | root cause | open |
+| SERIAL-14 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | SERIAL-15 | RC1 | S2 | root cause | open |
 | SERIAL-16 | RC8 | S11 | root cause | open |
 | SERIAL-17 | RC2 / LOCAL-OK | S3 | explicit | open |
-| SERIAL-18 | RC1 | S1 | root cause | open |
+| SERIAL-18 | RC1 | S2 | root cause | open |
 | SERIAL-19 | doc | S0 | root cause | open |
 | STEPPER-1 | RC1 | S2 | root cause | open |
 | STEPPER-2 | RC4 | S5 | root cause | open |
@@ -357,7 +414,7 @@ it) · `n/a` (with a reason).
 | STEPPER-9 | RC2 / LOCAL-OK | S3 | explicit | open |
 | STEPPER-10 | RC7 | S10 | root cause | open |
 | STEPPER-11 | RC6 / RC7 / RC3 | S9 | root cause | open |
-| STEPPER-12 | RC7 | S1 | root cause | open |
+| STEPPER-12 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
 | STEPPER-13 | RC9 | S12 | root cause | open |
 | STEPPER-14 | RC4 | S5 | root cause | open |
 | STEPPER-15 | RC4 | S5 | root cause | open |
