@@ -886,13 +886,13 @@ given, not assumed.
 | ID | Question | Options | Recommendation | Blocks |
 |---|---|---|---|---|
 | D-1 | What does closing a device tab or dock mean? | (a) hide: model and connection persist, reopen = show; (b) destroy: `release()`, reopen rebuilds from the stored config | **ANSWERED 2026-09-19: (a) hide**, plus a safe stop of motion on hide. See [Answered decisions](#answered-decisions) for the consequences. | RC-1, RC-9 |
-| D-2 | Does turning Autonomous or Manual off stop motion only, or also disable the coils? | stop-only (main) / disable (current) | Owner judgment: holding torque on loaded axes (DC-10) | RC-3 |
+| D-2 | Does turning Autonomous or Manual off stop motion only, or also disable the coils? | stop-only (main) / disable (current) | **ANSWERED 2026-09-20: disable.** Current behavior stands; DC-10's divergence from main is intentional. No hold-torque variant without reopening D-2. | RC-3 |
 | D-3 | Should manual mode idle-time-out? | yes (main) / no (current) | **Yes**, on real input inactivity | RC-3 |
-| D-4 | What should happen on window focus loss? | ignore input while unfocused / stop / nothing | Ignore input via a gate flag, but never stop on child-dialog deactivation | RC-4 |
+| D-4 | What should happen on window focus loss? | ignore input while unfocused / stop / nothing | **ANSWERED 2026-09-20: gate input, never stop.** Child-dialog deactivation is not focus loss. | RC-4 |
 | D-5 | How is the commit contract enforced? | (a) commands carry inputs; (b) commit-before-dispatch | **(a)** | RC-6, RC-7 |
 | D-6 | Red Percent rendering strategy | schema-driven / hand-built | **Schema-driven**, via v2 composites | RC-7 |
 | D-7 | Firmware protocol v2 (versioned identity, ACKs, DC e/d, `k`, temperature host watchdog) | adopt / defer | **Adopt**. It requires reflashing every board. | RC-2 |
-| D-8 | Should the Web client's liveness gate energized operation? | warn / FULL STOP / nothing | Warn at N s, FULL STOP at M s while motion is active | RC-10 |
+| D-8 | Should the Web client's liveness gate energized operation? | warn / FULL STOP / nothing | **ANSWERED 2026-09-20: warn at N s, FULL STOP at M s while motion is active** (suggested N=5, M=15). Extends the existing interlock watchdog with a second threshold; needs S7 item 2 first. | RC-10 |
 | D-9 | Default view on macOS when no flag is given | web / tkinter | **ANSWERED 2026-09-19: tkinter**, until the codebase is stabilized (not merely until RC-10 items 1–3 land) | RC-10 |
 | D-10 | Unsaved Red Percent data on exit or release | prompt / autosave / discard | Autosave to a timestamped file, plus a prompt where UI allows | RC-11 |
 | D-11 | Serial port reconnect at runtime | supported (setup-wizard path) / not supported (make the field readonly) | **ANSWERED 2026-09-19: not supported.** Purge it as a legacy feature — readonly field, dead code deleted, no deferred `reconfigure` promise. | RC-1, RC-7 |
@@ -950,9 +950,10 @@ setup. No deferred `reconfigure`-based reconnect is promised.
 The waves are ordered by dependency. Within a wave, the items are
 independent enough for parallel agents.
 
-- **Wave 0 (no code).** Owner answers D-1 to D-11 — **D-1, D-9 and D-11 are
-  answered** (see [Answered decisions](#answered-decisions)); D-2, D-3, D-7
-  and the rest remain open but block only Wave 2 and later. Apply the doc
+- **Wave 0 (no code).** Owner answers D-1 to D-12 — **all are answered
+  except D-7** (see [Answered decisions](#answered-decisions) and
+  `../implementation/progress.md`'s decision table, which is authoritative).
+  D-7 blocks only S16. Apply the doc
   corrections below (corrections 8 and 11 applied 2026-09-19). RC-12
   hardware verification can start now, in parallel.
   - D-9 and D-11 are small enough to land as code in Wave 0: the `app.py`

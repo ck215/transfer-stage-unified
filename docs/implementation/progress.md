@@ -53,15 +53,15 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
 | S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
 | S5 | Input service and model-owned loops | done | | 2026-09-19 | RC-13 + RC-4. I-4.1 holds. Web has manual mode for the first time. S6 unblocked. |
-| S6 | Hide/show semantics (D-1) | blocked | | 2026-09-20 | **BLOCKED on D-2.** Prerequisite S5 is done; the owner decision is not. |
-| S7 | Probe mode state machine (RC-3) | blocked | | 2026-09-20 | **BLOCKED on D-2.** Same decision as S6. |
+| S6 | Hide/show semantics (D-1) | todo | | | **Unblocked 2026-09-20** — D-2 answered (disable coils). |
+| S7 | Probe mode state machine (RC-3) | todo | | | **Unblocked 2026-09-20** — D-2 answered (disable coils). |
 | S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. I-5.2 holds. known_bad down 10 -> 7. |
 | S9 | Typed parameters (RC-6) | partial | | 2026-09-20 | Items 1 and 4 done (both speed/temperature hazards). Items 2 and 3 remain. |
 | S10 | Schema v2, three renderers (RC-7) | todo | | | |
 | S11 | Result channel and event bus (RC-8) | todo | | | |
 | S12 | Composition root, registry events | todo | | | |
 | S13 | MonitoringRun (RC-11) | todo | | | |
-| S14 | Remaining web work | todo | | | **Blocked on D-8** when reached. |
+| S14 | Remaining web work | todo | | | **Unblocked 2026-09-20** — D-8 answered (warn/FULL STOP tiers). |
 | S15 | Explicit `LOCAL-OK` sweep | todo | | | Any time; good filler while blocked. |
 | S16 | Owner verification, firmware v2 | todo | | | **Owner only.** Never delegate. |
 
@@ -70,29 +70,32 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | ID | Question | Answer | Date |
 |---|---|---|---|
 | D-1 | Close = hide or destroy? | **hide** — model, connection and config persist | 2026-09-19 |
-| D-2 | Mode off = stop only, or disable coils? | *open* — holding torque on loaded axes is a bench call | |
+| D-2 | Mode off = stop only, or disable coils? | **disable coils** — current behavior stands; DC-10's divergence from main is intentional | 2026-09-20 |
 | D-3 | Manual mode idle-timeout? | **yes**, on real input inactivity | 2026-09-19 |
-| D-4 | Window focus loss behavior? | *open* — recommendation: gate input, never stop on child-dialog deactivation | |
+| D-4 | Window focus loss behavior? | **gate input, never stop**; child-dialog deactivation is not focus loss | 2026-09-20 |
 | D-5 | Commit contract | **(a)** commands carry their inputs | 2026-09-19 |
 | D-6 | Red Percent rendering | **schema-driven** in all three views | 2026-09-19 |
 | D-7 | Firmware protocol v2 | *open* — adopt is recommended; requires reflashing every board | |
-| D-8 | Web client liveness gate | *open* | |
+| D-8 | Web client liveness gate | **warn at N s, FULL STOP at M s while motion is active**; folded into the existing interlock watchdog | 2026-09-20 |
 | D-9 | macOS default view | **tkinter**, until the codebase is stabilized | 2026-09-19 |
 | D-10 | Unsaved Red Percent data on exit | **autosave** to a timestamped file, plus a prompt where the UI allows | 2026-09-19 |
 | D-11 | Runtime serial reconnect | **not supported** — purged as legacy | 2026-09-19 |
-| D-12 | Gamepad poll rate: 200 Hz (code) or 50 Hz (comment)? | *open* — raised in S5; the value is unchanged at ~200 Hz pending a ruling | |
+| D-12 | Gamepad poll rate: 200 Hz (code) or 50 Hz (comment)? | **200 Hz** — the code was right, the comment wrong. 20 ms manual pump ratified with it | 2026-09-20 |
 
 D-3, D-5, D-6 and D-10 carry the recommendations recorded in
 `root-causes.md`; they were not separately re-confirmed by the owner and any
-of them can be reopened before its stage begins. D-2, D-4, D-7 and D-8 are
-genuinely open and block the stages noted above.
+of them can be reopened before its stage begins.
 
-**D-12 was raised during S5**, not by the audit. `ControllerPoller.POLL_
-INTERVAL` is 5 ms (~200 Hz) under a comment claiming 50 Hz. Nothing was
-changed: the manual-mode command rate is felt at the bench, so which number
-is right is a hardware judgement. It does not block S5 — the rate is the same
-as it has always been — but it should be settled before S8 tunes anything
-around it.
+**D-7 is the only decision still open.** It is S16 work, at the bench, and
+requires reflashing every board; the recommendation remains *adopt*. Nothing
+before S16 blocks on it.
+
+**D-12 was raised during S5**, not by the audit, and was **answered on
+2026-09-20**: `ControllerPoller.POLL_INTERVAL` stays at 5 ms (~200 Hz) and
+the 50 Hz comment was the error. The poller therefore runs at 4x the 20 ms
+manual pump deliberately, so that button edges shorter than one pump tick
+are still caught; the comment now says so, and says not to "optimise" the
+two into agreement.
 
 ---
 
@@ -901,15 +904,70 @@ is 3, down from 10.
 forced by `xfail(strict=True)` reporting the fix as a failure — none was
 noticed by looking.
 
-### Waiting on the owner
+### 2026-09-20 — owner rulings: D-2, D-4, D-8, D-12
 
-1. **D-2** — leaving a mode: disable the coils, or stop motion only? Blocks
-   S6 and S7. Hazardous in both directions, which is why it stops here.
-2. **D-12** — gamepad poll rate: the code runs ~200 Hz under a comment
-   claiming 50 Hz. **Unchanged** pending a ruling.
-3. **Manual pump rate** — Tk's 50 ms and PySide's 20 ms could not both
-   survive S5. 20 ms was adopted; **this changes how Tk manual mode feels at
-   the bench.**
+Four of the five open decisions are answered. **S6, S7 and S14 are
+unblocked**; D-7 (firmware v2) is the only decision still outstanding and it
+is S16 bench work.
+
+**D-2 — mode off disables the coils.** The current behavior stands and
+main's is not restored. This means DC-10's divergence is now *intentional*:
+there is no way to stop motion while keeping holding torque, and a loaded or
+vertical axis can sag on release. S7's `_transition` implements exactly one
+de-energizing path — stop packet, then `d`, then `system_enabled = False` —
+and S6's "safe stop on hide" uses it. **Anyone tempted to add a hold-torque
+variant later should reopen D-2 rather than add a branch**; the whole point
+of RC-3 is that this side effect lives in one ordered place.
+
+**D-4 — gate input, never stop.** Losing focus closes an input gate and
+drops edges; it never emits a stop packet, and motion already in flight
+continues. **A child dialog deactivating the main window is not focus loss**
+— that distinction is the actual defect behind GAMEPAD-8 / PYSIDE-14 /
+VIEW-TKINTER-9, not the `flush_neutral` no-op itself. On regaining focus the
+gate opens and flushes neutral once.
+
+**D-12 — 200 Hz stands; the comment was wrong.** `POLL_INTERVAL` stays at
+5 ms. The poller runs at 4x the 20 ms manual pump *deliberately*, to catch
+button edges shorter than one pump tick; both comments now say so. The S5
+manual pump rate was **ratified** in the same breath: Tk manual mode is
+faster than it was on main, on purpose, and the two frontends now feel
+identical. Neither value is an open question any more.
+
+**D-8 — two tiers, folded into the existing watchdog.** Warn when no client
+has polled for N s; FULL STOP at M s *while motion is active*; an idle
+energized system is left alone. Suggested starting values N=5, M=15, to be
+tuned at the bench.
+
+The owner's note — that an idle timer already exists and this should be part
+of it — is correct about the mechanism and worth stating precisely, because
+the two timers measure different things:
+
+| | Interlock watchdog (exists) | D-8 liveness (S14) |
+|---|---|---|
+| Measures | operator inactivity | web client absence |
+| Horizon | 300 s | ~5 s warn / ~15 s stop |
+| Action | `disable()` | warn, then FULL STOP |
+| Condition | energized | energized **and** moving |
+
+They share one thread, one `last_activity_time` family and one code path —
+S14 adds a second threshold to `_start_interlock_watchdog`, it does not add
+a second watchdog. But they are not the same trigger: a faithful client can
+poll all afternoon while the operator is idle, and an autonomous run is
+"active" at the hardware precisely when the client may have gone away. Web
+polling should call `touch_activity()`, and the liveness check needs its own
+timestamp.
+
+**One dependency to respect:** the existing watchdog `continue`s while
+`is_stepping or manual_flag`, so today it never fires in the energized modes
+D-8 cares about. **S7 item 2 fixes that** (the watchdog measures real
+inactivity and stops deferring on flags). S14's liveness tier is only
+trustworthy once S7 has landed — build it after, not before.
+
+### Still waiting on the owner
+
+1. **D-7** — firmware protocol v2. Recommendation: **adopt**. Requires
+   reflashing every board, so it is S16, at the bench, owner-only. Nothing
+   earlier blocks on it.
 
 ### For whoever picks this up
 

@@ -246,12 +246,13 @@ class ControllerPoller:
     
     # Poll interval in milliseconds.
     #
-    # NOTE (S5): the comment here used to read "Poll 50 times per second
-    # (1000ms / 20ms = 50Hz)" above a value of 5, i.e. 200 Hz — four times the
-    # documented rate. The value is left alone deliberately: the manual-mode
-    # command rate is something the operator feels at the bench, so changing
-    # it is the owner's call, not a refactor's. Flagged in progress.md.
-    POLL_INTERVAL = 5  # ms -> ~200 Hz
+    # NOTE (S5, ruled D-12 on 2026-09-20): the comment here used to read "Poll
+    # 50 times per second (1000ms / 20ms = 50Hz)" above a value of 5, i.e.
+    # 200 Hz — four times the documented rate. The owner ruled the *code* was
+    # right and the comment wrong: 5 ms stands. The poller therefore samples
+    # at 4x the manual command rate, which is deliberate — it catches button
+    # edges shorter than one pump tick. Do not "optimise" it to match.
+    POLL_INTERVAL = 5  # ms -> ~200 Hz  (D-12: ruled, do not change)
 
     def __init__(self, controllerID, active_claims, process_name):
         # Polling control flag

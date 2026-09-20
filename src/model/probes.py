@@ -41,8 +41,9 @@ class BaseProbe:
     #
     # Manual commands: Tk drove this at 50 ms and PySide at 20 ms, so the two
     # frontends did not feel the same. 20 ms is adopted — the faster of the
-    # two, and the one the primary GUI has been using. Related to D-12; if the
-    # owner rules on the gamepad poll rate, revisit this alongside it.
+    # two, and the one the primary GUI has been using. **Ratified by the owner
+    # on 2026-09-20 alongside D-12**: Tk manual mode is faster than it was on
+    # main, deliberately, and both frontends now feel identical.
     #
     # Hardware sampling: both frontends had dedicated 100 ms timers, but
     # PySide *additionally* sampled from _poll_model every 50 ms, roughly
