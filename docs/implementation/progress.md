@@ -61,8 +61,8 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S11 | Result channel and event bus (RC-8) | done | `409c859` | 2026-09-20 | All 4 items. `CommandResult` + `EventBus`; one `install_exception_hooks`. I-8.1–I-8.3 hold. conftest.py was duplicated end to end; half of it was dead. |
 | S12 | Composition root, registry events (RC-9) | done | `d35036b` | 2026-09-20 | All 3 items. `app_bootstrap` is the composition root; `SystemManager` emits `registered`/`released`; `_disabled_in_setup` deleted. I-9.1–I-9.3 built. **I-7.1 does not retire here** — 2 of its 6 hits are S13's. |
 | S13 | MonitoringRun (RC-11) | todo | | | |
-| S14 | Remaining web work | todo | | | **Unblocked 2026-09-20** — D-8 answered (warn/FULL STOP tiers). |
-| S15 | Explicit `LOCAL-OK` sweep | todo | | | Any time; good filler while blocked. |
+| S14 | Remaining web work | done | | 2026-09-20 | 7 of 8 closed in the `s14-web` worktree (WEB-5, 14, 15 residue, 16, 18, 21 and REDPERCENT-20's web half). WEB-22 is partly closed — no DOM harness for the staleness/refresh half. **WEB-19 deferred**: it needs the D-8 client-liveness watchdog in `probes.py`, so it spans model and web and cannot sit in a web-only write set. |
+| S15 | Explicit `LOCAL-OK` sweep | done | | 2026-09-20 | 4 of 5 closed in the `s15-local-ok` worktree (PYSIDE-16, 17, 18 and REDPERCENT-20's model half). GAMEPAD-17 is partly closed — three sub-items blocked by write-set boundaries, not difficulty. Two of the qt-marked tests it could not run were **wrong** and were fixed on merge; see the session log. |
 | S16 | Owner verification, firmware v2 | todo | | | **Owner only.** Never delegate. |
 
 ## Owner decisions
@@ -1820,6 +1820,63 @@ Two items were deliberately *not* decided here, and go to the owner:
 Gate: `547 passed, 94 deselected, 1 xfailed`, then 55 in
 `tests/core/test_transport_truth.py` after the TEMP-7 tests landed.
 
+### 2026-09-20 — S14 and S15 in parallel worktrees, and what the qt pass caught
+
+S14 and S15 were run simultaneously in two git worktrees (`s14-web`,
+`s15-local-ok`) by two agents, while the lead took the S8 safety residue on
+`mvc-refactor`. Thirteen findings moved in one wall-clock pass.
+
+**The partition is the whole technique.** Conflicts were prevented *by
+construction*, not by merging: each agent got an exclusive write set declared
+up front, plus a deny-list naming the owner of every forbidden file. Shared
+files — `docs/**`, `progress.md`, `tests/architecture/test_invariants.py` —
+were lead-only, and agents wrote a handoff to scratch instead of touching
+them. Cross-cutting findings were pulled out *before* partitioning: WEB-16
+shares `web_server.py` with WEB-14/21 so it moved S15 -> S14; REDPERCENT-20
+spans two write sets so it was split in half; WEB-19 needs `probes.py` so it
+was deferred entirely; TEMP-9 needs an owner call so it left the scope.
+
+Result: **zero file-level collisions** between the two branches or with the
+lead's own commit, confirmed by intersecting `git diff --name-only` before
+merging. Both merges were clean. All 36 claimed test names were verified to
+exist with `grep -rn "def <name>"` — none were wrong, but the check is what
+makes the claim worth anything.
+
+**The qt pass is where this nearly went wrong.** Agent B correctly refused to
+run the qt pass inside its session (a native Qt `SIGABRT` kills pytest and
+discards every already-passed result) and listed 11 qt-marked tests under
+`## UNVERIFIED`. Run at merge time, **two of them failed** — and both were
+bad tests, not bad code:
+
+- `test_last_added_dock_is_none_once_every_dock_is_closed` closed *one* of
+  two docks and asserted as though all were closed. `DashboardWindow`
+  auto-opens a dock for every device the manager already holds, and the
+  fixture registers two probes, so the surviving dock was correctly kept.
+  The production fallback was right; the test's premise was wrong.
+- `test_draw_plot_appends_probe_metadata_to_the_title` could never have
+  worked. `tests/conftest.py` replaces `matplotlib` *itself* with a
+  MagicMock for the whole suite, so `for ax in fig.axes` iterates **empty** —
+  the test would have passed against code that did nothing. It now injects a
+  controllable figure and asserts on the title the code actually sets.
+
+The lesson is not "agents write bad tests". It is that **a test which cannot
+be run is not evidence**, and this repo has a whole marker class of them. An
+agent that cannot run the qt pass must hand its qt tests back as unverified,
+and the merging lead must actually run them. That is now written into the
+`verify` skill rather than left to memory.
+
+Second-order finding: the harness mocks `matplotlib`, `PIL`, `mss`, `serial`
+and the Qt backends at `tests/conftest.py`. Any test asserting on a real
+object from one of those is silently vacuous. Worth an invariant later.
+
+Gates after both merges and the two test fixes: fast **576 passed, 105
+deselected, 1 xfailed**; qt **46 passed**.
+
+Deliberately still open, both owner calls: **TEMP-9** (plot the temperature
+history across all three views, or delete the dead arrays) and **WEB-19 /
+D-8** (the client-liveness FULL STOP tier, spanning `probes.py` and the web
+adapter).
+
 ## Finding ledger
 
 All 213 audit findings. `Closed by` is `root cause` when the finding closes
@@ -1880,7 +1937,7 @@ it) · `n/a` (with a reason).
 | GAMEPAD-14 | RC12 | S16 | explicit | open |
 | GAMEPAD-15 | RC13 / RC11 | S5 | root cause | closed (S5: edges latch under `_state_lock` and drain once; test_a_tap_shorter_than_a_read_interval_is_not_lost, test_edges_drain_exactly_once, test_reading_levels_does_not_consume_edges, test_levels_never_carry_edge_keys) |
 | GAMEPAD-16 | RC4 | S5 | root cause | closed by **D-12** — the owner ruled the 200 Hz poll and the 20 ms manual pump deliberately unequal. Verification note: `gamepad.py` POLL_INTERVAL and `probes.py` MANUAL_COMMAND_INTERVAL carry the ruling in comments. No test; none is wanted, since a test would pin a number the owner may retune. |
-| GAMEPAD-17 | LOCAL-OK | S15 | explicit | open |
+| GAMEPAD-17 | LOCAL-OK | S15 | explicit | open (partly closed: the unreachable `pygame.error` attribute lookup in `_read_raw` is guarded and the dead `connect_controller` is deleted — test_read_raw_pygame_error_guard_does_not_attributeerror_when_pygame_is_none, test_poller_reconnect_flow. **Three sub-items remain**: `change_controller` and `parse_controller_id` both have live callers in test files outside the S15 write set, and the `probes.py:188-192` sub-item was out of scope. All three are boundary blocks, not difficulty.) |
 | GAMEPAD-18 | RC13 / RC9 | S5 | root cause | closed (S12: in-process enumeration through InputService; test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing) |
 | GAMEPAD-19 | RC13 | S5 | root cause | open |
 | GAMEPAD-20 | doc | S0 | root cause | open |
@@ -1919,9 +1976,9 @@ it) · `n/a` (with a reason).
 | PYSIDE-13 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | PYSIDE-14 | RC4 | S5 | root cause | closed (D-4; deferred activeWindow check distinguishes a child dialog, tests/core/test_tkinter_teardown.py + pyside _app_has_focus) |
 | PYSIDE-15 | RC8 | S11 | root cause | closed (`threading.excepthook` now installed by every launcher) |
-| PYSIDE-16 | LOCAL-OK | S15 | explicit | open |
-| PYSIDE-17 | LOCAL-OK | S15 | explicit | open |
-| PYSIDE-18 | LOCAL-OK | S15 | explicit | open |
+| PYSIDE-16 | LOCAL-OK | S15 | explicit | closed (FULL STOP is added last in the sidebar and carries its own `fullStopButton` object name with QSS states; the empty `setCentralWidget(QWidget())` that claimed a stretch share is gone; `_last_added_dock` falls back to a surviving dock instead of resetting to None. test_full_stop_is_the_last_widget_in_the_sidebar, test_full_stop_has_its_own_object_name_for_hover_and_pressed_styling, test_no_central_widget_claims_a_stretch_share, test_last_added_dock_falls_back_to_a_remaining_open_dock_on_close, test_last_added_dock_is_none_once_every_dock_is_closed. Verified by the qt pass, 46 passed.) |
+| PYSIDE-17 | LOCAL-OK | S15 | explicit | closed (unused imports, orphaned QSS selectors and the `self.layout` shadowing are gone, and the real bug behind them — the `internal` schema element falling through to `addRow` with a never-populated layout, adding a blank row per element — is fixed. test_unused_imports_are_gone_from_pyside_view, test_orphaned_qss_selectors_are_gone, test_self_layout_no_longer_shadows_qwidget_layout, test_internal_schema_element_adds_no_blank_row) |
+| PYSIDE-18 | LOCAL-OK | S15 | explicit | closed (`save_log_ui` appends `.csv` where Qt, unlike Tk, does not; `load_csv` rejects on `red_percents` alone so a dims-column-with-no-rows CSV no longer reaches the modal `select_plot_type` — the PYSIDE-12 hang path — and opens with `newline=''`; the CSV metadata block now reaches the plot title. test_save_log_ui_appends_csv_when_the_chosen_name_has_no_suffix, test_save_log_ui_leaves_an_explicit_suffix_alone, test_load_csv_rejects_a_header_only_file_even_with_a_dims_column, test_load_csv_opens_the_file_with_newline_empty_string, test_draw_plot_appends_probe_metadata_to_the_title) |
 | PYSIDE-19 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | PYSIDE-20 | RC7 / RC13 | S10 | root cause | closed (S1: test_d11_serial_port_is_readonly_in_every_schema) |
 | REDPERCENT-1 | RC11 | S13 | root cause | open |
@@ -1943,7 +2000,7 @@ it) · `n/a` (with a reason).
 | REDPERCENT-17 | RC7 | S10 | root cause | open |
 | REDPERCENT-18 | RC7 | S10 | root cause | open |
 | REDPERCENT-19 | RC7 | S10 | root cause | open |
-| REDPERCENT-20 | LOCAL-OK | S15 | explicit | open |
+| REDPERCENT-20 | LOCAL-OK | S15 | explicit | closed (both halves. Model: the six dead fields, the `__del__` that only printed, and the per-call `set_focus_area` print are gone — test_construction_has_no_dead_fields, test_construction_keeps_the_live_equivalents, test_del_prints_nothing, test_set_focus_area_does_not_print, test_no_plot_data_ui_or_set_focus_area_ui_stub_exists. Web: `set_attr` writes only entry/dropdown/toggle elements — test_api_set_attr_refuses_a_readonly_element) |
 | ROTATOR-1 | RC1 / RC5 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
 | ROTATOR-2 | RC10 | S14 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | ROTATOR-3 | RC8 / RC7 | S11 | root cause | closed (a >30° refusal is a `Refused` carrying its reason, not a silent `None`) |
@@ -2028,7 +2085,7 @@ it) · `n/a` (with a reason).
 | WEB-2 | RC4 | S5 | root cause | closed (S5: polling moved into the models, so all three frontends share it; test_manual_mode_drives_hardware_with_no_gui_at_all, test_the_model_starts_the_poller_itself) |
 | WEB-3 | RC1 / RC10 | S2 | root cause | closed (tests/web/test_web_security.py: /api/screenshot now requires the session token) |
 | WEB-4 | RC9 | S12 | root cause | closed (S12 item 3, same as DC-12/MANAGER-12) |
-| WEB-5 | RC10 | S14 | root cause | open |
+| WEB-5 | RC10 | S14 | root cause | closed (the poller's `log_updater` is wired for models the setup wizard builds, not only for those built at import; test_setup_initialize_wires_poller_log_to_the_adapter) |
 | WEB-6 | RC7 | S10 | root cause | closed (S10: test_an_interactive_dropdown_always_has_a_command) |
 | WEB-7 | RC7 | S10 | root cause | open |
 | WEB-8 | RC4 / RC10 | S5 | root cause | closed (S5: /api/state reads the model caches; test_thread_safety_concurrent_requests) |
@@ -2037,15 +2094,15 @@ it) · `n/a` (with a reason).
 | WEB-11 | RC7 | S10 | root cause | open |
 | WEB-12 | RC8 | S11 | root cause | closed (`CommandResult`; a refusal is never rendered as success) |
 | WEB-13 | RC11 | S13 | root cause | open |
-| WEB-14 | RC10 | S14 | root cause | open |
-| WEB-15 | RC9 | S12 | root cause | open (partly closed: the `python3` subprocess and the fabricated "Virtual Controller" entries are gone — test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing. Per-port device-type autodetect is **not** done and needs an async scan flow; see `scan_hardware`'s docstring. Carried to S14.) |
-| WEB-16 | LOCAL-OK | S15 | explicit | open |
+| WEB-14 | RC10 | S14 | root cause | closed (every route returns a JSON 500 envelope instead of dropping the connection, and one raising device no longer takes the whole state payload down with it. test_get_state_isolates_a_raising_device, test_api_get_route_crash_returns_json_500_not_a_dropped_connection, test_api_post_route_crash_returns_json_500_not_a_dropped_connection) |
+| WEB-15 | RC9 | S12 | root cause | closed (S12 removed the `python3` subprocess and the fabricated "Virtual Controller" entries — test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing. S14 added the missing per-port device-type autodetect as a background scan polled to completion, single-flight — test_hardware_scan_runs_async_and_is_polled_to_completion, test_hardware_scan_is_single_flight) |
+| WEB-16 | LOCAL-OK | S14 | explicit | closed (`start()` treats only EADDRINUSE as port-busy and raises after ten, instead of swallowing every OSError and appearing to start. test_start_raises_runtime_error_after_ten_busy_ports, test_start_does_not_swallow_unrelated_os_errors, test_start_retries_past_a_genuinely_busy_port. Moved S15 -> S14: it shares `web_server.py` with WEB-14/21.) |
 | WEB-17 | RC10 | S14 | root cause | closed early in S11 (the destructive pop was the RC-8 half; `?since=` fixed it) |
-| WEB-18 | RC5 / RC8 | S8 | root cause | open |
+| WEB-18 | RC5 / RC8 | S8 | root cause | closed (FULL STOP reports per-device results instead of a blanket ok, so a device whose stop was not confirmed is named. test_full_stop_reports_per_device_results, test_api_full_stop_all_reports_unconfirmed_device) |
 | WEB-19 | RC10 | S14 | root cause | open |
 | WEB-20 | RC1 | S2 | root cause | open |
-| WEB-21 | RC10 | S14 | root cause | open |
-| WEB-22 | RC10 | S14 | root cause | open |
+| WEB-21 | RC10 | S14 | root cause | closed (POST bodies are capped and answered with 413 after the declared body is drained in bounded chunks; `mss`/PIL import lazily and one `mss` instance is reused. test_post_body_over_max_size_is_rejected_with_413, test_screenshot_reuses_a_single_mss_instance) |
+| WEB-22 | RC10 | S14 | root cause | open (partly closed: the shared fetch wrapper now aborts a hung request — test_shared_fetch_wrapper_aborts_a_hung_request_after_its_timeout, driven through a real Node process from inside pytest, since the repo has no JS test framework. Per-device staleness marking and dropdown refresh-on-focus are **implemented but untested** — no DOM-rendering harness exists.) |
 
 ---
 

@@ -70,6 +70,14 @@ def test_last_added_dock_falls_back_to_a_remaining_open_dock_on_close(dashboard)
 
 
 def test_last_added_dock_is_none_once_every_dock_is_closed(dashboard):
-    dashboard.open_device_view("Stepper Probe")
-    dashboard.close_device_view("Stepper Probe")
+    """The fallback bottoms out at None -- but only when nothing is left.
+
+    `DashboardWindow` auto-opens a dock for every device the manager already
+    holds, so the fixture starts with *both* probes docked. Closing one only
+    exercises the fallback; the None branch needs every dock closed.
+    """
+    assert set(dashboard.active_docks) == {"Stepper Probe", "DC Probe"}
+    for name in list(dashboard.active_docks):
+        dashboard.close_device_view(name)
+    assert dashboard.active_docks == {}
     assert dashboard._last_added_dock is None

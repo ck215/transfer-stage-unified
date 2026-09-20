@@ -132,17 +132,50 @@ def test_load_csv_opens_the_file_with_newline_empty_string(plot_dialog):
     m.assert_called_once_with("/tmp/data.csv", "r", newline="")
 
 
-def test_draw_plot_appends_probe_metadata_to_the_title(plot_dialog):
-    """No `Stepper * Location` column, so `dims_found` is empty and
-    `select_plot_type` goes straight to `draw_plot("0D", ...)` without a
-    modal dialog — safe to run end to end.
+class _FakeAx:
+    def __init__(self, title):
+        self._title = title
+
+    def get_title(self):
+        return self._title
+
+    def set_title(self, title):
+        self._title = title
+
+
+class _FakeFig:
+    """Stands in for the Figure `render_red_percent_figure` returns.
+
+    `tests/conftest.py` mocks `matplotlib` itself for the whole suite, so a
+    real Figure is not available here and a MagicMock is worse than useless
+    for this particular check: `for ax in fig.axes` over a MagicMock
+    iterates *empty*, so the title loop would silently not run and the test
+    would pass against code that does nothing.
     """
+
+    def __init__(self):
+        self.axes = [_FakeAx("Red Percent over Time")]
+
+
+def test_draw_plot_appends_probe_metadata_to_the_title(plot_dialog, tmp_path):
+    """The CSV's metadata block (probe name, tilt) reaches the plot title.
+
+    `parsed["metadata"]` was read and discarded; the title never showed it.
+    Runs the real path -- load_csv parses a real file, and `dims_found` is
+    empty so `select_plot_type` goes straight to `draw_plot("0D", ...)`
+    without a modal dialog.
+    """
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text(_ZERO_DIM_CSV_WITH_DATA)
+    fig = _FakeFig()
+
     with patch("PySide6.QtWidgets.QFileDialog.getOpenFileName",
-               return_value=("/tmp/data.csv", "")), \
-         patch("builtins.open", mock_open(read_data=_ZERO_DIM_CSV_WITH_DATA)):
+               return_value=(str(csv_path), "")), \
+         patch("model.plot_data.render_red_percent_figure", return_value=fig), \
+         patch.object(plot_dialog, "plot_frame", MagicMock()):
         plot_dialog.load_csv()
 
-    assert plot_dialog.canvas is not None
-    title = plot_dialog.canvas.figure.axes[0].get_title()
-    assert "Rig 1" in title
-    assert "45" in title
+    title = fig.axes[0].get_title()
+    assert "Red Percent over Time" in title, title
+    assert "Rig 1" in title, title
+    assert "45" in title, title
