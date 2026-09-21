@@ -3037,6 +3037,60 @@ three of its five rows were arithmetic; the real defect was that fifteen
 stages had passed underneath the file. Worth checking the other `doc` rows
 against their subject's mtime before trusting their scope.
 
+### 2026-09-21 (wave 6 pre-launch) — the four splits were two, and ROTATOR-6 was not what the audit said
+
+Wave 6 was recorded as four two-lane splits — ROTATOR-6, SERIAL-12, DC-5,
+MANAGER-13 — each needing a lead-written seam test before either half was
+briefed. Checking all four against HEAD before partitioning, per
+`fix-a-finding`, collapsed that plan:
+
+- **DC-5 and MANAGER-13 are already fixed.** Both say the Web frontend never
+  starts the gamepad poller and never routes manual input, so Manual Mode
+  energizes coils, suppresses the idle watchdog, and moves nothing. RC-4 moved
+  the input pump and the sampler into the model
+  (`BaseProbe.start_loops` / `_input_loop` / `_sample_loop`, probes.py
+  :1109-1192), and `start_loops` names this case in its own docstring: "Every
+  frontend reaches this through the same path — including the Web dashboard,
+  which had no input pump of its own at all." Trap #2, in the usual direction.
+  Routed to a lane as **verification and residue**, not as a fix — the dead
+  ctor loop in `web_view.py` and the `log_updater` wiring still need checking.
+
+- **ROTATOR-6's two named halves are both closed, and the finding is still
+  real for a third reason the audit does not state.** The GUI-thread blocking
+  went with S5/RC-4 (no view calls `poll_status`; `test_model_interactions`
+  asserts it is not called). FULL STOP queuing behind a poll went with
+  ROTATOR-8/S8 (`smc100.stop(priority=True)` refuses to wait on
+  `_serial_lock`). What is left: **`poll_status` is the only writer of live
+  `position`/`state` and now has no caller anywhere in `src/`.** The views
+  stopped polling and nothing replaced them, so the rotator card publishes
+  whatever `connect()` wrote and never moves again — on all three frontends.
+  `web_adapter.get_state` documents the contract it is relying on
+  (:451-456, "the model samples on its own thread") and for `RotatorSystem`
+  that thread does not exist.
+
+  This is bench-blocking in the way that matters: home the stage, watch it
+  turn, and the position field does not move. The operator cannot distinguish
+  a turning stage from a wedged one, which is exactly when someone reaches for
+  FULL STOP.
+
+**Seam pin landed first, by the lead**, per the WEB-19 failure of 2026-09-20:
+`tests/core/test_rotator6_model_owned_sampler.py`, 5 tests. Four are red at
+`f71c955` (`fake.polls == 0` — nothing polls), one green and required to stay
+green (an unconnected model must start no thread, the same demand-driven rule
+`start_loops` follows). The seam test deliberately pins *behaviour* — that a
+live value reaches the published property with no caller polling, that a
+wedged poll cannot delay FULL STOP past `ESTOP_RETURN_BUDGET`, and that the
+sampler dies with the connection — and not the thread's name, interval, or
+start trigger, which are the lane's to choose.
+
+So wave 6 is three lanes, not four splits: ROTATOR-6 (sonnet — it touches the
+stop path's lock), SERIAL-12 (haiku — the per-packet `print` flood and the
+unbounded `flush()` under `_lock` are both still there at serial.py:474-477),
+and the DC-5/MANAGER-13 web residue (haiku). Two read-only reviewers run
+alongside: a fresh-eyes full-codebase audit given no access to this ledger,
+and a test-suite quality pass hunting the hollow-test pattern this branch has
+now produced in three consecutive waves.
+
 ## Finding ledger
 
 218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
