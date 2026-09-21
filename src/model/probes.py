@@ -56,6 +56,19 @@ class BaseProbe(SchemaCommands):
     _INTERLOCK_POLL_INTERVAL = 5
     _INTERLOCK_TIMEOUT = 300
 
+    # D-8 (owner, 2026-09-20): "warn at N s, FULL STOP at M s while motion
+    # is active... Suggested starting values N=5, M=15, to be tuned at the
+    # bench." Folded into the interlock watchdog above rather than a second
+    # timer -- same thread, same generation, a second threshold. Distinct
+    # from `_INTERLOCK_TIMEOUT`: that measures *operator* inactivity across
+    # every energized mode; this measures *web client* absence, only while
+    # a mode that can move an axis is engaged (AUTONOMOUS/MANUAL) -- an
+    # idle-but-armed probe is explicitly left alone. See
+    # `touch_client_liveness` for the seam and what "no client has ever
+    # checked in" means.
+    WEB_CLIENT_WARN_TIMEOUT = 5    # s (N)
+    WEB_CLIENT_STOP_TIMEOUT = 15   # s (M)
+
     # Single-byte control commands this board's firmware is *observed* to
     # handle today, read straight out of `firmware/*/*.ino` (SERIAL-10).
     #
@@ -253,6 +266,13 @@ class BaseProbe(SchemaCommands):
         # single reused Event meant a watchdog stopped by one disable stayed
         # stopped for the next enable, because `_interlock_stop` was still set.
         self._interlock_generation = 0
+
+        # D-8 / WEB-19 liveness deadline. `None` until the first check-in —
+        # see `touch_client_liveness` — so a desktop (Tk/PySide) session,
+        # which never calls it, is never gated by a deadline meant for a
+        # frontend that was never watching.
+        self.last_client_seen_time = None
+        self._client_liveness_warned = False
 
         # Model-owned loops (RC-4). These used to live in the views: Tk's
         # _route_input (50 ms) and PySide's input_timer (20 ms) each pumped
@@ -1147,6 +1167,55 @@ class BaseProbe(SchemaCommands):
     def touch_activity(self):
         self.last_activity_time = time.time()
 
+    def touch_client_liveness(self):
+        """Record that a Web client is still watching (D-8 / WEB-19).
+
+        **The seam.** No arguments: "now" is read here, with `time.time()`,
+        rather than accepted from the caller, so a slow request cannot
+        backdate the deadline. The Web adapter's own side of this is to
+        call it once per live poll of this device — the natural place is
+        wherever it already reads this model's state for `/api/state`, so
+        the deadline tracks "a client is actually looking at this device"
+        rather than "the server process is up."
+
+        Before the first call, `last_client_seen_time` stays `None` and
+        the watchdog does not gate on it at all (see `_check_client_
+        liveness`) — a Tk or PySide session, which never calls this, reads
+        as a desktop session, not an absent web client. Once a web client
+        has checked in, the gate applies for the rest of this model's
+        life, and a check-in also clears any pending warning.
+        """
+        self.last_client_seen_time = time.time()
+        self._client_liveness_warned = False
+
+    def _check_client_liveness(self):
+        """D-8's second threshold, folded into the interlock watchdog.
+
+        Only while a mode that can actually move an axis is engaged — an
+        idle-but-armed probe is left alone by design — and only once a web
+        client has checked in at least once.
+        """
+        if self._mode not in (ProbeMode.AUTONOMOUS, ProbeMode.MANUAL):
+            return
+        seen = self.last_client_seen_time
+        if seen is None:
+            return
+        silence = time.time() - seen
+        if silence > self.WEB_CLIENT_STOP_TIMEOUT:
+            msg = (f"No web client has polled in {silence:.1f}s while "
+                   f"{self._mode.value}; FULL STOP (D-8).")
+            print(f"[{self.__class__.__name__}] {msg}")
+            ErrorPopupManager.report_error(
+                "Client Liveness FULL STOP", msg, None)
+            self.emergency_stop()
+        elif (silence > self.WEB_CLIENT_WARN_TIMEOUT
+                and not self._client_liveness_warned):
+            self._client_liveness_warned = True
+            msg = (f"No web client has polled in {silence:.1f}s while "
+                   f"{self._mode.value}.")
+            print(f"[{self.__class__.__name__}] {msg}")
+            ErrorPopupManager.report_warning("Client Liveness Warning", msg)
+
     def _stop_interlock_watchdog(self):
         self._interlock_stop.set()
 
@@ -1173,6 +1242,10 @@ class BaseProbe(SchemaCommands):
         generation = self._interlock_generation
         stop_event = self._interlock_stop
         self.touch_activity()
+        # A fresh arming starts with a clean liveness slate: a warning
+        # raised in a previous arming must not suppress the one this
+        # generation might need to raise on its own account.
+        self._client_liveness_warned = False
 
         def _watch():
             while not stop_event.wait(self._INTERLOCK_POLL_INTERVAL):
@@ -1197,6 +1270,10 @@ class BaseProbe(SchemaCommands):
                     ErrorPopupManager.report_info("Idle Timeout", msg)
                     self.disable()
                     return
+                # D-8 / WEB-19: the second threshold this same watchdog now
+                # carries. Folded in here rather than a second timer, per
+                # the owner's own framing of the request.
+                self._check_client_liveness()
 
         self._interlock_thread = threading.Thread(
             target=_watch, daemon=True,
