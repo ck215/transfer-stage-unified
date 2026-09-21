@@ -278,10 +278,45 @@ class RotatorSystem(SchemaCommands):
     def estop_latched(self):
         return self._estop.is_set()
 
-    def clear_estop(self):
-        """Explicit operator action. Nothing else may call this (RC-5)."""
+    def clear_estop(self, confirmed=False):
+        """Release the FULL STOP latch. **Explicit operator action only.**
+
+        Nothing but an operator may call this (RC-5), which is why it is a
+        declared schema command rather than anything automatic: `execute_
+        command` is the one path all three frontends share, and the
+        `NeedsConfirmation` below is the one dialog they all already render.
+
+        Until MANAGER-22 this method had **no callers at all** — no view, no
+        schema entry, no Web endpoint — so a latched device stayed refusing
+        every transition for the life of the process, and the only recoveries
+        were restarting (dropping every other device's connection) or
+        re-running the setup wizard. D-8's client-liveness watchdog can latch
+        a probe *by itself* after `WEB_CLIENT_STOP_TIMEOUT` of web silence
+        while a mode is engaged, so this was reachable by an operator doing
+        nothing more unusual than switching tabs.
+
+        This is **not** the per-device "Full Stop" button that was
+        deliberately removed from the schema as a redundant second E-stop.
+        The dashboard's global FULL STOP reaches every model, so a per-tab
+        stop was duplication; a *clear* has no global equivalent, and the
+        latch it releases is per-device state. Clearing one device must not
+        silently re-arm a probe on a tab nobody has looked at.
+
+        Returns the device to *refusable*, not to *running*: the mode is
+        already DISABLED by the stop that latched it, and nothing here
+        re-arms. Re-arming stays a separate, deliberate operator action.
+        """
+        if not confirmed:
+            return sch.NeedsConfirmation(
+                "Release the FULL STOP latch on this device?\n\n"
+                "Check that the cause has been dealt with and that it is "
+                "safe to approach before clearing. This does not restart "
+                "anything \u2014 the device stays disabled until you arm it "
+                "again.",
+                "clear_estop")
         self._estop.clear()
         print(f"[{self.__class__.__name__}] FULL STOP latch cleared by operator")
+        return sch.Ok()
 
     def emergency_stop(self):
         """Latch first, then dispatch the stop with a bounded wait.
@@ -460,6 +495,14 @@ class RotatorSystem(SchemaCommands):
                 sch.button("Home Stage", "home", role="go"),
                 sch.button("STOP", "stop", role="danger"),
                 sch.button("Reset & Config", "reset_and_configure"),
+                # **MANAGER-22.** The only operator-reachable way to
+                # release the FULL STOP latch. Declared here, not built in a
+                # view, so all three frontends get it from one declaration
+                # (D-6) — including the Web client, which is the frontend
+                # D-8's auto-latch actually strands. `clear_estop` returns
+                # `NeedsConfirmation`, so every renderer's existing generic
+                # dialog gates it; it is not a one-click release.
+                sch.button("Clear FULL STOP", "clear_estop", role="warning"),
             ),
             sch.section(
                 "Motion Control",

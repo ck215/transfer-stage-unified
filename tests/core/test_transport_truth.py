@@ -15,6 +15,7 @@ import threading
 import time
 
 import pytest
+from results import NeedsConfirmation
 
 from controller.serial import TransportError, serial as SerialTransport
 from model.probes import DCProbe
@@ -229,9 +230,22 @@ def test_the_latch_does_not_clear_itself():
 
 
 def test_only_an_explicit_operator_action_clears_the_latch():
+    """Strengthened by MANAGER-22, not relaxed by it.
+
+    `clear_estop()` used to release the latch on a single call, so this test
+    could only ever check that *something* cleared it. Now the unconfirmed
+    call asks first and clears nothing, which is what "explicit operator
+    action" in this test's own name actually means — so the assertion the
+    name promised is finally available to make.
+    """
     probe = _probe(RecordingTransport())
     probe.emergency_stop()
-    probe.clear_estop()
+
+    asked = probe.clear_estop()
+    assert isinstance(asked, NeedsConfirmation)
+    assert probe.estop_latched, "an unconfirmed clear released the latch"
+
+    probe.clear_estop(True)
     assert not probe.estop_latched
     assert probe.enable() is True
 
@@ -354,7 +368,7 @@ def test_temperature_emergency_stop_latches_and_refuses_new_setpoints():
     temp.send_settings()
     assert transport.writes == [], "a new setpoint was accepted after FULL STOP"
 
-    temp.clear_estop()
+    temp.clear_estop(True)
     temp.send_settings()
     assert transport.writes, "an explicit clear must restore normal operation"
 
@@ -807,7 +821,12 @@ def test_rotator_latches_so_a_queued_move_cannot_land_after_the_stop():
 def test_only_an_explicit_operator_action_clears_the_rotator_latch():
     rotator = _rotator(StallingSMC())
     rotator.emergency_stop()
-    rotator.clear_estop()
+
+    # Unconfirmed clears nothing (MANAGER-22) — see the probe test above.
+    assert isinstance(rotator.clear_estop(), NeedsConfirmation)
+    assert rotator.estop_latched
+
+    rotator.clear_estop(True)
     assert not rotator.estop_latched
     rotator.step_deg = "5"
     assert rotator.move_relative_positive() is True
