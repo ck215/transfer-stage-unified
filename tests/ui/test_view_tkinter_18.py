@@ -7,6 +7,13 @@ import pytest
 import sys
 from io import StringIO
 
+from pathlib import Path as _Path
+#: Anchored on this file, not on the process CWD. These read `src/`
+#: by relative path, which works only while pytest is launched from
+#: the repo root — true today, and a confusing failure the first
+#: time it is not.
+_SRC = _Path(__file__).resolve().parents[2] / "src"
+
 
 def test_view_tkinter_18_button_2_still_present():
     """VIEW-TKINTER-18 sub-issue: Button-2 closes tab on right-click on macOS.
@@ -20,7 +27,7 @@ def test_view_tkinter_18_button_2_still_present():
     instead of opening a context menu. This needs to be fixed to use Button-3
     on macOS or to use a confirmation dialog.
     """
-    with open('src/views/tkinter/view.py', 'r') as f:
+    with open(_SRC / "views/tkinter/view.py", 'r') as f:
         view_source = f.read()
 
     # Verify Button-2 is still bound (this is what we need to fix)
@@ -29,7 +36,7 @@ def test_view_tkinter_18_button_2_still_present():
 
 def test_view_tkinter_18_button_2_binding_location():
     """Verify the Button-2 binding is in the notebook tab close logic."""
-    with open('src/views/tkinter/view.py', 'r') as f:
+    with open(_SRC / "views/tkinter/view.py", 'r') as f:
         lines = f.readlines()
 
     # Find the Button-2 binding
@@ -55,7 +62,7 @@ def test_view_tkinter_18_log_window_never_opened():
     The fix moved polling to the model, so the view should not be opening any
     log windows anymore.
     """
-    with open('src/views/tkinter/view.py', 'r') as f:
+    with open(_SRC / "views/tkinter/view.py", 'r') as f:
         view_source = f.read()
 
     # ControllerLogWindow class should still exist (for reference)
@@ -86,7 +93,7 @@ def test_view_tkinter_18_no_log_updater_print():
     passing `log_updater=print` to any gamepad poller. This eliminates the
     ~200 Hz stdout spam mentioned in the audit.
     """
-    with open('src/views/tkinter/view.py', 'r') as f:
+    with open(_SRC / "views/tkinter/view.py", 'r') as f:
         view_source = f.read()
 
     # Should NOT see log_updater=print in the view

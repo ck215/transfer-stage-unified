@@ -12,6 +12,9 @@ import threading
 import time
 import traceback
 from model.schema import CommandResult, NeedsConfirmation
+#: DC-6's refusal type. Imported under an alias so the `except` clause below
+#: reads as what it is and cannot be mistaken for a plain ValueError catch.
+from model.probes import ModeRefused as _ModeRefused
 from typing import Dict, Any, Optional, List, Union
 
 
@@ -58,12 +61,20 @@ class WebModelAdapter:
     #: from here would let a browser tab that is merely open, doing
     #: nothing, silently defeat the idle-disable safety net. This is an
     #: additive, separate signal: "a browser tab believes it is present."
-    #: Agent A's D-8 watchdog (probes.py, folded into the existing
-    #: interlock watchdog) is expected to define this method if/when it
-    #: wants web-client liveness folded into its own timer. Until it does,
-    #: `getattr(model, CLIENT_HEARTBEAT_HOOK, None)` finds nothing and this
-    #: call is a no-op — this half does not invent that method itself.
-    CLIENT_HEARTBEAT_HOOK = "touch_client_heartbeat"
+    #:
+    #: **Joined by the lead on merge (D-8 / WEB-19).** This half and the
+    #: model half were built in parallel worktrees that could not see each
+    #: other, and they picked different names: the web half declared
+    #: `touch_client_heartbeat`, the model half implemented
+    #: `touch_client_liveness` in `BaseProbe`. Because the lookup is a
+    #: `getattr` against this constant, the mismatch failed **silently** —
+    #: every heartbeat resolved to `None`, the deadline was never set, and
+    #: D-8's gate never armed on any device. Both halves' own tests passed,
+    #: because each mocked the other side.
+    #:
+    #: `test_web19_seam_is_joined` pins the constant against the real
+    #: method so this cannot drift again without a red test.
+    CLIENT_HEARTBEAT_HOOK = "touch_client_liveness"
 
     def _get_device_lock(self, device_name: str) -> threading.Lock:
         with self._state_lock:
@@ -792,6 +803,29 @@ class WebModelAdapter:
                         value = float(value)
                 setattr(model, attr, value)
                 return {"status": "ok", "code": 200, "attr": attr, "value": getattr(model, attr)}
+            except _ModeRefused as e:
+                # **DC-6's refusal, joined by the lead on merge.** The model
+                # half made every `PARAMS` attribute a mode-gated property
+                # whose setter raises `ValueError` when the schema's own
+                # `disabled_when` forbids the write. A setter cannot return a
+                # `Refused`, so raising is the only channel it has — but
+                # landing here as a 500 reports a working interlock as a
+                # server fault, and the operator is told the rig is broken
+                # when it is in fact protecting them. STEPPER-11 already
+                # settled the right code for a refused write: 403.
+                #
+                # The two halves were built in separate worktrees, so neither
+                # could see this: the model half had no web route to check,
+                # and the web half predates the raising setter.
+                #
+                # Catching bare `ValueError` here was WRONG and is recorded as
+                # such: the type coercion a few lines above raises it too, so
+                # `int("invalid_number")` came back as a 403, telling the
+                # operator an interlock had refused a value that was simply
+                # malformed. `ModeRefused` is its own type for exactly that.
+                print(f"[WebModelAdapter] set_device_attribute("
+                      f"{device_name}.{attr}) refused: {e}")
+                return {"status": "refused", "code": 403, "message": str(e)}
             except Exception as e:
                 print(f"[WebModelAdapter] set_device_attribute({device_name}.{attr}) failed:\n{traceback.format_exc()}")
                 return {"status": "error", "code": 500, "message": str(e)}

@@ -8,6 +8,13 @@ Tests for:
 
 import pytest
 
+from pathlib import Path as _Path
+#: Anchored on this file, not on the process CWD. These read `src/`
+#: by relative path, which works only while pytest is launched from
+#: the repo root — true today, and a confusing failure the first
+#: time it is not.
+_SRC = _Path(__file__).resolve().parents[2] / "src"
+
 
 def test_redpercent_start_monitoring_refuses_without_focus_area():
     """Verify that start_monitoring returns Refused when no focus area is set."""
@@ -78,7 +85,7 @@ def test_redpercent_start_button_has_disabled_when_monitoring():
 def test_view_should_check_focus_area_when_gating_start_button():
     """The view's _sync_gates should check if focus_area is set for the start button."""
     # This is a structural test that the view code handles this case
-    with open('src/views/tkinter/view.py', 'r') as f:
+    with open(_SRC / "views/tkinter/view.py", 'r') as f:
         view_source = f.read()
 
     # The view should have logic to check focus_area when gating the start button

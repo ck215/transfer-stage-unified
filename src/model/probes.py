@@ -16,6 +16,18 @@ try:
 except ImportError:
     gcodeparser = None
 
+class ModeRefused(ValueError):
+    """A write refused because the schema's own `disabled_when` forbids it now.
+
+    A property setter cannot return a `Refused`, so DC-6's mode gate has to
+    raise. It subclasses `ValueError` so existing callers that already catch
+    that keep working — but it is its own type, because the web adapter has
+    to tell a refusal (403) from a malformed value (500), and both arrive
+    there as a `ValueError`. Catching the base class conflated them and
+    reported `int("invalid_number")` to the operator as a working interlock.
+    """
+
+
 class ProbeMode(Enum):
     """The modes a probe can be in. Exactly one at a time (RC-3).
 
@@ -1494,7 +1506,7 @@ def _mode_gated_param(name):
         element = self._schema_element_for(name)
         label = (element or {}).get("text", name).rstrip(":")
         if self._refuse_if_mode_disallows(element, label):
-            raise ValueError(f"{label} cannot be changed while "
+            raise ModeRefused(f"{label} cannot be changed while "
                               f"{self.mode.value}")
         self._param_store[name] = value
 

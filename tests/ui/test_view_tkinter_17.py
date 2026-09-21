@@ -6,10 +6,17 @@ uses the schema-driven approach (VIEW_HINT from the model).
 
 import pytest
 
+from pathlib import Path as _Path
+#: Anchored on this file, not on the process CWD. These read `src/`
+#: by relative path, which works only while pytest is launched from
+#: the repo root — true today, and a confusing failure the first
+#: time it is not.
+_SRC = _Path(__file__).resolve().parents[2] / "src"
+
 
 def test_view_tkinter_17_no_hardcoded_device_names():
     """Verify that DashboardWindow does not hard-code device names like 'SMC100 Rotator'."""
-    with open('src/views/tkinter/view.py', 'r') as f:
+    with open(_SRC / "views/tkinter/view.py", 'r') as f:
         view_source = f.read()
 
     # The old code had hard-coded device name matching:
@@ -44,7 +51,7 @@ def test_view_tkinter_17_uses_view_hint():
 
     # The router should use VIEW_HINT from the model
     # Read the source to verify this pattern is in place
-    with open('src/views/tkinter/view.py', 'r') as f:
+    with open(_SRC / "views/tkinter/view.py", 'r') as f:
         view_source = f.read()
 
     # Should see getattr(model, "VIEW_HINT", None) pattern
@@ -54,7 +61,7 @@ def test_view_tkinter_17_uses_view_hint():
 
 def test_view_tkinter_17_no_serial_port_field_checks():
     """Verify that the view doesn't special-case the serial_port field."""
-    with open('src/views/tkinter/view.py', 'r') as f:
+    with open(_SRC / "views/tkinter/view.py", 'r') as f:
         view_source = f.read()
 
     # The old code had: attr != "serial_port" check to skip serial_port entries

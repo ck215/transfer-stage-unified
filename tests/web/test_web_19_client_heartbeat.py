@@ -1,4 +1,9 @@
-"""WEB-19 (client half of D-8): the browser side of a client-liveness
+"""Seam note: these were written against `touch_client_heartbeat`, the name
+this half chose before it could see the model half, which implemented
+`touch_client_liveness`. The lead joined the two on merge; the names here
+follow the joined seam. See tests/web/test_web19_seam.py.
+
+WEB-19 (client half of D-8): the browser side of a client-liveness
 watchdog. Agent A is building the model side in probes.py - a warn-at-N-s,
 FULL-STOP-at-M-s gate folded into the existing interlock watchdog rather
 than run as a second timer - in a sibling worktree this test cannot see.
@@ -12,7 +17,7 @@ This is a deliberate split (see wave-4 brief). The seam this half exposes:
     same shared fetch-timeout wrapper WEB-22 already applies to every
     same-origin fetch).
   - `record_client_heartbeat()` forwards a duck-typed call to
-    `model.touch_client_heartbeat()` (the name is
+    `model.touch_client_liveness()` (the name is
     `WebModelAdapter.CLIENT_HEARTBEAT_HOOK`) on every active model that
     defines it, and is a no-op on every model that does not - which is
     every model today, since that hook lives in probes.py and is not this
@@ -54,7 +59,7 @@ class TestRecordClientHeartbeatUnit:
     def test_forwards_to_models_that_define_the_hook(self):
         touched = MagicMock()
         model_with_hook = MagicMock()
-        model_with_hook.touch_client_heartbeat = touched
+        model_with_hook.touch_client_liveness = touched
 
         manager = MagicMock(spec=SystemManager)
         manager.get_active_models_snapshot = MagicMock(
@@ -85,7 +90,7 @@ class TestRecordClientHeartbeatUnit:
 
     def test_a_raising_hook_does_not_fail_the_heartbeat(self):
         broken_model = MagicMock()
-        broken_model.touch_client_heartbeat = MagicMock(side_effect=RuntimeError("boom"))
+        broken_model.touch_client_liveness = MagicMock(side_effect=RuntimeError("boom"))
 
         manager = MagicMock(spec=SystemManager)
         manager.get_active_models_snapshot = MagicMock(
