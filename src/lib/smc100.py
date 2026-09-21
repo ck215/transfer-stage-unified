@@ -115,6 +115,29 @@ class SMC100(object):
 
   _sleepfunc = time.sleep
 
+  #: Bound on a single `port.write()`. pyserial's default is
+  #: `write_timeout=None`, meaning "block until every byte is accepted,
+  #: forever" -- and this port is opened with `xonxoff=True`, so the
+  #: controller can withhold XON exactly when it is busy or faulted, which
+  #: is exactly the condition under which someone is pressing FULL STOP.
+  #:
+  #: `stop(priority=True)` bounds only the `_serial_lock` acquisition
+  #: (`PRIORITY_LOCK_TIMEOUT`); without this, the `port.write()` that
+  #: follows it was still unbounded, so ROTATOR-8's fix stopped a stop from
+  #: queuing behind another transaction but did not stop it from hanging at
+  #: the wire itself. 0.2s matches the `write_timeout` already used to
+  #: identity-probe this exact device and baud rate in
+  #: `app_bootstrap.py`'s SMC100 handshake -- not the unrelated `1s` on
+  #: `controller/serial.py`'s transport, which talks to a different device
+  #: family over a different link. A bound write now raises
+  #: `serial.SerialTimeoutException` instead of hanging; `stop()` does not
+  #: catch it here; it is deliberately left to propagate to
+  #: `RotatorSystem.stop()`, which already wraps `smc.stop()` and routes any
+  #: exception through `ErrorRouter.report_error` -- so a stop that failed
+  #: to land is reported, not silent, without this lib module taking on a
+  #: dependency on the application's error-routing layer.
+  WRITE_TIMEOUT_SEC = 0.2
+
   def __init__(self, smcID, port, backlash_compensation=True, silent=True, sleepfunc=None):
     """
     If backlash_compensation is False, no backlash compensation will be done.
@@ -159,7 +182,8 @@ class SMC100(object):
         stopbits = 1,
         parity = 'N',
         xonxoff = True,
-        timeout = 0.050)
+        timeout = 0.050,
+        write_timeout = self.WRITE_TIMEOUT_SEC)
 
     self._smcID = str(smcID)
 
@@ -238,6 +262,19 @@ class SMC100(object):
     is the same trade already made for 'd' and 'k' in
     `controller/serial.write_command` (RC-5 item 2). Never take this path for
     a motion command.
+
+    The lock acquisition above is bounded by `PRIORITY_LOCK_TIMEOUT`, but the
+    `port.write()` calls that follow were not: `xonxoff=True` lets the
+    controller withhold XON exactly when it is busy or faulted, i.e. exactly
+    when this path is being taken, and pyserial's default `write_timeout` is
+    `None` -- block forever. `WRITE_TIMEOUT_SEC` on the port (set at
+    connection) bounds that write too, so a wedged controller now raises
+    `serial.SerialTimeoutException` here instead of hanging the worker
+    thread `RotatorSystem.emergency_stop` spawned to carry this call.
+    Deliberately not caught here: it propagates to `RotatorSystem.stop`,
+    which already wraps this call and reports any exception through
+    `ErrorRouter.report_error` -- so a stop that failed to land is reported
+    to the operator, not silently dropped.
     """
     if not priority:
       self.sendcmd('ST')
