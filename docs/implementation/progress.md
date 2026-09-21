@@ -5,7 +5,8 @@ what is next, and what is blocked. Update it in the *same commit* as the
 work it describes, then push. If this file and your memory disagree, this
 file wins.
 
-Route: [plan.md](plan.md) · Tests: [testing.md](testing.md) · Analysis:
+Route: [plan.md](plan.md) · Tests: [testing.md](testing.md) · Bench:
+[bench-checklist.md](bench-checklist.md) · Analysis:
 [../architecture/root-causes.md](../architecture/root-causes.md) ·
 Evidence: [../architecture/audit/](../architecture/audit/)
 
@@ -69,7 +70,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S13 | MonitoringRun (RC-11) | done | | 2026-09-20 | All 7 items. Items 5-7 landed first, out of plan order, for a bench run (`0e5ba73`); items 1-4 — `MonitoringRun` itself — landed in the `s13-monitoring-run` worktree and took over their snapshot rather than opening a second one. Item 3's `confirm_discard` seam exists model-side; the PySide dock-close prompt (PYSIDE-4) that consumes it is still open. |
 | S14 | Remaining web work | done | `a4f3a75` | 2026-09-20 | 7 of 8 closed in the `s14-web` worktree (WEB-5, 14, 15 residue, 16, 18, 21 and REDPERCENT-20's web half). WEB-22 is partly closed — no DOM harness for the staleness/refresh half. **WEB-19 deferred**: it needs the D-8 client-liveness watchdog in `probes.py`, so it spans model and web and cannot sit in a web-only write set. |
 | S15 | Explicit `LOCAL-OK` sweep | done | `a4f3a75` | 2026-09-20 | 4 of 5 closed in the `s15-local-ok` worktree (PYSIDE-16, 17, 18 and REDPERCENT-20's model half). GAMEPAD-17 is partly closed — three sub-items blocked by write-set boundaries, not difficulty. Two of the qt-marked tests it could not run were **wrong** and were fixed on merge; see the session log. |
-| S16 | Owner verification, firmware v2 | todo | | | **Owner only.** Never delegate. |
+| S16 | Owner verification, firmware v2 | todo | | | **Owner only.** Never delegate. Procedure and record sheet: [bench-checklist.md](bench-checklist.md). |
 
 ## Owner decisions
 
@@ -2687,6 +2688,81 @@ schema entry and a series accessor, not a data path.
 
 ---
 
+### 2026-09-21 (later) — wave 5 launched; GAMEPAD-20 closed; S16 given a record sheet
+
+**Wave 5 is running.** Three worktrees off `388834d`, briefed per
+`parallel-stage`. Model tier was chosen per lane rather than uniformly:
+`w5-transport` on the larger model because SERIAL-6 is a blocking→
+non-blocking change on the transport every motion subsystem rides and
+SERIAL-16 is a judgment audit; `w5-views` and `w5-thermal` on the small tier
+because their work is mirroring patterns that already exist in a sibling file
+(ROTATOR-9/13, TEMP-10's indicator) or following the Red Percent schema path
+that D-13 explicitly points at (TEMP-9). The lead's merge gate is unchanged
+either way: no row closes on an agent's report.
+
+**The both-views pin landed first (`388834d`), as the plan required.** It was
+mutation-checked in both directions before committing — see that commit.
+
+**GAMEPAD-20 closes.** It had been `open (partly closed)` with one named
+blocker: its fifth bullet lived in `known-issues.md`, outside the write set
+of the worktree that did the rest. The lead owns `docs/**`, so it was taken
+here. The superseded transient-falsy hypothesis now carries an inline
+**SUPERSEDED** pointer to GAMEPAD-4 *at the claim itself*, not only in the
+file header — a reader who lands mid-file previously got the wrong mechanism
+with no signal, including its instruction to add "targeted logging around the
+swap window", which instruments a window GAMEPAD-4 proved does not exist.
+
+The other four claims were already corrected in `controllers.md`. That doc
+carries its own "re-verified 2026-09-20" footer, which is exactly the claim
+trap #2 says not to take on trust, so the whole `ControllerPoller` inventory
+was re-resolved against `388834d` with an ast resolver: 22/22 symbols exact,
+`POLL_INTERVAL` 254, `EDGE_KEYS` 572, `get_gamepad_wrapper` 229, length 801,
+`lifecycle.py:69-70` all correct. It held up.
+
+**S16 now has `bench-checklist.md`** — the procedure and the record sheet for
+the work only the owner can do. It **asks** for every value and answers none:
+D-8's N and M, the D-pad sign, the T16000M binds, the allowlist names, the
+per-wrapper deadzones. Ordered safety-first (the stop path is verified before
+anything is allowed to move, and **again** after reflashing, since reflashing
+changes the stop path), and it names the code location each measured value
+lands in so a bench number does not end up recorded only in prose.
+
+**One audit correction found while writing it, and this is trap #1 exactly.**
+GAMEPAD-14 claims the deadzone is "applied twice" — raw axes below `0.1` in
+the poll loop, then x/y below `0.12` in `get_mapped_state`. At `388834d` that
+is **no longer true**: `_apply_deadzones` has exactly one call site
+(`_capture_state`, gamepad.py:619) and `get_mapped_state` applies no deadzone
+at all. Had the checklist been written from the audit text, it would have
+sent the owner to the bench to fix a defect that is already gone. What *does*
+survive is the rest of the row: the deadzone is a hard-coded `0.12` for every
+wrapper with no per-wrapper value (the T16000M's intended `0.03` has never
+executed on either branch), and `_read_hardware_changes` still thresholds at
+`0.1` while the value sent to hardware is deadzoned at `0.12` — so a stick
+between 0.10 and 0.12 logs "Axis changed" and fires `touch_activity()` while
+commanding zero. The checklist says so in place of the audit's wording.
+GAMEPAD-11 and GAMEPAD-12 were re-checked the same way and **both still hold
+in full** (substring matching plus the Linux `GUID[1:2]=='5'` rule; one
+T16000M class for both reported names, `z_l=10`/`z_r=9`, bumpers off buttons
+4/5 with a fallback to 7/9 that is dead because 4 and 5 exist).
+
+**ERRORS-11 deliberately not taken this session.** `error-routing.md` is
+stale far past the five rows the audit names — it is footered against
+`12e9d59` (2026-09-18), before S1–S15, and spot-checks fail immediately:
+it claims `error_routing.py` is 54 lines (it is **340**), `serial.py:48` is
+now inside `SimulatedPort`, `gamepad.py:450/467` both land inside
+`_initialize_pygame_joystick`, `gamepad.py:508` is `_next_generation`. The
+citation *scheme* has rotted, not five rows of it. It is not taken now
+because lanes 1–3 are editing four of the files it cites **at this moment**,
+so any line table written today is stale at merge. When taken, re-anchor the
+tables to **symbols** (`Class.method`) with line numbers kept only as
+"as of `<sha>`" — that addresses the finding's own stated failure scenario
+("an agent delegated the 455/457 style rows edits the wrong lines") instead
+of resetting a clock that rots again on the next commit.
+
+**Next action:** merge the three lanes as they hand back — write-set
+compliance check, then every claimed test name grepped, then the qt pass,
+then close rows. Then ERRORS-11 against the merged tree.
+
 ## Wave 5 — staged, not yet launched
 
 Partition below is the owner's call of 2026-09-21: **one lane owns both
@@ -2856,7 +2932,7 @@ it) · `n/a` (with a reason).
 | GAMEPAD-17 | LOCAL-OK | S15 | explicit | open (partly closed: the unreachable `pygame.error` lookup and the dead `connect_controller` closed in S15; the `probes.py` share closes here — a fallback poller built while the probe is already armed now starts its loop instead of waiting for the next arm. test_a_fallback_poller_built_while_already_armed_is_started, test_a_fallback_poller_built_while_disabled_is_left_for_the_next_arm. **`change_controller` and `parse_controller_id` still have live callers in test files** outside every write set used so far) |
 | GAMEPAD-18 | RC13 / RC9 | S5 | root cause | closed (S12: in-process enumeration through InputService; test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing) |
 | GAMEPAD-19 | RC13 | S5 | root cause | closed (test_macos_presence_check_does_not_consult_the_previous_controller, test_macos_swap_succeeds_when_the_previous_controller_is_gone; the consequence was a rejected bind, not a missed unplug) |
-| GAMEPAD-20 | doc | S0 | root cause | open (partly closed: all verifiable gamepad claims in controllers.md corrected, incl. a section advocating `_ensure_pygame_video()` which RC-13's anti-fix table forbids; the axis/T16000M/D-pad/deadzone claims left untouched as S16 owner territory; the fifth bullet lives in known-issues.md, outside the worktree's write set) |
+| GAMEPAD-20 | doc | S0 | root cause | closed (verification note, lead 2026-09-21: the blocking fifth bullet is done — the superseded transient-falsy hypothesis now carries an inline SUPERSEDED pointer to GAMEPAD-4 at the claim itself in `known-issues.md`, not only in the file header. The other four claims were already corrected in `controllers.md`; re-verified rather than taken on trust — its `ControllerPoller` inventory was re-resolved symbol-by-symbol against `388834d` with an ast resolver, 22/22 line numbers exact, plus `POLL_INTERVAL` 254, `EDGE_KEYS` 572, `get_gamepad_wrapper` 229, file length 801, `lifecycle.py:69-70`. Docs-accuracy row: a verification note is the appropriate closure, not a test name.) |
 | GAMEPAD-21 | RC13 | S5 | root cause | closed (test_manual_input_is_still_live_after_a_swap_on_the_threaded_clock, test_change_controller_resumes_the_threaded_clock_too, test_a_swap_does_not_start_polling_on_a_poller_that_was_not_polling, test_a_swap_on_the_tk_clock_still_resumes_and_still_uses_after) |
 | MANAGER-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | MANAGER-2 | RC1 / RC10 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |

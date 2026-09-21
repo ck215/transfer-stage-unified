@@ -60,7 +60,15 @@ unintended state).
   yet — needs a design decision, not a reflexive patch).
 - **Manual/Auton toggle visual state possibly desyncing after a controller
   swap mid-session** (reported live, not yet confirmed via targeted
-  logging). Reported sequence: enter manual mode → swap controller device
+  logging).
+  > **SUPERSEDED (GAMEPAD-4, audit 2026-09-19).** The mechanism below was
+  > traced and the hypothesis is **wrong**: the "transient falsy gamepad"
+  > window **cannot occur on a successful Tk swap**. What actually flips the
+  > flag is a *lazy flag flip on a **failed** swap*, and the Web frontend
+  > never flips it at all. Root cause is RC-3, not a rebuild-window race.
+  > The reported symptom is real; the explanation kept below is not. Do not
+  > add the "targeted logging around the swap window" it asks for — that
+  > instruments a window that does not exist. Read GAMEPAD-4 first. Reported sequence: enter manual mode → swap controller device
   via the dropdown → click "Enter Manual Mode" again → toggle behaves as
   though state is wrong, while the underlying firmware polling reportedly
   keeps working. **Hypothesis, not yet proven**: `ControllerPoller.set_controller`
