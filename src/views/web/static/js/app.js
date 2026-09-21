@@ -168,7 +168,25 @@ class TransferStageApp {
   // =========================================================================
   async init() {
     await this.checkSystemStatus();
+    // ERRORS-3: Initialize error tracking to avoid flooding on first connect.
+    // Fetch the latest error ID without showing old accumulated errors.
+    await this.initializeErrorTracking();
     this.setupPolling(this.pollIntervalMs);
+  }
+
+  async initializeErrorTracking() {
+    try {
+      const res = await fetch('/api/errors');
+      if (res.ok) {
+        const data = await res.json();
+        // Set lastErrorId to the latest ID so we only see NEW errors going forward
+        if (typeof data.latest_id === 'number') {
+          this.lastErrorId = data.latest_id;
+        }
+      }
+    } catch (err) {
+      // Quiet initialization failure; polling will still work
+    }
   }
 
   async checkSystemStatus() {
