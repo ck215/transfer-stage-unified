@@ -12,6 +12,22 @@ class RotatorSystem(SchemaCommands):
     #: Past this, moving risks damaging physical tubing.
     SAFE_ROTATION_DEG = 30.0
 
+    #: Sample interval for the model-owned poller (ROTATOR-6).
+    #:
+    #: `BaseProbe.SAMPLE_INTERVAL` is 0.10s (10Hz), chosen for a device a
+    #: human is actively jogging with a gamepad, where latency is felt
+    #: directly. The rotator has no such closed loop: the sampler only
+    #: refreshes two read-only display fields (position, state) for a human
+    #: to glance at. The audit notes the pre-refactor `main` polled this
+    #: device at 500ms (2Hz) and the refactor's timers, before S5 removed
+    #: them, had drifted to 100ms -- 5x the traffic on a device whose TS?
+    #: transaction can run ~0.5s when it is unhappy, for no display benefit.
+    #: 0.25s (4Hz) is deliberately between those two: fast enough that the
+    #: card visibly tracks a moving stage within the SAMPLE_DEADLINE any
+    #: operator would tolerate, slow enough that a poll transaction almost
+    #: always completes well inside one interval instead of backing up.
+    SAMPLE_INTERVAL = 0.25
+
     PARAMS = _param_table(
         Param("target_deg", "float", default=0, minimum=-175, maximum=175,
               decimals=2, unit="deg", label="Target (deg)"),
@@ -60,7 +76,25 @@ class RotatorSystem(SchemaCommands):
         # own thread straight into `smc.move_relative_deg`, so the PRs raced
         # and their effects accumulated with no ordering (ROTATOR-4).
         self._motion_lock = threading.Lock()
-        
+
+        # The model-owned sampler (ROTATOR-6 / RC-4). `BaseProbe` got this in
+        # S5; the rotator did not, so once the view-owned Tk/PySide timers
+        # that used to call `poll_status` were removed, nothing replaced
+        # them and the position/state fields froze at whatever `connect()`
+        # last wrote. `_loops_stop` and `_sample_thread` mirror
+        # `BaseProbe._loops_stop`/`_sample_thread` exactly, including the
+        # idempotent start and the demand-driven construction: an
+        # unconnected model must not carry a thread.
+        self._loops_stop = threading.Event()
+        self._sample_thread = None
+        # Held for the duration of one poll transaction so a slow device
+        # (a TS? retry can run ~0.5s) cannot pile a second poll on top of
+        # the first. The sample loop skips a tick outright rather than
+        # queue behind it -- queuing is what made FULL STOP wait on the
+        # rotator in the first place (ROTATOR-8), and a queue of stacked
+        # polls only makes the display more stale, not less.
+        self._poll_busy = threading.Lock()
+
         self.smc = None
         self.is_connected = False
         
@@ -187,6 +221,13 @@ class RotatorSystem(SchemaCommands):
                     self.smc = smc_inst
                     self.is_connected = True
                     self._state = "Connected"
+                # Outside the lock: the sampler's own I/O never runs under
+                # it. `connect()` rather than an explicit `start_loops()`
+                # call from a view, because the rotator has no `enable()` --
+                # a live port is the only point at which this model has
+                # anything worth sampling, and it is the one moment every
+                # frontend already funnels through.
+                self.start_loops()
             except Exception as e:
                 with self._lock:
                     self.smc = None
@@ -199,6 +240,11 @@ class RotatorSystem(SchemaCommands):
                     pass
 
     def disconnect(self):
+        # First, and unconditionally: a sampler that outlives the connection
+        # polls a closed port for the rest of the session (ROTATOR-6). This
+        # only sets an Event; it does not wait for an in-flight poll, so it
+        # cannot itself become something that blocks a caller.
+        self.stop_loops()
         with self._lock:
             smc = self.smc
             self.smc = None
@@ -504,11 +550,19 @@ class RotatorSystem(SchemaCommands):
         communication loss and clear position rather than leaving stale values.
         The UI should not show a false "Ready" state when the device is
         unreachable.
+
+        `smc` is snapshotted into a local once, not re-read from `self.smc`
+        between the two device calls (ROTATOR-6): the sampler now runs this
+        on its own thread, and `disconnect()` can null `self.smc` between the
+        position read and the status read, turning an ordinary disconnect
+        into an `AttributeError` this method has to fall back on rather than
+        a clean "not connected" no-op.
         """
-        if self.is_connected and self.smc:
+        smc = self.smc
+        if self.is_connected and smc:
             try:
-                pos = self.smc.get_position_deg()
-                err, state = self.smc.get_status(silent=True)
+                pos = smc.get_position_deg()
+                err, state = smc.get_status(silent=True)
 
                 self.position = pos
                 self.state = self._map_state_code(state)
@@ -522,3 +576,63 @@ class RotatorSystem(SchemaCommands):
                     ErrorRouter.report_warning("Rotator Poll Error", f"Failed to read status:\n{e}")
                 except Exception:
                     pass
+
+    # -- model-owned sampler (RC-4, ROTATOR-6) ----------------------------
+    #
+    # `poll_status` above is the only writer of live `position`/`state`, and
+    # at f71c955 nothing in `src/` called it -- the Tk/PySide timers that
+    # used to were removed by S5/RC-4 and nothing replaced them. This mirrors
+    # `BaseProbe.start_loops`/`_sample_loop` (probes.py): a daemon thread, an
+    # `Event`-based stop rather than a flag poll, exception-isolated so one
+    # transport hiccup does not freeze the display for the rest of the
+    # session, and idempotent so a second start does not stack threads.
+
+    def start_loops(self):
+        """Start the hardware sampler. Idempotent; safe to call repeatedly.
+
+        Called from `connect()`, not from an explicit view-driven call: the
+        rotator has no `enable()`/armed state distinct from being connected,
+        so a live port is the point at which sampling first has anything to
+        read, and every frontend already funnels through `connect()`.
+        """
+        self._loops_stop.clear()
+        if self._sample_thread is None or not self._sample_thread.is_alive():
+            self._sample_thread = threading.Thread(
+                target=self._sample_loop, daemon=True,
+                name=f"sample-{self.__class__.__name__}")
+            self._sample_thread.start()
+
+    def stop_loops(self):
+        """Signal the sampler to stop. Does not block on an in-flight poll."""
+        self._loops_stop.set()
+
+    def _sample_loop(self):
+        """Poll the SMC100 into the cached fields on a dedicated thread.
+
+        Views and the Web adapter read the cached properties and never touch
+        the transport, so a stalled read here cannot block a render tick or
+        FULL STOP -- `poll_status` never holds `self._lock` across the I/O,
+        only around the individual property writes, and `emergency_stop`'s
+        priority stop does not wait on the SMC100's serial lock either way
+        (ROTATOR-8, smc100.py `stop(priority=True)`).
+
+        `_poll_busy` is a non-blocking acquire: if the previous poll has not
+        returned yet, this tick is skipped rather than queued. A queue of
+        stacked polls behind a slow transaction only makes the eventual
+        display more stale, not less, and is the shape ROTATOR-8 exists to
+        avoid reintroducing.
+        """
+        while not self._loops_stop.wait(self.SAMPLE_INTERVAL):
+            if not self._poll_busy.acquire(blocking=False):
+                continue
+            try:
+                self.poll_status()
+            except Exception as e:
+                # Sampling is best-effort: a transport hiccup must not kill
+                # the loop, or the display freezes silently for the rest of
+                # the session. `poll_status` already catches its own I/O
+                # exceptions and publishes "Communication lost"; this is the
+                # backstop for anything that escapes that.
+                print(f"[{self.__class__.__name__}] Sample failed: {e}")
+            finally:
+                self._poll_busy.release()
