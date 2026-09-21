@@ -1,0 +1,45 @@
+{
+ "title": "Ideal Control System",
+ "header": "transfer-stage-unified, target architecture, drafted 2026-09-21 against mvc-refactor at 91b5dc9",
+ "owner_rulings": [
+  "Closing a model's tab destructs the model and releases its port; reopening constructs it. No hide/show state.",
+  "Autonomous mode stays; Step must work repeatedly inside it.",
+  "Scripts / G-code are not used at the station: purged.",
+  "Every model has its own estop toggle; the Controller's global FULL STOP is those toggles wired together.",
+  "The Web view is localhost only.",
+  "The Red Percent CSV analysis plot stays, in all three views, rendered once by the model.",
+  "All four gamepad layouts and all three probe types are in service."
+ ],
+ "hierarchy": [
+  {"step": "Launch", "text": "app.main() picks a view, builds the one Controller and a Setup panel, and opens the view. Nothing else constructs anything."},
+  {"step": "Setup", "text": "Setup scans ports and gamepads, validates the assignment and constructs Models into the Controller. It is a Panel, so each view renders it from its schema: one wizard, not three."},
+  {"step": "Model", "text": "A Model owns its Devices (SerialPort, Gamepad, SMC100, Screen). Model.open() and Model.close() open and close them on demand. Model.state reports every Device's status upward in one snapshot."},
+  {"step": "Controller", "text": "The Controller owns the Models. add() constructs, remove() estops, closes and destructs. run(name, command, inputs) is the only way a command reaches a model. estop_all() is the per-model estops wired together."},
+  {"step": "View", "text": "A view holds the Controller and nothing else. It reads schema(name) and state(name) and calls run(). It cannot have a feature the schema does not declare, which is what makes parity the default rather than a goal."},
+  {"step": "Events", "text": "Models and the Controller publish to the one EventLog. Views subscribe. Only EventLog.error may ask for an acknowledged popup, and it is reserved for failed commands, faults and unconfirmed stops."},
+  {"step": "Web liveness", "text": "The browser heartbeat is watched by WebView alone. On silence while Controller.is_active, it calls Controller.estop_all(). No model knows a browser exists."}
+ ],
+ "import_rules": [
+  "views import Controller, Result, schema helpers and EventLog. Never a Model or a Device.",
+  "Models import Device classes, Param, schema and EventLog. Never a view, never the Controller.",
+  "Only SerialPort imports pyserial; only GamepadHub imports pygame; only Screen imports mss.",
+  "Only Setup constructs Models; only the Controller destructs them.",
+  "These four rules are one import-graph test. They replace the Protocol and mixin 'contract' classes."
+ ],
+ "naming_rules": [
+  "Properties are nouns and take no parentheses: mode, position, state, schema, series.",
+  "Boolean properties start with is_, has_, can_ or needs_: is_open, is_estopped, has_unsaved_data, can_kill_coils.",
+  "No get_ prefix anywhere. No _flag, _var or _status suffixes.",
+  "Commands are bare imperative verbs, and one verb means one thing on every class: open/close (devices and models), enable/disable (energize), halt (stop motion, no latch), estop/clear_estop (latched), start_run/end_run.",
+  "set_<thing>(value) for every operator selection: set_mode, set_source, set_region, set_sync, set_gate.",
+  "Private helpers are _verb_noun. Threads are _<x>_thread, their bodies _<x>_loop.",
+  "Callbacks a class receives are on_<event>; UI handlers are _on_<widget>_<event>.",
+  "No abbreviations: auton -> auto, ser -> port, sch -> schema, cnt/sp -> spelled out. 'controller' means only the Controller; a joystick is a Gamepad.",
+  "Names fixed by a framework or vendor are exempt and marked: Qt event handlers, the pyserial interface SimulatedPort imitates, SMC100 protocol methods."
+ ],
+ "layers": [
+  {"id": "launch", "title": "Launch"}, {"id": "control", "title": "Control"}, {"id": "model", "title": "Models"},
+  {"id": "device", "title": "Devices"}, {"id": "view", "title": "Views, shared"}, {"id": "view-tk", "title": "Views, Tkinter"},
+  {"id": "view-qt", "title": "Views, PySide"}, {"id": "view-web", "title": "Views, Web"}
+ ]
+}

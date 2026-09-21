@@ -1,0 +1,2020 @@
+{
+ "clusters": [
+  {
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ids": [
+    "MANAGER-1",
+    "MANAGER-2",
+    "MANAGER-3",
+    "MANAGER-4",
+    "MANAGER-7",
+    "MANAGER-8",
+    "MANAGER-9",
+    "MANAGER-11",
+    "ROTATOR-2",
+    "ROTATOR-5",
+    "ROTATOR-10",
+    "ROTATOR-14",
+    "SERIAL-3",
+    "SERIAL-4",
+    "SERIAL-5",
+    "SERIAL-14",
+    "SERIAL-15",
+    "SERIAL-18",
+    "STEPPER-1",
+    "STEPPER-3",
+    "STEPPER-12",
+    "TEMP-1",
+    "TEMP-5",
+    "TEMP-6",
+    "TEMP-8",
+    "DC-2",
+    "DC-9",
+    "DC-16",
+    "PYSIDE-1",
+    "PYSIDE-2",
+    "PYSIDE-13",
+    "VIEW-TKINTER-1",
+    "VIEW-TKINTER-8",
+    "WEB-1",
+    "WEB-3",
+    "WEB-20",
+    "GAMEPAD-9"
+   ]
+  },
+  {
+   "category": "VOID",
+   "home": "-",
+   "requirement": "Concerned hide/show, which the owner replaced with destruct-on-close on 2026-09-21.",
+   "ids": [
+    "MANAGER-24"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "Model.close",
+   "requirement": "Close order is halt, de-energize, flush, close port, release gamepad claim. Every step isolated: the hardware step is never skipped because an earlier step raised. Never close a port mid-move without sending the stop first.",
+   "ids": [
+    "ROTATOR-1",
+    "MANAGER-10",
+    "VIEW-TKINTER-16",
+    "TEMP-11",
+    "SERIAL-2",
+    "DC-3"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ids": [
+    "MANAGER-19",
+    "MANAGER-21",
+    "MANAGER-22",
+    "MANAGER-23",
+    "MANAGER-25",
+    "ROTATOR-8",
+    "STEPPER-4",
+    "ERRORS-6",
+    "SERIAL-1",
+    "TEMP-7",
+    "VIEW-TKINTER-13"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ids": [
+    "SERIAL-8",
+    "SERIAL-11",
+    "SERIAL-12",
+    "SERIAL-16",
+    "SERIAL-20",
+    "SERIAL-23",
+    "TEMP-17",
+    "DC-18",
+    "ROTATOR-16"
+   ]
+  },
+  {
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ids": [
+    "DC-4",
+    "DC-7",
+    "DC-8",
+    "DC-11",
+    "DC-13",
+    "DC-15",
+    "PYSIDE-5",
+    "PYSIDE-6",
+    "PYSIDE-19",
+    "TEMP-3",
+    "TEMP-4",
+    "TEMP-13",
+    "REDPERCENT-14",
+    "STEPPER-11",
+    "ROTATOR-12",
+    "GAMEPAD-6",
+    "DC-19"
+   ]
+  },
+  {
+   "category": "OUT",
+   "home": "Probe._jog_loop",
+   "requirement": "The jog loop and the gamepad belong to the model, so manual mode works identically under all three views, the Web included.",
+   "ids": [
+    "GAMEPAD-1",
+    "DC-5",
+    "STEPPER-2",
+    "WEB-2",
+    "WEB-5",
+    "MANAGER-13",
+    "VIEW-TKINTER-5"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ids": [
+    "GAMEPAD-2",
+    "GAMEPAD-3",
+    "GAMEPAD-4",
+    "GAMEPAD-7",
+    "GAMEPAD-8",
+    "GAMEPAD-10",
+    "GAMEPAD-15",
+    "GAMEPAD-16",
+    "GAMEPAD-17",
+    "GAMEPAD-18",
+    "GAMEPAD-19",
+    "GAMEPAD-21",
+    "STEPPER-5",
+    "STEPPER-15",
+    "DC-17",
+    "VIEW-TKINTER-4",
+    "VIEW-TKINTER-6",
+    "VIEW-TKINTER-9",
+    "VIEW-TKINTER-11",
+    "PYSIDE-14",
+    "MANAGER-16"
+   ]
+  },
+  {
+   "category": "BENCH",
+   "home": "Gamepad.LAYOUTS",
+   "requirement": "STILL OPEN today. The layout table is the single place to settle them: exact-name whitelist, T16000M Z/bumper mapping, D-pad sign, deadzone applied once. Each needs the physical pad in hand; the rebuild ports today's values unchanged and marks them unverified. Dropdown live refresh and rebind-after-disconnect are code-closable in Gamepad.options.",
+   "ids": [
+    "GAMEPAD-5",
+    "GAMEPAD-11",
+    "GAMEPAD-12",
+    "GAMEPAD-13",
+    "GAMEPAD-14",
+    "VIEW-TKINTER-10",
+    "PYSIDE-20"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "Probe (interlock)",
+   "requirement": "is_moving expires by deadline. The idle interlock fires in AUTO and MANUAL on real inactivity (D-3). Restart race: a new watchdog never reuses a dying thread's stop event.",
+   "ids": [
+    "DC-1",
+    "STEPPER-6",
+    "STEPPER-7",
+    "VIEW-TKINTER-3"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "Probe.step / schema gating",
+   "requirement": "Step stays available while AUTO so repeated stepping works; refused only while is_moving. (This was closed for the Web in the ledger and re-broken in the schema: review finding 5.)",
+   "ids": [
+    "DC-6"
+   ]
+  },
+  {
+   "category": "VOID",
+   "home": "-",
+   "requirement": "Scripts / G-code purged by owner ruling 2026-09-21.",
+   "ids": [
+    "STEPPER-8",
+    "STEPPER-9",
+    "STEPPER-10",
+    "WEB-11"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ids": [
+    "ERRORS-2",
+    "ERRORS-3",
+    "ERRORS-4",
+    "ERRORS-5",
+    "ERRORS-8",
+    "ERRORS-9",
+    "ERRORS-10",
+    "ERRORS-12",
+    "MANAGER-17",
+    "VIEW-TKINTER-2",
+    "PYSIDE-10",
+    "PYSIDE-15",
+    "PYSIDE-21",
+    "WEB-9",
+    "WEB-14",
+    "WEB-17"
+   ]
+  },
+  {
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ids": [
+    "ERRORS-1",
+    "ERRORS-7",
+    "ROTATOR-3",
+    "ROTATOR-13",
+    "ROTATOR-15",
+    "WEB-12",
+    "WEB-18",
+    "TEMP-10",
+    "REDPERCENT-7"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ids": [
+    "MANAGER-5",
+    "MANAGER-6",
+    "MANAGER-12",
+    "MANAGER-14",
+    "MANAGER-18",
+    "MANAGER-20",
+    "SERIAL-6",
+    "SERIAL-7",
+    "SERIAL-9",
+    "SERIAL-17",
+    "WEB-4",
+    "WEB-15",
+    "WEB-16",
+    "DC-12",
+    "DC-14",
+    "REDPERCENT-15",
+    "VIEW-TKINTER-7"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ids": [
+    "ROTATOR-6",
+    "ROTATOR-7",
+    "ROTATOR-9",
+    "ROTATOR-11",
+    "PYSIDE-9",
+    "STEPPER-14",
+    "VIEW-TKINTER-12",
+    "WEB-8",
+    "WEB-21",
+    "WEB-22",
+    "TEMP-2"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "Rotator._move_guarded",
+   "requirement": "Tubing confirmation beyond 30 degrees on every move type. A stop forgets the commanded target. Busy guard against stacked moves. (home() must commit its target only after the guard passes: review finding 2.)",
+   "ids": [
+    "ROTATOR-4"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ids": [
+    "REDPERCENT-1",
+    "REDPERCENT-2",
+    "REDPERCENT-3",
+    "REDPERCENT-4",
+    "REDPERCENT-5",
+    "REDPERCENT-9",
+    "REDPERCENT-21",
+    "REDPERCENT-22",
+    "REDPERCENT-23",
+    "VIEW-TKINTER-15"
+   ]
+  },
+  {
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ids": [
+    "REDPERCENT-6",
+    "REDPERCENT-8",
+    "REDPERCENT-10",
+    "REDPERCENT-11",
+    "REDPERCENT-12",
+    "REDPERCENT-13",
+    "REDPERCENT-17",
+    "PYSIDE-3",
+    "PYSIDE-4",
+    "PYSIDE-7",
+    "PYSIDE-8",
+    "PYSIDE-11",
+    "PYSIDE-18",
+    "STEPPER-13",
+    "WEB-6",
+    "WEB-7",
+    "WEB-13",
+    "VIEW-TKINTER-14"
+   ]
+  },
+  {
+   "category": "REOPEN",
+   "home": "RedMonitor._read_dim / RunLog",
+   "requirement": "Ledger says closed; today's audit says NOT fit for force approximation. Velocity is differenced across red events against a 10 Hz position cache, and rows are still change-triggered. Needs the owner's two answers (uniform sampling? is 10 Hz a firmware limit?).",
+   "ids": [
+    "REDPERCENT-16"
+   ]
+  },
+  {
+   "category": "BENCH",
+   "home": "RegionOverlay / region_select",
+   "requirement": "STILL OPEN. One drag picker in all three views (Tk has only a typed prompt today; the Web picker is unreachable). Virtual-desktop and display-scaling conversion needs checking on the station PC.",
+   "ids": [
+    "REDPERCENT-18",
+    "PYSIDE-12"
+   ]
+  },
+  {
+   "category": "VIEW",
+   "home": "theme + PanelView",
+   "requirement": "Readouts formatted by Param (decimals, unit) identically in three views. Button and toggle state follows the model, including after FULL STOP. One shared theme: role palette, toggle on/off roles, one base font size. No dead widgets. macOS middle/right-click tab close stays unverified until run on a Mac.",
+   "ids": [
+    "REDPERCENT-19",
+    "PYSIDE-16",
+    "PYSIDE-17",
+    "VIEW-TKINTER-17",
+    "VIEW-TKINTER-18",
+    "TEMP-9",
+    "WEB-24"
+   ]
+  },
+  {
+   "category": "CARRY",
+   "home": "ApiHandler._is_local",
+   "requirement": "Localhost bind plus Origin/Host check on every state-changing route; JSON content type required.",
+   "ids": [
+    "MANAGER-15",
+    "WEB-10"
+   ]
+  },
+  {
+   "category": "VOID",
+   "home": "-",
+   "requirement": "Dead or legacy state that does not exist in the rebuild.",
+   "ids": [
+    "REDPERCENT-20"
+   ]
+  },
+  {
+   "category": "DOC",
+   "home": "docs",
+   "requirement": "Architecture docs are rewritten for the new structure; these corrections are moot.",
+   "ids": [
+    "ERRORS-11",
+    "GAMEPAD-20",
+    "SERIAL-19",
+    "TEMP-12"
+   ]
+  },
+  {
+   "category": "BENCH",
+   "home": "firmware / owner",
+   "requirement": "Firmware is untouched by owner instruction. DC board has no coil kill (reported honestly, D-7). Protocol change vs main needs matching firmware (already flashed). D-2 coil-off on stop stands. The Web heartbeat's warn/stop seconds become ONE pair on WebView, still set at the bench.",
+   "ids": [
+    "SERIAL-10",
+    "SERIAL-13",
+    "DC-10",
+    "WEB-19",
+    "WEB-23"
+   ]
+  }
+ ],
+ "rows": [
+  {
+   "id": "MANAGER-1",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-2",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-3",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-4",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-7",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-8",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-9",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-11",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-2",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-5",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-10",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-14",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-3",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-4",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-5",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-14",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-15",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-18",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-1",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-3",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-12",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-1",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-5",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-6",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-8",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-2",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-9",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-16",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-1",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-2",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-13",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-1",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-8",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-1",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-3",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-20",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-9",
+   "category": "OUT",
+   "home": "Controller",
+   "requirement": "One Controller for the process. remove() = estop, close, drop. Reopen = add() with the remembered config, so a reopened model is never headless. reset() tears everything down BEFORE building. Exit hooks (atexit, SIGINT/TERM/HUP, Qt aboutToQuit, Tk quit) call close() exactly once.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-24",
+   "category": "VOID",
+   "home": "-",
+   "requirement": "Concerned hide/show, which the owner replaced with destruct-on-close on 2026-09-21.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-1",
+   "category": "CARRY",
+   "home": "Model.close",
+   "requirement": "Close order is halt, de-energize, flush, close port, release gamepad claim. Every step isolated: the hardware step is never skipped because an earlier step raised. Never close a port mid-move without sending the stop first.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-10",
+   "category": "CARRY",
+   "home": "Model.close",
+   "requirement": "Close order is halt, de-energize, flush, close port, release gamepad claim. Every step isolated: the hardware step is never skipped because an earlier step raised. Never close a port mid-move without sending the stop first.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-16",
+   "category": "CARRY",
+   "home": "Model.close",
+   "requirement": "Close order is halt, de-energize, flush, close port, release gamepad claim. Every step isolated: the hardware step is never skipped because an earlier step raised. Never close a port mid-move without sending the stop first.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-11",
+   "category": "CARRY",
+   "home": "Model.close",
+   "requirement": "Close order is halt, de-energize, flush, close port, release gamepad claim. Every step isolated: the hardware step is never skipped because an earlier step raised. Never close a port mid-move without sending the stop first.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-2",
+   "category": "CARRY",
+   "home": "Model.close",
+   "requirement": "Close order is halt, de-energize, flush, close port, release gamepad claim. Every step isolated: the hardware step is never skipped because an earlier step raised. Never close a port mid-move without sending the stop first.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-3",
+   "category": "CARRY",
+   "home": "Model.close",
+   "requirement": "Close order is halt, de-energize, flush, close port, release gamepad claim. Every step isolated: the hardware step is never skipped because an earlier step raised. Never close a port mid-move without sending the stop first.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-19",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-21",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-22",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-23",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-25",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-8",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-4",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-6",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-1",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-7",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-13",
+   "category": "CARRY",
+   "home": "Model.estop / Controller.estop_all",
+   "requirement": "Latch before any I/O. Hardware stop on a worker with a bounded join. Returns True only when the stop landed. estop_all fans out one thread per model under one 1.0 s budget, and stops every model before closing any. An unconfirmed stop raises the ONE acknowledged popup naming the models. The latch clears only by operator action, with confirmation.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-8",
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-11",
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-12",
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-16",
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-20",
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-23",
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ledger_status": "open"
+  },
+  {
+   "id": "TEMP-17",
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ledger_status": "open"
+  },
+  {
+   "id": "DC-18",
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-16",
+   "category": "CARRY",
+   "home": "SerialPort.write",
+   "requirement": "One write path. Transaction lock plus a separate write-in-flight lock, so a priority byte never interleaves with a frame already on the wire. Priority lane with a lock timeout. abort_if evaluated inside the lock. Bounded flush and write timeouts. A failed write marks the port LOST and raises TransportError; nothing is swallowed. Bytes on the wire are identical to today's (golden-frame test).",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-4",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-7",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-8",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-11",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-13",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-15",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-5",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-6",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-19",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-3",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-4",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-13",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-14",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-11",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-12",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-6",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-19",
+   "category": "OUT",
+   "home": "PanelView / Panel.run",
+   "requirement": "Views never setattr on a model. Every command carries the panel's current entry values; Panel.run validates them as a set through Param (type, bounds, decimals) and commits all or none. Refusal names the field. set_value is allow-listed by the schema's writable flag.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-1",
+   "category": "OUT",
+   "home": "Probe._jog_loop",
+   "requirement": "The jog loop and the gamepad belong to the model, so manual mode works identically under all three views, the Web included.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-5",
+   "category": "OUT",
+   "home": "Probe._jog_loop",
+   "requirement": "The jog loop and the gamepad belong to the model, so manual mode works identically under all three views, the Web included.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-2",
+   "category": "OUT",
+   "home": "Probe._jog_loop",
+   "requirement": "The jog loop and the gamepad belong to the model, so manual mode works identically under all three views, the Web included.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-2",
+   "category": "OUT",
+   "home": "Probe._jog_loop",
+   "requirement": "The jog loop and the gamepad belong to the model, so manual mode works identically under all three views, the Web included.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-5",
+   "category": "OUT",
+   "home": "Probe._jog_loop",
+   "requirement": "The jog loop and the gamepad belong to the model, so manual mode works identically under all three views, the Web included.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-13",
+   "category": "OUT",
+   "home": "Probe._jog_loop",
+   "requirement": "The jog loop and the gamepad belong to the model, so manual mode works identically under all three views, the Web included.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-5",
+   "category": "OUT",
+   "home": "Probe._jog_loop",
+   "requirement": "The jog loop and the gamepad belong to the model, so manual mode works identically under all three views, the Web included.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-2",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-3",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-4",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-7",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-8",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-10",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-15",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-16",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-17",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-18",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-19",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-21",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-5",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-15",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-17",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-4",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-6",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-9",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-11",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-14",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-16",
+   "category": "CARRY",
+   "home": "Gamepad / GamepadHub",
+   "requirement": "One SDL owner. Claims released on close and on relaunch. A swap that fails to bind stops the probe and reverts the selection. Exactly one poll loop per Gamepad (generation guard). flush_neutral really neutralises. Edge events are latched, never dropped between ticks, and read without consuming from another thread. Gamepad loss while MANUAL = halt and disable. 50 Hz jog cadence. macOS disconnect detection re-enumerates.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-5",
+   "category": "BENCH",
+   "home": "Gamepad.LAYOUTS",
+   "requirement": "STILL OPEN today. The layout table is the single place to settle them: exact-name whitelist, T16000M Z/bumper mapping, D-pad sign, deadzone applied once. Each needs the physical pad in hand; the rebuild ports today's values unchanged and marks them unverified. Dropdown live refresh and rebind-after-disconnect are code-closable in Gamepad.options.",
+   "ledger_status": "open"
+  },
+  {
+   "id": "GAMEPAD-11",
+   "category": "BENCH",
+   "home": "Gamepad.LAYOUTS",
+   "requirement": "STILL OPEN today. The layout table is the single place to settle them: exact-name whitelist, T16000M Z/bumper mapping, D-pad sign, deadzone applied once. Each needs the physical pad in hand; the rebuild ports today's values unchanged and marks them unverified. Dropdown live refresh and rebind-after-disconnect are code-closable in Gamepad.options.",
+   "ledger_status": "open"
+  },
+  {
+   "id": "GAMEPAD-12",
+   "category": "BENCH",
+   "home": "Gamepad.LAYOUTS",
+   "requirement": "STILL OPEN today. The layout table is the single place to settle them: exact-name whitelist, T16000M Z/bumper mapping, D-pad sign, deadzone applied once. Each needs the physical pad in hand; the rebuild ports today's values unchanged and marks them unverified. Dropdown live refresh and rebind-after-disconnect are code-closable in Gamepad.options.",
+   "ledger_status": "open"
+  },
+  {
+   "id": "GAMEPAD-13",
+   "category": "BENCH",
+   "home": "Gamepad.LAYOUTS",
+   "requirement": "STILL OPEN today. The layout table is the single place to settle them: exact-name whitelist, T16000M Z/bumper mapping, D-pad sign, deadzone applied once. Each needs the physical pad in hand; the rebuild ports today's values unchanged and marks them unverified. Dropdown live refresh and rebind-after-disconnect are code-closable in Gamepad.options.",
+   "ledger_status": "open"
+  },
+  {
+   "id": "GAMEPAD-14",
+   "category": "BENCH",
+   "home": "Gamepad.LAYOUTS",
+   "requirement": "STILL OPEN today. The layout table is the single place to settle them: exact-name whitelist, T16000M Z/bumper mapping, D-pad sign, deadzone applied once. Each needs the physical pad in hand; the rebuild ports today's values unchanged and marks them unverified. Dropdown live refresh and rebind-after-disconnect are code-closable in Gamepad.options.",
+   "ledger_status": "open"
+  },
+  {
+   "id": "VIEW-TKINTER-10",
+   "category": "BENCH",
+   "home": "Gamepad.LAYOUTS",
+   "requirement": "STILL OPEN today. The layout table is the single place to settle them: exact-name whitelist, T16000M Z/bumper mapping, D-pad sign, deadzone applied once. Each needs the physical pad in hand; the rebuild ports today's values unchanged and marks them unverified. Dropdown live refresh and rebind-after-disconnect are code-closable in Gamepad.options.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-20",
+   "category": "BENCH",
+   "home": "Gamepad.LAYOUTS",
+   "requirement": "STILL OPEN today. The layout table is the single place to settle them: exact-name whitelist, T16000M Z/bumper mapping, D-pad sign, deadzone applied once. Each needs the physical pad in hand; the rebuild ports today's values unchanged and marks them unverified. Dropdown live refresh and rebind-after-disconnect are code-closable in Gamepad.options.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-1",
+   "category": "CARRY",
+   "home": "Probe (interlock)",
+   "requirement": "is_moving expires by deadline. The idle interlock fires in AUTO and MANUAL on real inactivity (D-3). Restart race: a new watchdog never reuses a dying thread's stop event.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-6",
+   "category": "CARRY",
+   "home": "Probe (interlock)",
+   "requirement": "is_moving expires by deadline. The idle interlock fires in AUTO and MANUAL on real inactivity (D-3). Restart race: a new watchdog never reuses a dying thread's stop event.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-7",
+   "category": "CARRY",
+   "home": "Probe (interlock)",
+   "requirement": "is_moving expires by deadline. The idle interlock fires in AUTO and MANUAL on real inactivity (D-3). Restart race: a new watchdog never reuses a dying thread's stop event.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-3",
+   "category": "CARRY",
+   "home": "Probe (interlock)",
+   "requirement": "is_moving expires by deadline. The idle interlock fires in AUTO and MANUAL on real inactivity (D-3). Restart race: a new watchdog never reuses a dying thread's stop event.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-6",
+   "category": "CARRY",
+   "home": "Probe.step / schema gating",
+   "requirement": "Step stays available while AUTO so repeated stepping works; refused only while is_moving. (This was closed for the Web in the ledger and re-broken in the schema: review finding 5.)",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-8",
+   "category": "VOID",
+   "home": "-",
+   "requirement": "Scripts / G-code purged by owner ruling 2026-09-21.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-9",
+   "category": "VOID",
+   "home": "-",
+   "requirement": "Scripts / G-code purged by owner ruling 2026-09-21.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-10",
+   "category": "VOID",
+   "home": "-",
+   "requirement": "Scripts / G-code purged by owner ruling 2026-09-21.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-11",
+   "category": "VOID",
+   "home": "-",
+   "requirement": "Scripts / G-code purged by owner ruling 2026-09-21.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-2",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-3",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-4",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-5",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-8",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-9",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-10",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-12",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-17",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-2",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-10",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-15",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-21",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-9",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-14",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-17",
+   "category": "CARRY",
+   "home": "EventLog + Dashboard._on_event",
+   "requirement": "sys, threading and Tk/Qt exception hooks installed once. Non-destructive since(id) so two browser tabs both see every event. Dedupe window with a repeat count. Popups are marshalled to the UI thread and NEVER opened synchronously inside a close/teardown path. Web escapes every server string (no innerHTML). Handler exceptions return JSON errors.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-1",
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-7",
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-3",
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-13",
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-15",
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-12",
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-18",
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-10",
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-7",
+   "category": "OUT",
+   "home": "Result / Refused",
+   "requirement": "A command returns a value or raises Refused / NeedsConfirm, so a refusal cannot be reported as success. All three views render Refused. A disconnected or simulated model refuses with a reason instead of going inert.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-5",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-6",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-12",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-14",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-18",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-20",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-6",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-7",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-9",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-17",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-4",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-15",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-16",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-12",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-14",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-15",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-7",
+   "category": "CARRY",
+   "home": "Setup",
+   "requirement": "ONE setup for three views, with autodetection preserved: port scan, handshake identity byte, gamepad list. Scan runs off the UI thread with progress and can be cancelled. Build is all-or-nothing with rollback. The identity byte is checked against the model class. SIM works for every model. A disabled row builds nothing. Probing errors are reported, not swallowed. CLI args are strict.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-6",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-7",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-9",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-11",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-9",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-14",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-12",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-8",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-21",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-22",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-2",
+   "category": "CARRY",
+   "home": "Model threads / Model.state",
+   "requirement": "Models own their loops; views only read state, never the transport. state carries a last-updated age so every view can grey out a stale value. Reader threads back off and recover instead of giving up. Long moves are not capped at 12 s. Status polls never delay a stop.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ROTATOR-4",
+   "category": "CARRY",
+   "home": "Rotator._move_guarded",
+   "requirement": "Tubing confirmation beyond 30 degrees on every move type. A stop forgets the commanded target. Busy guard against stacked moves. (home() must commit its target only after the guard passes: review finding 2.)",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-1",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-2",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-3",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-4",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-5",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-9",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-21",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-22",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-23",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-15",
+   "category": "CARRY",
+   "home": "RedMonitor / MonitorRun",
+   "requirement": "Each run freezes its own configuration and owns its log and stop event. Start refuses without a focus area. Thread failure ends the run and reports. Red and change published as one pair. Run identity, output root, sidecar JSON and annotations kept.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-6",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-8",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-10",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-11",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-12",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-13",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-17",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-3",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-4",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-7",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-8",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-11",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-18",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "STEPPER-13",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-6",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-7",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-13",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-14",
+   "category": "OUT",
+   "home": "RedMonitor (schema-only view)",
+   "requirement": "No Red Percent view subclasses. One Position Source control wired to set_source. One Save. The probe list follows on_model_added / on_model_removed. remove() autosaves or asks before discarding unsaved data. The live series comes from the model only.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-16",
+   "category": "REOPEN",
+   "home": "RedMonitor._read_dim / RunLog",
+   "requirement": "Ledger says closed; today's audit says NOT fit for force approximation. Velocity is differenced across red events against a 10 Hz position cache, and rows are still change-triggered. Needs the owner's two answers (uniform sampling? is 10 Hz a firmware limit?).",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-18",
+   "category": "BENCH",
+   "home": "RegionOverlay / region_select",
+   "requirement": "STILL OPEN. One drag picker in all three views (Tk has only a typed prompt today; the Web picker is unreachable). Virtual-desktop and display-scaling conversion needs checking on the station PC.",
+   "ledger_status": "open"
+  },
+  {
+   "id": "PYSIDE-12",
+   "category": "BENCH",
+   "home": "RegionOverlay / region_select",
+   "requirement": "STILL OPEN. One drag picker in all three views (Tk has only a typed prompt today; the Web picker is unreachable). Virtual-desktop and display-scaling conversion needs checking on the station PC.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-19",
+   "category": "VIEW",
+   "home": "theme + PanelView",
+   "requirement": "Readouts formatted by Param (decimals, unit) identically in three views. Button and toggle state follows the model, including after FULL STOP. One shared theme: role palette, toggle on/off roles, one base font size. No dead widgets. macOS middle/right-click tab close stays unverified until run on a Mac.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-16",
+   "category": "VIEW",
+   "home": "theme + PanelView",
+   "requirement": "Readouts formatted by Param (decimals, unit) identically in three views. Button and toggle state follows the model, including after FULL STOP. One shared theme: role palette, toggle on/off roles, one base font size. No dead widgets. macOS middle/right-click tab close stays unverified until run on a Mac.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "PYSIDE-17",
+   "category": "VIEW",
+   "home": "theme + PanelView",
+   "requirement": "Readouts formatted by Param (decimals, unit) identically in three views. Button and toggle state follows the model, including after FULL STOP. One shared theme: role palette, toggle on/off roles, one base font size. No dead widgets. macOS middle/right-click tab close stays unverified until run on a Mac.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-17",
+   "category": "VIEW",
+   "home": "theme + PanelView",
+   "requirement": "Readouts formatted by Param (decimals, unit) identically in three views. Button and toggle state follows the model, including after FULL STOP. One shared theme: role palette, toggle on/off roles, one base font size. No dead widgets. macOS middle/right-click tab close stays unverified until run on a Mac.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "VIEW-TKINTER-18",
+   "category": "VIEW",
+   "home": "theme + PanelView",
+   "requirement": "Readouts formatted by Param (decimals, unit) identically in three views. Button and toggle state follows the model, including after FULL STOP. One shared theme: role palette, toggle on/off roles, one base font size. No dead widgets. macOS middle/right-click tab close stays unverified until run on a Mac.",
+   "ledger_status": "open"
+  },
+  {
+   "id": "TEMP-9",
+   "category": "VIEW",
+   "home": "theme + PanelView",
+   "requirement": "Readouts formatted by Param (decimals, unit) identically in three views. Button and toggle state follows the model, including after FULL STOP. One shared theme: role palette, toggle on/off roles, one base font size. No dead widgets. macOS middle/right-click tab close stays unverified until run on a Mac.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-24",
+   "category": "VIEW",
+   "home": "theme + PanelView",
+   "requirement": "Readouts formatted by Param (decimals, unit) identically in three views. Button and toggle state follows the model, including after FULL STOP. One shared theme: role palette, toggle on/off roles, one base font size. No dead widgets. macOS middle/right-click tab close stays unverified until run on a Mac.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "MANAGER-15",
+   "category": "CARRY",
+   "home": "ApiHandler._is_local",
+   "requirement": "Localhost bind plus Origin/Host check on every state-changing route; JSON content type required.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-10",
+   "category": "CARRY",
+   "home": "ApiHandler._is_local",
+   "requirement": "Localhost bind plus Origin/Host check on every state-changing route; JSON content type required.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "REDPERCENT-20",
+   "category": "VOID",
+   "home": "-",
+   "requirement": "Dead or legacy state that does not exist in the rebuild.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "ERRORS-11",
+   "category": "DOC",
+   "home": "docs",
+   "requirement": "Architecture docs are rewritten for the new structure; these corrections are moot.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "GAMEPAD-20",
+   "category": "DOC",
+   "home": "docs",
+   "requirement": "Architecture docs are rewritten for the new structure; these corrections are moot.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-19",
+   "category": "DOC",
+   "home": "docs",
+   "requirement": "Architecture docs are rewritten for the new structure; these corrections are moot.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "TEMP-12",
+   "category": "DOC",
+   "home": "docs",
+   "requirement": "Architecture docs are rewritten for the new structure; these corrections are moot.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "SERIAL-10",
+   "category": "BENCH",
+   "home": "firmware / owner",
+   "requirement": "Firmware is untouched by owner instruction. DC board has no coil kill (reported honestly, D-7). Protocol change vs main needs matching firmware (already flashed). D-2 coil-off on stop stands. The Web heartbeat's warn/stop seconds become ONE pair on WebView, still set at the bench.",
+   "ledger_status": "open"
+  },
+  {
+   "id": "SERIAL-13",
+   "category": "BENCH",
+   "home": "firmware / owner",
+   "requirement": "Firmware is untouched by owner instruction. DC board has no coil kill (reported honestly, D-7). Protocol change vs main needs matching firmware (already flashed). D-2 coil-off on stop stands. The Web heartbeat's warn/stop seconds become ONE pair on WebView, still set at the bench.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "DC-10",
+   "category": "BENCH",
+   "home": "firmware / owner",
+   "requirement": "Firmware is untouched by owner instruction. DC board has no coil kill (reported honestly, D-7). Protocol change vs main needs matching firmware (already flashed). D-2 coil-off on stop stands. The Web heartbeat's warn/stop seconds become ONE pair on WebView, still set at the bench.",
+   "ledger_status": "closed"
+  },
+  {
+   "id": "WEB-19",
+   "category": "BENCH",
+   "home": "firmware / owner",
+   "requirement": "Firmware is untouched by owner instruction. DC board has no coil kill (reported honestly, D-7). Protocol change vs main needs matching firmware (already flashed). D-2 coil-off on stop stands. The Web heartbeat's warn/stop seconds become ONE pair on WebView, still set at the bench.",
+   "ledger_status": "open"
+  },
+  {
+   "id": "WEB-23",
+   "category": "BENCH",
+   "home": "firmware / owner",
+   "requirement": "Firmware is untouched by owner instruction. DC board has no coil kill (reported honestly, D-7). Protocol change vs main needs matching firmware (already flashed). D-2 coil-off on stop stands. The Web heartbeat's warn/stop seconds become ONE pair on WebView, still set at the bench.",
+   "ledger_status": "open"
+  }
+ ]
+}

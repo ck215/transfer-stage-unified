@@ -1,0 +1,638 @@
+# ===================== NEW CLASSES =====================
+class <app> [launch] : The only entry module. main() picks a view, builds the one Controller, hands both to the view. Replaces app + app_bootstrap + lifecycle + devices.
+class Setup(Panel) [launch] : The setup panel. Scans ports and gamepads, validates an assignment, constructs Models into the Controller. Rendered by every view's PanelView from its schema, so there is one wizard instead of three.
+class Controller [control] : Owns every Model. The ONLY object a view talks to. Constructs/destructs models on demand, serialises commands per model, wires the per-model estops into the global one, closes everything exactly once on exit.
+class EventLog [control] : One event log (was Event + EventBus + ErrorRouter + three per-view popup managers). Module singleton `events`. One policy decides what needs an acknowledged popup.
+class Event [control] : Plain record of one event. No behaviour beyond a merge key and serialisers.
+class Result [control] : One result type (was CommandResult, Ok, Failed and as_result). Built only by Panel.run.
+class Refused(Exception) [control] : Raised by a command to refuse. Cannot be silently dropped, which designs out finding 4 (refusals reported as Ok).
+class NeedsConfirm(Exception) [control] : Raised by a command that must not proceed unattended; the view asks, then re-runs with confirmed=True.
+class Panel [model] : Anything a view can render: a Param table, a schema, a state snapshot, and run(). Base of Model and Setup. Replaces the SchemaCommands mixin.
+class Model(Panel) [model] : Base of every station model. Owns its Devices, opens/closes them on demand, reports their status in state, and carries the ONE estop latch implementation. Replaces the ManagedModel protocol and three hand-rolled latch copies.
+class Param [model] : Typed, bounded parameter declaration. Unchanged.
+class <schema> [model] : Schema element builders and the questions renderers ask. Gains `image` and per-state toggle args; otherwise unchanged.
+class <plot_data> [model] : Red Percent CSV parsing and figure rendering, used by RedMonitor so all three views show the same image.
+class ProbeMode [model] : DISABLED, IDLE (was ENABLED_IDLE), AUTO (was AUTONOMOUS), MANUAL, FAULT.
+class Probe(Model) [model] : Mode machine, move/jog frames, position sampling, motion interlock. Owns a SerialPort and a Gamepad. Was BaseProbe (1682 lines); loses scripts, client liveness, gamepad plumbing and its private copy of the latch.
+class StepperProbe(Probe) [model] : TMC2209 board.
+class DCProbe(Probe) [model] : Own packet format; firmware cannot kill coils.
+class ChuckPositioner(Probe) [model] : Stepper-family board.
+class Heater(Model) [model] : Was TemperatureSystem. Owns a SerialPort.
+class Rotator(Model) [model] : Was RotatorSystem. Owns an SMC100.
+class RedMonitor(Model) [model] : Was RedPercentSystem. Owns a Screen. Follows a Probe for position.
+class MonitorRun [model] : One monitoring run. Was MonitoringRun.
+class RunLog [model] : Samples of one run. Was RedPercentDataLog.
+class Device [device] : Base of everything a Model owns that touches the outside world: open(), close(), is_open, status. One way to report connection state upward.
+class ConnectionState [device] : SIMULATED, CONNECTING, VERIFIED, UNVERIFIED, LOST, CLOSED.
+class TransportError(Exception) [device] : Lives in the same module as SerialPort, which is the only thing that raises it.
+class SerialPort(Device) [device] : Was `serial` (which shadowed pyserial). ONE write path with a priority lane and an in-lock abort check. Knows nothing about probes.
+class SimulatedPort [device] : Stand-in pyserial object for simulator mode.
+class SMC100(Device) [device] : Newport driver. Protocol methods keep their vendor names so upstream diffs stay readable; its raw port I/O moves onto SerialPort so the station has one transport stack.
+class Gamepad(Device) [device] : Was ControllerPoller + BaseGamepad + four subclasses. Layouts become a data table. 'Controller' now means only the Controller.
+class GamepadHub [device] : Was InputService. Process-wide owner of SDL and joystick claims.
+class Screen(Device) [device] : Screen capture (mss). Was duplicated in RedPercentSystem and the web server.
+class <theme> [view] : One shared look for all three views: role palette, toggle on/off roles, one base font size. Tk and Qt read it directly; the Web view serves it as CSS variables. Replaces per-widget hardcoded Arial 10, a 10px Qt stylesheet and a separate Web palette.
+class Dashboard [view] : Toolkit-neutral dashboard logic shared by Tk and Qt: event popup policy, model open/close, global estop toggle, focus forwarding.
+class PanelView [view] : Toolkit-neutral panel logic: gather inputs, run, confirm, show Refused, gate by mode, refresh. One abstract _make_<type> per schema element type, so a view missing a renderer cannot be instantiated.
+class TkDashboard(Dashboard) [view-tk] : Tk window.
+class TkPanelView(PanelView) [view-tk] : Tk renderer. Was DynamicView.
+class ClosableNotebook [view-tk] : Pure widget. Was DraggableClosableNotebook.
+class QtDashboard(Dashboard) [view-qt] : Qt window.
+class QtPanelView(PanelView) [view-qt] : Qt renderer. Was QtDynamicView.
+class SeriesPlot [view-qt] : Pure widget.
+class RegionOverlay [view-qt] : Pure widget. Was SelectionOverlay. Qt event-handler names are fixed by Qt and exempt from the naming scheme.
+class DeviceDock [view-qt] : Pure widget.
+class WebView [view-web] : Was WebDashboardWindow + WebDashboardServer. Owns the HTTP server AND the browser-heartbeat watchdog, which calls Controller.estop_all. Client liveness no longer exists in any model.
+class ApiHandler [view-web] : Thin JSON wrapper over the same Controller calls the desktop views make. Was WebAPIHandler + WebModelAdapter.
+
+rel Setup ..> Controller : add(model)
+rel <app> ..> Setup : builds
+rel <app> ..> Controller : builds
+rel Controller o-- Model : owns 0..*
+rel Controller ..> EventLog : publishes
+rel EventLog o-- Event
+rel Panel ..> Result : run() returns
+rel Panel ..> Param
+rel Panel ..> <schema>
+rel Model *-- Device : owns 1..*
+rel Probe *-- SerialPort
+rel Probe *-- Gamepad
+rel Probe *-- ProbeMode
+rel Heater *-- SerialPort
+rel Rotator *-- SMC100
+rel SMC100 *-- SerialPort
+rel RedMonitor *-- Screen
+rel RedMonitor *-- MonitorRun
+rel MonitorRun *-- RunLog
+rel RedMonitor ..> Probe : reads position
+rel RedMonitor ..> <plot_data>
+rel SerialPort *-- ConnectionState
+rel SerialPort o-- SimulatedPort
+rel SerialPort ..> TransportError : raises
+rel Gamepad ..> GamepadHub : claim/release
+rel Dashboard ..> Controller : only dependency
+rel PanelView ..> Controller : schema/state/run
+rel Dashboard o-- PanelView : one per open model
+rel TkDashboard ..> Controller : holds (inherited)
+rel QtDashboard ..> Controller : holds (inherited)
+rel PanelView ..> <theme>
+rel Dashboard ..> <theme>
+rel WebView ..> <theme> : serves as CSS variables
+rel TkDashboard o-- ClosableNotebook
+rel QtDashboard o-- DeviceDock
+rel QtPanelView o-- SeriesPlot
+rel QtPanelView o-- RegionOverlay
+rel WebView *-- ApiHandler
+rel WebView ..> Controller : estop_all on lost heartbeat
+rel ApiHandler ..> Controller : schema/state/run
+
+# ===================== NEW MEMBERS (no old origin) =====================
++ Controller.reopen | method | reopen(name): add() again from the config remembered at remove(), so a reopened model is never headless.
++ Controller.schema | method | schema(name) -> dict. What a view renders.
++ Controller.is_active | prop | True while any model is moving or heating. What the Web heartbeat watchdog consults.
++ Controller.clear_estop_all | method | clear_estop_all(confirmed). One confirmation listing the latched models, then each model's own clear_estop.
++ Controller.is_estopped | prop | any(model.is_estopped). Drives the global toggle's label.
++ Controller.set_input_focus | method | Forwards window focus to every Gamepad gate. Views no longer reach into probes.
++ Model.devices | prop | The Devices this model owns.
++ Model.open | method | Open every owned Device. On demand.
++ Model.is_active | prop | Is it moving / heating / recording right now. Replaces three private _client_liveness_active copies.
++ Model.halt | method | Unlatched stop of motion/heat. Subclasses implement _halt_hardware only.
++ Model._halt_hardware | method | The ONE hook a subclass writes for stopping: the strongest hardware stop it has, sent on the priority lane.
++ Model.toggle_estop | method | Per-model stop/clear toggle command. Inherited, so every model has it and the Controller's global stop is just these wired together.
++ Model.state | prop | One snapshot dict: params, mode, is_estopped, fault, and each owned Device's status. How a model tells the Controller what it is.
++ Device.open | method | 
++ Device.close | method | 
++ Device.is_open | prop | 
++ Device.status | prop | ConnectionState or equivalent; surfaces in Model.state.
++ Screen.grab | method | grab(region) -> image.
++ RedMonitor.load_run | method | Load a saved CSV run for the analysis plot. Moved from the PySide-only PlotDialog into the model so all three views get it.
++ RedMonitor.set_plot_dims | method | Choose the analysis plot's dimensions.
++ RedMonitor.figure | prop | PNG bytes of the analysis plot, rendered once by plot_data.render_figure and displayed by every view.
++ <schema>.image | method | New element: an image the model supplies. Used by RedMonitor.figure.
++ <schema>.indicator | method | New element: read-only boolean lamp. Used for is_estopped / is_faulted.
++ PanelView._show_refused | method | Non-modal status line. Desktop views drop Refused today.
++ PanelView._make_element | method | Dispatches to one abstract _make_<type> per ELEMENT_TYPE.
++ Dashboard.open | method | 
++ Dashboard.toggle_estop_all | method | The global FULL STOP / CLEAR toggle: Controller.estop_all or clear_estop_all, label driven by Controller.is_estopped.
++ <theme>.ROLES | prop | neutral, go, danger, warning, info -> colours. One table.
++ <theme>.FONT_SIZE | prop | One base size; every widget derives from it. Overridable at launch (--font-size).
++ <theme>.toggle_colors | method | toggle_colors(on_role, off_role, is_on). A toggle declares what its ON state means, so a latched estop shows danger, not the green Tk paints every ON toggle today.
++ PanelView._apply_theme | method | 
++ Result.needs_confirm | prop | 
+
+# ===================== FATE OF EVERY EXISTING METHOD =====================
+@ <app> => <app>
+main -> =
+select_view -> .pick_view | verb scheme; 'select' is reserved for operator selections
+run_legacy_app, run_pyside_app, run_web_app -> .launch | three 390-line launcher functions, each nesting its own setup wizard, become one launch(view_name) over a 3-entry table; the wizards are replaced by the Setup panel
+launch_legacy, launch_pyside -> ! purged | one-line wrappers around run_*; pick_view returns the name
+
+@ <app_bootstrap> => Setup
+discover_ports -> .scan_ports
+discover_controllers -> .scan_gamepads | 'controller' now means only the Controller
+probe_device_at -> .identify
+normalize_config -> ! implied | one Setup produces configs in one shape; there is nothing left to normalise
+validate_assignment -> .validate
+build_models, _build_each -> .build
+link_models -> ! implied | Controller.add announces each model to the others (on_model_added); no second wiring pass
+
+@ <model.devices> => Setup
+_stepper, _dc, _chuck, _temperature, _rotator, _red_percent -> ! implied | every Model subclass has the same constructor signature and class attrs NAME / IDENTITY / NEEDS_PORT / NEEDS_GAMEPAD; MODEL_TYPES is a dict of classes
+names -> .model_types
+get, build -> .build
+
+@ Device => Setup
+__init__, build, __repr__ -> ! implied | the catalog record class (also named Device) is replaced by class attributes on each Model subclass
+
+@ <lifecycle> => Controller
+set_current_manager, current_manager -> ! implied | one Controller per process, created in launch() and never replaced; re-setup calls Controller.reset
+shutdown -> .close
+install_exit_hooks -> ._hook_exit
+_reset_for_tests -> ! purged | no module globals remain to reset
+
+@ SystemManager => Controller
+__init__ -> =
+subscribe -> =
+unsubscribe -> =
+_emit -> ._notify
+register -> .add
+release, _stop_then_teardown -> .remove | destruct on demand: estop, close devices, drop
+get_model -> ._model | private: views never receive a model
+get_config -> .config
+get_active_models_snapshot -> .model_names
+hide, show, is_hidden, visible_models -> ! purged | owner ruling 2026-09-21: closing a tab destructs the model (Controller.remove); reopening constructs it (Controller.add). No hidden state exists
+shutdown_all -> .close
+reconfigure -> .reset
+full_stop_all -> .estop_all | wires the per-model estops together (owner ruling)
+_stop_concurrently -> ._estop_concurrently
+_report -> ! implied | EventLog is called directly
+
+@ WebModelAdapter => Controller
+__init__, set_system_manager -> ! implied | no adapter: the Web view holds the Controller like the other two views
+_get_device_lock -> ._lock_for | per-model command serialisation now protects all three views, not only Web
+scan_hardware, start_hardware_scan, get_scan_status -> Setup.scan | progress is part of Setup.state
+initialize_setup, _initialize_setup_locked, initialize_system -> Setup.build
+get_system_info, get_state -> .state | state() for everything, state(name) for one model
+get_devices -> .model_names
+_determine_connection_status, _transport_state -> Model.state | each owned Device reports status; no view-side inference
+_schema_commands, _schema_options_commands, _schema_attrs -> Panel._allows | the schema allow-list moves into Panel.run, so it guards every view
+resolve_options -> .options
+dispatch_command -> .run
+full_stop_all -> .estop_all
+set_device_attribute -> .set_value
+append_log, get_logs -> EventLog.info | the Web-only stdout buffer becomes ordinary info events
+errors_since -> EventLog.since
+latest_error_id -> EventLog.latest_id
+record_client_heartbeat -> WebView.beat
+client_heartbeat_age_seconds -> WebView.heartbeat_age
+
+@ ClientLivenessGate => WebView
+_init_client_liveness -> ! implied | WebView.__init__
+_client_liveness_active -> Controller.is_active
+touch_client_liveness -> .beat
+stop_client_liveness_watchdog, _ensure_client_liveness_watchdog -> ! implied | the watchdog thread starts in WebView.open and ends in WebView.close
+_client_liveness_loop -> ._watch_loop
+_check_client_liveness -> ._check_heartbeat | on timeout: Controller.estop_all. One watchdog for the station instead of one per model
+
+@ CommandResult => Result
+ok -> .is_ok
+refused -> .is_refused
+failed -> .is_failed
+needs_confirmation -> .needs_confirm
+__bool__ -> =
+__repr__ -> =
+@ Ok => Result
+__init__ -> =
+@ Failed => Result
+__init__ -> = | built by Panel.run from the caught exception
+@ Refused => Refused
+__init__ -> =
+@ NeedsConfirmation => NeedsConfirm
+__init__ -> =
+__repr__ -> =
+@ <results> => Result
+as_result -> ! implied | commands return a value or raise Refused/NeedsConfirm; None-means-Ok is now correct by construction instead of a shim that hid refusals
+
+@ <error_routing> => EventLog
+reset_bus -> ! purged | test helper; tests call events.clear
+install_exception_hooks -> .hook_exceptions
+@ Event => Event
+__init__ -> =
+key -> =
+to_dict -> =
+__repr__ -> =
+@ EventBus => EventLog
+__init__ -> =
+publish -> ._publish
+_prune_recent -> =
+subscribe -> =
+unsubscribe -> =
+subscriber_count -> ! purged | no caller in src; one test reads it
+since -> =
+latest_id -> =
+snapshot -> ! purged | no caller in src or tests
+clear -> =
+@ ErrorRouter => EventLog
+report_error -> .error | the ONLY call that may set needs_ack; reserved for failed commands, faults and unconfirmed stops
+report_warning -> .warn
+report_info -> .info
+subscribe -> .subscribe
+unsubscribe -> .unsubscribe
+since -> .since
+
+@ ManagedModel => Model
+teardown -> .close | the contract is the base class
+emergency_stop -> .estop
+@ SchemaCommands => Panel
+apply_inputs -> ._apply_inputs
+execute_command -> .run
+
+@ Param => Param
+__init__, is_numeric, coerce, parse, format, to_schema, _clamp, __repr__ -> =
+@ <model.params> => Param
+table -> ! implied | PARAMS is a plain dict literal
+extend -> ! implied | subclasses write PARAMS = {**Base.PARAMS, ...}
+@ <model.numeric> => Param
+num, safe_float -> Param.parse | two free-function parsers beside a typed Param table; remaining callers parse through their Param
+
+@ <model.schema> => <schema>
+section, schema, readonly, entry, button, toggle, dropdown, region_select, file_save, plot, log_stream, _gate, is_enabled, current_text, format_region, elements -> =
+
+@ <model.plot_data> => <plot_data>
+parse_red_percent_csv -> .parse_run_csv
+load_red_percent_run -> .load_run
+render_red_percent_figure -> .render_figure
+
+@ <model.probes> => Probe
+_mode_gated_param -> Probe._gated_param
+@ ModeRefused => Refused | merged: a second refusal exception type
+@ ProbeMode => ProbeMode
+@ BaseProbe => Probe
+_defaults -> Panel._defaults | generic over PARAMS
+_param -> Panel._param
+__del__ -> ! implied | Controller.remove closes models; destructors are not a lifecycle
+__init__ -> =
+_axis_state -> =
+vel_x, vel_y, vel_z -> .velocity | one (x, y, z) property
+ui_schema -> Panel.schema
+get_available_controllers -> Gamepad.options
+set_controller -> Gamepad.bind
+_sync_controller_var -> ! implied | gamepad_id is read from the Gamepad, not mirrored
+controller_log -> Gamepad.log
+open_controller_log -> ! purged | no caller; the log_stream element shows it inline
+toggle_manual, toggle_auton, enter_auton, enter_manual, toggle_enable, full_stop -> .set_mode | six public ways to change mode become one; schema toggles pass the target mode as an argument
+_new_run_generation, _generation_is_current, cancel_running_script, run_script -> ! purged | owner ruling 2026-09-21: scripts are not used at the station. Removes finding 8 with them
+_enter_fault -> Model._fault
+in_fault -> Model.is_faulted
+_clear_fault -> Model._clear_fault
+mode -> =
+system_enabled -> .is_enabled
+auton_flag -> .is_auto
+manual_flag -> .is_manual
+is_stepping -> .is_moving
+_begin_stepping -> ._mark_moving
+_note_position -> =
+connection_state -> Model.state | reported per owned Device
+input_gate_open -> Gamepad.is_gate_open
+set_input_gate -> Gamepad.set_gate
+_gamepad_bound -> Gamepad.is_bound
+_transition -> ._set_mode
+_arm -> ._energize
+_go_disabled -> ._deenergize
+estop_latched -> Model.is_estopped
+clear_estop -> Model.clear_estop
+_refuse_if_estopped -> Model._guard | raises Refused; also handed to SerialPort.write as abort_if so the check that counts happens inside the lock (designs out finding 3)
+_schema_element_for, _command_element_for, _refuse_if_mode_disallows -> Panel._allows | mode gating enforced once in Panel.run for every model
+execute_command -> Panel.run | the probe-only override disappears
+send_stop_command, power_down, _report_power_down_unsupported -> ._halt_hardware | zero frame, 'd', and the coil-kill report in one method, all on the priority lane (designs out finding 1)
+macro_start_auton -> .step | stays available while AUTO so repeated steps work (finding 5)
+get_params -> ._frame
+send_autonomous_command -> ._send_move
+send_manual_mode_command -> ._send_jog
+read_position -> ._read_position
+start_loops, stop_loops -> ! implied | threads start in Model.open and end in Model.close; nothing else may start them
+_input_loop -> ._jog_loop
+_sample_loop -> =
+touch_activity -> ._touch_activity
+touch_client_liveness, _check_client_liveness -> WebView._check_heartbeat | the probe's private copy of client liveness
+_stop_interlock_watchdog -> ._stop_interlock
+_start_interlock_watchdog -> ._start_interlock
+enable -> Model.enable
+disable -> Model.disable
+supports_coil_kill -> .can_kill_coils
+teardown -> Model.close
+emergency_stop -> Model.estop | one latch-then-bounded-worker implementation, inherited
+@ StepperProbe => StepperProbe
+__init__ -> =
+@ DCProbe => DCProbe
+__init__ -> =
+ui_schema -> Panel.schema
+get_params -> ._frame
+@ ChuckPositioner => ChuckPositioner
+__init__ -> =
+
+@ <model.redpercent_system> => RedMonitor
+_default_output_root -> RedMonitor._default_output_root
+_annotation_property -> ! implied | annotations become Params; no generated properties
+@ RedPercentDataLog => RunLog
+__init__ -> =
+add_entry -> .add
+save_to_csv -> .save
+@ MonitoringRun => MonitorRun
+__init__ -> =
+active -> .is_active
+mark_stopped -> .end
+@ RedPercentSystem => RedMonitor
+__init__ -> =
+set_focus_area -> .set_region
+set_stepper_model -> .set_source
+is_position_source -> ! implied | isinstance(model, Probe)
+bind_registry, unbind_registry -> ! implied | Controller.add/remove call on_model_added/on_model_removed on every model
+probe_registered -> .on_model_added
+probe_released -> .on_model_removed
+_reselect -> =
+capture_focus_area -> Screen.grab
+detect_red -> ._measure_red
+sync_x, sync_y, sync_z, toggle_sync_x, toggle_sync_y, toggle_sync_z -> .set_sync | nine members (three properties, three setters, three toggles) become one sync_axes Param and one command
+effective_run_id -> .run_id
+run_dir -> =
+station_meta -> ._station_meta
+save_run, save_log, autosave_log -> .save | always writes under output_root; the view then copies or downloads the file. No view passes a path to the server (designs out finding 9)
+plot_series -> .series
+get_available_probe_names -> .source_options
+pending_run_data -> Model.state
+has_unsaved_data -> =
+current_red -> =
+red_change -> =
+monitoring -> .is_running | the setter is purged; start_run/end_run are the only writers
+ui_schema -> Panel.schema
+_new_monitor_generation, _monitor_generation_is_current -> MonitorRun.is_active | each run owns its stop_event; a second, global generation counter is redundant once MonitorRun exists (verify against S13 tests during rebuild)
+start_monitoring -> .start_run
+stop_monitoring -> .end_run
+teardown -> Model.close
+_operator_confirmed_discard -> ! implied | start_run raises NeedsConfirm when has_unsaved_data; the confirm_discard hook that views inject into the model is purged, the same repair S10 made for rotation
+emergency_stop -> Model.estop | _halt_hardware = end_run; the base returns True (designs out finding 6)
+reset_baseline -> =
+_publish_red -> =
+_read_dim -> =
+_monitor_colors -> ._run_loop
+
+@ RotatorSystem => Rotator
+__del__ -> ! implied | Controller.remove closes models
+__init__ -> =
+position -> = | setter purged; written only by _poll under the lock
+state -> .motion_state | 'state' is the Model snapshot
+error -> .fault | one fault field on every model
+connection_status -> Model.state
+_run_async, _async_wrapper, _run_guarded -> ._run_motion | three nested wrappers become one; the latch check moves inside SMC100's port lock via abort_if
+connect -> Model.open
+disconnect, teardown -> Model.close
+estop_latched -> Model.is_estopped
+clear_estop -> Model.clear_estop
+emergency_stop -> Model.estop
+home -> = | target committed only after the guard passes (designs out finding 2)
+move_absolute -> .move_to
+move_relative_positive, move_relative_negative -> .move_by | one command with a signed step
+_reference_position -> =
+_commit_target -> =
+_forget_target -> =
+_guarded_move -> ._move_guarded
+ui_schema -> Panel.schema
+stop -> Model.halt
+disable -> Model.disable
+_client_liveness_active -> Model.is_active
+reset_and_configure -> .configure
+_map_state_code -> ._motion_state_name
+poll_status -> ._poll
+start_loops, stop_loops -> ! implied | threads start in Model.open and end in Model.close
+_sample_loop -> =
+
+@ TemperatureSystem => Heater
+connection_state -> Model.state
+__del__ -> ! implied | Controller.remove closes models
+__init__ -> =
+ui_schema -> Panel.schema
+estop_latched -> Model.is_estopped
+clear_estop -> Model.clear_estop
+send_settings -> .apply_settings | raises Refused instead of returning None
+_backoff_wait -> =
+read_serial_data -> ._read_loop
+process_raw_data -> ._parse_line
+get_history -> .history
+temp_series -> .series | same name as RedMonitor.series: one name for 'the plot data'
+stop -> Model.halt
+disable -> Model.disable
+close, disconnect, teardown -> Model.close | three names for one act
+_client_liveness_active -> Model.is_active
+emergency_stop -> Model.estop
+
+@ ConnectionState => ConnectionState
+@ TransportError => TransportError
+@ SimulatedPort => SimulatedPort
+__init__, write, read, readline, reset_input_buffer, reset_output_buffer, flush, close -> = | names fixed by the pyserial interface it imitates
+@ serial => SerialPort
+__init__ -> =
+_connect_worker -> ._connect_loop
+wait_connected -> .wait_open
+_handshake -> =
+_device_from -> ._identity_from
+_verify_serial -> ._verify
+read_position -> Probe._read_position | parsing a probe reply is the probe's job
+send_autonomous_command -> Probe._send_move | goes through SerialPort.write like every other byte (designs out finding 7)
+send_manual_mode_command -> Probe._send_jog
+write_command -> .write
+_mark_lost -> =
+flush -> =
+is_open -> Device.is_open | property on the Device base
+read_line -> =
+enable -> Probe._energize | the 'e' control byte belongs to the probe
+disable -> Probe._deenergize
+close -> Device.close
+
+@ <lib.smc100> => SMC100
+test_configure, test_general -> ! purged | bench scripts living inside a library module
+@ SMC100ReadTimeOutException => SMC100
+__init__ -> ! implied | the five SMC100 exception classes stay as one-line subclasses of a single SMC100Error with default messages
+@ SMC100WaitTimedOutException => SMC100
+__init__ -> ! implied | see SMC100ReadTimeOutException
+@ SMC100DisabledStateException => SMC100
+__init__ -> ! implied | see SMC100ReadTimeOutException
+@ SMC100RS232CorruptionException => SMC100
+__init__ -> ! implied | see SMC100ReadTimeOutException
+@ SMC100InvalidResponseException => SMC100
+__init__ -> ! implied | see SMC100ReadTimeOutException
+@ SMC100 => SMC100
+__init__, reset_and_configure, home, stop, get_status, get_position_deg, get_position_mdeg, move_relative_deg, move_relative_mdeg, move_absolute_deg, move_absolute_mdeg, wait_states, sendcmd -> = | vendor-derived protocol names kept so upstream diffs stay readable
+_readline, _emit -> SerialPort.read_line | raw port I/O moves onto the shared SerialPort: one lock discipline and one priority lane for the whole station
+close -> Device.close
+__del__ -> ! implied | Rotator.close closes it
+
+@ <controller.gamepad> => Gamepad
+get_gamepad_wrapper -> Gamepad._layout_for
+@ BaseGamepad => Gamepad
+__init__ -> ! implied | the five layout classes become rows of a LAYOUTS table
+get_mapped_state, update_overrides -> ._read_layout
+@ XboxGamepad => Gamepad
+__init__ -> ! implied | LAYOUTS row
+get_mapped_state -> ._read_layout
+@ BluetoothXboxGamepad => Gamepad
+__init__ -> ! implied | LAYOUTS row
+get_mapped_state -> ._read_layout
+@ LogitechF310Gamepad => Gamepad
+__init__ -> ! implied | LAYOUTS row
+_is_dinput_mode -> ._is_dinput
+get_mapped_state -> ._read_layout
+@ T16000MGamepad => Gamepad
+update_overrides, get_mapped_state -> ._read_layout
+@ ControllerPoller => Gamepad
+__init__ -> =
+_init_input_state -> ! implied | done in __init__
+_is_os_connected -> Device.is_open
+_handle_disconnect -> =
+get_physical_controllers -> GamepadHub.names | duplicate of the hub's list
+set_controller, _resume_polling_if -> .bind
+_initialize_pygame_joystick -> ._open_joystick
+_next_generation -> =
+start_polling -> Device.open
+_poll_forever, _poll_loop, _read_hardware_changes -> ._poll_loop | the legacy loop and its change-logger fold into the one loop
+stop_polling, close -> Device.close
+_read_raw -> =
+_apply_deadzones -> =
+_capture_state -> =
+poll_once -> =
+read_levels, get_mapped_state -> .levels | two accessors for the same snapshot
+drain_edges -> =
+flush_neutral -> =
+@ InputService => GamepadHub
+__init__ -> =
+ensure_init -> .open
+shutdown -> .close
+enumerate, names -> .names
+initialised -> .is_open
+count -> =
+is_index_connected -> .is_connected
+acquire -> .claim
+release -> =
+claims -> =
+index_for -> =
+lock -> =
+pump -> =
+
+@ ErrorPopupManager => TkDashboard
+initialize, shutdown, attach_panel -> ! implied | the dashboard subscribes in open() and unsubscribes in close()
+_publish, _poll_queue, _handle -> Dashboard._on_event | popup policy written once for Tk and Qt; the toolkit class only marshals to its UI thread
+_format -> Event.text | one wording for all three views
+events -> ! purged | no caller
+setup_excepthook -> EventLog.hook_exceptions
+@ TkEventLogPanel => TkDashboard
+__init__ -> ._build_event_panel
+append_event -> ._show_event
+@ DraggableClosableNotebook => ClosableNotebook
+__init__ -> =
+on_press -> ._on_press
+on_drag -> ._on_drag
+on_release -> ._on_release
+on_middle_press -> ._on_middle_press
+close_tab -> =
+@ DashboardWindow@views.tkinter.view => TkDashboard
+_confirm_rotation_dialog -> ! purged | dead since S10: no caller; PanelView._confirm is the one dialog
+__init__ -> =
+_sync_input_gate -> Dashboard._on_focus_change | calls Controller.set_input_focus
+_build_devices_menu -> ._build_models_menu
+_on_device_menu_toggled -> ._on_model_toggled
+on_tab_close_requested -> ._on_tab_close
+hide_device -> Dashboard.close_model | Controller.remove
+show_device -> Dashboard.open_model | Controller.add
+on_close -> Dashboard.close
+@ ControllerLogWindow@views.tkinter.view => TkPanelView
+__init__, append_log, on_close -> ! purged | separate gamepad-log window; the log_stream element already shows it inline in all three views
+@ DynamicView => TkPanelView
+__init__ -> =
+_build_ui, _build_from_schema -> PanelView._build
+_is_valid_float -> ._validate_entry
+_role_colors -> =
+_gather_inputs -> PanelView._gather_inputs
+_run_element, _execute_command -> PanelView._run
+_select_region -> ._make_region_select
+_build_plot -> ._make_plot
+_refresh_log -> =
+_redraw_plot -> =
+_poll_model -> PanelView._refresh
+_display -> PanelView._text_for
+_mode_name -> ! implied | Controller.state carries the mode
+_sync_gates -> PanelView._sync_gates | gates entries too, which neither desktop view does today
+@ RedPercentView => TkPanelView
+destroy -> ! purged | no model-specific view subclasses: what Red Percent needs is expressed in the schema
+
+@ QtErrorPopupManager => QtDashboard
+__init__, initialize, shutdown, attach_panel -> ! implied | the dashboard subscribes in open() and unsubscribes in close()
+_publish, _on_event -> Dashboard._on_event
+_format -> Event.text
+events -> ! purged | no caller
+setup_excepthook -> EventLog.hook_exceptions
+@ QtEventLogPanel => QtDashboard
+__init__ -> ._build_event_panel
+append_event -> ._show_event
+@ ControllerLogWindow => QtPanelView
+__init__, append_log, closeEvent -> ! purged | separate gamepad-log window; log_stream shows it inline
+@ QtDynamicView => QtPanelView
+__init__ -> =
+_build_ui -> PanelView._build
+_gather_inputs -> PanelView._gather_inputs
+_run_element, _execute_command -> PanelView._run
+_mode_name -> ! implied | Controller.state carries the mode
+_sync_gates -> PanelView._sync_gates
+_redraw_plot -> =
+_refresh_log -> =
+_display -> PanelView._text_for
+_poll_model -> PanelView._refresh
+cleanup -> PanelView.close
+@ SeriesPlot => SeriesPlot
+__init__, set_series, paintEvent -> =
+@ SelectionOverlay => RegionOverlay
+__init__, showEvent, mousePressEvent, mouseMoveEvent, mouseReleaseEvent, keyPressEvent, paintEvent -> =
+@ PlotDialog => RedMonitor
+__init__ -> ! purged | PySide-only dialog; the analysis plot becomes model-rendered and schema-declared
+load_csv -> RedMonitor.load_run
+select_plot_type -> RedMonitor.set_plot_dims
+draw_plot -> <plot_data>.render_figure
+@ RedPercentDynamicView => QtPanelView
+_run_element, save_log_ui, cleanup -> ! purged | no model-specific view subclasses; file_save and image elements cover it
+@ DeviceDock => DeviceDock
+__init__, closeEvent -> =
+@ DashboardWindow => QtDashboard
+__init__ -> =
+changeEvent -> =
+_app_has_focus -> =
+_sync_input_gate -> Dashboard._on_focus_change
+populate_sidebar -> ._build_sidebar
+on_device_item_changed -> ._on_item_changed
+close_device_view -> Dashboard.close_model
+_confirm_rotation_dialog -> ! purged | dead since S10: no caller
+open_device_view -> Dashboard.open_model
+_set_sidebar_checked -> =
+on_dock_closed -> ._on_dock_closed
+closeEvent -> =
+
+@ WebAPIHandler => ApiHandler
+_bound_hosts, _origin_ok, _token_ok, _authorize -> ._is_local | owner ruling 2026-09-21: localhost only. Bind 127.0.0.1, check client address and Origin (the Origin check stays: a web page open in the same browser can still POST to localhost). The session token is purged
+get_system_manager, set_system_manager -> ! implied | the handler holds one controller reference set by WebView
+_send_json -> =
+_serve_static -> =
+do_GET, _do_GET_impl -> .do_GET
+do_POST, _do_POST_impl -> .do_POST
+@ _SystemManagerDescriptor => ApiHandler
+__get__, __set__ -> ! purged | descriptor that existed to keep three manager references in sync; there is one reference now
+@ ThreadingHTTPServer => WebView | purged: the stdlib class already sets daemon_threads = True, so the subclass changes nothing
+@ WebDashboardServer => WebView
+__init__ -> =
+system_manager -> ! implied | one controller attribute
+start -> WebView.open
+stop -> WebView.close
+@ WebErrorManager => WebView
+report_error, report_warning, report_info -> ! purged | the browser polls EventLog.since like any subscriber
+@ WebDashboardWindow => WebView
+__init__ -> =
+system_manager -> ! implied | one controller attribute
+show -> .open
+close -> =
