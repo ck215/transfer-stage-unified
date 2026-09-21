@@ -542,10 +542,15 @@ class DynamicView(tk.Frame):
                                         font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5,
                                         cursor="hand2")
 
-                    def make_cmd(element):
-                        return lambda e: self._run_element(element)
+                    def make_cmd(element, widget):
+                        def handler(e):
+                            # Don't execute if the widget is disabled (VIEW-TKINTER-14)
+                            if widget.cget("state") == "disabled":
+                                return
+                            return self._run_element(element)
+                        return handler
 
-                    btn_lbl.bind("<Button-1>", make_cmd(el))
+                    btn_lbl.bind("<Button-1>", make_cmd(el, btn_lbl))
                     btn_lbl.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
                     self._gated.append({"widget": btn_lbl, "element": el})
                         
@@ -557,10 +562,15 @@ class DynamicView(tk.Frame):
                     
                     lbl = tk.Label(container, font=('Arial', 10, 'bold'), relief=tk.RAISED, pady=5, cursor="hand2")
 
-                    def make_cmd(element):
-                        return lambda e: self._run_element(element)
+                    def make_cmd(element, widget):
+                        def handler(e):
+                            # Don't execute if the widget is disabled (VIEW-TKINTER-14)
+                            if widget.cget("state") == "disabled":
+                                return
+                            return self._run_element(element)
+                        return handler
 
-                    lbl.bind("<Button-1>", make_cmd(el))
+                    lbl.bind("<Button-1>", make_cmd(el, lbl))
                     self._gated.append({"widget": lbl, "element": el})
                     lbl.grid(row=row_counter, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
                     
@@ -910,6 +920,15 @@ class DynamicView(tk.Frame):
         mode = self._mode_name()
         for gate in self._gated:
             enabled = sch.is_enabled(gate["element"], mode)
+
+            # VIEW-TKINTER-14: start_monitoring button should also be disabled
+            # if no focus_area is set (it would return Refused from the model)
+            element = gate["element"]
+            if element.get("command") == "start_monitoring":
+                focus_area = getattr(self.model, "focus_area", None)
+                if not focus_area:
+                    enabled = False
+
             widget = gate["widget"]
             try:
                 widget.configure(state=("normal" if enabled else "disabled"))
