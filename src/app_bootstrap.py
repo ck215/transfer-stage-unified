@@ -79,7 +79,32 @@ def discover_controllers() -> list[str]:
     return ["None"] + input_service.names()
 
 
-def probe_device_at(port: str) -> str | None:
+def probe_device_at(port: str, should_abort=None) -> str | None:
+    """Identify whatever is on `port`, or None.
+
+    `should_abort` is an optional zero-argument predicate: return True and
+    the scan gives up at the next check, without opening any further port
+    (MANAGER-20). This call blocks for ~1.5 s + 3 s *per baud per port*, and
+    the Qt setup window runs it on a `QThread` the operator can close
+    underneath. `QThread.requestInterruption()` only helps if the thing the
+    thread is blocked inside is watching for it, so the check is made between
+    baud attempts **and inside the polling loops**, which is where the time
+    actually goes.
+
+    A predicate that raises is treated as "do not abort": a broken abort hook
+    must not be able to stop the scan working at all.
+    """
+    def _aborted():
+        if should_abort is None:
+            return False
+        try:
+            return bool(should_abort())
+        except Exception:
+            return False
+
+    if _aborted():
+        return None
+
     try:
         import serial
     except ImportError:
@@ -114,7 +139,7 @@ def probe_device_at(port: str) -> str | None:
     except Exception:
         pass
 
-    if device_found: return device_name
+    if device_found or _aborted(): return device_name
 
     # 2. 500k baud
     try:
@@ -124,7 +149,8 @@ def probe_device_at(port: str) -> str | None:
             time.sleep(1.5)
             start_time = time.time()
             response_buffer = ""
-            while time.time() - start_time < 3.0 and not device_found:
+            while (time.time() - start_time < 3.0 and not device_found
+                   and not _aborted()):
                 try:
                     ser.write(b"s\n")
                 except Exception:
@@ -144,7 +170,7 @@ def probe_device_at(port: str) -> str | None:
     except Exception:
         pass
 
-    if device_found: return device_name
+    if device_found or _aborted(): return device_name
 
     # 3. 115200 baud
     try:
@@ -154,7 +180,8 @@ def probe_device_at(port: str) -> str | None:
             time.sleep(1.5)
             start_time = time.time()
             response_buffer = ""
-            while time.time() - start_time < 3.0 and not device_found:
+            while (time.time() - start_time < 3.0 and not device_found
+                   and not _aborted()):
                 try:
                     ser.write(b"s\n")
                 except Exception:
