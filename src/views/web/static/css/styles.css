@@ -660,6 +660,17 @@ html, body {
   gap: 14px;
 }
 
+/* ROTATOR-13 (web half): visible reason a card's controls are disabled -
+   not just the OFFLINE badge, which also stands in for busy/hardware/
+   simulated states elsewhere and is easy to read past. */
+.card-connection-note {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: #f85149;
+  background: #da363322;
+  border-bottom: 1px solid #da363366;
+}
+
 .card-section {
   display: flex;
   flex-direction: column;

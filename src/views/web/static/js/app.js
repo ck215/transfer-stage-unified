@@ -582,6 +582,7 @@ class TransferStageApp {
           </div>
           <span class="badge badge-subtle" id="badge-${this.sanitizeId(devName)}">INITIALIZING</span>
         </div>
+        <div class="card-connection-note" id="note-${this.sanitizeId(devName)}" style="display:none;"></div>
         <div class="card-body">
           ${sectionsHtml}
           ${focusPanelHtml}
@@ -996,6 +997,43 @@ class TransferStageApp {
     for (const devName of this.knownDevices) this._markDeviceMissedCycle(devName);
   }
 
+  // ROTATOR-13 (web half): the model half already reports "disconnected"
+  // honestly instead of a bogus "simulated" badge, and refusals like
+  // rotator_system's NOT_CONNECTED surface as toasts through dispatchCommand
+  // - but nothing stopped the card's own controls from staying clickable.
+  // Before this, a rotator with a SIM/None port (no simulator exists for it)
+  // showed a normal-looking card: every button enabled, every click either
+  // silently doing nothing (pre-refusal model code) or producing a toast the
+  // operator could easily miss mid-poll-cycle. Any device that reports
+  // "disconnected"/"offline"/"lost"/"closed" gets the same treatment: its
+  // controls are disabled outright, and the card says why in its own text,
+  // not just via a badge that also carries busy/hardware/simulated states.
+  static _DISCONNECTED_STATUSES = new Set(['disconnected', 'offline', 'lost', 'closed']);
+
+  _applyConnectionGate(devName, cardBody, rawStatus) {
+    const sanitized = this.sanitizeId(devName);
+    const isDisconnected = this.constructor._DISCONNECTED_STATUSES.has(rawStatus);
+
+    if (cardBody && isDisconnected) {
+      cardBody.querySelectorAll('button, input, select').forEach(ctrl => {
+        ctrl.disabled = true;
+      });
+    }
+
+    const note = document.getElementById(`note-${sanitized}`);
+    if (note) {
+      if (isDisconnected) {
+        note.textContent = 'Not connected — controls are disabled until this device answers on a real port.';
+        note.style.display = '';
+      } else {
+        note.textContent = '';
+        note.style.display = 'none';
+      }
+    }
+
+    return isDisconnected;
+  }
+
   _setDeviceStale(devName, stale) {
     const sanitized = this.sanitizeId(devName);
     const card = document.getElementById(`card-${sanitized}`);
@@ -1123,7 +1161,14 @@ class TransferStageApp {
             }
           });
         }
-        
+
+        // ROTATOR-13: forcibly disable and label a disconnected device's
+        // controls, overriding whatever the interlock block above set - a
+        // device with no live link is not "manual", "auton" or normally
+        // operating, it simply cannot execute anything.
+        const rawStatusForGate = (attrs.connection_status || '').toLowerCase();
+        this._applyConnectionGate(devName, cardBody, rawStatusForGate);
+
         this.updateDeviceStatusBadges(devName, attrs);
       }
     } catch (err) {
