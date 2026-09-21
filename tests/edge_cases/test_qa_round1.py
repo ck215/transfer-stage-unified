@@ -286,14 +286,36 @@ def test_rotator_system_boundary_conditions():
     rotator.error = "ERR_OVERTEMP"
     assert rotator.error == "ERR_OVERTEMP"
 
-    error_logged = []
-    rotator.error_callback = lambda e: error_logged.append(e)
 
-    def faulty_action():
-        raise ValueError("Simulated rotator hardware error")
+def test_rotator15_async_error_routes_through_event_bus_without_callback():
+    """ROTATOR-15: async-action failures reach the ErrorRouter/EventBus on
+    their own. `error_callback` was initialized to `None` and never assigned
+    anywhere in production (`app_bootstrap.py`, the three views), so the
+    routing that matters is whatever happens when no callback is installed
+    at all -- not whether one happens to be set. This is the "test caller"
+    half of ROTATOR-15 this wave owns: earlier revisions of this test file
+    exercised `rotator.error_callback` directly, which asserted the dead
+    hook rather than the real reporting seam (RC-8's `EventBus`, S11).
+    """
+    from error_routing import bus as event_bus
 
-    rotator._run_async(faulty_action)
-    time.sleep(0.1)
+    rotator = RotatorSystem(default_port=None)
+    assert rotator.error_callback is None, (
+        "no production caller ever assigns error_callback; a test that sets "
+        "it exercises code no shipped path reaches")
 
-    assert len(error_logged) == 1
-    assert isinstance(error_logged[0], ValueError)
+    received = []
+    event_bus.subscribe(received.append)
+    try:
+        def faulty_action():
+            raise ValueError("Simulated rotator hardware error")
+
+        rotator._run_async(faulty_action)
+        time.sleep(0.1)
+
+        assert len(received) == 1
+        assert received[0].exception is not None
+        assert isinstance(received[0].exception, ValueError)
+        assert "Rotator Controller Error" in received[0].title
+    finally:
+        event_bus.unsubscribe(received.append)
