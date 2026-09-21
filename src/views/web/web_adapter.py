@@ -28,6 +28,12 @@ class WebModelAdapter:
         self._reconfiguring = threading.Lock()
         self.mode = mode  # "setup" or "running"
         self._state_lock = threading.RLock()
+        # WEB-20: bumped every time self.system_manager is swapped
+        # (_initialize_setup_locked). A command that captured a model from
+        # a snapshot taken before the swap, but only reaches its per-device
+        # lock after it, re-checks this counter and aborts with 409 rather
+        # than run against a model whose manager has already torn it down.
+        self._generation = 0
         self._device_locks: Dict[str, threading.Lock] = {}
         self.log_buffer: List[str] = []
         # There is no error buffer (ERRORS-12). `errors_since`/
@@ -260,6 +266,7 @@ class WebModelAdapter:
         with self._state_lock:
             self.system_manager = new_manager
             self.mode = "running"
+            self._generation += 1
 
         # Exit hooks resolve the manager when they fire, so the new one takes
         # over immediately; a captured reference would keep stopping the
@@ -285,29 +292,45 @@ class WebModelAdapter:
     def get_system_info(self) -> Dict[str, Any]:
         """Returns current system setup/running status and list of active devices."""
         with self._state_lock:
-            active_devs = []
-            if self.system_manager:
-                models = getattr(self.system_manager, "active_models", {})
-                active_devs = list(models.keys())
-            return {
-                "status": self.mode,
-                "active_devices": active_devs
-            }
+            manager = self.system_manager
+
+        active_devs = []
+        if manager is not None:
+            # WEB-20: get_active_models_snapshot() takes the manager's own
+            # lock. This used to read `self.system_manager.active_models`
+            # directly under only the adapter's `_state_lock`, which does
+            # not synchronize with `initialize_setup`'s swap/build/register
+            # sequence on the manager — a request could observe a manager
+            # mid-swap holding a dict that is empty, half-built, or (via
+            # bare `getattr(..., {})`) simply absent on a mock/duck-typed
+            # manager, silently reporting no active devices at all.
+            models = manager.get_active_models_snapshot()
+            active_devs = list(models.keys())
+
+        return {
+            "status": self.mode,
+            "active_devices": active_devs
+        }
 
     def get_devices(self) -> Dict[str, Any]:
         """Returns connected devices and their respective ui_schema."""
-        devices = {}
         with self._state_lock:
-            if self.system_manager:
-                models = getattr(self.system_manager, "active_models", {})
-                for name, model in models.items():
-                    # No `_disabled` flag any more (RC-9 item 3). A device the
-                    # operator disabled is not constructed, so it is not
-                    # registered and does not appear here at all — which is
-                    # what Tk and PySide have always done. The flag it
-                    # replaced was computed from a key normalization had
-                    # already dropped, so it was never once set (WEB-4).
-                    devices[name] = getattr(model, "ui_schema", {"sections": []}).copy()
+            manager = self.system_manager
+
+        devices = {}
+        if manager is not None:
+            # WEB-20: same fix as get_system_info() above — read through
+            # get_active_models_snapshot(), not a live/direct dict access
+            # that races initialize_setup's manager swap.
+            models = manager.get_active_models_snapshot()
+            for name, model in models.items():
+                # No `_disabled` flag any more (RC-9 item 3). A device the
+                # operator disabled is not constructed, so it is not
+                # registered and does not appear here at all — which is
+                # what Tk and PySide have always done. The flag it
+                # replaced was computed from a key normalization had
+                # already dropped, so it was never once set (WEB-4).
+                devices[name] = getattr(model, "ui_schema", {"sections": []}).copy()
         return devices
 
     def _determine_connection_status(self, model) -> str:
@@ -497,6 +520,7 @@ class WebModelAdapter:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
             manager = self.system_manager
+            generation = self._generation
 
         # WEB-20: Use get_active_models_snapshot() to capture models under the
         # manager's lock, not the adapter's lock. This prevents stale references
@@ -510,9 +534,16 @@ class WebModelAdapter:
         func = getattr(model, options_command, None)
         if not func or not callable(func):
             return {"status": "error", "code": 400, "message": f"{options_command} not found on {device_name}"}
-                
+
         dev_lock = self._get_device_lock(device_name)
         with dev_lock:
+            # WEB-20: the manager may have been swapped (and the old one
+            # torn down) between the snapshot above and taking this lock.
+            # Abort rather than call into a model whose serial port/poller
+            # may already be closed.
+            if self._generation != generation:
+                return {"status": "error", "code": 409,
+                        "message": "System was reconfigured during this request; retry"}
             try:
                 result = func()
                 return {"status": "ok", "code": 200, "options": list(result) if result else []}
@@ -558,6 +589,7 @@ class WebModelAdapter:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
             manager = self.system_manager
+            generation = self._generation
 
         # WEB-20: Use get_active_models_snapshot() to capture models under the
         # manager's lock, not the adapter's lock. This prevents stale references
@@ -578,6 +610,14 @@ class WebModelAdapter:
         else:
             guard = self._get_device_lock(device_name)
         with guard:
+            # WEB-20: same generation re-check as resolve_options above.
+            # `stop`/`emergency_stop` deliberately skip the device lock
+            # (ROTATOR-7) so they are exempt here too — a stop is one
+            # idempotent frame and must never be deferred behind a
+            # reconfigure race the way a motion command must.
+            if command_name not in self._UNSERIALIZED_COMMANDS and self._generation != generation:
+                return {"status": "error", "code": 409,
+                        "message": "System was reconfigured during this request; retry"}
             try:
                 runner = getattr(model, "execute_command", None)
                 if callable(runner):
@@ -677,6 +717,7 @@ class WebModelAdapter:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
             manager = self.system_manager
+            generation = self._generation
 
         # WEB-20: Use get_active_models_snapshot() to capture models under the
         # manager's lock, not the adapter's lock. This prevents stale references
@@ -691,6 +732,10 @@ class WebModelAdapter:
 
         dev_lock = self._get_device_lock(device_name)
         with dev_lock:
+            # WEB-20: same generation re-check as resolve_options/dispatch_command.
+            if self._generation != generation:
+                return {"status": "error", "code": 409,
+                        "message": "System was reconfigured during this request; retry"}
             try:
                 # A read-only property is not writable through the API. This
                 # is invariant I-3.4: the mode flags (`manual_flag`,
