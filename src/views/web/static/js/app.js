@@ -1174,7 +1174,19 @@ class TransferStageApp {
           // Update readonly text display
           const valEl = document.getElementById(`val-${sanitizedDev}-${cleanAttr}`);
           if (valEl) {
-            valEl.innerText = (val !== null && val !== undefined) ? String(val) : '--';
+            // REDPERCENT-19: apply format from schema if present
+            let displayVal = val;
+            if (val !== null && val !== undefined) {
+              const el = this._findSchemaElement(devName, attr);
+              if (el && el.format && typeof val === 'number') {
+                displayVal = this._formatValue(val, el.format);
+              } else {
+                displayVal = val;
+              }
+              valEl.innerText = String(displayVal);
+            } else {
+              valEl.innerText = '--';
+            }
           }
 
           // Update entry input if not currently focused by the user
@@ -1228,43 +1240,26 @@ class TransferStageApp {
         // =====================================================================
         // Dynamic Badging: Connection Status and Busy State
         // =====================================================================
-        
-        // Enforce autonomous/manual/enabled interlock
-        const autonOn = attrs.auton_flag === true || attrs.auton_flag === 'True';
-        const manualOn = attrs.manual_flag === true || attrs.manual_flag === 'True';
-        const sysEnabled = attrs.system_enabled === true || attrs.system_enabled === 'True';
-        
+
+        // WEB-24: gate every dispatchable control from the schema's own
+        // enabled_when/disabled_when -- the one contract Tk's _sync_gates
+        // and PySide's gate walker both read via schema.is_enabled --
+        // instead of re-deriving "mode" here from raw polled flags and
+        // finding controls by innerText.includes('Full Stop'/'Enable'/
+        // 'Power Down'). Those three per-device controls no longer exist
+        // (the per-device Enable/Power Down toggle and per-device Full
+        // Stop button were both removed for the one global dashboard Full
+        // Stop at '/api/system/full_stop'), so that text search matched
+        // nothing real; a renamed label could not break it further, but it
+        // also could not gate anything. Server-side 403 enforcement
+        // (web_adapter.py's _ModeRefused) is unchanged -- this only keeps
+        // rendered state from drifting away from what it already enforces.
+        const modeName = this._modeNameFor(attrs);
         const cardBody = document.querySelector(`#card-${sanitizedDev} .card-body`);
         if (cardBody) {
-          const controls = cardBody.querySelectorAll('button, input, select');
-          controls.forEach(ctrl => {
-            // 'Serial Reconnect'/'reconnect_serial' dropped: runtime serial
-            // reconnect is purged (D-11), so no such control can be rendered.
-            const isEnableBtn = ctrl.innerText.includes('Enable') || ctrl.dataset.command === 'toggle_enable';
-            const isPowerDown = ctrl.innerText.includes('Power Down') || ctrl.dataset.command === 'power_down';
-            const isStop = ctrl.innerText.includes('Full Stop') || ctrl.dataset.command === 'full_stop';
-            const isAutonToggle = ctrl.dataset.attr === 'auton_flag' || ctrl.dataset.command === 'toggle_auton';
-            const isManualToggle = ctrl.dataset.attr === 'manual_flag' || ctrl.dataset.command === 'toggle_manual';
-            
-            if (!sysEnabled && attrs.system_enabled !== undefined) {
-              if (!isEnableBtn && !isPowerDown) {
-                ctrl.disabled = true;
-              } else {
-                ctrl.disabled = false;
-              }
-            } else {
-              // System is enabled or doesn't have the flag
-              if (autonOn) {
-                if (isStop || isPowerDown || isAutonToggle || isManualToggle) ctrl.disabled = false;
-                else ctrl.disabled = true;
-              } else if (manualOn) {
-                if (isStop || isPowerDown || isManualToggle || isAutonToggle) ctrl.disabled = false;
-                else ctrl.disabled = true;
-              } else {
-                // Both off, normal operation
-                ctrl.disabled = false;
-              }
-            }
+          cardBody.querySelectorAll('[data-command], [data-attr]').forEach(ctrl => {
+            const el = this._findSchemaElementForControl(devName, ctrl);
+            ctrl.disabled = el ? !this._isEnabled(el, modeName) : false;
           });
         }
 
@@ -1451,38 +1446,66 @@ class TransferStageApp {
     if (commandName === 'plot_data_ui') {
       const modal = document.getElementById('plot-dialog-modal');
       this.toggleModal(modal, true);
-      
+
       const btnClose = document.getElementById('btn-close-plot-dialog');
       if (btnClose) btnClose.onclick = () => this.toggleModal(modal, false);
+
+      const fileInput = document.getElementById('plot-csv-upload');
+      // REDPERCENT-17: populate the dim pickers from the CSV the operator
+      // just chose, the moment it is chosen -- not only at Generate time --
+      // so a 2D/3D plot can actually target a real dimension instead of
+      // always falling back to file order (which is what a 2D plot of a
+      // 1-dimension CSV used to do, and why it rendered a blank PNG: dim2
+      // fell back to nothing at all).
+      if (fileInput) {
+        fileInput.onchange = () => {
+          if (!fileInput.files.length) return;
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            this._populatePlotDimSelects(this._parseCsvHeaderDims(e.target.result));
+          };
+          reader.readAsText(fileInput.files[0]);
+        };
+      }
 
       const btnGen = document.getElementById('btn-generate-plot');
       if (btnGen) {
         btnGen.onclick = () => {
-          const fileInput = document.getElementById('plot-csv-upload');
           const typeSelect = document.getElementById('plot-type-select');
           if (!fileInput.files.length) {
             this.showToast('Please upload a CSV file', 'warning');
             return;
           }
-          
+
           const file = fileInput.files[0];
           const reader = new FileReader();
           reader.onload = async (e) => {
             const text = e.target.result;
+            const dim1Select = document.getElementById('plot-dim1-select');
+            const dim2Select = document.getElementById('plot-dim2-select');
+            const dim3Select = document.getElementById('plot-dim3-select');
             try {
               const res = await fetch('/api/plot', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   csv_data: text,
-                  plot_type: typeSelect.value
+                  plot_type: typeSelect.value,
+                  dim1: dim1Select ? dim1Select.value : '',
+                  dim2: dim2Select ? dim2Select.value : '',
+                  dim3: dim3Select ? dim3Select.value : '',
                 })
               });
               const data = await res.json();
               if (data.image_base64) {
                 document.getElementById('plot-output-img').src = 'data:image/png;base64,' + data.image_base64;
+                if (Array.isArray(data.dims)) this._populatePlotDimSelects(data.dims);
               } else {
-                this.showToast('Failed to generate plot', 'error');
+                // REDPERCENT-17: show the server's actual reason (also
+                // covers the case where render_red_percent_figure could
+                // not satisfy the request and the image came back empty)
+                // instead of one generic "failed" toast for every cause.
+                this.showToast(data.message || 'Failed to generate plot', 'error');
               }
             } catch (err) {
               this.showToast('Error generating plot', 'error');
@@ -2249,6 +2272,138 @@ class TransferStageApp {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  // REDPERCENT-19: Find element definition in schema for a given device and model_attr.
+  _findSchemaElement(devName, modelAttr) {
+    const schema = this.devices && this.devices[devName];
+    if (!schema || !schema.sections) return null;
+    for (const section of schema.sections) {
+      if (!section.elements) continue;
+      for (const el of section.elements) {
+        if (el.model_attr === modelAttr) {
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  // REDPERCENT-19: Format a numeric value according to a format string (e.g., ".2f").
+  // Supports Python-style format specs like ".2f" (2 decimal places).
+  _formatValue(val, format) {
+    if (!format || typeof val !== 'number' || val === null || val === undefined) {
+      return val;
+    }
+
+    // Parse ".Nf" format (e.g., ".2f" -> 2 decimal places)
+    const match = format.match(/^\.(\d+)f$/);
+    if (match) {
+      const decimals = parseInt(match[1], 10);
+      return val.toFixed(decimals);
+    }
+
+    return val;
+  }
+
+  // WEB-24: find the schema element a rendered control dispatches, by its
+  // data-command first (buttons/toggles/dropdowns) and its data-attr
+  // second (a toggle/dropdown's own model_attr, or an entry's "Set"
+  // button, which carries the entry's model_attr but no command of its
+  // own). Mirrors _findSchemaElement's walk, just keyed on whichever the
+  // control actually carries.
+  _findSchemaElementForControl(devName, ctrl) {
+    const schema = this.devices && this.devices[devName];
+    if (!schema || !schema.sections) return null;
+    const command = ctrl.dataset ? ctrl.dataset.command : undefined;
+    const attr = ctrl.dataset ? ctrl.dataset.attr : undefined;
+    if (command) {
+      for (const section of schema.sections) {
+        if (!section.elements) continue;
+        for (const el of section.elements) {
+          if (el.command === command) return el;
+        }
+      }
+    }
+    if (attr) {
+      return this._findSchemaElement(devName, attr);
+    }
+    return null;
+  }
+
+  // WEB-24: the mode name a device's schema enabled_when/disabled_when is
+  // written against, reconstructed from the flags /api/state already
+  // publishes -- the same names DynamicView._mode_name (Tk) derives from
+  // the model directly. RedPercentSystem has no `mode` attribute and is
+  // gated on "monitoring"/"idle"; probes derive auton_flag/manual_flag as
+  // pure views of `mode` (ProbeMode.AUTONOMOUS/MANUAL), and every gate in
+  // probes.py only tests membership in {"autonomous", "manual"} -- so
+  // these are the only mode names any live gate actually reads.
+  _modeNameFor(attrs) {
+    const rawStatus = (attrs.connection_status || '').toLowerCase();
+    if (rawStatus === 'disconnected') return 'disconnected';
+    if (attrs.auton_flag === true || attrs.auton_flag === 'True') return 'autonomous';
+    if (attrs.manual_flag === true || attrs.manual_flag === 'True') return 'manual';
+    if (attrs.monitoring === true || attrs.monitoring === 'True') return 'monitoring';
+    return 'idle';
+  }
+
+  // WEB-24: schema.py's is_enabled(element, mode_name), ported verbatim --
+  // one rule, so "disabled during a run" cannot mean something different
+  // in the Web client than it does in Tk/PySide.
+  _isEnabled(el, modeName) {
+    const disabled = el.disabled_when;
+    if (disabled && disabled.includes(modeName)) return false;
+    const enabled = el.enabled_when;
+    if (enabled && !enabled.includes(modeName)) return false;
+    return true;
+  }
+
+  // REDPERCENT-17: the same header convention
+  // model.plot_data.parse_red_percent_csv reads server-side --
+  // 'Red Percent' as the header row's first cell, then any
+  // 'Stepper <dim> Location' column names the dims a plot can target.
+  // Client-side only so the dim pickers populate the instant a file is
+  // chosen, without a round trip just to ask "what dims does this CSV
+  // have".
+  _parseCsvHeaderDims(text) {
+    const lines = String(text).split(/\r?\n/);
+    for (const line of lines) {
+      if (!line || line.startsWith('#')) continue;
+      const cells = line.split(',');
+      if (cells[0] !== 'Red Percent') continue;
+      return cells
+        .filter(c => c.endsWith(' Location'))
+        .map(c => c.replace(/^Stepper /, '').replace(/ Location$/, ''));
+    }
+    return [];
+  }
+
+  // REDPERCENT-17: fill the three dim pickers in the plot dialog. An
+  // "(auto)" placeholder stays selected by default, which maps to the
+  // server's original first-header-order fallback in web_server.py's
+  // /api/plot -- so leaving every picker alone still plots exactly what
+  // it always did; picking one targets that dimension specifically
+  // instead of leaving a 2D/3D request's second/third axis unset (the
+  // shape that used to render a blank PNG).
+  _populatePlotDimSelects(dims) {
+    ['plot-dim1-select', 'plot-dim2-select', 'plot-dim3-select'].forEach((id, i) => {
+      const select = document.getElementById(id);
+      if (!select) return;
+      const previous = select.value;
+      while (select.firstChild) select.removeChild(select.firstChild);
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = `Dim ${i + 1} (auto)`;
+      select.appendChild(placeholder);
+      (dims || []).forEach(dim => {
+        const opt = document.createElement('option');
+        opt.value = dim;
+        opt.textContent = dim;
+        select.appendChild(opt);
+      });
+      if (previous && (dims || []).includes(previous)) select.value = previous;
+    });
   }
 }
 

@@ -338,16 +338,31 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
 
                 parsed = parse_red_percent_csv(csv_data)
                 dims = parsed["dims"]
-                dim1 = dims[0] if len(dims) >= 1 else None
-                dim2 = dims[1] if len(dims) >= 2 else None
-                dim3 = dims[2] if len(dims) >= 3 else None
+
+                # REDPERCENT-17: an operator-chosen dim wins if it names an
+                # axis this CSV actually has; an empty/absent/unrecognised
+                # one falls back to file order, exactly the old behavior,
+                # so a client that has not been updated yet (or sends no
+                # selection for 0D/1D, which ignore dim1-3 anyway) still
+                # gets a plot.
+                def _pick(requested, index):
+                    if requested and requested in dims:
+                        return requested
+                    return dims[index] if len(dims) > index else None
+
+                dim1 = _pick(data.get("dim1"), 0)
+                dim2 = _pick(data.get("dim2"), 1)
+                dim3 = _pick(data.get("dim3"), 2)
 
                 fig = render_red_percent_figure(plot_type, dim1, dim2, dim3, parsed["red_percents"], parsed["dim_data"])
 
                 buf = io.BytesIO()
                 fig.savefig(buf, format='png')
 
-                return self._send_json(200, {"image_base64": base64.b64encode(buf.getvalue()).decode('utf-8')})
+                return self._send_json(200, {
+                    "image_base64": base64.b64encode(buf.getvalue()).decode('utf-8'),
+                    "dims": dims,
+                })
             except Exception as e:
                 import traceback
                 print(f"[WebAPIHandler] /api/plot failed:\n{traceback.format_exc()}")
