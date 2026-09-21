@@ -34,8 +34,14 @@ class MockSystemManager:
 
 
 def test_web_error_manager_routing():
-    WebAPIHandler.error_buffer.clear()
-    WebErrorManager.initialize()
+    """**Re-authored for ERRORS-12.** This read `WebAPIHandler.error_buffer`,
+    the mirror `WebErrorManager` kept of the bus. The mirror is gone, so the
+    same three events are read the way `/api/errors` reads them — through
+    the adapter, off the bus."""
+    from views.web.web_adapter import WebModelAdapter
+
+    adapter = WebModelAdapter()
+    cursor = adapter.latest_error_id()
 
     # Verify report_error
     ErrorRouter.report_error("ConnectionFailed", "Device failed to respond", exception=Exception("TimeoutErr"))
@@ -44,7 +50,7 @@ def test_web_error_manager_routing():
     # Verify report_info
     ErrorRouter.report_info("HomingComplete", "Stage is calibrated")
 
-    buf = WebAPIHandler.error_buffer
+    buf = adapter.errors_since(cursor)
     assert len(buf) == 3
     assert buf[0]["type"] == "error"
     assert buf[0]["title"] == "ConnectionFailed"
@@ -58,30 +64,46 @@ def test_web_error_manager_routing():
     assert buf[2]["title"] == "HomingComplete"
     assert buf[2]["exception"] is None
 
-    WebAPIHandler.error_buffer.clear()
+
+def test_web_error_manager_shims_publish_to_the_bus():
+    """The three report_* names WebErrorManager keeps still reach the bus,
+    tagged as the web source."""
+    from views.web.web_adapter import WebModelAdapter
+
+    adapter = WebModelAdapter()
+    cursor = adapter.latest_error_id()
+    WebErrorManager.report_error("ShimError", "via the manager")
+    WebErrorManager.report_warning("ShimWarning", "via the manager")
+    WebErrorManager.report_info("ShimInfo", "via the manager")
+
+    events = adapter.errors_since(cursor)
+    assert [e["title"] for e in events] == ["ShimError", "ShimWarning", "ShimInfo"]
+    assert {e["source"] for e in events} == {"web"}
 
 
 def test_web_dashboard_window_poller_binding():
-    WebAPIHandler.log_buffer.clear()
+    """**Re-authored for ERRORS-12.** The assertions read
+    `WebAPIHandler.log_buffer`, a proxy onto whichever adapter the handler
+    class held — which is not the one this window's server serves
+    `/api/logs` from. They read that server's adapter now."""
     mgr = MockSystemManager()
     win = WebDashboardWindow(mgr, port=9200, open_browser=False)
+    adapter = win.server.adapter
 
     # Trigger log update via poller
     poller = mgr.active_models["Stage_X"].poller
     poller.emit_log("Step completed: 100")
     poller.emit_log("Step completed: 200")
 
-    assert len(WebAPIHandler.log_buffer) == 2
-    assert "[Stage_X] Step completed: 100" in WebAPIHandler.log_buffer
-    assert "[Stage_X] Step completed: 200" in WebAPIHandler.log_buffer
+    assert len(adapter.get_logs()) == 2
+    assert "[Stage_X] Step completed: 100" in adapter.get_logs()
+    assert "[Stage_X] Step completed: 200" in adapter.get_logs()
 
     # Verify log buffer capped at 500 lines
     for i in range(550):
         poller.emit_log(f"Line {i}")
-    assert len(WebAPIHandler.log_buffer) == 500
-    assert "[Stage_X] Line 549" == WebAPIHandler.log_buffer[-1]
-
-    WebAPIHandler.log_buffer.clear()
+    assert len(adapter.get_logs()) == 500
+    assert "[Stage_X] Line 549" == adapter.get_logs()[-1]
 
 
 def test_web_dashboard_window_lifecycle():
@@ -501,3 +523,79 @@ def test_dispatch_surfaces_a_refused_command_as_an_error():
     res2 = adapter.dispatch_command("Rotator", "boom")
     assert res2["status"] == "error"
     assert "stage fell over" in res2["message"]
+
+
+# --- ERRORS-12: one source of truth for the web error path ---------------
+#
+# S11 made the bus the source of truth for /api/errors, so the failure the
+# audit describes — an error published before the dashboard exists, lost
+# when a second WebModelAdapter replaces the first — can no longer happen.
+# What survived is the structure: WebErrorManager mirroring every event
+# into a second buffer, and `_BufferProxy` lazily building a throwaway
+# adapter to hold it. The same indirection is still live on the *log* half,
+# where the buffer really does depend on which adapter instance is current.
+
+def test_api_errors_survives_an_adapter_replacement():
+    """The pin. An error reported against one adapter is still served after
+    that adapter has been replaced, because the route reads the bus."""
+    from views.web.web_adapter import WebModelAdapter
+    from views.web.web_server import WebAPIHandler
+    from error_routing import ErrorRouter
+
+    previous = WebAPIHandler.adapter
+    try:
+        first = WebModelAdapter()
+        WebAPIHandler.adapter = first
+        cursor = first.latest_error_id()
+        ErrorRouter.report_error("EarlyFailure", "reported before the dashboard")
+
+        # A completely different adapter, as a second construction would build.
+        second = WebModelAdapter()
+        WebAPIHandler.adapter = second
+
+        titles = [e["title"] for e in second.errors_since(cursor)]
+        assert "EarlyFailure" in titles
+        assert second.latest_error_id() > cursor
+    finally:
+        WebAPIHandler.adapter = previous
+
+
+def test_the_web_error_path_keeps_no_second_copy_of_the_bus():
+    """ERRORS-12, structural: no mirror buffer, and so no lazily built
+    throwaway adapter to hold one. `errors_since`/`latest_id` read the bus,
+    and that is the only account of an error the web layer has."""
+    from views.web.web_adapter import WebModelAdapter
+    from views.web.web_server import WebAPIHandler
+
+    assert not hasattr(WebAPIHandler, "error_buffer")
+    adapter = WebModelAdapter()
+    for gone in ("error_buffer", "append_error", "pop_errors"):
+        assert not hasattr(adapter, gone), (
+            f"WebModelAdapter.{gone} is a second account of the error bus")
+
+
+def test_poller_logs_reach_the_server_that_serves_them():
+    """ERRORS-12, the half that was still live. The poller logger wrote
+    through `WebAPIHandler.log_buffer`, a proxy over whichever adapter the
+    *handler class* happened to hold — which is not the adapter the window's
+    own server serves `/api/logs` from until `show()` re-points it. A log
+    emitted before then went into an adapter nothing reads."""
+    from views.web.web_server import WebAPIHandler
+    from views.web.web_adapter import WebModelAdapter
+
+    previous = WebAPIHandler.adapter
+    try:
+        # A different adapter is current on the handler class, exactly as one
+        # is after any other server has started.
+        WebAPIHandler.adapter = WebModelAdapter()
+
+        mgr = MockSystemManager()
+        win = WebDashboardWindow(mgr, port=9207, open_browser=False)
+        assert win.server.adapter is not WebAPIHandler.adapter
+
+        mgr.active_models["Stage_X"].poller.emit_log("Step completed: 100")
+
+        assert "[Stage_X] Step completed: 100" in win.server.adapter.get_logs(), (
+            "the log went to an adapter this server does not serve from")
+    finally:
+        WebAPIHandler.adapter = previous

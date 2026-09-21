@@ -30,7 +30,11 @@ class WebModelAdapter:
         self._state_lock = threading.RLock()
         self._device_locks: Dict[str, threading.Lock] = {}
         self.log_buffer: List[str] = []
-        self.error_buffer: List[Dict[str, Any]] = []
+        # There is no error buffer (ERRORS-12). `errors_since`/
+        # `latest_error_id` read the bus, which S11 made the source of truth
+        # for `/api/errors`; a second copy here was another account of the
+        # same events, kept in sync by a mirroring subscriber, and lost
+        # whenever this adapter was replaced.
         # Async hardware scan state (WEB-15 residue). See start_hardware_scan.
         self._scan_thread: Optional[threading.Thread] = None
         self._scan_state: Optional[Dict[str, Any]] = None
@@ -702,25 +706,6 @@ class WebModelAdapter:
     def get_logs(self) -> List[str]:
         with self._state_lock:
             return list(self.log_buffer)
-
-    def append_error(self, err_dict: Dict[str, Any], max_size: int = 500):
-        with self._state_lock:
-            self.error_buffer.append(err_dict)
-            if len(self.error_buffer) > max_size:
-                self.error_buffer.pop(0)
-
-    def pop_errors(self) -> List[Dict[str, Any]]:
-        """**Superseded by `errors_since` (RC-8 item 3).**
-
-        Destructive by construction: whichever client polled first consumed
-        the error and every other open tab never saw it (ERRORS-2, WEB-17).
-        Kept only because the shutdown path drains the buffer through it;
-        `/api/errors` does not call it any more.
-        """
-        with self._state_lock:
-            errors = list(self.error_buffer)
-            self.error_buffer.clear()
-            return errors
 
     def errors_since(self, event_id: int = 0) -> List[Dict[str, Any]]:
         """Every event newer than `event_id`, oldest first, non-destructively.

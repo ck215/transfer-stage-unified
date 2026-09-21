@@ -429,54 +429,22 @@ class _SystemManagerDescriptor:
 WebAPIHandler.system_manager = _SystemManagerDescriptor()
 
 
-# Backward compatibility aliases for module-level buffers
-class _BufferProxy:
-    def __init__(self, buffer_type):
-        self.buffer_type = buffer_type
-
-    def append(self, item):
-        if WebAPIHandler.adapter is None:
-            WebAPIHandler.adapter = WebModelAdapter()
-        if self.buffer_type == "log":
-            WebAPIHandler.adapter.append_log(item)
-        else:
-            WebAPIHandler.adapter.append_error(item)
-
-    def clear(self):
-        if WebAPIHandler.adapter is not None:
-            if self.buffer_type == "log":
-                with WebAPIHandler.adapter._state_lock:
-                    WebAPIHandler.adapter.log_buffer.clear()
-            else:
-                WebAPIHandler.adapter.pop_errors()
-
-    def __iter__(self):
-        if WebAPIHandler.adapter is not None:
-            if self.buffer_type == "log":
-                return iter(WebAPIHandler.adapter.get_logs())
-            else:
-                return iter(list(WebAPIHandler.adapter.error_buffer))
-        return iter([])
-
-    def __len__(self):
-        if WebAPIHandler.adapter is not None:
-            if self.buffer_type == "log":
-                return len(WebAPIHandler.adapter.get_logs())
-            else:
-                return len(WebAPIHandler.adapter.error_buffer)
-        return 0
-
-    def __getitem__(self, idx):
-        if WebAPIHandler.adapter is not None:
-            if self.buffer_type == "log":
-                return WebAPIHandler.adapter.get_logs()[idx]
-            else:
-                return WebAPIHandler.adapter.error_buffer[idx]
-        raise IndexError("Buffer is empty")
-
-
-WebAPIHandler.log_buffer = _BufferProxy("log")
-WebAPIHandler.error_buffer = _BufferProxy("error")
+# `_BufferProxy` and the two class-level buffers it backed are gone
+# (ERRORS-12). It presented `WebAPIHandler.log_buffer` / `.error_buffer` as
+# list-like objects that forwarded to *whichever* WebModelAdapter the
+# handler class currently held — and built a throwaway one, with no system
+# manager, if it held none. Two consequences, one of them live:
+#
+#   * the error copy duplicated the bus. S11 made the bus the source of
+#     truth for `/api/errors` (`errors_since`/`latest_id`), so the mirror
+#     was a second account of the same events that nothing read;
+#   * the log copy went to the handler class's adapter, which is not the
+#     adapter a given WebDashboardServer serves `/api/logs` from until
+#     `start()` re-points it. A poller log emitted before that landed in an
+#     adapter nothing reads.
+#
+# Callers name the adapter they mean now: `adapter.append_log(...)` and
+# `adapter.get_logs()`.
 
 
 class ThreadingHTTPServer(http.server.ThreadingHTTPServer):
