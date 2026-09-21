@@ -215,12 +215,19 @@ class QtDynamicView(QWidget):
                     attr = el.get("model_attr")
                     lbl = QLabel(label_text)
                     row_layout.addWidget(lbl)
-                    
+
                     val = str(getattr(self.model, attr, ""))
                     if el_type == "readonly":
                         val_widget = QLabel(val)
                         val_widget.setObjectName("valueLabel")
                         val_widget.setToolTip(f"Current value of {label_text.replace(':', '')}")
+
+                        # TEMP-10: Apply role-based styling to readonly fields (connection_state)
+                        # to visually distinguish connection/staleness states
+                        role = el.get("role", "neutral")
+                        if role and role in self.ROLE_STYLES:
+                            val_widget.setStyleSheet(self.ROLE_STYLES[role])
+
                         self.vars[attr] = val_widget
                         row_layout.addWidget(val_widget)
                     else:
