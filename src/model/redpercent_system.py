@@ -760,6 +760,14 @@ class RedPercentSystem(SchemaCommands):
                              param=P["current_red"]),
                 sch.readonly("Red Change %:", "red_change",
                              param=P["red_change"]),
+                # REDPERCENT-13: published so the Web client can gate the
+                # plotter on "is a run actually active" instead of sampling
+                # every poll regardless of state (app.js `pollState`). Tk and
+                # PySide already have this for free — `monitoring` gates their
+                # Start/Stop buttons via `disabled_when`/`enabled_when` — so
+                # this is a new *readable* surface for them, not new
+                # information; it renders as one more line in this section.
+                sch.readonly("Monitoring:", "monitoring", role="info"),
                 # **D-6: schema-driven in all three views.** Tk hand-built a
                 # RedPercentView and PySide bolted on duplicates; the plot is
                 # a composite with one contract now.

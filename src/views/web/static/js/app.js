@@ -385,6 +385,15 @@ class TransferStageApp {
     }
     if (this.dom.btnPlotterReset) {
       this.dom.btnPlotterReset.addEventListener('click', () => {
+        // REDPERCENT-13: this used to be entirely client-side - it reset
+        // only the chart's own `baselineRed`/`deltaRed`, so the model's own
+        // `baseline_red` (what `red_change` and the schema's "Red Change %"
+        // readout are actually computed from) never moved, and the two
+        // baselines disagreed from this click onward. `reset_baseline` is
+        // the model's own command for exactly this - the modal reset now
+        // dispatches it, the same as the "Reset Baseline" schema button
+        // does, so there is one baseline again, not two.
+        this.dispatchCommand('Red Percent Window', 'reset_baseline');
         const curr = this.plotterData.currentRed.slice(-1)[0] || 0;
         this.baselineRed = curr;
         this.plotterData.deltaRed = [];
@@ -989,6 +998,10 @@ class TransferStageApp {
       btnPlotterReset.dataset.bound = 'true';
       this.dom.btnPlotterReset = btnPlotterReset;
       btnPlotterReset.addEventListener('click', () => {
+        // REDPERCENT-13: see the matching comment on the other Reset
+        // binding in initEventListeners - same client-only-baseline defect,
+        // same fix.
+        this.dispatchCommand('Red Percent Window', 'reset_baseline');
         const curr = this.plotterData.currentRed.slice(-1)[0] || 0;
         this.baselineRed = curr;
         this.plotterData.deltaRed = [];
@@ -1198,7 +1211,17 @@ class TransferStageApp {
           // Only use current_red, not red_change, to avoid interleaving
           // delta and absolute values in the plot.
           if (attr === 'current_red' && typeof val === 'number') {
-            this.pushPlotterSample(val);
+            // REDPERCENT-13: ...and only while a run is actually active
+            // (`monitoring`, published by the model's ui_schema as a
+            // readonly attr), so a stopped/idle device does not draw a
+            // flat line of its last value forever. `attrs.monitoring` may
+            // come back as the JSON boolean `true` or, from some
+            // renderers, the string `'True'`; both are treated as "on"
+            // the same way the busy-badge check above does.
+            const monitoringOn = attrs.monitoring === true || attrs.monitoring === 'True';
+            if (monitoringOn) {
+              this.pushPlotterSample(val);
+            }
           }
         }
 
