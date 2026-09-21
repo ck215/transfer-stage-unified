@@ -24,14 +24,30 @@ class WebErrorManager:
 
     @classmethod
     def report_error(cls, title, message, exception=None):
+        # ERRORS-3: Print to console even when subscribers exist.
+        # EventBus only prints when no subscribers are registered, so we
+        # always print here to ensure errors reach the console.
+        print(f"[ERROR] web/{title}: {message}")
+        if exception is not None:
+            import traceback
+            traceback.print_exception(
+                type(exception), exception, exception.__traceback__)
         ErrorRouter.report_error(title, message, exception, source="web")
 
     @classmethod
     def report_warning(cls, title, message, exception=None):
+        # ERRORS-3: Print to console even when subscribers exist.
+        print(f"[WARNING] web/{title}: {message}")
+        if exception is not None:
+            import traceback
+            traceback.print_exception(
+                type(exception), exception, exception.__traceback__)
         ErrorRouter.report_warning(title, message, exception, source="web")
 
     @classmethod
     def report_info(cls, title, message):
+        # ERRORS-3: Print to console even when subscribers exist.
+        print(f"[INFO] web/{title}: {message}")
         ErrorRouter.report_info(title, message, source="web")
 
 

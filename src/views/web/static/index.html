@@ -220,32 +220,9 @@
     </div>
   </div>
 
-  <div id="file-picker-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
-    <div class="modal-window file-modal-window">
-      <div class="modal-header">
-        <h3 class="modal-title">Select Script Execution File</h3>
-        <button id="btn-close-file-modal" class="btn btn-icon btn-ghost" aria-label="Close file picker modal">✕</button>
-      </div>
-      <div class="modal-body">
-        <p class="dialog-description">
-          Select or enter a file path for GCode / Python motion script (<code>.txt</code>, <code>.gcode</code>, <code>.nc</code>):
-        </p>
-        <div class="file-input-wrapper">
-          <input type="file" id="script-file-input" class="hidden-file-input" accept=".txt,.gcode,.nc">
-          <button type="button" id="btn-browse-file" class="btn btn-secondary">Browse Local Files...</button>
-          <span id="selected-file-display" class="selected-filename">No file selected</span>
-        </div>
-        <div class="form-group" style="margin-top: 14px;">
-          <label for="script-path-text" class="control-label">Or specify absolute script path:</label>
-          <input type="text" id="script-path-text" class="schema-input" placeholder="/path/to/script.gcode">
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button id="btn-cancel-file" class="btn btn-secondary">Cancel</button>
-        <button id="btn-confirm-file" class="btn btn-primary">Load & Execute Script</button>
-      </div>
-    </div>
-  </div>
+  <!-- WEB-11: File picker modal removed. The execute_script command doesn't
+       exist on any model; the audit proposed removing this modal or implementing
+       the command with explicit safety review. Removing the modal is the safe choice. -->
 
   <!-- Modal / Dialog: Hardware Setup Wizard -->
   <div id="setup-wizard-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">

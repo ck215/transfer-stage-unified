@@ -123,7 +123,7 @@ class TransferStageApp {
       btnClearLogs: document.getElementById('btn-clear-logs'),
       btnExportLogs: document.getElementById('btn-export-logs'),
       formLogCmd: document.getElementById('form-log-command'),
-      inputLogCmd: document.getElementById('input-log-cmd'),
+      // WEB-11: inputLogCmd removed (send_raw_command command doesn't exist)
 
       // Plotter Modal
       btnTogglePlotter: document.getElementById('btn-toggle-plotter'),
@@ -141,14 +141,7 @@ class TransferStageApp {
       roiStatusBadge: document.getElementById('roi-status-badge'),
 
       // File Picker Modal
-      fileModal: document.getElementById('file-picker-modal'),
-      btnCloseFileModal: document.getElementById('btn-close-file-modal'),
-      btnCancelFile: document.getElementById('btn-cancel-file'),
-      btnConfirmFile: document.getElementById('btn-confirm-file'),
-      scriptFileInput: document.getElementById('script-file-input'),
-      btnBrowseFile: document.getElementById('btn-browse-file'),
-      selectedFileDisplay: document.getElementById('selected-file-display'),
-      scriptPathText: document.getElementById('script-path-text'),
+      // WEB-11: File picker modal removed (execute_script command doesn't exist)
 
       // Setup Wizard Modal
       setupModal: document.getElementById('setup-wizard-modal'),
@@ -175,7 +168,25 @@ class TransferStageApp {
   // =========================================================================
   async init() {
     await this.checkSystemStatus();
+    // ERRORS-3: Initialize error tracking to avoid flooding on first connect.
+    // Fetch the latest error ID without showing old accumulated errors.
+    await this.initializeErrorTracking();
     this.setupPolling(this.pollIntervalMs);
+  }
+
+  async initializeErrorTracking() {
+    try {
+      const res = await fetch('/api/errors');
+      if (res.ok) {
+        const data = await res.json();
+        // Set lastErrorId to the latest ID so we only see NEW errors going forward
+        if (typeof data.latest_id === 'number') {
+          this.lastErrorId = data.latest_id;
+        }
+      }
+    } catch (err) {
+      // Quiet initialization failure; polling will still work
+    }
   }
 
   async checkSystemStatus() {
@@ -312,33 +323,7 @@ class TransferStageApp {
     }
 
     // File picker modal
-    if (this.dom.btnCloseFileModal) {
-      this.dom.btnCloseFileModal.addEventListener('click', () => this.toggleModal(this.dom.fileModal, false));
-    }
-    if (this.dom.btnCancelFile) {
-      this.dom.btnCancelFile.addEventListener('click', () => this.toggleModal(this.dom.fileModal, false));
-    }
-    if (this.dom.btnBrowseFile && this.dom.scriptFileInput) {
-      this.dom.btnBrowseFile.addEventListener('click', () => this.dom.scriptFileInput.click());
-      this.dom.scriptFileInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          if (this.dom.selectedFileDisplay) this.dom.selectedFileDisplay.innerText = file.name;
-          if (this.dom.scriptPathText) this.dom.scriptPathText.value = file.name;
-        }
-      });
-    }
-    if (this.dom.btnConfirmFile) {
-      this.dom.btnConfirmFile.addEventListener('click', () => {
-        const path = this.dom.scriptPathText ? this.dom.scriptPathText.value.trim() : '';
-        if (path) {
-          this.executeScriptFile(path);
-          this.toggleModal(this.dom.fileModal, false);
-        } else {
-          this.showToast('Please select or specify a script file path.', 'warning');
-        }
-      });
-    }
+    // WEB-11: File picker modal event listeners removed
 
     // Setup Wizard Modal listeners
     if (this.dom.btnOpenSetup) {
@@ -1088,8 +1073,10 @@ class TransferStageApp {
             }
           }
 
-          // Update red percent metrics if optical data is present
-          if (attr.toLowerCase().includes('red') && typeof val === 'number') {
+          // WEB-7: Update red percent metrics if optical data is present
+          // Only use current_red, not red_change, to avoid interleaving
+          // delta and absolute values in the plot.
+          if (attr === 'current_red' && typeof val === 'number') {
             this.pushPlotterSample(val);
           }
         }
@@ -1486,28 +1473,9 @@ class TransferStageApp {
     }
   }
 
-  handleLogConsoleCommand() {
-    if (!this.dom.inputLogCmd) return;
-    const cmdText = this.dom.inputLogCmd.value.trim();
-    if (!cmdText) return;
+  // WEB-11: handleLogConsoleCommand removed (send_raw_command command doesn't exist)
 
-    this.logs.push(`> ${cmdText}`);
-    this.renderLogs();
-    this.dom.inputLogCmd.value = '';
-
-    // Route diagnostic command to available motion systems or SMC
-    const targetDev = Object.keys(this.devices)[0] || 'SMC100 Rotator';
-    this.dispatchCommand(targetDev, 'send_raw_command', [cmdText]).catch(() => {});
-  }
-
-  executeScriptFile(filePath) {
-    this.showToast(`Executing script file: ${filePath}`, 'info');
-    // Dispatch to a controller or stage if present
-    const stage = Object.keys(this.devices).find(d => d.toLowerCase().includes('stepper') || d.toLowerCase().includes('probe'));
-    if (stage) {
-      this.dispatchCommand(stage, 'execute_script', [filePath]);
-    }
-  }
+  // WEB-11: executeScriptFile removed (execute_script command doesn't exist)
 
   // =========================================================================
   // Real-Time Optical Red Ratio Plotter Canvas
