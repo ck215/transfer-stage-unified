@@ -715,17 +715,46 @@ class SelectionOverlay(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background-color: rgba(0, 0, 0, 100);")
-        
+
         # Make fullscreen across all monitors
         screen_geom = QApplication.primaryScreen().geometry()
         for screen in QApplication.screens():
             screen_geom = screen_geom.united(screen.geometry())
         self.setGeometry(screen_geom)
-        
+
+        # PYSIDE-12: Add instruction label and instruction layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.instruction_label = QLabel("Click and drag to select focus area (ESC to cancel)")
+        self.instruction_label.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 200);
+                padding: 10px;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+        """)
+        layout.addWidget(self.instruction_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch()
+        self.setLayout(layout)
+
         self.start_pos_global = None
         self.end_pos_global = None
         self.start_pos_local = None
         self.end_pos_local = None
+
+    def showEvent(self, event):
+        """PYSIDE-12: Set focus, activate window, and show crosshair cursor on show."""
+        super().showEvent(event)
+        from PySide6.QtGui import QCursor
+        # Request focus and activate the window
+        self.setFocus()
+        self.activateWindow()
+        # Set crosshair cursor
+        self.setCursor(Qt.CursorShape.CrossCursor)
 
     def mousePressEvent(self, event):
         self.start_pos_global = event.globalPosition().toPoint()
@@ -798,7 +827,8 @@ class PlotDialog(QDialog):
             with open(filename, 'r', newline='') as f:
                 parsed = parse_red_percent_csv(f.read())
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load CSV: {e}")
+            # ERRORS-9: Route through ErrorRouter instead of direct QMessageBox
+            ErrorRouter.report_error("Failed to Load CSV", f"Failed to load CSV: {e}", e)
             return
         # A header-only CSV (or one with a dims column but zero data rows)
         # has an empty `dims` *and* an empty `red_percents`, or a non-empty
@@ -806,7 +836,8 @@ class PlotDialog(QDialog):
         # nothing to plot. Gating on `dims` alone let that case slip through
         # and draw an empty plot instead of reporting the real problem.
         if not parsed["red_percents"]:
-            QMessageBox.critical(self, "Invalid File", "CSV missing 'Red Percent' column")
+            # ERRORS-9: Route through ErrorRouter instead of direct QMessageBox
+            ErrorRouter.report_error("Invalid CSV File", "CSV missing 'Red Percent' column")
             return
         self._csv_metadata = parsed["metadata"]
         self.select_plot_type(parsed["dims"], parsed["red_percents"], parsed["dim_data"])
@@ -928,7 +959,8 @@ class RedPercentDynamicView(QtDynamicView):
 
     def save_log_ui(self):
         if not self.model.data_log or not self.model.data_log.red_values:
-            QMessageBox.information(self, "No Data", "No data to save.")
+            # ERRORS-9: Route through ErrorRouter instead of direct QMessageBox
+            ErrorRouter.report_warning("No Data", "No data to save.")
             return
             
         p_name = getattr(self.model, 'probe_name', None)
