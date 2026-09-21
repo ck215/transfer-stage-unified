@@ -87,28 +87,40 @@ def test_linux_port_filtering_and_prioritization():
         assert sorted_ports == ["/dev/ttyACM0", "/dev/ttyUSB0"]
 
 def test_serial_init_bootloader_timing():
+    """SERIAL-6: the boot wait and handshake now run on `_connect_worker`'s
+    background thread, not on the thread that called `serial(...)`. This
+    patches the real, process-wide `time.sleep`/`time.time` (that is what
+    `controller.serial.time.sleep` resolves to), so the background thread's
+    calls must be forced to happen -- and finish -- *before* the `with`
+    block exits and restores the real clock; otherwise a call landing after
+    restoration would sleep for a real 1.5s on a daemon thread instead of
+    being recorded, and the assertion below would see an incomplete
+    `call_order`.
+    """
     with patch("controller.serial.pyserial.Serial") as mock_serial_cls:
         mock_ser = MagicMock()
         mock_ser.is_open = True
         mock_ser.in_waiting = 0
         mock_serial_cls.return_value = mock_ser
-        
+
         call_order = []
-        
+
         def fake_sleep(duration):
             call_order.append(('sleep', duration))
-            
+
         time_counter = [100.0]
         def fake_time():
             time_counter[0] += 0.1
             call_order.append(('time', time_counter[0]))
             return time_counter[0]
-            
+
         with patch("controller.serial.time.sleep", side_effect=fake_sleep), \
              patch("controller.serial.time.time", side_effect=fake_time):
-            
+
             s = serial("COM1")
-            
+            assert s.wait_connected(timeout=5.0), (
+                "handshake thread never finished while the clock was faked")
+
             # Verify that time.sleep(1.5) happens BEFORE start_time is recorded for the while loop
             sleep_idx = [i for i, c in enumerate(call_order) if c == ('sleep', 1.5)][0]
             time_indices_after_sleep = [i for i, c in enumerate(call_order) if c[0] == 'time' and i > sleep_idx]

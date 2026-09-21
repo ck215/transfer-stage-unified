@@ -130,6 +130,16 @@ class serial:
         self._read_buffer = ""
         self.device_type = None
 
+        # SERIAL-6: the identity handshake below used to run on this thread
+        # -- the GUI thread building models, or an HTTP handler thread for
+        # the web setup wizard -- for 1.5-4.5s per device, with nothing
+        # observable in between. `connection_state` already had a
+        # CONNECTING value (RC-5 item 3) and the Web badge already mapped it
+        # ("connecting"), but nothing could ever catch it: the whole wait
+        # happened before `__init__` returned. This thread is what makes
+        # CONNECTING real instead of a value nobody can observe.
+        self._connect_thread = None
+
         if self.SERIAL_PORT in ('SIM', 'None', None):
             msg = "[SerialDrive] Running in SIMULATOR mode. Commands are acknowledged locally."
             print(msg)
@@ -139,7 +149,7 @@ class serial:
             self.ser = SimulatedPort()
             self.connection_state = ConnectionState.SIMULATED
             return
-        
+
         try:
             print("[SerialDrive] Establishing Serial Connection...")
             self.ser = pyserial.Serial(
@@ -149,24 +159,20 @@ class serial:
                 write_timeout=1
             )
 
-            # Wait for the Arduino to boot, then ask it what it is.
-            print(f"[SerialDrive] Pinging port {self.SERIAL_PORT} to verify connection...")
+            # Identity is verified off this thread (SERIAL-6): opening the
+            # port is fast, but the boot wait plus handshake is not, and
+            # nothing here needs the identity to be known before returning.
+            # `enable()`/`disable()`/`write_command()` all key off
+            # `ser.is_open`, not `connection_state`, so a command sent while
+            # this is still CONNECTING is not held up or dropped by it --
+            # see `_connect_worker` and `_handshake`'s per-call locking.
+            print(f"[SerialDrive] Port {self.SERIAL_PORT} open; verifying "
+                  f"identity in the background.")
+            self._connect_thread = threading.Thread(
+                target=self._connect_worker, daemon=True,
+                name=f"serial-connect-{self.SERIAL_PORT}")
+            self._connect_thread.start()
 
-            self.ser.reset_input_buffer()
-            self.ser.reset_output_buffer()
-
-            time.sleep(self.BOOTLOADER_WAIT)
-            verified = self._handshake()
-
-            if verified:
-                self.connection_state = ConnectionState.VERIFIED
-                print(f"[SerialDrive] Serial Connection Verified! Arduino Ready on {self.SERIAL_PORT}")
-            else:
-                self.connection_state = ConnectionState.UNVERIFIED
-                msg = f"[WARNING] Port {self.SERIAL_PORT} opened, but no Arduino response received. Operating blind."
-                print(msg)
-                ErrorPopupManager.report_warning("Serial Connection Warning", msg)
-        
         # Exception handling
         except pyserial.SerialException as e:
             self.connection_state = ConnectionState.LOST
@@ -179,6 +185,72 @@ class serial:
             ErrorPopupManager.report_error("Unexpected Serial Error", msg, e)
         finally:
             print("[SerialDrive] Finish SerialDrive __init__")
+
+    def _connect_worker(self):
+        """The boot wait and identity handshake, off the constructor's
+        caller (SERIAL-6).
+
+        Never holds `_lock` for the wait itself -- only `_handshake`'s
+        individual write and read calls take it, exactly like every other
+        transport method -- so a priority write (FULL STOP's 'd') forces
+        itself through within `PRIORITY_LOCK_TIMEOUT` regardless of how far
+        the handshake has gotten. A connect in flight must not be able to
+        delay or swallow a stop.
+        """
+        try:
+            with self._lock:
+                self.ser.reset_input_buffer()
+                self.ser.reset_output_buffer()
+        except Exception:
+            # A reset failing here does not mean the port is unusable; the
+            # handshake and every command below are attempted on their own
+            # merits regardless.
+            pass
+
+        time.sleep(self.BOOTLOADER_WAIT)
+
+        try:
+            verified = self._handshake()
+        except Exception:
+            verified = False
+
+        with self._lock:
+            # `close()`, or a write failure elsewhere that already reached
+            # `_mark_lost`, may have moved `connection_state` on while this
+            # was running. Whoever got there first wins -- a stale
+            # handshake result must never overwrite CLOSED or LOST.
+            if self.connection_state != ConnectionState.CONNECTING:
+                return
+            self.connection_state = (
+                ConnectionState.VERIFIED if verified
+                else ConnectionState.UNVERIFIED)
+
+        if verified:
+            print(f"[SerialDrive] Serial Connection Verified! Arduino Ready on {self.SERIAL_PORT}")
+        else:
+            msg = f"[WARNING] Port {self.SERIAL_PORT} opened, but no Arduino response received. Operating blind."
+            print(msg)
+            ErrorPopupManager.report_warning("Serial Connection Warning", msg)
+
+    def wait_connected(self, timeout=None):
+        """Block until the identity handshake has finished.
+
+        For tests and scripts that want a deterministic point after which
+        `connection_state` has left CONNECTING -- **not** for production
+        code. Calling this from a view or model would put SERIAL-6 right
+        back: the whole point of `_connect_worker` is that nothing on the
+        GUI/request thread waits for it. Progress belongs in
+        `connection_state`, which every view already polls.
+
+        Returns True once the handshake has finished (verified or not),
+        False on timeout. True immediately if there was never a handshake
+        to wait for (SIM, or the port failed to open at all).
+        """
+        thread = self._connect_thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
 
     # --- identity handshake (SERIAL-17) -------------------------------
     #
@@ -212,6 +284,13 @@ class serial:
         * **Drain after the match**, not only before the bootloader wait, so
           the replies to the pings that were already in flight are not left
           for `read_position` to wade through.
+
+        Runs on `_connect_worker`'s background thread (SERIAL-6), so every
+        actual write and read is wrapped in `self._lock` -- the same
+        granularity `write_command`/`read_position` use -- rather than held
+        for the whole loop. That keeps a ping or a buffer check from ever
+        delaying a priority write by more than a single I/O call, matching
+        `PRIORITY_LOCK_TIMEOUT`.
         """
         deadline = time.time() + self.HANDSHAKE_TIMEOUT
         buffer = ""
@@ -220,16 +299,18 @@ class serial:
             now = time.time()
             if now >= next_ping:
                 try:
-                    self.ser.write(b"s\n")
+                    with self._lock:
+                        self.ser.write(b"s\n")
                 except Exception:
                     return False
                 next_ping = now + self.PING_INTERVAL
 
             try:
-                waiting = self.ser.in_waiting
-                if waiting > 0:
-                    buffer += self.ser.read(waiting).decode(
-                        'utf-8', errors='ignore')
+                with self._lock:
+                    waiting = self.ser.in_waiting
+                    if waiting > 0:
+                        buffer += self.ser.read(waiting).decode(
+                            'utf-8', errors='ignore')
             except Exception:
                 return False
 
@@ -237,7 +318,8 @@ class serial:
             if device is not None:
                 self.device_type = device
                 try:
-                    self.ser.reset_input_buffer()
+                    with self._lock:
+                        self.ser.reset_input_buffer()
                 except Exception:
                     pass
                 return True
@@ -462,12 +544,27 @@ class serial:
         was, so the UI kept showing the last good position of a device that
         had been unplugged (SERIAL-8). The transition is reported once; the
         state then carries the fact.
+
+        Called from `write_command`'s failure path, including the priority
+        one (SERIAL-6). A blocking `with self._lock:` here would put the
+        block right back that the priority path exists to avoid: a failed
+        priority write forces through and returns, but a background
+        handshake can still be holding `_lock` for its own in-flight write,
+        and this runs immediately after on the same call stack. Bounded to
+        `PRIORITY_LOCK_TIMEOUT`, same as the write it is reporting on; if
+        the lock cannot be had in time, the state is still updated -- an
+        unsynchronised write to `connection_state`/`self.ser` here is a far
+        smaller risk than a stop-adjacent path that can hang.
         """
-        with self._lock:
+        acquired = self._lock.acquire(timeout=self.PRIORITY_LOCK_TIMEOUT)
+        try:
             if self.connection_state == ConnectionState.LOST:
                 return
             self.connection_state = ConnectionState.LOST
             handle, self.ser = self.ser, None
+        finally:
+            if acquired:
+                self._lock.release()
         if handle is not None:
             try:
                 handle.close()
@@ -591,12 +688,44 @@ class serial:
 
     # Closes serial connection
     def close(self):
+        """Release the handle. -> None, always -- this is a teardown path.
+
+        SERIAL-16: the old body had no failure handling at all around
+        `ser.close()`; an exception here propagated straight out of
+        `close()` into whatever called it. `BaseProbe.teardown()` and
+        `TemperatureSystem.teardown()` call this last, so nothing else was
+        skipped by it, but the caller still got an unhandled exception
+        instead of a clean teardown, and the operator heard nothing.
+        `report_warning`, not `report_error`: the port is being discarded
+        either way, `connection_state` still moves to CLOSED below, and
+        this is deliberately never `report_error` for the same reason
+        `flush()`'s drain failure prints instead of reporting -- a popup
+        raised while the application is already closing the device is
+        noise, not an actionable fault.
+        """
+        close_error = None
         with self._lock:
             if self.ser and self.ser.is_open:
                 print("[SerialDrive] Closing serial port.")
-                self.ser.close()
+                try:
+                    self.ser.close()
+                except Exception as e:
+                    close_error = e
             if self.connection_state != ConnectionState.SIMULATED:
                 self.connection_state = ConnectionState.CLOSED
+
+        # Reported outside the lock, matching every other report site in
+        # this file: a subscriber is arbitrary code, and nothing here needs
+        # to hold `_lock` while it runs.
+        if close_error is not None:
+            msg = (f"[SerialDrive] Error closing port "
+                   f"{self.SERIAL_PORT}: {close_error}")
+            print(msg)
+            try:
+                ErrorPopupManager.report_warning(
+                    "Serial Close Error", msg, close_error)
+            except Exception:
+                pass
 
 
 # Aliases for backwards compatibility with legacy stable branch and standard naming
