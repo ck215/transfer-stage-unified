@@ -21,7 +21,12 @@ class TestTemperatureSystemInit:
             assert ts.i_term == "0.5"
             assert ts.d_term == ".1"
             assert ts.offset == "0"
-            assert ts.current_temp == "N/A"
+            # TEMP-10: this used to assert "N/A", which pinned the defect.
+            # With no port the reader thread is never started, so nothing can
+            # ever replace that value -- and "N/A" reads as *no reading yet*,
+            # a transient state the operator waits out forever. The model now
+            # says what is true. See tests/core/test_temp10_no_port_state.py.
+            assert ts.current_temp == ts.DISCONNECTED_TEMP
             assert ts.tempC == []
             assert ts.time == []
             assert ts.sp == []

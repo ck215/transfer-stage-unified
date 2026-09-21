@@ -24,6 +24,11 @@ class TemperatureSystem(SchemaCommands):
               label="Current Temperature"),
     )
 
+    #: What `current_temp` reads when there is no live link (TEMP-10). One
+    #: spelling, because three renderers display this attribute directly and
+    #: the old code had the string in one place and "N/A" in another.
+    DISCONNECTED_TEMP = "Disconnected"
+
     @property
     def connection_state(self):
         """The transport's link state, as a string, for every renderer."""
@@ -87,6 +92,16 @@ class TemperatureSystem(SchemaCommands):
 
             self.serial_thread = threading.Thread(target=self.read_serial_data, daemon=True)
             self.serial_thread.start()
+        else:
+            # TEMP-10 (headline). The reader is started only in the branch
+            # above, so with no port -- SIM, 'None', or an open that failed --
+            # nothing is ever in a position to update `current_temp`, and it
+            # keeps its "N/A" default for the life of the process. "N/A"
+            # reads as *no reading yet*, a transient state, so the operator
+            # waits for a number that cannot arrive. Say what is actually
+            # true instead. The three renderers show it as one because they
+            # all render this same attribute.
+            self.current_temp = self.DISCONNECTED_TEMP
                 
     @property
     def ui_schema(self):
@@ -255,6 +270,14 @@ class TemperatureSystem(SchemaCommands):
                 else:
                     # Port is closed/not open, treat as a read failure
                     consecutive_failures += 1
+                    # TEMP-10 (headline). This branch used to back off in
+                    # silence. `current_temp` was set to the disconnected
+                    # state *only* in the `except Exception` handler below --
+                    # and a port that is simply not open raises nothing, so
+                    # that line was unreachable from here. A link that
+                    # dropped mid-session went on displaying its last good
+                    # reading as though it were live.
+                    self.current_temp = self.DISCONNECTED_TEMP
                     # Exponential backoff: 0.1, 0.2, 0.4, 0.8, 1.6, 2.0, 2.0, ...
                     backoff = min(0.1 * (2 ** (consecutive_failures - 1)), max_backoff)
                     if self._backoff_wait(backoff):
@@ -279,7 +302,7 @@ class TemperatureSystem(SchemaCommands):
                     msg = f"Temperature reader persistent connection loss after {consecutive_failures} failures: {e}"
                     print(msg)
                     ErrorRouter.report_warning("Temperature Disconnected", msg)
-                    self.current_temp = "Disconnected"
+                    self.current_temp = self.DISCONNECTED_TEMP
                     failure_reported = True
 
                 if self._backoff_wait(backoff):
