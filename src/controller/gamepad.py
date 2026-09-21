@@ -363,11 +363,31 @@ class ControllerPoller:
 
     def set_controller(self, controllerID):
         """Reassigns this poller to a different physical controller, tearing down any existing connection first."""
+        # Whether to resume is a question about *this poller*, not about
+        # which frontend it happens to be attached to (GAMEPAD-21). The gate
+        # used to be `self.gui_root and not self.is_polling`, and gui_root is
+        # only ever assigned when start_polling is handed a `gui` — which the
+        # threaded clock never is. So on the Web frontend a successful swap
+        # ran stop_polling() inside _initialize_pygame_joystick and restarted
+        # nothing: manual mode went inert with the coils still energised,
+        # which is the end state GAMEPAD-1 was closed on.
+        was_polling = self.is_polling
         self.controllerID = controllerID
         success = self._initialize_pygame_joystick(controllerID)
-        if success and self.gui_root and not self.is_polling:
-            self.start_polling(self.gui_root, self.log_updater, self.activity_callback)
+        self._resume_polling_if(was_polling and success)
         return success
+
+    def _resume_polling_if(self, should_resume):
+        """Restart the poll loop after a rebind, on whichever clock is in use.
+
+        Called with **no** `gui` argument on purpose: choosing between the Tk
+        root and the poller's own thread belongs in one place, inside
+        start_polling, which already has the gui_root the view gave it. A
+        resume path that names a scheduler is how this went wrong the first
+        time.
+        """
+        if should_resume and not self.is_polling:
+            self.start_polling()
 
     # connect_controller() lived here: no callers in src (GAMEPAD-17,
     # grep-verified against this commit), and it called pygame.quit()
@@ -460,10 +480,13 @@ class ControllerPoller:
 
     def change_controller(self, new_controller_id):
         print(f"[{self.process_name}] Hot-swapping to: {new_controller_id}")
+        # Same gate as set_controller, and it was wrong here too (GAMEPAD-21).
+        # This method has no callers in src (GAMEPAD-17), which is precisely
+        # why a defect in it rots unnoticed.
+        was_polling = self.is_polling
         self.controllerID = new_controller_id
         success = self._initialize_pygame_joystick(new_controller_id)
-        if success and self.gui_root and not self.is_polling:
-            self.start_polling(self.gui_root, self.log_updater, self.activity_callback)
+        self._resume_polling_if(was_polling and success)
         return success
 
     # Which poll chain is the live one (GAMEPAD-7).

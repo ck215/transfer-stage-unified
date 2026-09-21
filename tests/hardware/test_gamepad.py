@@ -687,12 +687,15 @@ class _FakeTkRoot:
         return len(due)
 
 
-def _sdl_handles_per_index(mock_pygame, count=2):
+def _sdl_handles_per_index(mock_pygame, count=2, numaxes=0, axis_value=0.0):
     """Give each SDL index its own joystick mock, memoised.
 
     `patched_sdl` hands the same object back for every index, which is fine
     when a test only ever binds one controller but makes a swap untestable:
     the "old" and "new" devices would be the same mock.
+
+    `numaxes`/`axis_value` let a test hold a stick off-centre, so "is input
+    reaching the model" can be asserted on a value rather than on a flag.
     """
     handles = {}
 
@@ -702,9 +705,12 @@ def _sdl_handles_per_index(mock_pygame, count=2):
             handle = MagicMock()
             handle.get_name.return_value = f"Xbox Controller {index}"
             handle.get_guid.return_value = "030000005e04"
-            handle.get_numaxes.return_value = 0
+            handle.get_numaxes.return_value = numaxes
             handle.get_numbuttons.return_value = 0
             handle.get_numhats.return_value = 0
+            handle.get_axis.return_value = axis_value
+            handle.get_button.return_value = 0
+            handle.get_hat.return_value = (0, 0)
             handles[index] = handle
         return handle
 
@@ -911,3 +917,133 @@ def test_macos_swap_succeeds_when_the_previous_controller_is_gone():
             assert poller.gamepad.joystick is handles[1]
         finally:
             poller.close()
+
+
+# ==========================================
+# GAMEPAD-21 — a swap resumes polling on whichever clock is in use
+# ==========================================
+
+def _wait_for(predicate, timeout=1.0):
+    """Poll `predicate` until true or the timeout expires. Returns the result.
+
+    The threaded clock is a real thread; a fixed sleep would either be flaky
+    or slow. Failure here means the predicate never became true, which is
+    the assertion the caller wants to make anyway.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if predicate():
+            return True
+        _time.sleep(0.005)
+    return predicate()
+
+
+def test_manual_input_is_still_live_after_a_swap_on_the_threaded_clock():
+    """GAMEPAD-21, and the safety case: this is a manual-mode path.
+
+    S5 gave the poller its own clock so the Web frontend could have manual
+    mode at all (GAMEPAD-1). The repair never reached the swap path:
+    `set_controller` gated its resume on `self.gui_root`, which is only ever
+    assigned when `start_polling` is handed a `gui`, and the threaded clock
+    never hands it one. So a *successful* swap ran `stop_polling()` inside
+    `_initialize_pygame_joystick` and never restarted anything.
+
+    The end state is the one GAMEPAD-1 was closed on: the operator is in
+    manual mode with coils energised, the new controller binds and reports
+    bound, and stick deflection reaches nothing. The stick is held off-centre
+    here so this asserts on a value arriving, not merely on a flag.
+    """
+    with patched_sdl() as mock_pygame:
+        _sdl_handles_per_index(mock_pygame, count=2, numaxes=6, axis_value=0.9)
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            poller = ControllerPoller(0, {}, "WebProbe")
+            try:
+                poller.start_polling(gui=None)   # the web/headless clock
+                assert _wait_for(
+                    lambda: poller.get_mapped_state().get("x_axisStatus") == 0.9), \
+                    "input was not reaching the reader before the swap"
+
+                assert poller.set_controller(1) is True
+                assert poller.is_polling, (
+                    "a successful swap left the poller stopped; manual mode is "
+                    "now inert with the coils still energised")
+                assert _wait_for(
+                    lambda: poller.get_mapped_state().get("x_axisStatus") == 0.9), \
+                    "stick deflection stopped reaching the reader after the swap"
+            finally:
+                poller.close()
+
+
+def test_change_controller_resumes_the_threaded_clock_too():
+    """`change_controller` carries the identical gate. It has no callers in
+    `src` today (GAMEPAD-17), which is exactly why it would rot quietly."""
+    with patched_sdl() as mock_pygame:
+        _sdl_handles_per_index(mock_pygame, count=2, numaxes=6, axis_value=0.5)
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            poller = ControllerPoller(0, {}, "WebProbe")
+            try:
+                poller.start_polling(gui=None)
+                assert _wait_for(lambda: poller.is_polling)
+
+                assert poller.change_controller(1) is True
+                assert poller.is_polling
+                assert _wait_for(
+                    lambda: poller.get_mapped_state().get("x_axisStatus") == 0.5)
+            finally:
+                poller.close()
+
+
+def test_a_swap_does_not_start_polling_on_a_poller_that_was_not_polling():
+    """The other half of the new gate.
+
+    Resuming keys on whether this poller *was* polling before the teardown,
+    not on whether a Tk root happens to exist. A poller that nobody had
+    started must stay stopped after a swap — picking a controller from a
+    dropdown is not a request to begin driving the hardware, and on the Tk
+    path the old gate made it one.
+    """
+    root = _FakeTkRoot()
+    with patched_sdl() as mock_pygame:
+        _sdl_handles_per_index(mock_pygame, count=2)
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            poller = ControllerPoller(0, {}, "ProcessA")
+            try:
+                poller.gui_root = root          # a root exists...
+                assert poller.is_polling is False   # ...but nothing started it
+
+                assert poller.set_controller(1) is True
+                assert poller.is_polling is False, (
+                    "a swap started polling on its own")
+                assert root.queue == [], "a swap armed a poll chain on its own"
+            finally:
+                poller.close()
+
+
+def test_a_swap_on_the_tk_clock_still_resumes_and_still_uses_after():
+    """Regression guard for the path that already worked.
+
+    The resume must not acquire a `gui_root` requirement, and it must not
+    lose the Tk scheduler either: `start_polling` is called with no `gui`
+    argument, so the scheduler choice stays in one place — inside
+    `start_polling`, which reads the `gui_root` the view already gave it.
+    """
+    root = _FakeTkRoot()
+    with patched_sdl() as mock_pygame:
+        _sdl_handles_per_index(mock_pygame, count=2)
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            poller = ControllerPoller(0, {}, "ProcessA")
+            try:
+                poller.start_polling(root)
+                assert poller.is_polling and len(root.queue) == 1
+
+                assert poller.set_controller(1) is True
+                assert poller.is_polling, "the Tk swap resume regressed"
+                root.drain()
+                assert len(root.queue) == 1, (
+                    "the resumed chain is not clocked by gui_root.after")
+                assert poller._thread is None, (
+                    "the Tk path grew a poll thread")
+            finally:
+                poller.close()
