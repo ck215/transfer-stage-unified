@@ -27,7 +27,7 @@ class FailingTransport:
     def __init__(self):
         self.writes = []
 
-    def write_command(self, payload, priority=False):
+    def write_command(self, payload, priority=False, abort_if=None):
         self.writes.append(payload)
         raise TransportError("port is gone")
 
@@ -56,7 +56,7 @@ class RecordingTransport:
     def __init__(self):
         self.writes = []
 
-    def write_command(self, payload, priority=False):
+    def write_command(self, payload, priority=False, abort_if=None):
         self.writes.append(payload)
 
     def enable(self):
@@ -271,7 +271,7 @@ STALL = 0.4
 class StallingTransport(RecordingTransport):
     """A transport that has stopped answering — a live port with a wedged board."""
 
-    def write_command(self, payload, priority=False):
+    def write_command(self, payload, priority=False, abort_if=None):
         time.sleep(STALL)
         self.writes.append(payload)
 
@@ -877,7 +877,7 @@ def test_dc_18_kill_coils_goes_through_the_locked_priority_path():
             super().__init__()
             self.priorities = []
 
-        def write_command(self, payload, priority=False):
+        def write_command(self, payload, priority=False, abort_if=None):
             self.priorities.append((payload, priority))
             self.writes.append(payload)
 
@@ -1016,7 +1016,7 @@ class StallingHeaterTransport:
             self._on_is_open()
         return True
 
-    def write_command(self, payload, priority=False):
+    def write_command(self, payload, priority=False, abort_if=None):
         self.writes.append((payload, priority))
         if not priority:
             self.gate.wait(2.0)

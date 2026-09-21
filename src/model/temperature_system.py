@@ -77,6 +77,12 @@ class TemperatureSystem(ClientLivenessGate, SchemaCommands):
         self._commanded_setpoint = None
         self._init_client_liveness()
 
+        # Bumped by every stop, before its frame is built (TEMP-17). A
+        # settings frame records the value it saw at its FULL STOP check and
+        # is dropped at the wire if a stop has happened since. The latch
+        # alone cannot do this: a plain Stop System does not latch.
+        self._stop_generation = 0
+
         # `send_settings` and `stop` both build a frame from `self.*` fields
         # and then write it. Under the Web view those run on concurrent
         # `ThreadingHTTPServer` request threads, so Enter Settings could read
@@ -278,13 +284,35 @@ class TemperatureSystem(ClientLivenessGate, SchemaCommands):
                           f"the write: FULL STOP latched while the frame was "
                           f"being built")
                     return
+                generation = self._stop_generation
                 input_string = f"<{self.setpoint},{spdelay},{self.p_term},{self.i_term},{self.d_term},{self.offset}>"
+
+                # TEMP-17. The check above is still a check-then-act: this
+                # write can then wait on the transport's lock for as long as
+                # the reader's readline holds it, while a stop forces its
+                # frame past both locks. Written afterwards, this frame
+                # re-armed the heater the operator had just stopped. The
+                # transport re-asks at the wire.
+                def _superseded():
+                    return (self._estop.is_set()
+                            or self._stop_generation != generation)
+
                 try:
-                    self.serial_conn.write_command(input_string)
+                    written = self.serial_conn.write_command(
+                        input_string, abort_if=_superseded)
                 except Exception as e:
                     from error_routing import ErrorRouter as ErrorPopupManager
                     ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
                 else:
+                    if written is False:
+                        msg = (f"[{self.__class__.__name__}] Settings not "
+                               f"sent: a stop arrived while the frame was "
+                               f"waiting for the port.")
+                        print(msg)
+                        from error_routing import ErrorRouter
+                        ErrorRouter.report_warning(
+                            "Temperature Settings Superseded", msg)
+                        return
                     sent = safe_float(self.setpoint)
                     self._commanded_setpoint = sent if sent else None
         else:
@@ -430,10 +458,13 @@ class TemperatureSystem(ClientLivenessGate, SchemaCommands):
         """Stops heating immediately by setting target setpoint to 0 while keeping serial monitoring active.
 
         With `priority`, the write lock is taken with a timeout and the frame
-        is forced through if an Enter Settings is mid-write. A zero-setpoint
-        frame is idempotent, so the worst case is one mangled *stop* and the
-        alternative is a FULL STOP that waits on the heater (TEMP-7).
+        is forced past an Enter Settings that holds it (TEMP-7). Forcing no
+        longer means interleaving: the transport still waits, boundedly, for
+        any write already on the wire, and a settings frame that was waiting
+        behind this stop is dropped at the wire rather than written after it
+        (TEMP-17, via `_stop_generation`).
         """
+        self._stop_generation += 1  # first: supersedes any frame in flight
         self.setpoint = "0"
         rate_float = num(self.ramp_rate, 0.0)
 

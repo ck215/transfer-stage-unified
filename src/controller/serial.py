@@ -125,6 +125,13 @@ class serial:
 
         # Threading lock for thread-safe serial port access
         self._lock = threading.RLock()
+        # Held *only* around the `ser.write` call itself, never around a read,
+        # and always innermost. `_lock` spans whole transactions (a reader's
+        # blocking readline included), so the priority path forces past it
+        # routinely -- and used to then write straight into the middle of
+        # whatever write was on the wire (TEMP-17, SERIAL-23). This lock is
+        # what a forced write still waits for, briefly and boundedly.
+        self._write_io_lock = threading.Lock()
 
         # NEW: Buffer for incoming serial data from firmware
         self._read_buffer = ""
@@ -299,7 +306,7 @@ class serial:
             now = time.time()
             if now >= next_ping:
                 try:
-                    with self._lock:
+                    with self._lock, self._write_io_lock:
                         self.ser.write(b"s\n")
                 except Exception:
                     return False
@@ -416,7 +423,7 @@ class serial:
             )
 
             print(f"[SerialDrive] Sending 12-Field AUTON Command: {command.strip()}")
-            with self._lock:
+            with self._lock, self._write_io_lock:
                 self.ser.write(command.encode('utf-8'))    # type: ignore
 
         # Exception handling
@@ -478,7 +485,7 @@ class serial:
             # ms), the flush provides no value and the lock-holding hazard is not justified.
             # Callers needing a bounded drain can use the separate flush() method with
             # a timeout (see line 585).
-            with self._lock:
+            with self._lock, self._write_io_lock:
                 self.ser.write(packet)  # type: ignore
             
         # Exception handling
@@ -495,8 +502,13 @@ class serial:
     # itself through. Short enough that FULL STOP is not held up by an
     # in-flight poll, long enough that the ordinary case still serialises.
     PRIORITY_LOCK_TIMEOUT = 0.05
+    #: How long a forced priority write waits for a write already on the wire
+    #: to finish (TEMP-17, SERIAL-23). A frame at 115200 baud is a few ms, so
+    #: this only ever runs out on a writer wedged inside `ser.write` (bounded
+    #: by the port's write_timeout) -- and then the stop goes anyway.
+    WRITE_IO_LOCK_TIMEOUT = 0.25
 
-    def write_command(self, payload, priority=False):
+    def write_command(self, payload, priority=False, abort_if=None):
         """The one way anything reaches the hardware (RC-2, invariant I-2.3).
 
         Takes bytes (or str, encoded as UTF-8), writes under the lock, and
@@ -508,6 +520,14 @@ class serial:
 
         In simulator mode there is no port and nothing to write; that is a
         successful no-op, not a failure.
+
+        `abort_if`, when given, is called at the last moment - with every
+        lock this write will take already held, immediately before the bytes
+        go out - and a true answer skips the write and returns False. It
+        exists for frames that a stop may have superseded while they waited
+        (TEMP-17): checking before calling this is a check-then-act, and the
+        wait for `_lock` can be as long as a reader's readline. Returns True
+        when the payload was written.
         """
         if isinstance(payload, str):
             payload = payload.encode('utf-8')
@@ -517,13 +537,28 @@ class serial:
         if not acquired:
             # A stop that cannot get the lock is worse than an unsynchronised
             # one (RC-5 item 2). A poll or a long autonomous write holding the
-            # lock must not be able to delay 'd' or 'k'. The write below can
-            # therefore interleave with whatever holds the lock; the firmware
-            # treats both commands as idempotent single bytes, so a mangled
-            # *stop* is the only thing this risks and the alternative is no
-            # stop at all. Never pass priority=True for a motion command.
+            # lock must not be able to delay 'd' or 'k', so this write goes
+            # without the transaction lock. Never pass priority=True for a
+            # motion command.
+            #
+            # It does still wait for the write on the wire *now*
+            # (`_write_io_lock`, bounded by WRITE_IO_LOCK_TIMEOUT). This
+            # comment used to say an interleave could at worst produce "a
+            # mangled *stop*". The second fresh-eyes audit read the firmware:
+            # both binary boards `readBytes` a fixed-size packet after 0xAA,
+            # so a 'd' landing inside one is consumed as payload - a *lost*
+            # stop (SERIAL-23) - and a split heater frame reaches
+            # `atof(NULL)` in `parseData` (TEMP-17).
             print(f"[SerialDrive] PRIORITY: lock busy, forcing {payload!r} through")
+        io_acquired = False
         try:
+            io_acquired = self._write_io_lock.acquire(
+                timeout=self.WRITE_IO_LOCK_TIMEOUT if priority else -1)
+            if not io_acquired:
+                print(f"[SerialDrive] PRIORITY: a write is wedged on the wire, "
+                      f"forcing {payload!r} through regardless")
+            if abort_if is not None and abort_if():
+                return False
             if self.ser is None or not self.ser.is_open:
                 raise TransportError(
                     f"[SerialDrive] Port {self.SERIAL_PORT} is not open; "
@@ -535,6 +570,8 @@ class serial:
             else:
                 lost = None
         finally:
+            if io_acquired:
+                self._write_io_lock.release()
             if acquired:
                 self._lock.release()
         if lost is not None:
@@ -543,6 +580,7 @@ class serial:
             self._mark_lost(lost)
             raise TransportError(
                 f"[SerialDrive] Write of {payload!r} failed: {lost}") from lost
+        return True
 
     def _mark_lost(self, why):
         """First transport failure wins: go to LOST, close, report once.

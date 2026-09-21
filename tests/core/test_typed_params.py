@@ -37,7 +37,7 @@ def test_a_dc_probes_manual_jog_speed_falls_back_to_its_own(bad):
         def send_manual_mode_command(self, params):
             sent.update(params)
 
-        def write_command(self, payload, priority=False):
+        def write_command(self, payload, priority=False, abort_if=None):
             pass
 
     probe.serial_comm = Recorder()
@@ -83,7 +83,7 @@ class _Recorder:
     def is_open(self):
         return True
 
-    def write_command(self, payload, priority=False):
+    def write_command(self, payload, priority=False, abort_if=None):
         self.writes.append(payload)
 
 

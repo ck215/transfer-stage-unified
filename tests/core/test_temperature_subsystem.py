@@ -1,6 +1,6 @@
 import time
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 import pytest
 
 from model.temperature_system import TemperatureSystem
@@ -70,7 +70,8 @@ def test_temperature_system_send_settings_packet():
 
         ts.send_settings()
 
-        mock_instance.write_command.assert_called_once_with("<45.5,12.00,2.5,0.8,0.2,1.0>")
+        mock_instance.write_command.assert_called_once_with(
+            "<45.5,12.00,2.5,0.8,0.2,1.0>", abort_if=ANY)
         ts.close()
 
 
