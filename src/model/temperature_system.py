@@ -194,7 +194,15 @@ class TemperatureSystem(SchemaCommands):
                     ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
                 
     def read_serial_data(self):
+        """Background reader with exponential backoff and indefinite retry.
+
+        TEMP-2: Real backoff (0.1 -> 0.2 -> ... up to ~2 s), retry indefinitely,
+        and set current_temp to indicate disconnection on persistent failure.
+        """
         consecutive_failures = 0
+        max_backoff = 2.0  # Maximum backoff delay in seconds
+        failure_reported = False  # Track if we've reported a disconnection
+
         while getattr(self, 'continue_reading', True):
             try:
                 if self.serial_conn and self.serial_conn.is_open():
@@ -202,26 +210,41 @@ class TemperatureSystem(SchemaCommands):
                     if raw_line:
                         line = raw_line.decode('utf-8', errors='ignore')
                         self.process_raw_data(line)
+                        # Reset on successful read
+                        consecutive_failures = 0
+                        failure_reported = False
                     # Unconditional floor
                     time.sleep(0.01)
                 else:
-                    time.sleep(0.1)
-                consecutive_failures = 0
+                    # Port is closed/not open, treat as a read failure
+                    consecutive_failures += 1
+                    # Exponential backoff: 0.1, 0.2, 0.4, 0.8, 1.6, 2.0, 2.0, ...
+                    backoff = min(0.1 * (2 ** (consecutive_failures - 1)), max_backoff)
+                    time.sleep(backoff)
             except Exception as e:
                 if not getattr(self, 'continue_reading', True):
                     break
                 consecutive_failures += 1
+                # Exponential backoff: 0.1, 0.2, 0.4, 0.8, 1.6, 2.0, 2.0, ...
+                backoff = min(0.1 * (2 ** (consecutive_failures - 1)), max_backoff)
+
                 from error_routing import ErrorRouter
-                if consecutive_failures >= 5:
-                    msg = f"Giving up after {consecutive_failures} consecutive failures: {e}"
-                    print(msg)
-                    ErrorRouter.report_error("Temperature Read Error (Fatal)", msg, e)
-                    break
-                else:
+
+                # Only report once on transition to persistent failure
+                # (first 5 failures are transient, after that is persistent)
+                if consecutive_failures <= 5:
                     msg = f"Serial background read error (transient, retry {consecutive_failures}/5): {e}"
                     print(msg)
                     ErrorRouter.report_error("Temperature Read Error", msg, e)
-                    time.sleep(0.1)
+                elif not failure_reported:
+                    # Persistent failure: set disconnected state
+                    msg = f"Temperature reader persistent connection loss after {consecutive_failures} failures: {e}"
+                    print(msg)
+                    ErrorRouter.report_warning("Temperature Disconnected", msg)
+                    self.current_temp = "Disconnected"
+                    failure_reported = True
+
+                time.sleep(backoff)
 
     def process_raw_data(self, data_line):
         line = data_line.strip()
