@@ -6,7 +6,7 @@ import threading
 from enum import Enum
 from controller.serial import serial, PACKET_FORMAT
 from error_routing import ErrorRouter as ErrorPopupManager
-from model.numeric import num as _num
+from model.numeric import num as _num, safe_float as _safe_float
 from model.params import Param, table as _param_table, extend as _extend_params
 from model import schema as sch
 from model.base import SchemaCommands
@@ -772,33 +772,88 @@ class BaseProbe(SchemaCommands):
                     command = getattr(line, 'command', ('', 0))
                     
                     if command and command[0] == 'G':
-                        x_dist = params.get('X', 0)
-                        y_dist = params.get('Y', 0)
-                        z_dist = params.get('Z', 0)
-                        feedrate = params.get('F', self.full_speed)
-                        
+                        # **Only G0 and G1 are moves** (STEPPER-9). Every word
+                        # beginning with 'G' used to be dispatched as an
+                        # autonomous packet with X/Y/Z defaulted to 0, so the
+                        # `G21`/`G90` preamble that opens most files commanded
+                        # the stage twice before its first real move. The
+                        # firmware has no notion of units, work offsets or
+                        # absolute-vs-relative; a word it cannot act on is
+                        # skipped and said out loud, not turned into motion.
+                        word = command[1] if len(command) > 1 else None
+                        if _safe_float(word) not in (0.0, 1.0):
+                            msg = (f"{gcode_str.strip()}: this firmware has no "
+                                   f"handler for G{word} (only G0/G1 are moves"
+                                   f" — there is no absolute/relative or units"
+                                   f" handling). Line skipped; it was NOT sent"
+                                   f" as a zero-distance move.")
+                            print(f"[{self.__class__.__name__}] {msg}")
+                            ErrorPopupManager.report_warning(
+                                "Unsupported G-code Word", msg)
+                            continue
+
+                        # **Validated before anything is dispatched.** The
+                        # frame used to be built from raw strings and sent,
+                        # and only then did `float(self.x_step)` run — so a
+                        # malformed value went to the hardware *first* and
+                        # aborted the script afterwards, with the bad command
+                        # already on the wire. This is a motion path: a value
+                        # that cannot be read is an error to refuse, not a
+                        # number to invent (the rule get_params and
+                        # TemperatureSystem.send_settings already follow).
+                        axes = {}
+                        for axis in ('X', 'Y', 'Z'):
+                            raw = params.get(axis, 0)
+                            value = _safe_float(raw)
+                            if value is None:
+                                raise ValueError(
+                                    f"{gcode_str.strip()}: {axis} is "
+                                    f"{raw!r}, which is not a number. "
+                                    f"Nothing was sent.")
+                            axes[axis] = value
+
+                        if 'F' in params:
+                            feedrate = params['F']
+                            speed = _safe_float(feedrate)
+                            if speed is None:
+                                raise ValueError(
+                                    f"{gcode_str.strip()}: feedrate is "
+                                    f"{feedrate!r}, which is not a number. "
+                                    f"Nothing was sent.")
+                        else:
+                            # No F word: the probe's own configured speed,
+                            # coerced against its class's table rather than
+                            # read raw off the field (RC-6 item 1).
+                            speed = float(self._param("full_speed"))
+                            feedrate = speed
+
+                        x_step = self._param("x_step")
+                        y_step = self._param("y_step")
+                        z_step = self._param("z_step")
+
                         cmd_params = {
-                            "x_step_size": self.x_step,
-                            "y_step_size": self.y_step,
-                            "z_step_size": self.z_step,
+                            "x_step_size": x_step,
+                            "y_step_size": y_step,
+                            "z_step_size": z_step,
                             "full_speed": str(feedrate),
                             "slow_speed": 0,
                             "brake_distance": 0,
-                            "x_dist": str(x_dist),
-                            "y_dist": str(y_dist),
-                            "z_dist": str(z_dist),
+                            "x_dist": str(params.get('X', 0)),
+                            "y_dist": str(params.get('Y', 0)),
+                            "z_dist": str(params.get('Z', 0)),
                             "command_code_manual": 0,
                             "command_code_auton": 1
                         }
                         if self._refuse_if_estopped("script motion"):
                             break
                         self.serial_comm.send_autonomous_command(cmd_params)
-                        
-                        x_steps = abs(float(self.x_step) * float(x_dist))
-                        y_steps = abs(float(self.y_step) * float(y_dist))
-                        z_steps = abs(float(self.z_step) * float(z_dist))
+
+                        x_steps = abs(float(x_step) * axes['X'])
+                        y_steps = abs(float(y_step) * axes['Y'])
+                        z_steps = abs(float(z_step) * axes['Z'])
                         dist = math.sqrt(x_steps**2 + y_steps**2 + z_steps**2)
-                        speed = float(feedrate) if float(feedrate) > 0 else float(self.full_speed)
+                        if speed <= 0:
+                            speed = float(self._param("full_speed"))
                         duration = (dist / speed) + 0.05 if speed > 0 else 0.1
                         time.sleep(duration)
                     elif ',' in gcode_str:
