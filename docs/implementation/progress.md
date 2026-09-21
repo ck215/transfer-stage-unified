@@ -26,10 +26,14 @@ You are probably a fresh agent with no context. Do this, in order:
    re-derive the analysis; it cost a full audit pass.
 4. **Check the anti-fix table** in that same document before writing code.
    Several tempting patches entrench the cause they appear to fix.
-5. **Run the fast gate** — about 28 seconds:
+5. **Run the fast gate** — about 65 seconds, 589 passing at `0e5ba73`:
    `python3 -m pytest tests/ -m "not slow and not order_dependent and not qt"`.
-   Your stage's targeted gate and the three-pass full sweep are in
-   [testing.md](testing.md). Do not run the whole suite in a working loop.
+   It grew from 28 s when S10 un-excluded `tests/ui`. Your stage's targeted
+   gate is in [testing.md](testing.md). The **three-pass full sweep is
+   retired** (owner instruction, 2026-09-20) — the fast gate plus
+   `-m "qt"` is the contract now. Do not run the whole suite in a working
+   loop. Read pytest's exit code **unpiped**: `... > log 2>&1; echo $?`
+   reports pytest, `... | tail` reports `tail`.
 6. **Work, commit, push** per the protocol in plan.md. Every commit updates
    this file.
 7. **Before stopping,** write a session-log entry below saying what you did,
@@ -2049,6 +2053,69 @@ model's existing fields, so `MonitoringRun` must take over `run_id`,
 than leaving a second snapshot beside its own. After that, the fix wave: the
 partition is drawn (transport / rotator / input as three worktrees, views and
 docs lead-only) and the backlog behind it is now known to be real.
+
+### 2026-09-20 — doc audit before the fix wave, and the partition redrawn from the citation map
+
+Audited this file against the tree before launching more worktrees. Three
+things were checked and two were wrong.
+
+**Right:** the ledger is **216 rows**, 156 closed, 60 open, and
+`gen_ledger.py` regeneration is a byte-for-byte no-op — the `STAGE_OVERRIDE`
+fix holds. The Stage status table matches the ledger.
+
+**Wrong 1 — the cold-resume procedure lied about its own gate.** Step 5 said
+"about 28 seconds" and pointed at the three-pass full sweep. The gate has
+been ~65 s since S10 un-excluded `tests/ui`, and the sweep was **retired by
+owner instruction earlier today**. A fresh agent following step 5 would have
+budgeted a third of the real time and then run a sweep that no longer exists
+as a contract. Fixed, with the measured number and the commit it was
+measured at.
+
+**Wrong 2 — `testing.md`'s baseline trail stopped at S11.** Four stages have
+landed since (S12, S14, S15, S13 items 5-7) and none was recorded, so the
+newest number in the testing doc was 505 while the tree runs 589. Appended
+the current baseline, the sweep retirement *and the reason for it*, and the
+`| tail` exit-code trap that produced a false green in this project.
+
+Neither was a code defect. Both were the kind of drift that only costs
+something when someone trusts the document — which is the whole job this
+file has.
+
+**The partition was redrawn, and the first draft was wrong.** The earlier
+sketch (transport / rotator / input) assumed the rotator findings were
+model-only. They are not: ROTATOR-6's fix direction explicitly requires
+removing PySide's duplicate `status_timer` poll, so it spans
+`rotator_system.py` and `pyside/view.py`. Three others do the same.
+
+Redrew it mechanically instead of by intuition — map every open finding to
+every source file its audit entry cites, then partition the *files* and let
+each finding fall to the agent owning all of its files. Findings spanning
+two owners go to the lead by construction, so there is nothing to negotiate.
+
+The structural result is worth recording: **of 60 open findings, 42 cite a
+GUI view file or `redpercent_system.py`.** The remaining backlog is
+view-bound. Parallel worktrees cannot reach most of it, and no partition
+will change that — the two view files are cited by 28 open findings *each*,
+because the same defect is usually present in both. This is a real ceiling
+on how much of S13-S15's residue can be parallelized, and it means the
+back half of this branch is lead work whether or not agents are available.
+
+Eighteen findings are reachable, in three balanced, provably disjoint write
+sets: **A-input** (7, `gamepad.py`), **B-transport** (6, `app.py`,
+`app_bootstrap.py`, `serial.py`, `probes.py`, `system_manager.py`,
+`error_routing.py`), **C-web** (5, `views/web/**` plus `smc100.py`,
+`rotator_system.py`, `temperature_system.py`, `numeric.py`).
+
+A 15-finding single-agent variant was computed and **rejected**: it reached
+24 findings by giving one agent the whole web layer plus transport, and the
+extra six were all `probes.py` <-> `web_adapter.py` coupling findings — the
+cross-layer kind where an agent starts making design decisions that are not
+its to make.
+
+Baseline for the wave: `0e5ba73`, fast gate **589 passed, 1 xfailed**, exit
+0, 66 s, read unpiped.
+
+**Next action:** launch the three worktrees, then S13 items 1-4.
 
 ## Finding ledger
 

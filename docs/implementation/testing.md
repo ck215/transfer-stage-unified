@@ -337,3 +337,23 @@ has anything to do with the `ErrorRouter` change that was predicted to fix
 them, and passing on an idle machine is not evidence of a fix. The likeliest
 cause is that S10's un-ignoring of `tests/ui` changed what runs alongside
 them. Do not retire the marker without knowing which.*
+
+*After S12, S14, S15 and S13 items 5-7 (2026-09-20): fast gate **589 passed,
+105 deselected, 1 xfailed** (~65 s); Qt **46 passed** (~21 s). The +84 since
+the S11 line above is S12's composition-root tests, the two worktrees' 36,
+and S13 items 5-7's 13 in `tests/core/test_redpercent_run_artifacts.py`. The
+one xfail is still I-7.1, and it is still S13's — items 1-4 own it.*
+
+**The three-pass full sweep is retired** (owner instruction, 2026-09-20).
+The verification contract is now the fast gate plus `-m "qt"`, both read
+**unpiped**. The sweep was retired because its cost — three minutes-plus per
+stage boundary — bought only the `order_dependent` pair, which is two
+wall-clock assertions that pass on an idle machine and prove nothing when
+they do. Those two keep their marker and are run deliberately, not on a
+schedule. Nothing above this line was re-run to confirm it; the older
+baselines are a historical trail, not a current claim.
+
+> **Reading pytest's exit code.** `pytest ... | tail -5` reports *`tail`'s*
+> exit status, which is 0 whatever pytest did. This has produced a false
+> green in this project at least once. Redirect and echo instead:
+> `python3 -m pytest ... > log 2>&1; echo $?`.
