@@ -1088,8 +1088,10 @@ class TransferStageApp {
             }
           }
 
-          // Update red percent metrics if optical data is present
-          if (attr.toLowerCase().includes('red') && typeof val === 'number') {
+          // WEB-7: Update red percent metrics if optical data is present
+          // Only use current_red, not red_change, to avoid interleaving
+          // delta and absolute values in the plot.
+          if (attr === 'current_red' && typeof val === 'number') {
             this.pushPlotterSample(val);
           }
         }
