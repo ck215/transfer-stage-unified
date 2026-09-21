@@ -22,7 +22,6 @@ def create_test_rotator():
     rotator._motion_lock = threading.Lock()
     rotator.smc = None
     rotator.is_connected = False
-    rotator.error_callback = None
     return rotator
 
 
@@ -55,25 +54,26 @@ class TestErrorRouting:
             assert mock_report.called, "Should report stop error"
             assert "Rotator Error" in mock_report.call_args[0][0]
 
-    def test_error_routing_to_both_callback_and_error_router(self):
-        """Errors route to both callback (for backward compatibility) and ErrorRouter."""
+    def test_the_dead_callback_hook_is_gone(self):
+        """ROTATOR-15, the half that kept coming back `partly`.
+
+        This slot used to hold `test_error_routing_to_both_callback_and_
+        error_router`, which asserted that `error_callback` "should still be
+        called for backward compatibility". Nothing in production ever
+        assigned it -- not `app_bootstrap.py`, not any of the three views --
+        so the only thing it was backward-compatible *with* was other tests.
+        That assertion is what blocked the deletion the finding asks for,
+        across three waves: an agent would correctly conclude the hook was
+        dead, try to remove it, watch this test go red, and report `partly`.
+
+        Reporting is unconditional through ErrorRouter/EventBus (RC-8, S11),
+        which is what the rest of this file asserts.
+        """
         rotator = create_test_rotator()
-
-        # If a callback is set, it still gets called for backward compatibility
-        # with existing test code
-        mock_callback = MagicMock()
-        rotator.error_callback = mock_callback
-        rotator.smc = MagicMock()
-        rotator.smc.stop.side_effect = Exception("Stop failed")
-
-        with patch('error_routing.ErrorRouter.report_error') as mock_report:
-            rotator.stop()
-
-        # Both callback and ErrorRouter are called
-        assert mock_callback.called, (
-            "error_callback should still be called for backward compatibility")
-        assert mock_report.called, (
-            "ErrorRouter should also be called for consistent error routing")
+        assert not hasattr(rotator, "error_callback"), (
+            "the error_callback hook is back. No shipped path assigns it, so "
+            "it can only be a seam for tests -- and a test that sets it "
+            "asserts code no operator ever reaches (ROTATOR-15)")
 
 
 if __name__ == "__main__":

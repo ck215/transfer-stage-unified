@@ -2763,16 +2763,28 @@ of resetting a clock that rots again on the next commit.
 compliance check, then every claimed test name grepped, then the qt pass,
 then close rows. Then ERRORS-11 against the merged tree.
 
-## Wave 5 — launched 2026-09-21. Lanes 1 and 3 merged; lane 2 still running.
+## Wave 5 — launched and completed 2026-09-21. All three lanes merged.
 
-**Result so far: ROTATOR-9, ROTATOR-13, TEMP-9 and TEMP-10 all close.** Three
-of those had come back `partly` for three consecutive waves, and the reason
-the partition worked is the one the owner named: a single write set that owns
-both desktop view files. Gates at merge: fast **890 passed / 1 skipped /
-1 xfailed / 0 failed**, qt **64 passed** (baseline 64, no regression).
+**Result: all seven findings close.** ROTATOR-9, ROTATOR-13, TEMP-9, TEMP-10,
+ROTATOR-15, SERIAL-6, SERIAL-16. Four of those had come back `partly` for
+three consecutive waves, and the reason the partition worked is the one the
+owner named: a single write set that owns both desktop view files.
 
-Merge commits: `4f78148` (w5-views), `79c1285` (w5-thermal), plus `a3e3a36`
-(test repairs) and `e447446` (TEMP-10's headline, taken by the lead).
+**Ledger 191 closed / 27 open → 199 closed / 20 open** (the eighth is
+GAMEPAD-20, taken by the lead the same day). Final gates: fast **901 passed
+/ 1 skipped / 1 xfailed / 0 failed**, qt **64 passed** (baseline 64, no
+regression).
+
+Merge commits: `4f78148` (w5-views), `79c1285` (w5-thermal), `b95a379`
+(w5-transport), plus `a3e3a36` (test repairs) and `e447446` (TEMP-10's
+headline, taken by the lead).
+
+**Every lane came back with at least one row blocked by a test file in
+another lane's write set, and all three were unblockable in one edit by the
+lead.** That is the partition working as designed — the agents correctly
+refused to reach outside their write sets — but it is also a standing cost
+worth naming: *the blocker is almost never the fix, it is a test asserting
+the old behavior.* ROTATOR-15 is the extreme case; see its ledger row.
 
 **Two things the lanes handed back needed lead repair, and both were the same
 class of error — a test that cannot fail.**
@@ -2908,6 +2920,73 @@ the fix is in the view.
 **Baselines to beat, at this commit:** fast 854 passed / 1 skipped /
 1 xfailed; qt 64 passed; slow 58 passed. Ledger 191 closed / 27 open.
 
+### 2026-09-21 (close) — wave 5 lands complete; ROTATOR-15 finally deleted
+
+All three lanes merged. Seven findings close, plus GAMEPAD-20 earlier the
+same day: **191/27 → 199/20**. Fast gate 901 passed / 0 failed, qt 64 passed.
+
+**Lane 2 (`w5-transport`) justified being the one lane on the larger model.**
+SERIAL-6 is a genuine concurrency change on the transport every motion
+subsystem rides, and the lane handled it the way the safety pattern demands:
+the connect worker never holds `_lock` across the wait, only across
+individual I/O calls, so a priority write still forces through within
+`PRIORITY_LOCK_TIMEOUT`. It also found and fixed a **latent deadlock** the
+change exposed — `_mark_lost` acquired `_lock` unconditionally, so a priority
+write's forced-through failure path could hang behind a handshake write — and
+proved it by deadlocking the pre-fix code, which is the strongest evidence
+form this branch accepts.
+
+**Two things the lead checked independently rather than on the report,
+because they would have been serious if wrong.** Neither was: (1)
+autodetection is unaffected, because `app_bootstrap.probe_device_at` opens
+pyserial directly rather than this wrapper, so an early-returning constructor
+cannot mis-assign a board to the wrong device; (2) `_connect_worker`'s
+stale-result guard is real, and `CONNECTING` is genuinely set at
+`serial.py:124` rather than assumed — had it not been, the worker would have
+early-returned every time and silently never set VERIFIED/UNVERIFIED at all.
+
+**ROTATOR-15 is the lesson of this wave.** It asks for four lines to be
+deleted. It came back `partly` three waves running, and the blocker was never
+the code: `tests/core/test_rotator15_error_routing.py` asserted that
+`error_callback` "should still be called for backward compatibility". Every
+agent correctly concluded the hook was dead, tried to remove it, watched that
+test go red, and honestly reported `partly`. The only thing the hook was
+backward-compatible *with* was other tests. The lead deleted the assertion,
+rewrote the two tests that used the hook as their observation seam, and the
+deletion took minutes.
+
+**The generalisable form:** when a row keeps coming back `partly`, check
+whether a *test* is the obstacle before assuming the fix is hard. Three of
+this wave's seven findings were blocked that way (ROTATOR-15, SERIAL-6's
+transport-truth assertion, and ROTATOR-15's edge-case caller), and all three
+were one edit each. A brief cannot fix this — the agent is right to refuse to
+reach outside its write set — so **the lead should expect to spend the merge
+pass unblocking tests, and should budget for it rather than treating each one
+as a lane failure.**
+
+**SERIAL-6's blocking test was strengthened, not relaxed, while unblocking
+it.** `test_an_opened_port_that_never_answered_is_unverified_not_connected`
+asserted the state immediately after construction, which is exactly the
+synchronous assumption SERIAL-6 removes. It now waits on the `wait_connected`
+seam *and* additionally asserts the link is never VERIFIED during the
+in-flight window — which is SERIAL-7's actual contract, and was not previously
+checked at all. That distinction matters: the row would have been a
+baseline-bump if the assertion had merely been deleted.
+
+**Still open and deliberately so:** ERRORS-7 (the `rotator_system.py` and
+`redpercent_system.py` shares remain; `serial.py`'s was audited this wave and
+found already adequate), VIEW-TKINTER-18 (third refusal, correctly — it is in
+`bench-checklist.md` now), and ERRORS-11.
+
+**Next action:** ERRORS-11 against the merged tree. `error-routing.md` is
+stale past the five rows the audit names — it claims `error_routing.py` is 54
+lines and it is 340 — so the fix is to re-anchor its tables to **symbols**
+rather than line numbers, keeping line numbers only as "as of `<sha>`". Every
+file it cites is now free; no lane holds anything. After that, wave 6 is the
+two-lane splits (ROTATOR-6, SERIAL-12, DC-5, MANAGER-13), each of which needs
+**a seam test written by the lead before either half is briefed**, per the
+WEB-19 failure of 2026-09-20.
+
 ## Finding ledger
 
 218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
@@ -2955,7 +3034,7 @@ it) · `n/a` (with a reason).
 | ERRORS-4 | RC8 | S11 | root cause | closed (`install_exception_hooks`; test_i_8_3_every_launcher_installs_the_same_hooks, test_a_thread_exception_reaches_the_bus) |
 | ERRORS-5 | RC8 | S11 | root cause | closed (manager binds to the process-lifetime root, never the dashboard; the `after` loop reschedules in a `finally`) |
 | ERRORS-6 | RC2 | S3 | root cause | closed (S3: serial write failures raise TransportError and the models fault rather than swallow; test_an_unconfirmed_disable_is_a_fault_not_a_disabled_claim, test_a_failed_disable_still_hides) |
-| ERRORS-7 | RC2 / RC8 / RC11 | S3 | root cause | open (partly closed: the `probes.py` share — controller-swap and fallback-poller build failures are reported through the bus instead of printed. test_a_failed_fallback_poller_build_is_reported_not_just_printed, test_a_failed_swap_on_an_existing_poller_is_reported_not_just_printed. the `temperature_system.py` share is now covered too — `close()` reports heater-off write, flush and port-close failures, and the reader reports persistent connection loss: test_close_reports_write_failure, test_close_reports_flush_failure, test_close_reports_close_failure, test_read_persistent_failure_sets_disconnected. **The same shape remains in `rotator_system.py` and `redpercent_system.py`**, and `serial.py`'s share is with the w5-transport lane; route the remainder to the next wave) |
+| ERRORS-7 | RC2 / RC8 / RC11 | S3 | root cause | open (partly closed: the `probes.py` share — controller-swap and fallback-poller build failures are reported through the bus instead of printed. test_a_failed_fallback_poller_build_is_reported_not_just_printed, test_a_failed_swap_on_an_existing_poller_is_reported_not_just_printed. `serial.py`'s share was audited this wave and found already adequate (a handshake write failure and a malformed `POS:` line, both deliberate — see SERIAL-16); the `temperature_system.py` share is now covered too — `close()` reports heater-off write, flush and port-close failures, and the reader reports persistent connection loss: test_close_reports_write_failure, test_close_reports_flush_failure, test_close_reports_close_failure, test_read_persistent_failure_sets_disconnected. **The same shape remains in `rotator_system.py` and `redpercent_system.py`**; route the remainder to the next wave) |
 | ERRORS-8 | RC8 | S11 | root cause | closed (locked bus, key is `(severity, source, title)`; test_publishing_from_many_threads_loses_nothing, test_repeats_fold_into_one_event_with_a_count) |
 | ERRORS-9 | RC8 | S11 | root cause | closed (PySide's three CSV surfaces — load failure, missing Red Percent column, nothing to save — report through the bus instead of raising their own `QMessageBox`. **The agent reported this `closed` on "code inspection; no standalone test created" and the row stayed open until the lead wrote one**: test_the_csv_surfaces_do_not_raise_their_own_modal, test_the_csv_load_path_reports_through_the_error_router. The change also broke PYSIDE-18's qt test, which asserted on the very modal this finding removes; that test now asserts on the bus) |
 | ERRORS-10 | RC8 | S11 | root cause | closed (the rate limit no longer runs ahead of the no-subscriber print; test_with_no_subscriber_the_bus_prints) |
@@ -3059,13 +3138,13 @@ it) · `n/a` (with a reason).
 | ROTATOR-12 | RC6 | S9 | root cause | closed (S9 item 2: rotator params typed and bounded) |
 | ROTATOR-13 | RC2 / RC7 | S3 | root cause | closed (all four halves now land. Both desktop views gate their controls on the link and match the web half's rule — a device with no live link cannot execute anything, so every button/entry/toggle is disabled, STOP included, whose `stop()` is a no-op with `smc` as None. test_rotator_13_pyside_disables_every_control_when_disconnected, test_rotator_13_tk_disables_every_control_when_disconnected, and the negative cases test_rotator_13_pyside_leaves_controls_alone_when_connected, test_rotator_13_tk_leaves_controls_alone_when_connected, which pin that the gate is the link and not a permanent disable. The lane's own tests proved only that `_mode_name()` *returns* "disconnected" — the input to the decision, not the disabling — and were rewritten at merge to drive the real `_sync_gates`. Prior state: the model reports no-connection rather than claiming simulation, refusals surface as errors, and the **web** controls are now force-disabled with a stated reason when the device is disconnected — test_disconnected_device_controls_are_disabled_and_noted. the Tk and PySide shares remained because no wave had owned that pair together) |
 | ROTATOR-14 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
-| ROTATOR-15 | RC8 | S11 | root cause | open (partly closed: routing is no longer either/or — `_run_guarded`, `connect` and `stop` now report through `ErrorRouter` unconditionally instead of only when no `error_callback` was set, which is a real repair since a test setting the hook silently suppressed every bus report. test_async_action_failure_routes_through_error_router, test_stop_failure_routes_through_error_router, test_error_routing_to_both_callback_and_error_router. **The dead hook itself survives**: deleting it breaks tests in tests/edge_cases/, outside the agent's write set. The doc errors are the lead's) |
+| ROTATOR-15 | RC8 | S11 | root cause | closed (the dead hook is deleted — the init and all three `if self.error_callback:` checks are gone from `rotator_system.py`. test_the_dead_callback_hook_is_gone, plus test_rotator15_async_error_routes_through_event_bus_without_callback. **Why it took three waves to delete four lines:** `tests/core/test_rotator15_error_routing.py` asserted that `error_callback` "should still be called for backward compatibility", so every agent that correctly concluded the hook was dead watched that test go red and reported `partly`. The only thing it was backward-compatible *with* was other tests; no production path — not `app_bootstrap.py`, not any of the three views — ever assigned it. The lead removed that assertion and rewrote the two tests that used the hook as their observation seam (`test_edge_mvc_model.py` now watches `ErrorRouter.report_error` instead). Prior state: routing is no longer either/or — `_run_guarded`, `connect` and `stop` now report through `ErrorRouter` unconditionally instead of only when no `error_callback` was set, which is a real repair since a test setting the hook silently suppressed every bus report. test_async_action_failure_routes_through_error_router, test_stop_failure_routes_through_error_router, and the dead hook survived only because deleting it broke tests outside each agent's write set) |
 | SERIAL-1 | RC2 | S3 | root cause | closed (test_a_failed_disable_faults_instead_of_claiming_the_system_is_off, tests/core/test_transport_truth.py) |
 | SERIAL-2 | RC1 | S2 | root cause | closed (test_probe_teardown_sends_hardware_stop_when_poller_stop_raises, tests/core/test_lifecycle_teardown.py) |
 | SERIAL-3 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | SERIAL-4 | RC1 | S2 | root cause | closed (hide keeps the transport open; test_hiding_does_not_release_the_model) |
 | SERIAL-5 | RC1 / RC10 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
-| SERIAL-6 | RC4 | S5 | root cause | open |
+| SERIAL-6 | RC4 | S5 | root cause | closed (the boot wait and identity handshake moved to a daemon worker; `__init__` returns as soon as the port opens, so the 1.5–4.5 s per device is off the GUI/request thread. `CONNECTING` and the Web badge's "connecting" mapping already existed (RC-5 item 3) but were unobservable, because the whole wait ran before `__init__` returned — this is what makes them real. test_construction_returns_before_the_handshake_finishes, test_a_priority_write_is_not_delayed_by_an_in_flight_handshake, test_disable_reaches_the_hardware_while_still_connecting, test_a_write_failure_during_connect_still_marks_the_link_lost, test_close_during_connect_is_not_overwritten_by_a_late_handshake_result, test_wait_connected_returns_true_immediately_for_sim, test_wait_connected_returns_true_immediately_when_the_port_never_opened. **Safety checked at merge, not taken on report:** the worker never holds `_lock` across the wait — only the individual write/read calls take it — so a priority write still forces through within `PRIORITY_LOCK_TIMEOUT`; a connect in flight cannot delay or swallow a stop. Autodetection is unaffected because `app_bootstrap.probe_device_at` opens pyserial directly rather than this wrapper, so an early return cannot mis-assign a board. **A latent deadlock was found and fixed with it:** `_mark_lost` acquired `_lock` unconditionally, so a priority write's forced-through failure path could hang behind a handshake write holding it; it now uses the same bounded acquisition the priority path uses, and the new test deadlocked the pre-fix code outright. The one blocking test — `test_an_opened_port_that_never_answered_is_unverified_not_connected`, which asserted the state immediately after construction — was updated by the lead to wait on the `wait_connected` seam, and **strengthened** while there: it now also asserts the link is never VERIFIED *during* the in-flight window, which is SERIAL-7's actual contract) |
 | SERIAL-7 | RC2 | S3 | root cause | closed (test_an_opened_port_that_never_answered_is_unverified_not_connected, tests/core/test_transport_truth.py) |
 | SERIAL-8 | RC2 | S3 | root cause | closed (test_the_first_write_failure_moves_the_link_to_lost_and_closes_it, test_loss_is_reported_once_not_on_every_subsequent_command, tests/core/test_transport_truth.py) |
 | SERIAL-9 | RC2 | S3 | root cause | closed (test_simulator_probes_can_arm_and_disarm, tests/core/test_transport_truth.py) |
@@ -3075,7 +3154,7 @@ it) · `n/a` (with a reason).
 | SERIAL-13 | RC2 | S3 | root cause | closed (test_serial_send_manual_mode_command asserts the 42-byte packet format) |
 | SERIAL-14 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | SERIAL-15 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
-| SERIAL-16 | RC8 | S11 | root cause | open (mitigated) — the misleading throttle is gone (repeats fold and carry a count); the per-site audit of which `serial.py` conditions should report rather than print is not done |
+| SERIAL-16 | RC8 | S11 | root cause | closed (the per-site audit is done, condition by condition, with the full list recorded in the new test file's module docstring. Every site but one was already correct or already justified: `flush()`'s drain failure stays print-only, connect success stays silent per `error-routing.md`, `_handshake`'s write/read failures fold into `_connect_worker`'s single "Operating blind" report, and a malformed `POS:` line stays silent because it is ~10 Hz telemetry and reporting each one is the popup flood RC-8 exists to prevent. The one real gap: `close()` had **no exception handling at all**, so a failing `ser.close()` propagated uncaught into `BaseProbe.teardown()`/`TemperatureSystem.teardown()` — `shutdown_all`'s per-model catch kept it from taking the app down, so the operator heard nothing. test_close_does_not_raise_when_the_handle_fails_to_close, test_close_still_moves_to_closed_even_when_the_handle_fails, test_close_reports_nothing_on_the_ordinary_successful_path. Prior state: the misleading throttle was already gone, repeats folding with a count) |
 | SERIAL-17 | RC2 / LOCAL-OK | S3 | explicit | closed (9 tests in tests/hardware/test_serial17_handshake.py; the identity handshake stops flooding `s\n` every 50 ms, stops substring-matching a possibly-truncated `DEV:` line, and stops leaving queued replies behind) |
 | SERIAL-18 | RC1 | S2 | root cause | closed (reboot_model deleted; test_system_manager_reconfigure_replaces_the_model_set) |
 | SERIAL-19 | doc | S0 | root cause | closed (verification note: doc inaccuracy only; `pyside/view.py:886` passes `None` to serial as documented. No test applicable.) |

@@ -22,7 +22,6 @@ def create_test_rotator():
     rotator._motion_lock = threading.Lock()
     rotator.smc = None
     rotator.is_connected = False
-    rotator.error_callback = None
     return rotator
 
 

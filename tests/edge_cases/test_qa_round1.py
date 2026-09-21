@@ -300,9 +300,10 @@ def test_rotator15_async_error_routes_through_event_bus_without_callback():
     from error_routing import bus as event_bus
 
     rotator = RotatorSystem(default_port=None)
-    assert rotator.error_callback is None, (
+    assert not hasattr(rotator, "error_callback"), (
         "no production caller ever assigns error_callback; a test that sets "
-        "it exercises code no shipped path reaches")
+        "it exercises code no shipped path reaches. The hook is now deleted "
+        "outright (ROTATOR-15), so the attribute should not exist at all")
 
     received = []
     event_bus.subscribe(received.append)

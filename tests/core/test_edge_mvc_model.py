@@ -304,16 +304,22 @@ def test_a_failed_move_forgets_where_the_stage_was_going():
     landed, or the next relative move is computed from a position the stage
     never reached (the same rule as safety-pattern.md item 6)."""
     import threading as _t
+    from unittest.mock import patch as _patch
 
     rotator = _rotator_with_stage()
     reported = _t.Event()
-    rotator.error_callback = lambda e: reported.set()
     rotator.smc.move_absolute_deg.side_effect = RuntimeError(
         "Wait timed out (last reported state 28); the stage has not been stopped")
 
+    # ROTATOR-15: this used to wait on `rotator.error_callback`, a hook no
+    # production path ever assigned. Observing the real reporting seam
+    # instead proves the same thing and does not keep a dead hook alive to
+    # do it.
     rotator.target_deg = "10"
-    assert rotator.move_absolute() is True
-    assert reported.wait(3), "the failing move never reported"
+    with _patch("error_routing.ErrorRouter.report_error",
+                side_effect=lambda *a, **k: reported.set()):
+        assert rotator.move_absolute() is True
+        assert reported.wait(3), "the failing move never reported"
 
     assert rotator._commanded_target is None, (
         "a move that failed left its target behind as if it had arrived")

@@ -535,17 +535,43 @@ def test_simulator_mode_is_its_own_state_not_a_failure():
 def test_an_opened_port_that_never_answered_is_unverified_not_connected():
     """Opening a port proves nothing. The old code logged "Operating blind"
     and then treated the link as good, so a cable into a powered-off board
-    was indistinguishable from a working one (SERIAL-7)."""
+    was indistinguishable from a working one (SERIAL-7).
+
+    **Updated for SERIAL-6.** The handshake now runs on a worker thread, so
+    the verdict is no longer in hand the instant `__init__` returns — the
+    state passes through CONNECTING first. The contract this test defends is
+    unchanged and is if anything asserted harder below: a board that never
+    answers must *never* be called VERIFIED, at any point. What changed is
+    only *when* the final answer is readable, so the test waits for the
+    worker via the `wait_connected` seam SERIAL-6 added for exactly this.
+
+    `wait_connected` is test-only by design; calling it from a view or model
+    would put the 1.5–4.5 s stall straight back on the GUI thread, which is
+    the whole of SERIAL-6. The timing constants are shrunk here so waiting
+    for a board that never answers costs milliseconds instead of 4.5 s.
+    """
     from unittest.mock import MagicMock, patch
 
     from controller.serial import ConnectionState
 
-    with patch("controller.serial.pyserial.Serial") as mock_serial:
+    with patch("controller.serial.pyserial.Serial") as mock_serial, \
+         patch.object(SerialTransport, "BOOTLOADER_WAIT", 0.01), \
+         patch.object(SerialTransport, "HANDSHAKE_TIMEOUT", 0.05), \
+         patch.object(SerialTransport, "PING_INTERVAL", 0.01):
         inst = MagicMock()
         inst.is_open = True
         inst.in_waiting = 0          # nothing ever answers
         mock_serial.return_value = inst
         t = SerialTransport("COM9")
+
+        # The point SERIAL-7 exists for, now checked during the window that
+        # SERIAL-6 opened as well as after it: "not yet known" is an honest
+        # answer, "verified" is not.
+        assert t.connection_state != ConnectionState.VERIFIED, (
+            "a port that has answered nothing was called VERIFIED while the "
+            "handshake was still in flight")
+
+        assert t.wait_connected(timeout=5.0), "handshake worker never finished"
 
     assert t.connection_state == ConnectionState.UNVERIFIED
     assert t.connection_state != ConnectionState.VERIFIED

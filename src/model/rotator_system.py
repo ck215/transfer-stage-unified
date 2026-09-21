@@ -63,7 +63,6 @@ class RotatorSystem(SchemaCommands):
         
         self.smc = None
         self.is_connected = False
-        self.error_callback = None
         
         self.target_deg = "0"
         self.step_deg = "0"
@@ -140,6 +139,16 @@ class RotatorSystem(SchemaCommands):
                 return
             self._run_guarded(func, args)
 
+    # ROTATOR-15. `error_callback` used to be initialized to None here and
+    # checked at three error sites before the ErrorRouter call. No production
+    # path ever assigned it -- not `app_bootstrap.py`, not any of the three
+    # views -- and the comments guarding it said so outright ("not assigned
+    # in production code but is used by tests"). It was a hook kept alive
+    # purely so tests could observe errors, and a test that set it silently
+    # suppressed nothing but did assert a seam no shipped code reaches.
+    # Reporting goes through `ErrorRouter`/`EventBus` unconditionally (RC-8,
+    # S11), which is what the tests now observe. Do not reintroduce it.
+
     def _run_guarded(self, func, args):
         try:
             func(*args)
@@ -153,11 +162,6 @@ class RotatorSystem(SchemaCommands):
             # It was kept, so a timed-out move to 10 left the guard believing
             # the stage was at 10.
             self._forget_target()
-            # Note: error_callback is not assigned in production code but is used by
-            # tests. For backward compatibility, keep the check. Primary routing still
-            # goes through ErrorRouter for consistency (ROTATOR-15).
-            if self.error_callback:
-                self.error_callback(e)
             try:
                 from error_routing import ErrorRouter
                 ErrorRouter.report_error("Rotator Controller Error", f"Action failed:\n{e}", e)
@@ -188,11 +192,6 @@ class RotatorSystem(SchemaCommands):
                     self.smc = None
                     self.is_connected = False
                     self._state = "Disconnected"
-                # Note: error_callback is not assigned in production code but is used by
-                # tests. For backward compatibility, keep the check. Primary routing still
-                # goes through ErrorRouter for consistency (ROTATOR-15).
-                if self.error_callback:
-                    self.error_callback(e)
                 try:
                     from error_routing import ErrorRouter
                     ErrorRouter.report_error("Rotator Connection Error", f"Failed to connect to SMC100 on {port}:\n{e}", e)
@@ -447,11 +446,6 @@ class RotatorSystem(SchemaCommands):
             try:
                 smc.stop(priority=priority)
             except Exception as e:
-                # Note: error_callback is not assigned in production code but is used by
-                # tests. For backward compatibility, keep the check. Primary routing still
-                # goes through ErrorRouter for consistency (ROTATOR-15).
-                if self.error_callback:
-                    self.error_callback(e)
                 try:
                     from error_routing import ErrorRouter
                     ErrorRouter.report_error("Rotator Error", f"Failed to send stop:\n{e}", e)
