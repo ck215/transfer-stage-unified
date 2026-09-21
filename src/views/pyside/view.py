@@ -566,6 +566,19 @@ class QtDynamicView(QWidget):
     def _display(self, attr):
         """Render at the parameter's declared precision, not `str()`'s repr."""
         value = getattr(self.model, attr)
+
+        # Special case: rotator position formatting (ROTATOR-9)
+        # Format position as "--.--" when None (cleared on poll failure),
+        # and to 4 decimal places for numeric values, matching Tk.
+        if attr == "position":
+            if value is None:
+                return "--.--"  # No reading state
+            try:
+                float_val = float(value) if isinstance(value, str) else value
+                return f"{float_val:.4f}"
+            except (ValueError, TypeError):
+                return str(value)
+
         param = getattr(self.model, "PARAMS", {}).get(attr)
         if param is not None and param.is_numeric:
             return param.format(value)
