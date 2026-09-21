@@ -990,9 +990,34 @@ class RedPercentDynamicView(QtDynamicView):
                 ErrorRouter.report_error("File Save Error", msg, e)
 
     def cleanup(self):
+        """PYSIDE-4: D-10's discard prompt runs here via the model's teardown.
+
+        The confirm_discard hook is set before teardown so that when the model
+        checks whether to autosave unsaved data, it can ask the operator first.
+        """
         super().cleanup()
-        if hasattr(self.model, 'stop_monitoring'):
-            self.model.stop_monitoring()
+
+        # D-10 seam: install the discard prompt hook before teardown
+        if hasattr(self.model, 'has_unsaved_data') and self.model.has_unsaved_data:
+            def on_confirm_discard():
+                """Ask the operator whether to save or discard unsaved data.
+
+                Returns True if operator chose to discard (so autosave is skipped),
+                False/None if they chose to save (so autosave happens).
+                """
+                reply = QMessageBox.question(
+                    self, "Unsaved Data",
+                    "Monitoring has unsaved data. Save before closing?",
+                    QMessageBox.Yes | QMessageBox.No)
+                # Return True if user chose No (Discard), False if Yes (Save)
+                return reply == QMessageBox.No
+
+            self.model.confirm_discard = on_confirm_discard
+
+        # Call teardown which will consult the hook before autosaving
+        if hasattr(self.model, 'teardown'):
+            self.model.teardown()
+
         if hasattr(self, 'plot_dialog') and self.plot_dialog:
             self.plot_dialog.close()
 
