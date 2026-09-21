@@ -41,6 +41,11 @@ class FakeRedPercentModel:
             red_values=[1, 2, 3] if has_data else [],
             save_to_csv=MagicMock(),
         )
+        # REDPERCENT-6 routed `save_log_ui` through the model instead of
+        # reaching past it into `data_log`, so the double needs the method
+        # the view now calls. The suffix behaviour PYSIDE-18 pins is
+        # unchanged; only the collaborator it is observed on moved.
+        self.save_log = MagicMock()
 
 
 @pytest.fixture
@@ -70,7 +75,7 @@ def test_save_log_ui_appends_csv_when_the_chosen_name_has_no_suffix(red_percent_
     with patch("PySide6.QtWidgets.QFileDialog.getSaveFileName",
                return_value=("/tmp/mylog", "")):
         view.save_log_ui()
-    model.data_log.save_to_csv.assert_called_once_with("/tmp/mylog.csv")
+    model.save_log.assert_called_once_with("/tmp/mylog.csv")
 
 
 def test_save_log_ui_leaves_an_explicit_suffix_alone(red_percent_view):
@@ -78,7 +83,7 @@ def test_save_log_ui_leaves_an_explicit_suffix_alone(red_percent_view):
     with patch("PySide6.QtWidgets.QFileDialog.getSaveFileName",
                return_value=("/tmp/mylog.csv", "")):
         view.save_log_ui()
-    model.data_log.save_to_csv.assert_called_once_with("/tmp/mylog.csv")
+    model.save_log.assert_called_once_with("/tmp/mylog.csv")
 
 
 # ---------------------------------------------------------------------------

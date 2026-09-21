@@ -1014,9 +1014,20 @@ class RedPercentDynamicView(QtDynamicView):
 
             self.model.confirm_discard = on_confirm_discard
 
-        # Call teardown which will consult the hook before autosaving
-        if hasattr(self.model, 'teardown'):
-            self.model.teardown()
+        # **Not** teardown. `cleanup()` runs on the D-1 *hide* path
+        # (`close_device_view`, whose own comment two lines below its call
+        # site reads "D-1: closing means *hide*. The view used to destroy the
+        # model"). `teardown()` unbinds the registry and ends the run, so
+        # calling it here would reintroduce precisely the RC-1 defect S2 and
+        # S6 removed — a closed dock that destroys its device.
+        #
+        # Installing the hook above is enough. The real teardown happens in
+        # `MainWindow.closeEvent` via `system_manager.shutdown_all()`, and it
+        # consults the hook we just set, so D-10's autosave still runs at
+        # shutdown. On a hide, the model persists and so does its data, which
+        # is why nothing needs saving here for the data to survive.
+        if hasattr(self.model, 'stop_monitoring'):
+            self.model.stop_monitoring()
 
         if hasattr(self, 'plot_dialog') and self.plot_dialog:
             self.plot_dialog.close()
