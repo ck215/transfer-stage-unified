@@ -520,6 +520,12 @@ class QtDynamicView(QWidget):
         return self._run_element({"command": cmd_name})
 
     def _mode_name(self):
+        # ROTATOR-13: Check connection status for models that have it (e.g., rotator)
+        # When disconnected, gate the motion controls
+        connection_status = getattr(self.model, "connection_status", None)
+        if connection_status == "disconnected":
+            return "disconnected"
+
         mode = getattr(self.model, "mode", None)
         if mode is not None:
             return getattr(mode, "value", str(mode))
@@ -531,7 +537,15 @@ class QtDynamicView(QWidget):
         """One rule, `schema.is_enabled`, shared with the other two views."""
         mode = self._mode_name()
         for gate in self._gated:
-            gate["widget"].setEnabled(sch.is_enabled(gate["element"], mode))
+            enabled = sch.is_enabled(gate["element"], mode)
+
+            # ROTATOR-13: disable motion controls when the rotator is disconnected
+            if mode == "disconnected":
+                element = gate["element"]
+                if element.get("type") in ("button", "entry", "toggle"):
+                    enabled = False
+
+            gate["widget"].setEnabled(enabled)
 
     def _redraw_plot(self, entry):
         """Hand the widget the model's current series. Same source as Tk."""
