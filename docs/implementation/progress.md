@@ -26,9 +26,11 @@ You are probably a fresh agent with no context. Do this, in order:
    re-derive the analysis; it cost a full audit pass.
 4. **Check the anti-fix table** in that same document before writing code.
    Several tempting patches entrench the cause they appear to fix.
-5. **Run the fast gate** — about 65 seconds, 589 passing at `0e5ba73`:
+5. **Run the fast gate** — about 71 seconds, 715 passing and 1 xfailed at
+   `5871eea`:
    `python3 -m pytest tests/ -m "not slow and not order_dependent and not qt"`.
-   It grew from 28 s when S10 un-excluded `tests/ui`. Your stage's targeted
+   It grew from 28 s when S10 un-excluded `tests/ui`, and again across the
+   2026-09-20 fix wave. Your stage's targeted
    gate is in [testing.md](testing.md). The **three-pass full sweep is
    retired** (owner instruction, 2026-09-20) — the fast gate plus
    `-m "qt"` is the contract now. Do not run the whole suite in a working
@@ -52,21 +54,21 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | Stage | Title | Status | Commit | Date | Notes |
 |---|---|---|---|---|---|
 | S0 | Baseline, plan, invariant harness | done | `e760615` | 2026-09-19 | Docs baseline, plan, ledger, test division, invariant harness. |
-| S1 | Purge legacy paths (D-9, D-11) | done | | 2026-09-19 | D-9 + D-11 purged. SERIAL-18's `reboot_model` half reassigned to S2. |
-| S2 | Lifecycle authority (RC-1) | done | | 2026-09-19 | All 9 items. I-1.5 now holds. 7 tab-close findings deferred to S6 by D-1. |
-| S3 | Transport truth and E-stop latch | done | | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
-| S4 | Web AppContext and security boundary | done | | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
+| S1 | Purge legacy paths (D-9, D-11) | done | `86027f5` | 2026-09-19 | D-9 + D-11 purged. SERIAL-18's `reboot_model` half reassigned to S2. |
+| S2 | Lifecycle authority (RC-1) | done | `a7ed3f5` | 2026-09-19 | All 9 items. I-1.5 now holds. 7 tab-close findings deferred to S6 by D-1. |
+| S3 | Transport truth and E-stop latch | done | `f69586c` | 2026-09-19 | I-2.3 holds. I-5.2 xfailed to S8 (emergency_stop still blocks on a stalled transport). |
+| S4 | Web AppContext and security boundary | done | `2854d3e` | 2026-09-19 | CSRF hole and /api/screenshot closed. Manager read-through + single-flight. |
 | S5 | Input service and model-owned loops | done | `9a70834` | 2026-09-20 | RC-13 + RC-4. Deferred D-4 input gate landed 2026-09-20. |
 | S6 | Hide/show semantics (D-1) | done | `e9fc26f` | 2026-09-20 | All 4 items. Tk got a real re-add path. order_dependent 3 -> 2. |
 | S7 | Probe mode state machine (RC-3) | done | `8fc9f00` | 2026-09-20 | All 5 items. `ProbeMode` replaces 4 booleans; I-3.1–I-3.4 hold. known_bad 7 -> 2. |
-| S8 | Motion serialization, ConnectionState | done | | 2026-09-20 | All 4 items. known_bad down 10 -> 7. The S8 `emergency_stop` contract — latch first, never block the caller — was implemented for the probes only; the rotator and the heater ran their stop I/O on the calling thread and the rotator had no latch at all. Residue closed 2026-09-20: ROTATOR-8, ROTATOR-4, TEMP-7 fixed, DC-18 found already-fixed and pinned. **I-5.2 now holds for all three subsystems.** |
+| S8 | Motion serialization, ConnectionState | done | `728f714` | 2026-09-20 | All 4 items. known_bad down 10 -> 7. The S8 `emergency_stop` contract — latch first, never block the caller — was implemented for the probes only; the rotator and the heater ran their stop I/O on the calling thread and the rotator had no latch at all. Residue closed 2026-09-20: ROTATOR-8, ROTATOR-4, TEMP-7 fixed, DC-18 found already-fixed and pinned. **I-5.2 now holds for all three subsystems.** |
 | S9 | Typed parameters (RC-6) | done | `79d2d97` | 2026-09-20 | All 4 items. `Param` table + D-5 `apply_inputs`. Landed with S10. |
 | S10 | Schema v2, three renderers (RC-7) | done | `7cc5f3c` | 2026-09-20 | All 5 items. Qt pass resolved (it hung, it did not abort). `tests/ui` un-excluded: +83 tests in the fast gate. I-7.2 built; known_bad now empty. |
 | S11 | Result channel and event bus (RC-8) | done | `409c859` | 2026-09-20 | All 4 items. `CommandResult` + `EventBus`; one `install_exception_hooks`. I-8.1–I-8.3 hold. conftest.py was duplicated end to end; half of it was dead. |
 | S12 | Composition root, registry events (RC-9) | done | `d35036b` | 2026-09-20 | All 3 items. `app_bootstrap` is the composition root; `SystemManager` emits `registered`/`released`; `_disabled_in_setup` deleted. I-9.1–I-9.3 built. **I-7.1 does not retire here** — 2 of its 6 hits are S13's. |
-| S13 | MonitoringRun (RC-11) | in progress | | 2026-09-20 | Items 5-7 (REDPERCENT-21,22,23) landed first, out of plan order, for a bench run. Items 1-4 — `MonitoringRun` itself — are still open. |
-| S14 | Remaining web work | done | | 2026-09-20 | 7 of 8 closed in the `s14-web` worktree (WEB-5, 14, 15 residue, 16, 18, 21 and REDPERCENT-20's web half). WEB-22 is partly closed — no DOM harness for the staleness/refresh half. **WEB-19 deferred**: it needs the D-8 client-liveness watchdog in `probes.py`, so it spans model and web and cannot sit in a web-only write set. |
-| S15 | Explicit `LOCAL-OK` sweep | done | | 2026-09-20 | 4 of 5 closed in the `s15-local-ok` worktree (PYSIDE-16, 17, 18 and REDPERCENT-20's model half). GAMEPAD-17 is partly closed — three sub-items blocked by write-set boundaries, not difficulty. Two of the qt-marked tests it could not run were **wrong** and were fixed on merge; see the session log. |
+| S13 | MonitoringRun (RC-11) | in progress | `0e5ba73` | 2026-09-20 | Items 5-7 (REDPERCENT-21,22,23) landed first, out of plan order, for a bench run. Items 1-4 — `MonitoringRun` itself — are still open. |
+| S14 | Remaining web work | done | `a4f3a75` | 2026-09-20 | 7 of 8 closed in the `s14-web` worktree (WEB-5, 14, 15 residue, 16, 18, 21 and REDPERCENT-20's web half). WEB-22 is partly closed — no DOM harness for the staleness/refresh half. **WEB-19 deferred**: it needs the D-8 client-liveness watchdog in `probes.py`, so it spans model and web and cannot sit in a web-only write set. |
+| S15 | Explicit `LOCAL-OK` sweep | done | `a4f3a75` | 2026-09-20 | 4 of 5 closed in the `s15-local-ok` worktree (PYSIDE-16, 17, 18 and REDPERCENT-20's model half). GAMEPAD-17 is partly closed — three sub-items blocked by write-set boundaries, not difficulty. Two of the qt-marked tests it could not run were **wrong** and were fixed on merge; see the session log. |
 | S16 | Owner verification, firmware v2 | todo | | | **Owner only.** Never delegate. |
 
 ## Owner decisions
@@ -1574,7 +1576,13 @@ owned by S12.
   transition rather than on every tick was not done; the rate limit is
   currently absorbing that, which is a backstop standing in for a design.
 
-### Resume here (next session)
+### 2026-09-20 — resume note written at the close of S11 (SUPERSEDED)
+
+> **Stale — kept for the record, not for guidance.** Written when S11 was
+> the newest stage. S12, S13 items 5-7, S14 and S15 have all landed since,
+> the I-7.1 `xfail` it calls the last one was retired in S12, and its
+> ordering advice is four stages out of date. For the current next action,
+> read the **last** session-log entry, not this one.
 
 **S11 is done** (`409c859`). S10 is `7cc5f3c`. Working tree clean.
 
@@ -2235,6 +2243,82 @@ repair, still untouched, and REDPERCENT-4's remainder is now waiting on it
 too. When it lands it must take over `run_id`, `output_root`,
 `run_annotations` and the two timestamps from items 5-7 rather than opening
 a second snapshot beside them.
+
+### 2026-09-20 — ledger audited clean, trail hygiene, and wave 3 launched
+
+**The ledger holds up under audit.** Three checks before planning off it:
+218 rows as claimed; 51 open / 167 closed, matching the wave-close count
+exactly; and **every one of the 181 distinct test names cited in the ledger
+exists in `tests/`** (`grep -rn "def <name>" tests/` over all of them). No
+phantom citations. The fast gate re-run on a clean tree at `5871eea`:
+**715 passed, 1 xfailed, exit 0, 71 s.**
+
+**Four trail defects fixed, none of them a false claim in the record.**
+
+1. **The cold-resume baseline was stale** — step 5 said 589 passing at
+   `0e5ba73`, about 65 s. It is 715 passing and 1 xfailed at `5871eea`,
+   about 71 s. A fresh agent was being told to expect a number 126 tests
+   short of the truth, which makes a genuine regression look like drift.
+2. **Eight stage rows had blank Commit cells.** The protocol says to leave
+   the cell blank in the stage's own commit and fill it in the *next* one;
+   the fill-in half has been skipped since S1. All eight are recovered and
+   verified with `git merge-base --is-ancestor` before being written:
+   S1 `86027f5`, S2 `a7ed3f5`, S3 `f69586c`, S4 `2854d3e`, S8 `728f714`,
+   S13 `0e5ba73` (items 5-7 only, stage still in progress), S14 and S15 both
+   `a4f3a75`. S8's cell names the stage's own last commit; its safety
+   residue landed later in the fix wave and the Notes cell already says so.
+3. **`### Resume here (next session)` was four stages stale** and its title
+   read as current. Written at the close of S11, it names S12 as next and
+   calls I-7.1 the last remaining `xfail` — S12 retired that. Retitled to
+   its date, marked SUPERSEDED, and given a pointer to the last log entry.
+   Kept rather than deleted: this file's value is that it is not retconned.
+4. **Five merged branches were still on the clock** — `fix-input`,
+   `fix-web`, `fix-transport`, `s14-web`, `s15-local-ok`, all fully merged
+   into `mvc-refactor`, worktrees long removed. Deleted, so that
+   `git worktree list` and `git branch` describe the work actually in
+   flight rather than the work that finished yesterday.
+
+**Wave 3 is running in three worktrees**, partitioned by file rather than by
+subsystem — the axis the last wave proved, because `probes.py`,
+`web_adapter.py`, `app.js` and the two GUI view files are each wanted by six
+or more open findings and a theme-shaped partition collides on all five.
+
+| Worktree | Owns | Findings |
+|---|---|---|
+| `fix-gui` | the two desktop view files | VIEW-TKINTER-17, VIEW-TKINTER-18, PYSIDE-12, ERRORS-9 |
+| `fix-webui` | `views/web/**` + `error_routing.py` | WEB-20, DC-11, WEB-7, WEB-11, ERRORS-3, ROTATOR-13 (web half), WEB-22 |
+| `fix-thermal-rotator` | `temperature_system.py`, `rotator_system.py`, `smc100.py` | TEMP-2, TEMP-10, ROTATOR-9, ROTATOR-15 |
+
+The lead holds `redpercent_system.py`, `plot_data.py`, `schema.py`, `docs/**`
+and `tests/architecture/test_invariants.py`, and is taking **S13 items 1-4,
+`MonitoringRun`** — the last real RC-11 repair, and the gate on five other
+Red Percent rows.
+
+**`src/model/probes.py` is deliberately unowned this wave.** DC-6,
+STEPPER-11, ERRORS-7, WEB-19 and GAMEPAD-17's remainder all need it *plus* a
+view file or the web adapter, so assigning it now would collide with two of
+the three worktrees. It becomes a clean single-owner wave once A and B land.
+
+**Deferred behind S13 by semantics, not by files:** REDPERCENT-6, PYSIDE-4,
+REDPERCENT-13, 17, 18 and 19. Each touches a save or render path that
+`MonitoringRun` is about to redefine; fixing them against the current shape
+would produce work that has to be redone.
+
+**The agents run on smaller weights this wave, by owner instruction, to hold
+context.** That raises the error rate on exactly the failure this project
+has already seen twice — a test that passes against code that does nothing,
+and a row reported `closed` that was not. The compensating gate is unchanged
+and entirely lead-side: write-set compliance via `partition-check.sh`, a
+`grep -rn "def <name>"` existence check on every cited test name, and the qt
+pass run by the lead. **No row flips to `closed` on an agent's report alone.**
+
+**Six rows cannot close by delegation and will not be counted as failures:**
+GAMEPAD-11, 12, 13 and 14 are S16 bench work; SERIAL-10's remainder is D-7;
+TEMP-9 needs an owner call on whether any view should plot temperature
+history. D-7 and TEMP-9 stay unanswered — they are the owner's.
+
+**Next action:** S13 items 1-4 in the main checkout while the three
+worktrees run; then verify, merge and close each in turn.
 
 ## Finding ledger
 
