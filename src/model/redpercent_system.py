@@ -303,6 +303,17 @@ class RedPercentSystem(SchemaCommands):
             self.stepper_model = self.available_probes[probe_name]
             self.selected_probe_name = probe_name
             print(f"[{self.__class__.__name__}] Active position probe set to: {probe_name}")
+            # ERRORS-7: this changes which device's positions land in the
+            # next logged row — including a silent re-selection driven by
+            # `_reselect()` when the previously-chosen probe is released
+            # mid-run. An operator who did not click this themselves (the
+            # `probe_released` path) has no other way to learn the source
+            # under them just changed.
+            from error_routing import ErrorRouter
+            ErrorRouter.report_info(
+                "Position Source Changed",
+                f"Red Percent now reads position from: {probe_name}",
+                source=self.__class__.__name__)
 
     # -- the probe registry (RC-9 item 2) -------------------------------
     #
@@ -566,6 +577,13 @@ class RedPercentSystem(SchemaCommands):
         someone moves it (REDPERCENT-21).
         """
         if not self.data_log or not self.data_log.red_values:
+            # ERRORS-7: audited, staying print-only. `save_run` is reached
+            # only from `autosave_log()` (`start_monitoring`'s pre-run
+            # autosave and `teardown`'s), and "nothing was captured yet" is
+            # the ordinary case on every clean shutdown that never started a
+            # run — routing that through ErrorRouter would be a popup on
+            # every quit, the exact flood RC-8 exists to prevent. There is
+            # also nothing at risk: no data means nothing to lose.
             print(f"[{self.__class__.__name__}] No data to save.")
             return None
 
@@ -590,6 +608,18 @@ class RedPercentSystem(SchemaCommands):
             return None
 
         print(f"[{self.__class__.__name__}] Run saved to: {directory}")
+        # ERRORS-7: `save_run` only runs as part of an *autosave* — the
+        # operator did not click anything to trigger this write, so the
+        # console line is the only place this run's location was ever
+        # going to appear. REDPERCENT-21 exists because an autosaved run is
+        # exactly the one whose bench notes are thinnest; silently writing
+        # its only address to a console nobody is watching reproduces the
+        # same problem one layer down.
+        from error_routing import ErrorRouter
+        ErrorRouter.report_info(
+            "Run Autosaved",
+            f"Unsaved Red Percent data was automatically saved to: {directory}",
+            source=self.__class__.__name__)
         return csv_path
 
     def autosave_log(self):
@@ -756,10 +786,29 @@ class RedPercentSystem(SchemaCommands):
             ),
             sch.section(
                 "Red Detection",
+                # REDPERCENT-19 (model half): a declared display precision,
+                # not the box's own `decimals` re-derived by each renderer.
+                # Tk (`view.py:_display`) and PySide (`pyside/view.py:_display`)
+                # already render readonly numerics through `Param.format`, so
+                # `12.3456789012`/`-0.0` are already gone there; the Web
+                # client's `pollState` still writes `String(val)` straight
+                # from `/api/state` with no formatting step at all (app.js
+                # `pollState`'s readonly branch) — that half is outside this
+                # file's write set (per-view rendering code), so `format` is
+                # declared here and not yet consumed by any renderer. See
+                # REDPERCENT-19 in the handoff: partly closed on that basis.
                 sch.readonly("Current Red %:", "current_red",
-                             param=P["current_red"]),
+                             param=P["current_red"], format=".2f"),
                 sch.readonly("Red Change %:", "red_change",
-                             param=P["red_change"]),
+                             param=P["red_change"], format=".2f"),
+                # REDPERCENT-13: published so the Web client can gate the
+                # plotter on "is a run actually active" instead of sampling
+                # every poll regardless of state (app.js `pollState`). Tk and
+                # PySide already have this for free — `monitoring` gates their
+                # Start/Stop buttons via `disabled_when`/`enabled_when` — so
+                # this is a new *readable* surface for them, not new
+                # information; it renders as one more line in this section.
+                sch.readonly("Monitoring:", "monitoring", role="info"),
                 # **D-6: schema-driven in all three views.** Tk hand-built a
                 # RedPercentView and PySide bolted on duplicates; the plot is
                 # a composite with one contract now.
@@ -783,7 +832,18 @@ class RedPercentSystem(SchemaCommands):
 
     def save_log(self, file_path=None):
         if not self.data_log or not self.data_log.red_values:
+            # ERRORS-7: unlike `save_run`'s identical-looking guard, this one
+            # is reached only from the "Save Log" `file_save` composite — the
+            # operator explicitly clicked Save (and, in the Web client,
+            # already picked a destination) and got nothing, with no reason
+            # given anywhere but a console nobody watches. That is exactly
+            # the console-only failure ERRORS-7 exists for.
             print(f"[{self.__class__.__name__}] No data to save.")
+            from error_routing import ErrorRouter
+            ErrorRouter.report_warning(
+                "Nothing To Save",
+                "No Red Percent data has been recorded yet; there is "
+                "nothing to write.", source=self.__class__.__name__)
             return
 
         # Catch late UI edits before saving
@@ -801,12 +861,28 @@ class RedPercentSystem(SchemaCommands):
                 meta_path.write_text(
                     json.dumps(self.station_meta(chosen.stem), indent=2))
                 print(f"[{self.__class__.__name__}] Log saved to: {file_path}")
+                # ERRORS-7: an explicit, operator-triggered save with no
+                # confirmation anywhere the operator is actually looking.
+                # `save_log` returns nothing today, so there is no
+                # Ok(...)/Refused(...) for a generic command-result toast to
+                # surface either — this is the only confirmation there is.
+                from error_routing import ErrorRouter
+                ErrorRouter.report_info(
+                    "Log Saved",
+                    f"Red Percent log saved to: {file_path}",
+                    source=self.__class__.__name__)
             except Exception as e:
                 from error_routing import ErrorRouter
                 msg = f"[color_test] Error saving file: {e}"
                 print(msg)
                 ErrorRouter.report_error("File Save Error", msg, e)
         else:
+            # ERRORS-7: audited, staying print-only. This fires when the
+            # `file_save` composite dispatches with no path at all, which is
+            # what every frontend does when the operator cancels its own
+            # file dialog client-side — that is the operator's own
+            # decision, already visible to them (the dialog they just
+            # closed), not a failure to surface.
             print(f"[{self.__class__.__name__}] Save cancelled or no file path provided.")
 
     # -- generation tokens (RC-5 item 1's pattern, copied from probes.py) -
@@ -911,7 +987,35 @@ class RedPercentSystem(SchemaCommands):
             try:
                 thread.join(timeout=2.0)
             except Exception as e:
+                # ERRORS-7: this used to be print-only. A join failing here
+                # is the same shape as the safety-pattern concern this
+                # method's own docstring names — the thread may still be
+                # inside a screen grab and still writing to `data_log` after
+                # teardown claims to be done. A console line nobody is
+                # watching is not the operator learning that.
                 print(f"[{self.__class__.__name__}] Monitor thread would not join: {e}")
+                from error_routing import ErrorRouter
+                ErrorRouter.report_warning(
+                    "Monitor Thread Join Failed",
+                    f"Could not join the Red Percent monitor thread during "
+                    f"teardown: {e}", exception=e,
+                    source=self.__class__.__name__)
+            else:
+                if thread.is_alive():
+                    # ERRORS-7: `join(timeout=2.0)` returning without
+                    # raising says nothing about whether the thread actually
+                    # stopped — before this, that case was entirely silent
+                    # (no print, no report). The 2 s budget elapsed with the
+                    # monitor thread still not clear of the run's data log;
+                    # `self._monitor_thread` is about to be dropped either
+                    # way (below), so this is the only chance to say so.
+                    from error_routing import ErrorRouter
+                    ErrorRouter.report_warning(
+                        "Monitor Thread Still Running",
+                        "The Red Percent monitor thread did not stop within "
+                        "2s of teardown; it may still be capturing and "
+                        "writing to this run's data log.",
+                        source=self.__class__.__name__)
         self._monitor_thread = None
 
         if self.pending_run_data()["has_data"] and not self._operator_confirmed_discard():
