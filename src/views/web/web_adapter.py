@@ -492,14 +492,20 @@ class WebModelAdapter:
         with self._state_lock:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
-            model = getattr(self.system_manager, "active_models", {}).get(device_name)
-            if not model:
-                return {"status": "error", "code": 404, "message": f"Device {device_name} not found"}
-            if options_command not in self._schema_options_commands(model):
-                return {"status": "error", "code": 400, "message": f"{options_command} is not an exposed options_command on {device_name}"}
-            func = getattr(model, options_command, None)
-            if not func or not callable(func):
-                return {"status": "error", "code": 400, "message": f"{options_command} not found on {device_name}"}
+            manager = self.system_manager
+
+        # WEB-20: Use get_active_models_snapshot() to capture models under the
+        # manager's lock, not the adapter's lock. This prevents stale references
+        # if initialize_setup swaps the manager while we're in flight.
+        models = manager.get_active_models_snapshot()
+        model = models.get(device_name)
+        if not model:
+            return {"status": "error", "code": 404, "message": f"Device {device_name} not found"}
+        if options_command not in self._schema_options_commands(model):
+            return {"status": "error", "code": 400, "message": f"{options_command} is not an exposed options_command on {device_name}"}
+        func = getattr(model, options_command, None)
+        if not func or not callable(func):
+            return {"status": "error", "code": 400, "message": f"{options_command} not found on {device_name}"}
                 
         dev_lock = self._get_device_lock(device_name)
         with dev_lock:
@@ -547,16 +553,21 @@ class WebModelAdapter:
         with self._state_lock:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
+            manager = self.system_manager
 
-            model = getattr(self.system_manager, "active_models", {}).get(device_name)
-            if not model:
-                return {"status": "error", "code": 404, "message": f"Device {device_name} not found"}
+        # WEB-20: Use get_active_models_snapshot() to capture models under the
+        # manager's lock, not the adapter's lock. This prevents stale references
+        # if initialize_setup swaps the manager while we're in flight.
+        models = manager.get_active_models_snapshot()
+        model = models.get(device_name)
+        if not model:
+            return {"status": "error", "code": 404, "message": f"Device {device_name} not found"}
 
-            # Not in the allowlist and doesn't exist are reported identically:
-            # don't let a caller distinguish "blocked" from "doesn't exist".
-            func = getattr(model, command_name, None)
-            if command_name not in self._schema_commands(model) or not func or not callable(func):
-                return {"status": "error", "code": 400, "message": f"Command {command_name} not found on {device_name}"}
+        # Not in the allowlist and doesn't exist are reported identically:
+        # don't let a caller distinguish "blocked" from "doesn't exist".
+        func = getattr(model, command_name, None)
+        if command_name not in self._schema_commands(model) or not func or not callable(func):
+            return {"status": "error", "code": 400, "message": f"Command {command_name} not found on {device_name}"}
 
         if command_name in self._UNSERIALIZED_COMMANDS:
             guard: Any = contextlib.nullcontext()
@@ -661,13 +672,18 @@ class WebModelAdapter:
         with self._state_lock:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
+            manager = self.system_manager
 
-            model = getattr(self.system_manager, "active_models", {}).get(device_name)
-            if not model:
-                return {"status": "error", "code": 404, "message": f"Device {device_name} not found"}
+        # WEB-20: Use get_active_models_snapshot() to capture models under the
+        # manager's lock, not the adapter's lock. This prevents stale references
+        # if initialize_setup swaps the manager while we're in flight.
+        models = manager.get_active_models_snapshot()
+        model = models.get(device_name)
+        if not model:
+            return {"status": "error", "code": 404, "message": f"Device {device_name} not found"}
 
-            if attr not in self._schema_attrs(model):
-                return {"status": "error", "code": 403, "message": f"Attribute {attr} is not exposed on {device_name}"}
+        if attr not in self._schema_attrs(model):
+            return {"status": "error", "code": 403, "message": f"Attribute {attr} is not exposed on {device_name}"}
 
         dev_lock = self._get_device_lock(device_name)
         with dev_lock:
