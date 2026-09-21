@@ -9,6 +9,7 @@ Ensures zero coupling to Qt/PySide6.
 import contextlib
 import sys
 import threading
+import time
 import traceback
 from model.schema import CommandResult, NeedsConfirmation
 from typing import Dict, Any, Optional, List, Union
@@ -28,6 +29,12 @@ class WebModelAdapter:
         self._reconfiguring = threading.Lock()
         self.mode = mode  # "setup" or "running"
         self._state_lock = threading.RLock()
+        # WEB-20: bumped every time self.system_manager is swapped
+        # (_initialize_setup_locked). A command that captured a model from
+        # a snapshot taken before the swap, but only reaches its per-device
+        # lock after it, re-checks this counter and aborts with 409 rather
+        # than run against a model whose manager has already torn it down.
+        self._generation = 0
         self._device_locks: Dict[str, threading.Lock] = {}
         self.log_buffer: List[str] = []
         # There is no error buffer (ERRORS-12). `errors_since`/
@@ -38,6 +45,25 @@ class WebModelAdapter:
         # Async hardware scan state (WEB-15 residue). See start_hardware_scan.
         self._scan_thread: Optional[threading.Thread] = None
         self._scan_state: Optional[Dict[str, Any]] = None
+        # WEB-19 (D-8, client half): when a browser last checked in via
+        # POST /api/client/heartbeat. None until the first one arrives.
+        self._last_client_heartbeat: Optional[float] = None
+
+    #: WEB-19 (D-8, client half). The name of the per-model hook
+    #: `record_client_heartbeat` calls, duck-typed, if a model defines it.
+    #: Deliberately **not** `touch_activity` (probes.py): that method
+    #: already means something else - real operator/motion activity that
+    #: extends the idle-disable timer (RC-3 item 5 / STEPPER-7) - and a
+    #: passive background heartbeat is not that. Calling `touch_activity`
+    #: from here would let a browser tab that is merely open, doing
+    #: nothing, silently defeat the idle-disable safety net. This is an
+    #: additive, separate signal: "a browser tab believes it is present."
+    #: Agent A's D-8 watchdog (probes.py, folded into the existing
+    #: interlock watchdog) is expected to define this method if/when it
+    #: wants web-client liveness folded into its own timer. Until it does,
+    #: `getattr(model, CLIENT_HEARTBEAT_HOOK, None)` finds nothing and this
+    #: call is a no-op — this half does not invent that method itself.
+    CLIENT_HEARTBEAT_HOOK = "touch_client_heartbeat"
 
     def _get_device_lock(self, device_name: str) -> threading.Lock:
         with self._state_lock:
@@ -260,6 +286,7 @@ class WebModelAdapter:
         with self._state_lock:
             self.system_manager = new_manager
             self.mode = "running"
+            self._generation += 1
 
         # Exit hooks resolve the manager when they fire, so the new one takes
         # over immediately; a captured reference would keep stopping the
@@ -285,29 +312,45 @@ class WebModelAdapter:
     def get_system_info(self) -> Dict[str, Any]:
         """Returns current system setup/running status and list of active devices."""
         with self._state_lock:
-            active_devs = []
-            if self.system_manager:
-                models = getattr(self.system_manager, "active_models", {})
-                active_devs = list(models.keys())
-            return {
-                "status": self.mode,
-                "active_devices": active_devs
-            }
+            manager = self.system_manager
+
+        active_devs = []
+        if manager is not None:
+            # WEB-20: get_active_models_snapshot() takes the manager's own
+            # lock. This used to read `self.system_manager.active_models`
+            # directly under only the adapter's `_state_lock`, which does
+            # not synchronize with `initialize_setup`'s swap/build/register
+            # sequence on the manager — a request could observe a manager
+            # mid-swap holding a dict that is empty, half-built, or (via
+            # bare `getattr(..., {})`) simply absent on a mock/duck-typed
+            # manager, silently reporting no active devices at all.
+            models = manager.get_active_models_snapshot()
+            active_devs = list(models.keys())
+
+        return {
+            "status": self.mode,
+            "active_devices": active_devs
+        }
 
     def get_devices(self) -> Dict[str, Any]:
         """Returns connected devices and their respective ui_schema."""
-        devices = {}
         with self._state_lock:
-            if self.system_manager:
-                models = getattr(self.system_manager, "active_models", {})
-                for name, model in models.items():
-                    # No `_disabled` flag any more (RC-9 item 3). A device the
-                    # operator disabled is not constructed, so it is not
-                    # registered and does not appear here at all — which is
-                    # what Tk and PySide have always done. The flag it
-                    # replaced was computed from a key normalization had
-                    # already dropped, so it was never once set (WEB-4).
-                    devices[name] = getattr(model, "ui_schema", {"sections": []}).copy()
+            manager = self.system_manager
+
+        devices = {}
+        if manager is not None:
+            # WEB-20: same fix as get_system_info() above — read through
+            # get_active_models_snapshot(), not a live/direct dict access
+            # that races initialize_setup's manager swap.
+            models = manager.get_active_models_snapshot()
+            for name, model in models.items():
+                # No `_disabled` flag any more (RC-9 item 3). A device the
+                # operator disabled is not constructed, so it is not
+                # registered and does not appear here at all — which is
+                # what Tk and PySide have always done. The flag it
+                # replaced was computed from a key normalization had
+                # already dropped, so it was never once set (WEB-4).
+                devices[name] = getattr(model, "ui_schema", {"sections": []}).copy()
         return devices
 
     def _determine_connection_status(self, model) -> str:
@@ -428,6 +471,20 @@ class WebModelAdapter:
 
                 # Attach connection_status badging
                 model_state["connection_status"] = self._determine_connection_status(model)
+
+                # WEB-13: same seam PySide's view already uses in-process
+                # (`self.model.has_unsaved_data` before dispatching
+                # stop_monitoring) - the web transport cannot read the
+                # model object directly, so the adapter publishes
+                # `pending_run_data()`'s dict (RC-11's documented "source
+                # of truth" for this exact question) alongside the schema
+                # attrs. Duck-typed, not RedPercentSystem-specific: any
+                # model that grows the same convention gets the same
+                # surfacing for free. Absent on models that don't define it.
+                pending_run_data = getattr(model, "pending_run_data", None)
+                if callable(pending_run_data):
+                    model_state["pending_run_data"] = pending_run_data()
+
                 state[name] = model_state
             except Exception as e:
                 state[name] = {"_error": str(e)}
@@ -497,6 +554,7 @@ class WebModelAdapter:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
             manager = self.system_manager
+            generation = self._generation
 
         # WEB-20: Use get_active_models_snapshot() to capture models under the
         # manager's lock, not the adapter's lock. This prevents stale references
@@ -510,9 +568,16 @@ class WebModelAdapter:
         func = getattr(model, options_command, None)
         if not func or not callable(func):
             return {"status": "error", "code": 400, "message": f"{options_command} not found on {device_name}"}
-                
+
         dev_lock = self._get_device_lock(device_name)
         with dev_lock:
+            # WEB-20: the manager may have been swapped (and the old one
+            # torn down) between the snapshot above and taking this lock.
+            # Abort rather than call into a model whose serial port/poller
+            # may already be closed.
+            if self._generation != generation:
+                return {"status": "error", "code": 409,
+                        "message": "System was reconfigured during this request; retry"}
             try:
                 result = func()
                 return {"status": "ok", "code": 200, "options": list(result) if result else []}
@@ -558,6 +623,7 @@ class WebModelAdapter:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
             manager = self.system_manager
+            generation = self._generation
 
         # WEB-20: Use get_active_models_snapshot() to capture models under the
         # manager's lock, not the adapter's lock. This prevents stale references
@@ -578,6 +644,14 @@ class WebModelAdapter:
         else:
             guard = self._get_device_lock(device_name)
         with guard:
+            # WEB-20: same generation re-check as resolve_options above.
+            # `stop`/`emergency_stop` deliberately skip the device lock
+            # (ROTATOR-7) so they are exempt here too — a stop is one
+            # idempotent frame and must never be deferred behind a
+            # reconfigure race the way a motion command must.
+            if command_name not in self._UNSERIALIZED_COMMANDS and self._generation != generation:
+                return {"status": "error", "code": 409,
+                        "message": "System was reconfigured during this request; retry"}
             try:
                 runner = getattr(model, "execute_command", None)
                 if callable(runner):
@@ -677,6 +751,7 @@ class WebModelAdapter:
             if not self.system_manager:
                 return {"status": "error", "code": 500, "message": "SystemManager not initialized"}
             manager = self.system_manager
+            generation = self._generation
 
         # WEB-20: Use get_active_models_snapshot() to capture models under the
         # manager's lock, not the adapter's lock. This prevents stale references
@@ -691,6 +766,10 @@ class WebModelAdapter:
 
         dev_lock = self._get_device_lock(device_name)
         with dev_lock:
+            # WEB-20: same generation re-check as resolve_options/dispatch_command.
+            if self._generation != generation:
+                return {"status": "error", "code": 409,
+                        "message": "System was reconfigured during this request; retry"}
             try:
                 # A read-only property is not writable through the API. This
                 # is invariant I-3.4: the mode flags (`manual_flag`,
@@ -740,3 +819,52 @@ class WebModelAdapter:
     def latest_error_id(self) -> int:
         from error_routing import bus
         return bus.latest_id()
+
+    def record_client_heartbeat(self) -> Dict[str, Any]:
+        """WEB-19 (client half of D-8). app.js's heartbeat loop POSTs here
+        on a bounded interval while its tab is visible, and stops while
+        hidden, closed, or wedged (the request itself is bounded by the
+        shared fetch-timeout wrapper, WEB-22, so a hung heartbeat simply
+        never arrives rather than blocking).
+
+        Records when this adapter last heard from *a* client (not
+        per-tab — any tab counts, same as `/api/state` today), and
+        forwards a duck-typed touch to every active model that defines
+        `CLIENT_HEARTBEAT_HOOK`, so a model-side watchdog folded into an
+        existing timer (agent A, probes.py's interlock watchdog) can fold
+        web-client liveness into it without this adapter knowing anything
+        about how that timer works. A model that does not define the hook
+        (everything today) is untouched.
+        """
+        now = time.time()
+        with self._state_lock:
+            self._last_client_heartbeat = now
+            manager = self.system_manager
+
+        touched: List[str] = []
+        if manager is not None:
+            for name, model in manager.get_active_models_snapshot().items():
+                hook = getattr(model, self.CLIENT_HEARTBEAT_HOOK, None)
+                if callable(hook):
+                    try:
+                        hook()
+                        touched.append(name)
+                    except Exception:
+                        # WEB-14 isolation: a misbehaving hook on one model
+                        # must not fail the heartbeat response itself - the
+                        # browser's job here is only to report presence.
+                        print(f"[WebModelAdapter] {self.CLIENT_HEARTBEAT_HOOK}() "
+                              f"raised on {name}:\n{traceback.format_exc()}")
+
+        return {"status": "ok", "code": 200, "last_seen": now, "touched": touched}
+
+    def client_heartbeat_age_seconds(self) -> Optional[float]:
+        """Seconds since the last recorded client heartbeat, or `None` if
+        none has ever arrived. For a caller (model-side watchdog, or a
+        test) that wants to ask the adapter directly instead of relying
+        on the per-model touch in `record_client_heartbeat`."""
+        with self._state_lock:
+            last = self._last_client_heartbeat
+        if last is None:
+            return None
+        return time.time() - last

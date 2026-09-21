@@ -172,6 +172,89 @@ class TransferStageApp {
     // Fetch the latest error ID without showing old accumulated errors.
     await this.initializeErrorTracking();
     this.setupPolling(this.pollIntervalMs);
+
+    // WEB-19 (D-8 client half): start (or don't) the liveness heartbeat
+    // according to the tab's actual visibility right now, then keep it in
+    // sync with visibilitychange from here on.
+    this.setupClientHeartbeatVisibility();
+    if (typeof document === 'undefined' || !document.hidden) {
+      this.startClientHeartbeat();
+    }
+  }
+
+  // =========================================================================
+  // Client liveness heartbeat (WEB-19, client half of D-8)
+  // =========================================================================
+  //
+  // A model-side watchdog (agent A, probes.py) warns and then FULL STOPs
+  // when a run is active and no web client has checked in for a while,
+  // folded into the existing interlock watchdog rather than run as a
+  // second timer. This is the checking-in half: a small, bounded POST on
+  // its own interval, independent of /api/state polling.
+  //
+  // Deliberately NOT the same signal as the state poll. The state poll
+  // keeps running - throttled, not stopped - in a backgrounded tab in
+  // every browser this app targets, which would tell a watchdog a client
+  // is present when the operator is looking at a different tab entirely
+  // (the exact "closed the laptop lid" scenario D-8 exists for). This
+  // heartbeat stops outright the moment the tab is hidden, and resumes the
+  // moment it is visible again.
+  //
+  // The server-side seam this calls is WebModelAdapter.record_client_heartbeat()
+  // (POST /api/client/heartbeat) - see web_adapter.py for the model-side
+  // hook name it forwards to, duck-typed and optional, since that hook
+  // lives in probes.py and is not this worktree's to add.
+  static HEARTBEAT_INTERVAL_MS = 2000;
+
+  startClientHeartbeat() {
+    this.stopClientHeartbeat();
+    this._sendHeartbeatOnce();
+    this._heartbeatTimer = setInterval(
+      () => this._sendHeartbeatOnce(), this.constructor.HEARTBEAT_INTERVAL_MS);
+  }
+
+  stopClientHeartbeat() {
+    if (this._heartbeatTimer) {
+      clearInterval(this._heartbeatTimer);
+      this._heartbeatTimer = null;
+    }
+  }
+
+  async _sendHeartbeatOnce() {
+    // Belt-and-suspenders: even if something calls this directly while
+    // hidden, do not send. The interval itself is stopped on hidden by
+    // setupClientHeartbeatVisibility below.
+    if (typeof document !== 'undefined' && document.hidden) return;
+    try {
+      // A wedged heartbeat is exactly a heartbeat that must not count -
+      // the shared fetch wrapper (WEB-22) bounds this with the same
+      // abort-on-timeout behavior as every other same-origin fetch, so a
+      // hung request here simply fails to arrive rather than blocking
+      // the next tick.
+      await fetch('/api/client/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+    } catch (err) {
+      // Nothing to recover: a missed heartbeat is the signal itself.
+    }
+  }
+
+  setupClientHeartbeatVisibility() {
+    if (typeof document === 'undefined' || !document.addEventListener) return;
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this.stopClientHeartbeat();
+      } else {
+        this.startClientHeartbeat();
+      }
+    });
+    // Tab closed outright: nothing more to send either way, but stop the
+    // timer so a bfcache-restored tab does not resume a stale interval.
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('pagehide', () => this.stopClientHeartbeat());
+    }
   }
 
   async initializeErrorTracking() {
@@ -582,6 +665,7 @@ class TransferStageApp {
           </div>
           <span class="badge badge-subtle" id="badge-${this.sanitizeId(devName)}">INITIALIZING</span>
         </div>
+        <div class="card-connection-note" id="note-${this.sanitizeId(devName)}" style="display:none;"></div>
         <div class="card-body">
           ${sectionsHtml}
           ${focusPanelHtml}
@@ -996,6 +1080,43 @@ class TransferStageApp {
     for (const devName of this.knownDevices) this._markDeviceMissedCycle(devName);
   }
 
+  // ROTATOR-13 (web half): the model half already reports "disconnected"
+  // honestly instead of a bogus "simulated" badge, and refusals like
+  // rotator_system's NOT_CONNECTED surface as toasts through dispatchCommand
+  // - but nothing stopped the card's own controls from staying clickable.
+  // Before this, a rotator with a SIM/None port (no simulator exists for it)
+  // showed a normal-looking card: every button enabled, every click either
+  // silently doing nothing (pre-refusal model code) or producing a toast the
+  // operator could easily miss mid-poll-cycle. Any device that reports
+  // "disconnected"/"offline"/"lost"/"closed" gets the same treatment: its
+  // controls are disabled outright, and the card says why in its own text,
+  // not just via a badge that also carries busy/hardware/simulated states.
+  static _DISCONNECTED_STATUSES = new Set(['disconnected', 'offline', 'lost', 'closed']);
+
+  _applyConnectionGate(devName, cardBody, rawStatus) {
+    const sanitized = this.sanitizeId(devName);
+    const isDisconnected = this.constructor._DISCONNECTED_STATUSES.has(rawStatus);
+
+    if (cardBody && isDisconnected) {
+      cardBody.querySelectorAll('button, input, select').forEach(ctrl => {
+        ctrl.disabled = true;
+      });
+    }
+
+    const note = document.getElementById(`note-${sanitized}`);
+    if (note) {
+      if (isDisconnected) {
+        note.textContent = 'Not connected — controls are disabled until this device answers on a real port.';
+        note.style.display = '';
+      } else {
+        note.textContent = '';
+        note.style.display = 'none';
+      }
+    }
+
+    return isDisconnected;
+  }
+
   _setDeviceStale(devName, stale) {
     const sanitized = this.sanitizeId(devName);
     const card = document.getElementById(`card-${sanitized}`);
@@ -1123,7 +1244,14 @@ class TransferStageApp {
             }
           });
         }
-        
+
+        // ROTATOR-13: forcibly disable and label a disconnected device's
+        // controls, overriding whatever the interlock block above set - a
+        // device with no live link is not "manual", "auton" or normally
+        // operating, it simply cannot execute anything.
+        const rawStatusForGate = (attrs.connection_status || '').toLowerCase();
+        this._applyConnectionGate(devName, cardBody, rawStatusForGate);
+
         this.updateDeviceStatusBadges(devName, attrs);
       }
     } catch (err) {
@@ -1348,6 +1476,33 @@ class TransferStageApp {
       this.toggleModal(modal, true);
       this.startFocusStream();
       return;
+    }
+
+    // WEB-13: mirror PySide's `if element.get("command") == "stop_monitoring"
+    // and self.model.has_unsaved_data` guard (views/pyside/view.py). PySide
+    // reads the model in-process; the web client only has what /api/state
+    // publishes, which is this same pending_run_data() dict (see
+    // WebModelAdapter.get_state). Before this, "Stop Monitoring" was a bare
+    // dispatch with no notion of unsaved data at all - the model still
+    // autosaves on teardown/next-run-start by default (D-10), so nothing
+    // was ever silently destroyed, but the operator had no chance to choose
+    // a file name for a run they cared about before it stopped.
+    if (commandName === 'stop_monitoring') {
+      const pending = (this.deviceState[deviceName] || {}).pending_run_data;
+      if (pending && pending.has_data) {
+        const wantsSaveNow = confirm(
+          `This run has ${pending.sample_count} unsaved sample(s).\n\n` +
+          `Save it now with a chosen file name before stopping?\n` +
+          `(Choosing Cancel still stops monitoring - the server autosaves ` +
+          `unsaved data on its own, this only controls the file name.)`
+        );
+        if (wantsSaveNow) {
+          const name = prompt('Save as file name:', 'export.csv');
+          if (name) {
+            await this.dispatchCommand(deviceName, 'save_log', [name]);
+          }
+        }
+      }
     }
 
     if (triggerBtn) {
