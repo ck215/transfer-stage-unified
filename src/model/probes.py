@@ -56,6 +56,33 @@ class BaseProbe(SchemaCommands):
     _INTERLOCK_POLL_INTERVAL = 5
     _INTERLOCK_TIMEOUT = 300
 
+    # Single-byte control commands this board's firmware is *observed* to
+    # handle today, read straight out of `firmware/*/*.ino` (SERIAL-10).
+    #
+    #   stepper_firmware.ino, chuck_firmware.ino — `parseHybridSerial` has an
+    #       explicit branch for 0x64 ('d', TOFF=0 on all three drivers),
+    #       0x65 ('e') and 0x73 ('s'). Anything else is read and discarded.
+    #   high_polling_rate.ino (the DC probe) — only 0xAA and 0x73 ('s').
+    #       Every other byte falls through to `parseSerialAuto()` and is read
+    #       as *text*, so a 'd' there is not a disable at all.
+    #   'k' (0x6B) has no branch in any .ino, on any board.
+    #
+    # This is a **record of fact, not a decision.** Whether the protocol
+    # should grow ACKs, DC-side 'e'/'d' handlers, or a real 'k' is owner
+    # decision **D-7** (plan.md S16 item 2), open, at the bench, and it needs
+    # every board reflashed. Nothing here changes a byte on the wire: the
+    # only thing it buys is that the model stops asserting an outcome the
+    # firmware never produced. `test_declared_control_bytes_match_the_ino_files`
+    # is what keeps this honest if the firmware moves.
+    FIRMWARE_CONTROL_BYTES = frozenset({b"d", b"e", b"s"})
+
+    #: The outcome of the last `power_down()`, in the model's own vocabulary.
+    #: There is deliberately no "confirmed" — no firmware ACKs anything, so a
+    #: successful write is the strongest claim available until D-7 lands.
+    POWER_DOWN_SENT = "sent"                # a coil-kill handler exists
+    POWER_DOWN_UNSUPPORTED = "unsupported"  # this firmware has no such handler
+    POWER_DOWN_FAILED = "failed"            # it did not even leave the host
+
     # Per-class fallbacks for motion parameters (RC-6 item 1).
     #
     # These were hardcoded at each `_num(...)` call site — `_num(self.x_step,
@@ -188,6 +215,12 @@ class BaseProbe(SchemaCommands):
         # from whichever thread closed it.
         self._input_gate_open = threading.Event()
         self._input_gate_open.set()
+
+        # What the last power_down() actually achieved (SERIAL-10). `None`
+        # until one has been attempted. Never "confirmed": see
+        # POWER_DOWN_SENT above.
+        self.power_down_status = None
+        self._power_down_unsupported_reported = False
 
         # Fault state (RC-2). Set when a command's fate is unknown — a write
         # that failed means the hardware may be in either state, and saying
@@ -1020,18 +1053,80 @@ class BaseProbe(SchemaCommands):
     def full_stop(self):
         return self._transition(ProbeMode.DISABLED, "full stop")
 
+    @property
+    def supports_coil_kill(self):
+        """True when this board's firmware has a handler that cuts coil current.
+
+        `'d'` is that handler on the stepper and chuck boards: TOFF=0 on all
+        three TMC2209 drivers, unconditionally. The DC board has no branch for
+        it, so the same byte arrives at `parseSerialAuto()` as text and
+        produces the stop fallthrough — a halt, not a de-energize.
+        """
+        return b"d" in self.FIRMWARE_CONTROL_BYTES
+
     def power_down(self):
+        """Stop, de-energize, and report **what actually happened** (SERIAL-10).
+
+        The bytes sent here are exactly the bytes that were sent before —
+        zeroed stop frame, `'d'`, `'k\\n'` — because this is a stop path and
+        the standing rule is that a truthfulness fix does not get to change
+        it. What changed is the claim: the old code logged "Sent Power Down
+        (Kill Coils) command 'k'" on every board, which is false on all three
+        (no firmware handles `'k'`) and doubly false on the DC probe, whose
+        firmware has no coil-kill handler at all.
+
+        `power_down_status` carries the honest answer instead, and a device
+        that cannot do this says so once rather than reporting silent success.
+        Making `'k'` real — or deleting it — is **D-7**, not this.
+        """
         disabled = self._transition(ProbeMode.DISABLED, "power down")
         if self.serial_comm:
             try:
                 self.serial_comm.write_command(b'k\n', priority=True)
-                print(f"[{self.__class__.__name__}] Sent Power Down (Kill Coils) command 'k'")
             except Exception as e:
                 # The kill never reached the board. Say so loudly rather than
                 # letting the caller believe the coils are dead (RC-2).
+                self.power_down_status = self.POWER_DOWN_FAILED
                 self._enter_fault(f"power down not confirmed: {e}")
                 return False
+        if not disabled:
+            # `_go_disabled` has already faulted: the disable did not reach
+            # the board, so nothing here may claim the coils are down.
+            self.power_down_status = self.POWER_DOWN_FAILED
+            return False
+        if self.supports_coil_kill:
+            self.power_down_status = self.POWER_DOWN_SENT
+            print(f"[{self.__class__.__name__}] Power down sent: stop frame "
+                  f"and 'd' (TOFF=0). Unacknowledged — no firmware ACKs (D-7).")
+        else:
+            self.power_down_status = self.POWER_DOWN_UNSUPPORTED
+            self._report_power_down_unsupported()
         return disabled
+
+    def _report_power_down_unsupported(self):
+        """Tell the operator once that this device has no coil-kill command.
+
+        Once per model, not once per stop: `power_down()` is on the teardown
+        and FULL STOP paths, and a popup on every one of those trains the
+        operator to dismiss the message that matters. It is a standing
+        property of the board, not an event.
+        """
+        msg = (f"{self.__class__.__name__}: this device's firmware has no "
+               f"power-down (kill coils) command — it handles "
+               f"{sorted(b.decode() for b in self.FIRMWARE_CONTROL_BYTES)} "
+               f"and nothing else. A stop was sent and the motion frame was "
+               f"zeroed, but the driver outputs were NOT de-energized. "
+               f"Treat the device as live. (SERIAL-10; firmware support is "
+               f"owner decision D-7.)")
+        print(f"[{self.__class__.__name__}] {msg}")
+        self._controller_log.append(msg)
+        if self._power_down_unsupported_reported:
+            return
+        self._power_down_unsupported_reported = True
+        try:
+            ErrorPopupManager.report_warning("Power Down Not Supported", msg)
+        except Exception:
+            pass
 
     def teardown(self):
         """Safety-first, exception-safe shutdown (RC-1, invariant I-1.2).
@@ -1134,6 +1229,14 @@ class StepperProbe(BaseProbe):
 
 
 class DCProbe(BaseProbe):
+    # `firmware/high_polling_rate/high_polling_rate.ino`'s parseHybridSerial
+    # branches on 0xAA and 0x73 ('s') only; everything else, 'e' and 'd'
+    # included, falls through to `parseSerialAuto()` and is read as text
+    # (SERIAL-10). The host keeps sending the same bytes — see power_down —
+    # it just no longer reports a de-energize this board cannot perform.
+    # Adding the handlers is D-7, at the bench.
+    FIRMWARE_CONTROL_BYTES = frozenset({b"s"})
+
     # A DC probe runs at 120, not the stepper's 400. Before this table the
     # fallback was the stepper's number at every call site.
     PARAMS = _extend_params(
