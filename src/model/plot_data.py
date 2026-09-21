@@ -3,15 +3,35 @@ import io
 import json
 from pathlib import Path
 
+#: The column `RedPercentDataLog.save_to_csv` writes right after `Red
+#: Percent` (RC-11 item 4). Optional on read: a legacy CSV predating the
+#: column, or one written by a test fixture, has no time axis and that is
+#: not treated as an error.
+TIMESTAMP_HEADER = "Timestamp"
+
+
 def parse_red_percent_csv(csv_text: str) -> dict:
     """Parses the CSV format RedPercentDataLog.save_to_csv() writes: a
     '#'-prefixed metadata block, a blank line, then a header row starting
-    with 'Red Percent' followed by 'Stepper {dim} Location'/'Stepper {dim}
-    Velocity' column pairs per synced dimension. Returns
+    with 'Red Percent' followed by an optional 'Timestamp' column and
+    'Stepper {dim} Location'/'Stepper {dim} Velocity' column pairs per
+    synced dimension. Returns
     {'metadata': {...}, 'red_percents': [...], 'dims': [...],
-    'dim_data': {dim: [...]}} — dim_data only contains Location columns
-    (Velocity columns are written to the CSV but not currently plotted by
-    any of the three views).
+    'dim_data': {dim: [...]}, 'timestamps': [...]} — dim_data only contains
+    Location columns (Velocity columns are written to the CSV but not
+    currently plotted by any of the three views); `timestamps` is `[]`
+    when the header carries no `Timestamp` column at all, and its entries
+    are individually `None` for a row that failed to parse a readable one.
+
+    REDPERCENT-16/ERRORS-7: a `None` cell (an explicit sentinel `save_to_csv`
+    writes for a read that failed, never a fabricated `0.0`) round-trips
+    through `csv.writer` as an empty string, which `float('')` cannot parse
+    — so it falls into the same `except` below as any other malformed cell
+    and drops just that row. That already keeps `red_percents` and
+    `dim_data` from ending up at mismatched lengths (see the comment below),
+    which is the property a per-cell "keep the row, blank the cell" scheme
+    would have to reproduce by hand; dropping the row is simpler and no
+    caller here needs partial rows.
     """
     reader = csv.reader(io.StringIO(csv_text))
     metadata = {}
@@ -31,7 +51,8 @@ def parse_red_percent_csv(csv_text: str) -> dict:
         rows.append(row)
 
     if not header:
-        return {"metadata": metadata, "red_percents": [], "dims": [], "dim_data": {}}
+        return {"metadata": metadata, "red_percents": [], "dims": [],
+                "dim_data": {}, "timestamps": []}
 
     dims = []
     dim_loc_idx = {}
@@ -40,8 +61,10 @@ def parse_red_percent_csv(csv_text: str) -> dict:
             dim = col.replace("Stepper ", "").replace(" Location", "")
             dims.append(dim)
             dim_loc_idx[dim] = i
+    ts_idx = header.index(TIMESTAMP_HEADER) if TIMESTAMP_HEADER in header else None
 
     red_percents = []
+    timestamps = []
     dim_data = {dim: [] for dim in dims}
     for row in rows:
         try:
@@ -55,11 +78,19 @@ def parse_red_percent_csv(csv_text: str) -> dict:
         # Only commit the row once every value in it parsed cleanly — a
         # malformed dimension column must not leave red_percents and
         # dim_data at mismatched lengths.
+        ts_val = None
+        if ts_idx is not None and len(row) > ts_idx and row[ts_idx] != "":
+            try:
+                ts_val = float(row[ts_idx])
+            except ValueError:
+                ts_val = None
         red_percents.append(red_val)
+        timestamps.append(ts_val)
         for dim, val in row_dim_vals.items():
             dim_data[dim].append(val)
 
-    return {"metadata": metadata, "red_percents": red_percents, "dims": dims, "dim_data": dim_data}
+    return {"metadata": metadata, "red_percents": red_percents, "dims": dims,
+            "dim_data": dim_data, "timestamps": timestamps}
 
 def load_red_percent_run(csv_path):
     """Load a saved run from disk, from either artifact shape.

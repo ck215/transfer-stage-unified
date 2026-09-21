@@ -124,29 +124,52 @@ class TestRedPercentFeatures:
         print(type(image)); assert system.detect_red(image) == 20.0
 
     @patch('model.redpercent_system.mss.mss')
-    @patch('model.redpercent_system.time.sleep')
-    def test_monitoring_thread_lifecycle(self, mock_sleep, mock_mss):
+    def test_monitoring_thread_lifecycle(self, mock_mss):
+        """Re-authored for RC-11 item 1 (S13): `start_monitoring()` now
+        refuses without a focus area (REDPERCENT-9) instead of starting a
+        thread that spins forever with zero samples, and it returns a
+        `CommandResult` rather than `None`. `monitoring` is a property
+        derived from the run, not a bare boolean the test flips directly;
+        `time.sleep` is no longer patched because the loop now waits on
+        `run.stop_event`, which this test's own `stop_monitoring()` call
+        wakes immediately instead of the test needing to out-wait a mock.
+        """
         import time
         system = RedPercentSystem()
         system.stepper_model = MagicMock()
-        
+        system.set_focus_area(0, 0, 10, 10)
+
         # Prevent actual capturing blocking our mock thread
         mock_sct = MagicMock()
         mock_sct.grab.return_value = None  # Force detect_red to return 0.0 quickly
         mock_mss.return_value.__enter__.return_value = mock_sct
-        
+
         assert not system.monitoring
-        
-        system.start_monitoring()
+
+        result = system.start_monitoring()
+        assert result.ok, result.reason
         assert system.monitoring
         assert system._monitor_thread is not None
         assert system._monitor_thread.is_alive()
-        
+
         # Let the thread spin once
         time.sleep(0.1)
-        
+
         system.stop_monitoring()
         assert not system.monitoring
         system._monitor_thread.join(timeout=1.0)
         assert not system._monitor_thread.is_alive()
+
+    def test_start_monitoring_refuses_without_a_focus_area(self):
+        """REDPERCENT-9: today's code starts anyway, `capture_focus_area`
+        returns `None` forever, and the loop spins with `monitoring` True
+        and zero samples. It must refuse instead, and start nothing."""
+        system = RedPercentSystem()
+        assert system.focus_area is None
+
+        result = system.start_monitoring()
+
+        assert result.refused, result
+        assert not system.monitoring
+        assert system._monitor_thread is None
 
