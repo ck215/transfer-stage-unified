@@ -267,3 +267,170 @@ def test_hardware_scan_is_single_flight(monkeypatch):
     assert second["code"] == 409
 
     block_forever.set()
+
+
+# --- ROTATOR-7: the web STOP must not queue behind another request -------
+#
+# The finding: `dispatch_command` took the per-device lock for *every*
+# command, so the per-device STOP button waited for whatever request was
+# already holding it, and `get_state` took the same lock, so one slow
+# command stalled state polling for that device. The safety contract
+# (docs/architecture/safety-pattern.md) is that a stop never queues: "A
+# stop that cannot get the lock is worse than an unsynchronised one."
+
+class _GatedDevice:
+    """A model with one command that blocks until released, plus a stop."""
+
+    def __init__(self):
+        import threading as _t
+        self.release = _t.Event()
+        self.in_home = _t.Event()
+        self.stopped = _t.Event()
+        self.estopped = _t.Event()
+        self.position = 0.0
+
+    @property
+    def ui_schema(self):
+        return {"sections": [{"elements": [
+            {"type": "readonly", "model_attr": "position"},
+            {"type": "button", "command": "home"},
+            {"type": "button", "command": "stop"},
+            {"type": "button", "command": "emergency_stop"},
+        ]}]}
+
+    def home(self):
+        self.in_home.set()
+        # Bounded so a regression cannot wedge the suite forever.
+        self.release.wait(10)
+        return True
+
+    def stop(self):
+        self.stopped.set()
+        return True
+
+    def emergency_stop(self):
+        self.estopped.set()
+        return True
+
+
+class _GatedMgr:
+    def __init__(self, model):
+        self.active_models = {"Rotator": model}
+
+    def get_active_models_snapshot(self):
+        return dict(self.active_models)
+
+
+def _adapter_with_gated_device():
+    from views.web.web_adapter import WebModelAdapter
+    model = _GatedDevice()
+    adapter = WebModelAdapter()
+    adapter.set_system_manager(_GatedMgr(model))
+    return adapter, model
+
+
+def test_stop_command_is_not_serialized_behind_a_slow_command():
+    """ROTATOR-7: with a slow command holding the device lock, a STOP
+    dispatched from another request must still reach the model promptly."""
+    import threading
+    adapter, model = _adapter_with_gated_device()
+
+    slow = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    slow.start()
+    assert model.in_home.wait(2), "the slow command never started"
+
+    result = {}
+
+    def _stop():
+        result["res"] = adapter.dispatch_command("Rotator", "stop")
+
+    stopper = threading.Thread(target=_stop, daemon=True)
+    stopper.start()
+    try:
+        # The stop must land while `home` is still in flight.
+        assert model.stopped.wait(1.0), (
+            "STOP queued behind the in-flight command on the device lock")
+        stopper.join(1.0)
+        assert not stopper.is_alive(), "STOP did not return to its caller"
+        assert result["res"]["status"] == "ok"
+        assert not model.release.is_set()
+    finally:
+        model.release.set()
+        slow.join(5)
+
+
+def test_emergency_stop_command_is_not_serialized_behind_a_slow_command():
+    """ROTATOR-7: the same for `emergency_stop`, which the safety pattern
+    requires never block its caller."""
+    import threading
+    adapter, model = _adapter_with_gated_device()
+
+    slow = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    slow.start()
+    assert model.in_home.wait(2), "the slow command never started"
+
+    estopper = threading.Thread(
+        target=adapter.dispatch_command,
+        args=("Rotator", "emergency_stop"), daemon=True)
+    estopper.start()
+    try:
+        assert model.estopped.wait(1.0), (
+            "emergency_stop queued behind the in-flight command")
+        estopper.join(1.0)
+        assert not estopper.is_alive()
+    finally:
+        model.release.set()
+        slow.join(5)
+
+
+def test_get_state_is_not_stalled_by_an_in_flight_command():
+    """ROTATOR-7, second half: `/api/state` reads the model's cache and does
+    no I/O (I-4.1), so it must not wait on the per-device lock a long command
+    is holding. A blocking command used to stall every state poll for that
+    device, which is what the audit recorded for `reconnect`."""
+    import threading
+    import time as _time
+    adapter, model = _adapter_with_gated_device()
+
+    slow = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    slow.start()
+    assert model.in_home.wait(2), "the slow command never started"
+
+    try:
+        started = _time.monotonic()
+        state = adapter.get_state()
+        elapsed = _time.monotonic() - started
+        assert elapsed < 0.5, (
+            f"/api/state blocked {elapsed:.2f}s on the device lock")
+        assert state["Rotator"]["position"] == 0.0
+    finally:
+        model.release.set()
+        slow.join(5)
+
+
+def test_ordinary_commands_still_serialize_on_the_device_lock():
+    """Regression guard for the ROTATOR-7 fix: only the stop paths skip the
+    per-device lock. Two ordinary commands must still not overlap, or the
+    fix has traded a queued STOP for concurrent motion on one device."""
+    import threading
+    adapter, model = _adapter_with_gated_device()
+
+    slow = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    slow.start()
+    assert model.in_home.wait(2), "the slow command never started"
+
+    model.in_home.clear()
+    second = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    second.start()
+    try:
+        assert not model.in_home.wait(0.3), (
+            "a second ordinary command ran while the first held the device")
+    finally:
+        model.release.set()
+        slow.join(5)
+        second.join(5)
