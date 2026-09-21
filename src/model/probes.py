@@ -278,23 +278,54 @@ class BaseProbe(SchemaCommands):
         self._run_id = 0
         self._script_thread = None
 
+    def _axis_state(self):
+        """The poller's mapped state, or `{}` if it could not be read.
+
+        **The read itself is guarded, not just the float cast** (REDPERCENT-4).
+        `get_mapped_state()` goes to the shared SDL poller, and a controller
+        unplugged mid-session is the ordinary case, not the exotic one. The
+        three `vel_*` properties below are sampled by the Red Percent monitor
+        thread as `getattr(stepper_model, 'vel_x', 0.0)` — and that default
+        shields nothing, because a property that *raises* is not a property
+        that is missing. The exception came out through the getattr, out of
+        the monitor loop, and took the thread with it: `monitoring` stayed
+        True with nothing monitoring, and pressing Start again did nothing.
+
+        Reported, not swallowed. The bus folds a repeat of the same
+        `(severity, source, title)` into one event with a count, so reporting
+        on every failed read at 60 Hz produces one warning that says how long
+        it lasted — which is what I-8.2 asks for — rather than a popup storm.
+        """
+        if not self.poller:
+            return {}
+        try:
+            return self.poller.get_mapped_state() or {}
+        except Exception as e:
+            try:
+                ErrorPopupManager.report_warning(
+                    "Controller Read Failed",
+                    f"{self.__class__.__name__}: could not read the gamepad "
+                    f"state: {e}. Velocities are reported as 0 until it "
+                    f"recovers.", e)
+            except Exception:
+                pass
+            return {}
+
     @property
     def vel_x(self):
-        state = self.poller.get_mapped_state() if self.poller else {}
-        val = state.get("x_axisStatus", 0.0)
+        val = self._axis_state().get("x_axisStatus", 0.0)
         try: return float(val) if val is not None else 0.0
         except (ValueError, TypeError): return 0.0
 
     @property
     def vel_y(self):
-        state = self.poller.get_mapped_state() if self.poller else {}
-        val = state.get("y_axisStatus", 0.0)
+        val = self._axis_state().get("y_axisStatus", 0.0)
         try: return float(val) if val is not None else 0.0
         except (ValueError, TypeError): return 0.0
 
     @property
     def vel_z(self):
-        state = self.poller.get_mapped_state() if self.poller else {}
+        state = self._axis_state()
         r_val = state.get("z_axisStatusR", -1.0)
         l_val = state.get("z_axisStatusL", -1.0)
         try:
