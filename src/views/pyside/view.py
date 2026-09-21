@@ -37,7 +37,18 @@ class QtErrorPopupManager(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._message_signal.connect(self._on_event)
+        # PYSIDE-21: AutoConnection resolves to a *direct*, synchronous
+        # call when `_publish` (the bus callback) runs on the GUI thread
+        # itself -- e.g. an error raised inside `closeEvent ->
+        # shutdown_all()`. A direct call means `_on_event` -> the
+        # `QMessageBox.critical()` modal runs mid-teardown, inside the
+        # publisher's own call stack, opening a nested event loop while a
+        # device is still being torn down. Force QueuedConnection so the
+        # slot always runs from the GUI event loop, never inline, no
+        # matter which thread published -- events from worker threads
+        # were already queued (AutoConnection only goes direct on the GUI
+        # thread), so this does not change their behaviour.
+        self._message_signal.connect(self._on_event, Qt.QueuedConnection)
         self._log = []
         self._panel = None
         ErrorRouter.subscribe(self._publish)
