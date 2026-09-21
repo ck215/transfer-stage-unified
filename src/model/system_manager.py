@@ -179,6 +179,19 @@ class SystemManager:
             except Exception as e:
                 self._report(f"Failed to stop {name} while hiding it: {e}",
                              e, "Stop Error")
+        else:
+            # MANAGER-24. This branch used to be an implicit, silent skip —
+            # `if callable(disable):` with no `else` — and it is what let
+            # TemperatureSystem and RotatorSystem be hidden while still
+            # energized for as long as they did. A duck-typed lookup makes a
+            # model that *cannot* be brought to a safe state look exactly
+            # like one that just *was*, at the one call site that promises
+            # the opposite. If a model ever legitimately has no safe state to
+            # reach, that is a thing the operator needs told, not a silence.
+            self._report(
+                f"{name} was hidden but has no disable() — it was NOT brought "
+                f"to a safe state and may still be energized.",
+                None, "Hidden While Live")
         return True
 
     def show(self, name):

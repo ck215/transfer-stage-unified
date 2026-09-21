@@ -455,6 +455,28 @@ class TemperatureSystem(SchemaCommands):
             except Exception:
                 pass
 
+    def disable(self):
+        """Bring the heater to a safe state. **`SystemManager.hide()` calls
+        this** (MANAGER-24).
+
+        `hide()` promises, per D-2, that hiding a device stops motion and
+        de-energizes it — and it finds this method by `getattr(model,
+        "disable", None)`. Until MANAGER-24 this class had no `disable` at
+        all, so that lookup returned `None`, the guard silently skipped, and
+        `hide()` returned True having sent nothing. An operator who closed
+        the heater's tab left it driving toward its last setpoint, unwatched,
+        with no error and nothing in the log.
+
+        For a heater "safe" is setpoint zero, which is exactly what `stop()`
+        already writes, so this is that and not a second spelling of it. The
+        transport stays open: D-1 says hiding keeps the model, the connection
+        and the configuration alive, so showing it again costs no handshake.
+
+        Returns whether the zero-setpoint frame actually landed, for the same
+        reason `emergency_stop` does (MANAGER-21).
+        """
+        return self.stop()
+
     #: How long close() waits for the reader to leave the port. It reads with
     #: a 1 s timeout, so one outstanding read plus slack.
     READER_JOIN_TIMEOUT = 1.5

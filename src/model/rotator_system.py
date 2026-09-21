@@ -559,6 +559,24 @@ class RotatorSystem(SchemaCommands):
             return False
         return True
 
+    def disable(self):
+        """Bring the stage to a safe state. **`SystemManager.hide()` calls
+        this** (MANAGER-24).
+
+        Same gap as the heater's: `hide()` locates the safe-state action by
+        `getattr(model, "disable", None)`, this class had none, so hiding the
+        rotator sent nothing while `hide()` reported success. A move in
+        progress simply continued with the view gone.
+
+        `stop()` is the safe state for a stage — it halts wherever it is. The
+        latch is deliberately **not** set: hiding is not a FULL STOP, and a
+        hidden device that is shown again must be usable without an operator
+        having to clear a latch they never knowingly set.
+
+        Returns whether the stop landed (MANAGER-21).
+        """
+        return self.stop()
+
     def reset_and_configure(self):
         if not self.smc:
             from results import Refused
