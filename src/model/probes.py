@@ -451,7 +451,13 @@ class BaseProbe(SchemaCommands):
                 from controller.gamepad import ControllerPoller
                 self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
             except Exception as e:
-                print(f"[{self.__class__.__name__}] Gamepad still unavailable: {e}")
+                # ERRORS-7: this used to be print-only, so a swap the
+                # operator initiated could fail with nothing on the
+                # dashboard to say so — the log said "Swapping controller
+                # to: X" and nothing else.
+                msg = f"Could not bind controller {controller_id!r}: {e}"
+                print(f"[{self.__class__.__name__}] {msg}")
+                ErrorPopupManager.report_warning("Controller Swap Failed", msg)
                 self._sync_controller_var()
                 return False
             else:
@@ -472,7 +478,10 @@ class BaseProbe(SchemaCommands):
             try:
                 self.poller.set_controller(controller_id)
             except Exception as e:
-                print(f"[{self.__class__.__name__}] Controller swap failed: {e}")
+                # ERRORS-7: likewise print-only before this.
+                msg = f"Could not swap to controller {controller_id!r}: {e}"
+                print(f"[{self.__class__.__name__}] {msg}")
+                ErrorPopupManager.report_warning("Controller Swap Failed", msg)
                 self._sync_controller_var()
                 return False
 
