@@ -434,6 +434,20 @@ class BaseProbe(SchemaCommands):
                 print(f"[{self.__class__.__name__}] Gamepad still unavailable: {e}")
                 self._sync_controller_var()
                 return False
+            else:
+                # GAMEPAD-17: this poller exists only because none did at
+                # __init__ (gamepad hardware appearing after
+                # construction). `start_loops()` already ran, against
+                # `self.poller is None`, the last time this probe armed
+                # (RC-4) -- so the poll loop for this brand-new poller has
+                # never been started, and it would sit bound but inert.
+                # That is the same end state the audit named under the old
+                # view-owned polling model, reached here instead because
+                # the loop is model-owned now. Start it if the probe is
+                # already energized; otherwise the next `_transition` into
+                # an armed mode starts it the normal way.
+                if self.system_enabled:
+                    self.start_loops()
         else:
             try:
                 self.poller.set_controller(controller_id)
