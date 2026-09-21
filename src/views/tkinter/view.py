@@ -488,7 +488,14 @@ class DynamicView(tk.Frame):
                         row=row_counter, column=0, padx=5, pady=2, sticky='w')
 
                     if el_type == "readonly":
-                        tk.Label(container, textvariable=str_var, bg=self.bg_main, fg='lightgreen',
+                        # TEMP-10: Use role-based colors for readonly fields to indicate
+                        # staleness/connection state visually (e.g., connection_state with role="info")
+                        bg_color, fg_color = self._role_colors(el.get("role"))
+                        # If no role specified, use default lightgreen for readonly
+                        if el.get("role") is None:
+                            fg_color = 'lightgreen'
+                            bg_color = self.bg_main
+                        tk.Label(container, textvariable=str_var, bg=bg_color, fg=fg_color,
                                  font=('Arial', 10, 'bold')).grid(row=row_counter, column=1, padx=5, pady=2, sticky='w')
                     else: # entry
                         # **Declared, not guessed.** This used to call
