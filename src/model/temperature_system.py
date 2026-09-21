@@ -97,6 +97,11 @@ class TemperatureSystem(SchemaCommands):
                 sch.readonly("Current Temperature:", "current_temp",
                              param=P["current_temp"]),
                 sch.readonly("Connection:", "connection_state", role="info"),
+                # **D-13: schema-driven plot in all three views.** The history
+                # is already collected; this plot uses the same data path as
+                # Red Percent: a property that returns {"x": [...], "y": [...]}.
+                sch.plot("Temperature over time", "temp_series",
+                         x_label="time (s)", y_label="temperature (°C)"),
             ),
             sch.section(
                 "Control Parameters",
@@ -202,7 +207,18 @@ class TemperatureSystem(SchemaCommands):
                 except Exception as e:
                     from error_routing import ErrorRouter as ErrorPopupManager
                     ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
-                
+        else:
+            # TEMP-10: No port means the model is not connected. Report this
+            # to the operator so they know that the command did not reach
+            # the hardware.
+            msg = f"[{self.__class__.__name__}] Not connected: the temperature controller port is not open. Settings not sent."
+            print(msg)
+            try:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_warning("Temperature Not Connected", msg)
+            except Exception:
+                pass
+
     def _backoff_wait(self, backoff):
         """Wait out a backoff, but return early the moment close() asks.
 
@@ -300,6 +316,16 @@ class TemperatureSystem(SchemaCommands):
         with self._lock:
             return list(self.time), list(self.tempC), list(self.sp)
 
+    def temp_series(self):
+        """The data behind the `plot` composite.
+
+        Returns `{"x": [...], "y": [...]}`. This is the whole of what a plot
+        renderer needs, and it is the reason the plot can now be schema-driven
+        in all three views. The x axis is time, the y axis is temperature.
+        """
+        with self._lock:
+            return {"x": list(self.time), "y": list(self.tempC)}
+
     #: A stop that cannot get the write lock is worse than an unsynchronised
     #: one. Mirrors the probes' and the rotator's priority paths (RC-5 item 2).
     PRIORITY_LOCK_TIMEOUT = 0.05
@@ -339,6 +365,17 @@ class TemperatureSystem(SchemaCommands):
             finally:
                 if acquired:
                     self._write_lock.release()
+        else:
+            # TEMP-10: No port means the model is not connected. Report this
+            # to the operator so they know that the stop command did not reach
+            # the hardware.
+            msg = f"[{self.__class__.__name__}] Not connected: the temperature controller port is not open. Stop command not sent."
+            print(msg)
+            try:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_warning("Temperature Not Connected", msg)
+            except Exception:
+                pass
 
     #: How long close() waits for the reader to leave the port. It reads with
     #: a 1 s timeout, so one outstanding read plus slack.
