@@ -2117,6 +2117,64 @@ Baseline for the wave: `0e5ba73`, fast gate **589 passed, 1 xfailed**, exit
 
 **Next action:** launch the three worktrees, then S13 items 1-4.
 
+### 2026-09-20 — fix wave, worktrees A and C: nine rows moved, and two surprises
+
+Two of the three worktrees are merged and verified. **Fast gate 621 passed,
+1 xfailed, exit 0; qt 46 passed, exit 0**, both read unpiped, both run by
+the lead on the merge result rather than taken from a handoff.
+
+**A (`fix-input`, `gamepad.py`) — 4 commits.** GAMEPAD-7, 19 and 21 closed,
+GAMEPAD-20 partly. Verified before merge: write set respected, all ten test
+names present, and every claimed pre-fix failure reproduced independently
+against the base file (5 of 6, then 3 of 4; the other two are named
+regression guards that pass both ways, as they should).
+
+**C (`fix-web`) — 5 commits.** ROTATOR-7, ROTATOR-11 and ERRORS-12 closed;
+TEMP-11 and ROTATOR-13 partly. ROTATOR-7's proof is the strongest in the
+wave: against the pre-fix adapter, STOP, emergency STOP *and* `/api/state`
+all blocked behind a slow command. A STOP that queues is a STOP that does
+not happen.
+
+**I briefed four owner-only findings by mistake.** GAMEPAD-11, 12, 13 and 14
+are RC-12 / S16 — "Never delegated. The owner does this at the bench" — and
+I put them in A's brief because I drew the partition from the file-citation
+map without reading the Stage column. Caught after launch and retracted
+mid-flight; verified on merge that nothing was written for any of the four
+(the wrapper classes and `_apply_deadzones` are byte-identical to base, and
+all six source hunks land in `ControllerPoller`). The mechanical partition
+was right about *files* and silent about *authority*, which is the failure
+mode to remember: a write-set map cannot tell you who is allowed to decide.
+
+**GAMEPAD-21 — a closed fix that did not reach the whole surface.** A found
+it while working GAMEPAD-7. `set_controller` tore polling down and resumed
+only `if success and self.gui_root and not self.is_polling`; `gui_root` is
+assigned only when `start_polling` is handed a `gui`, and the sole live
+caller in `src/` is `probes.py:882`, which passes `None` — because S5 moved
+poller startup into the model so the Web frontend would poll at all. I first
+recorded it as Web-only and medium. That was wrong, and grepping every
+`start_polling` caller is what corrected it: `gui_root` is `None` on **all
+three frontends**, so every controller swap in the application killed input
+until restart, leaving manual mode inert with the coils energised and the
+watchdog skipped. Re-recorded high, all three views. It is the same end
+state GAMEPAD-1 was closed on, reached by a different route after that row
+was closed — trap #2 of CLAUDE.md, in its purest form.
+
+**ROTATOR-13 exposed a hole in the partition itself.** Its remaining half
+needs `src/views/web/static/js/app.js`, which is covered by *no* write set:
+my C brief said `src/views/web/**` in prose but enumerated only the three
+`.py` files. So the web half is unassigned rather than deferred. Any future
+partition drawn from Python-file citations has this blind spot — the audit
+cites `app.js` and my extractor only ever resolved `.py` basenames.
+
+**TEMP-11 is blocked on a primitive, not on difficulty.** The heater-off
+frame cannot be forced out before the port closes because the transport
+exposes no `flush()` and I-2.3 forbids the model touching `.ser`. Verified
+both halves myself. Routed to B, which owns `serial.py`.
+
+**Next action:** merge B when it lands, wire TEMP-11's two halves together,
+then S13 items 1-4 — `MonitoringRun` itself, still the actual RC-11 repair
+and still untouched.
+
 ## Finding ledger
 
 217 rows: the 213 findings of the 2026-09-19 audit, plus four added later.
@@ -2168,7 +2226,7 @@ it) · `n/a` (with a reason).
 | ERRORS-9 | RC8 | S11 | root cause | open (mitigated) — command failures route identically in all three views now; the **view-level** surfaces the finding actually names (PySide's CSV-column checks, and Web having no equivalent) are still direct dialogs that bypass the bus |
 | ERRORS-10 | RC8 | S11 | root cause | closed (the rate limit no longer runs ahead of the no-subscriber print; test_with_no_subscriber_the_bus_prints) |
 | ERRORS-11 | doc | S0 | root cause | open |
-| ERRORS-12 | RC10 | S4 | root cause | open — but the failure it describes (an error published before the dashboard exists, lost when a second `WebModelAdapter` replaces the first) can no longer happen: S11 made the bus, not the adapter buffer, the source of truth for `/api/errors`. Left to S4 to retire the `_BufferProxy` structure itself |
+| ERRORS-12 | RC10 | S4 | root cause | closed (the `_BufferProxy` indirection and the web error mirror are retired; the ledger's note that the behavioural defect was already gone held, but one half was still live — a `WebDashboardServer` built with a manager made its own adapter while `WebAPIHandler.adapter` only became that object in `start()`, so poller logs emitted before then went to an adapter `/api/logs` never read — test_api_errors_survives_an_adapter_replacement, test_the_web_error_path_keeps_no_second_copy_of_the_bus, test_web_error_manager_shims_publish_to_the_bus, test_poller_logs_reach_the_server_that_serves_them) |
 | GAMEPAD-1 | RC4 | S5 | root cause | closed (S5: the model owns the input loop and the poller; test_polling_continues_without_a_tk_event_loop) |
 | GAMEPAD-2 | RC13 | S5 | root cause | closed (S5: the refcount is gone, SDL is per-owner in InputService; test_closing_a_poller_never_tears_sdl_down, test_sdl_comes_down_only_at_process_exit) |
 | GAMEPAD-3 | RC3 | S7 | root cause | closed (test_a_failed_controller_swap_does_not_claim_the_controller) |
@@ -2259,13 +2317,13 @@ it) · `n/a` (with a reason).
 | ROTATOR-4 | RC5 | S8 | root cause | closed (`_current_position` turned an *unknown* position into `0.0`, and a relative target read from the last poll could not see a move already in flight, so stacked clicks walked past the soft limit unprompted. Replaced by `_reference_position` returning `(value, known)` plus a `_commanded_target` committed before dispatch; unknown now raises NeedsConfirmation instead of assuming the origin. test_rotator_4_an_unknown_position_is_not_the_origin, test_rotator_4_stacked_clicks_accumulate_toward_the_guard, test_rotator_4_the_commanded_target_tracks_accepted_moves, test_rotator_4_a_full_stop_makes_the_position_unknown_again, test_rotator_4_an_absolute_move_past_the_limit_still_asks) |
 | ROTATOR-5 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | ROTATOR-6 | RC4 | S5 | root cause | open |
-| ROTATOR-7 | RC4 / RC10 | S5 | root cause | open |
+| ROTATOR-7 | RC4 / RC10 | S5 | root cause | closed (test_stop_command_is_not_serialized_behind_a_slow_command, test_emergency_stop_command_is_not_serialized_behind_a_slow_command, test_get_state_is_not_stalled_by_an_in_flight_command, test_ordinary_commands_still_serialize_on_the_device_lock) |
 | ROTATOR-8 | RC5 | S8 | root cause | closed (the rotator had no `_estop` latch at all and ran its stop I/O on the calling thread, so a FULL STOP blocked on the SMC100 `_serial_lock` held by an in-flight poll. Now the S8 probe pattern: latch first, hardware stop on a daemon worker joined against ESTOP_RETURN_BUDGET, and `SMC100.stop(priority=True)` taking `_serial_lock` with PRIORITY_LOCK_TIMEOUT and forcing ST through on failure. test_rotator_emergency_stop_returns_within_100ms_behind_a_held_serial_lock, test_rotator_emergency_stop_still_reaches_the_hardware, test_rotator_latches_so_a_queued_move_cannot_land_after_the_stop, test_only_an_explicit_operator_action_clears_the_rotator_latch, test_the_rotator_stop_path_takes_the_priority_write) |
 | ROTATOR-9 | RC2 / RC7 | S3 | root cause | open |
 | ROTATOR-10 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
-| ROTATOR-11 | RC2 / LOCAL-OK | S3 | explicit | open |
+| ROTATOR-11 | RC2 / LOCAL-OK | S3 | explicit | closed (test_smc100_wait_states_does_not_expire_while_the_stage_is_moving, test_smc100_wait_states_still_has_an_absolute_ceiling, test_a_wait_timeout_says_the_stage_was_not_stopped, test_a_failed_move_forgets_where_the_stage_was_going, test_a_successful_move_keeps_its_target) |
 | ROTATOR-12 | RC6 | S9 | root cause | closed (S9 item 2: rotator params typed and bounded) |
-| ROTATOR-13 | RC2 / RC8 | S3 | root cause | open |
+| ROTATOR-13 | RC2 / RC8 | S3 | root cause | open (partly closed: the model now reports no-connection rather than claiming simulation, and refusals are surfaced instead of being reported `status: ok` — test_a_sim_port_rotator_is_not_badged_as_simulated, test_rotator_reports_no_connection_rather_than_simulation, test_rotator_commands_refuse_when_there_is_no_stage, test_dispatch_surfaces_a_refused_command_as_an_error. Disabling the controls themselves needs the two GUI view files AND `src/views/web/static/js/app.js`, which no write set covered — the web half is unassigned, not merely deferred) |
 | ROTATOR-14 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | ROTATOR-15 | RC8 / doc | S11 | root cause | open — routing is uniform now, but the dead `error_callback` hook and the doc errors are untouched |
 | SERIAL-1 | RC2 | S3 | root cause | closed (test_a_failed_disable_faults_instead_of_claiming_the_system_is_off, tests/core/test_transport_truth.py) |
@@ -2312,7 +2370,7 @@ it) · `n/a` (with a reason).
 | TEMP-8 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | TEMP-9 | LOCAL-OK | S15 | explicit | open |
 | TEMP-10 | RC2 / RC8 | S3 | root cause | open |
-| TEMP-11 | RC1 / RC2 / doc | S2 | root cause | open |
+| TEMP-11 | RC1 / RC2 / doc | S2 | root cause | open (partly closed: the heater-off frame goes out on the priority path, the reader is joined before the port is released, and an undelivered frame is reported rather than swallowed — test_close_sends_the_heater_off_frame_on_the_priority_path, test_close_joins_the_reader_before_releasing_the_port, test_close_reports_a_heater_off_frame_that_was_not_delivered, test_close_still_reports_nothing_on_a_clean_shutdown. The flush itself is blocked: the transport exposes no `flush()` and I-2.3 forbids the model touching `.ser`, so it needs `src/controller/serial.py`. Routed to the fix-transport worktree) |
 | TEMP-12 | RC8 | S11 | root cause | closed (an info popup is inexpressible: `publish` raises on `requires_ack` for anything but an error; test_a_quiet_event_raises_no_modal) |
 | TEMP-13 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | VIEW-TKINTER-1 | RC1 | S2 | root cause | closed (Tk got a real re-add path; test_tk_hide_is_reversible, tests/core/test_tkinter_teardown.py) |

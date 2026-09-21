@@ -357,3 +357,9 @@ baselines are a historical trail, not a current claim.
 > exit status, which is 0 whatever pytest did. This has produced a false
 > green in this project at least once. Redirect and echo instead:
 > `python3 -m pytest ... > log 2>&1; echo $?`.
+
+*After the 2026-09-20 fix wave, worktrees A and C merged: fast gate **621
+passed, 105 deselected, 1 xfailed** (~69 s); Qt **46 passed** (~21 s). +32
+on the 589 line above: 10 from `fix-input`, 22 from `fix-web`. Both gates run
+by the lead on the merge result — an agent's own gate run proves its
+worktree, not the merge.*
