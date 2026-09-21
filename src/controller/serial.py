@@ -73,6 +73,17 @@ class SimulatedPort:
     def reset_output_buffer(self):
         pass
 
+    def flush(self):
+        """Nothing is in flight, so a drain is instantly complete.
+
+        It did not answer this at all, and `send_manual_mode_command` calls
+        it on every frame — so *every* manual-mode frame in simulator mode
+        raised AttributeError inside the write path and was reported to the
+        operator as a "Serial Write Error". The same shape as SERIAL-9: a
+        method the simulated port forgot, turning SIM back into a different
+        code path, which is the one thing this class exists to prevent.
+        """
+
     def close(self):
         self.is_open = False
 
@@ -468,6 +479,71 @@ class serial:
             ErrorPopupManager.report_error("Connection Lost", msg, None)
         except Exception:
             pass
+
+    #: How long `flush()` waits for the OS to drain the output buffer before
+    #: giving up. Short: every caller is on a shutdown path, and a stop that
+    #: can hang the shutdown is its own bug.
+    FLUSH_TIMEOUT = 1.0
+
+    def flush(self, timeout=None):
+        """Block until the bytes already written have reached the wire. -> bool.
+
+        Exists so a model never has to reach for `.ser` (invariant I-2.3).
+        The case that needs it is a heater or motion **shutdown frame**:
+        `close()` on POSIX does not guarantee that bytes handed to the OS
+        have been transmitted, so an off-frame written immediately before a
+        close can be discarded by it — and the hardware stays on.
+
+        **Bounded, on a worker.** pyserial's `flush()` is `tcdrain`, which is
+        unbounded; SERIAL-12 already names it as a hazard for exactly this
+        reason. A dead or flow-controlled port would otherwise hang whatever
+        teardown called it, which is a worse failure than the one being
+        fixed. The drain is dispatched to a daemon thread and joined with a
+        budget — the same shape as `emergency_stop`'s bounded join, and for
+        the same reason: returning without the answer beats not returning.
+
+        Returns True only if the drain actually completed. False means the
+        bytes may still be in the buffer, and a caller about to close the
+        port should treat the frame as **not delivered**.
+
+        Deliberately **not** a state transition: it does not `_mark_lost`. It
+        is a query on a teardown path, and a "Connection Lost" popup raised
+        while the application is closing is noise, not information. A write
+        that matters will have already faulted through `write_command`.
+
+        The handle is snapshotted rather than locked, for the same reason a
+        priority write forces itself through: a drain that cannot get the
+        lock is worse than an unsynchronised one, and `tcdrain` does not
+        mutate the port — it only waits on it.
+        """
+        budget = self.FLUSH_TIMEOUT if timeout is None else timeout
+        handle = self.ser
+        if handle is None or not getattr(handle, "is_open", False):
+            return False
+
+        drained = threading.Event()
+        failure = []
+
+        def _drain():
+            try:
+                handle.flush()
+            except Exception as e:
+                failure.append(e)
+            finally:
+                drained.set()
+
+        worker = threading.Thread(
+            target=_drain, daemon=True, name=f"flush-{self.SERIAL_PORT}")
+        worker.start()
+        if not drained.wait(budget):
+            print(f"[SerialDrive] Port {self.SERIAL_PORT} did not drain within "
+                  f"{budget}s; treat the last frame as undelivered.")
+            return False
+        if failure:
+            print(f"[SerialDrive] Drain of {self.SERIAL_PORT} failed: "
+                  f"{failure[0]}")
+            return False
+        return True
 
     def is_open(self):
         """True when a command has somewhere to go — a real port or the simulator."""
