@@ -410,6 +410,14 @@ class WebAPIHandler(http.server.BaseHTTPRequestHandler):
             code = result.get("code", 200)
             return self._send_json(code, result)
 
+        elif route == "/api/client/heartbeat":
+            # WEB-19 (D-8, client half). Body is deliberately unused today -
+            # `{}` from app.js - so this stays a cheap, fixed-cost POST no
+            # matter how the payload evolves later.
+            result = adapter.record_client_heartbeat()
+            code = result.get("code", 200)
+            return self._send_json(code, result)
+
         else:
             self.send_error(404, "Endpoint not found")
 

@@ -9,6 +9,7 @@ Ensures zero coupling to Qt/PySide6.
 import contextlib
 import sys
 import threading
+import time
 import traceback
 from model.schema import CommandResult, NeedsConfirmation
 from typing import Dict, Any, Optional, List, Union
@@ -44,6 +45,25 @@ class WebModelAdapter:
         # Async hardware scan state (WEB-15 residue). See start_hardware_scan.
         self._scan_thread: Optional[threading.Thread] = None
         self._scan_state: Optional[Dict[str, Any]] = None
+        # WEB-19 (D-8, client half): when a browser last checked in via
+        # POST /api/client/heartbeat. None until the first one arrives.
+        self._last_client_heartbeat: Optional[float] = None
+
+    #: WEB-19 (D-8, client half). The name of the per-model hook
+    #: `record_client_heartbeat` calls, duck-typed, if a model defines it.
+    #: Deliberately **not** `touch_activity` (probes.py): that method
+    #: already means something else - real operator/motion activity that
+    #: extends the idle-disable timer (RC-3 item 5 / STEPPER-7) - and a
+    #: passive background heartbeat is not that. Calling `touch_activity`
+    #: from here would let a browser tab that is merely open, doing
+    #: nothing, silently defeat the idle-disable safety net. This is an
+    #: additive, separate signal: "a browser tab believes it is present."
+    #: Agent A's D-8 watchdog (probes.py, folded into the existing
+    #: interlock watchdog) is expected to define this method if/when it
+    #: wants web-client liveness folded into its own timer. Until it does,
+    #: `getattr(model, CLIENT_HEARTBEAT_HOOK, None)` finds nothing and this
+    #: call is a no-op — this half does not invent that method itself.
+    CLIENT_HEARTBEAT_HOOK = "touch_client_heartbeat"
 
     def _get_device_lock(self, device_name: str) -> threading.Lock:
         with self._state_lock:
@@ -799,3 +819,52 @@ class WebModelAdapter:
     def latest_error_id(self) -> int:
         from error_routing import bus
         return bus.latest_id()
+
+    def record_client_heartbeat(self) -> Dict[str, Any]:
+        """WEB-19 (client half of D-8). app.js's heartbeat loop POSTs here
+        on a bounded interval while its tab is visible, and stops while
+        hidden, closed, or wedged (the request itself is bounded by the
+        shared fetch-timeout wrapper, WEB-22, so a hung heartbeat simply
+        never arrives rather than blocking).
+
+        Records when this adapter last heard from *a* client (not
+        per-tab — any tab counts, same as `/api/state` today), and
+        forwards a duck-typed touch to every active model that defines
+        `CLIENT_HEARTBEAT_HOOK`, so a model-side watchdog folded into an
+        existing timer (agent A, probes.py's interlock watchdog) can fold
+        web-client liveness into it without this adapter knowing anything
+        about how that timer works. A model that does not define the hook
+        (everything today) is untouched.
+        """
+        now = time.time()
+        with self._state_lock:
+            self._last_client_heartbeat = now
+            manager = self.system_manager
+
+        touched: List[str] = []
+        if manager is not None:
+            for name, model in manager.get_active_models_snapshot().items():
+                hook = getattr(model, self.CLIENT_HEARTBEAT_HOOK, None)
+                if callable(hook):
+                    try:
+                        hook()
+                        touched.append(name)
+                    except Exception:
+                        # WEB-14 isolation: a misbehaving hook on one model
+                        # must not fail the heartbeat response itself - the
+                        # browser's job here is only to report presence.
+                        print(f"[WebModelAdapter] {self.CLIENT_HEARTBEAT_HOOK}() "
+                              f"raised on {name}:\n{traceback.format_exc()}")
+
+        return {"status": "ok", "code": 200, "last_seen": now, "touched": touched}
+
+    def client_heartbeat_age_seconds(self) -> Optional[float]:
+        """Seconds since the last recorded client heartbeat, or `None` if
+        none has ever arrived. For a caller (model-side watchdog, or a
+        test) that wants to ask the adapter directly instead of relying
+        on the per-model touch in `record_client_heartbeat`."""
+        with self._state_lock:
+            last = self._last_client_heartbeat
+        if last is None:
+            return None
+        return time.time() - last
