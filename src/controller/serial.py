@@ -688,12 +688,44 @@ class serial:
 
     # Closes serial connection
     def close(self):
+        """Release the handle. -> None, always -- this is a teardown path.
+
+        SERIAL-16: the old body had no failure handling at all around
+        `ser.close()`; an exception here propagated straight out of
+        `close()` into whatever called it. `BaseProbe.teardown()` and
+        `TemperatureSystem.teardown()` call this last, so nothing else was
+        skipped by it, but the caller still got an unhandled exception
+        instead of a clean teardown, and the operator heard nothing.
+        `report_warning`, not `report_error`: the port is being discarded
+        either way, `connection_state` still moves to CLOSED below, and
+        this is deliberately never `report_error` for the same reason
+        `flush()`'s drain failure prints instead of reporting -- a popup
+        raised while the application is already closing the device is
+        noise, not an actionable fault.
+        """
+        close_error = None
         with self._lock:
             if self.ser and self.ser.is_open:
                 print("[SerialDrive] Closing serial port.")
-                self.ser.close()
+                try:
+                    self.ser.close()
+                except Exception as e:
+                    close_error = e
             if self.connection_state != ConnectionState.SIMULATED:
                 self.connection_state = ConnectionState.CLOSED
+
+        # Reported outside the lock, matching every other report site in
+        # this file: a subscriber is arbitrary code, and nothing here needs
+        # to hold `_lock` while it runs.
+        if close_error is not None:
+            msg = (f"[SerialDrive] Error closing port "
+                   f"{self.SERIAL_PORT}: {close_error}")
+            print(msg)
+            try:
+                ErrorPopupManager.report_warning(
+                    "Serial Close Error", msg, close_error)
+            except Exception:
+                pass
 
 
 # Aliases for backwards compatibility with legacy stable branch and standard naming
