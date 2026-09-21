@@ -894,8 +894,23 @@ class DynamicView(tk.Frame):
         A float rendered by `str()` shows whatever repr it happens to have,
         which is why the same reading appeared as `20` in one view and `20.0`
         in another. `decimals` is declared per parameter now.
+
+        ROTATOR-9: Format position as readable text when None (cleared on
+        poll failure). Show "--.--" instead of "None" for a no-reading state.
         """
         value = getattr(self.model, attr)
+
+        # Special case: rotator position formatting (ROTATOR-9)
+        if attr == "position":
+            if value is None:
+                return "--.--"  # No reading state
+            try:
+                # Format position as a float with 4 decimal places (matching main)
+                float_val = float(value) if isinstance(value, str) else value
+                return f"{float_val:.4f}"
+            except (ValueError, TypeError):
+                return str(value)
+
         param = getattr(self.model, "PARAMS", {}).get(attr)
         if param is not None and param.is_numeric:
             return param.format(value)
