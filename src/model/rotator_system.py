@@ -3,12 +3,13 @@ import time
 from model import schema as sch
 from model.params import Param, table as _param_table
 from model.base import SchemaCommands
+from model.client_liveness import ClientLivenessGate
 try:
     from lib import smc100
 except ImportError:
     smc100 = None
 
-class RotatorSystem(SchemaCommands):
+class RotatorSystem(ClientLivenessGate, SchemaCommands):
     #: Past this, moving risks damaging physical tubing.
     SAFE_ROTATION_DEG = 30.0
 
@@ -27,6 +28,15 @@ class RotatorSystem(SchemaCommands):
     #: operator would tolerate, slow enough that a poll transaction almost
     #: always completes well inside one interval instead of backing up.
     SAMPLE_INTERVAL = 0.25
+
+    #: D-8a / WEB-23: web-client silence while the stage is moving.
+    #: **PROVISIONAL — owner to set at the bench.** This one *is* a motion
+    #: question, so it starts from the probe's D-8 suggestion (N=5, M=15),
+    #: which is itself provisional (WEB-19). A single SMC100 move is usually
+    #: over well inside M, so in practice this mostly catches a long move or
+    #: a stuck "Moving" state. WEB-23 stays open until these are measured.
+    WEB_CLIENT_WARN_TIMEOUT = 5    # s — PROVISIONAL
+    WEB_CLIENT_STOP_TIMEOUT = 15   # s — PROVISIONAL
 
     PARAMS = _param_table(
         Param("target_deg", "float", default=0, minimum=-175, maximum=175,
@@ -58,6 +68,7 @@ class RotatorSystem(SchemaCommands):
         # every device, but its test built a probe, so the stage kept the gap
         # (ROTATOR-8).
         self._estop = threading.Event()
+        self._init_client_liveness()  # D-8a / WEB-23
 
         # Where the stage is *going*, not where it last reported being
         # (ROTATOR-4). `position` is whatever the last poll wrote: it is None
@@ -293,6 +304,7 @@ class RotatorSystem(SchemaCommands):
         never sent ST — a stage mid-move kept moving after the port closed,
         with nothing left able to stop it.
         """
+        self.stop_client_liveness_watchdog()
         try:
             self.stop(priority=True)
         except Exception as e:
@@ -605,6 +617,16 @@ class RotatorSystem(SchemaCommands):
         Returns whether the stop landed (MANAGER-21).
         """
         return self.stop()
+
+    def _client_liveness_active(self):
+        """In motion, for D-8a: a move holds the motion lock, or the last
+        poll saw the stage moving or homing. At rest is idle."""
+        if self._motion_lock.locked():
+            return "a move is in flight"
+        state = self.state
+        if state in ("Moving", "Homing"):
+            return state.lower()
+        return None
 
     def reset_and_configure(self):
         if not self.smc:

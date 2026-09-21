@@ -5,9 +5,10 @@ import time
 from model import schema as sch
 from model.params import Param, table as _param_table
 from model.base import SchemaCommands
+from model.client_liveness import ClientLivenessGate
 
 
-class TemperatureSystem(SchemaCommands):
+class TemperatureSystem(ClientLivenessGate, SchemaCommands):
     PARAMS = _param_table(
         Param("setpoint", "float", default=0, decimals=1, unit="C",
               label="Setpoint"),
@@ -28,6 +29,18 @@ class TemperatureSystem(SchemaCommands):
     #: spelling, because three renderers display this attribute directly and
     #: the old code had the string in one place and "N/A" in another.
     DISCONNECTED_TEMP = "Disconnected"
+
+    #: D-8a / WEB-23: web-client silence while heating. **PROVISIONAL —
+    #: owner to set at the bench.** Chosen to be obviously safe, not
+    #: measured. This is a thermal question, not a motion one, so the
+    #: probe's 5 s / 15 s were deliberately not copied: a heater does not
+    #: overshoot in 15 s the way a stage does. Note for the measurement:
+    #: app.js stops heartbeating while its tab is *hidden*, so these also
+    #: bound how long an operator can switch tabs with the heater running.
+    #: WEB-23 stays open until they are measured. Do not quietly promote
+    #: these to final.
+    WEB_CLIENT_WARN_TIMEOUT = 10   # s — PROVISIONAL
+    WEB_CLIENT_STOP_TIMEOUT = 30   # s — PROVISIONAL
 
     @property
     def connection_state(self):
@@ -57,6 +70,12 @@ class TemperatureSystem(SchemaCommands):
         # stepper that can be re-commanded to move. Cleared only by an
         # explicit operator action.
         self._estop = threading.Event()
+
+        # D-8a / WEB-23. What the board was last *sent*, not what is in the
+        # setpoint box: an operator typing a number has not started heating.
+        # None means nothing nonzero has been sent since the last stop.
+        self._commanded_setpoint = None
+        self._init_client_liveness()
 
         # `send_settings` and `stop` both build a frame from `self.*` fields
         # and then write it. Under the Web view those run on concurrent
@@ -265,6 +284,9 @@ class TemperatureSystem(SchemaCommands):
                 except Exception as e:
                     from error_routing import ErrorRouter as ErrorPopupManager
                     ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
+                else:
+                    sent = safe_float(self.setpoint)
+                    self._commanded_setpoint = sent if sent else None
         else:
             # TEMP-10: No port means the model is not connected. Report this
             # to the operator so they know that the command did not reach
@@ -432,6 +454,7 @@ class TemperatureSystem(SchemaCommands):
                       f"forcing the stop frame through")
             try:
                 self.serial_conn.write_command(input_string, priority=priority)
+                self._commanded_setpoint = None
             except Exception as e:
                 from error_routing import ErrorRouter as ErrorPopupManager
                 ErrorPopupManager.report_error("Serial Write Error", f"Error writing stop state to serial:\n{e}", e)
@@ -519,6 +542,9 @@ class TemperatureSystem(SchemaCommands):
         that had no flush; item 4 is the seam, joined on merge once
         `fix-transport` added one. Neither half could be tested alone.
         """
+        # getattr: `__del__` can reach close() on a half-built instance.
+        if getattr(self, "_client_liveness_halt", None) is not None:
+            self.stop_client_liveness_watchdog()
         self.continue_reading = False
         # Wake a reader parked in its backoff, so the join below is waiting on
         # a thread that is actually trying to leave (TEMP-2 follow-up).
@@ -576,6 +602,12 @@ class TemperatureSystem(SchemaCommands):
                     "Serial Close Error",
                     f"Failed to release the temperature controller port:\n{e}",
                     e, source=self.__class__.__name__)
+
+    def _client_liveness_active(self):
+        """Heating, for D-8a: a nonzero setpoint has been sent and not
+        since stopped. A setpoint that is only typed into the box is not."""
+        sp = self._commanded_setpoint
+        return f"heating toward {sp:g} C" if sp else None
 
     def disconnect(self):
         """Alias for close to support unified model lifecycle."""

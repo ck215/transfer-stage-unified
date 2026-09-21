@@ -90,62 +90,48 @@ bench run, and record the values in [progress.md](progress.md) under D-8.
 
 ---
 
-## B2. Two things found on 2026-09-21 that change how you run section A
+## B2. Two things found on 2026-09-21 that change how you run section B
 
-Read both before you energize anything. Neither is answered here.
+Both are now built; what is left in each is yours to measure.
 
-### B2.1 — A latched FULL STOP cannot be cleared from the UI (MANAGER-22)
+### B2.1 — Clearing a latched FULL STOP (MANAGER-22, closed)
 
-`clear_estop()` exists on all three model families and **nothing calls it** —
-no button in any frontend, no schema entry, no Web endpoint. Once FULL STOP
-latches on a device, every subsequent transition on that device is refused for
-the life of the process.
+Each device now has its own **Clear FULL STOP** button, with a confirmation
+dialog, in all three frontends. You no longer need to restart between
+liveness measurements: when the gate latches a device, clear it on that
+device and carry on. Other devices are unaffected.
 
-Recovery today is one of:
+  Did Clear FULL STOP work on every device you latched?   yes / no
+  Anything about it that slowed the run down? ........................
 
-  - restart the application (drops every other device's connection too), or
-  - on Web only, re-run the setup wizard — the initial hardware wizard, not a
-    resume control.
+### B2.2 — D-8 now covers the heater and the rotator (D-8a, WEB-23)
 
-**Why this will bite you during section B specifically.** D-8's client-liveness
-watchdog calls `emergency_stop()` by itself when no web client has polled for
-`WEB_CLIENT_STOP_TIMEOUT` while a probe is in AUTONOMOUS or MANUAL — and that
-value is still the unmeasured **15 s placeholder**. Measuring N and M means
-deliberately letting the client go quiet, which is the exact thing that latches
-the probe. Expect to restart between measurements, and take the readings you
-need before you need a restart.
+You ruled **heater and rotator too**. Both now have the same gate as the
+probes (`src/model/client_liveness.py`): nothing happens until a web client has
+checked in, nothing happens while the device is idle, and past M seconds of
+silence the device is FULL STOPped and latched.
 
-If you would rather not hit this at all, measure N and M with a desktop
-frontend open and the web client used only as the thing you silence. A model
-that has never seen a web client check in is never gated (`last_client_seen_
-time is None`), so a Tk or PySide session is not at risk.
+"Active" means: **heater** — a nonzero setpoint has been *sent* and not since
+stopped (a number typed into the box doesn't count); **rotator** — a move is in
+flight, or the stage last reported Moving or Homing.
 
-  Did you get latched during the bench run?     yes / no
-  How many times? ........
-  Was restarting acceptable, or does this need
-  a Clear FULL STOP control before the next run?   ........................
+The four values are **placeholders**:
 
-### B2.2 — OWNER DECISION, not answered: does D-8 cover the heater and rotator?
+| Device | N (warn) | M (FULL STOP) | Where |
+|---|---|---|---|
+| Heater | 10 s | 30 s | `TemperatureSystem.WEB_CLIENT_*_TIMEOUT` |
+| Rotator | 5 s | 15 s | `RotatorSystem.WEB_CLIENT_*_TIMEOUT` |
 
-D-8's client-liveness auto-stop is implemented on `BaseProbe` only.
-`RotatorSystem` and `TemperatureSystem` have no equivalent — and no idle
-watchdog of any kind — so `record_client_heartbeat`'s duck-typed
-`getattr(model, "touch_client_liveness", None)` silently does nothing for both.
+**Heater: check this before you pick a number.** `app.js` stops sending
+heartbeats while its tab is hidden. So the heater's M is also how long
+someone can switch to another browser tab while the heater is running before it
+stops. Measure a realistic tab switch (section B, row B2) before you set it.
 
-Concretely: **a heater driven to setpoint from the Web frontend keeps heating
-indefinitely if the tab is closed, the machine sleeps, or the network drops.**
-There is no automatic safeguard on that path. The firmware has no watchdog
-either; `temperature_system.py`'s own `close()` docstring says so.
+  Heater  N ........ s   M ........ s    observed: ☐ warn ☐ stop
+  Rotator N ........ s   M ........ s    observed: ☐ warn ☐ stop
 
-Whether D-8 was intended to reach the heater and the rotator, or was
-deliberately scoped to probes, is yours to decide. It is recorded here rather
-than guessed at.
-
-  D-8 applies to the heater?      yes / no / different rule: ...............
-  D-8 applies to the rotator?     yes / no / different rule: ...............
-  If yes, N and M for each:       heater ........  rotator ........
-  (Do not assume the probe values transfer. A heater's safe unattended
-   window is a thermal question, not a motion one.)
+When all four are set and observed, remove the `PROVISIONAL` markers in both
+files and move **WEB-23** to `closed` with a note naming this bench run.
 
 ---
 
