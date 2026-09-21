@@ -468,10 +468,18 @@ class serial:
                 float(params['manual_jog_speed']) if 'f' in fmt[5:] else int(params['manual_jog_speed']),
             )
 
-            print(f"[SerialDrive] Sending 12-Field MANUAL State: {packet}")
+            # SERIAL-12: removed debug print that ran at 50 Hz (50 lines/sec) and flooded
+            # stdout, drowning all other messages. The write has already occurred; print
+            # output does not provide actionable information.
+            #
+            # SERIAL-12: removed unbounded flush() call. On POSIX, pyserial's flush()
+            # is tcdrain(), which blocks indefinitely on stalled USB CDC endpoints. At 50
+            # Hz with latest-state-wins semantics (each packet supersedes the last in 20
+            # ms), the flush provides no value and the lock-holding hazard is not justified.
+            # Callers needing a bounded drain can use the separate flush() method with
+            # a timeout (see line 585).
             with self._lock:
                 self.ser.write(packet)  # type: ignore
-                self.ser.flush()        # type: ignore
             
         # Exception handling
         except pyserial.SerialTimeoutException as e:
