@@ -184,24 +184,26 @@ def test_temperature_system_serial_write_failure(mock_report_error):
 
 
 def test_read_serial_data_retry_limit():
-    """Verify read_serial_data breaks after 5 consecutive failures,
-    but keeps retrying for <5, and resets counter on success."""
+    """TEMP-2: Verify reader retries indefinitely with exponential backoff.
+
+    Resets counter on success, reports transient errors for first 5, then
+    persistent connection loss on subsequent failures. No longer gives up."""
     with patch("model.temperature_system.serial") as mock_serial_cls:
         mock_instance = get_mock_serial_conn()
         mock_serial_cls.return_value = mock_instance
-        
+
         responses = [
             Exception("Transient 1"),
             Exception("Transient 2"),
             b"0,20.0,20.0\n",
-            Exception("Fatal 1"),
-            Exception("Fatal 2"),
-            Exception("Fatal 3"),
-            Exception("Fatal 4"),
-            Exception("Fatal 5"),
-            Exception("Should not be reached"),
+            Exception("Failure 1"),
+            Exception("Failure 2"),
+            Exception("Failure 3"),
+            Exception("Failure 4"),
+            Exception("Failure 5"),
+            b"0,21.0,21.0\n",  # Recovery
         ]
-        
+
         def side_effect(*args, **kwargs):
             if not responses:
                 return b""
@@ -209,21 +211,35 @@ def test_read_serial_data_retry_limit():
             if isinstance(resp, Exception):
                 raise resp
             return resp
-            
+
         mock_instance.read_line.side_effect = side_effect
-        
+
         with patch('error_routing.ErrorRouter.report_error') as mock_report_error:
-            ts = TemperatureSystem("COM4")
-            ts.serial_thread.join(timeout=3)
-            
-            assert not ts.serial_thread.is_alive()
-            assert len(responses) == 1  # The last exception shouldn't be reached
-            
-            fatal_calls = [call for call in mock_report_error.mock_calls if "Fatal" in call.args[0]]
-            assert len(fatal_calls) == 1
-            assert "Giving up after 5 consecutive failures" in fatal_calls[0].args[1]
-            
-        ts.close()
+            with patch('error_routing.ErrorRouter.report_warning') as mock_report_warning:
+                ts = TemperatureSystem("COM4")
+                ts = TemperatureSystem("COM4")
+
+                # Wait for reader to process responses
+                time.sleep(6)  # Enough for backoff: ~3 seconds for initial failures
+                
+                # Check state before closing
+                assert len(responses) == 0, (
+                    "Should have consumed all responses including recovery")
+                assert ts.current_temp == "21.00 °C", (
+                    "Should have recovered with latest temperature")
+                
+                # Should have reported transient errors
+                transient_calls = [call for call in mock_report_error.mock_calls
+                                 if "transient" in str(call).lower()]
+                assert len(transient_calls) >= 2, (
+                    "Should report transient errors for early failures")
+                
+                # Should NOT have "Giving up" or "Fatal" messages
+                fatal_calls = [call for call in mock_report_error.mock_calls
+                             if "giving up" in str(call).lower()]
+                assert len(fatal_calls) == 0, (
+                    "Should NOT give up after retries (TEMP-2)")
+                
 
 
 # --- TEMP-11: the heater-off frame on the shutdown path ------------------
