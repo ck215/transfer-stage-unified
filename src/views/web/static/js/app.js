@@ -1174,7 +1174,19 @@ class TransferStageApp {
           // Update readonly text display
           const valEl = document.getElementById(`val-${sanitizedDev}-${cleanAttr}`);
           if (valEl) {
-            valEl.innerText = (val !== null && val !== undefined) ? String(val) : '--';
+            // REDPERCENT-19: apply format from schema if present
+            let displayVal = val;
+            if (val !== null && val !== undefined) {
+              const el = this._findSchemaElement(devName, attr);
+              if (el && el.format && typeof val === 'number') {
+                displayVal = this._formatValue(val, el.format);
+              } else {
+                displayVal = val;
+              }
+              valEl.innerText = String(displayVal);
+            } else {
+              valEl.innerText = '--';
+            }
           }
 
           // Update entry input if not currently focused by the user
@@ -2249,6 +2261,38 @@ class TransferStageApp {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  // REDPERCENT-19: Find element definition in schema for a given device and model_attr.
+  _findSchemaElement(devName, modelAttr) {
+    const schema = this.devices && this.devices[devName];
+    if (!schema || !schema.sections) return null;
+    for (const section of schema.sections) {
+      if (!section.elements) continue;
+      for (const el of section.elements) {
+        if (el.model_attr === modelAttr) {
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  // REDPERCENT-19: Format a numeric value according to a format string (e.g., ".2f").
+  // Supports Python-style format specs like ".2f" (2 decimal places).
+  _formatValue(val, format) {
+    if (!format || typeof val !== 'number' || val === null || val === undefined) {
+      return val;
+    }
+
+    // Parse ".Nf" format (e.g., ".2f" -> 2 decimal places)
+    const match = format.match(/^\.(\d+)f$/);
+    if (match) {
+      const decimals = parseInt(match[1], 10);
+      return val.toFixed(decimals);
+    }
+
+    return val;
   }
 }
 
