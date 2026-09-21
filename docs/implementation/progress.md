@@ -2758,6 +2758,18 @@ row closes when both land; neither lane may report it `closed` alone.
 
 ### Launch procedure, cold
 
+**Step 2 is done.** `tests/ui/test_w5_both_views_hide_does_not_destroy.py`
+landed before the lanes were cut. It pins the full D-1 contract on *both*
+desktop hide paths at the source level, so it runs in the fast gate rather
+than the qt pass: Tk `hide_device` / `show_device`, PySide
+`close_device_view`, and — the wider blast radius the old pin missed —
+`QtDynamicView.cleanup`, the base every non-Red-Percent device view uses.
+It was mutation-checked in both directions before committing: injecting a
+`teardown()` into the Tk hide path and into `QtDynamicView.cleanup` turned
+it red, so it is a real gate and not a green-only decoration. **It is
+lead-owned.** Lane 1 owns the rest of `tests/ui/**`; if this file goes red
+the fix is in the view.
+
 1. `git worktree add ../w5-views -b w5-views` (and `w5-transport`, `w5-thermal`).
 2. Write the both-views hide/show pin **first**, in the main checkout, and
    commit it — the lane must start from a tree where that invariant is red if
