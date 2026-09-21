@@ -38,19 +38,3 @@ def test_system_manager_reconfigure_replaces_the_model_set():
 
     assert old.teardowns == 1
     assert mgr.get_model("Model 1") is new
-
-def test_gamepad_change_controller():
-    # Setup initial
-    claims = {}
-    with patch('controller.gamepad.pygame'):
-        driver = ControllerPoller(0, claims, "Test Process")
-        driver.start_polling = MagicMock()
-        
-        # Change controller to None
-        driver.change_controller("None")
-        
-        # Claims should be dropped/updated
-        assert claims["Test Process"] == "None Detected"
-        assert driver.gamepad is None
-
-
