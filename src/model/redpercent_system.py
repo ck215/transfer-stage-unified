@@ -756,10 +756,21 @@ class RedPercentSystem(SchemaCommands):
             ),
             sch.section(
                 "Red Detection",
+                # REDPERCENT-19 (model half): a declared display precision,
+                # not the box's own `decimals` re-derived by each renderer.
+                # Tk (`view.py:_display`) and PySide (`pyside/view.py:_display`)
+                # already render readonly numerics through `Param.format`, so
+                # `12.3456789012`/`-0.0` are already gone there; the Web
+                # client's `pollState` still writes `String(val)` straight
+                # from `/api/state` with no formatting step at all (app.js
+                # `pollState`'s readonly branch) — that half is outside this
+                # file's write set (per-view rendering code), so `format` is
+                # declared here and not yet consumed by any renderer. See
+                # REDPERCENT-19 in the handoff: partly closed on that basis.
                 sch.readonly("Current Red %:", "current_red",
-                             param=P["current_red"]),
+                             param=P["current_red"], format=".2f"),
                 sch.readonly("Red Change %:", "red_change",
-                             param=P["red_change"]),
+                             param=P["red_change"], format=".2f"),
                 # REDPERCENT-13: published so the Web client can gate the
                 # plotter on "is a run actually active" instead of sampling
                 # every poll regardless of state (app.js `pollState`). Tk and
