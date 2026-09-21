@@ -207,6 +207,17 @@ class TemperatureSystem(SchemaCommands):
                 except Exception as e:
                     from error_routing import ErrorRouter as ErrorPopupManager
                     ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
+        else:
+            # TEMP-10: No port means the model is not connected. Report this
+            # to the operator so they know that the command did not reach
+            # the hardware.
+            msg = f"[{self.__class__.__name__}] Not connected: the temperature controller port is not open. Settings not sent."
+            print(msg)
+            try:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_warning("Temperature Not Connected", msg)
+            except Exception:
+                pass
 
     def _backoff_wait(self, backoff):
         """Wait out a backoff, but return early the moment close() asks.
@@ -354,6 +365,17 @@ class TemperatureSystem(SchemaCommands):
             finally:
                 if acquired:
                     self._write_lock.release()
+        else:
+            # TEMP-10: No port means the model is not connected. Report this
+            # to the operator so they know that the stop command did not reach
+            # the hardware.
+            msg = f"[{self.__class__.__name__}] Not connected: the temperature controller port is not open. Stop command not sent."
+            print(msg)
+            try:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_warning("Temperature Not Connected", msg)
+            except Exception:
+                pass
 
     #: How long close() waits for the reader to leave the port. It reads with
     #: a 1 s timeout, so one outstanding read plus slack.
