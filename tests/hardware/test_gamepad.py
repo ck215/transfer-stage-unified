@@ -819,3 +819,95 @@ def test_a_restart_does_not_leave_a_second_poll_thread_running():
                 poller.close()
                 if poller._thread is not None:
                     poller._thread.join(timeout=3.0)
+
+
+# ==========================================
+# GAMEPAD-19 — macOS presence check asks about the right device
+# ==========================================
+
+@contextlib.contextmanager
+def _darwin():
+    """Run the body as if on macOS, whatever the host actually is."""
+    with patch("controller.gamepad.sys.platform", "darwin"):
+        yield
+
+
+def _poller_for_presence_check(index, owner="ProcessA"):
+    poller = _bare_poller()
+    poller.is_polling = False
+    poller.process_name = owner
+    poller.active_claims = {}
+    poller.controller_index = index
+    return poller
+
+
+def test_macos_presence_check_does_not_consult_the_previous_controller():
+    """GAMEPAD-19: the darwin branch asked `self.gamepad.joystick.get_name()`.
+
+    During a swap `controller_index` already names the device being bound
+    while `self.gamepad` is still the *previous* device's wrapper, so the
+    presence check answered about the wrong controller. If the old pad was
+    the one that was unplugged, its handle raises, and a perfectly present
+    new controller was rejected as "not physically present at OS level".
+    """
+    from controller.input_service import InputService, input_service
+
+    poller = _poller_for_presence_check(index=1)
+    dead_previous = MagicMock()
+    dead_previous.joystick.get_name.side_effect = Exception("device removed")
+    poller.gamepad = dead_previous
+
+    with _darwin(), \
+            patch.object(InputService, "initialised", True), \
+            patch.object(input_service, "is_index_connected", return_value=True), \
+            patch.object(input_service, "index_for", return_value=0):
+        assert poller._is_os_connected() is True, (
+            "the presence check for controller 1 was answered by controller 0")
+
+
+def test_macos_presence_check_still_reports_a_dead_handle_for_the_bound_device():
+    """Regression guard — passes before and after the fix.
+
+    When the handle we hold *is* the one for `controller_index`, a raising
+    `get_name()` is still the macOS disconnect signal. The fix must narrow
+    which object gets asked, not stop asking.
+    """
+    from controller.input_service import InputService, input_service
+
+    poller = _poller_for_presence_check(index=0)
+    dead = MagicMock()
+    dead.joystick.get_name.side_effect = Exception("device removed")
+    poller.gamepad = dead
+
+    with _darwin(), \
+            patch.object(InputService, "initialised", True), \
+            patch.object(input_service, "is_index_connected", return_value=True), \
+            patch.object(input_service, "index_for", return_value=0):
+        assert poller._is_os_connected() is False
+
+
+def test_macos_swap_succeeds_when_the_previous_controller_is_gone():
+    """The user-visible half of GAMEPAD-19.
+
+    Controller 0 is bound and then unplugged; the operator picks controller
+    1 from the dropdown. The bind has to go through — nothing about the
+    departed controller 0 says anything about whether controller 1 is there.
+    """
+    with _darwin(), patched_sdl() as mock_pygame:
+        handles = _sdl_handles_per_index(mock_pygame, count=2)
+        poller = ControllerPoller(0, {}, "ProcessA")
+        try:
+            assert poller.gamepad is not None
+            assert poller.controller_index == 0
+
+            # Controller 0 is yanked: its handle now raises.
+            handles[0].get_name.side_effect = Exception("device removed")
+
+            assert poller.set_controller(1) is True, (
+                "swapping to a present controller failed because the "
+                "*previous* controller had been unplugged")
+            assert poller.controller_index == 1
+            assert poller.gamepad is not None
+            assert poller.gamepad.joystick is handles[1]
+        finally:
+            poller.close()

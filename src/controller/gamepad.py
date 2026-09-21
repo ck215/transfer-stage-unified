@@ -320,13 +320,26 @@ class ControllerPoller:
                 pass
             return True
         elif sys.platform == "darwin":
-            if getattr(self, 'gamepad', None) and getattr(self.gamepad, 'joystick', None):
-                try:
-                    self.gamepad.joystick.get_name()
-                    return True
-                except Exception:
-                    return False
-            return True
+            # macOS has no joyGetPosEx equivalent here, so the only signal
+            # beyond SDL's index check above is the device handle itself —
+            # and it is only evidence about `controller_index` when it is
+            # *that* index's handle.
+            #
+            # It used to be asked unconditionally (GAMEPAD-19). A swap sets
+            # controller_index to the new device and then runs this check
+            # while self.gamepad is still the previous device's wrapper, so
+            # an unplugged old pad reported the *new* one as absent and the
+            # bind failed with "Device not physically present at OS level".
+            if input_service.index_for(self.process_name) != self.controller_index:
+                return True
+            joystick = getattr(getattr(self, 'gamepad', None), 'joystick', None)
+            if joystick is None:
+                return True
+            try:
+                joystick.get_name()
+                return True
+            except Exception:
+                return False
         return True
 
     def _handle_disconnect(self):
