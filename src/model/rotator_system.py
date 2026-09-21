@@ -153,14 +153,16 @@ class RotatorSystem(SchemaCommands):
             # It was kept, so a timed-out move to 10 left the guard believing
             # the stage was at 10.
             self._forget_target()
+            # Note: error_callback is not assigned in production code but is used by
+            # tests. For backward compatibility, keep the check. Primary routing still
+            # goes through ErrorRouter for consistency (ROTATOR-15).
             if self.error_callback:
                 self.error_callback(e)
-            else:
-                try:
-                    from error_routing import ErrorRouter
-                    ErrorRouter.report_error("Rotator Controller Error", f"Action failed:\n{e}", e)
-                except Exception:
-                    pass
+            try:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_error("Rotator Controller Error", f"Action failed:\n{e}", e)
+            except Exception:
+                pass
 
     def connect(self, port: str, smc_id: int = 1):
         with self._lock:
@@ -186,14 +188,16 @@ class RotatorSystem(SchemaCommands):
                     self.smc = None
                     self.is_connected = False
                     self._state = "Disconnected"
+                # Note: error_callback is not assigned in production code but is used by
+                # tests. For backward compatibility, keep the check. Primary routing still
+                # goes through ErrorRouter for consistency (ROTATOR-15).
                 if self.error_callback:
                     self.error_callback(e)
-                else:
-                    try:
-                        from error_routing import ErrorRouter
-                        ErrorRouter.report_error("Rotator Connection Error", f"Failed to connect to SMC100 on {port}:\n{e}", e)
-                    except Exception:
-                        pass
+                try:
+                    from error_routing import ErrorRouter
+                    ErrorRouter.report_error("Rotator Connection Error", f"Failed to connect to SMC100 on {port}:\n{e}", e)
+                except Exception:
+                    pass
 
     def disconnect(self):
         with self._lock:
@@ -443,14 +447,16 @@ class RotatorSystem(SchemaCommands):
             try:
                 smc.stop(priority=priority)
             except Exception as e:
+                # Note: error_callback is not assigned in production code but is used by
+                # tests. For backward compatibility, keep the check. Primary routing still
+                # goes through ErrorRouter for consistency (ROTATOR-15).
                 if self.error_callback:
                     self.error_callback(e)
-                else:
-                    try:
-                        from error_routing import ErrorRouter
-                        ErrorRouter.report_error("Rotator Error", f"Failed to send stop:\n{e}", e)
-                    except Exception:
-                        pass
+                try:
+                    from error_routing import ErrorRouter
+                    ErrorRouter.report_error("Rotator Error", f"Failed to send stop:\n{e}", e)
+                except Exception:
+                    pass
 
     def reset_and_configure(self):
         if not self.smc:
