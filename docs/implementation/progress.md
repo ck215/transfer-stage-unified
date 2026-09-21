@@ -3339,6 +3339,46 @@ prose in the wave 7 log are now rows: **MANAGER-25**, **PYSIDE-21**,
 **SERIAL-23** (bench), **TEMP-17**, **WEB-24**. Ledger **212 closed / 17 open /
 229 total**.
 
+## Wave 8 — 2026-09-21. Every code-closable row is closed.
+
+Ledger **217 closed / 12 open / 229 total**. Gate **1038 passed, 1 skipped,
+1 xfailed, 0 failed**; qt **69 passed** (64 → 69); slow 18 passed. **All 12
+open rows are bench or owner work:** GAMEPAD-5/11/12/13/14, REDPERCENT-18,
+SERIAL-10, VIEW-TKINTER-18 (bench); WEB-19, WEB-23 (provisional timeouts,
+bench-checklist B and B2.2); TEMP-17, SERIAL-23 (host halves closed; the
+remainder is firmware framing, D-7).
+
+**Lead (safety):** MANAGER-25 (`b33315f`), WEB-23 (`b46a734`), TEMP-17 and
+SERIAL-23 host side (`c5119ea`). **TEMP-17 was worse than the audit said.**
+Pinning its interleave, the lead reproduced an *order inversion* on the real
+transport: an Enter Settings blocked behind the heater reader's `readline()`
+wrote its `<80,...>` frame **after** a FULL STOP's zero frame, re-arming the
+heater. Fixed with an innermost `_write_io_lock` and `write_command(abort_if=)`
+checked at the wire against the heater's `_stop_generation`.
+
+**Lane B (sonnet, w8-pyside):** PYSIDE-21, REDPERCENT-17's PySide half, and
+the second `test_api_logs_and_errors` flake source — a probe's `_sample_thread`
+(its `_loops_stop` pair) was not stopped by the conftest sweep, and polled a
+MagicMock transport into "Serial Read Error" on the global bus. Evidence was
+the captured event title; the lead's own hypothesis (the client-liveness
+FULL STOP) was wrong and the lane ruled it out properly.
+
+**Lane A:** haiku closed half of REDPERCENT-19, blamed a "VM-context bug" for
+its failing harness, left a test that skipped to report success, and did not
+start REDPERCENT-17 or WEB-24. The lead handed the lane to sonnet in the same
+worktree, which found the real cause (the harness's fake DOM lacked
+`.dataset`, and `pollState`'s try/catch swallowed it) and closed all three.
+**Takeaway: haiku is fine for a single well-bounded fix, and not for a lane
+whose evidence is a hand-built JS harness.** The lead ran all three Node
+harnesses against 73c591a's app.js: each fails there and passes at HEAD.
+
+**Open observations, not rows.** Lane A saw order-dependent failures in
+`test_temperature_subsystem.py`, `test_view_round1.py` and
+`test_edge_mvc_scripting.py` in intermediate runs before lane B's conftest fix
+merged; none recurred in the lead's post-merge gate. Lane B flagged a possible
+third leak source it did not reproduce: `full_stop_all`/`_stop_concurrently`
+threads outliving their one-second join and reporting later.
+
 ## Finding ledger
 
 218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
@@ -3481,9 +3521,9 @@ it) · `n/a` (with a reason).
 
 | REDPERCENT-15 | RC9 | S12 | root cause | closed (S12 item 3: no `_disabled_in_setup`, so the filter it broke no longer exists; test_redpercent_get_available_probe_names) |
 | REDPERCENT-16 | RC11 | S13 | root cause | closed (velocity is derived from position deltas over timestamps by `_read_dim`, which no longer reads `vel_x`/`vel_y`/`vel_z` at all — the audit's finding that the logged "velocity" was gamepad stick deflection; a poisoned `vel_x` regression-guards it. The CSV gained a `Timestamp` column, and a failed position read is an empty cell, never `0.0` — zero is a position the stage can actually be at. test_velocity_is_derived_from_position_deltas_not_vel_x, test_an_invalid_position_read_is_none_not_zero, test_invalid_sample_is_never_written_as_zero_in_add_entry, test_csv_carries_a_timestamp_column, test_an_invalid_position_survives_as_an_empty_cell_not_a_zero) |
-| REDPERCENT-17 | RC7 | S10 | root cause | open |
+| REDPERCENT-17 | RC7 | S10 | root cause | closed (three halves, two lanes. **Renderer:** `render_red_percent_figure` draws an explanatory message on an axes instead of returning a blank Figure — test_2d_missing_second_dimension_still_gets_an_axes_and_a_message and three siblings. **Web:** dim pickers populated from the chosen CSV and posted to `/api/plot`, which honours an explicit pick and ignores a dim not in the file — test_api_plot_honours_an_explicit_dim_pick_over_file_order, test_api_plot_ignores_a_dim_not_present_in_the_csv, test_plot_dialog_dim_pickers_populate_and_post (Node harness, fails on 73c591a). **Tk:** stale — the 0D-only file plot is gone; pinned by test_tk_plot_composite_draws_from_the_live_series_not_a_file. **PySide** (w8-pyside): distinct default dims and a reported cancel — test_default_2d_plot_uses_two_distinct_dims, test_closing_the_dialog_reports_instead_of_aborting_silently, qt, run by the lead) |
 | REDPERCENT-18 | RC7 | S10 | root cause | open (partly closed: PySide's `SelectionOverlay` coordinate space is verified against `mss` — Qt logical coordinates match physical pixels on the bench machine — and the `focus_area` format is pinned. test_redpercent18_set_focus_area_stores_coordinates, test_redpercent18_focus_area_shown_in_view, test_redpercent18_selection_overlay_coordinates, test_redpercent18_focus_area_compatible_with_mss. **The structural divergence the finding names remains**: Tk is primary-monitor only and Web thumbnails a single monitor, both outside this write set. **HiDPI is an unverified hypothesis** — `devicePixelRatio()` conversion needs a scaled display, which is bench work) |
-| REDPERCENT-19 | RC7 | S10 | root cause | open (partly closed: **half the audit's claim is stale** — Tk and PySide already render readonly numerics through `Param.format`/`decimals`, so the raw-float complaint no longer holds for either desktop view. The Web client's `pollState` still does `String(val)` straight off `/api/state` with no formatting step. The model half landed — `current_red` and `red_change` now declare `format=".2f"` in `ui_schema`, which is the audit's second proposed direction and the one matching D-6 — but **no renderer reads that key yet**, so this is a declaration without a consumer and the row stays open on purpose rather than being rounded up. The remaining work is one change in app.js to honour `element.format`. The second clause, Tk's monitor button state not following FULL STOP, is also still open. Reported honestly by the lane with the gap named, which is the right call and worth recording as such) |
+| REDPERCENT-19 | RC7 | S10 | root cause | closed (both clauses. **Web format:** `app.js` `pollState` now renders readonly numerics through the schema's `format` (`_findSchemaElement`/`_formatValue`), the consumer the wave 7 model-side declaration lacked. test_format_honored_in_pollstate (Node harness `js_redpercent19_format_check.js`; lead ran it against 73c591a's app.js: fails with `12.3456789` and `0`). The first lane's "VM-context bug" was its own fake DOM missing `.dataset`/`.classList`, swallowed by `pollState`'s try/catch — found by the sonnet takeover. **Tk button vs FULL STOP:** stale — already true at 73c591a; pinned by test_full_stop_flips_the_start_stop_gate, coverage not a fix) |
 | REDPERCENT-20 | LOCAL-OK | S15 | explicit | closed (both halves. Model: the six dead fields, the `__del__` that only printed, and the per-call `set_focus_area` print are gone — test_construction_has_no_dead_fields, test_construction_keeps_the_live_equivalents, test_del_prints_nothing, test_set_focus_area_does_not_print, test_no_plot_data_ui_or_set_focus_area_ui_stub_exists. Web: `set_attr` writes only entry/dropdown/toggle elements — test_api_set_attr_refuses_a_readonly_element) |
 
 | REDPERCENT-21 | RC11 | S13 | root cause | closed (the run has a `run_id` and an `output_root` resolved once at import, never from CWD; artifacts land in `output_root/<run_id>/` named `<run_id>_*`. test_redpercent_21_autosave_never_writes_a_bare_relative_path, test_redpercent_21_every_artifact_of_a_run_carries_the_run_id, test_redpercent_21_the_output_root_does_not_follow_the_process_cwd, test_redpercent_21_an_unset_run_id_still_produces_a_unique_directory) |
@@ -3596,7 +3636,7 @@ it) · `n/a` (with a reason).
 | WEB-21 | RC10 | S14 | root cause | closed (POST bodies are capped and answered with 413 after the declared body is drained in bounded chunks; `mss`/PIL import lazily and one `mss` instance is reused. test_post_body_over_max_size_is_rejected_with_413, test_screenshot_reuses_a_single_mss_instance) |
 | WEB-22 | RC10 | S14 | root cause | closed (the fetch-wrapper abort closed earlier; per-device staleness marking and dropdown refresh-on-focus were found **already implemented and merely untested**, and now carry Node-harness coverage driven from pytest in the style of `js_fetch_timeout_check.js`. test_shared_fetch_wrapper_aborts_a_hung_request_after_its_timeout, test_staleness_marking_and_dropdown_refresh_on_focus) |
 | WEB-23 | RC10 | S14 | owner-D-8a | open (partly closed: **the mechanism is built, tested and joined; the numbers are not set** — the WEB-19 shape. `src/model/client_liveness.py::ClientLivenessGate` carries BaseProbe's three rules to `TemperatureSystem` and `RotatorSystem`: no gate and no thread until a web client checks in; never while idle; warn at N, latch FULL STOP at M. Heater "active" = a nonzero setpoint was *sent* (`_commanded_setpoint`, cleared by a successful stop frame), not merely typed; rotator "active" = motion lock held or last poll Moving/Homing. One deliberate difference: it fires **once per silence**, because a heater whose stop frame failed still reads as heating and would otherwise re-stop and re-report every tick. The watchdog halts in `close()`/`teardown()` and a late heartbeat cannot resurrect it. test_web23_heater_is_stopped_after_web_silence_while_heating, test_web23_heater_desktop_session_is_never_gated, test_web23_idle_heater_is_left_alone, test_web23_rotator_in_motion_is_stopped_after_web_silence, test_web23_rotator_at_rest_is_left_alone, test_web23_fires_once_not_every_tick, test_web23_the_real_adapter_heartbeat_reaches_both_models (end to end through `record_client_heartbeat`, since WEB-19's seam once failed silently) — all 16 original tests failed on 73c591a; the fire-once flag and the stop-clears-active reset were each mutation-checked. **Open on:** the four constants are PROVISIONAL placeholders (heater 10 s / 30 s — not the probe's values, per the ruling; rotator 5 s / 15 s). bench-checklist B2.2 has the table, and flags that app.js stops heartbeating on a hidden tab, so the heater's M is also how long an operator can switch tabs while heating) |
-| WEB-24 | RC7 | S14 | audit-2026-09-21 | open (low. Second fresh-eyes audit: `app.js` re-derives mode gating from raw polled flags (`auton_flag`, `manual_flag`, `system_enabled`) and finds buttons by `innerText.includes('Full Stop')` instead of consulting the schema's `enabled_when`/`disabled_when`, which is how the desktop views stay in step with DC-6. **Not a safety bypass** — the server independently refuses disallowed commands with 403 (`web_adapter.py` `_ModeRefused`) — but rendered state can drift from enforcement, and a label rename silently breaks it) |
+| WEB-24 | RC7 | S14 | audit-2026-09-21 | closed (`pollState` now gates each `[data-command]`/`[data-attr]` control from its schema element's `enabled_when`/`disabled_when` via `_isEnabled`, with the mode derived by `_modeNameFor` in the names the schema actually uses (`autonomous`, `manual`, `monitoring`, `disconnected`) — the same contract as Tk's `_mode_name`/`_sync_gates`. Lead-verified that every stop and Clear FULL STOP button is ungated in the schema, so none can be greyed out. **Found in passing:** the old blanket rule disabled everything it did not name during a run, which included wave 7's Clear FULL STOP button. test_pollstate_gates_from_schema_not_labels (Node harness `js_web24_schema_gate_check.js`; fails on 73c591a's app.js, including on Clear FULL STOP staying enabled). Server-side 403 enforcement untouched. Parity note: a disarmed probe's controls are no longer greyed out by the web client, matching Tk and PySide; the server still refuses them) |
 
 ---
 
