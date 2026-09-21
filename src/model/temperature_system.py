@@ -294,18 +294,70 @@ class TemperatureSystem(SchemaCommands):
                 if acquired:
                     self._write_lock.release()
 
+    #: How long close() waits for the reader to leave the port. It reads with
+    #: a 1 s timeout, so one outstanding read plus slack.
+    READER_JOIN_TIMEOUT = 1.5
+
     def close(self):
-        """Cleanly terminates serial thread and closes serial connection."""
+        """Send the heater-off frame, let the reader leave the port, close it.
+
+        This is a heater shutdown path, and the firmware has no watchdog: a
+        zero-setpoint frame that does not go out leaves the heater at its
+        last setpoint for as long as it stays powered. It therefore differs
+        from the version it replaces in three ways (TEMP-11):
+
+        1. **A failed write is reported, not swallowed.** The old body was
+           `except Exception: pass` around both the write and the close, so
+           quitting with a dead cable delivered nothing and said nothing.
+           The docstring here used to claim it "cleanly terminates" the
+           serial thread, which it also did not do — that claim, and the
+           error-routing notes calling these two `except` blocks candidate
+           *warning* sites, were both describing code that reported nothing
+           at all.
+        2. **The reader is joined before the port closes**, rather than
+           being left inside `read_line()` on a descriptor closing under it.
+           That join is also the only window the off-frame has to drain.
+        3. **The frame goes out on the priority path.** It is a single
+           idempotent zero-setpoint frame, exactly the case
+           `docs/architecture/safety-pattern.md` item 3 permits, so a
+           transaction holding the transport lock cannot hold the shutdown.
+
+        A true `flush()` before the close still belongs here and is not
+        done: the model must not touch `.ser` (invariant I-2.3), and the
+        transport exposes no flush of its own. Adding one is a change to
+        `src/controller/serial.py`.
+        """
         self.continue_reading = False
-        if self.serial_conn and self.serial_conn.is_open():
+        conn = self.serial_conn
+        if conn and conn.is_open():
             try:
-                self.serial_conn.write_command(b"<0,6.0,0,0,0,0>")
-            except Exception:
-                pass
+                conn.write_command(b"<0,6.0,0,0,0,0>", priority=True)
+            except Exception as e:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_error(
+                    "Heater Off Not Delivered",
+                    f"The heater-off frame could not be sent while closing "
+                    f"the temperature controller, so the heater may still be "
+                    f"at its last setpoint:\n{e}",
+                    e, source=self.__class__.__name__, requires_ack=True)
+
+            reader = getattr(self, "serial_thread", None)
+            if (reader is not None and reader is not threading.current_thread()
+                    and reader.is_alive()):
+                reader.join(timeout=self.READER_JOIN_TIMEOUT)
+                if reader.is_alive():
+                    print(f"[{self.__class__.__name__}] Reader still in the "
+                          f"port after {self.READER_JOIN_TIMEOUT}s; closing "
+                          f"anyway")
+
             try:
-                self.serial_conn.close()
-            except Exception:
-                pass
+                conn.close()
+            except Exception as e:
+                from error_routing import ErrorRouter
+                ErrorRouter.report_error(
+                    "Serial Close Error",
+                    f"Failed to release the temperature controller port:\n{e}",
+                    e, source=self.__class__.__name__)
 
     def disconnect(self):
         """Alias for close to support unified model lifecycle."""

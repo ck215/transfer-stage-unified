@@ -224,3 +224,100 @@ def test_read_serial_data_retry_limit():
             assert "Giving up after 5 consecutive failures" in fatal_calls[0].args[1]
             
         ts.close()
+
+
+# --- TEMP-11: the heater-off frame on the shutdown path ------------------
+#
+# close() set continue_reading=False, wrote <0,6.0,0,0,0,0> inside a bare
+# `except Exception: pass`, and closed the port immediately — no join, and
+# no word to the operator when the off-frame did not go out. Quitting with
+# a half-dead cable left the heater at its last setpoint (the firmware has
+# no watchdog) and said nothing.
+
+def test_close_reports_a_heater_off_frame_that_was_not_delivered():
+    """TEMP-11: a failed heater-off write must be reported, not swallowed.
+
+    The operator has to learn that the heater is still at setpoint; the
+    window closing quietly is the failure mode the audit describes."""
+    with patch("model.temperature_system.serial") as mock_serial_cls:
+        mock_instance = get_mock_serial_conn()
+        mock_serial_cls.return_value = mock_instance
+
+        ts = TemperatureSystem("COM4")
+        mock_instance.write_command.side_effect = OSError("port is gone")
+
+        with patch("error_routing.ErrorRouter.report_error") as mock_report:
+            ts.close()
+
+        assert mock_report.call_count == 1, (
+            "the heater-off frame failed and nothing was reported")
+        title, message = mock_report.call_args[0][0], mock_report.call_args[0][1]
+        assert "heater" in (title + message).lower()
+        assert "port is gone" in message
+        # The port is still released even though the write failed.
+        mock_instance.close.assert_called_once()
+
+
+def test_close_joins_the_reader_before_releasing_the_port():
+    """TEMP-11: close() must wait for the reader to leave the port before
+    closing the fd under it, which is also the only window the off-frame
+    gets to drain."""
+    with patch("model.temperature_system.serial") as mock_serial_cls:
+        mock_instance = get_mock_serial_conn()
+
+        def _slow_read():
+            time.sleep(0.05)
+            return b"0,20.0,20.0\n"
+
+        mock_instance.read_line.side_effect = _slow_read
+        mock_serial_cls.return_value = mock_instance
+
+        observed = {}
+
+        ts = TemperatureSystem("COM4")
+
+        def _record_close():
+            observed["reader_alive"] = ts.serial_thread.is_alive()
+
+        mock_instance.close.side_effect = _record_close
+
+        # Let the reader get into a read before the shutdown lands.
+        time.sleep(0.15)
+        ts.close()
+
+        assert observed.get("reader_alive") is False, (
+            "the port was closed while the reader thread was still in it")
+
+
+def test_close_sends_the_heater_off_frame_on_the_priority_path():
+    """TEMP-11: the zero-setpoint frame is idempotent, so on shutdown it
+    takes the priority write path rather than waiting out whatever holds
+    the transport lock. (safety-pattern.md item 3: a stop that cannot get
+    the lock is worse than an unsynchronised one.)"""
+    with patch("model.temperature_system.serial") as mock_serial_cls:
+        mock_instance = get_mock_serial_conn()
+        mock_serial_cls.return_value = mock_instance
+
+        ts = TemperatureSystem("COM4")
+        mock_instance.write_command.reset_mock()
+        ts.close()
+
+        assert mock_instance.write_command.call_count == 1
+        args, kwargs = mock_instance.write_command.call_args
+        assert args[0] == b"<0,6.0,0,0,0,0>"
+        assert kwargs.get("priority") is True, (
+            "the shutdown heater-off frame can be held by the transport lock")
+
+
+def test_close_still_reports_nothing_on_a_clean_shutdown():
+    """Guard for the TEMP-11 fix: reporting a failed off-frame must not
+    turn an ordinary quit into a popup."""
+    with patch("model.temperature_system.serial") as mock_serial_cls:
+        mock_instance = get_mock_serial_conn()
+        mock_serial_cls.return_value = mock_instance
+
+        ts = TemperatureSystem("COM4")
+        with patch("error_routing.ErrorRouter.report_error") as mock_report:
+            ts.close()
+            mock_report.assert_not_called()
+        assert ts.continue_reading is False
