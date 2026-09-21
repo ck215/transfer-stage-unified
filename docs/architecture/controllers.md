@@ -6,7 +6,7 @@ belongs to the view's `_execute_command`/schema dispatch (see
 [views.md](views.md)). These are I/O adapters: one for gamepads (via
 pygame/SDL), one for the Arduino serial protocol.
 
-## `gamepad.ControllerPoller` (`src/controller/gamepad.py`, 639 lines)
+## `gamepad.ControllerPoller` (`src/controller/gamepad.py`, 778 lines)
 
 **Cardinality:** one `ControllerPoller` per `BaseProbe` instance
 (1 probe : 1 poller, composition — constructed in `BaseProbe.__init__`,
@@ -14,26 +14,45 @@ destroyed via `poller.close()`, never shared between probes). A device with
 no controller assigned still gets a `ControllerPoller` object; it just never
 successfully binds a physical joystick (`self.gamepad = None`).
 
-**Process-wide shared state (not per-instance!):** pygame/SDL itself is a
-single global C library context for the whole Python process. Three module-
-level globals coordinate multiple `ControllerPoller` instances against that
-one shared context:
-```python
-_poller_lock: threading.Lock              # guards _active_poller_count
-_active_poller_count: int                 # how many pollers currently exist
-def _ensure_pygame_video() -> None        # pygame.init() if pygame is truthy
-```
-`_ensure_pygame_video()` is called at module import time, at the start of
-`_initialize_pygame_joystick()`, at the start of `get_physical_controllers()`,
-and immediately after the `pygame.quit()` in `close()` — see
-"Firmware/SDL command surface" below for why this exists as a single
-centralized call rather than four separate `pygame.init()` calls (fixed
-2026-09-18, see [known-issues.md](known-issues.md)).
+**Process-wide shared state (not in this module):** pygame/SDL is a single
+global C library context for the whole Python process, and it has exactly one
+owner — the `input_service` singleton in `controller/input_service.py`, which
+`gamepad.py` imports (line 21). `gamepad.py` holds no SDL state of its own.
+
+The three module-level globals this section used to describe
+(`_poller_lock`, `_active_poller_count`, `_ensure_pygame_video()`) no longer
+exist, and their removal is RC-13:
+
+- `_active_poller_count` never counted pollers. It was incremented on every
+  successful *bind* — including re-binds by the same poller — and decremented
+  once per `close()`, including for pollers that had never bound anything.
+  `close()` called `pygame.quit()` at zero, so closing one device could tear
+  SDL down under another poller that was still running (GAMEPAD-2).
+- `_ensure_pygame_video()` existed to bring SDL back up after those
+  `quit()`s. `root-causes.md` names it as an **anti-fix**: do not reintroduce
+  it, and do not add call sites for it.
+
+What `input_service` provides instead:
+
+| Rule | API |
+|---|---|
+| SDL is initialised once, lazily | `ensure_init()` |
+| SDL is torn down only at process exit | `shutdown()`, called from `lifecycle.shutdown()` (`src/lifecycle.py:69-70`) and nowhere else |
+| Every SDL call happens under one re-entrant lock | `lock()` — a poll tick holds it for the whole tick, because pygame's joystick API is not thread-safe and a poller may own its own thread |
+| Device handles are per owner | `acquire(owner_id, index)` / `release(owner_id)`; releasing one owner never touches another's handle |
+| Claims are derived from real acquisitions | `claims()`, `index_for(owner_id)` |
+| Enumeration has one formatter | `enumerate()` → `[(index, name)]`; `names()` → `"ID <n>: <name>"` |
+| Presence is one locked read | `count()`, `is_index_connected(index)` |
+
+A `ControllerPoller` still keeps the `active_claims` dict it was constructed
+with and still writes `"None Detected"` into it on a failed bind or a
+disconnect. That dict is the *view-facing label*, not the authoritative
+registry — `input_service.claims()` is.
 
 ### Wrapper classes (composition, 1 poller : 0..1 wrapper)
 
 `BaseGamepad` and its subclasses `XboxGamepad`, `BluetoothXboxGamepad`,
-`LogitechF310Gamepad`, and `T16000MGamepad` (lines 57-234) each wrap one `pygame.joystick.Joystick`
+`LogitechF310Gamepad`, and `T16000MGamepad` (lines 50-227) each wrap one `pygame.joystick.Joystick`
 and normalize its raw axis/button/hat layout into one dict shape via
 `get_mapped_state()`:
 
@@ -63,7 +82,7 @@ class T16000MGamepad(BaseGamepad):
 def get_gamepad_wrapper(joystick: pygame.joystick.Joystick) -> BaseGamepad
 ```
 
-`get_gamepad_wrapper(joystick)` (module function, line 236) picks the right subclass
+`get_gamepad_wrapper(joystick)` (module function, line 229) picks the right subclass
 by matching `joystick.get_name()`. `self.poller.gamepad` on `BaseProbe` is
 one of these wrapper instances (or `None`), not the raw `pygame.joystick.Joystick`.
 
@@ -71,40 +90,57 @@ one of these wrapper instances (or `None`), not the raw `pygame.joystick.Joystic
 
 | Method | Signature | Line | Ownership / side effect |
 |---|---|---|---|
-| `__init__` | `(controllerID, active_claims: dict, process_name: str)` | 256 | Calls `_initialize_pygame_joystick(controllerID)` unconditionally. |
-| `_is_os_connected` | `() -> bool` | 271 | Platform-branched (linux/win32/darwin) liveness check, doesn't touch `self.gamepad`. |
-| `_handle_disconnect` | `() -> None` | 315 | Reports a warning popup, clears `self.gamepad`, calls `self.stop_polling()`. |
-| `get_physical_controllers` | `() -> list[str]` | 325 | **Static-ish scan**, lists every joystick pygame currently sees. Backs the "⟳ Rescan controllers" UI button. |
-| `set_controller` | `(controllerID) -> bool` | 350 | Rebinds this poller to a different physical controller; restarts polling if it was already running. |
-| `connect_controller` | `() -> bool` | 358 | **Full pygame teardown+rebuild**: `pygame.quit()` then `_initialize_pygame_joystick(self.controllerID)`. |
-| `_initialize_pygame_joystick` | `(controllerID) -> bool` | 370 | Parses `controllerID` → index, checks for cross-device claim collisions via `active_claims`. |
-| `change_controller` | `(new_controller_id) -> bool` | 466 | Hot-swapping to a new controller ID. |
-| `start_polling` | `(gui=None, log_updater=None, activity_callback=None)` | 474 | Starts polling if gamepad is bound and not already polling. |
-| `stop_polling` | `() -> None` | 490 | Stops the actual input-polling loop. |
-| `close` | `() -> None` | 494 | Idempotent (`self._closed` guard). Decrements `_active_poller_count`; **only when it hits 0** does it call `pygame.quit()`. Re-establishes dummy video driver. |
-| `get_mapped_state` | `() -> dict` | 515 | Delegates to `self.gamepad.get_mapped_state()` if bound, else a zeroed dict. Handles debouncing/latching. |
-| `flush_neutral` | `() -> None` | 557 | Reset the controller state to neutral, typically when focus is lost. |
-| `_poll_loop` | `() -> None` | 572 | Owns the actual input-polling loop via gui root's `after` or similar async task dispatch. |
+| `POLL_INTERVAL` | `int` (class attr) | 254 | 5 ms → ~200 Hz. The comment above it once read "50 times per second"; the owner ruled the **code** right and the comment wrong (D-12, 2026-09-20). Do not "optimise" it to match the manual command rate. |
+| `__init__` | `(controllerID, active_claims: dict, process_name: str)` | 256 | Calls `_init_input_state()` then `_initialize_pygame_joystick(controllerID)` unconditionally. |
+| `_init_input_state` | `() -> None` | 282 | Installs the latched-input fields (`_state_lock`, `_levels`, `_pending_edges`, `_latch_state`). Split out of `__init__` so a test can assemble a poller without touching hardware. |
+| `_is_os_connected` | `() -> bool` | 294 | Platform-branched (linux/win32/darwin) liveness check. Asks `input_service.is_index_connected(self.controller_index)` first. It **does** touch `self.gamepad` on darwin — but only when `input_service.index_for(...)` says that handle is this index's, because during a swap `self.gamepad` is still the *previous* device's wrapper (GAMEPAD-19). |
+| `_handle_disconnect` | `() -> None` | 345 | Reports a warning popup, clears `self.gamepad`, writes `"None Detected"` into `active_claims[process_name]`, discards latched levels/edges, calls `self.stop_polling()`. |
+| `get_physical_controllers` | `() -> list[str]` | 357 | **Static-ish scan** — delegates to `input_service.names()`, so the index in each `"ID <n>: <name>"` label is the index `acquire()` takes. Backs the "⟳ Rescan controllers" UI button. |
+| `set_controller` | `(controllerID) -> bool` | 364 | Rebinds this poller to a different physical controller. Resumes polling when the bind succeeded, `gui_root` is set and it is not currently polling — i.e. whenever a Tk-style root has been supplied, even if it had never polled before. With no `gui_root` (the threaded clock) it does **not** resume: a swap on that path leaves the poller stopped. |
+| `_initialize_pygame_joystick` | `(controllerID) -> bool` | 379 | `stop_polling()`, parses `controllerID` → index, checks for cross-device claim collisions via `active_claims`, then `input_service.acquire(process_name, index)` and wraps the handle. |
+| `change_controller` | `(new_controller_id) -> bool` | 461 | Hot-swap to a new controller ID. **No callers in `src`** (grep-verified); `set_controller` is the live duplicate (GAMEPAD-17). |
+| `_next_generation` | `() -> int` | 483 | Retires every outstanding poll chain and returns the new loop identity (GAMEPAD-7). |
+| `start_polling` | `(gui=None, log_updater=None, activity_callback=None)` | 489 | Starts polling if a gamepad is bound and it is not already polling. Takes a fresh generation, then drives the loop one of two ways: a `gui_root` that duck-types `after` clocks it (Tk), otherwise the poller starts its own daemon thread. |
+| `_poll_forever` | `(generation) -> None` | 519 | The poller's own clock: `_poll_loop` + `sleep(POLL_INTERVAL)` until it is stopped, closed, or its generation goes stale. |
+| `stop_polling` | `() -> None` | 525 | Clears `is_polling` **and** advances the loop generation, so a chain scheduled before the call cannot survive a restart that happens before it next runs. |
+| `close` | `() -> None` | 534 | Idempotent (`self._closed` guard). Stops polling and releases *this owner's* device handle via `input_service.release(process_name)`. It does **not** touch SDL: there is no refcount and no `pygame.quit()` here (RC-13). |
+| `_read_raw` | `() -> dict \| None` | 551 | The wrapper's mapped state, or `None` when no device is bound. Its `except pygame.error` guard is unreachable today — every wrapper only reads its own `prev_*` caches — and is written so a missing pygame module cannot turn some other exception into an `AttributeError` (GAMEPAD-17). |
+| `_apply_deadzones` | `(state) -> state` (static) | 576 | Zeroes stick values inside the deadzone and snaps an idle trigger on the way into `_levels`. The threshold values themselves are owner/bench territory (S16, GAMEPAD-14) — do not take them from this document. |
+| `_capture_state` | `() -> None` | 585 | Latches one tick: levels into `_levels`, and any **edge** on `EDGE_KEYS` (549) into `_pending_edges`. Called by the poll loop, never by a reader — that is what stops one reader consuming another's edge, and what lets a tap shorter than the read interval survive. |
+| `poll_once` | `() -> None` | 606 | One poll tick, exposed for tests. |
+| `read_levels` | `() -> dict` | 610 | Current continuous input. **Non-consuming**; any number of readers. |
+| `drain_edges` | `() -> dict` | 618 | Pending discrete presses since the last drain, and clears them. **Single consumer.** |
+| `get_mapped_state` | `() -> dict` | 628 | Levels plus pending edges, in the shape existing call sites expect. Returns `{}` — not a zeroed dict — when no gamepad is bound *or* `is_polling` is False. It **drains**, so it is a single-consumer read. |
+| `flush_neutral` | `() -> None` | 654 | Rewrites the wrapper's axis caches to neutral and clears the latches. **No callers in `src`** as of this commit: the focus-loss path neutralises at the model instead, because the poll loop overwrites those caches from the hardware within one tick (GAMEPAD-8). |
+| `_poll_loop` | `(generation=None) -> None` | 672 | One tick of the input loop, under `input_service.lock()`. Re-arms itself only through `gui_root.after` when the root duck-types `after`; otherwise `_poll_forever` owns the cadence. A stale generation retires here instead of re-arming (GAMEPAD-7), and a re-arm that raises (destroyed widget) is treated as a disconnect. |
+| `_read_hardware_changes` | `(_log) -> None` | 736 | Logs whatever moved since the last tick and fires `activity_callback`. Caller holds the SDL lock. |
 
-### Firmware/SDL command surface (why `_ensure_pygame_video()` exists)
+### SDL surface (why there is no `_ensure_pygame_video()` any more)
 
-Three previously-independent call sites each assumed pygame's video
-subsystem (`SDL_VIDEODRIVER=dummy`, set via `os.environ` at module import)
-was already up, without guaranteeing it:
-1. `_initialize_pygame_joystick()` — reconnect/construct path.
-2. `get_physical_controllers()` — the rescan-button path.
-3. `close()`'s post-`pygame.quit()` state — nothing re-armed the dummy
-   driver until *something* happened to call #1 or #2 again.
+This section used to explain why three call sites funnelled through an
+`_ensure_pygame_video()` helper that re-ran `pygame.init()` after each
+`pygame.quit()`. That helper is gone, and so is the reason for it.
 
-Since `pygame.quit()` tears down the video subsystem along with everything
-else, and #3 never restored it, any poller construction or rescan that
-happened while the SDL context was in this "just torn down" window hit a
-"no video instance" error. All three now funnel through one
-`_ensure_pygame_video()` helper (`pygame.init()`, cheap/idempotent when
-already up) called at construction, at rescan, and immediately after every
-`pygame.quit()` — see [known-issues.md](known-issues.md) for the fix history
-(this took two rounds: an initial narrower fix only covered #1, the
-generalized fix covers all three).
+The "no video instance" errors it patched were the *aftermath* of a
+`pygame.quit()` that should never have happened: `close()` tore down
+process-wide SDL whenever its bind refcount hit zero, and
+`connect_controller()` called `pygame.quit()` unconditionally to "restart
+pygame" for one poller. Re-initialising SDL afterwards made the symptom
+survivable and removed the pressure to fix the ownership, which is why
+`root-causes.md` lists it in RC-13's anti-fix table. **Adding call sites for
+it is the wrong direction.**
+
+Current surface:
+
+- `SDL_VIDEODRIVER=dummy`, `SDL_AUDIODRIVER=dummy`,
+  `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1` and `PYGAME_HIDE_SUPPORT_PROMPT`
+  are set in **one** place, `controller/input_service.py`, before it imports
+  pygame. Four copies of that block used to exist and disagreed with each
+  other (MANAGER-18).
+- SDL comes up once, in `input_service.ensure_init()`.
+- SDL comes down once, in `input_service.shutdown()`, reached only from
+  `lifecycle.shutdown()` at process exit.
+- Closing a device releases that device's handle and nothing else.
 
 ## `serial.serial` (`src/controller/serial.py`, 267 lines; aliased `SerialArduino`, `Serial`)
 
@@ -150,7 +186,13 @@ motion without also sending `'d'` would leave coils holding current
 indefinitely.
 
 ---
-*Last verified against commit `8267e21` (2026-09-18).*
+*The `serial.py`/firmware sections were last verified against commit
+`8267e21` (2026-09-18). The `gamepad.py` section above was re-verified
+line-by-line against `src/controller/gamepad.py` on 2026-09-20 (GAMEPAD-20),
+in its post-RC-13 state. Two subjects are deliberately **not** described
+here because they are owner-verified at the bench in S16/RC-12: the
+per-wrapper axis/button maps (including the T16000M Z and bumper binds and
+the D-pad sign convention) and the deadzone values (GAMEPAD-11/12/13/14).*
 
 ## Deep-dive addendum (agy, 2026-09-18)
 
