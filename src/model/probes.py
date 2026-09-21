@@ -78,8 +78,15 @@ class BaseProbe(SchemaCommands):
     # idle-but-armed probe is explicitly left alone. See
     # `touch_client_liveness` for the seam and what "no client has ever
     # checked in" means.
-    WEB_CLIENT_WARN_TIMEOUT = 5    # s (N)
-    WEB_CLIENT_STOP_TIMEOUT = 15   # s (M)
+    #: **PROVISIONAL — owner to set at the bench (2026-09-21).** D-8 named N
+    #: and M without values; these were chosen to be obviously safe, not
+    #: measured against a real client on the real lab network. They trigger a
+    #: FULL STOP on a physical stage, so the owner set them aside to time
+    #: properly rather than ratify a guess. WEB-19 is `open (partly closed)`
+    #: until they are measured — the mechanism is built and tested, the
+    #: numbers are not. Do not quietly promote these to final.
+    WEB_CLIENT_WARN_TIMEOUT = 5    # s (N) — PROVISIONAL
+    WEB_CLIENT_STOP_TIMEOUT = 15   # s (M) — PROVISIONAL
 
     # Single-byte control commands this board's firmware is *observed* to
     # handle today, read straight out of `firmware/*/*.ino` (SERIAL-10).

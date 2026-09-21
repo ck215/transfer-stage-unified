@@ -81,20 +81,27 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | D-4 | Window focus loss behavior? | **gate input, never stop**; child-dialog deactivation is not focus loss | 2026-09-20 |
 | D-5 | Commit contract | **(a)** commands carry their inputs | 2026-09-19 |
 | D-6 | Red Percent rendering | **schema-driven** in all three views | 2026-09-19 |
-| D-7 | Firmware protocol v2 | *open* — adopt is recommended; requires reflashing every board | |
-| D-8 | Web client liveness gate | **warn at N s, FULL STOP at M s while motion is active**; folded into the existing interlock watchdog | 2026-09-20 |
+| D-7 | Firmware protocol v2 | **adopt** — as recommended; requires reflashing every board | 2026-09-21 |
+| D-8 | Web client liveness gate | **warn at N s, FULL STOP at M s while motion is active**; folded into the existing interlock watchdog. **N and M set at the bench** (2026-09-21) — the shipped 5 s / 15 s are provisional placeholders, not measured | 2026-09-20 |
 | D-9 | macOS default view | **tkinter**, until the codebase is stabilized | 2026-09-19 |
 | D-10 | Unsaved Red Percent data on exit | **autosave** to a timestamped file, plus a prompt where the UI allows | 2026-09-19 |
 | D-11 | Runtime serial reconnect | **not supported** — purged as legacy | 2026-09-19 |
 | D-12 | Gamepad poll rate: 200 Hz (code) or 50 Hz (comment)? | **200 Hz** — the code was right, the comment wrong. 20 ms manual pump ratified with it | 2026-09-20 |
+| D-13 | Temperature history: dead code or a plot? | **plot it** — schema-driven in all three views per D-6. Owner accepted this is feature work on a repair branch | 2026-09-21 |
 
 D-3, D-5, D-6 and D-10 carry the recommendations recorded in
 `root-causes.md`; they were not separately re-confirmed by the owner and any
 of them can be reopened before its stage begins.
 
-**D-7 is the only decision still open.** It is S16 work, at the bench, and
-requires reflashing every board; the recommendation remains *adopt*. Nothing
-before S16 blocks on it.
+**No owner decision is open.** D-7 was answered **adopt** on 2026-09-21,
+which unblocks SERIAL-10's mis-parse half — it needs a wire terminator on a
+stop path that only v2 carries. That work is still S16, at the bench, and
+still requires reflashing every board before the next run.
+
+**Two things remain the owner's without being decisions.** D-8's N and M are
+*answered in kind but not in value*: the gate warns and then FULL STOPs, and
+the shipped 5 s / 15 s are placeholders to be measured at the bench, not
+ratified. And S16's GAMEPAD-11/12/13/14 are physical verification.
 
 **D-12 was raised during S5**, not by the audit, and was **answered on
 2026-09-20**: `ControllerPoller.POLL_INTERVAL` stays at 5 ms (~200 Hz) and
@@ -2648,6 +2655,123 @@ is the one this project has not tried.
 values; these are placeholders chosen to be obviously safe, not measured.
 **They stop a physical stage and belong at the bench.**
 
+### 2026-09-21 — owner rulings D-7 / D-8 / D-13, and wave 5 staged ready to launch
+
+**Four rulings. No owner decision is open any more.**
+
+- **D-7 = adopt.** Firmware protocol v2. Unblocks SERIAL-10's mis-parse half,
+  which needs a wire terminator on a stop path that only v2 carries. Still
+  S16, still at the bench, still requires reflashing every board first.
+- **D-8's N and M go to the bench.** The gate's *kind* was already ruled on
+  2026-09-20 (warn, then FULL STOP, while motion is active). What was never
+  ruled is the *values*. The shipped 5 s / 15 s were chosen by an agent to be
+  obviously safe and were never measured against a real client on the real
+  network, and they stop a physical stage. **WEB-19 is reopened**
+  `open (partly closed)` and the constants are commented `PROVISIONAL` in
+  `probes.py`. The mechanism is built, tested and its seam pinned; only the
+  numbers are missing. Do not quietly promote them.
+- **D-13 (new) = plot the temperature history.** Owner accepts this is
+  feature work on a repair branch.
+- **Wave 5 partitions by giving one agent both desktop view files.**
+
+**The owner asked whether the PID uses the temperature history. It does not,
+and the answer is worth recording because it makes D-13 nearly free.** The
+PID loop runs on the *firmware*. The host only forwards
+`<setpoint, spdelay, p_term, i_term, d_term, offset>` on the wire
+(`temperature_system.py:199`), so `p_term`/`i_term`/`d_term` are operator
+values in transit, not host-side state — nothing on this side consumes them.
+`tempC`/`time`/`sp` are appended in `process_raw_data` with a ring-buffer
+trim and read only by `get_history()`, which has **zero callers in `src/`**.
+The samples are already being collected and thrown away, so the plot adds a
+schema entry and a series accessor, not a data path.
+
+---
+
+## Wave 5 — staged, not yet launched
+
+Partition below is the owner's call of 2026-09-21: **one lane owns both
+desktop views.** ROTATOR-9, ROTATOR-13 and TEMP-10 have each come back
+`partly` for three consecutive waves for one reason — their halves sit in Tk
+and PySide and no write set ever held both. This is the shape that fixes it.
+
+**Its risk is known and named.** One agent that can reach both frontends can
+regress both at once, which is exactly how the D-1 teardown slipped in on
+2026-09-20. Mitigation, to be done by the lead **before** the lane launches:
+pin the hide/show invariants for *both* views the way
+`test_pyside4_hide_does_not_destroy.py` pins them for one. `cleanup()` must
+not call `teardown()`, in either view.
+
+### Lane 1 — `w5-views` (sonnet). Owns both GUI view files.
+
+Write set: `src/views/tkinter/view.py`, `src/views/pyside/view.py`,
+`tests/ui/**`
+
+| Finding | What is left |
+|---|---|
+| ROTATOR-9 | PySide formatting only. Tk renders a cleared position as `--.--` at 4 dp; PySide still differs, so the two desktop views disagree. |
+| ROTATOR-13 | Neither GUI view disables its rotator controls when there is no stage. Model and web halves are done. |
+| TEMP-10 | PySide staleness indicator, matching the role styling Tk now uses for `connection_state`. Its **model** half is Lane 3's. |
+| VIEW-TKINTER-18 | macOS Button-2/Button-3. **Two agents have now declined to change this without executing it on macOS, and both were right.** Confirm against the Tk binding code or leave it; do not fix a guess. |
+
+### Lane 2 — `w5-transport` (sonnet). Owns serial and the rotator model.
+
+Write set: `src/controller/serial.py`, `src/model/rotator_system.py`,
+`src/lib/smc100.py`, `tests/hardware/**`, **and `tests/edge_cases/**`** —
+that last one deliberately, because ROTATOR-15 was boundary-blocked last wave
+by live callers of the dead hook in those files.
+
+| Finding | What is left |
+|---|---|
+| ROTATOR-15 | Delete the dead `error_callback` hook. Routing is already unconditional; only the hook and its test callers remain. |
+| SERIAL-6 | Constructor blocks 1.5–4.5 s per device on the GUI/request thread with no progress. |
+| SERIAL-16 | The per-site audit of which `serial.py` conditions should report rather than print. |
+
+### Lane 3 — `w5-thermal` (sonnet). Owns the temperature model.
+
+Write set: `src/model/temperature_system.py`, `src/model/plot_data.py`,
+`tests/core/**`
+
+| Finding | What is left |
+|---|---|
+| TEMP-9 | **D-13.** `sch.plot("Temperature over time", "temp_series")` plus the series accessor. Renders in all three views through the generic schema renderer — Red Percent already proved that path; do not hand-build a plot in any view. |
+| TEMP-10 | The **model** half, and the finding's actual headline: the no-port branch backs off silently and never sets `Disconnected`, so SIM or no-port shows "N/A" forever. This row has been reported `closed` and downgraded **twice**; read its text clause by clause. |
+| ERRORS-7 | The `temperature_system.py` share only. |
+
+**TEMP-10 spans Lane 1 and Lane 3 on purpose.** Unlike WEB-19 this is *not* a
+seam — the two halves are independent surfaces (a model state and a rendered
+indicator) that do not call each other, so there is nothing to mismatch. The
+row closes when both land; neither lane may report it `closed` alone.
+
+### Not in wave 5, and why
+
+- **ROTATOR-6, SERIAL-12, DC-5, MANAGER-13** — each needs both views *and* a
+  controller or the web adapter. These are genuine two-lane splits, and
+  2026-09-20's WEB-19 seam failure says a split needs **a seam test written
+  by the lead before either half is briefed**. Wave 6, with that contract.
+- **REDPERCENT-13/17/18/19** — each needs `redpercent_system.py`, `app.js`
+  *and* both views. Widest remaining cluster; wave 6 or 7.
+- **GAMEPAD-5, GAMEPAD-17** — the remainder of each has live callers in test
+  files no write set has owned. Cheap once a lane owns those tests.
+- **ERRORS-11, GAMEPAD-20** — documentation. Lead only.
+- **GAMEPAD-11/12/13/14, SERIAL-10, WEB-19's N and M** — bench and owner.
+  Not backlog.
+
+### Launch procedure, cold
+
+1. `git worktree add ../w5-views -b w5-views` (and `w5-transport`, `w5-thermal`).
+2. Write the both-views hide/show pin **first**, in the main checkout, and
+   commit it — the lane must start from a tree where that invariant is red if
+   broken.
+3. Briefs from `.claude/skills/parallel-stage/brief-template.md`, plus the
+   standing additions earned so far: cite test **names** not files; one commit
+   per finding; and **re-read the finding's own text clause by clause before
+   writing a STATUS** — every lead downgrade across waves 3 and 4 was a row
+   closed on its reachable half.
+4. Lead runs the qt pass and the merge. No row closes on an agent's report.
+
+**Baselines to beat, at this commit:** fast 854 passed / 1 skipped /
+1 xfailed; qt 64 passed; slow 58 passed. Ledger 191 closed / 27 open.
+
 ## Finding ledger
 
 218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
@@ -2809,7 +2933,7 @@ it) · `n/a` (with a reason).
 | SERIAL-7 | RC2 | S3 | root cause | closed (test_an_opened_port_that_never_answered_is_unverified_not_connected, tests/core/test_transport_truth.py) |
 | SERIAL-8 | RC2 | S3 | root cause | closed (test_the_first_write_failure_moves_the_link_to_lost_and_closes_it, test_loss_is_reported_once_not_on_every_subsequent_command, tests/core/test_transport_truth.py) |
 | SERIAL-9 | RC2 | S3 | root cause | closed (test_simulator_probes_can_arm_and_disarm, tests/core/test_transport_truth.py) |
-| SERIAL-10 | RC2 | S3 | root cause | open (partly closed: the host no longer claims a power-down the firmware never performs — `BaseProbe.FIRMWARE_CONTROL_BYTES` records what each `.ino` is observed to handle and `power_down()` reports sent/unsupported/failed; 9 tests in tests/hardware/test_serial10_power_down_truth.py, the first of which pins that the bytes on the wire are unchanged. The mis-parse half needs a wire terminator on a stop path, which is **D-7** and owner-only — deliberately not answered) |
+| SERIAL-10 | RC2 | S3 | root cause | open (partly closed: the host no longer claims a power-down the firmware never performs — `BaseProbe.FIRMWARE_CONTROL_BYTES` records what each `.ino` is observed to handle and `power_down()` reports sent/unsupported/failed; 9 tests in tests/hardware/test_serial10_power_down_truth.py, the first of which pins that the bytes on the wire are unchanged. **The mis-parse half is unblocked as of 2026-09-21**: it needs a wire terminator on a stop path, which only protocol v2 carries, and **D-7 was answered `adopt`**. It is S16 work — at the bench, after every board is reflashed — and is not delegable) |
 | SERIAL-11 | RC2 | S3 | root cause | closed (test_i_2_3_serial_handle_confined_to_transport; all writes go through write_command under the lock) |
 | SERIAL-12 | RC4 | S5 | root cause | open |
 | SERIAL-13 | RC2 | S3 | root cause | closed (test_serial_send_manual_mode_command asserts the 42-byte packet format) |
@@ -2843,7 +2967,7 @@ it) · `n/a` (with a reason).
 | TEMP-6 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | TEMP-7 | RC5 | S8 | root cause | closed (`send_settings` was a check-then-act: it tested `_estop` at the top, then built the frame, so a FULL STOP landing in that window was overwritten and the heater returned to setpoint silently. The latch is now re-checked inside a new `_write_lock` immediately before the write, and `emergency_stop` uses the latch-worker-bounded-join pattern with a forced priority frame. test_temp_7_a_stop_landing_mid_build_is_not_overwritten, test_temp_7_emergency_stop_returns_promptly_behind_a_held_write_lock, test_temp_7_the_stop_frame_forces_through_a_busy_write_lock, test_temp_7_an_ordinary_send_takes_the_lock_without_a_timeout) |
 | TEMP-8 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
-| TEMP-9 | LOCAL-OK | S15 | explicit | open |
+| TEMP-9 | RC7 | S15 | explicit | open (**D-13 answered 2026-09-21: plot it.** The history arrays are genuinely dead — `tempC`/`time`/`sp` are appended in `process_raw_data` with a ring-buffer trim and read only by `get_history()`, which has zero callers in `src/`. Verified on the owner's question that the **PID does not use them**: the loop runs on the firmware, and the host only forwards `<setpoint, spdelay, p, i, d, offset>` on the wire (`temperature_system.py:199`), so `p_term`/`i_term`/`d_term` are operator values in transit, not host-side state. The data is therefore already being collected and discarded, and a `sch.plot("Temperature over time", "temp_series")` renders in all three views per D-6 at near-zero cost. Owner accepts this is feature work on a repair branch) |
 | TEMP-10 | RC2 | S15 | explicit | open (partly closed: `connection_state` exists, is exposed readonly in the schema, and **Tk now renders it with its own role styling** so a frozen value is visibly frozen — test_temp_10_connection_state_exists, test_temp_10_connection_state_in_schema, test_temp_10_connection_state_has_role, test_temp_10_connection_state_closed_when_no_port. **Reported `closed` by the wave-4 agent and downgraded again**: the finding's headline is that SIM or no-port shows "N/A" forever, which is the `temperature_system.py` no-port branch — frozen that wave and still live. "Enter Settings is silent" is also untouched) |
 | TEMP-11 | RC1 / RC2 / doc | S2 | root cause | closed (the model half from the fix-web worktree, the bounded transport `flush()` from fix-transport, and the seam joined by the lead on merge — test_close_drains_the_heater_off_frame_before_releasing_the_port, test_close_reports_an_undrained_heater_off_frame, test_a_transport_without_flush_still_closes, plus the four close-path tests in tests/core/test_temperature_subsystem.py. Neither worktree could have tested the join alone) |
 | TEMP-12 | RC8 | S11 | root cause | closed (an info popup is inexpressible: `publish` raises on `requires_ack` for anything but an error; test_a_quiet_event_raises_no_modal) |
@@ -2884,7 +3008,7 @@ it) · `n/a` (with a reason).
 | WEB-16 | LOCAL-OK | S14 | explicit | closed (`start()` treats only EADDRINUSE as port-busy and raises after ten, instead of swallowing every OSError and appearing to start. test_start_raises_runtime_error_after_ten_busy_ports, test_start_does_not_swallow_unrelated_os_errors, test_start_retries_past_a_genuinely_busy_port. Moved S15 -> S14: it shares `web_server.py` with WEB-14/21.) |
 | WEB-17 | RC10 | S14 | root cause | closed early in S11 (the destructive pop was the RC-8 half; `?since=` fixed it) |
 | WEB-18 | RC5 / RC8 | S8 | root cause | closed (FULL STOP reports per-device results instead of a blanket ok, so a device whose stop was not confirmed is named. test_full_stop_reports_per_device_results, test_api_full_stop_all_reports_unconfirmed_device) |
-| WEB-19 | RC10 | S14 | root cause | closed (**D-8, built as a deliberate split across two worktrees and joined by the lead.** Model half: `BaseProbe.touch_client_liveness()` plus a client-liveness deadline folded into the *existing* interlock watchdog rather than a second timer, with `WEB_CLIENT_WARN_TIMEOUT` 5 s and `WEB_CLIENT_STOP_TIMEOUT` 15 s as named constants — these are **provisional and owner-settable at the bench**. Gates only in AUTONOMOUS/MANUAL, and only once a client has ever checked in, so a Tk or PySide session is never stopped. 8 tests incl. test_no_client_ever_checked_in_is_never_gated, test_full_stop_after_the_stop_threshold_of_silence, test_a_continuously_polled_client_never_trips_the_stop. Client half: browser heartbeat with `visibilitychange`/`pagehide` and `POST /api/client/heartbeat`, 7 tests incl. test_heartbeat_stops_when_tab_hidden_and_resumes_when_visible. **The two halves named the seam differently and it failed silently** — see test_web19_seam_is_joined, test_the_hook_actually_arms_the_deadline) |
+| WEB-19 | RC10 | S14 | root cause | open (partly closed: **the mechanism is built, tested and joined; the numbers are not set.** Model half — `BaseProbe.touch_client_liveness()` and a client-liveness deadline folded into the *existing* interlock watchdog, gating only in AUTONOMOUS/MANUAL and only once a client has ever checked in, so a Tk or PySide session is never stopped. Client half — browser heartbeat with `visibilitychange`/`pagehide` and `POST /api/client/heartbeat`. Seam joined by the lead and pinned: test_web19_seam_is_joined, test_the_hook_actually_arms_the_deadline, plus 8 model and 7 client tests incl. test_no_client_ever_checked_in_is_never_gated and test_full_stop_after_the_stop_threshold_of_silence. **`WEB_CLIENT_WARN_TIMEOUT` (5 s) and `WEB_CLIENT_STOP_TIMEOUT` (15 s) are provisional placeholders**, not measured against a real client on the real network. The owner set them aside on 2026-09-21 to time at the bench rather than ratify a guess; this row does not close until they are measured) |
 | WEB-20 | RC1 | S2 | root cause | closed **at the third attempt** (`get_system_info` and `get_devices` now read through `get_active_models_snapshot()` under the manager's lock rather than the adapter's, and the generation counter the finding asked for exists and is re-checked in `resolve_options`, `dispatch_command` and `set_device_attribute`. test_get_system_info_reports_active_device_from_snapshot, test_get_devices_reports_device_from_snapshot, test_generation_counter_exists, test_generation_bumps_on_setup_swap, test_dispatch_command_aborts_if_manager_changes_under_the_lock. Reported `closed` and rejected on verification twice before this — 2026-09-20 by a reconciliation agent and again by a wave-3 agent, both having fixed the reachable call sites and stopped looking. Verified by the lead this time by enumerating every remaining `active_models` reference: all are inside `initialize_setup`'s own construction) |
 | WEB-21 | RC10 | S14 | root cause | closed (POST bodies are capped and answered with 413 after the declared body is drained in bounded chunks; `mss`/PIL import lazily and one `mss` instance is reused. test_post_body_over_max_size_is_rejected_with_413, test_screenshot_reuses_a_single_mss_instance) |
 | WEB-22 | RC10 | S14 | root cause | closed (the fetch-wrapper abort closed earlier; per-device staleness marking and dropdown refresh-on-focus were found **already implemented and merely untested**, and now carry Node-harness coverage driven from pytest in the style of `js_fetch_timeout_check.js`. test_shared_fetch_wrapper_aborts_a_hung_request_after_its_timeout, test_staleness_marking_and_dropdown_refresh_on_focus) |
