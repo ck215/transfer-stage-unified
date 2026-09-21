@@ -200,3 +200,54 @@ def test_manager21_full_stop_all_latches_every_device_regardless():
             manager.shutdown_all()
         except Exception:
             pass
+
+
+# -- MANAGER-23: does the operator actually get told? -----------------------
+
+def test_manager23_an_unconfirmed_device_is_reported_to_every_frontend():
+    """MANAGER-23 claimed Tk and PySide have no path that could tell the
+    operator a device did not confirm, because both wire the FULL STOP button
+    straight to the bare `full_stop_all` callable and discard its return.
+
+    They do discard it — but the premise is still wrong, and this test is why
+    the row closes instead of being fixed. `full_stop_all` reports the
+    unconfirmed devices *itself*, through `SystemManager._report` ->
+    `ErrorRouter.report_error` -> the `EventBus`, which **both** desktop views
+    subscribe to (tkinter/view.py:38, pyside/view.py:43) and render as a
+    popup. The information reaches all three frontends; it simply does not
+    travel by return value.
+
+    The reason this looked broken is worth keeping: before MANAGER-21 the
+    `unconfirmed` list could never be populated, because `ok` was set to True
+    whenever `emergency_stop` did not raise. The reporting path was correct
+    and **unreachable** — the same shape as ROTATOR-6, where `poll_status`
+    was correct and had no caller. Fixing the confirmation contract is what
+    turned this code back on.
+
+    What the desktop views genuinely lack next to the Web client is the
+    *positive* toast on success. That is a deliberate difference, not a
+    defect: a modal on every successful FULL STOP is a modal operators learn
+    to dismiss without reading.
+    """
+    from error_routing import bus as event_bus
+
+    release = threading.Event()
+    manager = SystemManager()
+    manager.register("stalled", _probe(_StalledTransport(release)))
+
+    received = []
+    event_bus.subscribe(received.append)
+    try:
+        manager.full_stop_all()
+
+        titles = [getattr(e, "title", "") for e in received]
+        assert any("Not Confirmed" in t for t in titles), (
+            f"a device failed to confirm and nothing was published to the "
+            f"bus, so no frontend could tell the operator. Saw: {titles}")
+    finally:
+        event_bus.unsubscribe(received.append)
+        release.set()
+        try:
+            manager.shutdown_all()
+        except Exception:
+            pass

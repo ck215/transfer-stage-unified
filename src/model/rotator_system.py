@@ -149,7 +149,29 @@ class RotatorSystem(SchemaCommands):
             return "hardware" if (self.is_connected and self.smc) else "disconnected"
 
     def _run_async(self, func, *args):
-        """Helper to run blocking operations in a thread."""
+        """Dispatch a blocking operation to a worker. **Refuses synchronously
+        while the FULL STOP latch is set** (ERRORS-7).
+
+        The latch was already checked inside `_async_wrapper`, and still is —
+        that check catches a stop that lands between dispatch and execution,
+        which is the case it exists for. But it runs *on the worker thread*,
+        so its refusal could only ever be a `print`: by the time it ran,
+        `home()` had already returned `None` to `execute_command`, where
+        `as_result(None)` becomes `Ok`. Clicking "Home Stage" on a latched
+        rotator therefore refused the motion and told the operator it had
+        worked — on the very device they had just emergency-stopped.
+
+        Checking here, before the thread is spawned, is what makes the
+        refusal reach a frontend. `_guarded_move` already did the equivalent
+        by returning `False`; its comment ("Both happen; only this one is
+        visible") was naming precisely this gap.
+        """
+        if self._estop.is_set():
+            from results import Refused
+            print(f"[{self.__class__.__name__}] Dispatch refused: "
+                  f"FULL STOP is latched")
+            return Refused("FULL STOP is latched. Clear it before moving "
+                           "the stage.")
         thread = threading.Thread(target=self._async_wrapper, args=(func, args))
         thread.daemon = True
         thread.start()
@@ -161,6 +183,11 @@ class RotatorSystem(SchemaCommands):
         # `sendcmd` and issuing PA *after* the ST. Checking at dispatch would
         # not see that stop; checking here does.
         if self._estop.is_set():
+            # Print-only on purpose: this runs on the worker thread, so a
+            # returned value reaches nobody. The operator-facing refusal is
+            # the synchronous one in `_run_async` (ERRORS-7). This check
+            # still earns its place — it catches a latch that landed between
+            # dispatch and here.
             print(f"[{self.__class__.__name__}] Motion refused: "
                   f"FULL STOP is latched")
             return
@@ -377,7 +404,9 @@ class RotatorSystem(SchemaCommands):
             from results import Refused
             return Refused(self.NOT_CONNECTED)
         self._commit_target(0.0)
-        self._run_async(self.smc.home)
+        # Propagated, not discarded: `_run_async` refuses while the latch is
+        # set and says so (ERRORS-7).
+        return self._run_async(self.smc.home)
 
     # -- schema commands (D-5): the values are already validated ---------
     #
@@ -581,7 +610,7 @@ class RotatorSystem(SchemaCommands):
         if not self.smc:
             from results import Refused
             return Refused(self.NOT_CONNECTED)
-        self._run_async(self.smc.reset_and_configure)
+        return self._run_async(self.smc.reset_and_configure)
 
     # `_confirm_rotation`, `move_absolute(target_deg)` and
     # `move_relative(step_deg)` are gone, replaced by the guarded schema

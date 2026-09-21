@@ -3253,6 +3253,84 @@ with no client-liveness safeguard if the tab closes or the machine sleeps.
 Whether D-8 was meant to cover the heater and the rotator is an owner call and
 is **not** answered here. Raised as a question on the bench checklist.
 
+### 2026-09-21 (wave 7) — the code work is essentially done; what is left is the bench
+
+Closed: **MANAGER-21, MANAGER-22, MANAGER-23, MANAGER-24, ERRORS-7,
+GAMEPAD-17, REDPERCENT-13**, with REDPERCENT-19 honestly partly closed.
+Ledger **212 closed / 11 open / 223 total**. Gate **995 passed, 1 skipped,
+1 xfailed, exit 0**; qt **64 passed** against a baseline of 64.
+
+**Of the 11 open rows, 9 are bench or owner work**: GAMEPAD-5/11/12/13/14,
+SERIAL-10, VIEW-TKINTER-18, WEB-19, REDPERCENT-18. The only code left is
+REDPERCENT-17 (plot-type selection in Tk and Web, low severity, feature work)
+and REDPERCENT-19's remaining clause — one change in `app.js` to honour the
+`format` key the model now declares, plus Tk's monitor button not following
+FULL STOP. That is the whole backlog.
+
+**The pattern that ran through this entire wave: correct code with no
+caller.** Three separate findings turned out to be this same shape, and it is
+now worth treating as a first-class suspicion when reading any finding here:
+
+- **ROTATOR-6** (wave 6): `poll_status` was correct and nothing called it.
+- **MANAGER-23**: `full_stop_all` already reported unconfirmed devices through
+  `ErrorRouter` to a bus **both** desktop views subscribe to. The reporting
+  was correct — and unreachable, because before MANAGER-21 the `unconfirmed`
+  list could never be populated. Fixing the confirmation contract switched the
+  reporting back on. The row closed on a test, not a patch.
+- **MANAGER-22**: `clear_estop` was correct and had no caller anywhere.
+
+A grep for "is this implemented" answers the wrong question in this codebase.
+The right one is "does anything reach it".
+
+**MANAGER-24 came from the second fresh-eyes audit and is the best argument
+yet for running that pass.** `SystemManager.hide()` promises in its own
+docstring, citing D-2, that hiding a device stops motion and de-energizes it —
+and finds that action by `getattr(model, "disable", None)`. `disable()` existed
+only on `BaseProbe`. Closing the Temperature Controller's tab therefore sent
+nothing and reported success, leaving the heater driving toward its last
+setpoint unobserved. The duck-typed lookup is the actual defect: it makes a
+model that *cannot* reach a safe state indistinguishable from one that just
+*did*, at the single call site promising otherwise.
+
+That audit also produced a **firmware claim table** — every claim `src/` makes
+about the `.ino` sources, checked against them. Six claims agree (including
+the three power-down bytes and the heater's no-watchdog admission), one
+**differs** and is worth the owner's attention: `write_command`'s priority
+path reasons that its worst case is "a mangled *stop*", but both binary
+firmwares do `Serial.readBytes(..., BINARY_PACKET_SIZE)` with no framing check
+past the `0xAA` marker, so a `'d'` landing inside that window is consumed as
+packet payload and never surfaces as a command at all — a *lost* stop, not a
+mangled one. Whether concurrent unsynchronized `pyserial` writes can actually
+interleave at byte level on this app's three target platforms is unsettled
+from source and is a bench question.
+
+**Process notes.**
+
+- The write-set containment failure from wave 6 did **not** recur. Both lanes
+  committed to their own branches, and the brief's explicit "verify with
+  `git log` from that worktree" instruction is cheap enough to keep
+  permanently.
+- **The REDPERCENT lane's JS evidence was verified, not taken on report.** It
+  claimed a Node `vm` harness proving the plotter fix. The lead ran it against
+  HEAD (passes) and against the pre-fix `app.js` (fails, with both expected
+  messages). It holds. This is the first lane on this branch to produce
+  executable evidence for `app.js`, which has no other coverage in this repo.
+- **I clipped two ledger rows** (REDPERCENT-14, REDPERCENT-20) with a
+  sloppy row-replacement helper: rows whose status was a bare `open |` with no
+  parenthetical caused it to consume through to the *next* row's terminator.
+  Caught by diffing row IDs against HEAD before committing, and restored. Any
+  bulk edit of this table should be followed by that diff.
+- **I leaked sampler threads onto the global EventBus** from two new test
+  files by arming probes over `MagicMock` transports, whose `read_position()`
+  returns a MagicMock that the sampler then compares against an int — raising
+  every tick and flooding the bus. It broke
+  `tests/web/test_web_server.py::test_api_logs_and_errors` under random
+  ordering. Fixed by using the canonical SIM-probe double and stopping loops
+  in `finally`. **But the REDPERCENT lane observed the same failure
+  independently, at a base that did not contain my tests**, so there is very
+  likely a second source of error-bus pollution still in the suite. Recorded
+  as an open observation, not as fixed.
+
 ## Finding ledger
 
 218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
@@ -3300,7 +3378,8 @@ it) · `n/a` (with a reason).
 | ERRORS-4 | RC8 | S11 | root cause | closed (`install_exception_hooks`; test_i_8_3_every_launcher_installs_the_same_hooks, test_a_thread_exception_reaches_the_bus) |
 | ERRORS-5 | RC8 | S11 | root cause | closed (manager binds to the process-lifetime root, never the dashboard; the `after` loop reschedules in a `finally`) |
 | ERRORS-6 | RC2 | S3 | root cause | closed (S3: serial write failures raise TransportError and the models fault rather than swallow; test_an_unconfirmed_disable_is_a_fault_not_a_disabled_claim, test_a_failed_disable_still_hides) |
-| ERRORS-7 | RC2 / RC8 / RC11 | S3 | root cause | open (partly closed: the `probes.py` share — controller-swap and fallback-poller build failures are reported through the bus instead of printed. test_a_failed_fallback_poller_build_is_reported_not_just_printed, test_a_failed_swap_on_an_existing_poller_is_reported_not_just_printed. `serial.py`'s share was audited this wave and found already adequate (a handshake write failure and a malformed `POS:` line, both deliberate — see SERIAL-16); the `temperature_system.py` share is now covered too — `close()` reports heater-off write, flush and port-close failures, and the reader reports persistent connection loss: test_close_reports_write_failure, test_close_reports_flush_failure, test_close_reports_close_failure, test_read_persistent_failure_sets_disconnected. **The same shape remains in `rotator_system.py` and `redpercent_system.py`**; route the remainder to the next wave) |
+| ERRORS-7 | RC2 / RC8 / RC11 | S3 | root cause | closed (**all five shares now done.** `probes.py`, `serial.py` and `temperature_system.py` closed in earlier waves. `redpercent_system.py` closed here: five genuinely operator-facing silent sites routed through `ErrorRouter` (position-source change, autosave success, explicit-save "nothing to save", explicit-save success, and a previously entirely silent "monitor thread still alive after the teardown join timeout"), with the sites left print-only justified individually in the source — autosave's routine no-data case, the dialog-cancelled case, the unreachable sync-toggle guards, and `_read_dim`'s REDPERCENT-16 sentinel at monitor-loop rate, which is the popup flood RC-8 exists to prevent. `rotator_system.py` closed by the lead, and its defect was the sharpest instance of ERRORS-7 in the branch: `_async_wrapper` refused to dispatch while the FULL STOP latch was set — correctly, the stage did not move — but did so with a bare `print` **on the worker thread**, so `home()` returned `None` to `execute_command`, `as_result(None)` became `Ok`, and clicking "Home Stage" on a latched rotator reported success for an action it had refused, on the one device the operator had just emergency-stopped. The check is now made **synchronously in `_run_async`**, before the thread is spawned, which is what lets the refusal reach a frontend at all; the worker-side checks stay as prints because their return value reaches nobody, and they still earn their place catching a latch that lands between dispatch and execution. 5 tests in tests/core/test_errors7_rotator_share.py, 3 red beforehand, including the negative case — an unlatched rotator still homes — and the safety case, that the latch still blocks the hardware) |
+
 | ERRORS-8 | RC8 | S11 | root cause | closed (locked bus, key is `(severity, source, title)`; test_publishing_from_many_threads_loses_nothing, test_repeats_fold_into_one_event_with_a_count) |
 | ERRORS-9 | RC8 | S11 | root cause | closed (PySide's three CSV surfaces — load failure, missing Red Percent column, nothing to save — report through the bus instead of raising their own `QMessageBox`. **The agent reported this `closed` on "code inspection; no standalone test created" and the row stayed open until the lead wrote one**: test_the_csv_surfaces_do_not_raise_their_own_modal, test_the_csv_load_path_reports_through_the_error_router. The change also broke PYSIDE-18's qt test, which asserted on the very modal this finding removes; that test now asserts on the bus) |
 | ERRORS-10 | RC8 | S11 | root cause | closed (the rate limit no longer runs ahead of the no-subscriber print; test_with_no_subscriber_the_bus_prints) |
@@ -3322,7 +3401,8 @@ it) · `n/a` (with a reason).
 | GAMEPAD-14 | RC12 | S16 | explicit | open |
 | GAMEPAD-15 | RC13 / RC11 | S5 | root cause | closed (S5: edges latch under `_state_lock` and drain once; test_a_tap_shorter_than_a_read_interval_is_not_lost, test_edges_drain_exactly_once, test_reading_levels_does_not_consume_edges, test_levels_never_carry_edge_keys) |
 | GAMEPAD-16 | RC4 | S5 | root cause | closed by **D-12** — the owner ruled the 200 Hz poll and the 20 ms manual pump deliberately unequal. Verification note: `gamepad.py` POLL_INTERVAL and `probes.py` MANUAL_COMMAND_INTERVAL carry the ruling in comments. No test; none is wanted, since a test would pin a number the owner may retune. |
-| GAMEPAD-17 | LOCAL-OK | S15 | explicit | open (partly closed: the unreachable `pygame.error` lookup and the dead `connect_controller` closed in S15; the `probes.py` share closes here — a fallback poller built while the probe is already armed now starts its loop instead of waiting for the next arm. test_a_fallback_poller_built_while_already_armed_is_started, test_a_fallback_poller_built_while_disabled_is_left_for_the_next_arm. **`change_controller` and `parse_controller_id` still have live callers in test files** outside every write set used so far) |
+| GAMEPAD-17 | LOCAL-OK | S15 | explicit | closed (the last clause — `change_controller` and `parse_controller_id` kept alive only by their own tests — is done. Both were dead production code: `parse_controller_id` (src/app.py) had no caller in `src/` and five tests; `change_controller` (gamepad.py) had no caller in `src/` and two, and the live path is the schema-dispatched `set_controller`. **Reachability was checked for indirect callers, not just literal call syntax** — this codebase dispatches schema commands by name through `execute_command` → `getattr(self, name)`, so the string forms were searched across `src/` including the JS and the schema declarations, and neither appears. Both deleted with their anchor tests; `test_baseprobe_constructed_with_string_id` was kept because it exercises real surrounding behaviour rather than the deleted function. −83 lines, and the gate drops by exactly the 7 deleted tests with nothing else moving, which is the check that no live caller was missed. A test that keeps dead code alive is not coverage, it is an anchor) |
+
 | GAMEPAD-18 | RC13 / RC9 | S5 | root cause | closed (S12: in-process enumeration through InputService; test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing) |
 | GAMEPAD-19 | RC13 | S5 | root cause | closed (test_macos_presence_check_does_not_consult_the_previous_controller, test_macos_swap_succeeds_when_the_previous_controller_is_gone; the consequence was a rejected bind, not a missed unplug) |
 | GAMEPAD-20 | doc | S0 | root cause | closed (verification note, lead 2026-09-21: the blocking fifth bullet is done — the superseded transient-falsy hypothesis now carries an inline SUPERSEDED pointer to GAMEPAD-4 at the claim itself in `known-issues.md`, not only in the file header. The other four claims were already corrected in `controllers.md`; re-verified rather than taken on trust — its `ControllerPoller` inventory was re-resolved symbol-by-symbol against `388834d` with an ast resolver, 22/22 line numbers exact, plus `POLL_INTERVAL` 254, `EDGE_KEYS` 572, `get_gamepad_wrapper` 229, file length 801, `lifecycle.py:69-70`. Docs-accuracy row: a verification note is the appropriate closure, not a test name.) |
@@ -3351,7 +3431,8 @@ it) · `n/a` (with a reason).
 
 | MANAGER-22 | RC5 | S8 | audit-2026-09-21 | closed (**a latched FULL STOP can now be cleared from all three frontends.** At feb77fe `clear_estop()` had zero callers — no view, no schema entry, no Web endpoint — so a latched device refused every transition for the life of the process, and the only recoveries were restarting (dropping every other device's connection) or re-running the setup wizard. D-8's client-liveness watchdog can latch a probe *by itself* after `WEB_CLIENT_STOP_TIMEOUT` of web silence while a mode is engaged, and that value is still the unmeasured 15 s placeholder, so this was reachable by an operator doing nothing stranger than switching tabs. **Owner chose the per-device schema button** over a dashboard-wide clear: the latch is per-device state, and clearing one device must not silently re-arm a probe on a tab nobody has looked at. One `sch.button("Clear FULL STOP", "clear_estop", role="warning")` per latching model — `BaseProbe` (so Stepper, DC and Chuck), `TemperatureSystem`, `RotatorSystem` — so all three renderers get it from one declaration per D-6, including the Web client, which is the frontend the auto-latch actually strands. `clear_estop(confirmed=False)` now returns `NeedsConfirmation`, routing through the generic dialog every view already implements for the rotator's ±30° guard, rather than the schema's `confirm=` key, which **no renderer reads** — verified before choosing. It is emphatically not a reinstatement of the per-device "Full Stop" button deliberately removed as a redundant second E-stop: the dashboard's global FULL STOP reaches every model, so a per-tab stop was duplication, whereas a clear has no global equivalent. Clearing returns the device to *refusable*, never to *running*. **Seam pin written before the fix**, 12 tests in tests/core/test_manager22_clear_estop_is_reachable.py, all 12 red at feb77fe: the schema declaration across all five model classes, the unconfirmed call not clearing, the confirmation naming its own command so the views' re-dispatch is not a dead end, the latch actually releasing, `_refuse_if_estopped` going false again, reachability through `execute_command` (the path all three views use), and that clearing does not re-arm. **Three existing tests in test_transport_truth.py were strengthened, not relaxed:** `test_only_an_explicit_operator_action_clears_the_latch` could previously only check that *something* cleared the latch; it now asserts the unconfirmed call clears nothing, which is the assertion its name always promised) |
 
-| MANAGER-23 | RC5 | S8 | audit-2026-09-21 | open (Tk and PySide discard `full_stop_all`'s per-device result. Both wire the button straight to the bare callable — pyside/view.py:1134, tkinter/view.py:231 — so neither has any path that could tell the operator a device did not confirm, even once MANAGER-21 makes that value mean something. The Web frontend already consumes it and shows a toast. Smaller than MANAGER-21 and dependent on it; do them together) |
+| MANAGER-23 | RC5 | S8 | audit-2026-09-21 | closed (**premise wrong; the operator was already being told.** The finding says Tk and PySide have no path that could report a device failing to confirm, because both wire FULL STOP straight to the bare `full_stop_all` callable and discard its return. They do discard it — but `full_stop_all` reports the unconfirmed devices *itself*, via `SystemManager._report` → `ErrorRouter.report_error("Stop Not Confirmed", ...)` → the `EventBus`, which **both** desktop views subscribe to (tkinter/view.py:38, pyside/view.py:43) and render as a popup. The information reaches all three frontends; it just does not travel by return value. **Why it looked broken is the interesting part:** before MANAGER-21, `unconfirmed` could never be populated, because `ok` was set True whenever `emergency_stop` did not raise — so the reporting path was correct and *unreachable*, the identical shape to ROTATOR-6, where `poll_status` was correct and had no caller. Fixing the confirmation contract is what switched this back on. Pinned by test_manager23_an_unconfirmed_device_is_reported_to_every_frontend, which subscribes to the real bus and drives a real stalled transport. The one genuine difference from the Web client is the *positive* toast on success, which the desktop views deliberately lack: a modal on every successful FULL STOP is a modal operators learn to dismiss without reading. Recorded as intended, not as a gap) |
+
 | MANAGER-20 | RC4 | S5 | root cause | closed (test_a_running_scanner_thread_stops_when_interruption_is_requested, test_stop_scanner_brings_a_real_running_scan_down_promptly — both qt-marked, written unrun by the agent and **verified passing by the lead** on merge; plus 6 executing tests in tests/core/test_manager20_scan_abort.py for the abort hook. The 17 tests in test_manager20_scanner_wiring.py are AST-structural, not behavioural, and are a regression guard rather than the evidence) |
 | PYSIDE-1 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | PYSIDE-2 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
@@ -3385,14 +3466,16 @@ it) · `n/a` (with a reason).
 | REDPERCENT-10 | RC7 | S10 | root cause | closed (S10: the hand-built duplicate Position Source and Save Log controls are gone, the schema provides both; test_pyside_redpercent_sync_and_probe_controls) |
 | REDPERCENT-11 | RC9 / RC1 | S12 | root cause | closed (S12 item 2, same tests; I-9.1 holds by construction — test_i_9_1_only_the_dependent_model_writes_available_probes) |
 | REDPERCENT-12 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
-| REDPERCENT-13 | RC7 | S10 | root cause | open |
+| REDPERCENT-13 | RC7 | S10 | root cause | closed (the substring-match half — `pollState` pushing a plotter sample for every state attribute whose name merely *contains* "red", sweeping `current_red` and `red_change` into one series — was already fixed and pinned by test_web_7_plotter.py. Two clauses were still live and are fixed: the plotter sampled on every poll regardless of whether a run was active (now gated on a new `monitoring` readonly `ui_schema` attribute, which `WebModelAdapter.get_state` publishes for free once declared), and both "Reset" handlers in app.js touched only client-side state, so the model's baseline never moved (now dispatch `reset_baseline` first). **Proved with a Node `vm` harness** — tests/web/js_redpercent13_plotter_check.js, the same technique as the two existing js_*_check.js harnesses — wrapped by a Python test that skips cleanly where node is absent. Verified by the lead at merge: the harness passes against HEAD and **fails against the pre-fix app.js** with both expected messages, which is real evidence for a file that has no other test coverage in this repo) |
 | REDPERCENT-14 | RC6 | S9 | root cause | closed (S9 item 2: redpercent params typed) |
+
 | REDPERCENT-15 | RC9 | S12 | root cause | closed (S12 item 3: no `_disabled_in_setup`, so the filter it broke no longer exists; test_redpercent_get_available_probe_names) |
 | REDPERCENT-16 | RC11 | S13 | root cause | closed (velocity is derived from position deltas over timestamps by `_read_dim`, which no longer reads `vel_x`/`vel_y`/`vel_z` at all — the audit's finding that the logged "velocity" was gamepad stick deflection; a poisoned `vel_x` regression-guards it. The CSV gained a `Timestamp` column, and a failed position read is an empty cell, never `0.0` — zero is a position the stage can actually be at. test_velocity_is_derived_from_position_deltas_not_vel_x, test_an_invalid_position_read_is_none_not_zero, test_invalid_sample_is_never_written_as_zero_in_add_entry, test_csv_carries_a_timestamp_column, test_an_invalid_position_survives_as_an_empty_cell_not_a_zero) |
 | REDPERCENT-17 | RC7 | S10 | root cause | open |
 | REDPERCENT-18 | RC7 | S10 | root cause | open (partly closed: PySide's `SelectionOverlay` coordinate space is verified against `mss` — Qt logical coordinates match physical pixels on the bench machine — and the `focus_area` format is pinned. test_redpercent18_set_focus_area_stores_coordinates, test_redpercent18_focus_area_shown_in_view, test_redpercent18_selection_overlay_coordinates, test_redpercent18_focus_area_compatible_with_mss. **The structural divergence the finding names remains**: Tk is primary-monitor only and Web thumbnails a single monitor, both outside this write set. **HiDPI is an unverified hypothesis** — `devicePixelRatio()` conversion needs a scaled display, which is bench work) |
-| REDPERCENT-19 | RC7 | S10 | root cause | open |
+| REDPERCENT-19 | RC7 | S10 | root cause | open (partly closed: **half the audit's claim is stale** — Tk and PySide already render readonly numerics through `Param.format`/`decimals`, so the raw-float complaint no longer holds for either desktop view. The Web client's `pollState` still does `String(val)` straight off `/api/state` with no formatting step. The model half landed — `current_red` and `red_change` now declare `format=".2f"` in `ui_schema`, which is the audit's second proposed direction and the one matching D-6 — but **no renderer reads that key yet**, so this is a declaration without a consumer and the row stays open on purpose rather than being rounded up. The remaining work is one change in app.js to honour `element.format`. The second clause, Tk's monitor button state not following FULL STOP, is also still open. Reported honestly by the lane with the gap named, which is the right call and worth recording as such) |
 | REDPERCENT-20 | LOCAL-OK | S15 | explicit | closed (both halves. Model: the six dead fields, the `__del__` that only printed, and the per-call `set_focus_area` print are gone — test_construction_has_no_dead_fields, test_construction_keeps_the_live_equivalents, test_del_prints_nothing, test_set_focus_area_does_not_print, test_no_plot_data_ui_or_set_focus_area_ui_stub_exists. Web: `set_attr` writes only entry/dropdown/toggle elements — test_api_set_attr_refuses_a_readonly_element) |
+
 | REDPERCENT-21 | RC11 | S13 | root cause | closed (the run has a `run_id` and an `output_root` resolved once at import, never from CWD; artifacts land in `output_root/<run_id>/` named `<run_id>_*`. test_redpercent_21_autosave_never_writes_a_bare_relative_path, test_redpercent_21_every_artifact_of_a_run_carries_the_run_id, test_redpercent_21_the_output_root_does_not_follow_the_process_cwd, test_redpercent_21_an_unset_run_id_still_produces_a_unique_directory) |
 | REDPERCENT-22 | RC11 | S13 | root cause | closed (the CSV is a plain rectangle; configuration moved to `<run_id>_station_meta.json` carrying baseline, focus-area px, threshold, cadence and start/stop. Legacy `#`-block files still load. test_redpercent_22_the_csv_is_a_rectangle_a_default_reader_opens, test_redpercent_22_the_sidecar_carries_what_the_csv_cannot, test_redpercent_22_a_legacy_csv_with_a_comment_block_still_loads, test_redpercent_22_a_plain_csv_parses_and_reads_its_metadata_from_the_sidecar, test_redpercent_22_probe_tilt_angle_is_the_float_its_param_declares, test_csv_carries_no_metadata_block) |
 | REDPERCENT-23 | RC11 | S13 | root cause | closed (`ANNOTATION_FIELDS` is a Param table rendered by the schema in all three views (D-6); values snapshot into the sidecar under `annotations`, never merged with the actuals. test_redpercent_23_operator_annotations_reach_the_sidecar, test_redpercent_23_intended_and_actual_never_share_a_field, test_redpercent_23_the_annotation_set_is_a_table_not_hardcoded_attributes, test_redpercent_23_annotations_are_rendered_by_the_schema_not_per_view) |
