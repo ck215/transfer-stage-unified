@@ -925,6 +925,12 @@ class DynamicView(tk.Frame):
 
     def _mode_name(self):
         """The model's current mode, as the schema's gates name it."""
+        # ROTATOR-13: Check connection status for models that have it (e.g., rotator)
+        # When disconnected, gate the motion controls
+        connection_status = getattr(self.model, "connection_status", None)
+        if connection_status == "disconnected":
+            return "disconnected"
+
         mode = getattr(self.model, "mode", None)
         if mode is not None:
             return getattr(mode, "value", str(mode))
@@ -943,9 +949,15 @@ class DynamicView(tk.Frame):
         for gate in self._gated:
             enabled = sch.is_enabled(gate["element"], mode)
 
+            # ROTATOR-13: disable motion controls when the rotator is disconnected
+            element = gate["element"]
+            if mode == "disconnected":
+                # Disable all commands/inputs for disconnected devices
+                if element.get("type") in ("button", "entry", "toggle"):
+                    enabled = False
+
             # VIEW-TKINTER-14: start_monitoring button should also be disabled
             # if no focus_area is set (it would return Refused from the model)
-            element = gate["element"]
             if element.get("command") == "start_monitoring":
                 focus_area = getattr(self.model, "focus_area", None)
                 if not focus_area:

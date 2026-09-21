@@ -215,12 +215,19 @@ class QtDynamicView(QWidget):
                     attr = el.get("model_attr")
                     lbl = QLabel(label_text)
                     row_layout.addWidget(lbl)
-                    
+
                     val = str(getattr(self.model, attr, ""))
                     if el_type == "readonly":
                         val_widget = QLabel(val)
                         val_widget.setObjectName("valueLabel")
                         val_widget.setToolTip(f"Current value of {label_text.replace(':', '')}")
+
+                        # TEMP-10: Apply role-based styling to readonly fields (connection_state)
+                        # to visually distinguish connection/staleness states
+                        role = el.get("role", "neutral")
+                        if role and role in self.ROLE_STYLES:
+                            val_widget.setStyleSheet(self.ROLE_STYLES[role])
+
                         self.vars[attr] = val_widget
                         row_layout.addWidget(val_widget)
                     else:
@@ -520,6 +527,12 @@ class QtDynamicView(QWidget):
         return self._run_element({"command": cmd_name})
 
     def _mode_name(self):
+        # ROTATOR-13: Check connection status for models that have it (e.g., rotator)
+        # When disconnected, gate the motion controls
+        connection_status = getattr(self.model, "connection_status", None)
+        if connection_status == "disconnected":
+            return "disconnected"
+
         mode = getattr(self.model, "mode", None)
         if mode is not None:
             return getattr(mode, "value", str(mode))
@@ -531,7 +544,15 @@ class QtDynamicView(QWidget):
         """One rule, `schema.is_enabled`, shared with the other two views."""
         mode = self._mode_name()
         for gate in self._gated:
-            gate["widget"].setEnabled(sch.is_enabled(gate["element"], mode))
+            enabled = sch.is_enabled(gate["element"], mode)
+
+            # ROTATOR-13: disable motion controls when the rotator is disconnected
+            if mode == "disconnected":
+                element = gate["element"]
+                if element.get("type") in ("button", "entry", "toggle"):
+                    enabled = False
+
+            gate["widget"].setEnabled(enabled)
 
     def _redraw_plot(self, entry):
         """Hand the widget the model's current series. Same source as Tk."""
@@ -566,6 +587,19 @@ class QtDynamicView(QWidget):
     def _display(self, attr):
         """Render at the parameter's declared precision, not `str()`'s repr."""
         value = getattr(self.model, attr)
+
+        # Special case: rotator position formatting (ROTATOR-9)
+        # Format position as "--.--" when None (cleared on poll failure),
+        # and to 4 decimal places for numeric values, matching Tk.
+        if attr == "position":
+            if value is None:
+                return "--.--"  # No reading state
+            try:
+                float_val = float(value) if isinstance(value, str) else value
+                return f"{float_val:.4f}"
+            except (ValueError, TypeError):
+                return str(value)
+
         param = getattr(self.model, "PARAMS", {}).get(attr)
         if param is not None and param.is_numeric:
             return param.format(value)
