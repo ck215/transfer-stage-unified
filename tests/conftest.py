@@ -148,21 +148,32 @@ _FILE_MARKERS = {
     "web/test_web_setup.py": ["web", "bootstrap"],
 }
 
-# Files whose tests are dominated by real sleeps during model construction
-# (serial.py's 1.5 s bootloader wait, probes.py:168's sleep(1)) — measured
-# 2026-09-19 at ~4.5 s per test. Excluding them with `-m "not slow"` takes
-# the suite from ~3 min to ~20 s, which is what makes per-stage gating
-# usable. Re-measure with `--durations=40` if construction cost changes.
-# These sleeps are themselves findings (SERIAL-6, RC-4): once construction
-# moves off the calling thread in S5, most of this marking can go.
+# Files whose tests are dominated by real sleeps. Excluding them with
+# `-m "not slow"` is what makes per-stage gating usable.
+#
+# **Re-measured 2026-09-21 and six of the seven entries were removed.** The
+# note that used to sit here said the sleeps were themselves findings
+# (SERIAL-6, RC-4) and that "once construction moves off the calling thread
+# in S5, most of this marking can go." That came true and nobody came back
+# to collect it: SERIAL-6 closed on 2026-09-21, so construction now returns
+# as soon as the port opens and does the 1.5 s bootloader wait plus the
+# identity handshake on a background thread. Measured over the seven files:
+# 17.99 s total, of which `core/test_app_bootstrap.py` alone is 17.2 s. The
+# other six run 40 tests in **0.61 s**.
+#
+# Those 40 tests had been invisible to every working-gate run since S5 —
+# including the whole of `edge_cases/test_edge_mvc_boundary.py`, which is
+# where the NaN/infinity wire-format checks live. A stale quarantine is
+# indistinguishable from deleted coverage, and it is worse, because the file
+# is still there to reassure you.
+#
+# `core/test_app_bootstrap.py` stays: its cost is not construction but
+# `test_probe_device_at_*`, which walk real baud-rate probe timeouts
+# (9.25 s + 6.26 s + 1.71 s). That is inherent to what they test.
+#
+# Re-measure with `--durations=40` if construction cost changes again.
 _SLOW_FILES = {
     "core/test_app_bootstrap.py",
-    "core/test_model_interactions.py",
-    "edge_cases/test_edge_mvc_boundary.py",
-    "edge_cases/test_edge_mvc_disconnects.py",
-    "edge_cases/test_edge_mvc_state_transitions.py",
-    "hardware/test_serial.py",
-    "scripting/test_edge_mvc_scripting.py",
 }
 
 # Known-bad tests: quarantined, never silently deleted. Each entry says why

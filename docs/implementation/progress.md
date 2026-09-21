@@ -3091,6 +3091,81 @@ alongside: a fresh-eyes full-codebase audit given no access to this ledger,
 and a test-suite quality pass hunting the hollow-test pattern this branch has
 now produced in three consecutive waves.
 
+### 2026-09-21 (wave 6, lead) — a stale quarantine had been hiding 40 tests since S5
+
+Two read-only reviewers ran alongside the three fix lanes. The test-suite pass
+reported 11 hollow tests; **4 were real** and are repaired here. The other 7
+were "must not raise" tests — assertion-free by design, but they *do* fail if
+the call raises, so the guarantee they make is the one they claim. Left alone.
+Recording the split because the same report shape will come back: an
+assertion-free test is not automatically a hollow one.
+
+Worth stating plainly: that reviewer audited **70 of 918 test functions**
+(7.6%). Its "clean areas" list covers what it read, not the suite.
+
+The four real ones:
+
+- `tests/hardware/test_gamepad.py::test_bluetooth_xbox_gamepad_linux` wrapped
+  its entire body in `if sys.platform.startswith("linux")`. Neither the
+  development machine nor the bench machine is Linux, so it constructed a
+  gamepad, called `get_mapped_state()`, and asserted **nothing at all** — a
+  test named for a platform-specific mapping that never once checked that
+  mapping. Now patches `controller.gamepad.sys.platform` across *construction
+  as well as the call* (both read it: :127 seeds the trigger axes, :134 picks
+  the mapping) and asserts unconditionally. Added the missing other half,
+  `test_bluetooth_xbox_gamepad_off_linux_uses_the_wired_mapping`: the class
+  exists *because* the mapping diverges, and nothing tested the divergence —
+  delete the `startswith("linux")` guard in `get_mapped_state` and the Linux
+  test still passes. Mutation-checked in a throwaway worktree: with the guard
+  removed the new test goes red and the old one stays green, which is the
+  point.
+
+- `tests/edge_cases/test_edge_mvc_boundary.py::test_temperature_system_extreme_ramp_rate`
+  was worse than reported. It read
+  `temp_sys.serial_conn.ser.write.call_args`, but `send_settings` never
+  touches `.ser` — it calls `serial_conn.write_command(...)`. Against a
+  MagicMock every attribute exists, so `call_args` was always `None`, the
+  `if args:` never opened, and **the assertion had never executed once**. It
+  now asserts on `write_command`. Its inputs were also wrong: the docstring
+  describes a division that no longer exists, and `1e-300` formats to
+  `"0.00"`, so the value could never reach the `inf`/`nan` guard at
+  temperature_system.py:165. Now loops `1e-300`, `inf`, `-inf`, `nan`, `1e400`.
+
+- `tests/core/test_temp10_connection_state.py::test_connection_state_is_readonly`
+  guarded its assertions with `if connection_fields:`, going vacuous in
+  exactly the case it exists to catch. The sibling test above it already
+  asserts the field is present.
+
+- `tests/core/test_edge_mvc_model.py::test_dcprobe_invalid_speed` was
+  `try: ... except Exception: pass` — both outcomes accepted, no assertion,
+  cannot fail. Now pins the boundary the model is built around: the field
+  holds the operator's literal text, and the derived velocities must come
+  back **finite**. A NaN velocity does not raise; it produces a motion
+  command nobody can predict.
+
+**The larger find, which the reviewer did not report and which I went looking
+for after reading its output:** `tests/conftest.py`'s `_SLOW_FILES`
+quarantine was stale in 6 of its 7 entries. The note sitting above it said
+the sleeps were themselves findings (SERIAL-6, RC-4) and that "once
+construction moves off the calling thread in S5, most of this marking can
+go." That came true — SERIAL-6 closed 2026-09-21 — and nobody came back to
+collect it. Measured over the seven files: **17.99 s total, of which
+`core/test_app_bootstrap.py` alone is 17.2 s**; the other six run **40 tests
+in 0.61 s**.
+
+Those 40 tests had been invisible to every working-gate run since S5,
+including the whole of `edge_cases/test_edge_mvc_boundary.py` — which is
+where the NaN/infinity wire-format checks live, and which is why the dead
+assertion above went unnoticed for so long. A stale quarantine is
+indistinguishable from deleted coverage, and it is worse, because the file is
+still sitting there looking like coverage. `core/test_app_bootstrap.py` stays
+marked: its cost is `test_probe_device_at_*` walking real baud-probe timeouts,
+which is inherent to what it tests.
+
+Gate after this commit: **948 passed, 1 skipped, 1 xfailed, 4 failed** — the
+4 being the ROTATOR-6 seam pin, which is lane A's to close. Up from 901
+passed, of which +40 is the recovered quarantine.
+
 ## Finding ledger
 
 218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
