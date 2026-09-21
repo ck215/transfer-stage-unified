@@ -144,6 +144,15 @@ class RotatorSystem(SchemaCommands):
         try:
             func(*args)
         except Exception as e:
+            # The move did not finish, and nothing on this path stopped the
+            # stage: `SMC100WaitTimedOutException` says only that the driver
+            # stopped watching (ROTATOR-11). So the stage is somewhere we did
+            # not command it to be, and the commanded target is no longer a
+            # position the next relative move may be checked against — the
+            # same rule `emergency_stop` follows (safety-pattern.md item 6).
+            # It was kept, so a timed-out move to 10 left the guard believing
+            # the stage was at 10.
+            self._forget_target()
             if self.error_callback:
                 self.error_callback(e)
             else:

@@ -293,3 +293,47 @@ def test_rotator_commands_still_run_when_a_stage_is_present():
     rotator.target_deg = "10"
     assert rotator.execute_command("move_absolute",
                                    inputs={"target_deg": "10"}).ok
+
+
+# --- ROTATOR-11, model half: a move that did not finish is not a move ----
+
+def test_a_failed_move_forgets_where_the_stage_was_going():
+    """The driver's wait can end without the stage arriving — a timeout
+    while it is still turning, a disabled state, a dead port — and none of
+    those stop it. The commanded target must not survive as if the move had
+    landed, or the next relative move is computed from a position the stage
+    never reached (the same rule as safety-pattern.md item 6)."""
+    import threading as _t
+
+    rotator = _rotator_with_stage()
+    reported = _t.Event()
+    rotator.error_callback = lambda e: reported.set()
+    rotator.smc.move_absolute_deg.side_effect = RuntimeError(
+        "Wait timed out (last reported state 28); the stage has not been stopped")
+
+    rotator.target_deg = "10"
+    assert rotator.move_absolute() is True
+    assert reported.wait(3), "the failing move never reported"
+
+    assert rotator._commanded_target is None, (
+        "a move that failed left its target behind as if it had arrived")
+
+    # ...so the next relative move asks instead of assuming.
+    rotator.step_deg = "1"
+    assert isinstance(rotator.move_relative_positive(), NeedsConfirmation)
+
+
+def test_a_successful_move_keeps_its_target():
+    """Guard: only a *failed* move forgets. Dropping the target after every
+    move would put the ±30° guard back on the polled position, which is
+    the ROTATOR-4 defect."""
+    import time as _t
+
+    rotator = _rotator_with_stage()
+    rotator.target_deg = "10"
+    assert rotator.move_absolute() is True
+    for _ in range(200):
+        if rotator.smc.move_absolute_deg.called:
+            break
+        _t.sleep(0.01)
+    assert rotator._commanded_target == 10.0
