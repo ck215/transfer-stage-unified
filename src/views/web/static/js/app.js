@@ -1240,43 +1240,26 @@ class TransferStageApp {
         // =====================================================================
         // Dynamic Badging: Connection Status and Busy State
         // =====================================================================
-        
-        // Enforce autonomous/manual/enabled interlock
-        const autonOn = attrs.auton_flag === true || attrs.auton_flag === 'True';
-        const manualOn = attrs.manual_flag === true || attrs.manual_flag === 'True';
-        const sysEnabled = attrs.system_enabled === true || attrs.system_enabled === 'True';
-        
+
+        // WEB-24: gate every dispatchable control from the schema's own
+        // enabled_when/disabled_when -- the one contract Tk's _sync_gates
+        // and PySide's gate walker both read via schema.is_enabled --
+        // instead of re-deriving "mode" here from raw polled flags and
+        // finding controls by innerText.includes('Full Stop'/'Enable'/
+        // 'Power Down'). Those three per-device controls no longer exist
+        // (the per-device Enable/Power Down toggle and per-device Full
+        // Stop button were both removed for the one global dashboard Full
+        // Stop at '/api/system/full_stop'), so that text search matched
+        // nothing real; a renamed label could not break it further, but it
+        // also could not gate anything. Server-side 403 enforcement
+        // (web_adapter.py's _ModeRefused) is unchanged -- this only keeps
+        // rendered state from drifting away from what it already enforces.
+        const modeName = this._modeNameFor(attrs);
         const cardBody = document.querySelector(`#card-${sanitizedDev} .card-body`);
         if (cardBody) {
-          const controls = cardBody.querySelectorAll('button, input, select');
-          controls.forEach(ctrl => {
-            // 'Serial Reconnect'/'reconnect_serial' dropped: runtime serial
-            // reconnect is purged (D-11), so no such control can be rendered.
-            const isEnableBtn = ctrl.innerText.includes('Enable') || ctrl.dataset.command === 'toggle_enable';
-            const isPowerDown = ctrl.innerText.includes('Power Down') || ctrl.dataset.command === 'power_down';
-            const isStop = ctrl.innerText.includes('Full Stop') || ctrl.dataset.command === 'full_stop';
-            const isAutonToggle = ctrl.dataset.attr === 'auton_flag' || ctrl.dataset.command === 'toggle_auton';
-            const isManualToggle = ctrl.dataset.attr === 'manual_flag' || ctrl.dataset.command === 'toggle_manual';
-            
-            if (!sysEnabled && attrs.system_enabled !== undefined) {
-              if (!isEnableBtn && !isPowerDown) {
-                ctrl.disabled = true;
-              } else {
-                ctrl.disabled = false;
-              }
-            } else {
-              // System is enabled or doesn't have the flag
-              if (autonOn) {
-                if (isStop || isPowerDown || isAutonToggle || isManualToggle) ctrl.disabled = false;
-                else ctrl.disabled = true;
-              } else if (manualOn) {
-                if (isStop || isPowerDown || isManualToggle || isAutonToggle) ctrl.disabled = false;
-                else ctrl.disabled = true;
-              } else {
-                // Both off, normal operation
-                ctrl.disabled = false;
-              }
-            }
+          cardBody.querySelectorAll('[data-command], [data-attr]').forEach(ctrl => {
+            const el = this._findSchemaElementForControl(devName, ctrl);
+            ctrl.disabled = el ? !this._isEnabled(el, modeName) : false;
           });
         }
 
@@ -2293,6 +2276,59 @@ class TransferStageApp {
     }
 
     return val;
+  }
+
+  // WEB-24: find the schema element a rendered control dispatches, by its
+  // data-command first (buttons/toggles/dropdowns) and its data-attr
+  // second (a toggle/dropdown's own model_attr, or an entry's "Set"
+  // button, which carries the entry's model_attr but no command of its
+  // own). Mirrors _findSchemaElement's walk, just keyed on whichever the
+  // control actually carries.
+  _findSchemaElementForControl(devName, ctrl) {
+    const schema = this.devices && this.devices[devName];
+    if (!schema || !schema.sections) return null;
+    const command = ctrl.dataset ? ctrl.dataset.command : undefined;
+    const attr = ctrl.dataset ? ctrl.dataset.attr : undefined;
+    if (command) {
+      for (const section of schema.sections) {
+        if (!section.elements) continue;
+        for (const el of section.elements) {
+          if (el.command === command) return el;
+        }
+      }
+    }
+    if (attr) {
+      return this._findSchemaElement(devName, attr);
+    }
+    return null;
+  }
+
+  // WEB-24: the mode name a device's schema enabled_when/disabled_when is
+  // written against, reconstructed from the flags /api/state already
+  // publishes -- the same names DynamicView._mode_name (Tk) derives from
+  // the model directly. RedPercentSystem has no `mode` attribute and is
+  // gated on "monitoring"/"idle"; probes derive auton_flag/manual_flag as
+  // pure views of `mode` (ProbeMode.AUTONOMOUS/MANUAL), and every gate in
+  // probes.py only tests membership in {"autonomous", "manual"} -- so
+  // these are the only mode names any live gate actually reads.
+  _modeNameFor(attrs) {
+    const rawStatus = (attrs.connection_status || '').toLowerCase();
+    if (rawStatus === 'disconnected') return 'disconnected';
+    if (attrs.auton_flag === true || attrs.auton_flag === 'True') return 'autonomous';
+    if (attrs.manual_flag === true || attrs.manual_flag === 'True') return 'manual';
+    if (attrs.monitoring === true || attrs.monitoring === 'True') return 'monitoring';
+    return 'idle';
+  }
+
+  // WEB-24: schema.py's is_enabled(element, mode_name), ported verbatim --
+  // one rule, so "disabled during a run" cannot mean something different
+  // in the Web client than it does in Tk/PySide.
+  _isEnabled(el, modeName) {
+    const disabled = el.disabled_when;
+    if (disabled && disabled.includes(modeName)) return false;
+    const enabled = el.enabled_when;
+    if (enabled && !enabled.includes(modeName)) return false;
+    return true;
   }
 }
 
