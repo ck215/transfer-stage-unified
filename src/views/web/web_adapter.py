@@ -10,7 +10,7 @@ import contextlib
 import sys
 import threading
 import traceback
-from model.schema import NeedsConfirmation
+from model.schema import CommandResult, NeedsConfirmation
 from typing import Dict, Any, Optional, List, Union
 
 
@@ -589,6 +589,18 @@ class WebModelAdapter:
                     # A refused command is not an executed one.
                     return {"status": "error", "code": 400,
                             "message": f"{command_name} was refused"}
+
+                # ...and neither is one that came back `Refused` *with a
+                # reason* (ROTATOR-13). Only a bare `False` was caught here,
+                # so a command that said why it declined — "the rotator is
+                # not connected" — was reported to the dashboard as
+                # `status: ok` and toasted as executed. `Failed` is the same
+                # mistake in the other direction: it was attempted and
+                # raised, and the operator has to be told which.
+                if isinstance(res, CommandResult) and not res.ok:
+                    return {"status": "error",
+                            "code": 500 if res.failed else 400,
+                            "message": res.reason or f"{command_name} was refused"}
                 return {"status": "ok", "code": 200, "result": str(res)}
             except Exception as e:
                 print(f"[WebModelAdapter] dispatch_command({device_name}.{command_name}) failed:\n{traceback.format_exc()}")

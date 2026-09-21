@@ -434,3 +434,70 @@ def test_ordinary_commands_still_serialize_on_the_device_lock():
         model.release.set()
         slow.join(5)
         second.join(5)
+
+
+# --- ROTATOR-13, web half: the badge must not claim a simulator ----------
+
+def test_a_sim_port_rotator_is_not_badged_as_simulated():
+    """ROTATOR-13: `_determine_connection_status` guessed "simulated" from
+    the port string, so a rotator configured for SIM rendered a SIMULATED
+    badge next to state "Disconnected" — a claimed capability that does not
+    exist. The model's own `connection_status` is consulted first."""
+    from views.web.web_adapter import WebModelAdapter
+    from model.rotator_system import RotatorSystem
+
+    rotator = RotatorSystem(default_port="SIM")
+
+    class MockMgr:
+        def __init__(self):
+            self.active_models = {"Rotator": rotator}
+
+        def get_active_models_snapshot(self):
+            return dict(self.active_models)
+
+    adapter = WebModelAdapter()
+    adapter.set_system_manager(MockMgr())
+    assert adapter._determine_connection_status(rotator) == "disconnected"
+    assert adapter.get_state()["Rotator"]["connection_status"] == "disconnected"
+
+
+def test_dispatch_surfaces_a_refused_command_as_an_error():
+    """ROTATOR-13 residue: a `Refused` CommandResult is not a success. The
+    adapter only special-cased a bare `False`, so a command that refused
+    *with a reason* came back `{"status": "ok"}` and the dashboard toasted
+    "executed" — which is the same class of silence the refusal was added
+    to break."""
+    from views.web.web_adapter import WebModelAdapter
+    from results import Refused, Failed
+
+    class RefusingModel:
+        @property
+        def ui_schema(self):
+            return {"sections": [{"elements": [
+                {"type": "button", "command": "home"},
+                {"type": "button", "command": "boom"},
+            ]}]}
+
+        def home(self):
+            return Refused("The rotator is not connected.")
+
+        def boom(self):
+            return Failed(RuntimeError("stage fell over"))
+
+    class MockMgr:
+        def __init__(self):
+            self.active_models = {"Rotator": RefusingModel()}
+
+        def get_active_models_snapshot(self):
+            return dict(self.active_models)
+
+    adapter = WebModelAdapter()
+    adapter.set_system_manager(MockMgr())
+
+    res = adapter.dispatch_command("Rotator", "home")
+    assert res["status"] == "error"
+    assert "not connected" in res["message"]
+
+    res2 = adapter.dispatch_command("Rotator", "boom")
+    assert res2["status"] == "error"
+    assert "stage fell over" in res2["message"]

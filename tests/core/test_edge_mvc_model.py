@@ -248,3 +248,48 @@ def test_a_relative_move_is_judged_on_where_it_lands():
 
     rotator.step_deg = "1"
     assert rotator.move_relative_positive() is True
+
+
+# --- ROTATOR-13: a disconnected rotator says so ---------------------------
+#
+# `home`, `move_*` and `reset_and_configure` all began `if self.smc:` and
+# returned silently, so with no port (None/"SIM") every control was inert
+# and nothing anywhere said why. There is no rotator simulator to fall back
+# on: the honest answer is a refusal the operator can read.
+
+def test_rotator_commands_refuse_when_there_is_no_stage():
+    """Each schema command comes back Refused, with a reason, rather than
+    returning None and being rendered as "executed"."""
+    rotator = RotatorSystem(default_port="SIM")
+    assert rotator.smc is None
+
+    for command in ("home", "move_absolute", "move_relative_positive",
+                    "move_relative_negative", "reset_and_configure"):
+        result = rotator.execute_command(command)
+        assert result.refused, f"{command} did not refuse: {result!r}"
+        assert "connect" in result.reason.lower(), (
+            f"{command} refused without saying why: {result.reason!r}")
+
+
+def test_rotator_reports_no_connection_rather_than_simulation():
+    """A SIM/None port does not make the rotator simulated — nothing
+    simulates. `connection_status` is the model's own answer, so no view
+    has to guess it from the port string."""
+    assert RotatorSystem(default_port="SIM").connection_status == "disconnected"
+    assert RotatorSystem(default_port=None).connection_status == "disconnected"
+    assert RotatorSystem(default_port="None").connection_status == "disconnected"
+
+    connected = _rotator_with_stage()
+    connected.is_connected = True
+    assert connected.connection_status == "hardware"
+
+
+def test_rotator_commands_still_run_when_a_stage_is_present():
+    """Guard for the ROTATOR-13 refusals: they must fire only on the
+    no-stage path, not on every command."""
+    rotator = _rotator_with_stage()
+    rotator.is_connected = True
+    assert rotator.execute_command("home").ok
+    rotator.target_deg = "10"
+    assert rotator.execute_command("move_absolute",
+                                   inputs={"target_deg": "10"}).ok
