@@ -6,7 +6,7 @@ import threading
 from enum import Enum
 from controller.serial import serial, PACKET_FORMAT
 from error_routing import ErrorRouter as ErrorPopupManager
-from model.numeric import num as _num
+from model.numeric import num as _num, safe_float as _safe_float
 from model.params import Param, table as _param_table, extend as _extend_params
 from model import schema as sch
 from model.base import SchemaCommands
@@ -55,6 +55,33 @@ class BaseProbe(SchemaCommands):
     # Overridable by tests to avoid waiting on the real 5-minute timeout.
     _INTERLOCK_POLL_INTERVAL = 5
     _INTERLOCK_TIMEOUT = 300
+
+    # Single-byte control commands this board's firmware is *observed* to
+    # handle today, read straight out of `firmware/*/*.ino` (SERIAL-10).
+    #
+    #   stepper_firmware.ino, chuck_firmware.ino — `parseHybridSerial` has an
+    #       explicit branch for 0x64 ('d', TOFF=0 on all three drivers),
+    #       0x65 ('e') and 0x73 ('s'). Anything else is read and discarded.
+    #   high_polling_rate.ino (the DC probe) — only 0xAA and 0x73 ('s').
+    #       Every other byte falls through to `parseSerialAuto()` and is read
+    #       as *text*, so a 'd' there is not a disable at all.
+    #   'k' (0x6B) has no branch in any .ino, on any board.
+    #
+    # This is a **record of fact, not a decision.** Whether the protocol
+    # should grow ACKs, DC-side 'e'/'d' handlers, or a real 'k' is owner
+    # decision **D-7** (plan.md S16 item 2), open, at the bench, and it needs
+    # every board reflashed. Nothing here changes a byte on the wire: the
+    # only thing it buys is that the model stops asserting an outcome the
+    # firmware never produced. `test_declared_control_bytes_match_the_ino_files`
+    # is what keeps this honest if the firmware moves.
+    FIRMWARE_CONTROL_BYTES = frozenset({b"d", b"e", b"s"})
+
+    #: The outcome of the last `power_down()`, in the model's own vocabulary.
+    #: There is deliberately no "confirmed" — no firmware ACKs anything, so a
+    #: successful write is the strongest claim available until D-7 lands.
+    POWER_DOWN_SENT = "sent"                # a coil-kill handler exists
+    POWER_DOWN_UNSUPPORTED = "unsupported"  # this firmware has no such handler
+    POWER_DOWN_FAILED = "failed"            # it did not even leave the host
 
     # Per-class fallbacks for motion parameters (RC-6 item 1).
     #
@@ -189,6 +216,12 @@ class BaseProbe(SchemaCommands):
         self._input_gate_open = threading.Event()
         self._input_gate_open.set()
 
+        # What the last power_down() actually achieved (SERIAL-10). `None`
+        # until one has been attempted. Never "confirmed": see
+        # POWER_DOWN_SENT above.
+        self.power_down_status = None
+        self._power_down_unsupported_reported = False
+
         # Fault state (RC-2). Set when a command's fate is unknown — a write
         # that failed means the hardware may be in either state, and saying
         # "disabled" would be a guess presented as a fact. It persists until
@@ -245,23 +278,54 @@ class BaseProbe(SchemaCommands):
         self._run_id = 0
         self._script_thread = None
 
+    def _axis_state(self):
+        """The poller's mapped state, or `{}` if it could not be read.
+
+        **The read itself is guarded, not just the float cast** (REDPERCENT-4).
+        `get_mapped_state()` goes to the shared SDL poller, and a controller
+        unplugged mid-session is the ordinary case, not the exotic one. The
+        three `vel_*` properties below are sampled by the Red Percent monitor
+        thread as `getattr(stepper_model, 'vel_x', 0.0)` — and that default
+        shields nothing, because a property that *raises* is not a property
+        that is missing. The exception came out through the getattr, out of
+        the monitor loop, and took the thread with it: `monitoring` stayed
+        True with nothing monitoring, and pressing Start again did nothing.
+
+        Reported, not swallowed. The bus folds a repeat of the same
+        `(severity, source, title)` into one event with a count, so reporting
+        on every failed read at 60 Hz produces one warning that says how long
+        it lasted — which is what I-8.2 asks for — rather than a popup storm.
+        """
+        if not self.poller:
+            return {}
+        try:
+            return self.poller.get_mapped_state() or {}
+        except Exception as e:
+            try:
+                ErrorPopupManager.report_warning(
+                    "Controller Read Failed",
+                    f"{self.__class__.__name__}: could not read the gamepad "
+                    f"state: {e}. Velocities are reported as 0 until it "
+                    f"recovers.", e)
+            except Exception:
+                pass
+            return {}
+
     @property
     def vel_x(self):
-        state = self.poller.get_mapped_state() if self.poller else {}
-        val = state.get("x_axisStatus", 0.0)
+        val = self._axis_state().get("x_axisStatus", 0.0)
         try: return float(val) if val is not None else 0.0
         except (ValueError, TypeError): return 0.0
 
     @property
     def vel_y(self):
-        state = self.poller.get_mapped_state() if self.poller else {}
-        val = state.get("y_axisStatus", 0.0)
+        val = self._axis_state().get("y_axisStatus", 0.0)
         try: return float(val) if val is not None else 0.0
         except (ValueError, TypeError): return 0.0
 
     @property
     def vel_z(self):
-        state = self.poller.get_mapped_state() if self.poller else {}
+        state = self._axis_state()
         r_val = state.get("z_axisStatusR", -1.0)
         l_val = state.get("z_axisStatusL", -1.0)
         try:
@@ -739,33 +803,88 @@ class BaseProbe(SchemaCommands):
                     command = getattr(line, 'command', ('', 0))
                     
                     if command and command[0] == 'G':
-                        x_dist = params.get('X', 0)
-                        y_dist = params.get('Y', 0)
-                        z_dist = params.get('Z', 0)
-                        feedrate = params.get('F', self.full_speed)
-                        
+                        # **Only G0 and G1 are moves** (STEPPER-9). Every word
+                        # beginning with 'G' used to be dispatched as an
+                        # autonomous packet with X/Y/Z defaulted to 0, so the
+                        # `G21`/`G90` preamble that opens most files commanded
+                        # the stage twice before its first real move. The
+                        # firmware has no notion of units, work offsets or
+                        # absolute-vs-relative; a word it cannot act on is
+                        # skipped and said out loud, not turned into motion.
+                        word = command[1] if len(command) > 1 else None
+                        if _safe_float(word) not in (0.0, 1.0):
+                            msg = (f"{gcode_str.strip()}: this firmware has no "
+                                   f"handler for G{word} (only G0/G1 are moves"
+                                   f" — there is no absolute/relative or units"
+                                   f" handling). Line skipped; it was NOT sent"
+                                   f" as a zero-distance move.")
+                            print(f"[{self.__class__.__name__}] {msg}")
+                            ErrorPopupManager.report_warning(
+                                "Unsupported G-code Word", msg)
+                            continue
+
+                        # **Validated before anything is dispatched.** The
+                        # frame used to be built from raw strings and sent,
+                        # and only then did `float(self.x_step)` run — so a
+                        # malformed value went to the hardware *first* and
+                        # aborted the script afterwards, with the bad command
+                        # already on the wire. This is a motion path: a value
+                        # that cannot be read is an error to refuse, not a
+                        # number to invent (the rule get_params and
+                        # TemperatureSystem.send_settings already follow).
+                        axes = {}
+                        for axis in ('X', 'Y', 'Z'):
+                            raw = params.get(axis, 0)
+                            value = _safe_float(raw)
+                            if value is None:
+                                raise ValueError(
+                                    f"{gcode_str.strip()}: {axis} is "
+                                    f"{raw!r}, which is not a number. "
+                                    f"Nothing was sent.")
+                            axes[axis] = value
+
+                        if 'F' in params:
+                            feedrate = params['F']
+                            speed = _safe_float(feedrate)
+                            if speed is None:
+                                raise ValueError(
+                                    f"{gcode_str.strip()}: feedrate is "
+                                    f"{feedrate!r}, which is not a number. "
+                                    f"Nothing was sent.")
+                        else:
+                            # No F word: the probe's own configured speed,
+                            # coerced against its class's table rather than
+                            # read raw off the field (RC-6 item 1).
+                            speed = float(self._param("full_speed"))
+                            feedrate = speed
+
+                        x_step = self._param("x_step")
+                        y_step = self._param("y_step")
+                        z_step = self._param("z_step")
+
                         cmd_params = {
-                            "x_step_size": self.x_step,
-                            "y_step_size": self.y_step,
-                            "z_step_size": self.z_step,
+                            "x_step_size": x_step,
+                            "y_step_size": y_step,
+                            "z_step_size": z_step,
                             "full_speed": str(feedrate),
                             "slow_speed": 0,
                             "brake_distance": 0,
-                            "x_dist": str(x_dist),
-                            "y_dist": str(y_dist),
-                            "z_dist": str(z_dist),
+                            "x_dist": str(params.get('X', 0)),
+                            "y_dist": str(params.get('Y', 0)),
+                            "z_dist": str(params.get('Z', 0)),
                             "command_code_manual": 0,
                             "command_code_auton": 1
                         }
                         if self._refuse_if_estopped("script motion"):
                             break
                         self.serial_comm.send_autonomous_command(cmd_params)
-                        
-                        x_steps = abs(float(self.x_step) * float(x_dist))
-                        y_steps = abs(float(self.y_step) * float(y_dist))
-                        z_steps = abs(float(self.z_step) * float(z_dist))
+
+                        x_steps = abs(float(x_step) * axes['X'])
+                        y_steps = abs(float(y_step) * axes['Y'])
+                        z_steps = abs(float(z_step) * axes['Z'])
                         dist = math.sqrt(x_steps**2 + y_steps**2 + z_steps**2)
-                        speed = float(feedrate) if float(feedrate) > 0 else float(self.full_speed)
+                        if speed <= 0:
+                            speed = float(self._param("full_speed"))
                         duration = (dist / speed) + 0.05 if speed > 0 else 0.1
                         time.sleep(duration)
                     elif ',' in gcode_str:
@@ -1020,18 +1139,80 @@ class BaseProbe(SchemaCommands):
     def full_stop(self):
         return self._transition(ProbeMode.DISABLED, "full stop")
 
+    @property
+    def supports_coil_kill(self):
+        """True when this board's firmware has a handler that cuts coil current.
+
+        `'d'` is that handler on the stepper and chuck boards: TOFF=0 on all
+        three TMC2209 drivers, unconditionally. The DC board has no branch for
+        it, so the same byte arrives at `parseSerialAuto()` as text and
+        produces the stop fallthrough — a halt, not a de-energize.
+        """
+        return b"d" in self.FIRMWARE_CONTROL_BYTES
+
     def power_down(self):
+        """Stop, de-energize, and report **what actually happened** (SERIAL-10).
+
+        The bytes sent here are exactly the bytes that were sent before —
+        zeroed stop frame, `'d'`, `'k\\n'` — because this is a stop path and
+        the standing rule is that a truthfulness fix does not get to change
+        it. What changed is the claim: the old code logged "Sent Power Down
+        (Kill Coils) command 'k'" on every board, which is false on all three
+        (no firmware handles `'k'`) and doubly false on the DC probe, whose
+        firmware has no coil-kill handler at all.
+
+        `power_down_status` carries the honest answer instead, and a device
+        that cannot do this says so once rather than reporting silent success.
+        Making `'k'` real — or deleting it — is **D-7**, not this.
+        """
         disabled = self._transition(ProbeMode.DISABLED, "power down")
         if self.serial_comm:
             try:
                 self.serial_comm.write_command(b'k\n', priority=True)
-                print(f"[{self.__class__.__name__}] Sent Power Down (Kill Coils) command 'k'")
             except Exception as e:
                 # The kill never reached the board. Say so loudly rather than
                 # letting the caller believe the coils are dead (RC-2).
+                self.power_down_status = self.POWER_DOWN_FAILED
                 self._enter_fault(f"power down not confirmed: {e}")
                 return False
+        if not disabled:
+            # `_go_disabled` has already faulted: the disable did not reach
+            # the board, so nothing here may claim the coils are down.
+            self.power_down_status = self.POWER_DOWN_FAILED
+            return False
+        if self.supports_coil_kill:
+            self.power_down_status = self.POWER_DOWN_SENT
+            print(f"[{self.__class__.__name__}] Power down sent: stop frame "
+                  f"and 'd' (TOFF=0). Unacknowledged — no firmware ACKs (D-7).")
+        else:
+            self.power_down_status = self.POWER_DOWN_UNSUPPORTED
+            self._report_power_down_unsupported()
         return disabled
+
+    def _report_power_down_unsupported(self):
+        """Tell the operator once that this device has no coil-kill command.
+
+        Once per model, not once per stop: `power_down()` is on the teardown
+        and FULL STOP paths, and a popup on every one of those trains the
+        operator to dismiss the message that matters. It is a standing
+        property of the board, not an event.
+        """
+        msg = (f"{self.__class__.__name__}: this device's firmware has no "
+               f"power-down (kill coils) command — it handles "
+               f"{sorted(b.decode() for b in self.FIRMWARE_CONTROL_BYTES)} "
+               f"and nothing else. A stop was sent and the motion frame was "
+               f"zeroed, but the driver outputs were NOT de-energized. "
+               f"Treat the device as live. (SERIAL-10; firmware support is "
+               f"owner decision D-7.)")
+        print(f"[{self.__class__.__name__}] {msg}")
+        self._controller_log.append(msg)
+        if self._power_down_unsupported_reported:
+            return
+        self._power_down_unsupported_reported = True
+        try:
+            ErrorPopupManager.report_warning("Power Down Not Supported", msg)
+        except Exception:
+            pass
 
     def teardown(self):
         """Safety-first, exception-safe shutdown (RC-1, invariant I-1.2).
@@ -1134,6 +1315,14 @@ class StepperProbe(BaseProbe):
 
 
 class DCProbe(BaseProbe):
+    # `firmware/high_polling_rate/high_polling_rate.ino`'s parseHybridSerial
+    # branches on 0xAA and 0x73 ('s') only; everything else, 'e' and 'd'
+    # included, falls through to `parseSerialAuto()` and is read as text
+    # (SERIAL-10). The host keeps sending the same bytes — see power_down —
+    # it just no longer reports a de-energize this board cannot perform.
+    # Adding the handlers is D-7, at the bench.
+    FIRMWARE_CONTROL_BYTES = frozenset({b"s"})
+
     # A DC probe runs at 120, not the stepper's 400. Before this table the
     # fallback was the stepper's number at every call site.
     PARAMS = _extend_params(

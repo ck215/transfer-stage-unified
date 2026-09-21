@@ -73,6 +73,17 @@ class SimulatedPort:
     def reset_output_buffer(self):
         pass
 
+    def flush(self):
+        """Nothing is in flight, so a drain is instantly complete.
+
+        It did not answer this at all, and `send_manual_mode_command` calls
+        it on every frame — so *every* manual-mode frame in simulator mode
+        raised AttributeError inside the write path and was reported to the
+        operator as a "Serial Write Error". The same shape as SERIAL-9: a
+        method the simulated port forgot, turning SIM back into a different
+        code path, which is the one thing this class exists to prevent.
+        """
+
     def close(self):
         self.is_open = False
 
@@ -138,32 +149,15 @@ class serial:
                 write_timeout=1
             )
 
-            # Wait up to 1.5s for the Arduino to boot and respond
+            # Wait for the Arduino to boot, then ask it what it is.
             print(f"[SerialDrive] Pinging port {self.SERIAL_PORT} to verify connection...")
-            verified = False
-            
+
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
-            
-            time.sleep(1.5) # Wait for bootloader
-            start_time = time.time()
-            buffer = ""
-            while (time.time() - start_time < 3.0):
-                try:
-                    self.ser.write(b"s\n")
-                except Exception:
-                    break
-                    
-                if self.ser.in_waiting > 0:
-                    buffer += self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
-                    if "DEV:" in buffer:
-                        verified = True
-                        for line in buffer.splitlines():
-                            if "DEV:" in line:
-                                self.device_type = line.split("DEV:")[1].strip()
-                        break
-                time.sleep(0.05)
-                
+
+            time.sleep(self.BOOTLOADER_WAIT)
+            verified = self._handshake()
+
             if verified:
                 self.connection_state = ConnectionState.VERIFIED
                 print(f"[SerialDrive] Serial Connection Verified! Arduino Ready on {self.SERIAL_PORT}")
@@ -185,6 +179,88 @@ class serial:
             ErrorPopupManager.report_error("Unexpected Serial Error", msg, e)
         finally:
             print("[SerialDrive] Finish SerialDrive __init__")
+
+    # --- identity handshake (SERIAL-17) -------------------------------
+    #
+    #: How long to give the bootloader before the first ping.
+    BOOTLOADER_WAIT = 1.5
+    #: Seconds between identity pings. The loop used to write `s\n` on every
+    #: pass of a 50 ms poll — ~20 per second — and kept writing after the
+    #: board had already answered the previous one. Every `s` is answered, so
+    #: a verified link started life with a queue of unread `DEV:` replies
+    #: that `read_position` then skipped past for the rest of the session.
+    PING_INTERVAL = 0.25
+    #: How long to keep asking before declaring the link UNVERIFIED.
+    HANDSHAKE_TIMEOUT = 3.0
+    #: How often to look for a reply between pings.
+    _HANDSHAKE_POLL = 0.05
+
+    def _handshake(self):
+        """Ask the board what it is. True if it answered; sets `device_type`.
+
+        Three things this is careful about, all SERIAL-17:
+
+        * **One ping every `PING_INTERVAL`**, not one per poll, and none at
+          all once the board has answered.
+        * **A whole line, or nothing.** The old break condition was
+          `"DEV:" in buffer`, satisfied the instant those four bytes land —
+          `device_type` was then parsed off a line that had not finished
+          arriving and came out `""` or truncated. Harmless while nothing
+          reads it, wrong the moment it is used to validate the device
+          (SERIAL-7), which is exactly the sort of "negligible today" that
+          turns into a mis-identified board later.
+        * **Drain after the match**, not only before the bootloader wait, so
+          the replies to the pings that were already in flight are not left
+          for `read_position` to wade through.
+        """
+        deadline = time.time() + self.HANDSHAKE_TIMEOUT
+        buffer = ""
+        next_ping = 0.0
+        while time.time() < deadline:
+            now = time.time()
+            if now >= next_ping:
+                try:
+                    self.ser.write(b"s\n")
+                except Exception:
+                    return False
+                next_ping = now + self.PING_INTERVAL
+
+            try:
+                waiting = self.ser.in_waiting
+                if waiting > 0:
+                    buffer += self.ser.read(waiting).decode(
+                        'utf-8', errors='ignore')
+            except Exception:
+                return False
+
+            device = self._device_from(buffer)
+            if device is not None:
+                self.device_type = device
+                try:
+                    self.ser.reset_input_buffer()
+                except Exception:
+                    pass
+                return True
+
+            time.sleep(self._HANDSHAKE_POLL)
+        return False
+
+    @staticmethod
+    def _device_from(buffer):
+        """The device id from a **complete** `DEV:` line, or None.
+
+        The last element of the split is whatever has arrived since the final
+        newline — a partial line by definition — and is deliberately not
+        considered.
+        """
+        if '\n' not in buffer:
+            return None
+        for line in buffer.split('\n')[:-1]:
+            if "DEV:" in line:
+                device = line.split("DEV:")[1].strip()
+                if device:
+                    return device
+        return None
 
     # Helper to verify serial connection before sending data
     def _verify_serial(self, verbose=False):
@@ -403,6 +479,71 @@ class serial:
             ErrorPopupManager.report_error("Connection Lost", msg, None)
         except Exception:
             pass
+
+    #: How long `flush()` waits for the OS to drain the output buffer before
+    #: giving up. Short: every caller is on a shutdown path, and a stop that
+    #: can hang the shutdown is its own bug.
+    FLUSH_TIMEOUT = 1.0
+
+    def flush(self, timeout=None):
+        """Block until the bytes already written have reached the wire. -> bool.
+
+        Exists so a model never has to reach for `.ser` (invariant I-2.3).
+        The case that needs it is a heater or motion **shutdown frame**:
+        `close()` on POSIX does not guarantee that bytes handed to the OS
+        have been transmitted, so an off-frame written immediately before a
+        close can be discarded by it — and the hardware stays on.
+
+        **Bounded, on a worker.** pyserial's `flush()` is `tcdrain`, which is
+        unbounded; SERIAL-12 already names it as a hazard for exactly this
+        reason. A dead or flow-controlled port would otherwise hang whatever
+        teardown called it, which is a worse failure than the one being
+        fixed. The drain is dispatched to a daemon thread and joined with a
+        budget — the same shape as `emergency_stop`'s bounded join, and for
+        the same reason: returning without the answer beats not returning.
+
+        Returns True only if the drain actually completed. False means the
+        bytes may still be in the buffer, and a caller about to close the
+        port should treat the frame as **not delivered**.
+
+        Deliberately **not** a state transition: it does not `_mark_lost`. It
+        is a query on a teardown path, and a "Connection Lost" popup raised
+        while the application is closing is noise, not information. A write
+        that matters will have already faulted through `write_command`.
+
+        The handle is snapshotted rather than locked, for the same reason a
+        priority write forces itself through: a drain that cannot get the
+        lock is worse than an unsynchronised one, and `tcdrain` does not
+        mutate the port — it only waits on it.
+        """
+        budget = self.FLUSH_TIMEOUT if timeout is None else timeout
+        handle = self.ser
+        if handle is None or not getattr(handle, "is_open", False):
+            return False
+
+        drained = threading.Event()
+        failure = []
+
+        def _drain():
+            try:
+                handle.flush()
+            except Exception as e:
+                failure.append(e)
+            finally:
+                drained.set()
+
+        worker = threading.Thread(
+            target=_drain, daemon=True, name=f"flush-{self.SERIAL_PORT}")
+        worker.start()
+        if not drained.wait(budget):
+            print(f"[SerialDrive] Port {self.SERIAL_PORT} did not drain within "
+                  f"{budget}s; treat the last frame as undelivered.")
+            return False
+        if failure:
+            print(f"[SerialDrive] Drain of {self.SERIAL_PORT} failed: "
+                  f"{failure[0]}")
+            return False
+        return True
 
     def is_open(self):
         """True when a command has somewhere to go — a real port or the simulator."""

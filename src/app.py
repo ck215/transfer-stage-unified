@@ -475,19 +475,46 @@ def run_pyside_app():
                 return
     
             for i, port in enumerate(self.detected_ports):
+                # MANAGER-20: the operator can close the setup window while
+                # this is running. `requestInterruption()` sets a flag and
+                # nothing else — it is this loop's job to look at it, and
+                # `probe_device_at`'s job to look at it too, because a single
+                # port costs ~1.5 s + 3 s per baud and that is where the
+                # thread actually sits.
+                if self.isInterruptionRequested():
+                    print("[main_app] Port scan interrupted; stopping.")
+                    return
                 if port == "Headless": continue
                 self.pinging.emit(port)
-                
-                device_name = app_bootstrap.probe_device_at(port)
+
+                device_name = app_bootstrap.probe_device_at(
+                    port, should_abort=self.isInterruptionRequested)
+                if self.isInterruptionRequested():
+                    print("[main_app] Port scan interrupted; stopping.")
+                    return
                 if device_name:
                     self.found.emit(device_name, port)
                     print(f"[main_app] Auto-detected {device_name} on {port}")
-                
+
                 prog = ((i + 1) / total_ports) * 100
                 self.progress.emit(prog)
-    
+
             self.complete.emit()
+    #: Scanner threads that outlived their window. A `QThread` whose Python
+    #: wrapper is garbage-collected while the thread is still running takes
+    #: the process down with "QThread: Destroyed while thread is still
+    #: running" (MANAGER-20). If the bounded wait below ever expires, the
+    #: reference is parked here instead of dropped: the scan finishes into
+    #: nothing, which is untidy, and the process survives, which is the point.
+    _orphaned_scanners = []
+
     class SetupWindow(QMainWindow):
+        #: How long `closeEvent` waits for the scanner to notice its
+        #: interruption request. `probe_device_at` checks the flag inside its
+        #: polling loops, so the real figure is well under a second; this is
+        #: the ceiling on how long closing the window may appear to hang.
+        SCANNER_SHUTDOWN_MS = 3000
+
         def __init__(self):
             super().__init__()
             self.setWindowTitle("Device Configuration Setup (PySide6)")
@@ -516,7 +543,39 @@ def run_pyside_app():
             
             # Start autodetect
             self.start_autodetect()
-    
+
+        def stop_scanner(self):
+            """Ask the scan to stop and wait a bounded time for it (MANAGER-20).
+
+            Returns True if the thread is no longer running. Launch and
+            Refresh are disabled during a scan but the window's X is not, so
+            this window could be closed — and destroyed — with a `QThread`
+            still inside a multi-second `probe_device_at`. Qt's answer to
+            that is to abort the process.
+
+            Bounded, not indefinite: a stop that can hang the close is its
+            own problem. If the wait expires the thread is parked in
+            `_orphaned_scanners` so its wrapper is not collected underneath
+            it, and the window closes anyway.
+            """
+            scanner = getattr(self, "scanner", None)
+            if scanner is None or not scanner.isRunning():
+                return True
+            scanner.requestInterruption()
+            if scanner.wait(self.SCANNER_SHUTDOWN_MS):
+                return True
+            print(f"[main_app] Port scan did not stop within "
+                  f"{self.SCANNER_SHUTDOWN_MS} ms; leaving it to finish "
+                  f"detached rather than destroying a running QThread.")
+            _orphaned_scanners.append(scanner)
+            self.scanner = None
+            return False
+
+        def closeEvent(self, event):
+            self.stop_scanner()
+            self.is_scanning = False
+            super().closeEvent(event)
+
         def get_available_ports(self):
             import app_bootstrap
             self.detected_ports = app_bootstrap.discover_ports()
@@ -524,7 +583,7 @@ def run_pyside_app():
         def get_available_controllers(self):
             import app_bootstrap
             self.detected_controllers = app_bootstrap.discover_controllers()
-    
+
         def create_widgets(self):
             central = QWidget()
             self.setCentralWidget(central)
@@ -624,6 +683,12 @@ def run_pyside_app():
             self.start_autodetect()
     
         def start_autodetect(self):
+            # Refresh is disabled while a scan runs, so this should never
+            # find one — but replacing `self.scanner` with a new QThread
+            # while the old one is still running is precisely the
+            # destroyed-while-running crash MANAGER-20 is about, so it is
+            # stopped rather than assumed absent.
+            self.stop_scanner()
             self.is_scanning = True
             self.progress_bar.setValue(0)
             self.progress_bar.show()
