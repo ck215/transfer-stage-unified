@@ -444,20 +444,45 @@ def _track_and_get_thread(instance, thread_attr):
 
 
 def _stop_base_probe(instance):
+    """Stop **both** of BaseProbe's independent thread/stop-event pairs.
+
+    `_interlock_stop`/`_interlock_thread` (the watchdog wave 7 fixed) is not
+    the same pair as `_loops_stop`/`_sample_thread` (RC-4's model-owned
+    sampler, started by `start_loops()`/`enable()`). Only stopping the first
+    left `_sample_thread` running past test teardown for any probe whose
+    test called `enable()` or `start_loops()` directly (bypassing
+    SystemManager), polling a MagicMock transport at 10 Hz
+    (`SAMPLE_INTERVAL`). `read_position()` against an unconfigured
+    `MagicMock().in_waiting` raises `TypeError`, which
+    `ErrorPopupManager.report_error` reports onto the *global*,
+    process-wide event bus -- from whichever unrelated test happens to be
+    running next. That is the second source behind the
+    `test_api_logs_and_errors` / `test_web_error_manager_routing` flake:
+    wave 7 fixed the first (the watchdog thread) and this one survived
+    because it is a genuinely separate stop event, not a rename of the
+    same one.
+    """
     stop_event = getattr(instance, "_interlock_stop", None)
     if stop_event is not None:
         stop_event.set()
-    return getattr(instance, "_interlock_thread", None)
+    loops_stop = getattr(instance, "_loops_stop", None)
+    if loops_stop is not None:
+        loops_stop.set()
+    return [
+        getattr(instance, "_interlock_thread", None),
+        getattr(instance, "_sample_thread", None),
+        getattr(instance, "_input_thread", None),
+    ]
 
 
 def _stop_temperature_system(instance):
     instance.continue_reading = False
-    return getattr(instance, "serial_thread", None)
+    return [getattr(instance, "serial_thread", None)]
 
 
 def _stop_redpercent_system(instance):
     instance.monitoring = False
-    return getattr(instance, "_monitor_thread", None)
+    return [getattr(instance, "_monitor_thread", None)]
 
 
 def _install_background_thread_tracking():
@@ -502,7 +527,10 @@ def _stop_leaked_background_threads():
     for instance in list(_live_tracked_instances):
         for cls, stop_fn in _STOP_LEAKED_THREAD_PROCEDURES:
             if isinstance(instance, cls):
-                threads_to_join.append(stop_fn(instance))
+                # Each stop_fn now returns a *list* of threads (a probe has
+                # more than one independent thread/stop-event pair) -- see
+                # _stop_base_probe.
+                threads_to_join.extend(stop_fn(instance))
                 break
     for thread in threads_to_join:
         if isinstance(thread, threading.Thread) and thread.is_alive():
