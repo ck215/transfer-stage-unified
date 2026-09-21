@@ -128,3 +128,24 @@ is not evidence the defect exists. Read the line.
   `## UNVERIFIED`, `## CORE CHANGE REQUESTS`, `## NOTES FOR THE LEAD`.
   Report honestly: a `partly` with the reason is a good outcome; a claimed pass
   that did not run is not.
+
+## Addendum 1 (lead, after launch): diagnostics. Get it with `git merge --no-edit rebuild`
+
+The station is being benched TODAY and the owner wants detail to fix from.
+`events.debug(title, message, *, source="", exception=None, every=0.0)` now
+exists. It goes ONLY to the log file (never a view, never the terminal), with a
+timestamp, thread name and full traceback. Every info/warn/error is written
+there too. Use it generously:
+- every state/mode transition (from -> to, and why), every refusal reason you
+  raise, port open/close, handshake result and identity, connection-state
+  changes, reconnect attempts, gamepad bind/unbind/loss, thread start/stop;
+- timings on anything safety-relevant: how long `_halt_hardware` took, lock wait
+  time on a priority write, whether a write was aborted by `abort_if`;
+- bytes on the wire at debug level for command frames (hex), NOT for the 50 Hz
+  jog stream or any poll (use `every=1.0` there and report a rate instead);
+- inside any loop, ALWAYS pass `every=` so a call site emits at most one line per
+  interval. Pass `exception=exc` whenever you caught one.
+Popups stay rare: `events.error` only for a fault or an unconfirmed stop.
+`events.warn` for something the operator should see in the log panel and can act
+on. `events.info` for run/connection milestones. Everything else is `debug`.
+`app.launch()` calls `events.open_file()` and logs the path at startup.
