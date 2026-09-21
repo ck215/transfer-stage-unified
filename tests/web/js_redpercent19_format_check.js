@@ -48,9 +48,25 @@ const sandbox = {
       if (loggingEnabled) {
         console.error(`[getElementById] ${id}`);
       }
-      // Return a mock element that tracks innerText writes
+      // Return a mock element that tracks innerText writes. A real DOM
+      // element always has .dataset and .classList (even when empty), and
+      // pollState's toggle-button branch reads both unconditionally for
+      // every id it finds via getElementById. Leaving them off here made
+      // the *second* attribute in each device (red_change) throw a
+      // TypeError inside pollState's try/catch, which swallows it and
+      // aborts the whole poll silently -- that looked like "the loop only
+      // processes the first attribute" but was a fake-DOM gap, not app.js
+      // or the VM.
       if (!mockElements[id]) {
-        const el = { _innerText: '' };
+        const el = {
+          _innerText: '',
+          dataset: {},
+          classList: { add: () => {}, remove: () => {}, contains: () => false, toggle: () => {} },
+          options: [],
+          value: '',
+          placeholder: '',
+          disabled: false,
+        };
         Object.defineProperty(el, 'innerText', {
           get() { return this._innerText; },
           set(val) {

@@ -1,15 +1,21 @@
-"""REDPERCENT-19: Web client should honour format keys from the schema.
+"""REDPERCENT-19: Web client honours format keys from the schema.
 
-app.js pollState currently does String(val) for readonly numerics.
-The model declares current_red/red_change with format=".2f".
-This test harness proves pollState reads and applies the format key.
+The model declares current_red/red_change with format=".2f" in ui_schema.
+app.js's pollState used to write String(val) unconditionally for readonly
+numerics; it now looks the element up in the cached device schema via
+_findSchemaElement and applies _formatValue when a ".Nf" format is present.
+
+This wrapper runs the Node vm harness (js_redpercent19_format_check.js)
+against the real app.js and requires a clean "OK" -- no skip-on-partial-
+failure allowed. Proven to fail against 73c591a's app.js (both current_red
+and red_change come back unformatted) and to pass against the fix.
 """
 import subprocess
 import sys
-import pytest
 from pathlib import Path
 
-# Check if node is available
+import pytest
+
 try:
     subprocess.run(['node', '--version'], capture_output=True, check=True)
     HAS_NODE = True
@@ -19,22 +25,13 @@ except (FileNotFoundError, subprocess.CalledProcessError):
 
 @pytest.mark.skipif(not HAS_NODE, reason='node not found')
 def test_format_honored_in_pollstate():
-    """Test that pollState applies format key from schema elements."""
+    """pollState applies the schema's format key to every readonly numeric."""
     harness_path = Path(__file__).parent / 'js_redpercent19_format_check.js'
     app_js_path = Path(__file__).parent.parent.parent / 'src/views/web/static/js/app.js'
 
-    if not harness_path.exists():
-        pytest.skip('harness not found')
-    if not app_js_path.exists():
-        pytest.skip('app.js not found')
+    assert harness_path.exists(), 'harness not found'
+    assert app_js_path.exists(), 'app.js not found'
 
-    result = subprocess.run(
-        [sys.executable, '-m', 'pytest', '--co', '-q'],  # Just list, don't run
-        capture_output=True,
-        cwd=str(Path(__file__).parent.parent)
-    )
-
-    # Run the actual harness
     result = subprocess.run(
         ['node', str(harness_path), str(app_js_path)],
         capture_output=True,
@@ -42,12 +39,9 @@ def test_format_honored_in_pollstate():
         timeout=10,
     )
 
-    # Parse output
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
 
-    if result.returncode != 0:
-        pytest.fail(f'Harness failed: {stdout or stderr}')
-
-    if stdout != 'OK':
-        pytest.fail(f'Harness did not return OK: {stdout}')
+    assert result.returncode == 0 and stdout == 'OK', (
+        f'harness did not report a clean OK: stdout={stdout!r} stderr={stderr!r}'
+    )
