@@ -2119,10 +2119,12 @@ Baseline for the wave: `0e5ba73`, fast gate **589 passed, 1 xfailed**, exit
 
 ## Finding ledger
 
-216 rows: the 213 findings of the 2026-09-19 audit, plus **REDPERCENT-21,
-22 and 23**, added by owner instruction on 2026-09-20. The three carry a
-`Source:` line in `audit/redpercent.md` saying so — they were not produced by
-the audit pass and must not be cited as its evidence.
+217 rows: the 213 findings of the 2026-09-19 audit, plus four added later.
+**REDPERCENT-21, 22 and 23** came from owner instruction on 2026-09-20.
+**GAMEPAD-21** was found during the 2026-09-20 fix wave by the `fix-input`
+agent and confirmed by the lead before recording. All four carry a `Source:`
+line in their audit entry saying so — none was produced by the audit pass,
+and none may be cited as its evidence.
 
 `Closed by` is `root cause` when the finding closes because the structure
 changed, `explicit` when it is fixed and named individually. Generated from
@@ -2187,6 +2189,7 @@ it) · `n/a` (with a reason).
 | GAMEPAD-18 | RC13 / RC9 | S5 | root cause | closed (S12: in-process enumeration through InputService; test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing) |
 | GAMEPAD-19 | RC13 | S5 | root cause | open |
 | GAMEPAD-20 | doc | S0 | root cause | open |
+| GAMEPAD-21 | RC13 | S5 | root cause | open |
 | MANAGER-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | MANAGER-2 | RC1 / RC10 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
 | MANAGER-3 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |

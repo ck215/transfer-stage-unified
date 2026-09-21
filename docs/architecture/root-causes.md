@@ -866,7 +866,7 @@ handle from it and release it on close. Edges have exactly one consumer
 `pygame.quit()` is no longer called mid-session, the helper can collapse
 to the single init.
 
-**Closes.** GAMEPAD-2,5(claims part),10,15,18,19; MANAGER-16;
+**Closes.** GAMEPAD-2,5(claims part),10,15,18,19,21; MANAGER-16;
 VIEW-TKINTER-6,10(claims part); known-issues #7 (root).
 
 ---
@@ -1093,7 +1093,7 @@ parentheses):
 | MANAGER | 1 RC1/RC10 · 2 RC1/RC10 · 3 RC1 · 4 RC1/RC10 · 5 RC1 · 6 RC1 · 7 RC1 · 8 RC1 · 9 RC1 · 10 RC1/RC5 · 11 RC1 · 12 RC9 · 13 RC4/RC10 · 14 LOCAL-OK (+D-9) · 15 RC10 · 16 RC13 · 17 RC8 · 18 RC9 · 19 RC5 · 20 RC4 |
 | SERIAL | 1 RC2 · 2 RC1 · 3 RC1 · 4 RC1 · 5 RC1/RC10 · 6 RC4 · 7 RC2 · 8 RC2 · 9 RC2 · 10 RC2 (firmware, D-7) · 11 RC2 · 12 RC4 · 13 RC2 (D-7) · 14 RC1 · 15 RC1 · 16 RC8 · 17 RC2 (LOCAL-OK) · 18 RC1 (D-11) · 19 doc |
 | ERRORS | 1 RC8/RC7 · 2 RC8/RC10 · 3 RC8 · 4 RC8 · 5 RC8 · 6 RC2 · 7 RC2/RC8/RC11 · 8 RC8 · 9 RC8 · 10 RC8 · 11 doc · 12 RC10 |
-| GAMEPAD | 1 RC4 · 2 RC13 · 3 RC3 · 4 RC3 · 5 RC13/RC7 · 6 RC7 · 7 RC4 · 8 RC4 (D-4) · 9 RC1 · 10 RC13 · 11 RC12 · 12 RC12 · 13 RC12 · 14 RC12 · 15 RC13/RC11 · 16 RC4 · 17 LOCAL-OK · 18 RC13/RC9 · 19 RC13 · 20 doc |
+| GAMEPAD | 1 RC4 · 2 RC13 · 3 RC3 · 4 RC3 · 5 RC13/RC7 · 6 RC7 · 7 RC4 · 8 RC4 (D-4) · 9 RC1 · 10 RC13 · 11 RC12 · 12 RC12 · 13 RC12 · 14 RC12 · 15 RC13/RC11 · 16 RC4 · 17 LOCAL-OK · 18 RC13/RC9 · 19 RC13 · 20 doc · 21 RC13 |
 | STEPPER | 1 RC1 · 2 RC4 · 3 RC1 · 4 RC2 · 5 RC3 · 6 RC3 · 7 RC5/RC3 · 8 RC5 · 9 RC2 (+LOCAL-OK G-code parse) · 10 RC7 · 11 RC6/RC7/RC3 · 12 RC7 (D-11) · 13 RC9 · 14 RC4 · 15 RC4 |
 | DC | 1 RC3 · 2 RC1 · 3 RC1 · 4 RC6 · 5 RC4 · 6 RC7 · 7 RC6 · 8 RC6 · 9 RC1 · 10 RC3 (D-2) · 11 RC7/RC3 · 12 RC9 · 13 RC2/RC7 · 14 RC7 (D-11) · 15 RC6 · 16 RC4 · 17 RC4/RC3 · 18 RC5/RC2 · 19 RC7 |
 | ROTATOR | 1 RC1/RC5 · 2 RC10 · 3 RC8/RC7 · 4 RC5 · 5 RC1 · 6 RC4 · 7 RC4/RC10 · 8 RC5 · 9 RC2/RC7 · 10 RC1 · 11 RC2 (LOCAL-OK) · 12 RC6 · 13 RC2/RC8 · 14 RC1 · 15 RC8 + doc |

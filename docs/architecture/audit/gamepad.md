@@ -239,6 +239,36 @@ Repo: /Users/ianalbinogonzalez/Documents/GitHub/transfer-stage-unified/mvc-refac
 - **Proposed fix direction**: update docs after fixes above.
 - **Confidence**: verified
 
+### GAMEPAD-21
+- **Title**: A successful controller swap permanently stops the poller on **every** frontend
+- **Severity**: high
+- Source: **found during the 2026-09-20 fix wave** by the `fix-input` worktree agent while working GAMEPAD-7 — not from the 2026-09-19 audit pass. Verified independently by the lead before recording.
+- **Views affected**: Tkinter, PySide6, Web — all three. The lead initially recorded this as Web-only and that was wrong; see below.
+- **Reference behavior**: S5 (RC-13 item 2) gave `ControllerPoller` its own clock so polling no longer depends on a Tk widget's `after`. `test_polling_continues_without_a_tk_event_loop` pins that, and GAMEPAD-1 was closed on it.
+- **Actual behavior**: the repair did not reach the swap path. `set_controller` (`gamepad.py:364-370`) calls `_initialize_pygame_joystick`, whose first act is `stop_polling()` (:380). It then resumes under `if success and self.gui_root and not self.is_polling` (:368). `gui_root` defaults to `None` (:261) and is only assigned when `start_polling` is passed a `gui` (:489-491) — which the threaded clock path, by construction, does not. So on the web frontend the guard is falsy, the resume never runs, and the poller stays stopped. `change_controller` carries the identical condition at :465.
+- **Failure scenario**: a web user with a controller bound swaps to a second controller. The swap reports success and the UI shows the new controller selected. Polling has been torn down and never restarts, so `get_mapped_state()` returns `{}` for the rest of the process's life and stick input is silently dead. If the probe was in manual mode, the coils stay energised while input does nothing — the same end state GAMEPAD-1 described, reached by a different route after GAMEPAD-1 was closed.
+- **Proposed fix direction**: the resume condition must test what actually matters — that polling was running and should continue — not that a Tk root happens to exist. Gate on the prior `is_polling` state captured before the teardown, and call `start_polling()` with no `gui` argument so the existing `gui_root`/threaded-clock selection in `start_polling` makes the scheduler choice in one place. Fix both call sites. Do not reintroduce a `gui_root` requirement anywhere on the resume path.
+**Scope correction (lead, 2026-09-20).** First recorded as affecting the Web
+frontend only, on the reasoning that `gui_root` is set when a view passes a
+`gui`. It is not set anywhere. The only live external caller of
+`start_polling` in `src/` is `probes.py:882`, which passes `None` explicitly
+— S5 moved poller startup into the model precisely so the Web frontend,
+having no event loop to offer, would poll at all. So `gui_root` is `None` on
+**every** frontend, the resume gate was falsy for all three, and every
+controller swap in the application killed input until the process restarted.
+The `gui_root is not None` branch in `start_polling` (:527) is dead code on
+the current tree; it is left in place deliberately, because removing it is a
+separate decision and RC-13's anti-fix table is specific about what may be
+done to this path.
+
+This is also why the finding is `high` rather than `medium`: it is the same
+end state as GAMEPAD-1 — manual mode inert, coils energised, no auto-disable
+because the watchdog skips while `manual_flag` — and GAMEPAD-1 was rated
+high.
+
+- **Confidence**: verified (structure), lead-confirmed at `0e11280`; the
+  all-frontends scope verified by exhaustive grep of `start_polling` callers.
+
 ## Coverage
 
 Read fully: `src/controller/gamepad.py` (1-640); `src/model/probes.py` (1-537); `src/views/pyside/view.py` 20-96, 97-118, 120-455 (QtDynamicView), 719-967 (DashboardWindow/DeviceDock); `src/views/tkinter/view.py` 20-98 (error popups), 100-283, 285-580 (DashboardWindow, DynamicView); `src/views/web/web_adapter.py` (1-489), `web_view.py` (1-78); `src/views/web/static/js/app.js` 590-740, 780-935 (dropdown, toggle, pollState) plus greps of the whole file; `src/app.py` 1-20, 62-80, 130-165, 388-462, 530-552, 780-920; `src/app_bootstrap.py` 135-197; `src/model/system_manager.py` (all); main: `controllerDrive.py` (all), `stepper_frame.py` 362-425 and 580-720, `mainGUI.py` grep of controller handling; `src/controller/serial.py` only lines 195-225 (to compare Z/dpad combining, not audited); `firmware/stepper_firmware/stepper_firmware.ino` grep for dpad; `redpercent_system.py` 300-335; tests/hardware/test_gamepad.py 1-70; docs known-issues.md 36-60 and controllers.md 60-120; git log/show for commits 05c2e69 and 39e3a51.
