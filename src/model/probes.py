@@ -148,15 +148,31 @@ class BaseProbe(SchemaCommands):
         print(f"[{self.__class__.__name__}] Destructor called")
 
     def __init__(self, port, controller_id, active_claims=None):
+        # Mode (RC-3) and the mode-gated parameter store (DC-6) come first,
+        # before anything below can trigger a `PARAMS`-backed property
+        # setter — `self.x_step = "16"` two lines down is exactly that. One
+        # value, one writer for the mode: `_transition`. The four booleans
+        # this replaces were set from `enter_auton`, `enter_manual`,
+        # `macro_start_auton`, `run_script`, `send_manual_mode_command`,
+        # `_stop_and_disarm` and the Web `set_attr` route — seven writers, no
+        # agreed ordering, and the hardware side effects scattered among them.
+        self._mode = ProbeMode.DISABLED
+        self._mode_lock = threading.RLock()
+        # Backing storage for every `PARAMS`-declared attribute (DC-6, see
+        # the properties defined below the class). Construction always runs
+        # in DISABLED, which no entry's `disabled_when` names, so nothing
+        # below is ever refused — this is purely where the values live.
+        self._param_store = {}
+
         self.serial_comm = serial(port) if port and port != "None" else None
-        
+
         self.packet_format = PACKET_FORMAT  # Standardized 42-byte float format
-        
+
         # Position variables
         self.pos_x = "0"
         self.pos_y = "0"
         self.pos_z = "0"
-        
+
         # Connection variables
         self.controller_var = controller_id
         self.serial_port = port
@@ -167,28 +183,20 @@ class BaseProbe(SchemaCommands):
             self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
         except Exception as e:
             print(f"[{self.__class__.__name__}] Gamepad unavailable, running headless: {e}")
-        
+
         # Step sizes
         self.x_step = "16"
         self.y_step = "16"
         self.z_step = "16"
-        
+
         # Step counts (distances)
         self.x_dist = "0"
         self.y_dist = "0"
         self.z_dist = "0"
-        
+
         # Velocity control
         self.full_speed = "400"
         self.man_full_speed = "400"
-        
-        # Mode (RC-3). One value, one writer: `_transition`. The four
-        # booleans this replaces were set from `enter_auton`, `enter_manual`,
-        # `macro_start_auton`, `run_script`, `send_manual_mode_command`,
-        # `_stop_and_disarm` and the Web `set_attr` route — seven writers, no
-        # agreed ordering, and the hardware side effects scattered among them.
-        self._mode = ProbeMode.DISABLED
-        self._mode_lock = threading.RLock()
 
         # Autonomous "stepping" is a *timed sub-state*, not a fifth boolean
         # (RC-3 item 2). `is_stepping` used to be set by macro_start_auton and
@@ -376,9 +384,13 @@ class BaseProbe(SchemaCommands):
                 # what was just typed — and Tk papered over it by forcing
                 # focus away first, which is a named anti-fix because it only
                 # ever worked in Tk.
+                # DC-6: refusing this while a run is already active is
+                # enforced by `execute_command` below, not only rendered —
+                # the same `disabled_when` the entries use, so re-arming
+                # mid-run has to go through the toggle (stop) first.
                 sch.button("Start Stepping", "macro_start_auton",
                            inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
-                           role="go"),
+                           role="go", disabled_when=("autonomous", "manual")),
                 # Per-device "Full Stop" removed: the dashboard's global FULL
                 # STOP already calls this model's full_stop() directly, so a
                 # per-tab button was a redundant second E-stop.
@@ -725,6 +737,60 @@ class BaseProbe(SchemaCommands):
             print(f"[{self.__class__.__name__}] {what} refused: FULL STOP is latched")
             return True
         return False
+
+    # -- schema-declared mode gating (DC-6) -----------------------------
+    #
+    # `ui_schema` has always declared which modes grey an entry or a
+    # command out (`disabled_when=("autonomous", "manual")`). Before this,
+    # that declaration was consulted only by each view's own greying-out
+    # logic — so a request that reached the model directly (`setattr`, the
+    # Web `/api/set_attr` route, or `execute_command` called without going
+    # through a renderer at all) landed regardless of mode. These two
+    # lookups and the refusal helper are what the properties defined below
+    # the class, and the `execute_command` override just below, both share
+    # — one place reads the schema's own gate, so a control's rendered
+    # state and its actual enforcement cannot drift apart.
+
+    def _schema_element_for(self, model_attr):
+        """The schema element declaring `model_attr`, or `None`."""
+        for element in sch.elements(self.ui_schema):
+            if element.get("model_attr") == model_attr:
+                return element
+        return None
+
+    def _command_element_for(self, command):
+        """The schema element whose `command` is `command`, or `None`."""
+        for element in sch.elements(self.ui_schema):
+            if element.get("command") == command:
+                return element
+        return None
+
+    def _refuse_if_mode_disallows(self, element, label):
+        """True when `element`'s own `disabled_when`/`enabled_when` forbids
+        the current mode. `element=None` (nothing in the schema names this
+        attribute or command) means unrestricted, matching the pre-DC-6
+        behavior for everything the schema does not gate.
+        """
+        if element is None or sch.is_enabled(element, self.mode.value):
+            return False
+        print(f"[{self.__class__.__name__}] Rejected: {label} is not "
+              f"available while {self.mode.value} (DC-6)")
+        return True
+
+    def execute_command(self, name, inputs=None, args=None):
+        """DC-6: a command's own `disabled_when` refuses it here, not only
+        in whichever renderer happens to be greying it out. "Start
+        Stepping" is the motivating case: re-arming it mid-run has to go
+        through the toggle (stop) first, and that has to be true even for a
+        caller that never rendered the button at all.
+        """
+        element = self._command_element_for(name)
+        label = (element or {}).get("text", name)
+        if self._refuse_if_mode_disallows(element, label):
+            from results import Refused
+            return Refused(f"{label} is not available while "
+                            f"{self.mode.value}")
+        return super().execute_command(name, inputs, args)
 
     def send_stop_command(self):
         if self.serial_comm:
@@ -1297,6 +1363,42 @@ class BaseProbe(SchemaCommands):
         if not done.wait(self.ESTOP_RETURN_BUDGET):
             print(f"[{self.__class__.__name__}] FULL STOP: latched; hardware "
                   f"stop still in flight after {self.ESTOP_RETURN_BUDGET}s")
+
+
+def _mode_gated_param(name):
+    """One `property` per `PARAMS` name, shared by every `BaseProbe`
+    subclass (DC-6).
+
+    This is the *only* thing that changes: whether a write to a declared
+    motion parameter lands, gated by the exact `disabled_when` its schema
+    entry already carries. What is stored is untouched — an unparseable
+    value is still accepted here and only ever substituted for later,
+    inside `get_params`'s lenient `coerce` (RC-6; see
+    `tests/core/test_typed_params.py`). Mode gating and value typing are
+    different questions, and only the first one belongs at the write
+    boundary: a value that fails to parse is a formatting problem the
+    model already knows how to fall back from, but a write that arrives
+    mid-autonomous-run is a safety question, and the answer has to be "no"
+    before it is ever asked what the value was.
+    """
+
+    def getter(self):
+        return self._param_store.get(name, "")
+
+    def setter(self, value):
+        element = self._schema_element_for(name)
+        label = (element or {}).get("text", name).rstrip(":")
+        if self._refuse_if_mode_disallows(element, label):
+            raise ValueError(f"{label} cannot be changed while "
+                              f"{self.mode.value}")
+        self._param_store[name] = value
+
+    return property(getter, setter)
+
+
+for _param_name in BaseProbe.PARAMS:
+    setattr(BaseProbe, _param_name, _mode_gated_param(_param_name))
+del _param_name
 
 
 class StepperProbe(BaseProbe):
