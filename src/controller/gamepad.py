@@ -478,17 +478,6 @@ class ControllerPoller:
             ErrorPopupManager.report_error("Pygame Init Error", f"[controllerDrive] Error initializing pygame:\n{e}", e)
             return False
 
-    def change_controller(self, new_controller_id):
-        print(f"[{self.process_name}] Hot-swapping to: {new_controller_id}")
-        # Same gate as set_controller, and it was wrong here too (GAMEPAD-21).
-        # This method has no callers in src (GAMEPAD-17), which is precisely
-        # why a defect in it rots unnoticed.
-        was_polling = self.is_polling
-        self.controllerID = new_controller_id
-        success = self._initialize_pygame_joystick(new_controller_id)
-        self._resume_polling_if(was_polling and success)
-        return success
-
     # Which poll chain is the live one (GAMEPAD-7).
     #
     # A swap is stop_polling() + start_polling(), and `is_polling` was the

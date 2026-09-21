@@ -1,23 +1,5 @@
 import sys
 
-def parse_controller_id(controllerID):
-    """Safely parses a controller ID string into an integer or None."""
-    if controllerID is None:
-        return None
-    if not isinstance(controllerID, str):
-        return None
-    if "None" in controllerID or "Virtual" in controllerID or controllerID == "N/A":
-        return None
-    import re
-    m = re.search(r'(?:Joy|ID)?\s*(\d+)', controllerID, re.IGNORECASE)
-    if m:
-        try:
-            return int(m.group(1))
-        except ValueError:
-            return None
-    return None
-
-
 import os
 os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
 

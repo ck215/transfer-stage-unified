@@ -976,25 +976,6 @@ def test_manual_input_is_still_live_after_a_swap_on_the_threaded_clock():
                 poller.close()
 
 
-def test_change_controller_resumes_the_threaded_clock_too():
-    """`change_controller` carries the identical gate. It has no callers in
-    `src` today (GAMEPAD-17), which is exactly why it would rot quietly."""
-    with patched_sdl() as mock_pygame:
-        _sdl_handles_per_index(mock_pygame, count=2, numaxes=6, axis_value=0.5)
-        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
-            poller = ControllerPoller(0, {}, "WebProbe")
-            try:
-                poller.start_polling(gui=None)
-                assert _wait_for(lambda: poller.is_polling)
-
-                assert poller.change_controller(1) is True
-                assert poller.is_polling
-                assert _wait_for(
-                    lambda: poller.get_mapped_state().get("x_axisStatus") == 0.5)
-            finally:
-                poller.close()
-
-
 def test_a_swap_does_not_start_polling_on_a_poller_that_was_not_polling():
     """The other half of the new gate.
 
