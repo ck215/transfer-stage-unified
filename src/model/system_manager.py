@@ -223,7 +223,17 @@ class SystemManager:
                     if n not in self.hidden}
 
     def shutdown_all(self):
-        """Stop and tear down every model. Idempotent."""
+        """Stop every model, then tear every model down. Idempotent.
+
+        MANAGER-25: this used to run `_stop_then_teardown` per device, in
+        sequence, so anything that held this thread inside one device's
+        `teardown()` — a slow drain, or PySide's modal error dialog opening
+        synchronously inside it (PYSIDE-21) — left every later-registered
+        device *not yet stopped*. The heater registers before the rotator.
+        Every device is now stopped first, concurrently and within
+        FULL_STOP_BUDGET (the same fan-out FULL STOP uses), and only then
+        is anything torn down.
+        """
         with self.lock:
             models = list(self.active_models.items())
             self.active_models.clear()
@@ -231,8 +241,18 @@ class SystemManager:
             self.hidden.clear()
         for name, model in models:
             self._emit("released", name, model)
+        results = self._stop_concurrently(dict(models), "during shutdown")
+        unconfirmed = sorted(n for n, ok in results.items() if not ok)
+        if unconfirmed:
+            self._report(
+                "Shutdown could not confirm the stop of: "
+                f"{', '.join(unconfirmed)}. Treat them as live.",
+                None, "Stop Not Confirmed")
         for name, model in models:
-            self._stop_then_teardown(name, model)
+            try:
+                model.teardown()
+            except Exception as e:
+                self._report(f"Failed to tear down {name}: {e}", e, "Shutdown Error")
 
     def reconfigure(self, builder):
         """Replace the whole set of models: tear down first, then build.
@@ -267,7 +287,23 @@ class SystemManager:
         models = self.get_active_models_snapshot()
         if not models:
             return {}
+        results = self._stop_concurrently(models)
+        unconfirmed = [n for n, ok in results.items() if not ok]
+        if unconfirmed:
+            self._report(
+                "FULL STOP latched on every device, but these did not confirm "
+                f"within {self.FULL_STOP_BUDGET}s: {', '.join(sorted(unconfirmed))}",
+                None, "Stop Not Confirmed")
+        return dict(results)
 
+    def _stop_concurrently(self, models, context=""):
+        """Call every model's `emergency_stop` on its own thread; one join.
+
+        Returns {name: ok}. Shared by FULL STOP and shutdown so both have
+        the same bound: no model's stop can delay another's, and the whole
+        fan-out waits at most FULL_STOP_BUDGET.
+        """
+        where = f" {context}" if context else ""
         results = {}
         results_lock = threading.Lock()
 
@@ -278,13 +314,13 @@ class SystemManager:
                 # This used to be `model.emergency_stop(); ok = True`, and
                 # every model is built to always return inside its
                 # ESTOP_RETURN_BUDGET whether or not the write landed — so
-                # `ok` was True for a wedged transport, and the docstring
-                # above described a False that could not occur. `None` from a
-                # model that predates the contract is read as unconfirmed
-                # rather than silently as success.
+                # `ok` was True for a wedged transport, and full_stop_all's
+                # docstring described a False that could not occur. `None`
+                # from a model that predates the contract is read as
+                # unconfirmed rather than silently as success.
                 ok = model.emergency_stop() is True
             except Exception as e:
-                self._report(f"Failed to stop {name}: {e}", e, "Stop Error")
+                self._report(f"Failed to stop {name}{where}: {e}", e, "Stop Error")
             with results_lock:
                 results[name] = ok
 
@@ -303,13 +339,7 @@ class SystemManager:
         with results_lock:
             for name in models:
                 results.setdefault(name, False)
-            unconfirmed = [n for n, ok in results.items() if not ok]
-        if unconfirmed:
-            self._report(
-                "FULL STOP latched on every device, but these did not confirm "
-                f"within {self.FULL_STOP_BUDGET}s: {', '.join(sorted(unconfirmed))}",
-                None, "Stop Not Confirmed")
-        return dict(results)
+            return dict(results)
 
     @staticmethod
     def _report(message, exc, title):
