@@ -6,10 +6,11 @@ HTTP request handlers in `web_server.py` with the hardware models and SystemMana
 Ensures zero coupling to Qt/PySide6.
 """
 
+import contextlib
 import sys
 import threading
 import traceback
-from model.schema import NeedsConfirmation
+from model.schema import CommandResult, NeedsConfirmation
 from typing import Dict, Any, Optional, List, Union
 
 
@@ -29,7 +30,11 @@ class WebModelAdapter:
         self._state_lock = threading.RLock()
         self._device_locks: Dict[str, threading.Lock] = {}
         self.log_buffer: List[str] = []
-        self.error_buffer: List[Dict[str, Any]] = []
+        # There is no error buffer (ERRORS-12). `errors_since`/
+        # `latest_error_id` read the bus, which S11 made the source of truth
+        # for `/api/errors`; a second copy here was another account of the
+        # same events, kept in sync by a mirroring subscriber, and lost
+        # whenever this adapter was replaced.
         # Async hardware scan state (WEB-15 residue). See start_hardware_scan.
         self._scan_thread: Optional[threading.Thread] = None
         self._scan_state: Optional[Dict[str, Any]] = None
@@ -393,32 +398,39 @@ class WebModelAdapter:
         models = manager.get_active_models_snapshot()
 
         for name, model in models.items():
-            dev_lock = self._get_device_lock(name)
-            with dev_lock:
-                # No hardware I/O here (RC-4, invariant I-4.1). /api/state used
-                # to call read_position() and poll_status() inline, so the
-                # sampling rate was whatever the browser happened to poll at,
-                # and a stalled read blocked the HTTP handler thread. The model
-                # samples on its own thread; this reads the cache.
-                #
-                # One device's read is isolated from the rest (WEB-14): a
-                # raising property getter or a broken ui_schema used to blow
-                # up the whole /api/state response, graying out every device
-                # card over one bad one instead of just its own.
-                try:
-                    model_state = {}
-                    schema = getattr(model, "ui_schema", {"sections": []})
-                    for sec in schema.get("sections", []):
-                        for el in sec.get("elements", []):
-                            attr = el.get("model_attr")
-                            if attr and hasattr(model, attr):
-                                model_state[attr] = getattr(model, attr)
+            # No hardware I/O here (RC-4, invariant I-4.1). /api/state used
+            # to call read_position() and poll_status() inline, so the
+            # sampling rate was whatever the browser happened to poll at,
+            # and a stalled read blocked the HTTP handler thread. The model
+            # samples on its own thread; this reads the cache.
+            #
+            # Because it is a cache read it takes **no per-device lock**
+            # (ROTATOR-7). It used to, and a command holding that lock — a
+            # long move, or the blocking `reconnect` the audit named before
+            # D-11 purged it — stalled every `/api/state` poll for the
+            # device, from every open tab. The lock never protected these
+            # reads in the first place: the values are published by the
+            # model's own poll thread under the model's own lock, which this
+            # adapter does not hold either way.
+            #
+            # One device's read is isolated from the rest (WEB-14): a
+            # raising property getter or a broken ui_schema used to blow
+            # up the whole /api/state response, graying out every device
+            # card over one bad one instead of just its own.
+            try:
+                model_state = {}
+                schema = getattr(model, "ui_schema", {"sections": []})
+                for sec in schema.get("sections", []):
+                    for el in sec.get("elements", []):
+                        attr = el.get("model_attr")
+                        if attr and hasattr(model, attr):
+                            model_state[attr] = getattr(model, attr)
 
-                    # Attach connection_status badging
-                    model_state["connection_status"] = self._determine_connection_status(model)
-                    state[name] = model_state
-                except Exception as e:
-                    state[name] = {"_error": str(e)}
+                # Attach connection_status badging
+                model_state["connection_status"] = self._determine_connection_status(model)
+                state[name] = model_state
+            except Exception as e:
+                state[name] = {"_error": str(e)}
         return state
 
     @staticmethod
@@ -497,12 +509,30 @@ class WebModelAdapter:
             except Exception as e:
                 return {"status": "error", "code": 500, "message": str(e)}
 
+    #: Commands that must never queue behind another request on the same
+    #: device (ROTATOR-7, docs/architecture/safety-pattern.md: "A stop that
+    #: cannot get the lock is worse than an unsynchronised one"). Every other
+    #: command still serialises on the per-device lock. This list is stops
+    #: only — a stop is one idempotent frame, so the worst case of racing it
+    #: against an in-flight command is a repeated stop. Never add a motion
+    #: command here, where a mangled frame is a move to the wrong place.
+    _UNSERIALIZED_COMMANDS = frozenset({"stop", "emergency_stop"})
+
     def dispatch_command(self, device_name: str, command_name: str,
                          args: Any = None, inputs: Any = None) -> Dict[str, Any]:
         """
         Thread-safely dispatches a command (move, stop, home, calibrate, etc.)
         to the target device model using per-device locking. Only commands the
         device's own ui_schema declares are eligible for dispatch.
+
+        **Stops skip that lock** (`_UNSERIALIZED_COMMANDS`). The per-device
+        STOP button used to take it like anything else, so it waited out
+        whatever request was already holding the device — and the operator
+        pressing STOP is precisely the case where something slow is already
+        in flight. The model is what actually orders the stop against work
+        already dispatched: it latches `_estop` before any I/O and takes the
+        priority write path. The adapter's job here is only to not delay the
+        call into it.
 
         **`inputs` is D-5.** The client sends the current value of every field
         the command declared, and the model validates them as a set before
@@ -528,8 +558,11 @@ class WebModelAdapter:
             if command_name not in self._schema_commands(model) or not func or not callable(func):
                 return {"status": "error", "code": 400, "message": f"Command {command_name} not found on {device_name}"}
 
-        dev_lock = self._get_device_lock(device_name)
-        with dev_lock:
+        if command_name in self._UNSERIALIZED_COMMANDS:
+            guard: Any = contextlib.nullcontext()
+        else:
+            guard = self._get_device_lock(device_name)
+        with guard:
             try:
                 runner = getattr(model, "execute_command", None)
                 if callable(runner):
@@ -560,6 +593,18 @@ class WebModelAdapter:
                     # A refused command is not an executed one.
                     return {"status": "error", "code": 400,
                             "message": f"{command_name} was refused"}
+
+                # ...and neither is one that came back `Refused` *with a
+                # reason* (ROTATOR-13). Only a bare `False` was caught here,
+                # so a command that said why it declined — "the rotator is
+                # not connected" — was reported to the dashboard as
+                # `status: ok` and toasted as executed. `Failed` is the same
+                # mistake in the other direction: it was attempted and
+                # raised, and the operator has to be told which.
+                if isinstance(res, CommandResult) and not res.ok:
+                    return {"status": "error",
+                            "code": 500 if res.failed else 400,
+                            "message": res.reason or f"{command_name} was refused"}
                 return {"status": "ok", "code": 200, "result": str(res)}
             except Exception as e:
                 print(f"[WebModelAdapter] dispatch_command({device_name}.{command_name}) failed:\n{traceback.format_exc()}")
@@ -661,25 +706,6 @@ class WebModelAdapter:
     def get_logs(self) -> List[str]:
         with self._state_lock:
             return list(self.log_buffer)
-
-    def append_error(self, err_dict: Dict[str, Any], max_size: int = 500):
-        with self._state_lock:
-            self.error_buffer.append(err_dict)
-            if len(self.error_buffer) > max_size:
-                self.error_buffer.pop(0)
-
-    def pop_errors(self) -> List[Dict[str, Any]]:
-        """**Superseded by `errors_since` (RC-8 item 3).**
-
-        Destructive by construction: whichever client polled first consumed
-        the error and every other open tab never saw it (ERRORS-2, WEB-17).
-        Kept only because the shutdown path drains the buffer through it;
-        `/api/errors` does not call it any more.
-        """
-        with self._state_lock:
-            errors = list(self.error_buffer)
-            self.error_buffer.clear()
-            return errors
 
     def errors_since(self, event_id: int = 0) -> List[Dict[str, Any]]:
         """Every event newer than `event_id`, oldest first, non-destructively.

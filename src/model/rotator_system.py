@@ -90,10 +90,30 @@ class RotatorSystem(SchemaCommands):
     @property
     def error(self):
         with self._lock: return self._error
-        
+
     @error.setter
     def error(self, value):
         with self._lock: self._error = value
+
+    #: What a command says when there is no stage behind it (ROTATOR-13).
+    NOT_CONNECTED = ("The rotator is not connected. Choose a real port for "
+                     "it in setup and reconnect — there is no rotator "
+                     "simulator to fall back on.")
+
+    @property
+    def connection_status(self):
+        """The model's own account of the link, for every renderer.
+
+        **Never "simulated".** A port of "SIM"/"None" skips `connect()` and
+        leaves `smc` as None; nothing about the stage is then simulated, so
+        a badge reading SIMULATED claims a capability that does not exist
+        (ROTATOR-13). Each view used to guess this from the port string —
+        the Web adapter checked for "SIM" *before* it checked whether the
+        device was connected — which is how that badge appeared next to a
+        state line reading "Disconnected".
+        """
+        with self._lock:
+            return "hardware" if (self.is_connected and self.smc) else "disconnected"
 
     def _run_async(self, func, *args):
         """Helper to run blocking operations in a thread."""
@@ -124,6 +144,15 @@ class RotatorSystem(SchemaCommands):
         try:
             func(*args)
         except Exception as e:
+            # The move did not finish, and nothing on this path stopped the
+            # stage: `SMC100WaitTimedOutException` says only that the driver
+            # stopped watching (ROTATOR-11). So the stage is somewhere we did
+            # not command it to be, and the commanded target is no longer a
+            # position the next relative move may be checked against — the
+            # same rule `emergency_stop` follows (safety-pattern.md item 6).
+            # It was kept, so a timed-out move to 10 left the guard believing
+            # the stage was at 10.
+            self._forget_target()
             if self.error_callback:
                 self.error_callback(e)
             else:
@@ -248,9 +277,14 @@ class RotatorSystem(SchemaCommands):
                   f"stop still in flight after {self.ESTOP_RETURN_BUDGET}s")
 
     def home(self):
-        if self.smc:
-            self._commit_target(0.0)
-            self._run_async(self.smc.home)
+        if not self.smc:
+            # Refused, not silently skipped (ROTATOR-13). This used to be a
+            # bare `if self.smc:` with no else, so with no port every button
+            # in the rotator card did nothing and said nothing.
+            from results import Refused
+            return Refused(self.NOT_CONNECTED)
+        self._commit_target(0.0)
+        self._run_async(self.smc.home)
 
     # -- schema commands (D-5): the values are already validated ---------
     #
@@ -328,7 +362,8 @@ class RotatorSystem(SchemaCommands):
         the operator can answer (S10 item 3).
         """
         if not self.smc:
-            return False
+            from results import Refused
+            return Refused(self.NOT_CONNECTED)
         if self._estop.is_set():
             # Refused where the operator can see it, rather than dispatched
             # and dropped on the worker. Both happen; only this one is visible.
@@ -418,8 +453,10 @@ class RotatorSystem(SchemaCommands):
                         pass
 
     def reset_and_configure(self):
-        if self.smc:
-            self._run_async(self.smc.reset_and_configure)
+        if not self.smc:
+            from results import Refused
+            return Refused(self.NOT_CONNECTED)
+        self._run_async(self.smc.reset_and_configure)
 
     # `_confirm_rotation`, `move_absolute(target_deg)` and
     # `move_relative(step_deg)` are gone, replaced by the guarded schema

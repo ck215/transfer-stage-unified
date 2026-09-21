@@ -95,16 +95,20 @@ class MockSystemManager:
 
 @pytest.fixture
 def web_server_fixture():
-    # Reset buffer state before tests
-    WebAPIHandler.log_buffer.clear()
-    WebAPIHandler.error_buffer.clear()
+    # The log buffer belongs to this server's own adapter (ERRORS-12): the
+    # `WebAPIHandler.log_buffer` / `.error_buffer` proxies this used to
+    # clear forwarded to whichever adapter the handler class held, which is
+    # a different object until `start()` re-points it. There is no error
+    # buffer at all any more — `/api/errors` reads the bus.
     mgr = MockSystemManager()
     server = WebDashboardServer(mgr, port=9100)
+    with server.adapter._state_lock:
+        server.adapter.log_buffer.clear()
     server.start(background=True)
     yield server, mgr
     server.stop()
-    WebAPIHandler.log_buffer.clear()
-    WebAPIHandler.error_buffer.clear()
+    with server.adapter._state_lock:
+        server.adapter.log_buffer.clear()
 
 
 def make_request(url, method="GET", json_data=None, token=True, extra_headers=None):
@@ -433,7 +437,7 @@ def test_api_logs_and_errors(web_server_fixture):
     from error_routing import ErrorRouter
 
     server, _ = web_server_fixture
-    WebAPIHandler.log_buffer.append("[Stage_A] Initialization complete")
+    server.adapter.append_log("[Stage_A] Initialization complete")
     ErrorRouter.report_warning("LimitReached", "Soft limit", source="Stage_A")
 
     status, _, body = make_request(f"http://127.0.0.1:{server.port}/api/logs")

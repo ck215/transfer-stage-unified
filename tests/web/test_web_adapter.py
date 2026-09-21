@@ -34,8 +34,14 @@ class MockSystemManager:
 
 
 def test_web_error_manager_routing():
-    WebAPIHandler.error_buffer.clear()
-    WebErrorManager.initialize()
+    """**Re-authored for ERRORS-12.** This read `WebAPIHandler.error_buffer`,
+    the mirror `WebErrorManager` kept of the bus. The mirror is gone, so the
+    same three events are read the way `/api/errors` reads them — through
+    the adapter, off the bus."""
+    from views.web.web_adapter import WebModelAdapter
+
+    adapter = WebModelAdapter()
+    cursor = adapter.latest_error_id()
 
     # Verify report_error
     ErrorRouter.report_error("ConnectionFailed", "Device failed to respond", exception=Exception("TimeoutErr"))
@@ -44,7 +50,7 @@ def test_web_error_manager_routing():
     # Verify report_info
     ErrorRouter.report_info("HomingComplete", "Stage is calibrated")
 
-    buf = WebAPIHandler.error_buffer
+    buf = adapter.errors_since(cursor)
     assert len(buf) == 3
     assert buf[0]["type"] == "error"
     assert buf[0]["title"] == "ConnectionFailed"
@@ -58,30 +64,46 @@ def test_web_error_manager_routing():
     assert buf[2]["title"] == "HomingComplete"
     assert buf[2]["exception"] is None
 
-    WebAPIHandler.error_buffer.clear()
+
+def test_web_error_manager_shims_publish_to_the_bus():
+    """The three report_* names WebErrorManager keeps still reach the bus,
+    tagged as the web source."""
+    from views.web.web_adapter import WebModelAdapter
+
+    adapter = WebModelAdapter()
+    cursor = adapter.latest_error_id()
+    WebErrorManager.report_error("ShimError", "via the manager")
+    WebErrorManager.report_warning("ShimWarning", "via the manager")
+    WebErrorManager.report_info("ShimInfo", "via the manager")
+
+    events = adapter.errors_since(cursor)
+    assert [e["title"] for e in events] == ["ShimError", "ShimWarning", "ShimInfo"]
+    assert {e["source"] for e in events} == {"web"}
 
 
 def test_web_dashboard_window_poller_binding():
-    WebAPIHandler.log_buffer.clear()
+    """**Re-authored for ERRORS-12.** The assertions read
+    `WebAPIHandler.log_buffer`, a proxy onto whichever adapter the handler
+    class held — which is not the one this window's server serves
+    `/api/logs` from. They read that server's adapter now."""
     mgr = MockSystemManager()
     win = WebDashboardWindow(mgr, port=9200, open_browser=False)
+    adapter = win.server.adapter
 
     # Trigger log update via poller
     poller = mgr.active_models["Stage_X"].poller
     poller.emit_log("Step completed: 100")
     poller.emit_log("Step completed: 200")
 
-    assert len(WebAPIHandler.log_buffer) == 2
-    assert "[Stage_X] Step completed: 100" in WebAPIHandler.log_buffer
-    assert "[Stage_X] Step completed: 200" in WebAPIHandler.log_buffer
+    assert len(adapter.get_logs()) == 2
+    assert "[Stage_X] Step completed: 100" in adapter.get_logs()
+    assert "[Stage_X] Step completed: 200" in adapter.get_logs()
 
     # Verify log buffer capped at 500 lines
     for i in range(550):
         poller.emit_log(f"Line {i}")
-    assert len(WebAPIHandler.log_buffer) == 500
-    assert "[Stage_X] Line 549" == WebAPIHandler.log_buffer[-1]
-
-    WebAPIHandler.log_buffer.clear()
+    assert len(adapter.get_logs()) == 500
+    assert "[Stage_X] Line 549" == adapter.get_logs()[-1]
 
 
 def test_web_dashboard_window_lifecycle():
@@ -267,3 +289,313 @@ def test_hardware_scan_is_single_flight(monkeypatch):
     assert second["code"] == 409
 
     block_forever.set()
+
+
+# --- ROTATOR-7: the web STOP must not queue behind another request -------
+#
+# The finding: `dispatch_command` took the per-device lock for *every*
+# command, so the per-device STOP button waited for whatever request was
+# already holding it, and `get_state` took the same lock, so one slow
+# command stalled state polling for that device. The safety contract
+# (docs/architecture/safety-pattern.md) is that a stop never queues: "A
+# stop that cannot get the lock is worse than an unsynchronised one."
+
+class _GatedDevice:
+    """A model with one command that blocks until released, plus a stop."""
+
+    def __init__(self):
+        import threading as _t
+        self.release = _t.Event()
+        self.in_home = _t.Event()
+        self.stopped = _t.Event()
+        self.estopped = _t.Event()
+        self.position = 0.0
+
+    @property
+    def ui_schema(self):
+        return {"sections": [{"elements": [
+            {"type": "readonly", "model_attr": "position"},
+            {"type": "button", "command": "home"},
+            {"type": "button", "command": "stop"},
+            {"type": "button", "command": "emergency_stop"},
+        ]}]}
+
+    def home(self):
+        self.in_home.set()
+        # Bounded so a regression cannot wedge the suite forever.
+        self.release.wait(10)
+        return True
+
+    def stop(self):
+        self.stopped.set()
+        return True
+
+    def emergency_stop(self):
+        self.estopped.set()
+        return True
+
+
+class _GatedMgr:
+    def __init__(self, model):
+        self.active_models = {"Rotator": model}
+
+    def get_active_models_snapshot(self):
+        return dict(self.active_models)
+
+
+def _adapter_with_gated_device():
+    from views.web.web_adapter import WebModelAdapter
+    model = _GatedDevice()
+    adapter = WebModelAdapter()
+    adapter.set_system_manager(_GatedMgr(model))
+    return adapter, model
+
+
+def test_stop_command_is_not_serialized_behind_a_slow_command():
+    """ROTATOR-7: with a slow command holding the device lock, a STOP
+    dispatched from another request must still reach the model promptly."""
+    import threading
+    adapter, model = _adapter_with_gated_device()
+
+    slow = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    slow.start()
+    assert model.in_home.wait(2), "the slow command never started"
+
+    result = {}
+
+    def _stop():
+        result["res"] = adapter.dispatch_command("Rotator", "stop")
+
+    stopper = threading.Thread(target=_stop, daemon=True)
+    stopper.start()
+    try:
+        # The stop must land while `home` is still in flight.
+        assert model.stopped.wait(1.0), (
+            "STOP queued behind the in-flight command on the device lock")
+        stopper.join(1.0)
+        assert not stopper.is_alive(), "STOP did not return to its caller"
+        assert result["res"]["status"] == "ok"
+        assert not model.release.is_set()
+    finally:
+        model.release.set()
+        slow.join(5)
+
+
+def test_emergency_stop_command_is_not_serialized_behind_a_slow_command():
+    """ROTATOR-7: the same for `emergency_stop`, which the safety pattern
+    requires never block its caller."""
+    import threading
+    adapter, model = _adapter_with_gated_device()
+
+    slow = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    slow.start()
+    assert model.in_home.wait(2), "the slow command never started"
+
+    estopper = threading.Thread(
+        target=adapter.dispatch_command,
+        args=("Rotator", "emergency_stop"), daemon=True)
+    estopper.start()
+    try:
+        assert model.estopped.wait(1.0), (
+            "emergency_stop queued behind the in-flight command")
+        estopper.join(1.0)
+        assert not estopper.is_alive()
+    finally:
+        model.release.set()
+        slow.join(5)
+
+
+def test_get_state_is_not_stalled_by_an_in_flight_command():
+    """ROTATOR-7, second half: `/api/state` reads the model's cache and does
+    no I/O (I-4.1), so it must not wait on the per-device lock a long command
+    is holding. A blocking command used to stall every state poll for that
+    device, which is what the audit recorded for `reconnect`."""
+    import threading
+    import time as _time
+    adapter, model = _adapter_with_gated_device()
+
+    slow = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    slow.start()
+    assert model.in_home.wait(2), "the slow command never started"
+
+    try:
+        started = _time.monotonic()
+        state = adapter.get_state()
+        elapsed = _time.monotonic() - started
+        assert elapsed < 0.5, (
+            f"/api/state blocked {elapsed:.2f}s on the device lock")
+        assert state["Rotator"]["position"] == 0.0
+    finally:
+        model.release.set()
+        slow.join(5)
+
+
+def test_ordinary_commands_still_serialize_on_the_device_lock():
+    """Regression guard for the ROTATOR-7 fix: only the stop paths skip the
+    per-device lock. Two ordinary commands must still not overlap, or the
+    fix has traded a queued STOP for concurrent motion on one device."""
+    import threading
+    adapter, model = _adapter_with_gated_device()
+
+    slow = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    slow.start()
+    assert model.in_home.wait(2), "the slow command never started"
+
+    model.in_home.clear()
+    second = threading.Thread(
+        target=adapter.dispatch_command, args=("Rotator", "home"), daemon=True)
+    second.start()
+    try:
+        assert not model.in_home.wait(0.3), (
+            "a second ordinary command ran while the first held the device")
+    finally:
+        model.release.set()
+        slow.join(5)
+        second.join(5)
+
+
+# --- ROTATOR-13, web half: the badge must not claim a simulator ----------
+
+def test_a_sim_port_rotator_is_not_badged_as_simulated():
+    """ROTATOR-13: `_determine_connection_status` guessed "simulated" from
+    the port string, so a rotator configured for SIM rendered a SIMULATED
+    badge next to state "Disconnected" — a claimed capability that does not
+    exist. The model's own `connection_status` is consulted first."""
+    from views.web.web_adapter import WebModelAdapter
+    from model.rotator_system import RotatorSystem
+
+    rotator = RotatorSystem(default_port="SIM")
+
+    class MockMgr:
+        def __init__(self):
+            self.active_models = {"Rotator": rotator}
+
+        def get_active_models_snapshot(self):
+            return dict(self.active_models)
+
+    adapter = WebModelAdapter()
+    adapter.set_system_manager(MockMgr())
+    assert adapter._determine_connection_status(rotator) == "disconnected"
+    assert adapter.get_state()["Rotator"]["connection_status"] == "disconnected"
+
+
+def test_dispatch_surfaces_a_refused_command_as_an_error():
+    """ROTATOR-13 residue: a `Refused` CommandResult is not a success. The
+    adapter only special-cased a bare `False`, so a command that refused
+    *with a reason* came back `{"status": "ok"}` and the dashboard toasted
+    "executed" — which is the same class of silence the refusal was added
+    to break."""
+    from views.web.web_adapter import WebModelAdapter
+    from results import Refused, Failed
+
+    class RefusingModel:
+        @property
+        def ui_schema(self):
+            return {"sections": [{"elements": [
+                {"type": "button", "command": "home"},
+                {"type": "button", "command": "boom"},
+            ]}]}
+
+        def home(self):
+            return Refused("The rotator is not connected.")
+
+        def boom(self):
+            return Failed(RuntimeError("stage fell over"))
+
+    class MockMgr:
+        def __init__(self):
+            self.active_models = {"Rotator": RefusingModel()}
+
+        def get_active_models_snapshot(self):
+            return dict(self.active_models)
+
+    adapter = WebModelAdapter()
+    adapter.set_system_manager(MockMgr())
+
+    res = adapter.dispatch_command("Rotator", "home")
+    assert res["status"] == "error"
+    assert "not connected" in res["message"]
+
+    res2 = adapter.dispatch_command("Rotator", "boom")
+    assert res2["status"] == "error"
+    assert "stage fell over" in res2["message"]
+
+
+# --- ERRORS-12: one source of truth for the web error path ---------------
+#
+# S11 made the bus the source of truth for /api/errors, so the failure the
+# audit describes — an error published before the dashboard exists, lost
+# when a second WebModelAdapter replaces the first — can no longer happen.
+# What survived is the structure: WebErrorManager mirroring every event
+# into a second buffer, and `_BufferProxy` lazily building a throwaway
+# adapter to hold it. The same indirection is still live on the *log* half,
+# where the buffer really does depend on which adapter instance is current.
+
+def test_api_errors_survives_an_adapter_replacement():
+    """The pin. An error reported against one adapter is still served after
+    that adapter has been replaced, because the route reads the bus."""
+    from views.web.web_adapter import WebModelAdapter
+    from views.web.web_server import WebAPIHandler
+    from error_routing import ErrorRouter
+
+    previous = WebAPIHandler.adapter
+    try:
+        first = WebModelAdapter()
+        WebAPIHandler.adapter = first
+        cursor = first.latest_error_id()
+        ErrorRouter.report_error("EarlyFailure", "reported before the dashboard")
+
+        # A completely different adapter, as a second construction would build.
+        second = WebModelAdapter()
+        WebAPIHandler.adapter = second
+
+        titles = [e["title"] for e in second.errors_since(cursor)]
+        assert "EarlyFailure" in titles
+        assert second.latest_error_id() > cursor
+    finally:
+        WebAPIHandler.adapter = previous
+
+
+def test_the_web_error_path_keeps_no_second_copy_of_the_bus():
+    """ERRORS-12, structural: no mirror buffer, and so no lazily built
+    throwaway adapter to hold one. `errors_since`/`latest_id` read the bus,
+    and that is the only account of an error the web layer has."""
+    from views.web.web_adapter import WebModelAdapter
+    from views.web.web_server import WebAPIHandler
+
+    assert not hasattr(WebAPIHandler, "error_buffer")
+    adapter = WebModelAdapter()
+    for gone in ("error_buffer", "append_error", "pop_errors"):
+        assert not hasattr(adapter, gone), (
+            f"WebModelAdapter.{gone} is a second account of the error bus")
+
+
+def test_poller_logs_reach_the_server_that_serves_them():
+    """ERRORS-12, the half that was still live. The poller logger wrote
+    through `WebAPIHandler.log_buffer`, a proxy over whichever adapter the
+    *handler class* happened to hold — which is not the adapter the window's
+    own server serves `/api/logs` from until `show()` re-points it. A log
+    emitted before then went into an adapter nothing reads."""
+    from views.web.web_server import WebAPIHandler
+    from views.web.web_adapter import WebModelAdapter
+
+    previous = WebAPIHandler.adapter
+    try:
+        # A different adapter is current on the handler class, exactly as one
+        # is after any other server has started.
+        WebAPIHandler.adapter = WebModelAdapter()
+
+        mgr = MockSystemManager()
+        win = WebDashboardWindow(mgr, port=9207, open_browser=False)
+        assert win.server.adapter is not WebAPIHandler.adapter
+
+        mgr.active_models["Stage_X"].poller.emit_log("Step completed: 100")
+
+        assert "[Stage_X] Step completed: 100" in win.server.adapter.get_logs(), (
+            "the log went to an adapter this server does not serve from")
+    finally:
+        WebAPIHandler.adapter = previous

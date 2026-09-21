@@ -4,8 +4,18 @@ import time
 import threading
 from math import floor
 
-# never wait for more than this e.g. during wait_states
+# Never wait for more than this while the controller is *not* making
+# progress -- i.e. it is neither in a target state nor reporting motion.
+# This used to be the ceiling on the whole wait, so a move or a homing run
+# that legitimately took longer than 12 s raised SMC100WaitTimedOutException
+# while the stage was still turning, and the operator was shown "Action
+# failed: Wait timed out" for a move that then completed (ROTATOR-11).
 MAX_WAIT_TIME_SEC = 12
+
+# The absolute ceiling, even while the controller keeps reporting motion.
+# "Wait while it says it is moving" must not become "wait forever" when a
+# controller is wedged in state 28.
+MAX_MOVING_WAIT_TIME_SEC = 300
 
 # time to wait after sending a command. This number has been arrived at by
 # trial and error
@@ -25,6 +35,13 @@ STATE_READY_FROM_MOVING = '33'
 
 STATE_CONFIGURATION = '14'
 
+#: The controller is working: the wait must not expire under it.
+IN_MOTION_STATES = (
+    STATE_MOVING,
+    STATE_HOMING_FROM_RS232,
+    STATE_HOMING_FROM_SMC_RC,
+)
+
 STATE_DISABLE_FROM_READY = '3C'
 STATE_DISABLE_FROM_MOVING = '3D'
 STATE_DISABLE_FROM_JOGGING = '3E'
@@ -34,8 +51,24 @@ class SMC100ReadTimeOutException(Exception):
     super(SMC100ReadTimeOutException, self).__init__('Read timed out')
 
 class SMC100WaitTimedOutException(Exception):
-  def __init__(self):
-    super(SMC100WaitTimedOutException, self).__init__('Wait timed out')
+  """The wait gave up. **The stage has not been stopped** (ROTATOR-11).
+
+  Nothing in the timeout path sends ST, so this is not a signal that motion
+  ended -- it says only that we stopped watching. `state` carries the last
+  status the controller reported, so a caller can tell "it was still moving"
+  from "it sat idle and never arrived".
+  """
+
+  def __init__(self, state=None, waited=None):
+    self.state = state
+    self.waited = waited
+    detail = ''
+    if state is not None:
+      detail += ' (last reported state %s)' % (state,)
+    if waited is not None:
+      detail += ' after %.1fs' % (waited,)
+    super(SMC100WaitTimedOutException, self).__init__(
+        'Wait timed out%s; the stage has not been stopped' % (detail,))
 
 class SMC100DisabledStateException(Exception):
   def __init__(self, state):
@@ -364,18 +397,32 @@ class SMC100(object):
     The state encountered is returned.
     """
     starttime = time.time()
+    # The clock that MAX_WAIT_TIME_SEC bounds. It is reset every time the
+    # controller reports motion, so the ceiling measures time spent *not*
+    # making progress rather than the length of the move (ROTATOR-11).
+    idlesince = starttime
+    laststate = None
     done = False
     self._emit('waiting for states %s'%(str(targetstates)))
     while not done:
-      waittime = time.time() - starttime
-      if waittime > MAX_WAIT_TIME_SEC:
-        raise SMC100WaitTimedOutException()
+      now = time.time()
+      if now - starttime > MAX_MOVING_WAIT_TIME_SEC:
+        raise SMC100WaitTimedOutException(laststate, now - starttime)
+      if now - idlesince > MAX_WAIT_TIME_SEC:
+        raise SMC100WaitTimedOutException(laststate, now - starttime)
 
       try:
         state = self.get_status()[1]
+        laststate = state
         if state in targetstates:
           self._emit('in state %s'%(state))
           return state
+        elif state in IN_MOTION_STATES:
+          # Still working. A 60 deg move at a low velocity is not a fault,
+          # and the timeout it used to raise did not stop the stage -- the
+          # move went on to complete behind an error popup saying it had
+          # failed.
+          idlesince = time.time()
         elif not ignore_disabled_states:
           disabledstates = [
               STATE_DISABLE_FROM_READY,

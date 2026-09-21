@@ -248,3 +248,92 @@ def test_a_relative_move_is_judged_on_where_it_lands():
 
     rotator.step_deg = "1"
     assert rotator.move_relative_positive() is True
+
+
+# --- ROTATOR-13: a disconnected rotator says so ---------------------------
+#
+# `home`, `move_*` and `reset_and_configure` all began `if self.smc:` and
+# returned silently, so with no port (None/"SIM") every control was inert
+# and nothing anywhere said why. There is no rotator simulator to fall back
+# on: the honest answer is a refusal the operator can read.
+
+def test_rotator_commands_refuse_when_there_is_no_stage():
+    """Each schema command comes back Refused, with a reason, rather than
+    returning None and being rendered as "executed"."""
+    rotator = RotatorSystem(default_port="SIM")
+    assert rotator.smc is None
+
+    for command in ("home", "move_absolute", "move_relative_positive",
+                    "move_relative_negative", "reset_and_configure"):
+        result = rotator.execute_command(command)
+        assert result.refused, f"{command} did not refuse: {result!r}"
+        assert "connect" in result.reason.lower(), (
+            f"{command} refused without saying why: {result.reason!r}")
+
+
+def test_rotator_reports_no_connection_rather_than_simulation():
+    """A SIM/None port does not make the rotator simulated — nothing
+    simulates. `connection_status` is the model's own answer, so no view
+    has to guess it from the port string."""
+    assert RotatorSystem(default_port="SIM").connection_status == "disconnected"
+    assert RotatorSystem(default_port=None).connection_status == "disconnected"
+    assert RotatorSystem(default_port="None").connection_status == "disconnected"
+
+    connected = _rotator_with_stage()
+    connected.is_connected = True
+    assert connected.connection_status == "hardware"
+
+
+def test_rotator_commands_still_run_when_a_stage_is_present():
+    """Guard for the ROTATOR-13 refusals: they must fire only on the
+    no-stage path, not on every command."""
+    rotator = _rotator_with_stage()
+    rotator.is_connected = True
+    assert rotator.execute_command("home").ok
+    rotator.target_deg = "10"
+    assert rotator.execute_command("move_absolute",
+                                   inputs={"target_deg": "10"}).ok
+
+
+# --- ROTATOR-11, model half: a move that did not finish is not a move ----
+
+def test_a_failed_move_forgets_where_the_stage_was_going():
+    """The driver's wait can end without the stage arriving — a timeout
+    while it is still turning, a disabled state, a dead port — and none of
+    those stop it. The commanded target must not survive as if the move had
+    landed, or the next relative move is computed from a position the stage
+    never reached (the same rule as safety-pattern.md item 6)."""
+    import threading as _t
+
+    rotator = _rotator_with_stage()
+    reported = _t.Event()
+    rotator.error_callback = lambda e: reported.set()
+    rotator.smc.move_absolute_deg.side_effect = RuntimeError(
+        "Wait timed out (last reported state 28); the stage has not been stopped")
+
+    rotator.target_deg = "10"
+    assert rotator.move_absolute() is True
+    assert reported.wait(3), "the failing move never reported"
+
+    assert rotator._commanded_target is None, (
+        "a move that failed left its target behind as if it had arrived")
+
+    # ...so the next relative move asks instead of assuming.
+    rotator.step_deg = "1"
+    assert isinstance(rotator.move_relative_positive(), NeedsConfirmation)
+
+
+def test_a_successful_move_keeps_its_target():
+    """Guard: only a *failed* move forgets. Dropping the target after every
+    move would put the ±30° guard back on the polled position, which is
+    the ROTATOR-4 defect."""
+    import time as _t
+
+    rotator = _rotator_with_stage()
+    rotator.target_deg = "10"
+    assert rotator.move_absolute() is True
+    for _ in range(200):
+        if rotator.smc.move_absolute_deg.called:
+            break
+        _t.sleep(0.01)
+    assert rotator._commanded_target == 10.0
