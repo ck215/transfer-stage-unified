@@ -187,6 +187,17 @@
             <option value="3D">3D</option>
           </select>
         </div>
+        <!-- REDPERCENT-17: dimension pickers for 1D/2D/3D, populated from
+             the uploaded CSV's own header (Stepper <dim> Location columns)
+             once a file is chosen. Left at "(auto)" -- the server's
+             existing first-header-order fallback -- these still work
+             exactly as before; picking one selects the actual dimension
+             instead of whatever the CSV happened to list first. -->
+        <div class="form-group" style="margin-bottom: 12px; display: flex; gap: 8px;">
+          <select id="plot-dim1-select" class="schema-select"><option value="">Dim 1 (auto)</option></select>
+          <select id="plot-dim2-select" class="schema-select"><option value="">Dim 2 (auto)</option></select>
+          <select id="plot-dim3-select" class="schema-select"><option value="">Dim 3 (auto)</option></select>
+        </div>
         <button id="btn-generate-plot" class="btn btn-primary">Generate Plot</button>
         <div style="margin-top: 16px;">
           <img id="plot-output-img" style="max-width: 100%; max-height: 400px; display: block;">

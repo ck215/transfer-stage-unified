@@ -1446,38 +1446,66 @@ class TransferStageApp {
     if (commandName === 'plot_data_ui') {
       const modal = document.getElementById('plot-dialog-modal');
       this.toggleModal(modal, true);
-      
+
       const btnClose = document.getElementById('btn-close-plot-dialog');
       if (btnClose) btnClose.onclick = () => this.toggleModal(modal, false);
+
+      const fileInput = document.getElementById('plot-csv-upload');
+      // REDPERCENT-17: populate the dim pickers from the CSV the operator
+      // just chose, the moment it is chosen -- not only at Generate time --
+      // so a 2D/3D plot can actually target a real dimension instead of
+      // always falling back to file order (which is what a 2D plot of a
+      // 1-dimension CSV used to do, and why it rendered a blank PNG: dim2
+      // fell back to nothing at all).
+      if (fileInput) {
+        fileInput.onchange = () => {
+          if (!fileInput.files.length) return;
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            this._populatePlotDimSelects(this._parseCsvHeaderDims(e.target.result));
+          };
+          reader.readAsText(fileInput.files[0]);
+        };
+      }
 
       const btnGen = document.getElementById('btn-generate-plot');
       if (btnGen) {
         btnGen.onclick = () => {
-          const fileInput = document.getElementById('plot-csv-upload');
           const typeSelect = document.getElementById('plot-type-select');
           if (!fileInput.files.length) {
             this.showToast('Please upload a CSV file', 'warning');
             return;
           }
-          
+
           const file = fileInput.files[0];
           const reader = new FileReader();
           reader.onload = async (e) => {
             const text = e.target.result;
+            const dim1Select = document.getElementById('plot-dim1-select');
+            const dim2Select = document.getElementById('plot-dim2-select');
+            const dim3Select = document.getElementById('plot-dim3-select');
             try {
               const res = await fetch('/api/plot', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   csv_data: text,
-                  plot_type: typeSelect.value
+                  plot_type: typeSelect.value,
+                  dim1: dim1Select ? dim1Select.value : '',
+                  dim2: dim2Select ? dim2Select.value : '',
+                  dim3: dim3Select ? dim3Select.value : '',
                 })
               });
               const data = await res.json();
               if (data.image_base64) {
                 document.getElementById('plot-output-img').src = 'data:image/png;base64,' + data.image_base64;
+                if (Array.isArray(data.dims)) this._populatePlotDimSelects(data.dims);
               } else {
-                this.showToast('Failed to generate plot', 'error');
+                // REDPERCENT-17: show the server's actual reason (also
+                // covers the case where render_red_percent_figure could
+                // not satisfy the request and the image came back empty)
+                // instead of one generic "failed" toast for every cause.
+                this.showToast(data.message || 'Failed to generate plot', 'error');
               }
             } catch (err) {
               this.showToast('Error generating plot', 'error');
@@ -2329,6 +2357,53 @@ class TransferStageApp {
     const enabled = el.enabled_when;
     if (enabled && !enabled.includes(modeName)) return false;
     return true;
+  }
+
+  // REDPERCENT-17: the same header convention
+  // model.plot_data.parse_red_percent_csv reads server-side --
+  // 'Red Percent' as the header row's first cell, then any
+  // 'Stepper <dim> Location' column names the dims a plot can target.
+  // Client-side only so the dim pickers populate the instant a file is
+  // chosen, without a round trip just to ask "what dims does this CSV
+  // have".
+  _parseCsvHeaderDims(text) {
+    const lines = String(text).split(/\r?\n/);
+    for (const line of lines) {
+      if (!line || line.startsWith('#')) continue;
+      const cells = line.split(',');
+      if (cells[0] !== 'Red Percent') continue;
+      return cells
+        .filter(c => c.endsWith(' Location'))
+        .map(c => c.replace(/^Stepper /, '').replace(/ Location$/, ''));
+    }
+    return [];
+  }
+
+  // REDPERCENT-17: fill the three dim pickers in the plot dialog. An
+  // "(auto)" placeholder stays selected by default, which maps to the
+  // server's original first-header-order fallback in web_server.py's
+  // /api/plot -- so leaving every picker alone still plots exactly what
+  // it always did; picking one targets that dimension specifically
+  // instead of leaving a 2D/3D request's second/third axis unset (the
+  // shape that used to render a blank PNG).
+  _populatePlotDimSelects(dims) {
+    ['plot-dim1-select', 'plot-dim2-select', 'plot-dim3-select'].forEach((id, i) => {
+      const select = document.getElementById(id);
+      if (!select) return;
+      const previous = select.value;
+      while (select.firstChild) select.removeChild(select.firstChild);
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = `Dim ${i + 1} (auto)`;
+      select.appendChild(placeholder);
+      (dims || []).forEach(dim => {
+        const opt = document.createElement('option');
+        opt.value = dim;
+        opt.textContent = dim;
+        select.appendChild(opt);
+      });
+      if (previous && (dims || []).includes(previous)) select.value = previous;
+    });
   }
 }
 

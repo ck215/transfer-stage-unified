@@ -133,9 +133,25 @@ def render_red_percent_figure(plot_type, dim1, dim2, dim3, red_percents, dim_dat
     FigureCanvasQTAgg, or fig.savefig(buf, format='png') for the web view —
     no pyplot/backend-switching needed since this uses the Figure class
     directly, not the pyplot global-state API).
+
+    REDPERCENT-17: a request this data cannot satisfy -- a 2D/3D plot with
+    a dimension left unselected, or one whose samples don't line up with
+    `red_percents` -- used to fall straight through every branch below and
+    return a bare `Figure` with no `Axes` at all: an indistinguishable
+    blank PNG to whichever caller (Web `/api/plot`, PySide's plot dialog)
+    just `savefig`s whatever comes back. Every path here now ends with at
+    least one `Axes`, so a plot that cannot be drawn says why on the
+    figure itself instead of rendering nothing.
     """
     from matplotlib.figure import Figure
     fig = Figure(figsize=(8, 6), dpi=100)
+
+    def _message(reason):
+        ax = fig.add_subplot(111)
+        ax.axis('off')
+        ax.text(0.5, 0.5, reason, ha='center', va='center', wrap=True,
+                 fontsize=11, transform=ax.transAxes)
+        return fig
 
     if plot_type == "0D" or not dim1:
         ax = fig.add_subplot(111)
@@ -144,7 +160,9 @@ def render_red_percent_figure(plot_type, dim1, dim2, dim3, red_percents, dim_dat
         ax.set_ylabel('Red Percent')
         ax.set_title('Red Percent Data')
         ax.grid(True)
-    elif plot_type == "1D":
+        return fig
+
+    if plot_type == "1D":
         ax = fig.add_subplot(111)
         if dim_data.get(dim1) and len(dim_data[dim1]) == len(red_percents):
             paired = sorted(zip(dim_data[dim1], red_percents))
@@ -158,23 +176,41 @@ def render_red_percent_figure(plot_type, dim1, dim2, dim3, red_percents, dim_dat
         ax.set_ylabel('Red Percent')
         ax.set_title(f'Red Percent vs {dim1}')
         ax.grid(True)
-    elif plot_type == "2D" and dim1 and dim2:
-        ax = fig.add_subplot(111, projection='3d')
-        x, y, z = dim_data.get(dim1, []), dim_data.get(dim2, []), red_percents
-        if len(x) == len(z) and len(y) == len(z) and len(z) > 0:
-            scatter = ax.scatter(x, y, z, c=z, cmap='coolwarm', marker='o')
-            ax.set_xlabel(f'Stepper {dim1}')
-            ax.set_ylabel(f'Stepper {dim2}')
-            ax.set_zlabel('Red Percent')
-            fig.colorbar(scatter, ax=ax, label='Red Percent')
-    elif plot_type == "3D" and dim1 and dim2 and dim3:
-        ax = fig.add_subplot(111, projection='3d')
-        x, y, z, c = dim_data.get(dim1, []), dim_data.get(dim2, []), dim_data.get(dim3, []), red_percents
-        if len(x) == len(c) and len(y) == len(c) and len(z) == len(c) and len(c) > 0:
-            scatter = ax.scatter(x, y, z, c=c, cmap='coolwarm', marker='o')
-            ax.set_xlabel(f'Stepper {dim1}')
-            ax.set_ylabel(f'Stepper {dim2}')
-            ax.set_zlabel(f'Stepper {dim3}')
-            fig.colorbar(scatter, ax=ax, label='Red Percent')
+        return fig
 
-    return fig
+    if plot_type == "2D":
+        if not (dim1 and dim2):
+            return _message('Select two dimensions for a 2D plot.')
+        x, y, z = dim_data.get(dim1, []), dim_data.get(dim2, []), red_percents
+        if not (len(x) == len(z) and len(y) == len(z) and len(z) > 0):
+            return _message(
+                f'No samples with both {dim1} and {dim2} recorded '
+                'alongside Red Percent.')
+        ax = fig.add_subplot(111, projection='3d')
+        scatter = ax.scatter(x, y, z, c=z, cmap='coolwarm', marker='o')
+        ax.set_xlabel(f'Stepper {dim1}')
+        ax.set_ylabel(f'Stepper {dim2}')
+        ax.set_zlabel('Red Percent')
+        fig.colorbar(scatter, ax=ax, label='Red Percent')
+        return fig
+
+    if plot_type == "3D":
+        if not (dim1 and dim2 and dim3):
+            return _message('Select three dimensions for a 3D plot.')
+        x = dim_data.get(dim1, [])
+        y = dim_data.get(dim2, [])
+        z = dim_data.get(dim3, [])
+        c = red_percents
+        if not (len(x) == len(c) and len(y) == len(c) and len(z) == len(c) and len(c) > 0):
+            return _message(
+                f'No samples with {dim1}, {dim2} and {dim3} all recorded '
+                'alongside Red Percent.')
+        ax = fig.add_subplot(111, projection='3d')
+        scatter = ax.scatter(x, y, z, c=c, cmap='coolwarm', marker='o')
+        ax.set_xlabel(f'Stepper {dim1}')
+        ax.set_ylabel(f'Stepper {dim2}')
+        ax.set_zlabel(f'Stepper {dim3}')
+        fig.colorbar(scatter, ax=ax, label='Red Percent')
+        return fig
+
+    return _message(f'Unknown plot type: {plot_type!r}.')
