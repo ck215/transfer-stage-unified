@@ -2175,7 +2175,7 @@ it) · `n/a` (with a reason).
 | GAMEPAD-4 | RC3 | S7 | root cause | closed (test_a_failed_controller_swap_does_not_claim_the_controller) |
 | GAMEPAD-5 | RC13 / RC7 | S5 | root cause | open (partly closed: the `None` entry is back — `discover_controllers` returns `["None"] + input_service.names()` — and claim filtering is tested by test_controller_claim_conflict. **Live refresh and rebind-after-disconnect are not verified**; they need S14 or a bench run.) |
 | GAMEPAD-6 | RC7 | S10 | root cause | closed (the placeholder is `disabled hidden` and the handler refuses a blank value; test_gamepad_6_the_dropdown_placeholder_cannot_be_reselected, test_gamepad_6_the_dispatch_handler_ignores_a_blank_value) |
-| GAMEPAD-7 | RC4 | S5 | root cause | open |
+| GAMEPAD-7 | RC4 | S5 | root cause | closed (test_a_stale_poll_chain_stops_when_polling_is_restarted, test_a_controller_swap_does_not_start_a_second_poll_chain, test_a_restart_does_not_leave_a_second_poll_thread_running) |
 | GAMEPAD-8 | RC4 | S5 | root cause | closed (D-4 input gate replaces flush_neutral; test_d4_a_closed_gate_stops_the_manual_pump_without_stopping_the_mode) |
 | GAMEPAD-9 | RC1 | S2 | root cause | closed (loops moved to the models; test_manual_mode_drives_hardware_with_no_gui_at_all, tests/core/test_model_owned_loops.py) |
 | GAMEPAD-10 | RC13 | S5 | root cause | closed (S12: one claims dict per build, derived from real acquisitions; test_build_models_owns_its_claims_dict, test_two_pollers_cannot_claim_the_same_controller) |
@@ -2187,9 +2187,9 @@ it) · `n/a` (with a reason).
 | GAMEPAD-16 | RC4 | S5 | root cause | closed by **D-12** — the owner ruled the 200 Hz poll and the 20 ms manual pump deliberately unequal. Verification note: `gamepad.py` POLL_INTERVAL and `probes.py` MANUAL_COMMAND_INTERVAL carry the ruling in comments. No test; none is wanted, since a test would pin a number the owner may retune. |
 | GAMEPAD-17 | LOCAL-OK | S15 | explicit | open (partly closed: the unreachable `pygame.error` attribute lookup in `_read_raw` is guarded and the dead `connect_controller` is deleted — test_read_raw_pygame_error_guard_does_not_attributeerror_when_pygame_is_none, test_poller_reconnect_flow. **Three sub-items remain**: `change_controller` and `parse_controller_id` both have live callers in test files outside the S15 write set, and the `probes.py:188-192` sub-item was out of scope. All three are boundary blocks, not difficulty.) |
 | GAMEPAD-18 | RC13 / RC9 | S5 | root cause | closed (S12: in-process enumeration through InputService; test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing) |
-| GAMEPAD-19 | RC13 | S5 | root cause | open |
-| GAMEPAD-20 | doc | S0 | root cause | open |
-| GAMEPAD-21 | RC13 | S5 | root cause | open |
+| GAMEPAD-19 | RC13 | S5 | root cause | closed (test_macos_presence_check_does_not_consult_the_previous_controller, test_macos_swap_succeeds_when_the_previous_controller_is_gone; the consequence was a rejected bind, not a missed unplug) |
+| GAMEPAD-20 | doc | S0 | root cause | open (partly closed: all verifiable gamepad claims in controllers.md corrected, incl. a section advocating `_ensure_pygame_video()` which RC-13's anti-fix table forbids; the axis/T16000M/D-pad/deadzone claims left untouched as S16 owner territory; the fifth bullet lives in known-issues.md, outside the worktree's write set) |
+| GAMEPAD-21 | RC13 | S5 | root cause | closed (test_manual_input_is_still_live_after_a_swap_on_the_threaded_clock, test_change_controller_resumes_the_threaded_clock_too, test_a_swap_does_not_start_polling_on_a_poller_that_was_not_polling, test_a_swap_on_the_tk_clock_still_resumes_and_still_uses_after) |
 | MANAGER-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | MANAGER-2 | RC1 / RC10 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
 | MANAGER-3 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
