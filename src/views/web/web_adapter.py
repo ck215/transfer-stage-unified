@@ -474,7 +474,11 @@ class WebModelAdapter:
     # a client could POST /api/set_attr for a `readonly` field such as
     # RedPercentSystem's `current_red`/`red_change` and overwrite a value
     # the model computes from live monitoring data.
-    _WRITABLE_ELEMENT_TYPES = frozenset({"entry", "dropdown", "toggle"})
+    # DC-11: Only entry elements should be writable via set_device_attribute.
+    # Toggles and dropdowns must be changed through their commands (toggle_auton,
+    # set_controller, etc.) to enforce interlocks and gamepad checks. Readonly
+    # elements are never writable. This prevents mode/interlock bypass via API.
+    _WRITABLE_ELEMENT_TYPES = frozenset({"entry"})
 
     @classmethod
     def _schema_attrs(cls, model) -> set:
