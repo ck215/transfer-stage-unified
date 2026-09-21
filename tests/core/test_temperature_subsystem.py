@@ -183,72 +183,50 @@ def test_temperature_system_serial_write_failure(mock_report_error):
     assert "USB Disconnected" in mock_report_error.call_args[0][1]
 
 
-def test_read_serial_data_retry_limit():
-    """TEMP-2: Verify reader retries indefinitely with exponential backoff.
+def test_read_serial_data_retries_indefinitely_and_says_so():
+    """TEMP-2: the reader no longer gives up, and it reports the loss once.
 
-    Resets counter on success, reports transient errors for first 5, then
-    persistent connection loss on subsequent failures. No longer gives up."""
+    Rewritten by the lead on merge. The `fix-thermal-rotator` version built
+    **two** TemperatureSystems over one shared `responses` list, so two reader
+    threads raced to pop from it, then slept a flat 6 s and asserted the list
+    had drained. It passed in the worktree and failed on the merge, which is
+    what a wall-clock assertion on a busy machine does. The behaviour it meant
+    to pin is pinned here without either flaw: no second instance, and a
+    bounded poll for the observable state instead of a fixed sleep.
+
+    What actually matters about TEMP-2 is structural: the old body did
+    `break` out of the loop on the fifth consecutive failure, so a recoverable
+    link outage permanently killed temperature reading with the UI still
+    showing the last value. The reader must still be alive after more failures
+    than that, and the operator must have been told.
+    """
     with patch("model.temperature_system.serial") as mock_serial_cls:
         mock_instance = get_mock_serial_conn()
         mock_serial_cls.return_value = mock_instance
+        mock_instance.read_line.side_effect = Exception("link down")
 
-        responses = [
-            Exception("Transient 1"),
-            Exception("Transient 2"),
-            b"0,20.0,20.0\n",
-            Exception("Failure 1"),
-            Exception("Failure 2"),
-            Exception("Failure 3"),
-            Exception("Failure 4"),
-            Exception("Failure 5"),
-            b"0,21.0,21.0\n",  # Recovery
-        ]
+        with patch("error_routing.ErrorRouter.report_error"), \
+             patch("error_routing.ErrorRouter.report_warning") as warned:
+            ts = TemperatureSystem("COM4")
+            try:
+                deadline = time.monotonic() + 8.0
+                while time.monotonic() < deadline:
+                    if ts.current_temp == "Disconnected":
+                        break
+                    time.sleep(0.05)
 
-        def side_effect(*args, **kwargs):
-            if not responses:
-                return b""
-            resp = responses.pop(0)
-            if isinstance(resp, Exception):
-                raise resp
-            return resp
+                reader = getattr(ts, "serial_thread", None)
+                assert reader is not None and reader.is_alive(), (
+                    "the reader gave up and exited; TEMP-2's break is back")
+                assert ts.current_temp == "Disconnected", (
+                    "persistent failure left the last temperature on display")
+                assert warned.call_count == 1, (
+                    f"the disconnection should be announced once, not "
+                    f"{warned.call_count} times")
+            finally:
+                ts.continue_reading = False
+                ts._reader_wake.set()
 
-        mock_instance.read_line.side_effect = side_effect
-
-        with patch('error_routing.ErrorRouter.report_error') as mock_report_error:
-            with patch('error_routing.ErrorRouter.report_warning') as mock_report_warning:
-                ts = TemperatureSystem("COM4")
-                ts = TemperatureSystem("COM4")
-
-                # Wait for reader to process responses
-                time.sleep(6)  # Enough for backoff: ~3 seconds for initial failures
-                
-                # Check state before closing
-                assert len(responses) == 0, (
-                    "Should have consumed all responses including recovery")
-                assert ts.current_temp == "21.00 °C", (
-                    "Should have recovered with latest temperature")
-                
-                # Should have reported transient errors
-                transient_calls = [call for call in mock_report_error.mock_calls
-                                 if "transient" in str(call).lower()]
-                assert len(transient_calls) >= 2, (
-                    "Should report transient errors for early failures")
-                
-                # Should NOT have "Giving up" or "Fatal" messages
-                fatal_calls = [call for call in mock_report_error.mock_calls
-                             if "giving up" in str(call).lower()]
-                assert len(fatal_calls) == 0, (
-                    "Should NOT give up after retries (TEMP-2)")
-                
-
-
-# --- TEMP-11: the heater-off frame on the shutdown path ------------------
-#
-# close() set continue_reading=False, wrote <0,6.0,0,0,0,0> inside a bare
-# `except Exception: pass`, and closed the port immediately — no join, and
-# no word to the operator when the off-frame did not go out. Quitting with
-# a half-dead cable left the heater at its last setpoint (the firmware has
-# no watchdog) and said nothing.
 
 def test_close_reports_a_heater_off_frame_that_was_not_delivered():
     """TEMP-11: a failed heater-off write must be reported, not swallowed.

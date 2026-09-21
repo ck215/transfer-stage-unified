@@ -67,6 +67,16 @@ class TemperatureSystem(SchemaCommands):
         
         self.serial_conn = serial(port, baud_rate=115200) if port and port != "None" else None
         self.continue_reading = True
+        #: Set by `close()` so the reader's backoff is interruptible.
+        #:
+        #: TEMP-2 gave the reader a real exponential backoff, which is the
+        #: right fix — but a plain `time.sleep(backoff)` is only checked for
+        #: `continue_reading` at the top of the loop, so a reader parked in a
+        #: 2.0 s backoff outlives `READER_JOIN_TIMEOUT` (1.5 s). `close()`
+        #: would then give up waiting and shut the port while that thread was
+        #: still about to touch it. Waiting on an event instead means the
+        #: backoff ends the instant shutdown asks for it, whatever its length.
+        self._reader_wake = threading.Event()
         
         if self.serial_conn and self.serial_conn.is_open():
             try:
@@ -193,6 +203,17 @@ class TemperatureSystem(SchemaCommands):
                     from error_routing import ErrorRouter as ErrorPopupManager
                     ErrorPopupManager.report_error("Serial Write Error", f"Error writing to serial:\n{e}", e)
                 
+    def _backoff_wait(self, backoff):
+        """Wait out a backoff, but return early the moment close() asks.
+
+        Returns True when the reader should stop. `Event.wait` returns True
+        if the flag was set, which is exactly the shutdown case, so the two
+        conditions collapse into one call.
+        """
+        if self._reader_wake.wait(backoff):
+            return True
+        return not getattr(self, "continue_reading", True)
+
     def read_serial_data(self):
         """Background reader with exponential backoff and indefinite retry.
 
@@ -220,7 +241,8 @@ class TemperatureSystem(SchemaCommands):
                     consecutive_failures += 1
                     # Exponential backoff: 0.1, 0.2, 0.4, 0.8, 1.6, 2.0, 2.0, ...
                     backoff = min(0.1 * (2 ** (consecutive_failures - 1)), max_backoff)
-                    time.sleep(backoff)
+                    if self._backoff_wait(backoff):
+                        break
             except Exception as e:
                 if not getattr(self, 'continue_reading', True):
                     break
@@ -244,7 +266,8 @@ class TemperatureSystem(SchemaCommands):
                     self.current_temp = "Disconnected"
                     failure_reported = True
 
-                time.sleep(backoff)
+                if self._backoff_wait(backoff):
+                    break
 
     def process_raw_data(self, data_line):
         line = data_line.strip()
@@ -360,6 +383,11 @@ class TemperatureSystem(SchemaCommands):
         `fix-transport` added one. Neither half could be tested alone.
         """
         self.continue_reading = False
+        # Wake a reader parked in its backoff, so the join below is waiting on
+        # a thread that is actually trying to leave (TEMP-2 follow-up).
+        wake = getattr(self, "_reader_wake", None)
+        if wake is not None:
+            wake.set()
         conn = self.serial_conn
         if conn and conn.is_open():
             try:

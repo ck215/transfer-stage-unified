@@ -113,13 +113,18 @@ def test_load_csv_rejects_a_header_only_file_even_with_a_dims_column(plot_dialog
     with patch("PySide6.QtWidgets.QFileDialog.getOpenFileName",
                return_value=("/tmp/empty.csv", "")), \
          patch("builtins.open", mock_open(read_data=_HEADER_ONLY_WITH_DIMS_CSV)), \
-         patch("PySide6.QtWidgets.QMessageBox.critical") as crit, \
+         patch("error_routing.ErrorRouter.report_error") as crit, \
          patch.object(type(plot_dialog), "select_plot_type") as select_plot_type:
         plot_dialog.load_csv()
 
     select_plot_type.assert_not_called()
+    # ERRORS-9 moved this surface off QMessageBox and onto the bus. The
+    # rejection itself is what PYSIDE-18 pinned and it still holds — what
+    # changed is only *where* the operator is told, which is the whole point
+    # of the finding. Asserting on QMessageBox here would re-pin the direct
+    # dialog ERRORS-9 exists to remove.
     crit.assert_called_once()
-    assert "Invalid File" in crit.call_args[0][1]
+    assert "Invalid CSV File" in crit.call_args[0][0]
 
 
 def test_load_csv_opens_the_file_with_newline_empty_string(plot_dialog):

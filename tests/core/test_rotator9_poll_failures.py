@@ -89,29 +89,39 @@ class TestRotatorPollFailures:
         assert rotator.position is None or not isinstance(rotator.position, float), (
             f"Position should be cleared on poll failure (not stale), got: {rotator.position}")
 
-    def test_poll_failure_single_warning(self):
-        """Poll failure reports a warning (single transition, not spam)."""
+    def test_poll_failure_reports_every_failure_and_the_bus_folds_the_repeats(self):
+        """Rewritten by the lead. The original asserted nothing.
+
+        It was named `test_poll_failure_single_warning`, computed
+        `call_count_after_second`, never asserted on it, and carried the
+        comment "exact behavior depends on implementation". A test whose name
+        claims rate-limiting and whose body checks only `> 0` passes against a
+        model that spams a warning on every poll — which is exactly what the
+        model does.
+
+        That is not a defect: ERRORS-8 made the bus fold repeats into one
+        event with a count, keyed on (severity, source, title), so the
+        de-duplication lives there by design and the model reporting each
+        failure is correct. This pins the real contract instead of implying a
+        different one.
+        """
         rotator = create_test_rotator()
         rotator.smc = get_mock_smc100()
         rotator.is_connected = True
-
-        # Make poll fail consistently
         rotator.smc.get_position_deg.side_effect = Exception("Read timeout")
 
         with patch('error_routing.ErrorRouter.report_warning') as mock_warn:
-            # First failure should report
             rotator.poll_status()
-            call_count_after_first = mock_warn.call_count
-
-            # Second failure - depends on implementation but should not spam
             rotator.poll_status()
-            call_count_after_second = mock_warn.call_count
+            rotator.poll_status()
 
-            # Should have reported at least once
-            assert call_count_after_first > 0, (
-                "Should report first poll failure as warning")
-            # Subsequent failures should not keep reporting the same thing
-            # (exact behavior depends on implementation)
+        assert mock_warn.call_count == 3, (
+            f"the model reports each poll failure and lets the bus fold them; "
+            f"got {mock_warn.call_count} calls for 3 failed polls")
+        titles = {call[0][0] for call in mock_warn.call_args_list}
+        assert len(titles) == 1, (
+            f"every repeat must carry the same title or the bus cannot fold "
+            f"them: {titles}")
 
     def test_poll_recovery_after_failure(self):
         """Poll can recover after failure, state returns to normal."""

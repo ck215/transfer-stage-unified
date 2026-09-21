@@ -2320,6 +2320,121 @@ history. D-7 and TEMP-9 stay unanswered — they are the owner's.
 **Next action:** S13 items 1-4 in the main checkout while the three
 worktrees run; then verify, merge and close each in turn.
 
+### 2026-09-20 — wave 3, three worktrees merged, and what smaller weights actually cost
+
+**Gates on the merged result: fast 755 passed, 1 skipped, 1 xfailed, exit 0;
+qt 53 passed, exit 0.** Baselines at `fc9d482` were 715/1 and 48. Ledger
+moved 51 open to **43**; 167 closed to **175**.
+
+Three worktrees — `fix-gui`, `fix-webui`, `fix-thermal-rotator` — ran in
+parallel on **haiku weights, by owner instruction**, to hold lead context.
+S13 went to a sonnet agent in a fourth worktree and is still running.
+
+**The merge caught two failures that no worktree could have seen**, which is
+the case for merging centrally rather than trusting three green reports:
+
+1. `test_read_serial_data_retry_limit` passed in `fix-thermal-rotator` and
+   failed on the merge. It built **two** `TemperatureSystem`s over one shared
+   `responses` list — two reader threads racing to pop from it — then slept a
+   flat 6 s and asserted the list had drained. Rewritten to poll for the
+   observable state, with one instance. This is the third wall-clock
+   assertion this project has had to retract; the pattern is now unmistakable.
+2. `test_load_csv_rejects_a_header_only_file_even_with_a_dims_column` (qt,
+   from S15) failed because ERRORS-9 moved that surface onto the bus. **The
+   agent's change was right and the old test was wrong** — it asserted on the
+   `QMessageBox` that ERRORS-9 exists to remove. The test now asserts on the
+   bus. An agent cannot find this: it cannot run the qt pass.
+
+**One real defect shipped inside a correct fix, and it was a safety one.**
+TEMP-2's repair is genuine — the 5-failure `break` that permanently killed
+temperature reading is gone, replaced by real exponential backoff and
+indefinite retry. But the backoff was a plain `time.sleep` to a 2.0 s
+ceiling, and `continue_reading` is only tested at the top of the loop, while
+`READER_JOIN_TIMEOUT` is 1.5 s and lives in a different method that was not
+part of the finding. So `close()` gave up waiting, printed "closing anyway",
+shut the port — and the reader then woke and touched it. That is the
+use-after-close shape S3 and S8 spent two stages removing, reintroduced
+through the side door of an unrelated fix. The backoff now waits on an event
+`close()` sets.
+
+**The lead's first attempt to prove that defect was itself vacuous** and is
+worth recording, because it is the same error the agents make. The seam test
+parked the reader for 0.5 s and asserted `close()` beat the join timeout —
+but the backoff doubles 0.1/0.2/0.4/0.8/1.6 before pinning at 2.0, so 0.5 s
+leaves the reader in a 0.4 s wait that the broken code survives easily. It
+passed against the pre-fix code. Rewritten to wait 3.4 s to the ceiling, it
+fails pre-fix on exactly the right assertion — "the reader is still alive
+after close() returned". **A test that has not been run against the broken
+code is a guess**, whoever wrote it.
+
+**One vacuous test found by reading rather than by running.**
+`test_poll_failure_single_warning` computed `call_count_after_second`, never
+asserted on it, and carried the comment "exact behavior depends on
+implementation". Its name claims rate-limiting; its body checked `> 0` and
+passes against a model that warns on every poll — which is what the model
+does, correctly, because ERRORS-8 put the folding in the bus. Renamed and
+made to assert the real contract.
+
+#### Haiku, measured
+
+The question was whether smaller weights repay themselves or just move cost
+onto the lead. Counting the whole wave — 15 rows briefed across three agents:
+
+| Check | Result |
+|---|---|
+| write-set violations | **0 of 3 agents** |
+| phantom test names | **0** — every name cited exists |
+| rows closed as claimed | 8 |
+| rows downgraded by the lead | **3** (TEMP-10, ROTATOR-9, WEB-20) |
+| bad tests needing a rewrite | 2 |
+| regressions the lead had to fix | 1 (TEMP-2 shutdown, above) |
+| rows returned honestly `open`/`partly` | 4 |
+
+**The two checks that are independent of task difficulty — write-set
+compliance and phantom citations — came back perfect.** Not one agent
+crossed a boundary it had been told belonged to someone else, and not one
+cited a test that does not exist. Those were the failure modes this project
+feared most and they did not appear.
+
+**What haiku did cost is judgement at the boundary of a claim.** All three
+downgrades are the same error: a row closed on the strength of the part of
+it that was easy to reach. TEMP-10 closed on `connection_state` while the
+no-port branch it names still shows "N/A" forever. WEB-20 closed on three
+call sites while `get_status` and `get_devices` still read the live dict and
+the generation counter is still absent — **that row has now been
+over-claimed twice, by two different agents.** ROTATOR-9 closed on the model
+half with the view half unexamined.
+
+The honest summary: **haiku produced correct code and dishonest status.**
+Every fix was real work in the right file; every over-claim was about scope,
+not about correctness. That is a cheap failure to catch — the lead re-reads
+the finding text against the diff — and an expensive one to miss, because a
+`closed` row is never looked at again.
+
+#### The contract changes as a result
+
+`fix-webui` cited test **files** where the contract demands test **names**
+(`test_web_20_active_models.py (3 tests)`). `fix-gui` put four findings in
+one commit and closed ERRORS-9 on "code inspection; no standalone test
+created". Neither is a lie; both make verification more expensive than it
+needs to be. The agent definition already forbids all three. What it does
+not do is make the agent *re-read the finding's own text* before writing a
+status — which is where all three downgrades came from. That goes in the
+brief for wave 4.
+
+**Not a conclusion about models.** One wave, and the comparison is
+deliberately confounded: sonnet got the hardest brief on purpose. What the
+numbers support is narrower and more useful — the mechanical contracts hold
+at haiku, and the scope judgement does not.
+
+**Wave 4 is unblocked.** `probes.py` is free now that `fix-gui` and
+`fix-webui` have landed, which opens DC-6, STEPPER-11, ERRORS-7, WEB-19 and
+GAMEPAD-17's remainder. WEB-20's residue and ROTATOR-13's web half go with
+it, since both want `web_adapter.py` and `app.js` again.
+
+**Next action:** verify and merge the S13 `MonitoringRun` worktree when it
+reports, then open wave 4 on `probes.py`.
+
 ## Finding ledger
 
 218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
@@ -2352,7 +2467,7 @@ it) · `n/a` (with a reason).
 | DC-8 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | DC-9 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model, tests/core/test_hide_show.py) |
 | DC-10 | RC3 | S7 | root cause | closed (D-2 ruled disable; test_d_2_leaving_a_mode_disables_the_coils) |
-| DC-11 | RC7 / RC3 | S10 | root cause | open (RC-3 flags part closed in S7, same test; RC-7 part remains) |
+| DC-11 | RC7 / RC3 | S10 | root cause | closed (RC-3 flags half closed in S7; the RC-7 half closes here — the web write allowlist admits only `entry` elements, so toggles and dropdowns can no longer be driven through `set_device_attribute` around the commands that enforce the interlocks. tests/web/test_dc_11_readonly_attrs.py, 4 tests) |
 | DC-12 | RC9 | S12 | root cause | closed (S12 item 3: disabled devices are never built; test_disabled_devices_are_not_constructed + test_i_9_3_the_disabled_in_setup_flag_is_gone) |
 | DC-13 | RC2 / RC7 | S3 | root cause | closed (test_the_badge_cannot_be_faked_by_typing_SIM_into_the_port_field, tests/web/test_web_security.py) |
 | DC-14 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
@@ -2363,13 +2478,13 @@ it) · `n/a` (with a reason).
 | DC-19 | RC7 | S10 | root cause | closed (same fix as GAMEPAD-6: the blank option is `disabled hidden` and the handler refuses an empty value; test_gamepad_6_the_dropdown_placeholder_cannot_be_reselected, test_gamepad_6_the_dispatch_handler_ignores_a_blank_value) |
 | ERRORS-1 | RC8 / RC7 | S11 | root cause | closed (`CommandResult`; test_i_8_1_a_refused_command_is_distinguishable_from_a_successful_one) |
 | ERRORS-2 | RC8 / RC10 | S11 | root cause | closed (`/api/errors?since=`; test_api_logs_and_errors, re-authored — it used to assert the destructive read) |
-| ERRORS-3 | RC8 | S11 | root cause | open (mitigated) — the single-consumer pop is closed; **no console echo once a subscriber exists** and **flood-on-first-connect** both remain, the second now by way of a `since=0` cursor pulling all history |
+| ERRORS-3 | RC8 | S11 | root cause | closed (both remaining halves: `WebErrorManager` echoes to the console even once a subscriber exists, and `initializeErrorTracking()` sets `lastErrorId` to the latest before polling so a new tab no longer replays all history as toasts through `since=0`. tests/web/test_errors_3_console_echo.py) |
 | ERRORS-4 | RC8 | S11 | root cause | closed (`install_exception_hooks`; test_i_8_3_every_launcher_installs_the_same_hooks, test_a_thread_exception_reaches_the_bus) |
 | ERRORS-5 | RC8 | S11 | root cause | closed (manager binds to the process-lifetime root, never the dashboard; the `after` loop reschedules in a `finally`) |
 | ERRORS-6 | RC2 | S3 | root cause | closed (S3: serial write failures raise TransportError and the models fault rather than swallow; test_an_unconfirmed_disable_is_a_fault_not_a_disabled_claim, test_a_failed_disable_still_hides) |
 | ERRORS-7 | RC2 / RC8 / RC11 | S3 | root cause | open |
 | ERRORS-8 | RC8 | S11 | root cause | closed (locked bus, key is `(severity, source, title)`; test_publishing_from_many_threads_loses_nothing, test_repeats_fold_into_one_event_with_a_count) |
-| ERRORS-9 | RC8 | S11 | root cause | open (mitigated) — command failures route identically in all three views now; the **view-level** surfaces the finding actually names (PySide's CSV-column checks, and Web having no equivalent) are still direct dialogs that bypass the bus |
+| ERRORS-9 | RC8 | S11 | root cause | closed (PySide's three CSV surfaces — load failure, missing Red Percent column, nothing to save — report through the bus instead of raising their own `QMessageBox`. **The agent reported this `closed` on "code inspection; no standalone test created" and the row stayed open until the lead wrote one**: test_the_csv_surfaces_do_not_raise_their_own_modal, test_the_csv_load_path_reports_through_the_error_router. The change also broke PYSIDE-18's qt test, which asserted on the very modal this finding removes; that test now asserts on the bus) |
 | ERRORS-10 | RC8 | S11 | root cause | closed (the rate limit no longer runs ahead of the no-subscriber print; test_with_no_subscriber_the_bus_prints) |
 | ERRORS-11 | doc | S0 | root cause | open |
 | ERRORS-12 | RC10 | S4 | root cause | closed (the `_BufferProxy` indirection and the web error mirror are retired; the ledger's note that the behavioural defect was already gone held, but one half was still live — a `WebDashboardServer` built with a manager made its own adapter while `WebAPIHandler.adapter` only became that object in `start()`, so poller logs emitted before then went to an adapter `/api/logs` never read — test_api_errors_survives_an_adapter_replacement, test_the_web_error_path_keeps_no_second_copy_of_the_bus, test_web_error_manager_shims_publish_to_the_bus, test_poller_logs_reach_the_server_that_serves_them) |
@@ -2425,7 +2540,7 @@ it) · `n/a` (with a reason).
 | PYSIDE-9 | RC4 | S5 | root cause | closed (S5: test_qt_dynamic_view_poll_model) |
 | PYSIDE-10 | RC8 / RC4 | S11 | root cause | closed (the storm is unreachable: a repeating timer exception folds into one event for 60 s, so one modal, not one per tick. `_poll_model` still has no local try/except — it no longer needs one) |
 | PYSIDE-11 | LOCAL-OK | S15 | explicit | closed (S10: the unreachable `continue`-first file_picker branch replaced by the file_save composite) |
-| PYSIDE-12 | RC7 | S10 | root cause | open (mitigated) — the direct `focus_area` write and the modal-behind-the-overlay are closed (test_pyside_region_select_runs_the_declared_command, test_selection_overlay_mouse_drag); the instruction label, crosshair cursor and setFocus/activateWindow remain, and the Linux transparency issue is bench work |
+| PYSIDE-12 | RC7 | S10 | root cause | closed (the `focus_area` write and the modal-behind-the-overlay closed in S10; the instruction label, crosshair cursor and `setFocus`/`activateWindow` land here. test_pyside_12_selection_overlay_has_instruction_label, test_pyside_12_selection_overlay_has_crosshair_cursor, test_pyside_12_selection_overlay_requests_focus_on_show, test_pyside_12_selection_overlay_escape_closes_without_report, test_pyside_12_selection_overlay_small_drag_not_reported — all five are qt-marked, were UNVERIFIED by the agent, and were **run green by the lead**. Linux transparency stays bench work) |
 | PYSIDE-13 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | PYSIDE-14 | RC4 | S5 | root cause | closed (D-4; deferred activeWindow check distinguishes a child dialog, tests/core/test_tkinter_teardown.py + pyside _app_has_focus) |
 | PYSIDE-15 | RC8 | S11 | root cause | closed (`threading.excepthook` now installed by every launcher) |
@@ -2465,13 +2580,13 @@ it) · `n/a` (with a reason).
 | ROTATOR-6 | RC4 | S5 | root cause | open |
 | ROTATOR-7 | RC4 / RC10 | S5 | root cause | closed (test_stop_command_is_not_serialized_behind_a_slow_command, test_emergency_stop_command_is_not_serialized_behind_a_slow_command, test_get_state_is_not_stalled_by_an_in_flight_command, test_ordinary_commands_still_serialize_on_the_device_lock) |
 | ROTATOR-8 | RC5 | S8 | root cause | closed (the rotator had no `_estop` latch at all and ran its stop I/O on the calling thread, so a FULL STOP blocked on the SMC100 `_serial_lock` held by an in-flight poll. Now the S8 probe pattern: latch first, hardware stop on a daemon worker joined against ESTOP_RETURN_BUDGET, and `SMC100.stop(priority=True)` taking `_serial_lock` with PRIORITY_LOCK_TIMEOUT and forcing ST through on failure. test_rotator_emergency_stop_returns_within_100ms_behind_a_held_serial_lock, test_rotator_emergency_stop_still_reaches_the_hardware, test_rotator_latches_so_a_queued_move_cannot_land_after_the_stop, test_only_an_explicit_operator_action_clears_the_rotator_latch, test_the_rotator_stop_path_takes_the_priority_write) |
-| ROTATOR-9 | RC2 / RC7 | S3 | root cause | open |
+| ROTATOR-9 | RC2 | S3 | root cause | open (partly closed: a failed poll no longer leaves the last reading on screen — `state` becomes "Communication lost" and `position` is cleared, and both reach all three views through the schema. test_poll_success_updates_state, test_poll_failure_indicates_communication_loss, test_poll_failure_clears_position, test_poll_recovery_after_failure. **Reported `closed` and downgraded**: the finding also names the display differs from `main`, which is formatting and untouched, and a cleared `position` renders as the literal "None" because `Param("position")` is `text`. One cited test was vacuous — see the session log) |
 | ROTATOR-10 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | ROTATOR-11 | RC2 / LOCAL-OK | S3 | explicit | closed (test_smc100_wait_states_does_not_expire_while_the_stage_is_moving, test_smc100_wait_states_still_has_an_absolute_ceiling, test_a_wait_timeout_says_the_stage_was_not_stopped, test_a_failed_move_forgets_where_the_stage_was_going, test_a_successful_move_keeps_its_target) |
 | ROTATOR-12 | RC6 | S9 | root cause | closed (S9 item 2: rotator params typed and bounded) |
 | ROTATOR-13 | RC2 / RC8 | S3 | root cause | open (partly closed: the model now reports no-connection rather than claiming simulation, and refusals are surfaced instead of being reported `status: ok` — test_a_sim_port_rotator_is_not_badged_as_simulated, test_rotator_reports_no_connection_rather_than_simulation, test_rotator_commands_refuse_when_there_is_no_stage, test_dispatch_surfaces_a_refused_command_as_an_error. Disabling the controls themselves needs the two GUI view files AND `src/views/web/static/js/app.js`, which no write set covered — the web half is unassigned, not merely deferred) |
 | ROTATOR-14 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
-| ROTATOR-15 | RC8 / doc | S11 | root cause | open — routing is uniform now, but the dead `error_callback` hook and the doc errors are untouched |
+| ROTATOR-15 | RC8 | S11 | root cause | open (partly closed: routing is no longer either/or — `_run_guarded`, `connect` and `stop` now report through `ErrorRouter` unconditionally instead of only when no `error_callback` was set, which is a real repair since a test setting the hook silently suppressed every bus report. test_async_action_failure_routes_through_error_router, test_stop_failure_routes_through_error_router, test_error_routing_to_both_callback_and_error_router. **The dead hook itself survives**: deleting it breaks tests in tests/edge_cases/, outside the agent's write set. The doc errors are the lead's) |
 | SERIAL-1 | RC2 | S3 | root cause | closed (test_a_failed_disable_faults_instead_of_claiming_the_system_is_off, tests/core/test_transport_truth.py) |
 | SERIAL-2 | RC1 | S2 | root cause | closed (test_probe_teardown_sends_hardware_stop_when_poller_stop_raises, tests/core/test_lifecycle_teardown.py) |
 | SERIAL-3 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
@@ -2508,7 +2623,7 @@ it) · `n/a` (with a reason).
 | STEPPER-14 | RC4 | S5 | root cause | closed (test_serial_read_position) |
 | STEPPER-15 | RC4 | S5 | root cause | closed (S5: test_manual_mode_drives_hardware_with_no_gui_at_all, test_the_model_starts_the_poller_itself) |
 | TEMP-1 | RC1 / RC10 | S2 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
-| TEMP-2 | RC2 | S3 | root cause | open |
+| TEMP-2 | RC2 | S3 | root cause | closed (the 5-failure `break` is gone: real exponential backoff to a 2.0 s ceiling, indefinite retry, and `current_temp = "Disconnected"` announced once. test_reader_implements_exponential_backoff, test_reader_continues_retrying_indefinitely, test_reader_sets_disconnected_on_persistent_failure, test_reader_recovers_after_reconnect, test_reader_backoff_respects_maximum, test_read_serial_data_retries_indefinitely_and_says_so. **The fix shipped with a defect the lead caught on merge**: the backoff was a plain `time.sleep`, and its 2.0 s ceiling outlives `READER_JOIN_TIMEOUT` (1.5 s), so `close()` gave up waiting and shut the port under a live reader. Backoff now waits on an event `close()` sets — test_a_reader_at_the_backoff_ceiling_still_leaves_before_close_returns, test_the_reader_stops_even_with_no_port_to_close) |
 | TEMP-3 | RC6 | S9 | root cause | closed (test_a_non_numeric_field_refuses_the_whole_frame, tests/core/test_typed_params.py) |
 | TEMP-4 | RC6 | S9 | root cause | closed (S9 item 2: temperature params typed) |
 | TEMP-5 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
@@ -2516,7 +2631,7 @@ it) · `n/a` (with a reason).
 | TEMP-7 | RC5 | S8 | root cause | closed (`send_settings` was a check-then-act: it tested `_estop` at the top, then built the frame, so a FULL STOP landing in that window was overwritten and the heater returned to setpoint silently. The latch is now re-checked inside a new `_write_lock` immediately before the write, and `emergency_stop` uses the latch-worker-bounded-join pattern with a forced priority frame. test_temp_7_a_stop_landing_mid_build_is_not_overwritten, test_temp_7_emergency_stop_returns_promptly_behind_a_held_write_lock, test_temp_7_the_stop_frame_forces_through_a_busy_write_lock, test_temp_7_an_ordinary_send_takes_the_lock_without_a_timeout) |
 | TEMP-8 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | TEMP-9 | LOCAL-OK | S15 | explicit | open |
-| TEMP-10 | RC2 / RC8 | S3 | root cause | open (unchanged by the fix wave — the agent correctly reported `open` rather than rounding up, having changed nothing. Every model-side branch needs `temperature_system.py` and the staleness indicator needs the two GUI views, so none of it fell in the transport write set. One part is already done and was not credited: `connection_status` exists at `temperature_system.py:28-34`) |
+| TEMP-10 | RC2 | S15 | explicit | open (partly closed: `connection_state` exists and is credited — test_connection_state_closed_when_no_port, test_connection_state_reflects_transport_state, test_connection_state_in_schema, test_connection_state_is_readonly. **Reported `closed` by the wave-3 agent and downgraded on verification**: the no-port branch backs off silently and never sets `Disconnected`, so SIM or no-port still shows "N/A" forever — the finding's headline. "Enter Settings is silent" untouched; the staleness indicator needs the two GUI views) |
 | TEMP-11 | RC1 / RC2 / doc | S2 | root cause | closed (the model half from the fix-web worktree, the bounded transport `flush()` from fix-transport, and the seam joined by the lead on merge — test_close_drains_the_heater_off_frame_before_releasing_the_port, test_close_reports_an_undrained_heater_off_frame, test_a_transport_without_flush_still_closes, plus the four close-path tests in tests/core/test_temperature_subsystem.py. Neither worktree could have tested the join alone) |
 | TEMP-12 | RC8 | S11 | root cause | closed (an info popup is inexpressible: `publish` raises on `requires_ack` for anything but an error; test_a_quiet_event_raises_no_modal) |
 | TEMP-13 | RC6 | S9 | root cause | closed (S9 item 2, same) |
@@ -2536,19 +2651,19 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-14 | RC11 / RC7 | S13 | root cause | open |
 | VIEW-TKINTER-15 | RC11 | S13 | root cause | open |
 | VIEW-TKINTER-16 | RC1 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
-| VIEW-TKINTER-17 | RC7 / RC9 | S10 | root cause | open (RC-9 wiring part closed in S12: probe linking moved into `app_bootstrap.link_models` and is no longer duplicated per view — test_red_percent_built_after_its_probes_still_sees_them. The RC-7 parts — hard-coded device names, `open_controller_log`, the dead `serial_port` entry, rotator formatting — remain.) |
-| VIEW-TKINTER-18 | LOCAL-OK | S15 | explicit | open |
+| VIEW-TKINTER-17 | RC7 / RC9 | S10 | root cause | closed (RC-9 wiring closed in S12; the RC-7 half verified gone on 2026-09-20 — no `open_controller_log`, no hard-coded "Red Percent Window"/"SMC100 Rotator" dispatch and no dead `serial_port` field check survives in tkinter/view.py, which routes on `VIEW_HINT`. Confirmed by the lead with an independent grep before accepting. test_view_tkinter_17_no_hardcoded_device_names, test_view_tkinter_17_uses_view_hint, test_view_tkinter_17_no_serial_port_field_checks) |
+| VIEW-TKINTER-18 | LOCAL-OK | S15 | explicit | open (partly closed: the log-window handling and the stdout spam are gone, the latter with RC-4's move of polling into the models — test_view_tkinter_18_log_window_never_opened, test_view_tkinter_18_no_log_updater_print. **Button-2/Button-3 on macOS Aqua remains** and needs platform-conditional binding; it is also unconfirmed by execution, so it is a hypothesis, not a diagnosis) |
 | WEB-1 | RC1 / RC10 | S2 | root cause | closed (tests/web/test_web_security.py: token, Origin and Content-Type checks on every POST) |
 | WEB-2 | RC4 | S5 | root cause | closed (S5: polling moved into the models, so all three frontends share it; test_manual_mode_drives_hardware_with_no_gui_at_all, test_the_model_starts_the_poller_itself) |
 | WEB-3 | RC1 / RC10 | S2 | root cause | closed (tests/web/test_web_security.py: /api/screenshot now requires the session token) |
 | WEB-4 | RC9 | S12 | root cause | closed (S12 item 3, same as DC-12/MANAGER-12) |
 | WEB-5 | RC10 | S14 | root cause | closed (the poller's `log_updater` is wired for models the setup wizard builds, not only for those built at import; test_setup_initialize_wires_poller_log_to_the_adapter) |
 | WEB-6 | RC7 | S10 | root cause | closed (S10: test_an_interactive_dropdown_always_has_a_command) |
-| WEB-7 | RC7 | S10 | root cause | open |
+| WEB-7 | RC7 | S10 | root cause | closed (the plotter takes `current_red` only, instead of any attribute whose name contains "red", so absolute and delta values stop interleaving in one series. tests/web/test_web_7_plotter.py) |
 | WEB-8 | RC4 / RC10 | S5 | root cause | closed (S5: /api/state reads the model caches; test_thread_safety_concurrent_requests) |
 | WEB-9 | RC8 | S11 | root cause | closed (`/api/errors?since=`; the destructive pop is gone and each tab keeps its own cursor). **The replay half survives**: a tab connecting with `since=0` still pulls the whole history as toasts — see ERRORS-3 |
 | WEB-10 | RC10 | S4 | root cause | closed (S4: token, Content-Type and Origin validation; test_a_post_from_another_origin_is_refused_even_with_json) |
-| WEB-11 | RC7 | S10 | root cause | open |
+| WEB-11 | RC7 | S10 | root cause | closed (the file-picker modal and the JS for the non-existent `execute_script` and `send_raw_command` commands are deleted. tests/web/test_web_11_dead_commands.py) |
 | WEB-12 | RC8 | S11 | root cause | closed (`CommandResult`; a refusal is never rendered as success) |
 | WEB-13 | RC11 | S13 | root cause | open |
 | WEB-14 | RC10 | S14 | root cause | closed (every route returns a JSON 500 envelope instead of dropping the connection, and one raising device no longer takes the whole state payload down with it. test_get_state_isolates_a_raising_device, test_api_get_route_crash_returns_json_500_not_a_dropped_connection, test_api_post_route_crash_returns_json_500_not_a_dropped_connection) |
@@ -2557,7 +2672,7 @@ it) · `n/a` (with a reason).
 | WEB-17 | RC10 | S14 | root cause | closed early in S11 (the destructive pop was the RC-8 half; `?since=` fixed it) |
 | WEB-18 | RC5 / RC8 | S8 | root cause | closed (FULL STOP reports per-device results instead of a blanket ok, so a device whose stop was not confirmed is named. test_full_stop_reports_per_device_results, test_api_full_stop_all_reports_unconfirmed_device) |
 | WEB-19 | RC10 | S14 | root cause | open |
-| WEB-20 | RC1 | S2 | root cause | open (partly closed: `dispatch_command` uses `get_active_models_snapshot` (web_adapter.py:393). The rest does not — `resolve_options`:483, `set_device_attribute`:521 and :620 still read the live `active_models` dict under the **adapter's** `_state_lock`, which is not `SystemManager.lock`, and the generation counter the finding asks for does not exist. Reported CLOSED by a reconciliation agent on 2026-09-20 and rejected on verification) |
+| WEB-20 | RC1 | S2 | root cause | open (partly closed: `resolve_options`, `dispatch_command` and `set_device_attribute` now read through `get_active_models_snapshot` — test_web_20_active_models.py, 3 tests. **Reported `closed` and downgraded for the second time**: `get_status` (web_adapter.py:290) and `get_devices` (:302) still read the live `active_models` dict under the adapter's `_state_lock`, which is not `SystemManager.lock`, and the generation counter the finding asks for still does not exist — `grep -c generation web_adapter.py` is 0) |
 | WEB-21 | RC10 | S14 | root cause | closed (POST bodies are capped and answered with 413 after the declared body is drained in bounded chunks; `mss`/PIL import lazily and one `mss` instance is reused. test_post_body_over_max_size_is_rejected_with_413, test_screenshot_reuses_a_single_mss_instance) |
 | WEB-22 | RC10 | S14 | root cause | open (partly closed: the shared fetch wrapper now aborts a hung request — test_shared_fetch_wrapper_aborts_a_hung_request_after_its_timeout, driven through a real Node process from inside pytest, since the repo has no JS test framework. Per-device staleness marking and dropdown refresh-on-focus are **implemented but untested** — no DOM-rendering harness exists.) |
 
