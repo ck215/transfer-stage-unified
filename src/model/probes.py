@@ -56,6 +56,19 @@ class BaseProbe(SchemaCommands):
     _INTERLOCK_POLL_INTERVAL = 5
     _INTERLOCK_TIMEOUT = 300
 
+    # D-8 (owner, 2026-09-20): "warn at N s, FULL STOP at M s while motion
+    # is active... Suggested starting values N=5, M=15, to be tuned at the
+    # bench." Folded into the interlock watchdog above rather than a second
+    # timer -- same thread, same generation, a second threshold. Distinct
+    # from `_INTERLOCK_TIMEOUT`: that measures *operator* inactivity across
+    # every energized mode; this measures *web client* absence, only while
+    # a mode that can move an axis is engaged (AUTONOMOUS/MANUAL) -- an
+    # idle-but-armed probe is explicitly left alone. See
+    # `touch_client_liveness` for the seam and what "no client has ever
+    # checked in" means.
+    WEB_CLIENT_WARN_TIMEOUT = 5    # s (N)
+    WEB_CLIENT_STOP_TIMEOUT = 15   # s (M)
+
     # Single-byte control commands this board's firmware is *observed* to
     # handle today, read straight out of `firmware/*/*.ino` (SERIAL-10).
     #
@@ -148,15 +161,31 @@ class BaseProbe(SchemaCommands):
         print(f"[{self.__class__.__name__}] Destructor called")
 
     def __init__(self, port, controller_id, active_claims=None):
+        # Mode (RC-3) and the mode-gated parameter store (DC-6) come first,
+        # before anything below can trigger a `PARAMS`-backed property
+        # setter — `self.x_step = "16"` two lines down is exactly that. One
+        # value, one writer for the mode: `_transition`. The four booleans
+        # this replaces were set from `enter_auton`, `enter_manual`,
+        # `macro_start_auton`, `run_script`, `send_manual_mode_command`,
+        # `_stop_and_disarm` and the Web `set_attr` route — seven writers, no
+        # agreed ordering, and the hardware side effects scattered among them.
+        self._mode = ProbeMode.DISABLED
+        self._mode_lock = threading.RLock()
+        # Backing storage for every `PARAMS`-declared attribute (DC-6, see
+        # the properties defined below the class). Construction always runs
+        # in DISABLED, which no entry's `disabled_when` names, so nothing
+        # below is ever refused — this is purely where the values live.
+        self._param_store = {}
+
         self.serial_comm = serial(port) if port and port != "None" else None
-        
+
         self.packet_format = PACKET_FORMAT  # Standardized 42-byte float format
-        
+
         # Position variables
         self.pos_x = "0"
         self.pos_y = "0"
         self.pos_z = "0"
-        
+
         # Connection variables
         self.controller_var = controller_id
         self.serial_port = port
@@ -167,28 +196,20 @@ class BaseProbe(SchemaCommands):
             self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
         except Exception as e:
             print(f"[{self.__class__.__name__}] Gamepad unavailable, running headless: {e}")
-        
+
         # Step sizes
         self.x_step = "16"
         self.y_step = "16"
         self.z_step = "16"
-        
+
         # Step counts (distances)
         self.x_dist = "0"
         self.y_dist = "0"
         self.z_dist = "0"
-        
+
         # Velocity control
         self.full_speed = "400"
         self.man_full_speed = "400"
-        
-        # Mode (RC-3). One value, one writer: `_transition`. The four
-        # booleans this replaces were set from `enter_auton`, `enter_manual`,
-        # `macro_start_auton`, `run_script`, `send_manual_mode_command`,
-        # `_stop_and_disarm` and the Web `set_attr` route — seven writers, no
-        # agreed ordering, and the hardware side effects scattered among them.
-        self._mode = ProbeMode.DISABLED
-        self._mode_lock = threading.RLock()
 
         # Autonomous "stepping" is a *timed sub-state*, not a fifth boolean
         # (RC-3 item 2). `is_stepping` used to be set by macro_start_auton and
@@ -245,6 +266,13 @@ class BaseProbe(SchemaCommands):
         # single reused Event meant a watchdog stopped by one disable stayed
         # stopped for the next enable, because `_interlock_stop` was still set.
         self._interlock_generation = 0
+
+        # D-8 / WEB-19 liveness deadline. `None` until the first check-in —
+        # see `touch_client_liveness` — so a desktop (Tk/PySide) session,
+        # which never calls it, is never gated by a deadline meant for a
+        # frontend that was never watching.
+        self.last_client_seen_time = None
+        self._client_liveness_warned = False
 
         # Model-owned loops (RC-4). These used to live in the views: Tk's
         # _route_input (50 ms) and PySide's input_timer (20 ms) each pumped
@@ -376,9 +404,13 @@ class BaseProbe(SchemaCommands):
                 # what was just typed — and Tk papered over it by forcing
                 # focus away first, which is a named anti-fix because it only
                 # ever worked in Tk.
+                # DC-6: refusing this while a run is already active is
+                # enforced by `execute_command` below, not only rendered —
+                # the same `disabled_when` the entries use, so re-arming
+                # mid-run has to go through the toggle (stop) first.
                 sch.button("Start Stepping", "macro_start_auton",
                            inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
-                           role="go"),
+                           role="go", disabled_when=("autonomous", "manual")),
                 # Per-device "Full Stop" removed: the dashboard's global FULL
                 # STOP already calls this model's full_stop() directly, so a
                 # per-tab button was a redundant second E-stop.
@@ -419,14 +451,37 @@ class BaseProbe(SchemaCommands):
                 from controller.gamepad import ControllerPoller
                 self.poller = ControllerPoller(controller_id, self.active_claims, self.__class__.__name__)
             except Exception as e:
-                print(f"[{self.__class__.__name__}] Gamepad still unavailable: {e}")
+                # ERRORS-7: this used to be print-only, so a swap the
+                # operator initiated could fail with nothing on the
+                # dashboard to say so — the log said "Swapping controller
+                # to: X" and nothing else.
+                msg = f"Could not bind controller {controller_id!r}: {e}"
+                print(f"[{self.__class__.__name__}] {msg}")
+                ErrorPopupManager.report_warning("Controller Swap Failed", msg)
                 self._sync_controller_var()
                 return False
+            else:
+                # GAMEPAD-17: this poller exists only because none did at
+                # __init__ (gamepad hardware appearing after
+                # construction). `start_loops()` already ran, against
+                # `self.poller is None`, the last time this probe armed
+                # (RC-4) -- so the poll loop for this brand-new poller has
+                # never been started, and it would sit bound but inert.
+                # That is the same end state the audit named under the old
+                # view-owned polling model, reached here instead because
+                # the loop is model-owned now. Start it if the probe is
+                # already energized; otherwise the next `_transition` into
+                # an armed mode starts it the normal way.
+                if self.system_enabled:
+                    self.start_loops()
         else:
             try:
                 self.poller.set_controller(controller_id)
             except Exception as e:
-                print(f"[{self.__class__.__name__}] Controller swap failed: {e}")
+                # ERRORS-7: likewise print-only before this.
+                msg = f"Could not swap to controller {controller_id!r}: {e}"
+                print(f"[{self.__class__.__name__}] {msg}")
+                ErrorPopupManager.report_warning("Controller Swap Failed", msg)
                 self._sync_controller_var()
                 return False
 
@@ -725,6 +780,60 @@ class BaseProbe(SchemaCommands):
             print(f"[{self.__class__.__name__}] {what} refused: FULL STOP is latched")
             return True
         return False
+
+    # -- schema-declared mode gating (DC-6) -----------------------------
+    #
+    # `ui_schema` has always declared which modes grey an entry or a
+    # command out (`disabled_when=("autonomous", "manual")`). Before this,
+    # that declaration was consulted only by each view's own greying-out
+    # logic — so a request that reached the model directly (`setattr`, the
+    # Web `/api/set_attr` route, or `execute_command` called without going
+    # through a renderer at all) landed regardless of mode. These two
+    # lookups and the refusal helper are what the properties defined below
+    # the class, and the `execute_command` override just below, both share
+    # — one place reads the schema's own gate, so a control's rendered
+    # state and its actual enforcement cannot drift apart.
+
+    def _schema_element_for(self, model_attr):
+        """The schema element declaring `model_attr`, or `None`."""
+        for element in sch.elements(self.ui_schema):
+            if element.get("model_attr") == model_attr:
+                return element
+        return None
+
+    def _command_element_for(self, command):
+        """The schema element whose `command` is `command`, or `None`."""
+        for element in sch.elements(self.ui_schema):
+            if element.get("command") == command:
+                return element
+        return None
+
+    def _refuse_if_mode_disallows(self, element, label):
+        """True when `element`'s own `disabled_when`/`enabled_when` forbids
+        the current mode. `element=None` (nothing in the schema names this
+        attribute or command) means unrestricted, matching the pre-DC-6
+        behavior for everything the schema does not gate.
+        """
+        if element is None or sch.is_enabled(element, self.mode.value):
+            return False
+        print(f"[{self.__class__.__name__}] Rejected: {label} is not "
+              f"available while {self.mode.value} (DC-6)")
+        return True
+
+    def execute_command(self, name, inputs=None, args=None):
+        """DC-6: a command's own `disabled_when` refuses it here, not only
+        in whichever renderer happens to be greying it out. "Start
+        Stepping" is the motivating case: re-arming it mid-run has to go
+        through the toggle (stop) first, and that has to be true even for a
+        caller that never rendered the button at all.
+        """
+        element = self._command_element_for(name)
+        label = (element or {}).get("text", name)
+        if self._refuse_if_mode_disallows(element, label):
+            from results import Refused
+            return Refused(f"{label} is not available while "
+                            f"{self.mode.value}")
+        return super().execute_command(name, inputs, args)
 
     def send_stop_command(self):
         if self.serial_comm:
@@ -1067,6 +1176,55 @@ class BaseProbe(SchemaCommands):
     def touch_activity(self):
         self.last_activity_time = time.time()
 
+    def touch_client_liveness(self):
+        """Record that a Web client is still watching (D-8 / WEB-19).
+
+        **The seam.** No arguments: "now" is read here, with `time.time()`,
+        rather than accepted from the caller, so a slow request cannot
+        backdate the deadline. The Web adapter's own side of this is to
+        call it once per live poll of this device — the natural place is
+        wherever it already reads this model's state for `/api/state`, so
+        the deadline tracks "a client is actually looking at this device"
+        rather than "the server process is up."
+
+        Before the first call, `last_client_seen_time` stays `None` and
+        the watchdog does not gate on it at all (see `_check_client_
+        liveness`) — a Tk or PySide session, which never calls this, reads
+        as a desktop session, not an absent web client. Once a web client
+        has checked in, the gate applies for the rest of this model's
+        life, and a check-in also clears any pending warning.
+        """
+        self.last_client_seen_time = time.time()
+        self._client_liveness_warned = False
+
+    def _check_client_liveness(self):
+        """D-8's second threshold, folded into the interlock watchdog.
+
+        Only while a mode that can actually move an axis is engaged — an
+        idle-but-armed probe is left alone by design — and only once a web
+        client has checked in at least once.
+        """
+        if self._mode not in (ProbeMode.AUTONOMOUS, ProbeMode.MANUAL):
+            return
+        seen = self.last_client_seen_time
+        if seen is None:
+            return
+        silence = time.time() - seen
+        if silence > self.WEB_CLIENT_STOP_TIMEOUT:
+            msg = (f"No web client has polled in {silence:.1f}s while "
+                   f"{self._mode.value}; FULL STOP (D-8).")
+            print(f"[{self.__class__.__name__}] {msg}")
+            ErrorPopupManager.report_error(
+                "Client Liveness FULL STOP", msg, None)
+            self.emergency_stop()
+        elif (silence > self.WEB_CLIENT_WARN_TIMEOUT
+                and not self._client_liveness_warned):
+            self._client_liveness_warned = True
+            msg = (f"No web client has polled in {silence:.1f}s while "
+                   f"{self._mode.value}.")
+            print(f"[{self.__class__.__name__}] {msg}")
+            ErrorPopupManager.report_warning("Client Liveness Warning", msg)
+
     def _stop_interlock_watchdog(self):
         self._interlock_stop.set()
 
@@ -1093,6 +1251,10 @@ class BaseProbe(SchemaCommands):
         generation = self._interlock_generation
         stop_event = self._interlock_stop
         self.touch_activity()
+        # A fresh arming starts with a clean liveness slate: a warning
+        # raised in a previous arming must not suppress the one this
+        # generation might need to raise on its own account.
+        self._client_liveness_warned = False
 
         def _watch():
             while not stop_event.wait(self._INTERLOCK_POLL_INTERVAL):
@@ -1117,6 +1279,10 @@ class BaseProbe(SchemaCommands):
                     ErrorPopupManager.report_info("Idle Timeout", msg)
                     self.disable()
                     return
+                # D-8 / WEB-19: the second threshold this same watchdog now
+                # carries. Folded in here rather than a second timer, per
+                # the owner's own framing of the request.
+                self._check_client_liveness()
 
         self._interlock_thread = threading.Thread(
             target=_watch, daemon=True,
@@ -1297,6 +1463,42 @@ class BaseProbe(SchemaCommands):
         if not done.wait(self.ESTOP_RETURN_BUDGET):
             print(f"[{self.__class__.__name__}] FULL STOP: latched; hardware "
                   f"stop still in flight after {self.ESTOP_RETURN_BUDGET}s")
+
+
+def _mode_gated_param(name):
+    """One `property` per `PARAMS` name, shared by every `BaseProbe`
+    subclass (DC-6).
+
+    This is the *only* thing that changes: whether a write to a declared
+    motion parameter lands, gated by the exact `disabled_when` its schema
+    entry already carries. What is stored is untouched — an unparseable
+    value is still accepted here and only ever substituted for later,
+    inside `get_params`'s lenient `coerce` (RC-6; see
+    `tests/core/test_typed_params.py`). Mode gating and value typing are
+    different questions, and only the first one belongs at the write
+    boundary: a value that fails to parse is a formatting problem the
+    model already knows how to fall back from, but a write that arrives
+    mid-autonomous-run is a safety question, and the answer has to be "no"
+    before it is ever asked what the value was.
+    """
+
+    def getter(self):
+        return self._param_store.get(name, "")
+
+    def setter(self, value):
+        element = self._schema_element_for(name)
+        label = (element or {}).get("text", name).rstrip(":")
+        if self._refuse_if_mode_disallows(element, label):
+            raise ValueError(f"{label} cannot be changed while "
+                              f"{self.mode.value}")
+        self._param_store[name] = value
+
+    return property(getter, setter)
+
+
+for _param_name in BaseProbe.PARAMS:
+    setattr(BaseProbe, _param_name, _mode_gated_param(_param_name))
+del _param_name
 
 
 class StepperProbe(BaseProbe):
