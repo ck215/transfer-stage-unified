@@ -137,8 +137,16 @@ def test_redpercent_syncs_to_non_stepper_probe():
     dc_probe.pos_x, dc_probe.pos_y, dc_probe.pos_z = "1.5", "2.5", "3.5"
     rp.capture_focus_area = lambda sct: object()
     rp.detect_red = lambda img: 25.0
+    # REDPERCENT-9 (S13 item 1): `start_monitoring` refuses without a focus
+    # area instead of starting a thread that can never produce a sample. This
+    # test predates that guard and stubbed `capture_focus_area` without ever
+    # setting the area it reads, so the start is now correctly Refused. The
+    # subject here is syncing to a non-stepper probe, not focus-area
+    # validation, so the area is supplied rather than the guard weakened.
+    rp.set_focus_area(0, 0, 10, 10)
 
-    rp.start_monitoring()
+    result = rp.start_monitoring()
+    assert result, f"monitoring refused to start: {getattr(result, 'reason', result)}"
     import time
     time.sleep(0.2)
     rp.stop_monitoring()

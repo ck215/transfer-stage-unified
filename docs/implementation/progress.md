@@ -66,7 +66,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S10 | Schema v2, three renderers (RC-7) | done | `7cc5f3c` | 2026-09-20 | All 5 items. Qt pass resolved (it hung, it did not abort). `tests/ui` un-excluded: +83 tests in the fast gate. I-7.2 built; known_bad now empty. |
 | S11 | Result channel and event bus (RC-8) | done | `409c859` | 2026-09-20 | All 4 items. `CommandResult` + `EventBus`; one `install_exception_hooks`. I-8.1–I-8.3 hold. conftest.py was duplicated end to end; half of it was dead. |
 | S12 | Composition root, registry events (RC-9) | done | `d35036b` | 2026-09-20 | All 3 items. `app_bootstrap` is the composition root; `SystemManager` emits `registered`/`released`; `_disabled_in_setup` deleted. I-9.1–I-9.3 built. **I-7.1 does not retire here** — 2 of its 6 hits are S13's. |
-| S13 | MonitoringRun (RC-11) | in progress | `0e5ba73` | 2026-09-20 | Items 5-7 (REDPERCENT-21,22,23) landed first, out of plan order, for a bench run. Items 1-4 — `MonitoringRun` itself — are still open. |
+| S13 | MonitoringRun (RC-11) | done | | 2026-09-20 | All 7 items. Items 5-7 landed first, out of plan order, for a bench run (`0e5ba73`); items 1-4 — `MonitoringRun` itself — landed in the `s13-monitoring-run` worktree and took over their snapshot rather than opening a second one. Item 3's `confirm_discard` seam exists model-side; the PySide dock-close prompt (PYSIDE-4) that consumes it is still open. |
 | S14 | Remaining web work | done | `a4f3a75` | 2026-09-20 | 7 of 8 closed in the `s14-web` worktree (WEB-5, 14, 15 residue, 16, 18, 21 and REDPERCENT-20's web half). WEB-22 is partly closed — no DOM harness for the staleness/refresh half. **WEB-19 deferred**: it needs the D-8 client-liveness watchdog in `probes.py`, so it spans model and web and cannot sit in a web-only write set. |
 | S15 | Explicit `LOCAL-OK` sweep | done | `a4f3a75` | 2026-09-20 | 4 of 5 closed in the `s15-local-ok` worktree (PYSIDE-16, 17, 18 and REDPERCENT-20's model half). GAMEPAD-17 is partly closed — three sub-items blocked by write-set boundaries, not difficulty. Two of the qt-marked tests it could not run were **wrong** and were fixed on merge; see the session log. |
 | S16 | Owner verification, firmware v2 | todo | | | **Owner only.** Never delegate. |
@@ -2435,6 +2435,93 @@ it, since both want `web_adapter.py` and `app.js` again.
 **Next action:** verify and merge the S13 `MonitoringRun` worktree when it
 reports, then open wave 4 on `probes.py`.
 
+### 2026-09-20 — S13 closed: a monitoring session becomes an object, and sonnet's side of the comparison
+
+**Three gates, all green: fast 786 passed / 1 skipped / 1 xfailed; slow 58
+passed; qt 53 passed.** Ledger 43 open to **35**; 175 closed to **183**.
+S13 is `done` — all seven items.
+
+`MonitoringRun` exists. A run owns a frozen `tuple` of its sync dimensions,
+a frozen focus area, its own `RedPercentDataLog`, its own stop `Event`, its
+own generation token and its own `last_logged_red`. `start_monitoring()`
+returns a `CommandResult` and refuses three ways: no focus area, already
+active, or `mss`/`numpy`/`PIL` missing. `monitoring` is no longer a free
+boolean — it is derived from the run, so it cannot disagree with whether a
+thread is actually running, which is REDPERCENT-4's entire failure mode.
+
+**Item 1 took over items 5-7's snapshot rather than opening a second one
+beside it**, which was the explicit risk when 5-7 landed early and out of
+order. `run_id`, `output_root`, `run_annotations` and the two timestamps
+have one owner again.
+
+**Velocity is real now.** `_read_dim` derives it from position deltas over
+timestamps and never reads `vel_x`/`vel_y`/`vel_z`, which were gamepad stick
+deflection recorded in a column labelled velocity — a number that has been
+wrong in every saved run this project has produced. A poisoned `vel_x`
+regression-guards the old path. The CSV gained a `Timestamp` column, and a
+failed position read is an empty cell rather than `0.0`, because zero is a
+position the stage can actually be at.
+
+**Two agents closed the same hole from opposite sides without knowing it.**
+S13 made the `sync_x/y/z` setters refuse mid-run, reasoning that the
+schema's `disabled_when` never protected the web `set_device_attribute`
+path because `_schema_attrs` allowlisted toggle-type `model_attr`s
+regardless. That reading was correct **at `fc9d482`** — and while it was
+being written, DC-11 in `fix-webui` narrowed `_WRITABLE_ELEMENT_TYPES` to
+`{"entry"}`, closing the same path from the adapter. Both fixes are right
+and the redundancy is welcome, but the S13 rationale now describes a tree
+that no longer exists; a later reader must not conclude the model-side
+refusal is the only guard, nor that it is now redundant and removable.
+
+**One collision outside the write set, self-reported.**
+`test_model_interactions.py::test_redpercent_syncs_to_non_stepper_probe`
+stubbed `capture_focus_area` without ever setting a focus area, so
+REDPERCENT-9's new guard correctly refuses its start. Its subject is
+syncing to a non-stepper probe, not focus-area validation, so the lead
+supplied the area rather than weakening the guard. **It is `slow`-marked, so
+it never appears in the working gate** — the agent found it anyway and
+flagged it, which is the only reason it was fixed today rather than
+surfacing at some future stage boundary.
+
+#### Sonnet, against the same rubric
+
+| Check | haiku (3 agents, 15 rows) | sonnet (1 agent, 8 rows) |
+|---|---|---|
+| write-set violations | 0 | 0 |
+| phantom test names | 0 | 0 |
+| cited names vs files | 1 of 3 cited files | names throughout |
+| rows downgraded by the lead | 3 | **0** |
+| bad tests needing rewrite | 2 | 0 |
+| regressions the lead had to fix | 1 | 0 |
+| out-of-set collisions self-reported | 0 | 1 |
+
+Nothing sonnet handed back needed downgrading. Every status matched what the
+diff supported, every defect came with a named pre-fix proof and what it
+printed when it failed, and item 3 came back `partly` unprompted because the
+`confirm_discard` seam exists but the PySide prompt that consumes it is in
+another agent's file.
+
+**The comparison is confounded and the numbers should not be read as a
+ranking.** Sonnet got one brief, the hardest one, with a design written out
+for it in advance; the haiku agents got four briefs between them against
+audit entries a year stale. What the wave does support is narrower: the
+mechanical contracts — write sets, citations — held at both weights, and the
+difference showed up entirely in *status honesty*, which is the expensive
+kind to catch. Every haiku over-claim was a row closed on its reachable
+half. Sonnet closed nothing it had not reached.
+
+**The allocation rule that follows**, and what wave 4 will use: weight by
+whether a finding's *scope* is obvious from its own text. A single-file
+LOCAL-OK sweep is scope-obvious and belongs on haiku. A `partly`-closed row,
+anything cross-cutting, and anything already mis-reported once is not, and
+the lead pays more to check it than the model saved.
+
+**Next action:** wave 4 on `probes.py`, now free — DC-6, STEPPER-11,
+ERRORS-7, WEB-19 and GAMEPAD-17's remainder, plus WEB-20's residue and
+ROTATOR-13's web half, which both want `web_adapter.py` and `app.js` again.
+PYSIDE-4 and REDPERCENT-6/13/17/18/19 are unblocked now that
+`MonitoringRun` is settled.
+
 ## Finding ledger
 
 218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
@@ -2549,22 +2636,22 @@ it) · `n/a` (with a reason).
 | PYSIDE-18 | LOCAL-OK | S15 | explicit | closed (`save_log_ui` appends `.csv` where Qt, unlike Tk, does not; `load_csv` rejects on `red_percents` alone so a dims-column-with-no-rows CSV no longer reaches the modal `select_plot_type` — the PYSIDE-12 hang path — and opens with `newline=''`; the CSV metadata block now reaches the plot title. test_save_log_ui_appends_csv_when_the_chosen_name_has_no_suffix, test_save_log_ui_leaves_an_explicit_suffix_alone, test_load_csv_rejects_a_header_only_file_even_with_a_dims_column, test_load_csv_opens_the_file_with_newline_empty_string, test_draw_plot_appends_probe_metadata_to_the_title) |
 | PYSIDE-19 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | PYSIDE-20 | RC7 / RC13 | S10 | root cause | closed (S1: test_d11_serial_port_is_readonly_in_every_schema) |
-| REDPERCENT-1 | RC11 | S13 | root cause | open |
-| REDPERCENT-2 | RC11 | S13 | root cause | open |
-| REDPERCENT-3 | RC11 / RC5 | S13 | root cause | open |
-| REDPERCENT-4 | RC11 | S13 | root cause | open (partly closed: the `probes.py` share is fixed — a dead gamepad no longer kills the monitor thread; 8 tests in tests/core/test_redpercent4_velocity_reads.py. The rest is the monitor thread's own exception handling and the `mss=None` path, both in `redpercent_system.py`, which S13 items 1-4 own) |
-| REDPERCENT-5 | RC11 | S13 | root cause | open |
+| REDPERCENT-1 | RC11 | S13 | root cause | closed (`MonitoringRun` freezes `sync_dimensions` as a tuple at start and the monitor loop reads only that, so the log can no longer alias the model's live list; the `sync_x/y/z` setters and `toggle_sync_*` refuse while a run is active, which also closes the web `setattr` path independently of DC-11's allowlist. test_monitoring_run_freezes_sync_dimensions_as_a_tuple, test_toggle_sync_refuses_while_a_run_is_active, test_direct_setattr_on_sync_x_is_ignored_mid_run, test_toggle_sync_still_works_when_no_run_is_active. Aliasing proven pre-fix: `data_log.sync_dimensions is system.sync_dimensions`) |
+| REDPERCENT-2 | RC11 | S13 | root cause | closed (`start_monitoring` builds a new run with a fresh `RedPercentDataLog` and `last_logged_red = -1000.0` unconditionally, replacing `if not self.data_log:`; runs no longer concatenate and `has_unsaved_data` is no longer sticky. test_a_fresh_run_gets_a_fresh_data_log, test_last_logged_red_does_not_carry_over_between_runs. Proven pre-fix: `system.data_log is first_log` still held after a second start) |
+| REDPERCENT-3 | RC11 | S13 | root cause | closed (each run owns its own `threading.Event` and its thread closure captures that run rather than re-reading `self._run`, so two runs cannot share a stop flag; the `probes.py:467-480` generation token is carried as well. test_generation_token_invalidates_a_superseded_generation, test_a_stale_generation_stops_the_loop_without_the_stop_event) |
+| REDPERCENT-4 | RC11 | S13 | root cause | closed (the `probes.py` share closed earlier — a dead gamepad no longer kills the monitor thread, 8 tests in tests/core/test_redpercent4_velocity_reads.py. The `redpercent_system.py` remainder closes here: the whole loop body is inside `try/except`, an unexpected exception sets the run's `failure` — which is what makes the derived `monitoring` read False — and reports through the bus with `requires_ack`, so a dead thread can no longer leave the UI claiming to monitor. The `mss=None` path is a `Refused` at start rather than an `AttributeError` in the thread. test_an_exception_in_the_loop_clears_monitoring_and_is_reported, test_start_monitoring_refuses_when_a_dependency_is_missing) |
+| REDPERCENT-5 | RC11 | S13 | root cause | closed (`current_red` and `red_change` are read-only views onto one `_red_state` tuple swapped in a single assignment, so no poller can read a mismatched pair, and `_publish_red` reads `baseline_red` exactly once per sample instead of twice in one expression. test_publish_red_reads_baseline_exactly_once, test_current_red_and_red_change_always_agree) |
 | REDPERCENT-6 | RC7 | S10 | root cause | open |
 | REDPERCENT-7 | RC8 / RC7 | S11 | root cause | closed (result part: refusals are `Refused` and render as refusals) |
 | REDPERCENT-8 | RC7 | S10 | root cause | closed (S10: the web probe dropdown carries `command="set_stepper_model"`; test_all_ui_schemas, test_an_interactive_dropdown_always_has_a_command) |
-| REDPERCENT-9 | RC11 | S13 | root cause | open |
+| REDPERCENT-9 | RC11 | S13 | root cause | closed (`start_monitoring` returns a `CommandResult`: `Refused` with no focus area, when already active, or when `mss`/`numpy`/`PIL` is missing; `Ok(run)` otherwise. It no longer starts a thread that can never produce a sample. test_start_monitoring_refuses_without_a_focus_area, test_start_monitoring_refuses_when_already_active, test_start_monitoring_refuses_when_a_dependency_is_missing, test_start_monitoring_ok_returns_the_run. Proven pre-fix: `=== MONITORING STARTED ===` printed with no focus area set) |
 | REDPERCENT-10 | RC7 | S10 | root cause | closed (S10: the hand-built duplicate Position Source and Save Log controls are gone, the schema provides both; test_pyside_redpercent_sync_and_probe_controls) |
 | REDPERCENT-11 | RC9 / RC1 | S12 | root cause | closed (S12 item 2, same tests; I-9.1 holds by construction — test_i_9_1_only_the_dependent_model_writes_available_probes) |
 | REDPERCENT-12 | RC1 | S2 | root cause | closed (hide/show; test_hiding_does_not_release_the_model) |
 | REDPERCENT-13 | RC7 | S10 | root cause | open |
 | REDPERCENT-14 | RC6 | S9 | root cause | closed (S9 item 2: redpercent params typed) |
 | REDPERCENT-15 | RC9 | S12 | root cause | closed (S12 item 3: no `_disabled_in_setup`, so the filter it broke no longer exists; test_redpercent_get_available_probe_names) |
-| REDPERCENT-16 | RC11 | S13 | root cause | open |
+| REDPERCENT-16 | RC11 | S13 | root cause | closed (velocity is derived from position deltas over timestamps by `_read_dim`, which no longer reads `vel_x`/`vel_y`/`vel_z` at all — the audit's finding that the logged "velocity" was gamepad stick deflection; a poisoned `vel_x` regression-guards it. The CSV gained a `Timestamp` column, and a failed position read is an empty cell, never `0.0` — zero is a position the stage can actually be at. test_velocity_is_derived_from_position_deltas_not_vel_x, test_an_invalid_position_read_is_none_not_zero, test_invalid_sample_is_never_written_as_zero_in_add_entry, test_csv_carries_a_timestamp_column, test_an_invalid_position_survives_as_an_empty_cell_not_a_zero) |
 | REDPERCENT-17 | RC7 | S10 | root cause | open |
 | REDPERCENT-18 | RC7 | S10 | root cause | open |
 | REDPERCENT-19 | RC7 | S10 | root cause | open |
@@ -2648,8 +2735,8 @@ it) · `n/a` (with a reason).
 | VIEW-TKINTER-11 | RC4 | S5 | root cause | closed (S5: test_a_tap_shorter_than_a_read_interval_is_not_lost) |
 | VIEW-TKINTER-12 | RC4 | S5 | root cause | closed (S5: test_the_model_not_the_view_feeds_the_idle_watchdog) |
 | VIEW-TKINTER-13 | RC3 | S7 | root cause | closed (every exit routes through _transition; test_mode_is_exactly_one_value) |
-| VIEW-TKINTER-14 | RC11 / RC7 | S13 | root cause | open |
-| VIEW-TKINTER-15 | RC11 | S13 | root cause | open |
+| VIEW-TKINTER-14 | RC11 | S13 | root cause | open (partly closed: Start without a focus area is refused in the model now, so no view can begin a run that cannot sample — test_start_monitoring_refuses_without_a_focus_area. The Tk **button state and Sync checkbox rendering** the finding also names are view work and were not in any wave-3 write set) |
+| VIEW-TKINTER-15 | RC11 | S13 | root cause | closed (same fix as REDPERCENT-1, seen from Tk: the log's dimensions are frozen at run creation and toggling Sync after a start neither corrupts the log nor kills the thread. test_monitoring_run_freezes_sync_dimensions_as_a_tuple, test_toggle_sync_refuses_while_a_run_is_active) |
 | VIEW-TKINTER-16 | RC1 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
 | VIEW-TKINTER-17 | RC7 / RC9 | S10 | root cause | closed (RC-9 wiring closed in S12; the RC-7 half verified gone on 2026-09-20 — no `open_controller_log`, no hard-coded "Red Percent Window"/"SMC100 Rotator" dispatch and no dead `serial_port` field check survives in tkinter/view.py, which routes on `VIEW_HINT`. Confirmed by the lead with an independent grep before accepting. test_view_tkinter_17_no_hardcoded_device_names, test_view_tkinter_17_uses_view_hint, test_view_tkinter_17_no_serial_port_field_checks) |
 | VIEW-TKINTER-18 | LOCAL-OK | S15 | explicit | open (partly closed: the log-window handling and the stdout spam are gone, the latter with RC-4's move of polling into the models — test_view_tkinter_18_log_window_never_opened, test_view_tkinter_18_no_log_updater_print. **Button-2/Button-3 on macOS Aqua remains** and needs platform-conditional binding; it is also unconfirmed by execution, so it is a hypothesis, not a diagnosis) |
