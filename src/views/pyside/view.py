@@ -909,7 +909,13 @@ class PlotDialog(QDialog):
         dim1_cb = QComboBox(); dim1_cb.addItems(dims_found)
         dim2_cb = QComboBox(); dim2_cb.addItems(dims_found)
         dim3_cb = QComboBox(); dim3_cb.addItems(dims_found)
-        
+        # REDPERCENT-17: each combo used to default to index 0, so a
+        # default 2D/3D plot used the same dim on every axis. Default each
+        # combo to the next distinct dim (clamped to the last one found)
+        # so the initial selection is already a usable plot.
+        dim2_cb.setCurrentIndex(min(1, len(dims_found) - 1))
+        dim3_cb.setCurrentIndex(min(2, len(dims_found) - 1))
+
         form.addRow("Dim 1:", dim1_cb)
         form.addRow("Dim 2:", dim2_cb)
         form.addRow("Dim 3:", dim3_cb)
@@ -932,6 +938,11 @@ class PlotDialog(QDialog):
         
         if 'type' in selected:
             self.draw_plot(selected['type'], selected['dim1'], selected['dim2'], selected['dim3'], red_percents, dim_data)
+        else:
+            # REDPERCENT-17: closing the dialog (X, Escape) used to abort
+            # with no trace. Report it so the operator knows the CSV load
+            # did not silently fail elsewhere.
+            ErrorRouter.report_info("Plot Cancelled", "Plot type selection was cancelled; no plot drawn.")
 
     def draw_plot(self, plot_type, dim1, dim2, dim3, red_percents, dim_data):
         from model.plot_data import render_red_percent_figure
