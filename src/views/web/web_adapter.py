@@ -451,6 +451,20 @@ class WebModelAdapter:
 
                 # Attach connection_status badging
                 model_state["connection_status"] = self._determine_connection_status(model)
+
+                # WEB-13: same seam PySide's view already uses in-process
+                # (`self.model.has_unsaved_data` before dispatching
+                # stop_monitoring) - the web transport cannot read the
+                # model object directly, so the adapter publishes
+                # `pending_run_data()`'s dict (RC-11's documented "source
+                # of truth" for this exact question) alongside the schema
+                # attrs. Duck-typed, not RedPercentSystem-specific: any
+                # model that grows the same convention gets the same
+                # surfacing for free. Absent on models that don't define it.
+                pending_run_data = getattr(model, "pending_run_data", None)
+                if callable(pending_run_data):
+                    model_state["pending_run_data"] = pending_run_data()
+
                 state[name] = model_state
             except Exception as e:
                 state[name] = {"_error": str(e)}
