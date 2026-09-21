@@ -958,16 +958,22 @@ class RedPercentDynamicView(QtDynamicView):
                 self.save_log_ui()
 
     def save_log_ui(self):
+        """REDPERCENT-6: Route through model.save_log, not data_log.save_to_csv.
+
+        The model method syncs probe_name and probe_tilt_angle from the model
+        to the data_log before saving, and also writes the station_meta.json
+        sidecar with the full run configuration.
+        """
         if not self.model.data_log or not self.model.data_log.red_values:
             # ERRORS-9: Route through ErrorRouter instead of direct QMessageBox
             ErrorRouter.report_warning("No Data", "No data to save.")
             return
-            
+
         p_name = getattr(self.model, 'probe_name', None)
         if not p_name or not str(p_name).strip():
             p_name = "red_log"
         default_name = f"{p_name}.csv".replace(' ', '_')
-            
+
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Save Red Detection Log", default_name, "CSV Files (*.csv);;All Files (*)"
         )
@@ -980,14 +986,8 @@ class RedPercentDynamicView(QtDynamicView):
             # extension) saves with none at all.
             if not os.path.splitext(file_path)[1]:
                 file_path += ".csv"
-            try:
-                self.model.data_log.save_to_csv(file_path)
-                print(f"[{self.__class__.__name__}] Log saved to: {file_path}")
-            except Exception as e:
-                from error_routing import ErrorRouter
-                msg = f"[{self.__class__.__name__}] Error saving file: {e}"
-                print(msg)
-                ErrorRouter.report_error("File Save Error", msg, e)
+            # Call model.save_log which syncs metadata and saves both CSV and sidecar
+            self.model.save_log(file_path)
 
     def cleanup(self):
         """PYSIDE-4: D-10's discard prompt runs here via the model's teardown.
