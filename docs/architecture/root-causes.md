@@ -245,7 +245,7 @@ was confirmed.
   `\.ser\.` appears only in `controller/serial.py`.
 - I-2.4 A board of the wrong type or protocol is rejected at construction.
 
-**Closes.** SERIAL-1,7,8,9,10,11,13,16,17; ERRORS-6,7; STEPPER-4,9(partial);
+**Closes.** SERIAL-1,7,8,9,10,11,13,16,17,20; ERRORS-6,7; STEPPER-4,9(partial);
 DC-13,18; ROTATOR-9,11,13; TEMP-2,10,11; known-issues "ACK gap" and
 "Raw Serial Bypass".
 
@@ -1091,7 +1091,7 @@ parentheses):
 | Audit | Mapping |
 |---|---|
 | MANAGER | 1 RC1/RC10 · 2 RC1/RC10 · 3 RC1 · 4 RC1/RC10 · 5 RC1 · 6 RC1 · 7 RC1 · 8 RC1 · 9 RC1 · 10 RC1/RC5 · 11 RC1 · 12 RC9 · 13 RC4/RC10 · 14 LOCAL-OK (+D-9) · 15 RC10 · 16 RC13 · 17 RC8 · 18 RC9 · 19 RC5 · 20 RC4 |
-| SERIAL | 1 RC2 · 2 RC1 · 3 RC1 · 4 RC1 · 5 RC1/RC10 · 6 RC4 · 7 RC2 · 8 RC2 · 9 RC2 · 10 RC2 (firmware, D-7) · 11 RC2 · 12 RC4 · 13 RC2 (D-7) · 14 RC1 · 15 RC1 · 16 RC8 · 17 RC2 (LOCAL-OK) · 18 RC1 (D-11) · 19 doc |
+| SERIAL | 1 RC2 · 2 RC1 · 3 RC1 · 4 RC1 · 5 RC1/RC10 · 6 RC4 · 7 RC2 · 8 RC2 · 9 RC2 · 10 RC2 (firmware, D-7) · 11 RC2 · 12 RC4 · 13 RC2 (D-7) · 14 RC1 · 15 RC1 · 16 RC8 · 17 RC2 (LOCAL-OK) · 18 RC1 (D-11) · 19 doc · 20 RC2 |
 | ERRORS | 1 RC8/RC7 · 2 RC8/RC10 · 3 RC8 · 4 RC8 · 5 RC8 · 6 RC2 · 7 RC2/RC8/RC11 · 8 RC8 · 9 RC8 · 10 RC8 · 11 doc · 12 RC10 |
 | GAMEPAD | 1 RC4 · 2 RC13 · 3 RC3 · 4 RC3 · 5 RC13/RC7 · 6 RC7 · 7 RC4 · 8 RC4 (D-4) · 9 RC1 · 10 RC13 · 11 RC12 · 12 RC12 · 13 RC12 · 14 RC12 · 15 RC13/RC11 · 16 RC4 · 17 LOCAL-OK · 18 RC13/RC9 · 19 RC13 · 20 doc · 21 RC13 |
 | STEPPER | 1 RC1 · 2 RC4 · 3 RC1 · 4 RC2 · 5 RC3 · 6 RC3 · 7 RC5/RC3 · 8 RC5 · 9 RC2 (+LOCAL-OK G-code parse) · 10 RC7 · 11 RC6/RC7/RC3 · 12 RC7 (D-11) · 13 RC9 · 14 RC4 · 15 RC4 |

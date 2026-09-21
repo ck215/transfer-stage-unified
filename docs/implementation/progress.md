@@ -2175,14 +2175,76 @@ both halves myself. Routed to B, which owns `serial.py`.
 then S13 items 1-4 — `MonitoringRun` itself, still the actual RC-11 repair
 and still untouched.
 
+### 2026-09-20 — worktree B merged: the wave closes at 12 of 19, and two defects the audit never had
+
+All three worktrees are merged. **Fast gate 715 passed, 1 xfailed, exit 0;
+qt 48 passed, exit 0**, both run by the lead on the merge result.
+
+**B (`fix-transport`) — 6 commits, 73 tests.** STEPPER-9, SERIAL-17 and
+MANAGER-20 closed; SERIAL-10 and REDPERCENT-4 partly; TEMP-10 left `open`.
+
+**B's two qt tests passed.** That is worth recording because last wave two
+of eleven did not, and both were wrong. These are not: they lift the real
+`ScannerThread` and `SetupWindow` out of `app.py`'s syntax tree and run them
+over real Qt base classes, so what executes is the shipped code rather than
+a replica of it. The technique is sound and worth reusing — both classes are
+defined *inside* `run_pyside_app()` and cannot be imported at all otherwise.
+
+**I checked MANAGER-20's evidence and it is thinner than the headline.** Of
+its 19 tests, 17 are AST-structural — they parse `app.py` and assert the
+pieces refer to each other. The file's own docstring says so plainly, but a
+row reading `closed (19 tests)` would have implied behaviour that those 17
+do not cover. The row now names the 2 qt tests and the 6 executing ones as
+the evidence, and calls the other 17 what they are: a regression guard
+against a silent deletion.
+
+**TEMP-10 came back `open`, not `partly`, and that was the right answer.**
+The agent changed nothing and declined to round up. Its report also caught
+something the ledger had wrong in the other direction: `connection_status`
+already exists at `temperature_system.py:28-34`, so one part of TEMP-10 was
+done and uncredited. Recorded.
+
+**SERIAL-20 — a defect in the agent's own file, found while fixing another.**
+`SimulatedPort` had no `flush()`, and `send_manual_mode_command` calls
+`self.ser.flush()` on every frame under the transport lock. So in simulator
+mode — the configuration the three frontends are normally developed in —
+every manual-mode frame raised `AttributeError` inside the write path and
+reached the operator as a "Serial Write Error", at frame rate. Verified by
+grepping every `.flush()` caller at both `0e11280` and `f188804`. It is the
+same shape as SERIAL-9: a method the double forgot, which quietly turns SIM
+into a *different* code path — the one thing that class exists to prevent.
+The audit entry proposes the durable fix (assert the double answers every
+attribute the transport calls); that is **not** done, and the row says so.
+
+**TEMP-11 is closed, and neither worktree could have closed it.** C wrote
+the model half against a transport with no flush; B added a bounded
+`flush()` with no caller. I wrote the three seam tests and joined them here:
+write, drain, then close, with an undrained frame reported under the same
+obligation as a failed write, and a transport lacking `flush()` treated as
+not-an-error. The ordering assertion is the load-bearing one — a drain after
+the close protects nothing.
+
+**Wave totals.** 19 findings briefed (18 planned, plus TEMP-11's transport
+half routed mid-flight). **12 closed, 5 partly, 1 open, 1 retracted** —
+GAMEPAD-20's remainder, ROTATOR-13's, SERIAL-10's (D-7, owner-only),
+REDPERCENT-4's (S13's own file) and TEMP-10 in full. Two new findings the
+2026-09-19 audit did not contain. Ledger is 218 rows, 167 closed, 51 open.
+
+**Next action:** S13 items 1-4 — `MonitoringRun`. Still the actual RC-11
+repair, still untouched, and REDPERCENT-4's remainder is now waiting on it
+too. When it lands it must take over `run_id`, `output_root`,
+`run_annotations` and the two timestamps from items 5-7 rather than opening
+a second snapshot beside them.
+
 ## Finding ledger
 
-217 rows: the 213 findings of the 2026-09-19 audit, plus four added later.
+218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
 **REDPERCENT-21, 22 and 23** came from owner instruction on 2026-09-20.
-**GAMEPAD-21** was found during the 2026-09-20 fix wave by the `fix-input`
-agent and confirmed by the lead before recording. All four carry a `Source:`
-line in their audit entry saying so — none was produced by the audit pass,
-and none may be cited as its evidence.
+**GAMEPAD-21** and **SERIAL-20** were found during the 2026-09-20 fix wave,
+by the `fix-input` and `fix-transport` agents respectively, and each was
+confirmed by the lead before recording. All five carry a `Source:` line in
+their audit entry saying so — none was produced by the audit pass, and none
+may be cited as its evidence.
 
 `Closed by` is `root cause` when the finding closes because the structure
 changed, `explicit` when it is fixed and named individually. Generated from
@@ -2267,7 +2329,7 @@ it) · `n/a` (with a reason).
 | MANAGER-17 | RC8 | S11 | root cause | closed (same fix as ERRORS-5) |
 | MANAGER-18 | RC9 | S12 | root cause | closed (S12 item 1: one composition root; test_discover_controllers_never_shells_out, test_discover_controllers_fabricates_nothing, test_i_9_2_the_same_configs_produce_the_same_manager) |
 | MANAGER-19 | RC5 | S8 | root cause | closed (S8: test_full_stop_returns_even_if_a_model_never_finishes) |
-| MANAGER-20 | RC4 | S5 | root cause | open |
+| MANAGER-20 | RC4 | S5 | root cause | closed (test_a_running_scanner_thread_stops_when_interruption_is_requested, test_stop_scanner_brings_a_real_running_scan_down_promptly — both qt-marked, written unrun by the agent and **verified passing by the lead** on merge; plus 6 executing tests in tests/core/test_manager20_scan_abort.py for the abort hook. The 17 tests in test_manager20_scanner_wiring.py are AST-structural, not behavioural, and are a regression guard rather than the evidence) |
 | PYSIDE-1 | RC1 | S2 | root cause | closed (view no longer constructs models; open_device_view refuses an unconfigured device) |
 | PYSIDE-2 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | PYSIDE-3 | RC9 | S12 | root cause | closed (S12 item 2: registry events; test_i_9_1_a_released_probe_leaves_available_probes, test_releasing_the_selected_probe_falls_back_to_a_live_one) |
@@ -2291,7 +2353,7 @@ it) · `n/a` (with a reason).
 | REDPERCENT-1 | RC11 | S13 | root cause | open |
 | REDPERCENT-2 | RC11 | S13 | root cause | open |
 | REDPERCENT-3 | RC11 / RC5 | S13 | root cause | open |
-| REDPERCENT-4 | RC11 | S13 | root cause | open |
+| REDPERCENT-4 | RC11 | S13 | root cause | open (partly closed: the `probes.py` share is fixed — a dead gamepad no longer kills the monitor thread; 8 tests in tests/core/test_redpercent4_velocity_reads.py. The rest is the monitor thread's own exception handling and the `mss=None` path, both in `redpercent_system.py`, which S13 items 1-4 own) |
 | REDPERCENT-5 | RC11 | S13 | root cause | open |
 | REDPERCENT-6 | RC7 | S10 | root cause | open |
 | REDPERCENT-7 | RC8 / RC7 | S11 | root cause | closed (result part: refusals are `Refused` and render as refusals) |
@@ -2335,16 +2397,17 @@ it) · `n/a` (with a reason).
 | SERIAL-7 | RC2 | S3 | root cause | closed (test_an_opened_port_that_never_answered_is_unverified_not_connected, tests/core/test_transport_truth.py) |
 | SERIAL-8 | RC2 | S3 | root cause | closed (test_the_first_write_failure_moves_the_link_to_lost_and_closes_it, test_loss_is_reported_once_not_on_every_subsequent_command, tests/core/test_transport_truth.py) |
 | SERIAL-9 | RC2 | S3 | root cause | closed (test_simulator_probes_can_arm_and_disarm, tests/core/test_transport_truth.py) |
-| SERIAL-10 | RC2 | S3 | root cause | open |
+| SERIAL-10 | RC2 | S3 | root cause | open (partly closed: the host no longer claims a power-down the firmware never performs — `BaseProbe.FIRMWARE_CONTROL_BYTES` records what each `.ino` is observed to handle and `power_down()` reports sent/unsupported/failed; 9 tests in tests/hardware/test_serial10_power_down_truth.py, the first of which pins that the bytes on the wire are unchanged. The mis-parse half needs a wire terminator on a stop path, which is **D-7** and owner-only — deliberately not answered) |
 | SERIAL-11 | RC2 | S3 | root cause | closed (test_i_2_3_serial_handle_confined_to_transport; all writes go through write_command under the lock) |
 | SERIAL-12 | RC4 | S5 | root cause | open |
 | SERIAL-13 | RC2 | S3 | root cause | closed (test_serial_send_manual_mode_command asserts the 42-byte packet format) |
 | SERIAL-14 | RC1 | S1 | root cause | closed (test_d11_no_runtime_serial_reconnect) |
 | SERIAL-15 | RC1 | S2 | root cause | closed (tests/core/test_lifecycle_exit.py) |
 | SERIAL-16 | RC8 | S11 | root cause | open (mitigated) — the misleading throttle is gone (repeats fold and carry a count); the per-site audit of which `serial.py` conditions should report rather than print is not done |
-| SERIAL-17 | RC2 / LOCAL-OK | S3 | explicit | open |
+| SERIAL-17 | RC2 / LOCAL-OK | S3 | explicit | closed (9 tests in tests/hardware/test_serial17_handshake.py; the identity handshake stops flooding `s\n` every 50 ms, stops substring-matching a possibly-truncated `DEV:` line, and stops leaving queued replies behind) |
 | SERIAL-18 | RC1 | S2 | root cause | closed (reboot_model deleted; test_system_manager_reconfigure_replaces_the_model_set) |
 | SERIAL-19 | doc | S0 | root cause | closed (verification note: doc inaccuracy only; `pyside/view.py:886` passes `None` to serial as documented. No test applicable.) |
+| SERIAL-20 | RC2 | S3 | root cause | closed (12 tests in tests/hardware/test_serial_flush.py cover the bounded transport flush; `SimulatedPort.flush` added in the same commit. Note the durable fix proposed in the audit — a test asserting SimulatedPort answers every attribute the transport calls on `.ser` — is **not** done, so the next omission of this shape will still reach an operator) |
 | STEPPER-1 | RC1 | S2 | root cause | closed (close_device_view no longer tears down; test_i_1_5_active_models_written_only_by_system_manager) |
 | STEPPER-2 | RC4 | S5 | root cause | closed (S5: the model owns the input pump; test_manual_mode_drives_hardware_with_no_gui_at_all) |
 | STEPPER-3 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
@@ -2353,7 +2416,7 @@ it) · `n/a` (with a reason).
 | STEPPER-6 | RC3 | S7 | root cause | closed (test_i_3_3_the_interlock_no_longer_defers_on_stepping) |
 | STEPPER-7 | RC5 / RC3 | S8 | root cause | closed (RC-5 half in S8; RC-3 watchdog-generation half in S7, test_the_watchdog_gets_a_fresh_event_each_arming) |
 | STEPPER-8 | RC5 | S8 | root cause | closed (test_stopping_invalidates_a_script_still_in_flight, tests/core/test_transport_truth.py) |
-| STEPPER-9 | RC2 / LOCAL-OK | S3 | explicit | open |
+| STEPPER-9 | RC2 / LOCAL-OK | S3 | explicit | closed (10 tests in tests/scripting/test_stepper9_script_validation.py; the script path now sanitises numerics before they become axis commands, as `get_params` already did) |
 | STEPPER-10 | RC7 | S10 | root cause | closed (S10: every schema command exists on its model; test_every_command_exists_on_the_model) |
 | STEPPER-11 | RC6 / RC7 / RC3 | S9 | root cause | open (RC-3 flags part closed in S7: mode flags are read-only, API returns 403 — test_i_3_4_mode_flags_cannot_be_assigned. RC-6/RC-7 parts remain) |
 | STEPPER-12 | RC7 | S1 | root cause | closed (test_d11_serial_port_is_readonly_in_every_schema) |
@@ -2369,8 +2432,8 @@ it) · `n/a` (with a reason).
 | TEMP-7 | RC5 | S8 | root cause | closed (`send_settings` was a check-then-act: it tested `_estop` at the top, then built the frame, so a FULL STOP landing in that window was overwritten and the heater returned to setpoint silently. The latch is now re-checked inside a new `_write_lock` immediately before the write, and `emergency_stop` uses the latch-worker-bounded-join pattern with a forced priority frame. test_temp_7_a_stop_landing_mid_build_is_not_overwritten, test_temp_7_emergency_stop_returns_promptly_behind_a_held_write_lock, test_temp_7_the_stop_frame_forces_through_a_busy_write_lock, test_temp_7_an_ordinary_send_takes_the_lock_without_a_timeout) |
 | TEMP-8 | RC1 | S2 | root cause | closed (web re-setup routed through teardown-then-build; test_web_setup.py) |
 | TEMP-9 | LOCAL-OK | S15 | explicit | open |
-| TEMP-10 | RC2 / RC8 | S3 | root cause | open |
-| TEMP-11 | RC1 / RC2 / doc | S2 | root cause | open (partly closed: the heater-off frame goes out on the priority path, the reader is joined before the port is released, and an undelivered frame is reported rather than swallowed — test_close_sends_the_heater_off_frame_on_the_priority_path, test_close_joins_the_reader_before_releasing_the_port, test_close_reports_a_heater_off_frame_that_was_not_delivered, test_close_still_reports_nothing_on_a_clean_shutdown. The flush itself is blocked: the transport exposes no `flush()` and I-2.3 forbids the model touching `.ser`, so it needs `src/controller/serial.py`. Routed to the fix-transport worktree) |
+| TEMP-10 | RC2 / RC8 | S3 | root cause | open (unchanged by the fix wave — the agent correctly reported `open` rather than rounding up, having changed nothing. Every model-side branch needs `temperature_system.py` and the staleness indicator needs the two GUI views, so none of it fell in the transport write set. One part is already done and was not credited: `connection_status` exists at `temperature_system.py:28-34`) |
+| TEMP-11 | RC1 / RC2 / doc | S2 | root cause | closed (the model half from the fix-web worktree, the bounded transport `flush()` from fix-transport, and the seam joined by the lead on merge — test_close_drains_the_heater_off_frame_before_releasing_the_port, test_close_reports_an_undrained_heater_off_frame, test_a_transport_without_flush_still_closes, plus the four close-path tests in tests/core/test_temperature_subsystem.py. Neither worktree could have tested the join alone) |
 | TEMP-12 | RC8 | S11 | root cause | closed (an info popup is inexpressible: `publish` raises on `requires_ack` for anything but an error; test_a_quiet_event_raises_no_modal) |
 | TEMP-13 | RC6 | S9 | root cause | closed (S9 item 2, same) |
 | VIEW-TKINTER-1 | RC1 | S2 | root cause | closed (Tk got a real re-add path; test_tk_hide_is_reversible, tests/core/test_tkinter_teardown.py) |

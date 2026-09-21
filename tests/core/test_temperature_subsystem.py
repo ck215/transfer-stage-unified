@@ -321,3 +321,70 @@ def test_close_still_reports_nothing_on_a_clean_shutdown():
             ts.close()
             mock_report.assert_not_called()
         assert ts.continue_reading is False
+
+
+# --- TEMP-11, the seam: the model half and the transport half wired up -----
+# The transport gained a bounded flush() in the fix-transport worktree; the
+# model half was written in fix-web against a transport that had none. These
+# three pin the join, which neither worktree could test on its own.
+
+def test_close_drains_the_heater_off_frame_before_releasing_the_port():
+    """TEMP-11: close() on POSIX does not guarantee written bytes reached the
+    wire, so the off-frame must be drained before the fd goes away. The
+    ordering is the whole point: write, flush, then close."""
+    with patch("model.temperature_system.serial") as mock_serial_cls:
+        mock_instance = get_mock_serial_conn()
+        mock_instance.flush.return_value = True
+        mock_serial_cls.return_value = mock_instance
+
+        ts = TemperatureSystem("COM4")
+        calls = []
+        mock_instance.write_command.side_effect = lambda *a, **k: calls.append("write")
+        mock_instance.flush.side_effect = lambda *a, **k: (calls.append("flush"), True)[1]
+        mock_instance.close.side_effect = lambda *a, **k: calls.append("close")
+
+        ts.close()
+
+        assert "flush" in calls, (
+            "close() released the port without draining the heater-off frame")
+        assert calls.index("write") < calls.index("flush") < calls.index("close"), (
+            f"wrong order: {calls} — the drain must sit between the frame and "
+            "the close, or it protects nothing")
+
+
+def test_close_reports_an_undrained_heater_off_frame():
+    """A flush that times out means the frame may still be buffered. The
+    operator has to be told the heater may still be at setpoint — the same
+    obligation as a failed write, reached a different way."""
+    with patch("model.temperature_system.serial") as mock_serial_cls:
+        mock_instance = get_mock_serial_conn()
+        mock_serial_cls.return_value = mock_instance
+        ts = TemperatureSystem("COM4")
+        mock_instance.flush.return_value = False      # drain did not complete
+
+        with patch("error_routing.ErrorRouter.report_error") as mock_report:
+            ts.close()
+
+        assert mock_report.call_count == 1, (
+            "an undrained shutdown frame was not reported")
+        title, message = mock_report.call_args[0][0], mock_report.call_args[0][1]
+        assert "heater" in (title + message).lower()
+        # Still released: a stuck drain must not also leak the port.
+        mock_instance.close.assert_called_once()
+
+
+def test_a_transport_without_flush_still_closes():
+    """The model must not require a flush() the transport may not have — a
+    simulated port, or an older double. Absence is not a failure to report."""
+    with patch("model.temperature_system.serial") as mock_serial_cls:
+        mock_instance = get_mock_serial_conn()
+        del mock_instance.flush                       # no such attribute
+        mock_serial_cls.return_value = mock_instance
+        ts = TemperatureSystem("COM4")
+
+        with patch("error_routing.ErrorRouter.report_error") as mock_report:
+            ts.close()
+
+        mock_instance.close.assert_called_once()
+        assert mock_report.call_count == 0, (
+            "a transport with no flush() is not an undelivered frame")

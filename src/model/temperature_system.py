@@ -322,10 +322,19 @@ class TemperatureSystem(SchemaCommands):
            `docs/architecture/safety-pattern.md` item 3 permits, so a
            transaction holding the transport lock cannot hold the shutdown.
 
-        A true `flush()` before the close still belongs here and is not
-        done: the model must not touch `.ser` (invariant I-2.3), and the
-        transport exposes no flush of its own. Adding one is a change to
-        `src/controller/serial.py`.
+        4. **The frame is drained before the port is released.** `close()`
+           on POSIX does not guarantee that bytes handed to the OS have been
+           transmitted, so the off-frame can be discarded by the very close
+           that follows it. `transport.flush()` is bounded and returns
+           whether the drain actually completed; a `False` is reported with
+           the same obligation as a failed write, because both leave the
+           heater at its last setpoint. A transport without a `flush()` —
+           a simulated port, or an older double — is not an undelivered
+           frame and is not reported.
+
+        Items 1-3 were written in the `fix-web` worktree against a transport
+        that had no flush; item 4 is the seam, joined on merge once
+        `fix-transport` added one. Neither half could be tested alone.
         """
         self.continue_reading = False
         conn = self.serial_conn
@@ -340,6 +349,27 @@ class TemperatureSystem(SchemaCommands):
                     f"the temperature controller, so the heater may still be "
                     f"at its last setpoint:\n{e}",
                     e, source=self.__class__.__name__, requires_ack=True)
+
+            # Drain before the close can discard the frame. Bounded by the
+            # transport; `False` means the bytes may still be buffered.
+            flush = getattr(conn, "flush", None)
+            if callable(flush):
+                try:
+                    drained = flush()
+                except Exception as e:
+                    drained, exc = False, e
+                else:
+                    exc = None
+                if drained is False:
+                    from error_routing import ErrorRouter
+                    ErrorRouter.report_error(
+                        "Heater Off Not Delivered",
+                        "The heater-off frame was written but could not be "
+                        "confirmed on the wire before the port closed, so "
+                        "the heater may still be at its last setpoint."
+                        + (f"\n{exc}" if exc else ""),
+                        exc, source=self.__class__.__name__,
+                        requires_ack=True)
 
             reader = getattr(self, "serial_thread", None)
             if (reader is not None and reader is not threading.current_thread()

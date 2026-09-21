@@ -363,3 +363,10 @@ passed, 105 deselected, 1 xfailed** (~69 s); Qt **46 passed** (~21 s). +32
 on the 589 line above: 10 from `fix-input`, 22 from `fix-web`. Both gates run
 by the lead on the merge result — an agent's own gate run proves its
 worktree, not the merge.*
+
+*After the 2026-09-20 fix wave, all three worktrees merged and the TEMP-11
+seam joined: fast gate **715 passed, 107 deselected, 1 xfailed** (~71 s); Qt
+**48 passed** (~21 s). +126 on the 589 baseline. The two new qt tests came
+back from an agent marked UNVERIFIED and **passed** when the lead ran them —
+unlike the previous wave, where two of eleven failed and both were bad
+tests. The qt pass stays a lead responsibility for exactly that reason.*
