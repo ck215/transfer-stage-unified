@@ -1,5 +1,7 @@
 import csv
 import io
+import json
+from pathlib import Path
 
 def parse_red_percent_csv(csv_text: str) -> dict:
     """Parses the CSV format RedPercentDataLog.save_to_csv() writes: a
@@ -58,6 +60,40 @@ def parse_red_percent_csv(csv_text: str) -> dict:
             dim_data[dim].append(val)
 
     return {"metadata": metadata, "red_percents": red_percents, "dims": dims, "dim_data": dim_data}
+
+def load_red_percent_run(csv_path):
+    """Load a saved run from disk, from either artifact shape.
+
+    REDPERCENT-22 moved the configuration out of the CSV's `#` rows and into a
+    sibling `<stem>_station_meta.json`. Both shapes stay readable:
+
+    - a **new** run's CSV is a plain rectangle, and its metadata comes from
+      the sidecar (rich: baseline, focus-area px, threshold, timestamps);
+    - a **legacy** CSV carries its `#` block and has no sidecar, so the
+      metadata comes from the block exactly as before.
+
+    Returns the same dict as `parse_red_percent_csv`, whose `metadata` key
+    holds whichever of the two was found. Sidecar keys are snake_case
+    (`probe_name`); legacy block keys are the old labels (`Probe Name`).
+    """
+    csv_path = Path(csv_path)
+    result = parse_red_percent_csv(csv_path.read_text())
+
+    sidecar = csv_path.with_name(csv_path.stem + "_station_meta.json")
+    if not sidecar.exists() and csv_path.stem.endswith("_position"):
+        # The autosave naming: `<run_id>_position.csv` beside
+        # `<run_id>_station_meta.json`.
+        stem = csv_path.stem[: -len("_position")]
+        sidecar = csv_path.with_name(stem + "_station_meta.json")
+
+    if sidecar.exists():
+        try:
+            result["metadata"] = json.loads(sidecar.read_text())
+        except (ValueError, OSError):
+            # A corrupt sidecar must not make the samples unreadable.
+            pass
+    return result
+
 
 def render_red_percent_figure(plot_type, dim1, dim2, dim3, red_percents, dim_data):
     """Builds a matplotlib Figure for plot_type in {'0D','1D','2D','3D'} —

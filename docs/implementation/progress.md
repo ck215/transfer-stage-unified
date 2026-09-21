@@ -60,7 +60,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | S10 | Schema v2, three renderers (RC-7) | done | `7cc5f3c` | 2026-09-20 | All 5 items. Qt pass resolved (it hung, it did not abort). `tests/ui` un-excluded: +83 tests in the fast gate. I-7.2 built; known_bad now empty. |
 | S11 | Result channel and event bus (RC-8) | done | `409c859` | 2026-09-20 | All 4 items. `CommandResult` + `EventBus`; one `install_exception_hooks`. I-8.1–I-8.3 hold. conftest.py was duplicated end to end; half of it was dead. |
 | S12 | Composition root, registry events (RC-9) | done | `d35036b` | 2026-09-20 | All 3 items. `app_bootstrap` is the composition root; `SystemManager` emits `registered`/`released`; `_disabled_in_setup` deleted. I-9.1–I-9.3 built. **I-7.1 does not retire here** — 2 of its 6 hits are S13's. |
-| S13 | MonitoringRun (RC-11) | todo | | | |
+| S13 | MonitoringRun (RC-11) | in progress | | 2026-09-20 | Items 5-7 (REDPERCENT-21,22,23) landed first, out of plan order, for a bench run. Items 1-4 — `MonitoringRun` itself — are still open. |
 | S14 | Remaining web work | done | | 2026-09-20 | 7 of 8 closed in the `s14-web` worktree (WEB-5, 14, 15 residue, 16, 18, 21 and REDPERCENT-20's web half). WEB-22 is partly closed — no DOM harness for the staleness/refresh half. **WEB-19 deferred**: it needs the D-8 client-liveness watchdog in `probes.py`, so it spans model and web and cannot sit in a web-only write set. |
 | S15 | Explicit `LOCAL-OK` sweep | done | | 2026-09-20 | 4 of 5 closed in the `s15-local-ok` worktree (PYSIDE-16, 17, 18 and REDPERCENT-20's model half). GAMEPAD-17 is partly closed — three sub-items blocked by write-set boundaries, not difficulty. Two of the qt-marked tests it could not run were **wrong** and were fixed on merge; see the session log. |
 | S16 | Owner verification, firmware v2 | todo | | | **Owner only.** Never delegate. |
@@ -1967,6 +1967,89 @@ changed in this session.
 **Next action:** S13. It is now the only `todo` stage before the owner-only
 S16, and it carries both the RC-11 repair and the three new items.
 
+### 2026-09-20 — reconciliation found nothing to close, and S13 items 5-7 landed early
+
+Two things this session, both off the plan's order and both deliberate.
+
+**The reconciliation came back empty, which is the useful answer.** 33 rows
+were `open` while their stage said `done` — the drift pattern this branch has
+had all along. Four read-only haiku agents audited all 33 against the current
+tree, partitioned by audit file so no file was split.
+
+Result: **1 CLOSED claimed, 0 applied.** The 2026-09-20 pass had already
+harvested the closable rows; what is left is real work, not drift. **The
+backlog is not inflated any more, and the next fix wave can be briefed
+straight off it** — which is what the reconciliation was for.
+
+The single CLOSED was **WEB-20**, and it did not survive verification. The
+agent's evidence was that `active_models` reads are now under
+`with self._state_lock:`. That is true and not the finding: `_state_lock` is
+the *adapter's* lock, and the audit names `SystemManager.lock`. Holding a
+different lock serializes nothing against the manager. `dispatch_command`
+does use `get_active_models_snapshot` (web_adapter.py:393), but
+`resolve_options`:483, `set_device_attribute`:521 and :620 still read the
+live dict, and the generation counter the finding asks for exists nowhere —
+the four `409`s in that file are the scan and re-setup single-flights.
+Downgraded to `open (partly closed: ...)`, not closed.
+
+This is the asymmetry the `reconcile-ledger` skill is built around, hit for
+real: a false OPEN costs one verification, a false CLOSED erases a defect
+permanently. Four of four agents' OPEN verdicts spot-checked true
+(`serial.py:148`'s live `time.sleep(1.5)`, `temperature_system.py:301-308`'s
+double bare-except with no join, `app.js:1126`, `SetupWindow` with no
+`closeEvent`). **The one CLOSED was the one that was wrong.**
+
+One agent died mid-run on a rate limit and was relaunched with its findings
+intact. Worth knowing the pass is resumable per write-set.
+
+**S13 items 5-7 landed before items 1-4.** Out of plan order, on owner
+instruction, because a bench run needs them this weekend. They are the
+owner-added REDPERCENT-21/22/23 recorded earlier today.
+
+- **Run identity.** `run_id` + `output_root`, the latter resolved once at
+  import from `TRANSFER_STAGE_DATA_ROOT` or `~/transfer-stage-runs` — never
+  from CWD, which is what made the three launchers disagree. Artifacts land
+  in `output_root/<run_id>/` as `<run_id>_position.csv` and
+  `<run_id>_station_meta.json`, so a file stays self-describing once moved.
+  A blank `run_id` falls back to a timestamp slug rather than producing an
+  unnamed run.
+- **The CSV is a rectangle.** The `# Metadata` rows are gone; configuration
+  is in the sidecar, including the things that make red percent mean
+  anything — `baseline_red`, the focus area *with its pixel size*, the
+  `detect_red` thresholds (now the named `RED_THRESHOLD`), sample count and
+  start/stop stamps.
+- **Annotation is a table, not attributes.** `ANNOTATION_FIELDS` is five
+  `Param`s; the schema renders them in all three views (D-6) and the
+  properties that back them are *generated* from the table, because a
+  hand-written pair per field is how the table and the attributes drift
+  apart. Intended and actual never share a key.
+
+**Two things worth the next reader's attention.**
+
+1. **The metadata block was load-bearing.** `plot_data.parse_red_percent_csv`
+   parses it back for in-app run review, so deleting it outright would have
+   broken reading every file already on disk. `load_red_percent_run` now
+   reads the sidecar when present and falls back to the `#` block when not.
+   Old files keep working; that is pinned by a test, not by intention.
+2. **`test_csv_metadata_injection` was re-authored, not deleted.** It
+   asserted that `save_to_csv` prepends the block. It is now
+   `test_csv_carries_no_metadata_block` and asserts the inverse, so it is the
+   test that fails if the block ever comes back.
+
+`probe_tilt_angle` was declared `float` in `PARAMS` and initialized to `""`;
+fixed with item 6.
+
+Gates: fast **589 passed, 105 deselected, 1 xfailed** (was 576; +13 new).
+qt **46 passed**. Both run unpiped, exit code read directly.
+
+**Next action:** S13 items 1-4 — `MonitoringRun` itself, which is the actual
+RC-11 repair. Items 5-7 deliberately did not build it; they hang off the
+model's existing fields, so `MonitoringRun` must take over `run_id`,
+`output_root`, `run_annotations` and the two timestamps when it lands, rather
+than leaving a second snapshot beside its own. After that, the fix wave: the
+partition is drawn (transport / rotator / input as three worktrees, views and
+docs lead-only) and the backlog behind it is now known to be real.
+
 ## Finding ledger
 
 216 rows: the 213 findings of the 2026-09-19 audit, plus **REDPERCENT-21,
@@ -2097,9 +2180,9 @@ it) · `n/a` (with a reason).
 | REDPERCENT-18 | RC7 | S10 | root cause | open |
 | REDPERCENT-19 | RC7 | S10 | root cause | open |
 | REDPERCENT-20 | LOCAL-OK | S15 | explicit | closed (both halves. Model: the six dead fields, the `__del__` that only printed, and the per-call `set_focus_area` print are gone — test_construction_has_no_dead_fields, test_construction_keeps_the_live_equivalents, test_del_prints_nothing, test_set_focus_area_does_not_print, test_no_plot_data_ui_or_set_focus_area_ui_stub_exists. Web: `set_attr` writes only entry/dropdown/toggle elements — test_api_set_attr_refuses_a_readonly_element) |
-| REDPERCENT-21 | RC11 | S13 | root cause | open |
-| REDPERCENT-22 | RC11 | S13 | root cause | open |
-| REDPERCENT-23 | RC11 | S13 | root cause | open |
+| REDPERCENT-21 | RC11 | S13 | root cause | closed (the run has a `run_id` and an `output_root` resolved once at import, never from CWD; artifacts land in `output_root/<run_id>/` named `<run_id>_*`. test_redpercent_21_autosave_never_writes_a_bare_relative_path, test_redpercent_21_every_artifact_of_a_run_carries_the_run_id, test_redpercent_21_the_output_root_does_not_follow_the_process_cwd, test_redpercent_21_an_unset_run_id_still_produces_a_unique_directory) |
+| REDPERCENT-22 | RC11 | S13 | root cause | closed (the CSV is a plain rectangle; configuration moved to `<run_id>_station_meta.json` carrying baseline, focus-area px, threshold, cadence and start/stop. Legacy `#`-block files still load. test_redpercent_22_the_csv_is_a_rectangle_a_default_reader_opens, test_redpercent_22_the_sidecar_carries_what_the_csv_cannot, test_redpercent_22_a_legacy_csv_with_a_comment_block_still_loads, test_redpercent_22_a_plain_csv_parses_and_reads_its_metadata_from_the_sidecar, test_redpercent_22_probe_tilt_angle_is_the_float_its_param_declares, test_csv_carries_no_metadata_block) |
+| REDPERCENT-23 | RC11 | S13 | root cause | closed (`ANNOTATION_FIELDS` is a Param table rendered by the schema in all three views (D-6); values snapshot into the sidecar under `annotations`, never merged with the actuals. test_redpercent_23_operator_annotations_reach_the_sidecar, test_redpercent_23_intended_and_actual_never_share_a_field, test_redpercent_23_the_annotation_set_is_a_table_not_hardcoded_attributes, test_redpercent_23_annotations_are_rendered_by_the_schema_not_per_view) |
 | ROTATOR-1 | RC1 / RC5 | S2 | root cause | closed (test_rotator_teardown_sends_stop_before_disconnecting, tests/core/test_lifecycle_teardown.py) |
 | ROTATOR-2 | RC10 | S14 | root cause | closed (test_shutdown_resolves_the_manager_when_it_fires_not_when_installed) |
 | ROTATOR-3 | RC8 / RC7 | S11 | root cause | closed (a >30° refusal is a `Refused` carrying its reason, not a silent `None`) |
@@ -2199,7 +2282,7 @@ it) · `n/a` (with a reason).
 | WEB-17 | RC10 | S14 | root cause | closed early in S11 (the destructive pop was the RC-8 half; `?since=` fixed it) |
 | WEB-18 | RC5 / RC8 | S8 | root cause | closed (FULL STOP reports per-device results instead of a blanket ok, so a device whose stop was not confirmed is named. test_full_stop_reports_per_device_results, test_api_full_stop_all_reports_unconfirmed_device) |
 | WEB-19 | RC10 | S14 | root cause | open |
-| WEB-20 | RC1 | S2 | root cause | open |
+| WEB-20 | RC1 | S2 | root cause | open (partly closed: `dispatch_command` uses `get_active_models_snapshot` (web_adapter.py:393). The rest does not — `resolve_options`:483, `set_device_attribute`:521 and :620 still read the live `active_models` dict under the **adapter's** `_state_lock`, which is not `SystemManager.lock`, and the generation counter the finding asks for does not exist. Reported CLOSED by a reconciliation agent on 2026-09-20 and rejected on verification) |
 | WEB-21 | RC10 | S14 | root cause | closed (POST bodies are capped and answered with 413 after the declared body is drained in bounded chunks; `mss`/PIL import lazily and one `mss` instance is reused. test_post_body_over_max_size_is_rejected_with_413, test_screenshot_reuses_a_single_mss_instance) |
 | WEB-22 | RC10 | S14 | root cause | open (partly closed: the shared fetch wrapper now aborts a hung request — test_shared_fetch_wrapper_aborts_a_hung_request_after_its_timeout, driven through a real Node process from inside pytest, since the repo has no JS test framework. Per-device staleness marking and dropdown refresh-on-focus are **implemented but untested** — no DOM-rendering harness exists.) |
 

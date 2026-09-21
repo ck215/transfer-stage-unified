@@ -13,6 +13,26 @@ except ImportError:
     np = None
 import typing
 import csv
+import json
+import os
+from pathlib import Path
+
+
+def _default_output_root():
+    """Resolved once, at import, and never from the process CWD.
+
+    REDPERCENT-21: `autosave_log` used to hand `save_log` a bare relative
+    path, so an unattended stop wrote into whatever directory the launcher
+    happened to start in — a different one for run.sh, run_macos.sh and the
+    web server. The run's output location is not allowed to be one of the
+    things that varies between the three frontends.
+    """
+    env = os.environ.get("TRANSFER_STAGE_DATA_ROOT")
+    return Path(env).expanduser().resolve() if env else \
+        (Path.home() / "transfer-stage-runs").resolve()
+
+
+DEFAULT_OUTPUT_ROOT = _default_output_root()
 
 class RedPercentDataLog:
     def __init__(self, sync_dimensions=None, probe_name="", probe_tilt_angle=""):
@@ -34,15 +54,23 @@ class RedPercentDataLog:
                 self.vel_values[dim].append(vels.get(dim, 0.0))
             
     def save_to_csv(self, filepath):
+        """A plain rectangle: header row, then samples.
+
+        REDPERCENT-22: this used to prepend `# Metadata`, `# Probe Name`,
+        `# Probe Tilt Angle` and a blank row. That is not a comment
+        convention — they are four DATA rows before the header, so a default
+        `pandas.read_csv` takes `# Metadata` as the column names. The
+        workaround was `skiprows=4`, a magic number that breaks the moment a
+        field is added.
+
+        The configuration now goes to a sibling `<run_id>_station_meta.json`
+        (see `RedPercentSystem.station_meta`). Files already on disk keep
+        working: `plot_data.parse_red_percent_csv` still skips `#` rows and
+        finds the header by name.
+        """
         with self.lock:
             with open(filepath, 'w', newline='') as csvfile:
                 writer = csv.writer(csvfile)
-                # Write metadata header block
-                writer.writerow(["# Metadata"])
-                writer.writerow(["# Probe Name", self.probe_name])
-                writer.writerow(["# Probe Tilt Angle", self.probe_tilt_angle])
-                writer.writerow([])
-                
                 headers = ["Red Percent"]
                 for dim in self.sync_dimensions:
                     headers.append(f"Stepper {dim} Location")
@@ -63,7 +91,29 @@ class RedPercentSystem(SchemaCommands):
     #: A model with no hint renders with the generic schema renderer.
     VIEW_HINT = "red_percent"
 
+    #: What the operator INTENDED, as data rather than as attributes.
+    #: REDPERCENT-23: these are experiment-specific, so hardcoding this
+    #: experiment's set guarantees the next one needs a code change. Adding a
+    #: field is a line in this table; the schema, the snapshot and the
+    #: sidecar all follow from it.
+    #:
+    #: These never hold what the station actually did — that lives in
+    #: `station_meta()`. Merging the two loses exactly the planned-versus-
+    #: actual comparison the experiment exists to make.
+    ANNOTATION_FIELDS = (
+        Param("specimen_id", "text", default="", label="Specimen ID"),
+        Param("consumable_id", "text", default="", label="Tip / Consumable ID"),
+        Param("stage_x", "float", default=0.0, decimals=3, label="Stage X"),
+        Param("stage_y", "float", default=0.0, decimals=3, label="Stage Y"),
+        Param("note", "text", default="", label="Note"),
+    )
+
+    #: The `detect_red` decision, named so the sidecar can record it. Two runs
+    #: with the same red percent and different thresholds are not comparable.
+    RED_THRESHOLD = {"r_min": 150, "g_max": 100, "b_max": 100}
+
     PARAMS = _param_table(
+        Param("run_id", "text", default="", label="Run / Cut ID"),
         Param("probe_name", "text", default="", label="Probe Name"),
         Param("probe_tilt_angle", "float", default=0.0, decimals=2,
               unit="deg", label="Probe Tilt Angle"),
@@ -71,6 +121,7 @@ class RedPercentSystem(SchemaCommands):
               label="Current Red %"),
         Param("red_change", "float", default=0.0, decimals=2, unit="%",
               label="Red Change %"),
+        *ANNOTATION_FIELDS,
     )
 
     def __init__(self):
@@ -96,7 +147,19 @@ class RedPercentSystem(SchemaCommands):
         
         # New metadata fields
         self.probe_name = ""
-        self.probe_tilt_angle = ""
+        # Declared `float` in PARAMS; it used to be initialized to "" so the
+        # very first save wrote a string into a numeric field (REDPERCENT-22).
+        self.probe_tilt_angle = 0.0
+
+        # -- run identity and artifacts (REDPERCENT-21/22/23) ------------
+        #: Operator-set. Blank falls back to a timestamp slug rather than
+        #: producing an unnamed run; see `effective_run_id`.
+        self.run_id = ""
+        self.output_root = DEFAULT_OUTPUT_ROOT
+        #: What the operator intended, keyed by ANNOTATION_FIELDS.
+        self.run_annotations = {f.name: f.default for f in self.ANNOTATION_FIELDS}
+        self._run_started_at = None
+        self._run_stopped_at = None
 
     def set_focus_area(self, x, y, w, h):
         self.focus_area = {'top': int(y), 'left': int(x), 'width': int(w), 'height': int(h)}
@@ -246,16 +309,90 @@ class RedPercentSystem(SchemaCommands):
         elif not value and 'Z' in self.sync_dimensions:
             self.sync_dimensions.remove('Z')
 
+    # -- run identity and artifacts (REDPERCENT-21/22/23) ---------------
+
+    def effective_run_id(self):
+        """The operator's run id, or a timestamp slug when they set none.
+
+        Never empty: an unattended stop is exactly the run whose bench notes
+        are least complete, so it is the one that most needs a name.
+        """
+        return self.run_id.strip() or time.strftime("run_%Y%m%d_%H%M%S")
+
+    def run_dir(self, run_id=None):
+        """`output_root/<run_id>/`. Absolute, and never CWD-relative."""
+        return Path(self.output_root) / (run_id or self.effective_run_id())
+
+    def station_meta(self, run_id=None):
+        """What the station actually did — the half a CSV column cannot carry.
+
+        Red percent is uninterpretable without these: two runs with the same
+        number and different focus-area sizes are not comparable, and the old
+        artifact said nothing about it (REDPERCENT-22).
+
+        `annotations` is what the operator *intended* (REDPERCENT-23). The two
+        are separate keys on purpose and must never be merged.
+        """
+        log = self.data_log
+        return {
+            "run_id": run_id or self.effective_run_id(),
+            "probe_name": self.probe_name,
+            "probe_tilt_angle": self.probe_tilt_angle,
+            "selected_probe_name": self.selected_probe_name,
+            "sync_dimensions": list(log.sync_dimensions) if log
+                               else list(self.sync_dimensions),
+            "focus_area": dict(self.focus_area) if self.focus_area else None,
+            "baseline_red": self.baseline_red,
+            "red_threshold": dict(self.RED_THRESHOLD),
+            "sample_count": len(log.red_values) if log else 0,
+            "started_at": self._run_started_at,
+            "stopped_at": self._run_stopped_at,
+            "annotations": dict(self.run_annotations),
+        }
+
+    def save_run(self, directory=None, run_id=None):
+        """Write the run's whole artifact set, and report where it landed.
+
+        Every file is named `<run_id>_*` so it stays self-describing after
+        someone moves it (REDPERCENT-21).
+        """
+        if not self.data_log or not self.data_log.red_values:
+            print(f"[{self.__class__.__name__}] No data to save.")
+            return None
+
+        rid = run_id or self.effective_run_id()
+        directory = Path(directory) if directory else self.run_dir(rid)
+        directory.mkdir(parents=True, exist_ok=True)
+
+        self.data_log.probe_name = self.probe_name
+        self.data_log.probe_tilt_angle = self.probe_tilt_angle
+
+        csv_path = directory / f"{rid}_position.csv"
+        meta_path = directory / f"{rid}_station_meta.json"
+        try:
+            self.data_log.save_to_csv(str(csv_path))
+            meta_path.write_text(json.dumps(self.station_meta(rid), indent=2))
+        except Exception as e:
+            from error_routing import ErrorRouter
+            msg = f"[color_test] Error saving run {rid}: {e}"
+            print(msg)
+            ErrorRouter.report_error("File Save Error", msg, e)
+            return None
+
+        print(f"[{self.__class__.__name__}] Run saved to: {directory}")
+        return csv_path
+
     def autosave_log(self):
-        """D-10: autosave to a timestamped file.
+        """D-10: autosave, into the run's own directory.
 
         Kept as the unattended path — shutdown, and any client that cannot
         raise a file dialog. The `file_save` composite is the attended one and
         passes the operator's chosen path to `save_log`.
+
+        REDPERCENT-21: this used to build a bare `redpercent_log_<ts>.csv`
+        with no directory, so the file landed wherever the launcher started.
         """
-        path = f"redpercent_log_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-        self.save_log(path)
-        return path
+        return self.save_run()
 
     def plot_series(self):
         """The data behind the `plot` composite (D-6).
@@ -304,6 +441,21 @@ class RedPercentSystem(SchemaCommands):
     def ui_schema(self):
         P = self.PARAMS
         return sch.schema(
+            sch.section(
+                "Run",
+                # Fixed for the run's duration, like the rest of the
+                # configuration (REDPERCENT-21).
+                sch.entry("Run / Cut ID:", "run_id", P["run_id"],
+                          disabled_when=("monitoring",)),
+            ),
+            sch.section(
+                # REDPERCENT-23, D-6: declared once here so all three views
+                # render it. None of them hand-builds an annotation form.
+                "Operator Annotation (intended)",
+                *[sch.entry(f"{f.label}:", f.name, P[f.name],
+                            disabled_when=("monitoring",))
+                  for f in self.ANNOTATION_FIELDS],
+            ),
             sch.section(
                 "Probe Metadata",
                 sch.entry("Probe Name:", "probe_name", P["probe_name"]),
@@ -371,6 +523,13 @@ class RedPercentSystem(SchemaCommands):
         if file_path:
             try:
                 self.data_log.save_to_csv(file_path)
+                # The configuration follows the data. A CSV saved through the
+                # file dialog is as un-interpretable without its sidecar as an
+                # autosaved one (REDPERCENT-22).
+                chosen = Path(file_path)
+                meta_path = chosen.with_name(chosen.stem + "_station_meta.json")
+                meta_path.write_text(
+                    json.dumps(self.station_meta(chosen.stem), indent=2))
                 print(f"[{self.__class__.__name__}] Log saved to: {file_path}")
             except Exception as e:
                 from error_routing import ErrorRouter
@@ -384,6 +543,8 @@ class RedPercentSystem(SchemaCommands):
         if self.monitoring:
             return
         self.monitoring = True
+        self._run_started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self._run_stopped_at = None
         print(f"[{self.__class__.__name__}] === MONITORING STARTED ===")
         if not self.data_log:
             self.data_log = RedPercentDataLog(self.sync_dimensions, self.probe_name, self.probe_tilt_angle)
@@ -394,6 +555,7 @@ class RedPercentSystem(SchemaCommands):
     def stop_monitoring(self):
         print(f"[{self.__class__.__name__}] === MONITORING STOPPED ===")
         self.monitoring = False
+        self._run_stopped_at = time.strftime("%Y-%m-%dT%H:%M:%S")
 
     def teardown(self):
         """Stop monitoring and wait for the thread to actually leave.
@@ -463,3 +625,29 @@ class RedPercentSystem(SchemaCommands):
                             self.data_log.add_entry(rounded_red, locs, vels)
                         
                 time.sleep(0.016) # ~60 FPS continuous logging
+
+
+# -- annotation fields as model attributes (REDPERCENT-23) -----------------
+#
+# The schema declares each annotation field with `model_attr=<name>`, so every
+# view reaches it as `getattr(model, name)` / `set_device_attribute`. The
+# values live in one `run_annotations` dict rather than in five attributes, so
+# that snapshotting a run and emitting its sidecar stay single statements and
+# adding a field stays a single line in ANNOTATION_FIELDS.
+#
+# Generated here rather than written out five times: a hand-written pair per
+# field is exactly the duplication that lets the table and the attributes
+# drift apart.
+def _annotation_property(name):
+    def getter(self):
+        return self.run_annotations.get(name)
+
+    def setter(self, value):
+        self.run_annotations[name] = value
+
+    return property(getter, setter)
+
+
+for _f in RedPercentSystem.ANNOTATION_FIELDS:
+    setattr(RedPercentSystem, _f.name, _annotation_property(_f.name))
+del _f

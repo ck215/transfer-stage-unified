@@ -71,23 +71,35 @@ class TestRedPercentFeatures:
         assert system.data_log.vel_values['Z'][0] == 7.7
 
     @patch('builtins.open', new_callable=MagicMock)
-    def test_csv_metadata_injection(self, mock_open):
-        """Test Action 3: RedPercentDataLog prepends metadata to CSV."""
-        log = RedPercentDataLog(["X"], "Test_Probe_1", "45_degrees")
+    def test_csv_carries_no_metadata_block(self, mock_open):
+        """REDPERCENT-22 re-authored this test rather than deleting it.
+
+        It used to assert that `save_to_csv` PREPENDS a `# Metadata` block.
+        That block was never a comment convention — it was four data rows
+        written before the header, so a default `pandas.read_csv` took
+        `# Metadata` as the column names and every real column name as data.
+
+        The configuration moved to a sibling `<run_id>_station_meta.json`
+        (`RedPercentSystem.station_meta`), and the CSV is now a plain
+        rectangle. The assertion is inverted deliberately: this is the test
+        that fails if the block is ever reintroduced.
+        """
+        log = RedPercentDataLog(["X"], "Test_Probe_1", 45.0)
         log.add_entry(50.0, {"X": 1.0}, {"X": 0.5})
-        
+
         mock_file = MagicMock()
         mock_open.return_value.__enter__.return_value = mock_file
-        
+
         log.save_to_csv("dummy.csv")
-        
-        # Extract all written lines
+
         written_lines = [call.args[0] for call in mock_file.write.mock_calls]
         full_output = "".join(written_lines)
-        
-        assert "# Metadata" in full_output
-        assert "Probe Name,Test_Probe_1" in full_output
-        assert "Probe Tilt Angle,45_degrees" in full_output
+
+        assert "# Metadata" not in full_output
+        assert "# Probe Name" not in full_output
+        # The first thing written is the header, not a comment row.
+        assert full_output.lstrip().startswith("Red Percent")
+        assert "Stepper X Location" in full_output
 
     def test_detect_red_accuracy(self):
         import numpy as np
