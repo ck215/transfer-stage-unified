@@ -2987,6 +2987,56 @@ two-lane splits (ROTATOR-6, SERIAL-12, DC-5, MANAGER-13), each of which needs
 **a seam test written by the lead before either half is briefed**, per the
 WEB-19 failure of 2026-09-20.
 
+### 2026-09-21 (close, cont.) — ERRORS-11: the doc described a deleted API
+
+**200 closed / 19 open.** ERRORS-11 understated itself badly, which is the
+opposite of this branch's usual drift and worth recording as its own pattern.
+
+The finding asks for five table rows to be corrected in
+`docs/architecture/error-routing.md`. What the file actually contained was a
+**documented API that does not exist**: `set_callbacks`, the three
+`_error_cb`/`_warning_cb`/`_info_cb` slots, `_last_messages`, and an
+`_is_spam` 5-second text dedup. S11 (RC-8) replaced all of it with the
+`EventBus` — the source even says so in `ErrorRouter`'s own docstring
+("`set_callbacks` is **not** here any more"). The file was footered "last
+verified against `12e9d59` (2026-09-18)", i.e. before S1–S15, and gave
+`error_routing.py` as 54 lines against an actual 340.
+
+Rate limiting was documented **backwards**, which is the part that could
+have caused harm: the old text says repeats dedupe on the *message string*
+inside 5 s, so "adding a report call inside a hot loop won't spam as long as
+the message text doesn't change". The real bus folds on
+`(severity, source, title)` over per-severity windows of 30 s (info) and
+60 s (warning/error), and increments `count` rather than dropping. Anyone
+following the old advice would have varied the title per call — defeating
+the fold — while carefully holding the message text constant, which does
+nothing.
+
+**Four of ERRORS-11's own claims had gone stale**, now recorded in a
+"verdicts that are now wrong" table in the file: `serial.enable`/`disable`
+both raise `TransportError` now rather than swallowing; `threading.excepthook`
+*is* set, in the shared `install_exception_hooks`; the audit's correction
+about "gamepad polling threads" is itself outdated, because RC-13/S5 gave
+the poller its own daemon clock so a poll genuinely can be off the main
+thread; and the `_is_spam` cap argument is moot.
+
+**The fix is the citation scheme, not the rows.** Line numbers are replaced
+with symbol anchors plus a regenerable per-file index (counts of `print`,
+`report_*` and bare `except: pass` sites per `Class.method`). That addresses
+the finding's stated failure scenario — "an agent delegated the `455/457`
+style rows edits the wrong lines" — rather than resetting a clock that rots
+again on the next commit. The old tables are kept, clearly fenced as a
+2026-09-18 snapshot, because their *reasoning* is still the project's
+position even where their verdicts are spent. The deep-dive addendum was
+deleted outright: it computed dedup maths for a function that no longer
+exists.
+
+**Standing lesson for the ledger itself:** a `doc` finding's severity is the
+age of the document, not the length of the finding. ERRORS-11 was `low` and
+three of its five rows were arithmetic; the real defect was that fifteen
+stages had passed underneath the file. Worth checking the other `doc` rows
+against their subject's mtime before trusting their scope.
+
 ## Finding ledger
 
 218 rows: the 213 findings of the 2026-09-19 audit, plus five added later.
@@ -3038,7 +3088,7 @@ it) · `n/a` (with a reason).
 | ERRORS-8 | RC8 | S11 | root cause | closed (locked bus, key is `(severity, source, title)`; test_publishing_from_many_threads_loses_nothing, test_repeats_fold_into_one_event_with_a_count) |
 | ERRORS-9 | RC8 | S11 | root cause | closed (PySide's three CSV surfaces — load failure, missing Red Percent column, nothing to save — report through the bus instead of raising their own `QMessageBox`. **The agent reported this `closed` on "code inspection; no standalone test created" and the row stayed open until the lead wrote one**: test_the_csv_surfaces_do_not_raise_their_own_modal, test_the_csv_load_path_reports_through_the_error_router. The change also broke PYSIDE-18's qt test, which asserted on the very modal this finding removes; that test now asserts on the bus) |
 | ERRORS-10 | RC8 | S11 | root cause | closed (the rate limit no longer runs ahead of the no-subscriber print; test_with_no_subscriber_the_bus_prints) |
-| ERRORS-11 | doc | S0 | root cause | open |
+| ERRORS-11 | doc | S0 | root cause | closed (verification note, lead 2026-09-21: `error-routing.md`'s header, API surface and per-frontend wiring rewritten against `b95a379`. **The finding understated it.** It asked for five table rows to be corrected; the file actually documented an API that no longer exists — `set_callbacks`, the three `_error_cb`/`_warning_cb`/`_info_cb` slots, `_last_messages` and the `_is_spam` 5 s text dedup were all replaced wholesale by S11's `EventBus` (RC-8), and the stated length of 54 lines is now 340. Rate limiting in particular is documented backwards: the real fold keys on `(severity, source, title)` — not message text — over per-severity windows of 30 s/60 s, and increments a `count` rather than dropping. **Four of the finding's own claims had themselves gone stale** and are recorded in a new "verdicts that are now wrong" table: `serial.enable`/`disable` both raise now rather than swallowing; `threading.excepthook` *is* set, in the shared `install_exception_hooks`; the gamepad-thread correction is itself outdated because RC-13/S5 gave the poller its own daemon clock; and the `_is_spam` cap argument is moot. Line-number citations replaced with symbol anchors plus a regenerable per-file index, which addresses the finding's actual failure scenario — "an agent delegated the 455/457 style rows edits the wrong lines" — instead of resetting a clock that rots on the next commit. The stale addendum was deleted; the old tables are kept, clearly marked as a 2026-09-18 snapshot, for their reasoning rather than their line numbers.) |
 | ERRORS-12 | RC10 | S4 | root cause | closed (the `_BufferProxy` indirection and the web error mirror are retired; the ledger's note that the behavioural defect was already gone held, but one half was still live — a `WebDashboardServer` built with a manager made its own adapter while `WebAPIHandler.adapter` only became that object in `start()`, so poller logs emitted before then went to an adapter `/api/logs` never read — test_api_errors_survives_an_adapter_replacement, test_the_web_error_path_keeps_no_second_copy_of_the_bus, test_web_error_manager_shims_publish_to_the_bus, test_poller_logs_reach_the_server_that_serves_them) |
 | GAMEPAD-1 | RC4 | S5 | root cause | closed (S5: the model owns the input loop and the poller; test_polling_continues_without_a_tk_event_loop) |
 | GAMEPAD-2 | RC13 | S5 | root cause | closed (S5: the refcount is gone, SDL is per-owner in InputService; test_closing_a_poller_never_tears_sdl_down, test_sdl_comes_down_only_at_process_exit) |
