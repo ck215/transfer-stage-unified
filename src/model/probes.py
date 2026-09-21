@@ -1213,10 +1213,15 @@ class BaseProbe(SchemaCommands):
         if silence > self.WEB_CLIENT_STOP_TIMEOUT:
             msg = (f"No web client has polled in {silence:.1f}s while "
                    f"{self._mode.value}; FULL STOP (D-8).")
+            # Latch FIRST, then tell anyone about it. `safety-pattern.md`'s
+            # rule 1 is that nothing may come between deciding to stop and
+            # stopping; reporting is bounded here but it is still a bus
+            # publish under a lock, and the idle-timeout branch below does it
+            # in the other order only because a disable is not a FULL STOP.
+            self.emergency_stop()
             print(f"[{self.__class__.__name__}] {msg}")
             ErrorPopupManager.report_error(
                 "Client Liveness FULL STOP", msg, None)
-            self.emergency_stop()
         elif (silence > self.WEB_CLIENT_WARN_TIMEOUT
                 and not self._client_liveness_warned):
             self._client_liveness_warned = True
