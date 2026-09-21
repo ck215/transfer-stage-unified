@@ -37,7 +37,11 @@ class FakeDevice(ManagedModel):
         self.transport_open = False
 
     def emergency_stop(self):
+        # Returns True per the MANAGER-21 contract: `full_stop_all` now reads
+        # the model's own answer rather than treating "did not raise" as a
+        # confirmed stop.
         self.stops += 1
+        return True
 
 
 @pytest.fixture
@@ -141,7 +145,12 @@ def test_a_hidden_device_is_still_torn_down_at_shutdown(manager):
 
 
 def test_a_hidden_device_still_answers_full_stop(manager):
-    """Out of sight is not out of the stop path."""
+    """Out of sight is not out of the stop path.
+
+    `is True` here is the MANAGER-21 contract, not incidental: the fixture's
+    model must report a confirmed stop, and a model that merely failed to
+    raise no longer counts.
+    """
     device = manager.get_model("Stepper Probe")
     manager.hide("Stepper Probe")
     results = manager.full_stop_all()

@@ -345,10 +345,15 @@ class RotatorSystem(SchemaCommands):
         self._forget_target()
 
         done = threading.Event()
+        confirmed = []
 
         def _stop():
             try:
-                self.stop(priority=True)
+                confirmed.append(bool(self.stop(priority=True)))
+            except Exception as e:
+                confirmed.append(False)
+                print(f"[{self.__class__.__name__}] FULL STOP: stage stop "
+                      f"raised: {e}")
             finally:
                 done.set()
 
@@ -359,6 +364,10 @@ class RotatorSystem(SchemaCommands):
         if not done.wait(self.ESTOP_RETURN_BUDGET):
             print(f"[{self.__class__.__name__}] FULL STOP: latched; hardware "
                   f"stop still in flight after {self.ESTOP_RETURN_BUDGET}s")
+            # MANAGER-21: unconfirmed. The priority write is still being
+            # forced through; we have stopped waiting for it, not abandoned it.
+            return False
+        return bool(confirmed and confirmed[0])
 
     def home(self):
         if not self.smc:
@@ -531,15 +540,24 @@ class RotatorSystem(SchemaCommands):
         # AttributeError inside the stop path (ROTATOR-8).
         with self._lock:
             smc = self.smc
-        if smc:
+        if not smc:
+            # MANAGER-21: nothing to stop and nothing confirmed. A rotator
+            # with no controller attached cannot report that the stage
+            # halted, because it cannot see the stage.
+            return False
+        try:
+            smc.stop(priority=priority)
+        except Exception as e:
             try:
-                smc.stop(priority=priority)
-            except Exception as e:
-                try:
-                    from error_routing import ErrorRouter
-                    ErrorRouter.report_error("Rotator Error", f"Failed to send stop:\n{e}", e)
-                except Exception:
-                    pass
+                from error_routing import ErrorRouter
+                ErrorRouter.report_error("Rotator Error", f"Failed to send stop:\n{e}", e)
+            except Exception:
+                pass
+            # MANAGER-21: ROTATOR-16 gave the write a bound, so this is now
+            # reachable as a SerialTimeoutException rather than a hang. The
+            # ST bytes did not land; say so upward.
+            return False
+        return True
 
     def reset_and_configure(self):
         if not self.smc:

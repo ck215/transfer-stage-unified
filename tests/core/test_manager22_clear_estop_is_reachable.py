@@ -44,7 +44,45 @@ from results import NeedsConfirmation, Ok
 
 
 def _probe():
-    return StepperProbe(MagicMock(), controller_id="0")
+    """The canonical double: a SIM probe with a recording transport.
+
+    Deliberately not `StepperProbe(MagicMock(), ...)`. A MagicMock transport
+    makes `read_position()` return a MagicMock, which the model's sampler
+    thread then compares against an int — raising on every tick and flooding
+    the global `EventBus` with "Serial Read Error" for the rest of the
+    session. That leaks into unrelated tests that assert on the error buffer
+    (it broke `tests/web/test_web_server.py::test_api_logs_and_errors` under
+    random ordering), which is why these tests stop their loops in `finally`.
+    """
+    probe = DCProbe("SIM", None)
+    probe.serial_comm = _Transport()
+    return probe
+
+
+class _Transport:
+    def __init__(self):
+        self.writes = []
+
+    def write_command(self, payload, priority=False):
+        self.writes.append(payload)
+
+    def enable(self):
+        self.write_command(b"e")
+
+    def disable(self):
+        self.write_command(b"d")
+
+    def send_autonomous_command(self, params):
+        self.writes.append(("auton", params))
+
+    def send_manual_mode_command(self, params):
+        self.writes.append(("manual", params))
+
+    def read_position(self):
+        return None
+
+    def close(self):
+        pass
 
 
 def _commands_in(schema):
@@ -149,17 +187,22 @@ def test_manager22_clearing_does_not_re_arm_or_move_anything():
     re-armed, an operator recovering from an auto-latch would energize a stage
     they are standing over."""
     probe = _probe()
-    probe.enter_manual()
-    probe.emergency_stop()
-    assert probe.estop_latched
+    try:
+        probe.enter_manual()
+        probe.emergency_stop()
+        assert probe.estop_latched
 
-    probe.clear_estop(True)
+        probe.clear_estop(True)
 
-    assert probe._mode is ProbeMode.DISABLED, (
-        f"clearing the latch left the probe in {probe._mode}; it must come "
-        f"back disabled and be re-armed deliberately")
-    assert not probe.manual_flag
-    assert not probe.auton_flag
+        assert probe._mode is ProbeMode.DISABLED, (
+            f"clearing the latch left the probe in {probe._mode}; it must "
+            f"come back disabled and be re-armed deliberately")
+        assert not probe.manual_flag
+        assert not probe.auton_flag
+    finally:
+        # Arming starts the model's loops; leaving them running leaks a
+        # sampler thread into every later test in the session.
+        probe.stop_loops()
 
 
 def test_manager22_clearing_an_unlatched_device_is_harmless():

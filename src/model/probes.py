@@ -1512,14 +1512,43 @@ class BaseProbe(SchemaCommands):
         Returning before the write completes is deliberate. The alternative
         is a UI thread blocked behind a dead serial port, with a FULL STOP
         button that appears to have done nothing.
+
+        **Returns whether the stop was confirmed (MANAGER-21).** `True` only
+        if `power_down()` finished inside the budget *and* reported success.
+        `False` covers both "still in flight" and "the board refused it" —
+        from the operator's position those are the same fact: nobody can
+        promise this axis has stopped. What `False` never means is that the
+        latch is unset; that happens first and cannot fail.
+
+        **"Confirmed" means the strongest stop this device supports landed —
+        not that the coils are dead.** On a device whose firmware has no
+        coil-kill handler (the DC probe: `supports_coil_kill` is False, see
+        SERIAL-10 and D-7), a successful stop zeroes the motion frame and
+        sends `'d'`, and the driver outputs stay energized. That is reported
+        separately and loudly by `_report_power_down_unsupported`, and it is
+        deliberately *not* folded into this return value: it is a fixed
+        property of the firmware, not an outcome of this stop, so folding it
+        in would mark every DC probe permanently unconfirmed and train the
+        operator to ignore the one signal that is supposed to mean something.
+        The two facts are both surfaced, separately, because they are
+        different questions — "did the stop land" and "can this board
+        de-energize at all".
         """
         self._estop.set()
 
         done = threading.Event()
+        confirmed = []
 
         def _stop():
             try:
-                self.power_down()
+                confirmed.append(bool(self.power_down()))
+            except Exception as e:
+                # Reported rather than swallowed: the caller is about to be
+                # told this device did not confirm, and the reason belongs
+                # somewhere an operator can see.
+                confirmed.append(False)
+                print(f"[{self.__class__.__name__}] FULL STOP: hardware stop "
+                      f"raised: {e}")
             finally:
                 done.set()
 
@@ -1530,6 +1559,8 @@ class BaseProbe(SchemaCommands):
         if not done.wait(self.ESTOP_RETURN_BUDGET):
             print(f"[{self.__class__.__name__}] FULL STOP: latched; hardware "
                   f"stop still in flight after {self.ESTOP_RETURN_BUDGET}s")
+            return False
+        return bool(confirmed and confirmed[0])
 
 
 def _mode_gated_param(name):

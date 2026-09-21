@@ -261,8 +261,15 @@ class SystemManager:
         def _stop(name, model):
             ok = False
             try:
-                model.emergency_stop()
-                ok = True
+                # MANAGER-21: the model's own answer, not "it did not raise".
+                # This used to be `model.emergency_stop(); ok = True`, and
+                # every model is built to always return inside its
+                # ESTOP_RETURN_BUDGET whether or not the write landed — so
+                # `ok` was True for a wedged transport, and the docstring
+                # above described a False that could not occur. `None` from a
+                # model that predates the contract is read as unconfirmed
+                # rather than silently as success.
+                ok = model.emergency_stop() is True
             except Exception as e:
                 self._report(f"Failed to stop {name}: {e}", e, "Stop Error")
             with results_lock:

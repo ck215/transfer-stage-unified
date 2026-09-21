@@ -276,6 +276,13 @@ class TemperatureSystem(SchemaCommands):
                 ErrorRouter.report_warning("Temperature Not Connected", msg)
             except Exception:
                 pass
+            # MANAGER-21: unconfirmed, and deliberately so. This branch
+            # already tells the operator "Stop command not sent"; returning
+            # True here would have `full_stop_all` contradict that warning in
+            # the same breath. A disconnected heater is not a stopped heater
+            # — nothing reached the hardware, and this model cannot see
+            # whether the board is still driving from its last setpoint.
+            return False
 
     def _backoff_wait(self, backoff):
         """Wait out a backoff, but return early the moment close() asks.
@@ -428,9 +435,14 @@ class TemperatureSystem(SchemaCommands):
             except Exception as e:
                 from error_routing import ErrorRouter as ErrorPopupManager
                 ErrorPopupManager.report_error("Serial Write Error", f"Error writing stop state to serial:\n{e}", e)
+                # MANAGER-21: the frame did not land. The report above tells
+                # the operator; the return tells `full_stop_all`, which is
+                # what decides whether they are shown "confirmed".
+                return False
             finally:
                 if acquired:
                     self._write_lock.release()
+            return True
         else:
             # TEMP-10: No port means the model is not connected. Report this
             # to the operator so they know that the stop command did not reach
@@ -568,14 +580,23 @@ class TemperatureSystem(SchemaCommands):
         so an emergency stop on the heater ran its I/O on the calling thread
         -- frequently a UI thread -- exactly like the probe defect S8 fixed
         and the rotator defect S8 missed (I-5.2, TEMP-7).
+
+        **Returns whether the stop was confirmed (MANAGER-21)** — see
+        `ManagedModel.emergency_stop`. For the heater "confirmed" means the
+        zero-setpoint frame was written without error inside the budget.
         """
         self._estop.set()
 
         done = threading.Event()
+        confirmed = []
 
         def _stop():
             try:
-                self.stop(priority=True)
+                confirmed.append(bool(self.stop(priority=True)))
+            except Exception as e:
+                confirmed.append(False)
+                print(f"[{self.__class__.__name__}] FULL STOP: heater stop "
+                      f"raised: {e}")
             finally:
                 done.set()
 
@@ -586,3 +607,5 @@ class TemperatureSystem(SchemaCommands):
         if not done.wait(self.ESTOP_RETURN_BUDGET):
             print(f"[{self.__class__.__name__}] FULL STOP: latched; heater "
                   f"stop still in flight after {self.ESTOP_RETURN_BUDGET}s")
+            return False
+        return bool(confirmed and confirmed[0])

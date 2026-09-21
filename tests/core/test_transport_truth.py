@@ -386,11 +386,23 @@ class SlowStopModel:
         self.stops = 0
 
     def emergency_stop(self):
+        """Honours the MANAGER-21 contract: returns whether the stop confirmed.
+
+        This double used to return `None` implicitly, which is exactly how
+        the defect survived — `full_stop_all` read "did not raise" as
+        success, and every test here handed it a double that could only
+        succeed or raise. The real shape, a model that returns normally
+        *without* having confirmed, was not reachable through this class and
+        so was never tested. It is covered directly now, against real models
+        and a real stalled transport, in
+        tests/core/test_manager21_stop_confirmation.py.
+        """
         self.stops += 1
         if self.delay:
             time.sleep(self.delay)
         if self.raises:
             raise self.raises
+        return True
 
     def teardown(self):
         pass

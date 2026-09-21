@@ -15,10 +15,24 @@ class ManagedModel(Protocol):
         shutdown — not time-critical, should not raise."""
         ...
 
-    def emergency_stop(self) -> None:
+    def emergency_stop(self) -> bool:
         """Halt hardware activity immediately, by the strongest means this
         model has available. Called by the global FULL STOP control — must
-        be fast and must never block."""
+        be fast and must never block.
+
+        **Returns whether the hardware stop was confirmed** (MANAGER-21).
+        `True` means the stop completed and reported success inside this
+        model's `ESTOP_RETURN_BUDGET`. `False` means it did not — either the
+        write is still in flight against a wedged transport, or it reported
+        failure.
+
+        `False` never means "not attempted". The latch is set first, before
+        any I/O, and is set whatever this returns; a `False` model is one
+        whose priority write is still being forced through. The distinction
+        matters because `SystemManager.full_stop_all` turns this value into
+        what the operator is told, and it used to tell them every device had
+        confirmed because the only observable outcome was "did not raise".
+        """
         ...
 
 
