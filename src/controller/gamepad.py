@@ -453,6 +453,26 @@ class ControllerPoller:
             self.start_polling(self.gui_root, self.log_updater, self.activity_callback)
         return success
 
+    # Which poll chain is the live one (GAMEPAD-7).
+    #
+    # A swap is stop_polling() + start_polling(), and `is_polling` was the
+    # only thing an already-scheduled callback checked before re-arming
+    # itself. By the time the old chain's `after`/sleep expired the flag was
+    # True again, so it carried on alongside its replacement: N swaps left
+    # N+1 chains pumping SDL and firing log/activity callbacks against one
+    # shared set of prev_* caches. Each chain now carries the generation it
+    # was started with and retires as soon as that is no longer current.
+    #
+    # Class attribute, not an __init__ field, so a poller assembled
+    # piecemeal (see _init_input_state) still reads a sane value.
+    _loop_gen = 0
+
+    def _next_generation(self):
+        """Retire every outstanding poll chain and return the new identity."""
+        with self._state_lock:
+            self._loop_gen += 1
+            return self._loop_gen
+
     def start_polling(self, gui=None, log_updater=None, activity_callback=None):
         if gui is not None:
             self.gui_root = gui
@@ -465,11 +485,12 @@ class ControllerPoller:
         if not self.gamepad: return
 
         print("[controllerDrive] Starting controller polling...")
+        generation = self._next_generation()
         self.is_polling = True
 
         if self.gui_root is not None and hasattr(self.gui_root, "after"):
             # Legacy path: driven by the Tk event loop.
-            self._poll_loop()
+            self._poll_loop(generation)
         else:
             # The poller owns its own clock (RC-13 item 2). Without this the
             # loop ran exactly once and then called stop_polling(), because
@@ -478,18 +499,24 @@ class ControllerPoller:
             # so entering manual mode energized the coils and then did
             # nothing else.
             self._thread = threading.Thread(
-                target=self._poll_forever, daemon=True,
+                target=self._poll_forever, args=(generation,), daemon=True,
                 name=f"poller-{self.process_name}")
             self._thread.start()
 
-    def _poll_forever(self):
-        while self.is_polling and not self._closed:
-            self._poll_loop()
+    def _poll_forever(self, generation):
+        while self.is_polling and not self._closed \
+                and self._loop_gen == generation:
+            self._poll_loop(generation)
             time.sleep(self.POLL_INTERVAL / 1000.0)
 
     def stop_polling(self):
         if self.is_polling:
             self.is_polling = False
+        # Unconditional: a chain scheduled before this call must not survive
+        # a restart that happens before it next runs (GAMEPAD-7). This is the
+        # stop path for the poll loop — everything else here assumes that
+        # asking a chain to stop actually ends it.
+        self._next_generation()
 
     def close(self):
         """Release this poller's device handle. SDL stays up.
@@ -629,7 +656,16 @@ class ControllerPoller:
             self._pending_edges.clear()
             self._levels = {}
 
-    def _poll_loop(self):
+    def _poll_loop(self, generation=None):
+        # A stale chain — one started before the most recent stop/start —
+        # retires here instead of re-arming itself (GAMEPAD-7). A caller that
+        # names no generation (poll_once, and tests) adopts the current one,
+        # so any chain it starts is still cancellable.
+        if generation is None:
+            generation = self._loop_gen
+        elif generation != self._loop_gen:
+            return
+
         if not self.is_polling: return
         
         def _log(message):
@@ -668,7 +704,8 @@ class ControllerPoller:
 
         if self.gui_root is not None and hasattr(self.gui_root, "after"):
             try:
-                self.gui_root.after(self.POLL_INTERVAL, self._poll_loop)
+                self.gui_root.after(
+                    self.POLL_INTERVAL, lambda: self._poll_loop(generation))
             except Exception as e:
                 # gui_root can be destroyed between the is_polling check at
                 # the top of this method and this call (dashboard/tab torn

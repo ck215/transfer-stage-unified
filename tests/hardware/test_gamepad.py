@@ -658,3 +658,164 @@ def test_poll_loop_rearm_failure_is_treated_as_a_disconnect():
     assert poller.gamepad is None
     assert poller.is_polling is False
     assert claims["TestProcess"] == "None Detected"
+
+
+# ==========================================
+# GAMEPAD-7 — one poll chain per poller, always
+# ==========================================
+
+class _FakeTkRoot:
+    """A Tk root that only *queues* `after` callbacks; the test runs them.
+
+    The real defect is invisible with a live event loop, because every chain
+    does the same work and shares the same `prev_*` state. Holding the queue
+    makes the number of live chains directly observable.
+    """
+
+    def __init__(self):
+        self.queue = []
+
+    def after(self, _ms, callback):
+        self.queue.append(callback)
+        return len(self.queue)
+
+    def drain(self):
+        """Fire everything currently scheduled, once."""
+        due, self.queue = self.queue, []
+        for callback in due:
+            callback()
+        return len(due)
+
+
+def _sdl_handles_per_index(mock_pygame, count=2):
+    """Give each SDL index its own joystick mock, memoised.
+
+    `patched_sdl` hands the same object back for every index, which is fine
+    when a test only ever binds one controller but makes a swap untestable:
+    the "old" and "new" devices would be the same mock.
+    """
+    handles = {}
+
+    def make(index):
+        handle = handles.get(index)
+        if handle is None:
+            handle = MagicMock()
+            handle.get_name.return_value = f"Xbox Controller {index}"
+            handle.get_guid.return_value = "030000005e04"
+            handle.get_numaxes.return_value = 0
+            handle.get_numbuttons.return_value = 0
+            handle.get_numhats.return_value = 0
+            handles[index] = handle
+        return handle
+
+    mock_pygame.joystick.get_count.return_value = count
+    mock_pygame.joystick.Joystick.side_effect = make
+    return handles
+
+
+def test_a_stale_poll_chain_stops_when_polling_is_restarted():
+    """The stop half of GAMEPAD-7, and the reason it comes first.
+
+    `stop_polling()` has to actually stop the chain it was asked to stop.
+    It did not: the only thing an already-scheduled callback checked was the
+    `is_polling` flag, so any restart that happened before the callback fired
+    (which is exactly what `set_controller` does — `stop_polling()` inside
+    `_initialize_pygame_joystick`, then `start_polling()` again) revived the
+    old chain instead of ending it.
+    """
+    root = _FakeTkRoot()
+    poller = _bare_poller()
+    poller.is_polling = False
+    poller.gui_root = root
+    poller.log_updater = None
+    poller.activity_callback = None
+    poller.process_name = "ProcessA"
+    poller.active_claims = {}
+    poller.controller_index = 0
+    poller.gamepad = MagicMock()
+    poller.gamepad.joystick.get_numaxes.return_value = 0
+    poller.gamepad.joystick.get_numbuttons.return_value = 0
+    poller.gamepad.joystick.get_numhats.return_value = 0
+    poller.gamepad.get_mapped_state.return_value = {
+        "x_axisStatus": 0.0, "y_axisStatus": 0.0, "dpad_LR": 0,
+        "dpad_UD": 0, "LBumper": 0, "RBumper": 0}
+
+    with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+        poller.start_polling(root)
+        assert len(root.queue) == 1
+
+        # Stop, then restart before the scheduled callback has run.
+        poller.stop_polling()
+        poller.start_polling(root)
+
+        # Two callbacks are pending now — the stale one cannot be
+        # unscheduled — but only the live chain may re-arm itself.
+        root.drain()
+        assert len(root.queue) == 1, (
+            f"{len(root.queue)} poll chains are live; stop_polling() did not "
+            "end the chain it stopped")
+
+
+def test_a_controller_swap_does_not_start_a_second_poll_chain():
+    """GAMEPAD-7: every successful swap used to leave the previous chain
+    running, so N swaps gave N+1 concurrent `_poll_loop` chains sharing one
+    set of `prev_*` caches — N+1x the pump work, and whichever chain saw a
+    change first fired the log/activity callbacks.
+    """
+    root = _FakeTkRoot()
+    with patched_sdl() as mock_pygame:
+        _sdl_handles_per_index(mock_pygame, count=2)
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True):
+            poller = ControllerPoller(0, {}, "ProcessA")
+            try:
+                poller.start_polling(root)
+                assert len(root.queue) == 1
+
+                for target in (1, 0, 1):
+                    assert poller.set_controller(target) is True
+                    root.drain()
+                    assert len(root.queue) == 1, (
+                        f"after swapping to {target}, {len(root.queue)} poll "
+                        "chains are live instead of 1")
+            finally:
+                poller.close()
+
+
+def test_a_restart_does_not_leave_a_second_poll_thread_running():
+    """The same race on the threaded (non-Tk) path, where it is not merely
+    wasted work: two OS threads then drive `_poll_loop` against one
+    unsynchronised set of `prev_*` caches.
+
+    Driven through `stop_polling()`/`start_polling()` rather than through
+    `set_controller`, because `set_controller` only resumes polling when
+    `gui_root` is set and so never restarts the threaded clock at all (a
+    separate defect, reported in the handoff, not fixed here).
+
+    POLL_INTERVAL is stretched so the first thread is certainly asleep across
+    the stop/start window — the flag it used to depend on is True again by
+    the time it wakes.
+    """
+    with patched_sdl() as mock_pygame:
+        _sdl_handles_per_index(mock_pygame, count=2)
+        with patch.object(ControllerPoller, "_is_os_connected", return_value=True), \
+                patch.object(ControllerPoller, "POLL_INTERVAL", 300):
+            poller = ControllerPoller(0, {}, "Headless")
+            try:
+                poller.start_polling(gui=None)
+                first = poller._thread
+                assert first is not None and first.is_alive()
+
+                poller.stop_polling()
+                poller.start_polling(gui=None)
+                second = poller._thread
+                assert second is not first, "no new poll thread after the restart"
+
+                first.join(timeout=3.0)
+                assert not first.is_alive(), (
+                    "the stopped poll thread is still polling alongside its "
+                    "replacement")
+                assert second.is_alive(), "the live poll thread died"
+            finally:
+                poller.close()
+                if poller._thread is not None:
+                    poller._thread.join(timeout=3.0)
