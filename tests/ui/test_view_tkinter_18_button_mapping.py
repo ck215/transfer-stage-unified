@@ -1,80 +1,44 @@
-"""VIEW-TKINTER-18: Tk button mapping on macOS - confirmation of current code.
+"""VIEW-TKINTER-18: where the tab-close binding lives. Deliberately thin.
 
-Audit claim: On macOS Aqua, Button-2 is the RIGHT button, so a right-click
-intended to open a context menu closes the tab instead.
+The audit claims that on macOS Aqua, Button-2 is the *right* button, so a
+right-click meant to open a context menu closes the tab instead.
 
-Current code finding: DraggableClosableNotebook binds <ButtonPress-2> to
-on_middle_press() which closes the tab. No platform-specific handling exists.
+**Three agents have now declined to change this without running it on macOS,
+and all three were right.** This file exists to make the binding easy to find
+when someone finally has the hardware. It does not pin the current mapping as
+correct.
 
-Status: This needs verification on macOS hardware. The code as-is:
-1. Binds Button-2 to close tabs (all platforms, no platform detection)
-2. Does not bind Button-3 (would normally be right-click context menu)
-3. If macOS Aqua has Button-2=right, this would cause right-click to close tabs
+That distinction cost a review. The first version of this file also asserted
+that `sys.platform` does *not* appear in the binding code and that Button-3
+is *not* bound — i.e. it pinned the defect. Those tests would have gone red
+the moment the owner applied the actual fix (platform detection, and a
+Button-3 binding for the context menu), so the fix would have arrived with
+two failing tests that had to be deleted to proceed. A test that must be
+removed before a bug can be fixed is worse than no test.
 
-The brief states: "Two agents have now declined to change this without executing
-it on macOS, and the lead judged both of them right." This finding requires
-bench execution to confirm the button mapping on actual macOS hardware.
+It also carried a `test_..._confirmation` whose body was `pass`. It asserted
+nothing, could never fail, and inflated the count by one. Its docstring is
+now this module docstring, which is where prose belongs.
+
+The verification itself is in `docs/implementation/bench-checklist.md`.
 """
-
-import ast
 import inspect
-from pathlib import Path
-import pytest
 
 
 def test_view_tkinter_18_button_2_binding_exists():
-    """Verify Button-2 binding is present in the notebook code."""
-    from views.tkinter.view import DraggableClosableNotebook
+    """Locator, not a verdict: find the binding this finding is about.
 
-    # Check that the source code has the binding
-    source = inspect.getsource(DraggableClosableNotebook.__init__)
-
-    # The binding string should be present
-    assert '<ButtonPress-2>' in source, "Button-2 binding not found in source"
-    assert 'on_middle_press' in source, "on_middle_press handler not found"
-
-
-def test_view_tkinter_18_no_platform_detection():
-    """Verify there's no platform-specific button binding code."""
-    from views.tkinter.view import DraggableClosableNotebook
-
-    source = inspect.getsource(DraggableClosableNotebook.__init__)
-
-    # Check that there's no platform-specific logic for buttons
-    assert 'sys.platform' not in source
-    assert 'darwin' not in source.lower()
-    assert 'aqua' not in source.lower()
-    assert 'Button-3' not in source  # No special handling for Button-3
-
-    # This confirms the finding: same binding for all platforms
-
-
-def test_view_tkinter_18_button_3_not_bound():
-    """Note that Button-3 is not bound in the notebook."""
-    from views.tkinter.view import DraggableClosableNotebook
-
-    source = inspect.getsource(DraggableClosableNotebook)
-
-    # Verify Button-3 is not used anywhere in the class
-    # (it would normally be right-click for context menu)
-    assert 'ButtonPress-3' not in source, "Button-3 binding found (unexpected)"
-    assert 'Button-3' not in source, "Button-3 reference found"
-
-
-def test_view_tkinter_18_confirmation():
-    """Summary of findings for VIEW-TKINTER-18.
-
-    The code currently binds:
-    - Button-1: drag to reorder tabs
-    - Button-2: close tab
-    - Button-3: (not bound)
-
-    On macOS Aqua, the button-to-physical-action mapping may differ.
-    This needs verification on actual macOS hardware to confirm whether
-    Button-2 maps to right-click (which would cause right-click to close tabs
-    instead of showing context menu).
-
-    The audit says this needs bench execution and both previous agents correctly
-    declined to fix it without running on macOS.
+    Survives the real fix on purpose. A platform-conditional binding still
+    mentions `<ButtonPress-2>` and still routes to `on_middle_press`, so this
+    stays green whether or not macOS gets its own branch — it only fails if
+    the tab-close binding is renamed or removed out from under the finding.
     """
-    pass  # This is a documentation test
+    from views.tkinter.view import DraggableClosableNotebook
+
+    source = inspect.getsource(DraggableClosableNotebook.__init__)
+    assert "<ButtonPress-2>" in source, (
+        "the Button-2 tab-close binding VIEW-TKINTER-18 is about has moved "
+        "or been renamed; re-locate it before trusting the audit entry")
+    assert "on_middle_press" in source, (
+        "the Button-2 binding no longer routes to on_middle_press; "
+        "VIEW-TKINTER-18's audit text describes a handler that is gone")
