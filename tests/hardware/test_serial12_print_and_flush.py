@@ -76,49 +76,66 @@ def test_serial12_print_removed(capsys):
         )
 
 
-def test_serial12_lock_not_held_during_flush(capsys):
-    """SERIAL-12 fix: lock is not held during flush.
+def test_serial12_a_blocking_flush_cannot_stall_a_concurrent_lock_acquirer():
+    """The hazard itself, with a flush that actually blocks.
 
-    After removing the flush() call, the lock is released immediately after
-    the write, so other threads can acquire it without waiting for an unbounded
-    drain operation.
+    This replaces a test of the same intent that began "Don't make flush
+    block - just track if it was called" and then acquired `_lock` *after*
+    `send_manual_mode_command` had already returned. The lock is obviously
+    free once the call returns; that test passed against the pre-fix code and
+    proved nothing about the defect.
+
+    SERIAL-12 is not "flush is called". It is "an unbounded call is made while
+    holding `_lock`". On POSIX pyserial's `flush()` is `tcdrain()`, which has
+    no timeout, so a stalled USB CDC endpoint pins the lock for as long as the
+    endpoint stays stalled — and `_lock` is the lock this module's priority
+    path (`PRIORITY_LOCK_TIMEOUT`) deliberately refuses to wait on.
+
+    So the test has to hold the flush open and ask for the lock *during* the
+    send. Post-fix the flush is never reached and the acquirer wins
+    immediately. Pre-fix the sender is parked inside `tcdrain` holding the
+    lock, and the acquirer times out. Verified by restoring the `flush()` call
+    in a throwaway worktree: this test fails there and passes here.
     """
     with patch("controller.serial.pyserial.Serial") as mock_serial:
         mock_instance = get_mock_serial()
+        release = threading.Event()
+        flush_entered = threading.Event()
 
-        # Don't make flush block - just track if it was called
-        mock_instance.flush = MagicMock()
+        def blocking_flush():
+            flush_entered.set()
+            release.wait(10)
+
+        mock_instance.flush = MagicMock(side_effect=blocking_flush)
         mock_serial.return_value = mock_instance
 
         s = serial("COM1")
         params = get_params()
 
-        # Track whether the second thread could acquire the lock
-        lock_acquired = []
+        sender = threading.Thread(
+            target=s.send_manual_mode_command, args=(params,), daemon=True)
+        sender.start()
 
-        def try_acquire_lock():
-            """Try to acquire the lock with a 0.5s timeout."""
-            acquired = s._lock.acquire(timeout=0.5)
+        try:
+            # Whether or not the flush is reached, the lock must become
+            # available promptly. A generous timeout: this is a latency
+            # assertion, and 2s is far past any legitimate write.
+            acquired = s._lock.acquire(timeout=2.0)
             if acquired:
-                lock_acquired.append(True)
                 s._lock.release()
-            else:
-                lock_acquired.append(False)
 
-        # Send a packet
-        s.send_manual_mode_command(params)
-
-        # Try to acquire the lock from another thread
-        # This should succeed immediately since the lock is released after write
-        acquirer = threading.Thread(target=try_acquire_lock)
-        acquirer.start()
-        acquirer.join(timeout=2.0)
-
-        # After fix: should be able to acquire the lock
-        assert lock_acquired == [True], (
-            f"Expected to acquire the lock after SERIAL-12 fix, "
-            f"but got {lock_acquired}."
-        )
+            assert acquired, (
+                "could not acquire _lock within 2s while a send was in "
+                "flight with a stalled flush. An unbounded call is being "
+                "made under the transport lock, which is exactly what the "
+                "priority write path cannot survive (SERIAL-12)")
+            assert not flush_entered.is_set(), (
+                "send_manual_mode_command reached flush() at all; at 50 Hz "
+                "each packet supersedes the last in 20 ms and the drain buys "
+                "nothing for the risk it carries")
+        finally:
+            release.set()
+            sender.join(timeout=5)
 
 
 def test_serial12_flush_not_called_in_send(capsys):
