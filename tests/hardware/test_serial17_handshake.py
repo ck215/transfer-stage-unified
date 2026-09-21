@@ -103,7 +103,17 @@ def harness(monkeypatch):
 
         monkeypatch.setattr(serial_mod, "time", clock)
         monkeypatch.setattr(serial_mod, "pyserial", FakePySerial)
-        return SerialTransport(PORT), port, clock
+        t = SerialTransport(PORT)
+        # SERIAL-6: the handshake now runs on a background thread, so the
+        # virtual clock advancing instantly no longer means the handshake
+        # itself has finished by the time this returns -- only that it
+        # *would* finish quickly once scheduled. Join explicitly instead of
+        # relying on the real thread happening to win the race before the
+        # caller's next line runs. Real seconds, deliberately: `Thread.join`
+        # does not know about the fake clock, and the work behind it is a
+        # handful of Python-level iterations either way.
+        assert t.wait_connected(timeout=5.0), "handshake thread never finished"
+        return t, port, clock
 
     return build
 

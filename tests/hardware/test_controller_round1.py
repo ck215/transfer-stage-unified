@@ -151,7 +151,17 @@ def test_get_mapped_state_when_disconnected():
 # ==========================================
 
 def test_serial_auton_command_dispatch():
-    """Verify autonomous 12-field command string dispatch."""
+    """Verify autonomous 12-field command string dispatch.
+
+    SERIAL-6: `serial(...)` used to run its identity handshake synchronously
+    inside the constructor, so this test could count on exactly one `s\\n`
+    ping having already landed in `write.call_args_list[0]` before the auton
+    command sent the second call. Now the handshake runs on a background
+    thread that does not even start pinging until `BOOTLOADER_WAIT` has
+    elapsed, so this asserts on the *last* write call rather than a fixed
+    position or count -- the number of handshake pings that have or have not
+    landed by the time this line runs is not this test's business.
+    """
     with patch("controller.serial.pyserial.Serial") as mock_serial_cls:
         mock_inst = MagicMock()
         mock_inst.is_open = True
@@ -172,8 +182,8 @@ def test_serial_auton_command_dispatch():
             'command_code_auton': 1,
         }
         s.send_autonomous_command(params)
-        assert mock_inst.write.call_count == 2
-        sent_bytes = mock_inst.write.call_args_list[1][0][0]
+        assert mock_inst.write.call_count >= 1
+        sent_bytes = mock_inst.write.call_args_list[-1][0][0]
         expected_str = "100,200,300,0,1000,100,50,5.0,10.0,2.0,0,1\n"
         assert sent_bytes == expected_str.encode('utf-8')
 
