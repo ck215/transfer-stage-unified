@@ -498,15 +498,25 @@ class RotatorSystem(SchemaCommands):
         return code
 
     def poll_status(self):
+        """Poll the rotator for current position and state.
+
+        ROTATOR-9: On poll failure, explicitly set state to indicate
+        communication loss and clear position rather than leaving stale values.
+        The UI should not show a false "Ready" state when the device is
+        unreachable.
+        """
         if self.is_connected and self.smc:
             try:
                 pos = self.smc.get_position_deg()
                 err, state = self.smc.get_status(silent=True)
-                
+
                 self.position = pos
                 self.state = self._map_state_code(state)
                 self.error = str(err)
             except Exception as e:
+                # Poll failure: clear state to indicate communication loss
+                self.position = None
+                self.state = "Communication lost"
                 try:
                     from error_routing import ErrorRouter
                     ErrorRouter.report_warning("Rotator Poll Error", f"Failed to read status:\n{e}")
