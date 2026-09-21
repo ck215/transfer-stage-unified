@@ -84,6 +84,7 @@ note. **Never** answer an owner decision (`D-n`) yourself.
 | D-6 | Red Percent rendering | **schema-driven** in all three views | 2026-09-19 |
 | D-7 | Firmware protocol v2 | **adopt** — as recommended; requires reflashing every board | 2026-09-21 |
 | D-8 | Web client liveness gate | **warn at N s, FULL STOP at M s while motion is active**; folded into the existing interlock watchdog. **N and M set at the bench** (2026-09-21) — the shipped 5 s / 15 s are provisional placeholders, not measured | 2026-09-20 |
+| D-8a | Does D-8's client-liveness gate cover the heater and the rotator, or was it probes-only? | **heater and rotator too** — extend the gate to `TemperatureSystem` and `RotatorSystem`. **N and M are set separately for each at the bench**; the probe values do not transfer, because a heater's safe unattended window is a thermal question, not a motion one | 2026-09-21 |
 | D-9 | macOS default view | **tkinter**, until the codebase is stabilized | 2026-09-19 |
 | D-10 | Unsaved Red Percent data on exit | **autosave** to a timestamped file, plus a prompt where the UI allows | 2026-09-19 |
 | D-11 | Runtime serial reconnect | **not supported** — purged as legacy | 2026-09-19 |
@@ -94,7 +95,19 @@ D-3, D-5, D-6 and D-10 carry the recommendations recorded in
 `root-causes.md`; they were not separately re-confirmed by the owner and any
 of them can be reopened before its stage begins.
 
-**No owner decision is open.** D-7 was answered **adopt** on 2026-09-21,
+**No owner decision is open.** D-8a was answered **heater and rotator too**
+on 2026-09-21, after a fresh-eyes audit found the gate was implemented on
+`BaseProbe` only: `RotatorSystem` and `TemperatureSystem` have no equivalent
+and no idle watchdog of any kind, so `record_client_heartbeat`'s duck-typed
+`getattr(model, "touch_client_liveness", None)` silently did nothing for both.
+The concrete consequence was that a heater driven to setpoint from the Web
+frontend kept heating indefinitely if the tab closed, the machine slept, or
+the network dropped — with no firmware watchdog behind it either. The
+mechanism is being built now; **its constants ship as explicitly-marked
+placeholders**, exactly as WEB-19's did, and the rows do not close until the
+values are measured.
+
+D-7 was answered **adopt** on 2026-09-21,
 which unblocks SERIAL-10's mis-parse half — it needs a wire terminator on a
 stop path that only v2 carries. That work is still S16, at the bench, and
 still requires reflashing every board before the next run.
@@ -102,7 +115,9 @@ still requires reflashing every board before the next run.
 **Two things remain the owner's without being decisions.** D-8's N and M are
 *answered in kind but not in value*: the gate warns and then FULL STOPs, and
 the shipped 5 s / 15 s are placeholders to be measured at the bench, not
-ratified. And S16's GAMEPAD-11/12/13/14 are physical verification.
+ratified. **D-8a adds two more pairs** — one for the heater, one for the
+rotator — on the same terms. And S16's GAMEPAD-11/12/13/14 are physical
+verification.
 
 **D-12 was raised during S5**, not by the audit, and was **answered on
 2026-09-20**: `ControllerPoller.POLL_INTERVAL` stays at 5 ms (~200 Hz) and
