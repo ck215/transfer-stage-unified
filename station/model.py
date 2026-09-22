@@ -170,6 +170,9 @@ class Model(Panel):
             "age": round(time.monotonic() - self._updated_at, 2),
             "devices": {type(d).__name__: d.status for d in self.devices},
         })
+        root = getattr(self, "output_root", None)
+        if root is not None:
+            snapshot["output_root"] = str(root)   # a view checks downloads against it
         return snapshot
 
     def _safety_section(self):

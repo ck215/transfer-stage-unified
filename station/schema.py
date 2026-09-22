@@ -135,12 +135,17 @@ def dropdown(text, model_attr, command, options_command, *,
 
 # -- composites: one contract, three renderers (S10 item 2) ----------------
 
-def region_select(text, command, *, model_attr=None, role="neutral"):
-    """Pick a rectangular region of the screen or image."""
-    return {
+def region_select(text, command, *, model_attr=None, data_command=None,
+                  role="neutral"):
+    """Pick a rectangular region of the screen. A view without its own
+    overlay (the browser) draws on the image `data_command` supplies."""
+    element = {
         "type": "region_select", "text": text, "command": command,
         "model_attr": model_attr, "writable": False, "role": role,
     }
+    if data_command is not None:
+        element["data_command"] = data_command
+    return element
 
 
 def file_save(text, command, *, extensions=("csv",), role="neutral"):

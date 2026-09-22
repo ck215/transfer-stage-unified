@@ -1111,6 +1111,13 @@ class RedMonitor(Model):
         return self.plot_dims
 
     @property
+    def screen_image(self):
+        """The desktop as PNG for the browser's region picker: `{"png": bytes,
+        "bounds": {...}}`, or None when capture is unavailable."""
+        png, bounds = self.screen.screenshot_png()
+        return None if png is None else {"png": png, "bounds": bounds}
+
+    @property
     def figure(self):
         """PNG bytes of the analysis plot, rendered once here and displayed by
         every view — rather than Tk, PySide and the Web client each building
@@ -1240,7 +1247,8 @@ class RedMonitor(Model):
             sch.section(
                 "Control",
                 sch.region_select("Set Capture Region", "set_region",
-                                  model_attr="region", role="info"),
+                                  model_attr="region", role="info",
+                                  data_command="screen_image"),
                 sch.button("Start", "start_run", inputs=self._entry_names,
                            role="go", disabled_when=("running",)),
                 sch.button("Stop", "end_run", role="danger",

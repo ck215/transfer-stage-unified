@@ -98,7 +98,8 @@ def test_to_dict_is_json_safe_and_drops_an_unserialisable_value():
         pass
 
     payload = Result(Result.OK, value=Opaque(), command="go").to_dict()
-    assert payload == {"status": "ok", "reason": "", "command": "go", "value": None}
+    assert payload == {"status": "ok", "reason": "", "command": "go", "value": None,
+                       "inputs": {}, "args": []}
 
 
 @pytest.mark.parametrize("value", ["s", 1, 1.5, True, [1], {"a": 1}, None])

@@ -63,7 +63,8 @@ class Result:
 
     def to_dict(self):
         return {"status": self.status, "reason": self.reason,
-                "command": self.command, "value": _plain(self.value)}
+                "command": self.command, "value": _plain(self.value),
+                "inputs": dict(self.inputs), "args": list(self.args)}
 
 
 def _plain(value):
