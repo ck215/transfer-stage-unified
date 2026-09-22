@@ -9,13 +9,16 @@ probe off.
 Nothing here opens a real modal: `QMessageBox.exec` is patched wherever one
 could be raised, because there is nobody to click it.
 """
+import functools
 import os
 import threading
 
 import pytest
 
+from PySide6.QtGui import QIntValidator
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QFileDialog, QLabel, QMessageBox
+from PySide6.QtWidgets import (QFileDialog, QFrame, QLabel, QMessageBox,
+                               QSizePolicy)
 
 from station import schema as sch
 from station.events import events
@@ -115,6 +118,90 @@ class FakePanel(Panel):
         return None
 
 
+class TablePanel(Panel):
+    """A panel shaped like Setup after Addendum 2.
+
+    A column section, then one `layout="row"` section per model type, then a
+    column section. The rows deliberately declare *different* controls — the
+    rotator takes no gamepad, the screen monitor takes no port at all — since
+    a ragged set of rows is exactly what a table has to survive if "Port" is
+    to stay under "Port". It also carries the one `int` parameter.
+    """
+
+    NAME = "Table"
+    PARAMS = {"dwell": Param("dwell", "int", default=5, minimum=0, maximum=60,
+                             label="Dwell")}
+
+    #: (display name, attribute prefix, needs a port, needs a gamepad)
+    ROWS = (("Stepper Probe", "stepper", True, True),
+            ("Rotator", "rotator", True, False),
+            ("Red Percent", "red", False, False))
+
+    def __init__(self):
+        super().__init__()
+        self.scan_status = "Ready."
+        self.is_stopped = False
+        self.selected = []
+        for _, key, _, _ in self.ROWS:
+            setattr(self, f"{key}_port", "Off")
+            setattr(self, f"{key}_gamepad", "None")
+            setattr(self, f"{key}_found", "")
+            for field in ("port", "gamepad"):
+                setattr(self, f"set_{key}_{field}",
+                        functools.partial(self._select, key, field))
+
+    @property
+    def schema(self):
+        sections = [sch.section(
+            "Hardware",
+            sch.readonly("Status:", "scan_status"),
+            sch.entry("Dwell (s):", "dwell", self.PARAMS["dwell"]),
+            sch.button("Refresh", "refresh", role="info"),
+        )]
+        for name, key, needs_port, needs_gamepad in self.ROWS:
+            elements = []
+            if needs_port:
+                elements.append(sch.dropdown("Port", f"{key}_port",
+                                             f"set_{key}_port", "port_options"))
+            if needs_gamepad:
+                elements.append(sch.dropdown("Gamepad", f"{key}_gamepad",
+                                             f"set_{key}_gamepad",
+                                             "gamepad_options"))
+            elements.append(sch.readonly("Detected:", f"{key}_found"))
+            sections.append(sch.section(name, *elements, layout="row"))
+        sections.append(sch.section(
+            "Launch", sch.button("Launch", "launch", role="go")))
+        # The shape `Model._safety_section` builds: a stop toggle that is a
+        # danger role in BOTH states.
+        sections.append(sch.section(
+            "Safety",
+            sch.toggle("FULL STOP", "is_stopped", "toggle_stop",
+                       "LATCHED - click to clear", "FULL STOP",
+                       on_role="danger", off_role="danger")))
+        return sch.schema(*sections)
+
+    def toggle_stop(self):
+        self.is_stopped = not self.is_stopped
+        return self.is_stopped
+
+    def _select(self, key, field, choice):
+        self.selected.append((key, field, choice))
+        setattr(self, f"{key}_{field}", choice)
+        return choice
+
+    def port_options(self):
+        return ["Off", "SIM", "COM3"]
+
+    def gamepad_options(self):
+        return ["None", "Pad 1"]
+
+    def refresh(self):
+        return True
+
+    def launch(self):
+        return True
+
+
 class FakeController:
     def __init__(self, panel):
         self.panel = panel
@@ -212,8 +299,39 @@ def dashboard(qapp, controller, panel):
     events.unsubscribe(window._on_event)
 
 
+@pytest.fixture
+def table_panel():
+    return TablePanel()
+
+
+@pytest.fixture
+def table_view(qapp, table_panel):
+    built = qt.QtPanelView(FakeController(table_panel), "Table")
+    yield built
+    built.close()
+
+
 def element_of(view, kind):
     return next(e for e in view._elements if e["type"] == kind)
+
+
+def element_named(view, attr):
+    return next(e for e in view._elements if e.get("model_attr") == attr)
+
+
+def cell_of(grid, widget):
+    """(row, column) of the grid cell `widget` sits in, or None.
+
+    A dropdown's widget is the combo, and what the grid holds is the cell that
+    carries the combo *and* its rescan button - so the lookup climbs.
+    """
+    while widget is not None:
+        index = grid.indexOf(widget)
+        if index >= 0:
+            row, column, _, _ = grid.getItemPosition(index)
+            return (row, column)
+        widget = widget.parentWidget()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -771,3 +889,304 @@ def test_the_stylesheet_is_applied_to_the_application_not_the_window(view, qapp)
     """PYSIDE-15: on the window, every QMessageBox and file dialog stayed in
     the native light palette, unparented over a dark dashboard."""
     assert qapp.styleSheet() == qt.stylesheet()
+
+
+# ---------------------------------------------------------------------------
+# The row layout: Setup as a table (Addendum 2)
+# ---------------------------------------------------------------------------
+
+def test_a_row_section_puts_all_of_its_elements_on_one_line(table_view):
+    """`layout="row"` is a hint the renderer has to honour. Before this, the
+    Setup panel was one long vertical column of six stacked forms - the owner's
+    "overly convoluted, everything in one vertical tab is poor UI/UX"."""
+    grid = table_view._table.grid
+    rows = {attr: cell_of(grid, table_view._widget_for(element_named(table_view, attr)))[0]
+            for attr in ("stepper_port", "stepper_gamepad", "stepper_found")}
+    assert len(set(rows.values())) == 1, rows
+
+
+def test_every_model_gets_its_own_line_in_schema_order(table_view):
+    grid = table_view._table.grid
+    lines = [cell_of(grid, table_view._widget_for(element_named(table_view, attr)))[0]
+             for attr in ("stepper_found", "rotator_found", "red_found")]
+    assert lines == sorted(lines) and len(set(lines)) == 3
+
+
+def test_a_column_named_port_holds_only_ports_however_ragged_the_rows(table_view):
+    """The alignment claim, pinned. The rotator declares no gamepad and Red
+    Percent declares no port, so allocating columns by *position* would put
+    the rotator's "Detected:" under the stepper's Gamepad dropdown. Columns
+    are allocated by label instead."""
+    grid = table_view._table.grid
+    column = {attr: cell_of(grid, table_view._widget_for(element_named(table_view, attr)))[1]
+              for attr in ("stepper_port", "rotator_port",
+                           "stepper_found", "rotator_found", "red_found")}
+    assert column["stepper_port"] == column["rotator_port"]
+    assert column["stepper_found"] == column["rotator_found"] == column["red_found"]
+    assert column["stepper_port"] != column["stepper_found"]
+
+
+def test_the_table_names_each_row_and_captions_each_column_once(table_view):
+    grid = table_view._table.grid
+    headers = [grid.itemAtPosition(qt.PanelTable.HEADER_ROW, c).widget().text()
+               for c in range(1, grid.columnCount())
+               if grid.itemAtPosition(qt.PanelTable.HEADER_ROW, c) is not None]
+    titles = [grid.itemAtPosition(r, 0).widget().text()
+              for r in range(1, grid.rowCount())
+              if grid.itemAtPosition(r, 0) is not None]
+    assert headers == ["Port", "Gamepad", "Detected"]
+    assert titles == ["Stepper Probe", "Rotator", "Red Percent"]
+
+
+def test_a_column_section_keeps_its_own_card_and_stays_out_of_the_table(table_view):
+    """Only `layout="row"` sections join the table: the scan status and the
+    Launch button are still a form apiece."""
+    grid = table_view._table.grid
+    status = table_view._widget_for(element_named(table_view, "scan_status"))
+    assert cell_of(grid, status) is None
+
+
+def test_every_dropdown_is_one_width_rather_than_as_wide_as_its_longest_option(
+        table_view):
+    combos = [table_view._widget_for(e) for e in table_view._elements
+              if e["type"] == "dropdown"]
+    assert len(combos) == 3
+    assert {c.minimumContentsLength() for c in combos} == {qt.DROPDOWN_CHARS}
+    grid = table_view._table.grid
+    used = {cell_of(grid, c)[1] for c in combos}
+    assert all(grid.columnMinimumWidth(c) == qt.TABLE_CONTROL_MIN_PX
+               for c in used)
+
+
+def test_a_dropdown_in_a_row_section_still_runs_its_command(table_view,
+                                                            table_panel):
+    element = element_named(table_view, "stepper_port")
+    table_view._on_dropdown_changed(element, "COM3")
+    assert ("stepper", "port", "COM3") in table_panel.selected
+
+
+def test_a_panel_with_no_row_section_builds_no_table(view):
+    assert view._table is None
+
+
+# ---------------------------------------------------------------------------
+# Integers are integers (Addendum 2)
+# ---------------------------------------------------------------------------
+
+def test_an_int_entry_refuses_a_decimal_point_outright(table_view):
+    """A QDoubleValidator with decimals=0 keeps *accepting* the point and
+    calls the result intermediate, so the box looked as though it took the
+    value. QIntValidator refuses it."""
+    entry = table_view._widget_for(element_named(table_view, "dwell"))
+    validator = entry.validator()
+    assert isinstance(validator, QIntValidator)
+    state, _, _ = validator.validate("5.5", 0)
+    assert state == type(state).Invalid
+    state, _, _ = validator.validate("42", 0)
+    assert state == type(state).Acceptable
+
+
+def test_a_refresh_never_writes_a_decimal_into_an_int_entry(table_view):
+    """The box would then reject the text the refresh just put in it, and the
+    operator would be editing a field that refuses its own contents."""
+    element = element_named(table_view, "dwell")
+    entry = table_view._widget_for(element)
+    table_view._set_text(element, "5.000")
+    assert entry.text() == "5"
+    assert entry.hasAcceptableInput() is True
+
+
+def test_a_float_entry_still_gets_the_wide_decimal_validator(view):
+    """PYSIDE-19 is not undone by the integer path."""
+    entry = view._widget_for(element_of(view, "entry"))
+    assert not isinstance(entry.validator(), QIntValidator)
+    state, _, _ = entry.validator().validate("0.0005", 0)
+    assert state != type(state).Invalid
+
+
+# ---------------------------------------------------------------------------
+# Polish: the lamp, the log box, FULL STOP, the event dock
+# ---------------------------------------------------------------------------
+
+def test_an_indicator_is_a_lamp_and_never_repeats_its_own_caption(view, panel):
+    """It rendered as "Fault    Fault" on the bench: the caption, then a
+    full-width box carrying the element's text all over again."""
+    element = element_of(view, "indicator")
+    lamp = view._widget_for(element)
+    view._refresh()
+    assert lamp.text() == ""
+    assert lamp.width() == qt.LAMP_PX and lamp.height() == qt.LAMP_PX
+
+
+def test_a_lamp_takes_its_colour_from_the_state_not_from_a_literal(view, panel):
+    element = element_of(view, "indicator")
+    lamp = view._widget_for(element)
+    view._refresh()
+    assert theme.toggle_colors(element, False)["border"] in lamp.styleSheet()
+    panel.is_faulted = True
+    view._refresh()
+    assert theme.toggle_colors(element, True)["background"] in lamp.styleSheet()
+    assert lamp.text() == ""
+
+
+def test_a_log_stream_stays_a_few_scrollable_lines(view):
+    """Left to expand, the stepper's Gamepad Log took a third of the panel and
+    pushed the Safety section off the bottom of the dock."""
+    stream = view._widget_for(element_of(view, "log_stream"))
+    assert stream.height() == qt.LOG_STREAM_PX
+    assert stream.maximumHeight() == qt.LOG_STREAM_PX
+    view._refresh()
+    assert stream.toPlainText() == "first\nsecond"
+
+
+def test_a_models_own_stop_takes_the_whole_section_and_the_tall_metric(
+        table_view):
+    """It rendered as a caption and a small button beside it - "FULL STOP
+    FULL STOP" - which is neither prominent nor readable as one control."""
+    element = next(e for e in table_view._elements
+                   if e["type"] == "toggle" and e.get("on_role") == "danger")
+    button = table_view._widget_for(element)
+    assert button.minimumHeight() == qt.STOP_BUTTON_PX
+    assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+
+def test_an_ordinary_toggle_keeps_its_caption_and_its_natural_size(view):
+    """Only a danger toggle is a stop; everything else stays a labelled row."""
+    button = view._widget_for(element_of(view, "toggle"))
+    assert button.minimumHeight() != qt.STOP_BUTTON_PX
+
+
+def test_a_section_card_keeps_its_natural_height(table_view):
+    """Left to expand, the stepper's System Control card grew to a third of
+    the dock with its title floating in the middle of the empty space."""
+    cards = [c for c in table_view.findChildren(QFrame)
+             if c.objectName() == "card"]
+    assert len(cards) >= 3
+    assert all(c.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Maximum
+               for c in cards)
+
+
+def test_the_full_stop_button_is_tall_and_set_in_the_theme_size(dashboard):
+    assert dashboard.stop_button.minimumHeight() == qt.STOP_BUTTON_PX
+    dashboard._sync_stop_button()
+    _, size, _ = theme.font(qt.STOP_FONT_SCALE, bold=True)
+    assert f"font-size: {size}pt" in dashboard.stop_button.styleSheet()
+
+
+def test_the_event_log_keeps_only_its_tail(dashboard):
+    """A window that runs a whole bench session cannot hold every line."""
+    class Spoof:
+        severity, source, title, message, count = "info", "T", "t", "m", 1
+        needs_ack = False
+        text = "a line"
+
+    assert dashboard.event_view.document().maximumBlockCount() == qt.EVENT_LOG_LINES
+    for _ in range(qt.EVENT_LOG_LINES + 25):
+        dashboard._show_event(Spoof())
+    assert dashboard.event_view.document().blockCount() <= qt.EVENT_LOG_LINES
+
+
+# ---------------------------------------------------------------------------
+# Collapsing Setup, and getting it back (Addendum 2)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fresh_dashboard(dashboard, controller):
+    """A dashboard opened the way the app opens one: nothing built yet, so
+    Setup is the only thing on screen until the operator launches something."""
+    controller.open_names.clear()
+    return dashboard
+
+
+def test_the_setup_dock_collapses_when_the_first_model_launches(fresh_dashboard,
+                                                                qapp,
+                                                                controller):
+    dashboard = fresh_dashboard
+    dashboard.open()
+    assert dashboard._setup_dock.isHidden() is False
+    controller.notify("added", "Fake")
+    qapp.processEvents()
+    assert dashboard._setup_dock.isHidden() is True
+
+
+def test_the_collapsed_setup_dock_comes_back_from_the_toolbar(fresh_dashboard, qapp,
+                                                              controller):
+    """It has to stay reopenable: Refresh and Relaunch are mid-session jobs."""
+    dashboard = fresh_dashboard
+    dashboard.open()
+    controller.notify("added", "Fake")
+    qapp.processEvents()
+    action = dashboard.setup_action
+    assert action.isCheckable() is True
+    # Qt *disables* a dock's toggleViewAction unless the dock is closable, so
+    # this is the assertion that catches a dead toolbar entry.
+    assert action.isEnabled() is True
+    assert action.isChecked() is False
+    action.trigger()
+    assert dashboard._setup_dock.isHidden() is False
+    assert action.isChecked() is True
+
+
+def test_the_setup_panel_is_put_away_not_torn_down(fresh_dashboard, qapp, controller):
+    """Its scan results and its selections are still there when it comes back,
+    which they would not be if the panel behind it had been destroyed. A
+    model's `DeviceDock` deletes itself on close; Setup's must not."""
+    dashboard = fresh_dashboard
+    dashboard.open()
+    panel_view = dashboard._setup_dock.widget()
+    assert not dashboard._setup_dock.testAttribute(
+        Qt.WidgetAttribute.WA_DeleteOnClose)
+    controller.notify("added", "Fake")
+    qapp.processEvents()
+    dashboard.show_setup()
+    assert dashboard._setup_dock.widget() is panel_view
+    assert panel_view._timer.isActive() is True
+
+
+def test_a_dashboard_that_opens_onto_running_models_starts_collapsed(dashboard,
+                                                                     qapp):
+    """`base.Dashboard` only sees the first add *after* open(), so a config
+    built before the window existed would otherwise leave the wizard up over
+    a system that has already launched."""
+    dashboard.open()
+    assert dashboard.controller.model_names == ["Fake"]
+    assert dashboard._setup_dock.isHidden() is True
+    assert dashboard.setup_action.isEnabled() is True
+
+
+def test_closing_the_setup_dock_puts_it_away_and_closes_no_model(fresh_dashboard,
+                                                                 qapp,
+                                                                 controller):
+    """Its X is not a model's X: it hides Setup and removes nothing."""
+    dashboard = fresh_dashboard
+    dashboard.open()
+    dashboard._setup_dock.close()
+    assert controller.removed == []
+    assert dashboard.setup_action.isChecked() is False
+    dashboard.show_setup()
+    assert dashboard._setup_dock.isHidden() is False
+
+
+def test_setup_collapses_once_and_a_reopened_panel_is_left_alone(fresh_dashboard, qapp,
+                                                                 controller):
+    dashboard = fresh_dashboard
+    dashboard.open()
+    controller.notify("added", "Fake")
+    qapp.processEvents()
+    dashboard.show_setup()
+    controller.notify("added", "Gone")
+    qapp.processEvents()
+    assert dashboard._setup_dock.isHidden() is False
+
+
+def test_collapsing_without_a_setup_dock_is_not_an_error(dashboard):
+    """`_collapse_setup` can arrive before `open()` has built the dock."""
+    dashboard._collapse_setup()
+    dashboard.show_setup()
+    assert dashboard._setup_dock is None
+
+
+def test_the_toolbar_offers_an_entry_for_every_dock_it_can_hide(dashboard, qapp):
+    dashboard.open()
+    assert [a.text() for a in dashboard.toolbar.actions()] == [
+        "Setup", "Models", "Event Log"]

@@ -35,6 +35,19 @@ def test_no_renderer_exists_for_a_type_the_schema_does_not_declare():
     assert made == set(sch.ELEMENT_TYPES)
 
 
+def test_both_section_layouts_offer_the_builders_one_api():
+    """`_make_section` returns a container, not a QFormLayout, so none of the
+    thirteen element builders carries a layout branch. Both containers answer
+    the same two calls and say how wide a control in them should be."""
+    for container in (qt.ColumnSection, qt.TableRow):
+        assert callable(container.add) and callable(container.add_wide)
+        assert isinstance(container.control_width, int)
+    # A row's cells are sized; a column's controls size themselves.
+    assert qt.TableRow.control_width > 0
+    assert qt.ColumnSection.control_width == 0
+    assert qt.TableRow.is_row is True and qt.ColumnSection.is_row is False
+
+
 # ---------------------------------------------------------------------------
 # Styling: theme only
 # ---------------------------------------------------------------------------
@@ -64,6 +77,28 @@ def test_the_stylesheet_names_every_role():
     sheet = qt.stylesheet()
     for role in sch.ROLES:
         assert f'QPushButton[role="{role}"]' in sheet
+
+
+def test_the_stylesheet_dresses_the_table_and_the_toolbar():
+    """The polish pass is in the sheet, not sprinkled through the builders:
+    a rule here reaches every panel at once and follows --font-size."""
+    sheet = qt.stylesheet()
+    for selector in ("QLabel#columnHeader", "QLabel#rowTitle",
+                     "QToolBar QToolButton:checked", "QDockWidget::title"):
+        assert f"{selector} {{" in sheet, selector
+
+
+def test_a_readout_and_an_entry_do_not_look_the_same():
+    """The owner's "readouts distinct from entries": an entry is a bordered
+    well sunk to the window colour, a readout is bold text on the card. Shape
+    and weight, so the distinction survives any palette."""
+    sheet = qt.stylesheet()
+    entries = sheet.split("QLineEdit, QComboBox, QTextEdit {")[1].split("}")[0]
+    readouts = sheet.split("QLabel#valueLabel {")[1].split("}")[0]
+    assert f"background-color: {theme.BACKGROUND};" in entries
+    assert "border: 1px solid" in entries
+    assert "font-weight: 600;" in readouts
+    assert "border" not in readouts
 
 
 def test_the_module_declares_no_colour_and_no_pixel_font_size():
@@ -178,6 +213,49 @@ def test_an_integer_entry_accepts_no_decimals():
 def test_an_unbounded_entry_gets_wide_bounds_not_none():
     low, high, _ = qt.validator_bounds({"value_type": "float"})
     assert low < -1e9 < 1e9 < high
+
+
+# ---------------------------------------------------------------------------
+# Integers are integers (Addendum 2)
+# ---------------------------------------------------------------------------
+
+def test_only_an_int_entry_asks_for_an_integer_validator():
+    assert qt.int_bounds({"value_type": "float", "min": 0, "max": 9}) is None
+    assert qt.int_bounds({"value_type": "text"}) is None
+    assert qt.int_bounds({}) is None
+
+
+def test_an_int_entry_carries_its_declared_bounds():
+    assert qt.int_bounds({"value_type": "int", "min": 0, "max": 9}) == (0, 9)
+
+
+def test_an_unbounded_int_entry_stays_inside_a_c_int():
+    """`validator_bounds` answers 1e12, which `QIntValidator` cannot store."""
+    low, high = qt.int_bounds({"value_type": "int"})
+    assert (low, high) == (-qt.INT_LIMIT, qt.INT_LIMIT)
+    assert -2 ** 31 <= low and high < 2 ** 31
+
+
+def test_an_int_validator_widens_a_fractional_bound_rather_than_narrowing_it():
+    """PYSIDE-19's rule, restated for integers: the box never refuses what
+    `Param.parse` would accept. A minimum of 0.5 admits 1, so the validator
+    has to admit it too - and flooring is the only way round that keeps it."""
+    assert qt.int_bounds({"value_type": "int", "min": 0.5, "max": 9.5}) == (0, 10)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("5.000", "5"), ("5", "5"), ("-3.000", "-3"), ("0.0", "0"),
+    ("", ""), ("   ", "   "), (None, ""), ("not a number", "not a number"),
+])
+def test_an_int_entry_is_never_shown_a_decimal_point(text, expected):
+    """A refresh that writes "5.000" into a box guarded by a QIntValidator
+    leaves the operator editing a field that rejects its own contents."""
+    assert qt.display_text({"value_type": "int"}, text) == expected
+
+
+def test_a_float_entry_keeps_every_decimal_the_model_formatted():
+    assert qt.display_text({"value_type": "float"}, "5.000") == "5.000"
+    assert qt.display_text({}, "5.000") == "5.000"
 
 
 # ---------------------------------------------------------------------------
