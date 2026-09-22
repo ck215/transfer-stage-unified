@@ -133,7 +133,7 @@ def test_the_per_baud_probe_budget_is_the_one_probe_device_at_spent():
 def test_model_types_is_every_model_class_keyed_by_its_name():
     assert list(MODEL_TYPES) == ["Stepper Probe", "DC Probe",
                                  "Chuck Positioner", "Temperature Controller",
-                                 "SMC100 Rotator", "Red Percent"]
+                                 "Rotator", "Red Percent"]
     assert len(set(MODEL_TYPES.values())) == 6
 
 
