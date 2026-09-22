@@ -37,26 +37,6 @@ from station.param import Param
 from station.result import Refused
 
 
-class _PlotSeries(dict):
-    """The plot data, readable as a property AND callable as a data command.
-
-    `design.json` makes `series` a property (one name for "the plot data",
-    shared with `RedMonitor`), but `Panel.run` reaches a schema element's
-    `data_command` with `getattr(self, command)(*args)` — it calls it, the
-    way `Panel.options` does *not*. A plain property therefore turns every
-    plot refresh in all three views into `TypeError: 'dict' object is not
-    callable`, i.e. a `Result.FAILED` and an acknowledged popup per refresh.
-
-    This is a dict, so `heater.series["x"]` and `Result._plain` both behave;
-    calling it returns itself, so the view's `_call("series")` behaves too.
-    Delete it the moment the core change request in the handoff lands — it
-    exists only because `panel.py` is frozen.
-    """
-
-    def __call__(self):
-        return self
-
-
 class Heater(Model):
     """Was TemperatureSystem. Owns a SerialPort.
 
@@ -244,10 +224,9 @@ class Heater(Model):
 
         `{"x": times, "y": temperatures}` — the whole of what a plot renderer
         needs, which is what lets the plot be schema-driven in all three views
-        (TEMP-9, D-13). See `_PlotSeries` for why it is not a bare dict.
         """
         with self._history_lock:
-            return _PlotSeries(x=list(self._times), y=list(self._temperatures))
+            return {"x": list(self._times), "y": list(self._temperatures)}
 
     @property
     def is_active(self):

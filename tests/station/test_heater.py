@@ -603,7 +603,7 @@ def test_no_readout_is_writable(heater):
 
 def test_the_view_can_fetch_the_plot_data_the_way_it_fetches_any_other(heater):
     """A `plot` element is refreshed with `run(data_command)` in all three
-    views. See `_PlotSeries` in the model, and the core change request."""
+    views. Panel.run accepts a property as a data source."""
     heater._parse_line("1.0,20.0,20.0")
     result = heater.run("series")
     assert result.is_ok, result.reason
