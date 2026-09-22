@@ -20,6 +20,10 @@ html, body {
   line-height: 1.4;
 }
 
+/* Room for the fixed event bar. Replaced at runtime by its measured height;
+   this is only what the page starts with, before the client has measured. */
+body { padding-bottom: 8rem; }
+
 /* -- the top bar -------------------------------------------------------- */
 /* Sticky, and the FULL STOP rides with it: the stop control is reachable
    from anywhere on the page without scrolling to find it. */
@@ -134,7 +138,12 @@ html, body {
 
 .card-body { padding: 0.25rem 0.75rem 0.6rem; }
 
-.card-body[hidden] { display: none; }
+/* A collapsed card hides its body. Specific enough to beat
+   `.card-body.table { display: grid }`, which is a class-on-class rule and
+   silently won this when the hide was a bare `.card-body[hidden]` - the
+   Setup card then showed its whole table with an "Expand" button on it. */
+.card > .card-body[hidden],
+.card.collapsed > .card-body { display: none; }
 
 .section { padding-top: 0.35rem; }
 
@@ -348,21 +357,33 @@ span.value.role-go { color: var(--go-bg); }
 }
 
 /* -- the event log ------------------------------------------------------ */
-/* Compact and scrolled, pinned to the bottom of the viewport: the log is
-   reference, not the page. */
+/* A bar fixed to the bottom of the viewport: the log is reference, not the
+   page. Because it is fixed, the page must reserve its height - the body's
+   padding-bottom is measured and set by the client every time the bar
+   changes size. Without that the bar covers the bottom of the cards, which
+   is what the bench shot showed. It collapses to its one-line header. */
 .log-panel {
-  position: sticky;
+  position: fixed;
+  left: 0;
+  right: 0;
   bottom: 0;
   padding: 0.25rem 1rem 0.5rem;
   background: var(--bg);
   border-top: 1px solid var(--muted);
-  z-index: 2;
+  z-index: 4;
 }
 
-.log-panel .section-title { margin: 0.25rem 0; }
+.log-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.log-head .section-title { margin: 0.2rem 0; margin-right: auto; }
 
 .log {
-  height: 7.5rem;
+  /* About four lines, at this panel's own 0.8em and 1.35 line height. */
+  height: 6.1em;
   overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--muted);
@@ -371,6 +392,8 @@ span.value.role-go { color: var(--go-bg); }
   font-size: 0.8em;
   line-height: 1.35;
 }
+
+.log-panel.collapsed .log { display: none; }
 
 .event { padding: 0; }
 .severity-info { color: var(--text); }

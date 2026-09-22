@@ -237,6 +237,10 @@ def test_a_short_row_still_lines_its_status_up_with_the_others():
     assert "cells.splice(cells.length - 1, 0" in build, (
         "padding a short row at the end would push its status out of the "
         "status column")
+    # An untitled row claims no name column (views/qt.py's rule), and is
+    # padded by one more cell so its status still lands in the last column.
+    assert "const hasTitle = !isRow || Boolean(section.title);" in build
+    assert "const wanted = columns + (hasTitle ? 0 : 1);" in build
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
@@ -292,9 +296,26 @@ def test_the_collapsed_setup_card_is_a_header_bar_that_opens_again():
     assert "this.body.hidden = this.isCollapsed" in collapsed, (
         "the body must be hidden, not the card: the header bar stays")
     assert "this.collapseButton.textContent" in collapsed
-    assert "'Expand'" in collapsed, "there is no control that opens it again"
+    # The label says what the click does, and it is not inverted.
+    assert "this.isCollapsed\n        ? 'Expand' : 'Collapse'" in collapsed or (
+        "this.isCollapsed ? 'Expand' : 'Collapse'" in collapsed), (
+        "the collapse button's label is inverted or missing")
     head = _body(r"if \(options && options\.collapsible\) \{(.*?)\n    \}")
     assert "head.appendChild(this.collapseButton)" in head
+
+
+def test_hiding_a_card_body_beats_the_rule_that_makes_it_a_table():
+    """The bench shot, 2026-09-22: the Setup card showed its whole table with
+    an "Expand" button on it. `body.hidden` was set, but
+    `.card-body.table { display: grid }` is a class-on-class rule and beat a
+    bare `.card-body[hidden]`, so the hide did nothing."""
+    hide = re.search(r"\.card > \.card-body\[hidden\],\s*\n\.card\.collapsed > "
+                     r"\.card-body\s*\{[^}]*display:\s*none", STYLES)
+    assert hide, (
+        "no rule hides a collapsed card's body specifically enough to beat "
+        ".card-body.table")
+    table = re.search(r"\.card-body\.table\s*\{[^}]*display:\s*grid", STYLES)
+    assert table, "the table rule this has to beat is gone"
 
 
 def test_an_int_entry_steps_by_one_and_refuses_a_decimal():
@@ -386,8 +407,29 @@ def test_every_dropdown_is_the_same_width_and_the_log_is_compact():
         "dropdowns sized themselves from whatever was chosen")
     log = re.search(r"\n\.log\s*\{([^}]*)\}", STYLES)
     assert log and "overflow-y: auto" in log.group(1)
-    assert re.search(r"height:\s*[0-9.]+rem", log.group(1)), (
+    assert re.search(r"height:\s*[0-9.]+em", log.group(1)), (
         "an unbounded log pushes the cards off the screen")
+
+
+def test_the_event_bar_reserves_its_own_room_and_can_be_collapsed():
+    """The bench shot, 2026-09-22: the events panel covered the bottom of
+    every card because nothing reserved space for it."""
+    assert re.search(r"\.log-panel\s*\{[^}]*position:\s*fixed", STYLES)
+    reserve = _body(r"\n  reserveLogSpace\(\) \{(.*?)\n  \}")
+    assert "document.body.style.paddingBottom = panel.offsetHeight" in reserve, (
+        "the page must reserve the bar's MEASURED height - it changes when "
+        "the bar collapses and when --font-size changes")
+    assert re.search(r"\nbody \{[^}]*padding-bottom:", STYLES), (
+        "the page reserves nothing before the client has measured")
+    collapse = _body(r"\n  setLogCollapsed\(isCollapsed\) \{(.*?)\n  \}")
+    assert "this.dom.log.hidden = this.isLogCollapsed" in collapse
+    assert "'Show events' : 'Hide events'" in collapse
+    assert "this.reserveLogSpace()" in collapse, (
+        "collapsing the bar without re-measuring leaves a hole the size of "
+        "the old bar")
+    assert "this.setLogCollapsed(false)" in _body(r"async start\(\) \{(.*?)\n  \}"), (
+        "the bar must start open, at its four lines, with its room reserved")
+    assert "window.addEventListener('resize', () => this.reserveLogSpace())" in APP_JS
 
 
 def test_the_stylesheet_sizes_nothing_in_absolute_points_or_pixels():
@@ -485,7 +527,8 @@ def test_the_page_loads_the_theme_and_the_client():
     assert 'href="/styles.css"' in INDEX
     assert 'src="/app.js"' in INDEX
     for element_id in ("full-stop", "cards", "event-log", "ack-modal",
-                       "region-picker", "closed-models", "connection"):
+                       "region-picker", "closed-models", "connection",
+                       "log-panel", "log-toggle"):
         assert f'id="{element_id}"' in INDEX, f"index.html has no #{element_id}"
         assert f"'{element_id}'" in APP_JS
 
