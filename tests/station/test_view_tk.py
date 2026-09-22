@@ -1,0 +1,1266 @@
+"""Tk renderer tests. No window is ever opened.
+
+The harness is the one the old suite settled on (`tests/conftest.py`): the
+whole of `tkinter` is a stand-in, so importing the view cannot start a Tcl
+interpreter. That file's stand-in is deliberately thin, so the widget classes
+here are richer ones patched onto `station.views.tk`'s module globals — every
+widget the view builds goes through them, and every option it sets is
+readable afterwards.
+
+Two things it does NOT stub: the schema and `Panel`. `DemoPanel` is a real
+`station.panel.Panel`, so `run()` really validates inputs, really raises
+`Refused` and `NeedsConfirm`, and really builds a `Result`. A view test that
+passes against a mocked command channel proves very little.
+"""
+import ast
+import base64
+import os
+import re
+import tempfile
+
+import pytest
+
+from station import schema as sch
+from station.events import Event
+from station.panel import Panel
+from station.param import Param
+from station.result import Refused, NeedsConfirm, Result
+from station.views import theme
+from station.views import tk as tkmod
+
+pytestmark = pytest.mark.tk
+
+
+# ---------------------------------------------------------------------------
+# A Tk stand-in with real bookkeeping
+# ---------------------------------------------------------------------------
+
+class Scheduler:
+    """Every `after` callback the view registers, so a test can run them."""
+
+    def __init__(self):
+        self.pending = {}
+        self.cancelled = []
+        self._next = 1
+
+    def add(self, fn):
+        token = f"after#{self._next}"
+        self._next += 1
+        self.pending[token] = fn
+        return token
+
+    def cancel(self, token):
+        self.cancelled.append(token)
+        self.pending.pop(token, None)
+
+    def pump(self):
+        """Run one round. A callback that reschedules itself does not loop."""
+        due, self.pending = list(self.pending.items()), {}
+        for _token, fn in due:
+            fn()
+        return len(due)
+
+
+class Focus:
+    current = None
+
+
+class FakeTcl:
+    def call(self, *args):
+        if args[:2] == ("tk", "windowingsystem"):
+            return "x11"
+        raise RuntimeError(f"unstubbed tcl call {args}")
+
+
+class FakeVar:
+    def __init__(self, master=None, value=None):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+class FakeWidget:
+    def __init__(self, master=None, **options):
+        self.master = master
+        self.options = dict(options)
+        self.bindings = {}
+        self.children = []
+        self.is_destroyed = False
+        self.grid_info = None
+        self.tk = FakeTcl()
+        self.scheduler = getattr(master, "scheduler", None) or SCHEDULER
+        if isinstance(master, FakeWidget):
+            master.children.append(self)
+
+    # -- options
+    def configure(self, **options):
+        self.options.update(options)
+    config = configure
+
+    def cget(self, option):
+        return self.options.get(option)
+
+    def __getitem__(self, option):
+        return self.options.get(option)
+
+    # -- geometry
+    def pack(self, **kwargs):
+        self.grid_info = self.grid_info or {}
+
+    def grid(self, **kwargs):
+        self.grid_info = kwargs
+
+    def pack_forget(self):
+        pass
+
+    # -- events
+    def bind(self, sequence, callback=None, add=None):
+        self.bindings[sequence] = callback
+
+    def fire(self, sequence, event=None):
+        callback = self.bindings.get(sequence)
+        assert callback is not None, f"nothing bound to {sequence}"
+        return callback(event if event is not None else FakeEvent())
+
+    # -- lifecycle
+    def destroy(self):
+        self.is_destroyed = True
+
+    def winfo_exists(self):
+        return not self.is_destroyed
+
+    def focus_get(self):
+        return Focus.current
+
+    def focus_set(self):
+        Focus.current = self
+
+    def focus_force(self):
+        Focus.current = self
+
+    def grab_set(self):
+        pass
+
+    def grab_release(self):
+        pass
+
+    def register(self, fn):
+        return fn
+
+    def wait_window(self, _window=None):
+        return None
+
+    def after(self, _ms, fn=None):
+        return self.scheduler.add(fn)
+
+    def after_cancel(self, token):
+        self.scheduler.cancel(token)
+
+    # -- screen geometry, for the region picker
+    def winfo_vrootwidth(self):
+        return 2560
+
+    def winfo_vrootheight(self):
+        return 1440
+
+    def winfo_vrootx(self):
+        return 0
+
+    def winfo_vrooty(self):
+        return 0
+
+    def winfo_screenwidth(self):
+        return 1920
+
+    def winfo_screenheight(self):
+        return 1080
+
+
+class FakeEvent:
+    def __init__(self, x=0, y=0, x_root=0, y_root=0, widget=None):
+        self.x, self.y = x, y
+        self.x_root, self.y_root = x_root, y_root
+        self.widget = widget
+
+
+class FakeText(FakeWidget):
+    def __init__(self, master=None, **options):
+        super().__init__(master, **options)
+        self.body = ""
+        self.tags = {}
+        self.written_tags = []
+
+    def insert(self, _index, text, *tags):
+        self.body += text
+        self.written_tags.extend(tags)
+
+    def delete(self, *_args):
+        self.body = ""
+
+    def see(self, _index):
+        pass
+
+    def tag_configure(self, name, **options):
+        self.tags[name] = options
+
+
+class FakeCanvas(FakeWidget):
+    def __init__(self, master=None, **options):
+        super().__init__(master, **options)
+        self.items = []
+
+    def create_line(self, *points, **options):
+        self.items.append(("line", points, options))
+        return len(self.items)
+
+    def create_text(self, x, y, **options):
+        self.items.append(("text", (x, y), options))
+        return len(self.items)
+
+    def create_rectangle(self, *coords, **options):
+        self.items.append(("rect", coords, options))
+        return len(self.items)
+
+    def coords(self, _item, *values):
+        self.items.append(("coords", values, {}))
+
+    def canvasx(self, value):
+        return value
+
+    def canvasy(self, value):
+        return value
+
+    def delete(self, _what):
+        self.items = []
+
+
+class FakeMenu(FakeWidget):
+    def __init__(self, master=None, **options):
+        super().__init__(master, **options)
+        self.entries = []
+        self.cascades = []
+
+    def add_checkbutton(self, label=None, variable=None, command=None, **kwargs):
+        self.entries.append({"label": label, "variable": variable,
+                             "command": command})
+
+    def add_command(self, label=None, command=None, **kwargs):
+        self.entries.append({"label": label, "variable": None, "command": command})
+
+    def add_cascade(self, label=None, menu=None, **kwargs):
+        self.cascades.append({"label": label, "menu": menu})
+
+
+class FakeRoot(FakeWidget):
+    def __init__(self, *args, **options):
+        self.scheduler = SCHEDULER
+        super().__init__(None, **options)
+        self.protocols = {}
+        self.commands = {}
+        self.did_mainloop = 0
+        self.did_quit = 0
+
+    def title(self, *_args):
+        pass
+
+    def geometry(self, *_args):
+        pass
+
+    def protocol(self, name, fn):
+        self.protocols[name] = fn
+
+    def createcommand(self, name, fn):
+        self.commands[name] = fn
+
+    def mainloop(self):
+        self.did_mainloop += 1
+
+    def quit(self):
+        self.did_quit += 1
+
+    def overrideredirect(self, _flag):
+        pass
+
+    def attributes(self, *_args):
+        pass
+
+
+class FakePhotoImage:
+    instances = []
+
+    def __init__(self, data=None, **kwargs):
+        self.data = data
+        FakePhotoImage.instances.append(self)
+
+
+class FakeDialogs:
+    """`filedialog` and `messagebox`, recording what the view asked for."""
+
+    def __init__(self):
+        self.save_path = ""
+        self.open_path = ""
+        self.confirm_answer = True
+        self.errors = []
+        self.asked = []
+
+    # filedialog
+    def asksaveasfilename(self, **kwargs):
+        self.asked.append(("save", kwargs))
+        return self.save_path
+
+    def askopenfilename(self, **kwargs):
+        self.asked.append(("open", kwargs))
+        return self.open_path
+
+    # messagebox
+    def showerror(self, title, message, **kwargs):
+        self.errors.append((title, message))
+
+    def askyesno(self, title, prompt, **kwargs):
+        self.asked.append(("confirm", prompt))
+        return self.confirm_answer
+
+
+class FakeTkModule:
+    StringVar = FakeVar
+    BooleanVar = FakeVar
+    Frame = FakeWidget
+    Label = FakeWidget
+    Entry = FakeWidget
+    Canvas = FakeCanvas
+    Text = FakeText
+    Menu = FakeMenu
+    Toplevel = FakeRoot
+    Tk = FakeRoot
+    PhotoImage = FakePhotoImage
+
+
+class FakeTtkModule:
+    Frame = FakeWidget
+    Combobox = FakeWidget
+
+
+SCHEDULER = Scheduler()
+
+
+# ---------------------------------------------------------------------------
+# A real Panel with every element type on it
+# ---------------------------------------------------------------------------
+
+def _internal(command):
+    """`schema.py` has no builder for `internal`; it is a hand-written dict."""
+    return {"type": "internal", "command": command, "writable": False,
+            "role": "neutral"}
+
+
+class DemoPanel(Panel):
+    NAME = "Demo"
+    PARAMS = {
+        "speed": Param("speed", "float", default=1.0, minimum=0.0, maximum=10.0,
+                       decimals=2, label="Speed"),
+        "note": Param("note", "text", default="hi", label="Note"),
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.is_running = False
+        self.is_latched = False
+        self.region = None
+        self.source = None
+        self.mode = "idle"
+        self.commands = []
+        self.saved_path = None
+        self.loaded_path = None
+        self.samples = []
+        self.png = b"\x89PNG\r\n\x1a\n-demo"
+        self.lines = ["first", "second"]
+
+    @property
+    def mode_name(self):
+        return self.mode
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section(
+                "Readouts",
+                sch.readonly("Speed now:", "speed", param=self.PARAMS["speed"]),
+                sch.indicator("Latched", "is_latched"),
+                sch.plot("Series", "series", x_label="n", y_label="red"),
+                sch.image("Figure", "figure"),
+                sch.log_stream("Log", "log_lines"),
+            ),
+            sch.section(
+                "Controls",
+                sch.entry("Speed", "speed", self.PARAMS["speed"],
+                          disabled_when=["running"]),
+                sch.entry("Note", "note", self.PARAMS["note"]),
+                sch.button("Go", "go", inputs=["speed"], role="danger"),
+                sch.button("Refuse", "refuse_me"),
+                sch.button("Ask", "ask_me"),
+                sch.toggle("Run", "is_running", "set_running", "RUNNING",
+                           "STOPPED", on_args=[True], off_args=[False],
+                           on_role="danger", off_role="neutral"),
+                sch.dropdown("Source", "source", "set_source", "source_options"),
+                sch.region_select("Pick area", "set_region", model_attr="region"),
+                sch.file_save("Save", "save_run"),
+                sch.file_open("Load", "load_run"),
+                _internal("hidden"),
+            ),
+        )
+
+    # -- commands
+    def go(self):
+        self.commands.append(("go", self.speed))
+        return "went"
+
+    def refuse_me(self):
+        raise Refused("the bench is busy")
+
+    def ask_me(self, confirmed=False):
+        if not confirmed:
+            raise NeedsConfirm("Really?", "ask_me")
+        self.commands.append(("ask_me", True))
+        return "confirmed"
+
+    def set_running(self, on):
+        self.is_running = bool(on)
+        self.mode = "running" if on else "idle"
+        return self.is_running
+
+    def set_source(self, name):
+        self.source = name
+        return name
+
+    def source_options(self):
+        return ["alpha", "beta"]
+
+    def set_region(self, x, y, width, height):
+        self.region = {"left": x, "top": y, "width": width, "height": height}
+        return self.region
+
+    def save_run(self):
+        handle, path = tempfile.mkstemp(suffix=".csv")
+        with os.fdopen(handle, "w") as stream:
+            stream.write("n,red\n0,1\n")
+        self.saved_path = path
+        return path
+
+    def load_run(self, path):
+        self.loaded_path = path
+        return path
+
+    def hidden(self):
+        return "hidden"
+
+    # -- data commands
+    def series(self):
+        return {"x": list(range(len(self.samples))), "y": list(self.samples)}
+
+    def figure(self):
+        return self.png
+
+    def log_lines(self):
+        return list(self.lines)
+
+
+class FakeController:
+    """The Controller surface a view is allowed to touch, and nothing else."""
+
+    def __init__(self, **panels):
+        self.panels = dict(panels)
+        self.closed = {}
+        self.calls = []
+        self.removed = []
+        self.reopened = []
+        self.focus_calls = []
+        self.estop_calls = 0
+        self.clear_calls = 0
+        self.is_estopped = False
+        self.clear_needs_confirm = False
+        self.is_closed = False
+        self._subscribers = []
+
+    # -- what a view reads
+    def schema(self, name):
+        return self.panels[name].schema
+
+    def state(self, name=None):
+        return self.panels[name].state
+
+    def run(self, name, command, inputs=None, args=()):
+        self.calls.append((name, command, dict(inputs or {}), tuple(args)))
+        panel = self.panels.get(name)
+        if panel is None:
+            return Result(Result.REFUSED, reason=f"{name} is not open")
+        return panel.run(command, inputs, args)
+
+    def options(self, name, command):
+        return self.panels[name].options(command)
+
+    @property
+    def model_names(self):
+        return list(self.panels)
+
+    @property
+    def closed_names(self):
+        return list(self.closed)
+
+    # -- what a view does
+    def remove(self, name):
+        self.removed.append(name)
+        panel = self.panels.pop(name, None)
+        if panel is None:
+            return False
+        self.closed[name] = panel
+        self._notify("removed", name)
+        return True
+
+    def reopen(self, name):
+        self.reopened.append(name)
+        panel = self.closed.pop(name, None)
+        if panel is None:
+            raise ValueError(name)
+        self.panels[name] = panel
+        self._notify("added", name)
+        return panel
+
+    def estop_all(self):
+        self.estop_calls += 1
+        self.is_estopped = True
+        return {name: True for name in self.panels}
+
+    def clear_estop_all(self, confirmed=False):
+        self.clear_calls += 1
+        if self.clear_needs_confirm and not confirmed:
+            return Result(Result.CONFIRM, reason="Release the latch?",
+                          command="clear_estop_all")
+        self.is_estopped = False
+        return Result(Result.OK)
+
+    def set_input_focus(self, is_focused):
+        self.focus_calls.append(is_focused)
+
+    def close(self):
+        self.is_closed = True
+
+    def subscribe(self, fn):
+        self._subscribers.append(fn)
+
+    def unsubscribe(self, fn):
+        if fn in self._subscribers:
+            self._subscribers.remove(fn)
+
+    def _notify(self, change, name):
+        for fn in list(self._subscribers):
+            fn(change, name)
+
+
+# ---------------------------------------------------------------------------
+# fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def tk_harness(monkeypatch):
+    """Point the view's toolkit names at the stand-ins, for this test only."""
+    global SCHEDULER
+    SCHEDULER = Scheduler()
+    Focus.current = None
+    FakePhotoImage.instances = []
+    dialogs = FakeDialogs()
+    monkeypatch.setattr(tkmod, "tk", FakeTkModule)
+    monkeypatch.setattr(tkmod, "ttk", FakeTtkModule)
+    monkeypatch.setattr(tkmod, "filedialog", dialogs)
+    monkeypatch.setattr(tkmod, "messagebox", dialogs)
+    return dialogs
+
+
+@pytest.fixture
+def panel():
+    return DemoPanel()
+
+
+@pytest.fixture
+def controller(panel):
+    return FakeController(Demo=panel)
+
+
+@pytest.fixture
+def view(controller):
+    built = tkmod.TkPanelView(FakeWidget(), controller, "Demo")
+    yield built
+    built.close()
+
+
+def element_of(view, kind, text=None):
+    for element in view._elements:
+        if element["type"] == kind and (text is None or element.get("text") == text):
+            return element
+    raise AssertionError(f"no {kind} element {text!r}")
+
+
+def widget_of(view, element):
+    return view._widgets[id(element)]["widget"]
+
+
+def click(view, element):
+    widget_of(view, element).fire("<Button-1>")
+
+
+def last_call(controller, command):
+    """The most recent call of one command. `_run` ends with a refresh, so the
+    plot/image/log data commands are always the last entries."""
+    for call in reversed(controller.calls):
+        if call[1] == command:
+            return call
+    raise AssertionError(f"{command} was never called")
+
+
+# ---------------------------------------------------------------------------
+# rendering
+# ---------------------------------------------------------------------------
+
+def test_every_element_type_has_a_renderer():
+    """`PanelView.__init__` refuses to build a view missing one; this says
+    which one, instead of failing at the first schema that uses it."""
+    missing = [t for t in sorted(sch.ELEMENT_TYPES)
+               if not callable(getattr(tkmod.TkPanelView, f"_make_{t}", None))]
+    assert not missing
+
+
+def test_a_view_missing_a_renderer_cannot_be_built(controller):
+    class Partial(tkmod.TkPanelView):
+        _make_plot = None
+
+    with pytest.raises(TypeError) as raised:
+        Partial(FakeWidget(), controller, "Demo")
+    assert "plot" in str(raised.value)
+
+
+def test_every_element_type_builds(view, panel):
+    kinds = {element["type"] for element in view._elements}
+    assert kinds == sch.ELEMENT_TYPES - {"internal"} | {"internal"}
+    for element in view._elements:
+        if element["type"] == "internal":
+            assert id(element) not in view._widgets, "internal renders nothing"
+        else:
+            assert widget_of(view, element) is not None
+
+
+def test_readonly_shows_the_formatted_value(view, panel):
+    panel.speed = 2.5
+    view._refresh()
+    element = element_of(view, "readonly")
+    assert view._widgets[id(element)]["var"].get() == "2.50"
+
+
+def test_indicator_and_toggle_take_their_colours_from_the_theme(view, panel):
+    toggle = element_of(view, "toggle")
+    panel.is_running = True
+    view._refresh()
+    widget = widget_of(view, toggle)
+    expected = theme.toggle_colors(toggle, True)
+    assert widget.cget("background") == expected["background"]
+    assert widget.cget("foreground") == expected["foreground"]
+    assert widget.cget("text") == "RUNNING"
+    # A danger toggle is the theme's danger colour, not a literal red.
+    assert expected["background"] == theme.colors("danger")[0]
+
+    panel.is_running = False
+    view._refresh()
+    off = theme.toggle_colors(toggle, False)
+    assert widget.cget("background") == off["background"]
+    assert widget.cget("text") == "STOPPED"
+
+
+def test_plot_draws_a_polyline_without_matplotlib(view, panel):
+    panel.samples = [1.0, 4.0, 2.0]
+    view._refresh()
+    canvas = widget_of(view, element_of(view, "plot"))
+    lines = [item for item in canvas.items if item[0] == "line"]
+    assert len(lines) == 1
+    assert len(lines[0][1]) == 6      # three (x, y) pairs
+
+
+def test_empty_plot_says_why(view, panel):
+    panel.samples = []
+    view._refresh()
+    canvas = widget_of(view, element_of(view, "plot"))
+    assert [item for item in canvas.items if item[0] == "text"]
+
+
+def test_image_is_a_photoimage_from_base64_png(view, panel):
+    view._refresh()
+    assert FakePhotoImage.instances
+    assert FakePhotoImage.instances[-1].data == base64.b64encode(panel.png).decode()
+    # The reference is kept, or Tk drops the image the moment Python does.
+    assert view._widgets[id(element_of(view, "image"))]["photo"] is not None
+
+
+def test_an_image_is_not_re_rendered_on_every_tick(view, controller):
+    """A model renders an image; a 100 ms tick must not ask ten times a
+    second. A series is cheap and is not cached."""
+    before = len([c for c in controller.calls if c[1] == "figure"])
+    for _ in range(5):
+        view._refresh()
+    after = len([c for c in controller.calls if c[1] == "figure"])
+    assert after == before
+    assert len([c for c in controller.calls if c[1] == "series"]) >= 5
+
+
+def test_log_stream_shows_the_model_lines(view, panel):
+    view._refresh()
+    text = widget_of(view, element_of(view, "log_stream"))
+    assert text.body == "first\nsecond"
+
+
+def test_dropdown_options_come_from_the_options_command(view):
+    element = element_of(view, "dropdown")
+    assert widget_of(view, element).cget("values") == ["alpha", "beta"]
+
+
+def test_dropdown_selection_runs_the_command(view, panel):
+    element = element_of(view, "dropdown")
+    view._widgets[id(element)]["var"].set("beta")
+    widget_of(view, element).fire("<<ComboboxSelected>>")
+    assert panel.source == "beta"
+
+
+# ---------------------------------------------------------------------------
+# running commands
+# ---------------------------------------------------------------------------
+
+def test_every_entry_travels_with_a_command(view, panel, controller):
+    """D-5: the typed value goes with the command, not one edit behind."""
+    speed = element_of(view, "entry", "Speed")
+    view._widgets[id(speed)]["var"].set("7.5")
+    click(view, element_of(view, "button", "Go"))
+    assert panel.commands == [("go", 7.5)]
+    name, _command, inputs, _args = last_call(controller, "go")
+    assert name == "Demo"
+    assert inputs["speed"] == "7.5"
+
+
+def test_refused_reaches_the_status_line_and_not_a_popup(view, tk_harness):
+    click(view, element_of(view, "button", "Refuse"))
+    assert "the bench is busy" in view._status.cget("text")
+    assert tk_harness.errors == [], "a refusal is not a popup"
+
+
+def test_a_later_success_clears_the_status_line(view):
+    click(view, element_of(view, "button", "Refuse"))
+    assert view._status.cget("text")
+    click(view, element_of(view, "button", "Go"))
+    assert view._status.cget("text") == ""
+
+
+def test_needs_confirm_asks_once_and_re_runs(view, panel, tk_harness):
+    tk_harness.confirm_answer = True
+    click(view, element_of(view, "button", "Ask"))
+    assert panel.commands == [("ask_me", True)]
+    assert ("confirm", "Really?") in tk_harness.asked
+
+
+def test_declining_a_confirm_does_not_run_it(view, panel, tk_harness):
+    tk_harness.confirm_answer = False
+    click(view, element_of(view, "button", "Ask"))
+    assert panel.commands == []
+
+
+def test_toggle_sends_the_state_it_is_switching_to(view, panel, controller):
+    click(view, element_of(view, "toggle"))
+    assert panel.is_running is True
+    assert last_call(controller, "set_running")[3] == (True,)
+    click(view, element_of(view, "toggle"))
+    assert panel.is_running is False
+    assert last_call(controller, "set_running")[3] == (False,)
+
+
+def test_entry_commit_validates_through_the_model(view, panel):
+    speed = element_of(view, "entry", "Speed")
+    view._widgets[id(speed)]["var"].set("99")     # above the declared maximum
+    widget_of(view, speed).fire("<Return>")
+    assert panel.speed != 99
+    assert "at most 10" in view._status.cget("text")
+
+    view._widgets[id(speed)]["var"].set("3")
+    widget_of(view, speed).fire("<Return>")
+    assert panel.speed == 3.0
+
+
+def test_keystroke_validation_follows_the_declared_type(view):
+    speed = element_of(view, "entry", "Speed")
+    note = element_of(view, "entry", "Note")
+    assert view._validate_entry("", speed) is True        # a cleared box stays numeric
+    assert view._validate_entry("-", speed) is True
+    assert view._validate_entry("1.5", speed) is True
+    assert view._validate_entry("1.5e", speed) is False
+    assert view._validate_entry("abc", speed) is False
+    assert view._validate_entry("inf", speed) is False
+    # bounds do not block a keystroke: "50" has to pass through "5"
+    assert view._validate_entry("0.5", speed) is True
+    # a text field never gets a numeric validator at all
+    assert widget_of(view, note).cget("validate") is None
+
+
+def test_out_of_range_text_is_flagged_without_blocking_typing(view):
+    speed = element_of(view, "entry", "Speed")
+    view._widgets[id(speed)]["var"].set("99")
+    view._bounds_hint(speed)
+    assert widget_of(view, speed).cget("foreground") == theme.colors("warning")[0]
+
+
+# ---------------------------------------------------------------------------
+# refresh, dirt and gating
+# ---------------------------------------------------------------------------
+
+def test_refresh_does_not_stomp_a_field_being_typed_into(view, panel):
+    speed = element_of(view, "entry", "Speed")
+    widget, var = widget_of(view, speed), view._widgets[id(speed)]["var"]
+    Focus.current = widget
+    var.set("4.4")
+    view._refresh()
+    assert var.get() == "4.4"
+
+    Focus.current = None
+    view._refresh()                    # still dirty: differs from last refresh
+    assert var.get() == "4.4"
+
+
+def test_refresh_updates_a_clean_field(view, panel):
+    speed = element_of(view, "entry", "Speed")
+    var = view._widgets[id(speed)]["var"]
+    panel.speed = 6.0
+    view._refresh()
+    assert var.get() == "6.00"
+    assert view._entry_is_dirty(speed) is False
+
+
+def test_gating_disables_entries_and_commands(view, panel):
+    """Entries are gated too, which neither desktop view did."""
+    speed = element_of(view, "entry", "Speed")
+    panel.set_running(True)
+    view._refresh()
+    assert widget_of(view, speed).cget("state") == "disabled"
+    assert view._widgets[id(speed)]["is_enabled"] is False
+
+    panel.set_running(False)
+    view._refresh()
+    assert widget_of(view, speed).cget("state") == "normal"
+
+
+def test_a_disabled_control_does_not_run_when_clicked(view, panel, controller):
+    go = element_of(view, "button", "Go")
+    view._set_enabled(go, False)
+    click(view, go)
+    assert panel.commands == []
+    assert not any(call[1] == "go" for call in controller.calls)
+
+
+def test_stale_state_greys_the_panel_title(view):
+    view._set_stale(True)
+    assert view._title.cget("foreground") == theme.MUTED
+    view._set_stale(False)
+    assert view._title.cget("foreground") == theme.TEXT
+
+
+def test_close_cancels_its_after_loop(controller):
+    built = tkmod.TkPanelView(FakeWidget(), controller, "Demo")
+    token = built._after_id
+    assert token in SCHEDULER.pending
+    built.close()
+    assert token in SCHEDULER.cancelled
+    assert built.frame.is_destroyed
+
+
+def test_a_refresh_tick_for_a_removed_model_stops_quietly(controller):
+    built = tkmod.TkPanelView(FakeWidget(), controller, "Demo")
+    controller.panels.clear()          # the model went away mid-tick
+    built._on_refresh_tick()
+    assert built._after_id is None     # no further ticks scheduled
+    built.close()
+
+
+# ---------------------------------------------------------------------------
+# composites: region, save, open
+# ---------------------------------------------------------------------------
+
+def _drag(picker, start, end):
+    picker._on_canvas_press(FakeEvent(x=start[0], y=start[1],
+                                      x_root=start[0], y_root=start[1]))
+    picker._on_canvas_drag(FakeEvent(x=end[0], y=end[1],
+                                     x_root=end[0], y_root=end[1]))
+    picker._on_canvas_release(FakeEvent(x=end[0], y=end[1],
+                                        x_root=end[0], y_root=end[1]))
+
+
+def test_region_picker_returns_screen_coordinates():
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build()
+    _drag(picker, (100, 200), (400, 500))
+    assert picker.region == (100, 200, 300, 300)
+    assert picker.top.is_destroyed
+
+
+def test_region_picker_normalises_a_backwards_drag():
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build()
+    _drag(picker, (400, 500), (100, 200))
+    assert picker.region == (100, 200, 300, 300)
+
+
+def test_a_drag_under_ten_pixels_is_reported_not_captured():
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build()
+    _drag(picker, (100, 100), (104, 103))
+    assert picker.region is None
+    assert "10" in picker.reason
+
+
+def test_escape_cancels_the_region_picker():
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build()
+    picker.top.fire("<Escape>")
+    assert picker.region is None
+    assert "cancel" in picker.reason.lower()
+    assert picker.top.is_destroyed
+
+
+def test_region_select_runs_the_command_with_four_args(view, panel, monkeypatch):
+    class Picked:
+        reason = ""
+
+        def __init__(self, _master):
+            pass
+
+        def pick(self):
+            return (10, 20, 30, 40)
+
+    monkeypatch.setattr(tkmod, "_RegionPicker", Picked)
+    click(view, element_of(view, "region_select"))
+    assert panel.region == {"left": 10, "top": 20, "width": 30, "height": 40}
+
+
+def test_a_cancelled_region_shows_the_reason_and_runs_nothing(view, panel,
+                                                              monkeypatch):
+    class Cancelled:
+        def __init__(self, _master):
+            self.reason = "Region selection cancelled."
+
+        def pick(self):
+            return None
+
+    monkeypatch.setattr(tkmod, "_RegionPicker", Cancelled)
+    click(view, element_of(view, "region_select"))
+    assert panel.region is None
+    assert "cancel" in view._status.cget("text").lower()
+
+
+def test_the_captured_region_is_drawn_not_announced(view, panel, tk_harness):
+    panel.region = {"left": 1, "top": 2, "width": 3, "height": 4}
+    view._refresh()
+    element = element_of(view, "region_select")
+    assert view._widgets[id(element)]["var"].get() == sch.format_region(panel.region)
+    assert tk_harness.errors == []
+
+
+def test_file_save_copies_the_written_file_to_the_destination(view, panel,
+                                                              tk_harness, tmp_path):
+    destination = tmp_path / "copy.csv"
+    tk_harness.save_path = str(destination)
+    click(view, element_of(view, "file_save"))
+    assert panel.saved_path is not None
+    assert destination.read_text() == "n,red\n0,1\n"
+    os.unlink(panel.saved_path)
+
+
+def test_cancelling_the_save_dialog_runs_nothing(view, panel, tk_harness):
+    tk_harness.save_path = ""
+    click(view, element_of(view, "file_save"))
+    assert panel.saved_path is None
+
+
+def test_file_open_passes_the_chosen_path(view, panel, tk_harness):
+    tk_harness.open_path = "/tmp/run.csv"
+    click(view, element_of(view, "file_open"))
+    assert panel.loaded_path == "/tmp/run.csv"
+
+
+# ---------------------------------------------------------------------------
+# styling
+# ---------------------------------------------------------------------------
+
+def _executable_source(path):
+    """The module's code with its prose removed.
+
+    Docstrings and comments quote the old hardcoded `('Arial', 10, 'bold')` at
+    length — the same trap `src/` sets, where a grep hit for a defect is prose
+    about its removal. Only what runs is scanned.
+    """
+    source = open(path).read()
+    lines = source.splitlines()
+    for node in ast.walk(ast.parse(source)):
+        body = getattr(node, "body", None)
+        for child in body if isinstance(body, list) else []:
+            if (isinstance(child, ast.Expr)
+                    and isinstance(child.value, ast.Constant)
+                    and isinstance(child.value.value, str)):
+                for index in range(child.lineno - 1, child.end_lineno):
+                    lines[index] = ""
+    return "\n".join(re.sub(r"\s#.*$", "", line) for line in lines
+                     if not line.strip().startswith("#"))
+
+
+def test_no_colour_or_font_literal_in_the_module():
+    """Every colour and font comes from `station.views.theme`."""
+    code = _executable_source(tkmod.__file__)
+    assert not re.findall(r"#[0-9a-fA-F]{6}\b", code)
+    named = r"""['"](?:black|white|red|green|darkred|darkgreen|darkblue|"""\
+            r"""darkorange|gray\d*|lightgreen|Arial|Helvetica|Courier)['"]"""
+    assert not re.findall(named, code), "a colour or font is named here"
+    # No bare font tuple: ('Arial', 10, 'bold') and friends.
+    assert not re.findall(r"\(\s*['\"][A-Za-z ]+['\"]\s*,\s*\d+", code)
+
+
+def test_the_theme_is_the_only_palette(view):
+    """Change the theme and the widgets change with it."""
+    for element in view._elements:
+        widget = view._widgets.get(id(element), {}).get("widget")
+        background = widget.cget("background") if widget is not None else None
+        if background is not None:
+            assert (background in {theme.BACKGROUND, theme.SURFACE,
+                                   theme.DISABLED[0]}
+                    or background in {colour for colour, _ in theme.ROLES.values()})
+
+
+# ---------------------------------------------------------------------------
+# the dashboard
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def setup_panel():
+    return DemoPanel()
+
+
+@pytest.fixture
+def dashboard(controller, setup_panel):
+    built = tkmod.TkDashboard(controller, setup_panel)
+    yield built
+    if not built._closing:
+        built.close()
+
+
+def test_open_shows_the_setup_panel_first(dashboard, setup_panel):
+    dashboard.open()
+    assert list(dashboard._panels)[0] == dashboard.SETUP_TAB
+    setup_view = dashboard._panels[dashboard.SETUP_TAB]
+    assert setup_view._panel is setup_panel
+    assert isinstance(setup_view, tkmod.TkPanelView)
+    assert dashboard.root.did_mainloop == 1
+
+
+def test_open_gives_every_already_open_model_a_tab(dashboard):
+    dashboard.open()
+    assert "Demo" in dashboard._panels
+
+
+def test_a_model_added_later_gets_a_tab(dashboard, controller, panel):
+    dashboard.open()
+    controller.remove("Demo")
+    SCHEDULER.pump()
+    assert "Demo" not in dashboard._panels
+    controller.reopen("Demo")
+    SCHEDULER.pump()
+    assert "Demo" in dashboard._panels
+
+
+def test_closing_a_tab_removes_the_model(dashboard, controller):
+    dashboard.open()
+    index = list(dashboard.notebook.tabs()).index(str(dashboard._frames["Demo"]))
+    dashboard.notebook.close_tab(index)
+    assert controller.removed == ["Demo"]
+    SCHEDULER.pump()
+    assert "Demo" not in dashboard._panels
+
+
+def test_a_close_click_on_the_tab_bar_closes_that_tab(dashboard, controller,
+                                                      monkeypatch):
+    dashboard.open()
+    monkeypatch.setattr(dashboard.notebook, "index", lambda _spec: 1)
+    dashboard.notebook._on_middle_press(FakeEvent(x=5, y=5))
+    assert controller.removed == ["Demo"]
+
+
+def test_the_setup_tab_cannot_be_closed(dashboard, controller):
+    dashboard.open()
+    dashboard._on_tab_close(0)          # index 0 is Setup
+    assert controller.removed == []
+
+
+def test_the_models_menu_lists_closed_models_to_reopen(dashboard, controller):
+    dashboard.open()
+    controller.remove("Demo")
+    SCHEDULER.pump()
+    entries = {entry["label"]: entry for entry in _menu_entries(dashboard)}
+    assert "Demo" in entries
+    assert entries["Demo"]["variable"].get() is False
+    entries["Demo"]["variable"].set(True)
+    entries["Demo"]["command"]()
+    assert controller.reopened == ["Demo"]
+
+
+def _menu_entries(dashboard):
+    for name, variable in dashboard._menu_vars.items():
+        yield {"label": name, "variable": variable,
+               "command": lambda n=name: dashboard._on_model_toggled(n)}
+
+
+def test_unticking_a_model_closes_it(dashboard, controller):
+    dashboard.open()
+    dashboard._menu_vars["Demo"].set(False)
+    dashboard._on_model_toggled("Demo")
+    assert controller.removed == ["Demo"]
+
+
+def test_the_stop_button_label_follows_the_controller(dashboard, controller):
+    dashboard.open()
+    dashboard._sync_stop_button()
+    assert dashboard._stop_button.cget("text") == "FULL STOP"
+    assert dashboard._stop_button.cget("background") == theme.colors("danger")[0]
+
+    controller.is_estopped = True
+    dashboard._sync_stop_button()
+    assert dashboard._stop_button.cget("text") == "CLEAR FULL STOP"
+    assert dashboard._stop_button.cget("background") == theme.colors("warning")[0]
+
+
+def test_the_stop_button_toggles_the_global_estop(dashboard, controller,
+                                                  tk_harness):
+    dashboard.open()
+    dashboard._stop_button.fire("<Button-1>")
+    assert controller.estop_calls == 1
+    assert controller.is_estopped is True
+
+    dashboard._stop_button.fire("<Button-1>")
+    assert controller.clear_calls == 1
+    assert controller.is_estopped is False
+
+
+def test_clearing_the_latch_asks_first(dashboard, controller, tk_harness):
+    dashboard.open()
+    controller.is_estopped = True
+    controller.clear_needs_confirm = True
+    tk_harness.confirm_answer = True
+    dashboard._stop_button.fire("<Button-1>")
+    assert controller.clear_calls == 2       # the ask, then the confirmed run
+    assert controller.is_estopped is False
+
+
+def test_events_reach_the_log_panel_coloured_by_severity(dashboard):
+    dashboard.open()
+    for severity in ("info", "warning", "error"):
+        dashboard._show_event(_event(severity, needs_ack=False))
+    assert dashboard._event_text.written_tags == ["info", "warning", "error"]
+    for severity, role in theme.SEVERITY_ROLE.items():
+        assert dashboard._event_text.tags[severity]["foreground"] == \
+            theme.colors(role)[0]
+
+
+def test_only_a_needs_ack_event_becomes_a_popup(dashboard, tk_harness):
+    dashboard.open()
+    dashboard._on_event(_event("warning", needs_ack=False))
+    dashboard._on_event(_event("error", needs_ack=True))
+    SCHEDULER.pump()
+    assert [title for title, _ in tk_harness.errors] == ["error-event"]
+
+
+def test_an_event_is_marshalled_onto_the_tk_thread(dashboard):
+    dashboard.open()
+    before = dashboard._event_text.body
+    dashboard._on_event(_event("info", needs_ack=False))
+    assert dashboard._event_text.body == before, "drawn straight off the thread"
+    SCHEDULER.pump()
+    assert dashboard._event_text.body != before
+
+
+def test_no_popup_once_close_has_begun(dashboard, tk_harness):
+    """A modal raised from inside a close path blocks the exit."""
+    dashboard.open()
+    dashboard.close()
+    dashboard._on_event(_event("error", needs_ack=True))
+    SCHEDULER.pump()
+    assert tk_harness.errors == []
+
+
+def test_close_unsubscribes_and_closes_the_controller(dashboard, controller):
+    dashboard.open()
+    dashboard.close()
+    assert controller.is_closed is True
+    assert controller._subscribers == []
+    assert dashboard.root.is_destroyed
+
+
+def test_close_is_idempotent(dashboard, controller):
+    dashboard.open()
+    dashboard.close()
+    dashboard.close()
+    assert dashboard.root.did_quit == 1
+
+
+def test_the_window_close_button_closes_the_app(dashboard, controller):
+    dashboard.open()
+    dashboard.root.protocols["WM_DELETE_WINDOW"]()
+    assert controller.is_closed is True
+
+
+def test_macos_quit_closes_the_app(dashboard, controller):
+    dashboard.open()
+    dashboard.root.commands["::tk::mac::Quit"]()
+    assert controller.is_closed is True
+
+
+def test_focus_gates_input_and_never_stops(dashboard, controller):
+    dashboard.open()
+    Focus.current = None
+    dashboard.root.fire("<FocusOut>", FakeEvent(widget=dashboard.root))
+    assert controller.focus_calls == [False]
+    assert controller.estop_calls == 0, "D-4: gate input, never stop"
+
+    Focus.current = dashboard.root
+    dashboard.root.fire("<FocusIn>", FakeEvent(widget=dashboard.root))
+    assert controller.focus_calls == [False, True]
+
+
+def test_a_child_dialog_taking_focus_is_not_focus_loss(dashboard, controller):
+    dashboard.open()
+    Focus.current = dashboard.root
+    dashboard._on_window_focus(FakeEvent(widget=dashboard.root))
+    assert controller.focus_calls == [True]
+    dialog = FakeWidget(dashboard.root)
+    Focus.current = dialog          # still inside this application
+    dashboard.root.fire("<FocusOut>", FakeEvent(widget=dashboard.root))
+    assert controller.focus_calls == [True], "a dialog is not focus loss"
+
+
+def test_focus_events_from_a_child_widget_are_ignored(dashboard, controller):
+    dashboard.open()
+    child = FakeWidget(dashboard.root)
+    dashboard.root.fire("<FocusOut>", FakeEvent(widget=child))
+    assert controller.focus_calls == []
+
+
+def test_the_dashboard_tick_stops_after_close(dashboard):
+    dashboard.open()
+    token = dashboard._after_id
+    dashboard.close()
+    assert token in SCHEDULER.cancelled
+    assert dashboard._after_id is None
+
+
+def _event(severity, needs_ack):
+    return Event(1, severity, "Demo", f"{severity}-event", "something happened",
+                 None, needs_ack, 0.0)
