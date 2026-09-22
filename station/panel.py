@@ -136,17 +136,25 @@ class Panel:
             param = self.PARAMS.get(name)
             if param is None or name not in writable:
                 raise Refused(f"{name} is not an editable field of {self.NAME}")
-            if not sch.is_enabled(writable[name], self.mode_name):
-                if param.format(getattr(self, name, None)) == str(raw):
-                    continue  # unchanged value of a gated field: not an edit
-                raise Refused(f"{param.label or name} cannot be changed "
-                              f"while {self.mode_name}")
             ok, value = param.parse(raw)
             if not ok:
                 raise Refused(value)
+            if not sch.is_enabled(writable[name], self.mode_name):
+                if self._same_value(getattr(self, name, None), value):
+                    continue  # unchanged value of a gated field: not an edit
+                raise Refused(f"{param.label or name} cannot be changed "
+                              f"while {self.mode_name}")
             parsed[name] = value
         for name, value in parsed.items():
             setattr(self, name, value)
+
+    @staticmethod
+    def _same_value(current, new):
+        """Parsed values, not display text: "5" and 5.000 are the same edit."""
+        try:
+            return abs(float(current) - float(new)) < 1e-9
+        except (TypeError, ValueError):
+            return current == new
 
     def _defaults(self):
         return {name: p.default for name, p in self.PARAMS.items()}
