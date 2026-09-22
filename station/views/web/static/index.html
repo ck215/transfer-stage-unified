@@ -20,8 +20,13 @@
 
   <main id="cards" class="cards"></main>
 
-  <section class="log-panel">
-    <h2 class="section-title">Events</h2>
+  <!-- Fixed to the bottom of the viewport, so the client measures it and
+       reserves exactly that much room at the foot of the page. -->
+  <section id="log-panel" class="log-panel">
+    <div class="log-head">
+      <h2 class="section-title">Events</h2>
+      <button id="log-toggle" type="button" class="button small">Hide events</button>
+    </div>
     <div id="event-log" class="log"></div>
   </section>
 

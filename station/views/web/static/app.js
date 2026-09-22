@@ -497,7 +497,7 @@ class PanelCard {
       // The collapsed card keeps its header bar, so the panel is always one
       // click from being back (base.Dashboard._collapse_setup: "minimise the
       // Setup panel; reopenable").
-      this.collapseButton = make('button', 'button small collapse', 'Hide');
+      this.collapseButton = make('button', 'button small collapse', 'Collapse');
       this.collapseButton.type = 'button';
       this.collapseButton.addEventListener('click',
         () => this.setCollapsed(!this.isCollapsed));
@@ -537,9 +537,14 @@ class PanelCard {
       const spans = isRow && isCommandRow(section);
       const block = make('div', 'section' + (isRow ? ' section-row' : '')
                          + (spans ? ' section-span' : ''));
-      block.appendChild(isRow
-        ? make('span', 'row-title', section.title || '')
-        : make('h3', 'section-title', section.title || ''));
+      // An untitled row claims no name column (the rule views/qt.py settled
+      // on); a titled one's caption is the row's name.
+      const hasTitle = !isRow || Boolean(section.title);
+      if (hasTitle) {
+        block.appendChild(isRow
+          ? make('span', 'row-title', section.title || '')
+          : make('h3', 'section-title', section.title || ''));
+      }
       const cells = [];
       for (const element of (section.elements || [])) {
         const render = ELEMENT_RENDERERS[element.type];
@@ -559,7 +564,8 @@ class PanelCard {
       // its last cell, so the status column stays the status column. A row
       // that spans the table has no columns to line up with.
       if (isRow && !spans) {
-        while (cells.length && cells.length < columns) {
+        const wanted = columns + (hasTitle ? 0 : 1);
+        while (cells.length && cells.length < wanted) {
           cells.splice(cells.length - 1, 0, make('span', 'cell filler'));
         }
       }
@@ -577,7 +583,8 @@ class PanelCard {
     // The status line lives above the body, so a refusal raised by a
     // collapsed card is still a sentence the operator can read.
     if (this.collapseButton) {
-      this.collapseButton.textContent = this.isCollapsed ? 'Expand' : 'Hide';
+      // The label says what the click will do: collapsed -> "Expand".
+      this.collapseButton.textContent = this.isCollapsed ? 'Expand' : 'Collapse';
     }
   }
 
@@ -766,10 +773,39 @@ class Dashboard {
       pickerCanvas: document.getElementById('region-canvas'),
       pickerClose: document.getElementById('region-close'),
       connection: document.getElementById('connection'),
+      logPanel: document.getElementById('log-panel'),
+      logToggle: document.getElementById('log-toggle'),
     };
+    this.isLogCollapsed = false;
     this.dom.stop.addEventListener('click', () => this.toggleEstopAll());
     this.dom.modalOk.addEventListener('click', () => { this.dom.modal.hidden = true; });
     this.dom.pickerClose.addEventListener('click', () => { this.dom.picker.hidden = true; });
+    this.dom.logToggle.addEventListener('click',
+      () => this.setLogCollapsed(!this.isLogCollapsed));
+    window.addEventListener('resize', () => this.reserveLogSpace());
+  }
+
+  // -- the event bar ------------------------------------------------------
+  //
+  // It is fixed to the bottom of the viewport, so the page has to reserve
+  // exactly as much room as it takes: without that it covers the bottom of
+  // the cards, which is what the bench shot showed. The height is measured
+  // rather than guessed, because it changes when the bar collapses and when
+  // --font-size changes.
+  reserveLogSpace() {
+    const panel = this.dom.logPanel;
+    if (!panel || !document.body || panel.offsetHeight === undefined) return;
+    document.body.style.paddingBottom = panel.offsetHeight + 'px';
+  }
+
+  /** Collapsed, the bar is its one-line header and nothing else. */
+  setLogCollapsed(isCollapsed) {
+    this.isLogCollapsed = Boolean(isCollapsed);
+    this.dom.logPanel.classList.toggle('collapsed', this.isLogCollapsed);
+    this.dom.log.hidden = this.isLogCollapsed;
+    this.dom.logToggle.textContent = this.isLogCollapsed
+      ? 'Show events' : 'Hide events';
+    this.reserveLogSpace();
   }
 
   async start() {
@@ -779,6 +815,7 @@ class Dashboard {
       const seen = await apiGet('/api/events?since=0');
       this.lastEventId = seen.latest_id || 0;
     } catch (err) { /* the first poll will retry */ }
+    this.setLogCollapsed(false);     // four lines, and the room to show them
     await this.loadSetup();
     this.timer = setInterval(() => this.poll(), STATE_POLL_MS);
     this.startHeartbeat();
