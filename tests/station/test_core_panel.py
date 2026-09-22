@@ -147,13 +147,6 @@ def test_the_gated_toggle_is_still_refused_on_its_own_args():
     assert panel.mode == "autonomous"
 
 
-@pytest.mark.xfail(strict=True, reason="CORE BUG: Panel._allows picks ONE "
-                   "element with `next(...)`, so when two toggles share a "
-                   "command and the same off_args the gate applied is "
-                   "whichever appears first in the schema. Here that is the "
-                   "gated Manual toggle, and the operator cannot leave "
-                   "autonomous mode at all — a stop-the-run control refused "
-                   "because of an unrelated control's gate.")
 def test_leaving_a_mode_is_not_gated_by_a_sibling_toggles_declaration():
     panel = _SharedOffArgs()
     result = panel.run("set_mode", args=("idle",))
@@ -369,11 +362,6 @@ def test_an_undeclared_options_command_is_refused():
         FakeModel().options("port_name")
 
 
-@pytest.mark.xfail(strict=True, reason="CORE BUG: Panel.options builds its "
-                   "allow-list as a set comprehension over every element's "
-                   "options_command, so None (every non-dropdown element) is "
-                   "on the list. options(None) passes the gate and dies in "
-                   "getattr(self, None) with TypeError instead of Refused.")
 def test_options_with_no_command_is_refused_rather_than_crashing():
     with pytest.raises(Refused):
         FakeModel().options(None)

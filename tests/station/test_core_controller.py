@@ -284,13 +284,6 @@ def test_schema_and_state_come_straight_from_the_model(controller):
 
 
 @pytest.mark.parametrize("call", ["schema", "state"])
-@pytest.mark.xfail(strict=True, reason="CORE BUG: Controller.run guards the "
-                   "closed-model race and returns Refused, but schema(), "
-                   "state() and options() go straight through _model() and "
-                   "raise KeyError. PanelView._refresh runs on a 100 ms timer "
-                   "and calls _state() every tick, so closing a tab — or "
-                   "Controller.close() — raises KeyError on the UI thread "
-                   "between the removal and the panel being torn down.")
 def test_reading_a_model_that_just_closed_does_not_raise_on_the_ui_thread(
         controller, call):
     """`PanelView._refresh` has no way to catch this: it is scheduled by the
@@ -300,9 +293,6 @@ def test_reading_a_model_that_just_closed_does_not_raise_on_the_ui_thread(
     getattr(controller, call)("probe")
 
 
-@pytest.mark.xfail(strict=True, reason="CORE BUG: Controller.options() raises "
-                   "KeyError for a model that is no longer open, where run() "
-                   "returns a Refused Result. Same race, same UI thread.")
 def test_listing_options_of_a_model_that_just_closed_does_not_raise(controller):
     controller.add("probe", FakeModel())
     controller.remove("probe")

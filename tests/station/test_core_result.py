@@ -32,19 +32,14 @@ def test_needs_confirm_carries_the_prompt_command_inputs_and_args():
     ask = NeedsConfirm("Really?", "go", inputs={"speed": "3"}, args=["north", 2])
     assert (ask.prompt, ask.command) == ("Really?", "go")
     assert ask.inputs == {"speed": "3"}
-    assert ask.args == ("north", 2), "args must be a tuple, ready for (*args, True)"
+    assert ask.rerun_args == ("north", 2), "rerun_args must be a tuple, ready for (*rerun_args, True)"
 
 
 def test_needs_confirm_defaults_are_empty_not_none():
     ask = NeedsConfirm("Really?", "go")
-    assert ask.inputs == {} and ask.args == ()
+    assert ask.inputs == {} and ask.rerun_args == ()
 
 
-@pytest.mark.xfail(strict=True, reason="CORE BUG: NeedsConfirm assigns "
-                   "self.args, which is BaseException.args. str(exc) becomes "
-                   "the re-run argument tuple — or '' in the common args=() "
-                   "case — instead of the prompt, so every generic "
-                   "f'{exc}' / traceback rendering of a confirmation loses it.")
 def test_str_of_a_needs_confirm_is_the_prompt():
     """`Refused` gets this right; `NeedsConfirm` does not.
 

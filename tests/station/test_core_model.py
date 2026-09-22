@@ -258,12 +258,6 @@ def test_toggle_estop_while_latched_asks_before_clearing():
     assert model.is_estopped
 
 
-@pytest.mark.xfail(strict=True, reason="CORE BUG: the confirmation "
-                   "Model.clear_estop raises names the command 'clear_estop', "
-                   "which no schema declares — _safety_section wires only "
-                   "'toggle_estop'. The view's re-run therefore hits the "
-                   "Panel.run allow-list and comes back refused, so a latched "
-                   "FULL STOP cannot be cleared from any of the three views.")
 def test_the_confirmed_clear_round_trip_actually_clears_the_latch():
     """MANAGER-22, rebuilt: a latched FULL STOP has to be clearable from the
     UI. `views/base.PanelView._run` re-runs `result.command` with
@@ -288,7 +282,7 @@ def test_every_models_schema_ends_with_the_safety_section():
     sections = FakeModel().schema["sections"]
     assert sections[-1]["title"] == "Safety"
     types = [e["type"] for e in sections[-1]["elements"]]
-    assert types == ["toggle", "indicator", "readonly"]
+    assert types == ["toggle", "indicator", "readonly", "internal"]
 
 
 def test_the_safety_toggle_is_danger_in_both_states():
