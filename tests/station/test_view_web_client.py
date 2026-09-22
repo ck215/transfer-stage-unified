@@ -239,6 +239,32 @@ def test_a_short_row_still_lines_its_status_up_with_the_others():
         "status column")
 
 
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_a_row_of_commands_spans_the_table_instead_of_setting_its_widths():
+    """Setup's Launch row carries the whole selection summary. In a shared
+    grid that one long sentence sets the width of every model row's first
+    column, so a row that holds a command spans the table instead."""
+    data_row = {"title": "Stepper Probe", "layout": "row", "elements": [
+        {"type": "readonly"}, {"type": "dropdown"}, {"type": "dropdown"},
+        {"type": "readonly"}]}
+    launch_row = {"title": "Launch", "layout": "row", "elements": [
+        {"type": "readonly"}, {"type": "button"}, {"type": "button"},
+        {"type": "button"}, {"type": "button"}]}
+    assert _node_value(f"isCommandRow({json.dumps(launch_row)})") is True
+    assert _node_value(f"isCommandRow({json.dumps(data_row)})") is False
+    # the command row's five elements must not widen the data rows
+    assert _node_value(
+        f"rowColumnCount({json.dumps([data_row, launch_row])})") == 4
+    build = _body(r"\n  build\(\) \{(.*?)\n  \}")
+    assert "isCommandRow(section)" in build and "' section-span'" in build
+    assert "if (isRow && !spans)" in build, (
+        "a spanning row has no columns to be padded against")
+    assert re.search(r"\.section\.section-span\s*\{[^}]*grid-column:\s*1 / -1",
+                     STYLES)
+    assert re.search(r"\.section-span > :last-child\s*\{[^}]*margin-left:\s*auto",
+                     STYLES)
+
+
 def test_the_setup_card_collapses_when_the_first_model_appears():
     """`Dashboard._collapse_setup` in base.py, mirrored: the desktop views
     hear `added`, the browser sees `state.models` go from empty to not."""
@@ -248,10 +274,13 @@ def test_the_setup_card_collapses_when_the_first_model_appears():
     assert "setupState.is_launched" in collapse, (
         "the Setup panel's own is_launched must collapse it too - a launch "
         "that builds no model still leaves the wizard")
-    assert "this.setCollapsed(true)" in collapse.replace("this.setupCard.", "this.")
-    assert "if (this.isLaunched" in collapse, (
-        "without the once-only latch, re-opening the card would snap it "
-        "shut again on the next poll")
+    assert "this.setupCard.setCollapsed(isLaunched)" in collapse
+    assert "if (isLaunched === this.isLaunched) return;" in collapse, (
+        "the collapse must be edge-triggered: a level-triggered version "
+        "slams the card shut 250 ms after every re-open, and never opens it "
+        "again when the system is stopped")
+    assert "if (!hasModels && !setupState) return;" in collapse, (
+        "a failed setup poll would read as `stopped` and re-open the card")
     assert "this.collapseSetupOnLaunch(models, setupState)" in APP_JS, (
         "nothing calls it")
 

@@ -119,11 +119,23 @@ function isRowSection(section) {
   return section && section.layout === 'row';
 }
 
-/** How many element columns the widest row section needs. */
+//: Element types that DO something rather than say something.
+const COMMAND_TYPES = ['button', 'file_save', 'file_open'];
+
+/** A row of commands is not a table row: Setup's Launch row carries the
+ *  whole selection summary, and in a shared grid that one long sentence
+ *  widens the first column of every model row. A row that holds a command
+ *  spans the table instead of lining up with it. */
+function isCommandRow(section) {
+  return isRowSection(section)
+    && (section.elements || []).some((e) => COMMAND_TYPES.indexOf(e.type) !== -1);
+}
+
+/** How many element columns the widest data row needs. */
 function rowColumnCount(sections) {
   let widest = 0;
   for (const section of (sections || [])) {
-    if (!isRowSection(section)) continue;
+    if (!isRowSection(section) || isCommandRow(section)) continue;
     const drawn = (section.elements || []).filter((e) => e.type !== 'internal');
     if (drawn.length > widest) widest = drawn.length;
   }
@@ -522,7 +534,9 @@ class PanelCard {
     }
     for (const section of sections) {
       const isRow = isRowSection(section);
-      const block = make('div', 'section' + (isRow ? ' section-row' : ''));
+      const spans = isRow && isCommandRow(section);
+      const block = make('div', 'section' + (isRow ? ' section-row' : '')
+                         + (spans ? ' section-span' : ''));
       block.appendChild(isRow
         ? make('span', 'row-title', section.title || '')
         : make('h3', 'section-title', section.title || ''));
@@ -542,8 +556,9 @@ class PanelCard {
         }
       }
       // A row with fewer controls than the widest one is padded just before
-      // its last cell, so the status column stays the status column.
-      if (isRow) {
+      // its last cell, so the status column stays the status column. A row
+      // that spans the table has no columns to line up with.
+      if (isRow && !spans) {
         while (cells.length && cells.length < columns) {
           cells.splice(cells.length - 1, 0, make('span', 'cell filler'));
         }
@@ -859,17 +874,24 @@ class Dashboard {
 
   /** `Dashboard._collapse_setup` in station/views/base.py, mirrored: the
    *  first time a model exists, the wizard gives way to it. The desktop
-   *  views hear `added`; the browser polls, so the same edge is "models went
-   *  from empty to not empty" - or the Setup panel's own `is_launched`,
-   *  which is true the moment it has built its models. Once only: an
-   *  operator who re-opens the card keeps it open. */
+   *  views hear `added`; the browser polls, so the same signal is "models
+   *  exist" - or the Setup panel's own `is_launched`, which it flips inside
+   *  `build()` and clears in `stop_system()`.
+   *
+   *  Edge-triggered, deliberately: the card is collapsed as the station
+   *  launches and opened again when it is stopped, and in between the
+   *  operator's own Hide / Expand is left alone - a level-triggered version
+   *  would slam the card shut 250 ms after every re-open. */
   collapseSetupOnLaunch(models, setupState) {
-    if (this.isLaunched || !this.setupCard) return;
+    if (!this.setupCard) return;
     const hasModels = Object.keys(models || {}).length > 0;
-    const isLaunched = Boolean(setupState && setupState.is_launched);
-    if (!hasModels && !isLaunched) return;
-    this.isLaunched = true;
-    this.setupCard.setCollapsed(true);
+    // No setup state and no models: the setup poll failed, which is not an
+    // edge and must not be read as "stopped".
+    if (!hasModels && !setupState) return;
+    const isLaunched = hasModels || Boolean(setupState.is_launched);
+    if (isLaunched === this.isLaunched) return;
+    this.isLaunched = isLaunched;
+    this.setupCard.setCollapsed(isLaunched);
   }
 
   async addCard(name) {

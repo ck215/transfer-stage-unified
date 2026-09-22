@@ -167,6 +167,20 @@ html, body {
   grid-column: 1 / -1;
 }
 
+/* A row that holds a command (Setup's Devices and Launch rows) spans the
+   table rather than lining up with it: its summary would otherwise set the
+   width of every model row's first column. Its last cell still lands hard
+   right, where the status column ends. */
+.card-body.table > .section.section-span {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  grid-column: 1 / -1;
+  padding: 0.15rem 0;
+}
+
+.section-span > :last-child { margin-left: auto; }
+
 .section-row > .row-title {
   font-weight: bold;
   white-space: nowrap;
