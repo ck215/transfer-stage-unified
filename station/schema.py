@@ -77,12 +77,15 @@ def entry(text, model_attr, param, *, enabled_when=None, disabled_when=None):
     return _gate(element, enabled_when, disabled_when)
 
 
-def button(text, command, *, inputs=(), role="neutral", confirm=None,
+def button(text, command, *, inputs=(), args=(), role="neutral", confirm=None,
            enabled_when=None, disabled_when=None):
-    """A command. `inputs` names the parameters whose values travel with it."""
+    """A command. `inputs` names the parameters whose values travel with it;
+    `args` are fixed positional arguments the button always passes (two
+    buttons can share one command: `move_by` with args (1,) and (-1,))."""
     element = {
         "type": "button", "text": text, "command": command,
-        "inputs": list(inputs), "writable": False, "role": role,
+        "inputs": list(inputs), "args": list(args), "writable": False,
+        "role": role,
     }
     if confirm:
         element["confirm"] = confirm
