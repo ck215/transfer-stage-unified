@@ -269,39 +269,58 @@ def test_a_row_of_commands_spans_the_table_instead_of_setting_its_widths():
                      STYLES)
 
 
-def test_the_setup_card_collapses_when_the_first_model_appears():
+def test_the_setup_drawer_withdraws_when_the_first_model_appears():
     """`Dashboard._collapse_setup` in base.py, mirrored: the desktop views
-    hear `added`, the browser sees `state.models` go from empty to not."""
+    hear `added`, the browser sees `state.models` go from empty to not. Since
+    the instrument-console pass Setup is a left drawer rather than a card in
+    the rack, so "minimised" is "slid out" - the same edge, the same rule."""
     collapse = _body(r"collapseSetupOnLaunch\(models, setupState\) \{(.*?)\n  \}")
     assert "Object.keys(models || {}).length > 0" in collapse, (
         "the collapse is not driven by a model appearing in the state")
     assert "setupState.is_launched" in collapse, (
-        "the Setup panel's own is_launched must collapse it too - a launch "
+        "the Setup panel's own is_launched must close it too - a launch "
         "that builds no model still leaves the wizard")
-    assert "this.setupCard.setCollapsed(isLaunched)" in collapse
+    assert "this.setDrawerOpen(!isLaunched)" in collapse
     assert "if (isLaunched === this.isLaunched) return;" in collapse, (
         "the collapse must be edge-triggered: a level-triggered version "
-        "slams the card shut 250 ms after every re-open, and never opens it "
-        "again when the system is stopped")
+        "slams the drawer shut 250 ms after every re-open, and never opens "
+        "it again when the system is stopped")
     assert "if (!hasModels && !setupState) return;" in collapse, (
-        "a failed setup poll would read as `stopped` and re-open the card")
+        "a failed setup poll would read as `stopped` and re-open the drawer")
     assert "this.collapseSetupOnLaunch(models, setupState)" in APP_JS, (
         "nothing calls it")
 
 
-def test_the_collapsed_setup_card_is_a_header_bar_that_opens_again():
+def test_the_setup_drawer_is_open_at_boot_and_reopens_from_the_rail():
+    """Setup is where a run begins, so the drawer is open at boot; it slides
+    out on launch and the rail's Setup button is the way back (Addendum 2's
+    "must stay reopenable", in the drawer's terms)."""
     setup = _body(r"async loadSetup\(\) \{(.*?)\n  \}")
-    assert "collapsible: true" in setup, "the Setup card cannot be collapsed"
-    collapsed = _body(r"\n  setCollapsed\(isCollapsed\) \{(.*?)\n  \}")
-    assert "this.body.hidden = this.isCollapsed" in collapsed, (
-        "the body must be hidden, not the card: the header bar stays")
-    assert "this.collapseButton.textContent" in collapsed
-    # The label says what the click does, and it is not inverted.
-    assert "this.isCollapsed\n        ? 'Expand' : 'Collapse'" in collapsed or (
-        "this.isCollapsed ? 'Expand' : 'Collapse'" in collapsed), (
-        "the collapse button's label is inverted or missing")
-    head = _body(r"if \(options && options\.collapsible\) \{(.*?)\n    \}")
-    assert "head.appendChild(this.collapseButton)" in head
+    assert "this.dom.drawerBody.appendChild(this.setupCard.node)" in setup, (
+        "the Setup panel is not in the drawer")
+    assert "this.setDrawerOpen(true)" in setup, "the drawer does not open at boot"
+    drawer = _body(r"\n  setDrawerOpen\(isOpen\) \{(.*?)\n  \}")
+    assert "this.dom.drawer.classList.toggle('open', this.isDrawerOpen)" in drawer
+    assert "this.dom.setupLink.hidden = this.isDrawerOpen" in drawer, (
+        "the rail's Setup button must be the way back when the drawer is shut")
+    assert "this.dom.scrim.hidden" in drawer, (
+        "an open drawer over live modules needs a scrim behind it")
+    assert "this.dom.setupLink.addEventListener('click', () => this.setDrawerOpen(true))" \
+        in APP_JS, "nothing reopens the drawer"
+    assert "event.key === 'Escape' && this.isDrawerOpen" in APP_JS, (
+        "Escape does not close the drawer")
+    assert re.search(r"\.drawer\s*\{[^}]*position:\s*fixed", STYLES)
+    assert re.search(r"\.drawer\s*\{[^}]*width:\s*min\(5[0-9]0px, 100%\)", STYLES)
+    # The stop may never be under the drawer or under its scrim.
+    assert re.search(r"\.rail\s*\{[^}]*z-index:\s*9", STYLES)
+    assert re.search(r"\.drawer\s*\{[^}]*z-index:\s*8", STYLES)
+    assert re.search(r"\.scrim\s*\{[^}]*z-index:\s*7", STYLES)
+    assert re.search(r"\.scrim\s*\{[^}]*inset:\s*var\(--rail-h\)", STYLES), (
+        "the scrim dims the rail, and with it the one control that may "
+        "never be dimmed")
+    assert re.search(r"\.drawer-body\s*\{[^}]*overflow:\s*auto", STYLES), (
+        "the drawer's table has to scroll inside it, not push it open")
+    assert re.search(r"\.drawer\.open\s*\{[^}]*transform:\s*none", STYLES)
 
 
 def test_hiding_a_card_body_beats_the_rule_that_makes_it_a_table():
@@ -372,8 +391,8 @@ def test_a_card_with_a_lot_to_say_takes_two_columns_instead_of_one_tall_stripe()
     assert re.search(r"\.card\.wide\s*\{[^}]*grid-column:\s*span 2", STYLES)
     assert re.search(r"\.card\.wide > \.card-body\s*\{[^}]*column-count:\s*2",
                      STYLES)
-    assert re.search(r"\.cards\s*\{[^}]*grid-auto-flow:\s*dense", STYLES), (
-        "a wide card would leave a column-shaped hole beside it")
+    assert re.search(r"\.rack\s*\{[^}]*grid-auto-flow:\s*dense", STYLES), (
+        "a wide panel would leave a column-shaped hole beside it")
 
 
 def test_a_rendered_figure_sits_on_the_surface_colour_and_is_bounded():
@@ -384,52 +403,111 @@ def test_a_rendered_figure_sits_on_the_surface_colour_and_is_bounded():
         "an unbounded figure made the Red Percent card taller than the page")
 
 
-def test_the_full_stop_is_prominent_and_rides_with_the_sticky_bar():
-    assert re.search(r"\.top\s*\{[^}]*position:\s*sticky", STYLES), (
-        "the FULL STOP scrolls off the page with the header")
-    stop = re.search(r"\.full-stop\s*\{([^}]*)\}", STYLES)
-    assert stop, "styles.css no longer styles the FULL STOP"
-    assert "font-weight: bold" in stop.group(1)
-    assert 'class="button full-stop role-danger off"' in INDEX
+def test_the_stop_is_a_mushroom_that_rides_with_the_sticky_rail():
+    """The design brief's one bold element: round, signal red, a darker ring
+    and an inset highlight, sitting on a rail that never scrolls away."""
+    assert re.search(r"\.rail\s*\{[^}]*position:\s*sticky", STYLES), (
+        "the stop scrolls off the page with the rail")
+    stop = re.search(r"\n\.mushroom\s*\{([^}]*)\}", STYLES)
+    assert stop, "styles.css no longer styles the stop"
+    body = stop.group(1)
+    assert "border-radius: 50%" in body, "the stop is not round"
+    assert "var(--signal)" in body, "the stop is not the signal colour"
+    assert "box-shadow:\n    inset" in body, "the disc has no inset highlight"
+    assert "border: 0.32rem solid" in body, "the disc has no outer ring"
+    assert 'id="full-stop" type="button" class="mushroom"' in INDEX
+    # The copy is the action, and it follows the state rather than the click.
+    estop = _body(r"\n  renderEstop\(isEstopped\) \{(.*?)\n  \}")
+    assert "isEstopped ? 'Clear' : 'Stop'" in estop
+    assert "classList.add('pulse')" in estop and "!wasEstopped" in estop, (
+        "the latch must pulse once when it is SET, not for as long as it is")
+    assert re.search(r"\.mushroom\.pulse\s*\{[^}]*animation:\s*latch-pulse", STYLES)
+    # and the per-model Safety stop is the same object, one size down
+    assert re.search(r"\.mushroom\.mini\s*\{", STYLES)
+    mini = _body(r"function renderStopToggle\(panel, element\) \{(.*?)\n\}")
+    assert "button.classList.add('mini')" in mini
+    assert "panel.runToggle(element)" in mini, (
+        "the mini mushroom must run the model's own estop toggle")
+    assert "if (element.model_attr === 'is_estopped') return renderStopToggle" in APP_JS
 
 
 def test_a_readout_does_not_look_like_a_box_the_operator_can_type_in():
+    """The instrument-console pass takes the well away entirely: a readout is
+    a number set in the trace colour at display size with tabular figures,
+    and an entry is the only thing on the panel wearing a border."""
     value = re.search(r"\n\.value\s*\{([^}]*)\}", STYLES)
     assert value, "styles.css no longer styles a readout"
-    assert "background: var(--bg)" in value.group(1)
+    assert "border: 0;" in value.group(1), "a readout is bordered like an entry"
+    assert "background: none" in value.group(1)
     assert "font-variant-numeric: tabular-nums" in value.group(1)
+    assert "color: var(--trace)" in value.group(1), (
+        "a live number is drawn in the trace colour (design brief)")
     assert re.search(r"\.input, \.select\s*\{[^}]*border: 1px solid var\(--muted\)",
                      STYLES), "an entry has to keep a border a readout does not"
+
+
+def test_the_rail_derives_each_models_key_numbers_from_its_own_schema():
+    """The rail is the hero and it is generic: no model is named here. The
+    key numbers are the readonly elements of a model's FIRST schema section,
+    which is where every model in this station puts what is watched."""
+    rail = _body(r"function railElements\(schema\) \{(.*?)\n\}")
+    assert "element.type === 'readonly'" in rail
+    assert "sections" in rail and "slice(0, RAIL_READOUTS)" in rail
+    render = _body(r"\n  renderRail\(models\) \{(.*?)\n  \}")
+    assert "this.railGroups" in render
+    assert "(models[name] || {}).values" in render, (
+        "the rail must follow state.values on every poll")
+    assert "buildRailGroup" in render
+    # built once per model, so the launch stagger plays exactly once
+    build = _body(r"\n  buildRailGroup\(name, index\) \{(.*?)\n  \}")
+    assert "'readout-group is-entering'" in build
+    assert "setProperty('--stagger'" in build
+    assert re.search(r"\.readout-group\.is-entering\s*\{[^}]*animation-delay:"
+                     r"\s*calc\(var\(--stagger, 0\) \* 60ms\)", STYLES), (
+        "the 60 ms stagger the brief asks for is not in the stylesheet")
+    assert re.search(r"prefers-reduced-motion: reduce", STYLES), (
+        "reduced motion is not respected")
+    reduced = STYLES.split("prefers-reduced-motion: reduce")[1]
+    assert "animation-duration: 0s !important" in reduced
+    assert "transition-duration: 0s !important" in reduced
 
 
 def test_every_dropdown_is_the_same_width_and_the_log_is_compact():
     assert re.search(r"\n\.select\s*\{[^}]*width:\s*10rem", STYLES), (
         "dropdowns sized themselves from whatever was chosen")
-    log = re.search(r"\n\.log\s*\{([^}]*)\}", STYLES)
+    log = re.search(r"\n\.tray-log\s*\{([^}]*)\}", STYLES)
     assert log and "overflow-y: auto" in log.group(1)
     assert re.search(r"height:\s*[0-9.]+em", log.group(1)), (
-        "an unbounded log pushes the cards off the screen")
+        "an unbounded log pushes the rack off the screen")
 
 
-def test_the_event_bar_reserves_its_own_room_and_can_be_collapsed():
+def test_the_event_tray_reserves_its_own_room_and_starts_as_one_line():
     """The bench shot, 2026-09-22: the events panel covered the bottom of
-    every card because nothing reserved space for it."""
-    assert re.search(r"\.log-panel\s*\{[^}]*position:\s*fixed", STYLES)
+    every card because nothing reserved space for it. The instrument-console
+    pass also makes it one line by default - the newest event - so the log is
+    reference rather than the page."""
+    assert re.search(r"\.tray\s*\{[^}]*position:\s*fixed", STYLES)
     reserve = _body(r"\n  reserveLogSpace\(\) \{(.*?)\n  \}")
     assert "document.body.style.paddingBottom = panel.offsetHeight" in reserve, (
-        "the page must reserve the bar's MEASURED height - it changes when "
-        "the bar collapses and when --font-size changes")
+        "the page must reserve the tray's MEASURED height - it changes when "
+        "the tray collapses and when --font-size changes")
     assert re.search(r"\nbody \{[^}]*padding-bottom:", STYLES), (
         "the page reserves nothing before the client has measured")
     collapse = _body(r"\n  setLogCollapsed\(isCollapsed\) \{(.*?)\n  \}")
     assert "this.dom.log.hidden = this.isLogCollapsed" in collapse
     assert "'Show events' : 'Hide events'" in collapse
     assert "this.reserveLogSpace()" in collapse, (
-        "collapsing the bar without re-measuring leaves a hole the size of "
-        "the old bar")
-    assert "this.setLogCollapsed(false)" in _body(r"async start\(\) \{(.*?)\n  \}"), (
-        "the bar must start open, at its four lines, with its room reserved")
+        "collapsing the tray without re-measuring leaves a hole the size of "
+        "the old tray")
+    assert "this.setLogCollapsed(true)" in _body(r"async start\(\) \{(.*?)\n  \}"), (
+        "the tray must start collapsed, at its one line, with its room "
+        "reserved")
     assert "window.addEventListener('resize', () => this.reserveLogSpace())" in APP_JS
+    # the one line is the latest event, not an empty bar with a label on it
+    show = _body(r"\n  showEvent\(event\) \{(.*?)\n  \}")
+    assert "this.dom.trayLatest.textContent = event.text" in show
+    assert re.search(r"\.tray:not\(\.open\) \.tray-log\s*\{[^}]*display:\s*none",
+                     STYLES)
 
 
 def test_the_stylesheet_sizes_nothing_in_absolute_points_or_pixels():
@@ -515,11 +593,29 @@ def test_the_stylesheet_names_no_colour_of_its_own():
         f"station/views/theme.py and reaches the browser as /api/theme.css")
 
 
-def test_every_variable_the_stylesheet_uses_is_one_the_theme_defines():
+def test_every_variable_the_stylesheet_uses_is_defined_somewhere():
+    """Either by the theme, or by the stylesheet itself out of theme values.
+    A shade between two tokens - a hairline, a ring, a scrim - is mixed FROM
+    them with color-mix and named on `:root` here; what the strictness is
+    actually for is caught by the test above, which forbids a literal."""
     defined = set(re.findall(r"(--[a-z-]+):", theme.css_variables()))
-    used = set(re.findall(r"var\((--[a-z-]+)\)", STYLES + APP_JS))
+    defined |= set(re.findall(r"^\s*(--[a-z-]+):", STYLES, re.M))
+    # and by the client, for the one value only it knows: a group's place in
+    # the launch stagger.
+    defined |= set(re.findall(r"setProperty\('(--[a-z-]+)'", APP_JS))
+    used = set(re.findall(r"var\((--[a-z-]+)", STYLES + APP_JS))
     used |= set(re.findall(r"getPropertyValue\('(--[a-z-]+)'\)", APP_JS))
-    assert used <= defined, f"undefined theme variables: {sorted(used - defined)}"
+    assert used <= defined, f"undefined variables: {sorted(used - defined)}"
+
+
+def test_the_palette_the_theme_serves_is_the_briefs_six_tokens():
+    """Owner ruling 2026-09-22. `--signal` is the stop colour and `--trace`
+    is what a live number is drawn in; the stylesheet may name no seventh."""
+    css = theme.css_variables()
+    for name in ("--bg", "--surface", "--text", "--muted", "--signal", "--trace"):
+        assert f"{name}: #" in css, f"the theme does not serve {name}"
+    assert "var(--signal)" in STYLES and "var(--trace)" in STYLES
+    assert "--signal" in APP_JS or "var(--signal)" in STYLES
 
 
 def test_the_page_loads_the_theme_and_the_client():
@@ -528,7 +624,9 @@ def test_the_page_loads_the_theme_and_the_client():
     assert 'src="/app.js"' in INDEX
     for element_id in ("full-stop", "cards", "event-log", "ack-modal",
                        "region-picker", "closed-models", "connection",
-                       "log-panel", "log-toggle"):
+                       "log-panel", "log-toggle", "rail-readouts",
+                       "setup-drawer", "drawer-body", "drawer-close",
+                       "scrim", "setup-link", "tray-latest"):
         assert f'id="{element_id}"' in INDEX, f"index.html has no #{element_id}"
         assert f"'{element_id}'" in APP_JS
 
