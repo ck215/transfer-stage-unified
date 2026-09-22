@@ -557,7 +557,7 @@ def test_a_failure_in_the_loop_ends_the_run_and_reports_once(monitor, capsys):
     assert not monitor.is_running
     assert run.failure is not None
     assert isinstance(run.failure, ZeroDivisionError)
-    assert "Red Monitor Run Failed" in capsys.readouterr().err
+    assert "Red Percent Run Failed" in capsys.readouterr().err
 
 
 def test_a_grab_failure_does_not_end_the_run(monitor):

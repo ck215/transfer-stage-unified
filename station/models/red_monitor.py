@@ -232,7 +232,7 @@ class MonitorRun:
 class RedMonitor(Model):
     """Was `RedPercentSystem`. Owns a `Screen`. Follows a Probe for position."""
 
-    NAME = "Red Monitor"
+    NAME = "Red Percent"
     IDENTITY = None
     NEEDS_PORT = False
     NEEDS_GAMEPAD = False
@@ -794,7 +794,7 @@ class RedMonitor(Model):
                     break
         except Exception as exc:
             run.failure = exc
-            events.error("Red Monitor Run Failed",
+            events.error("Red Percent Run Failed",
                          f"run {run.run_id} stopped unexpectedly: {exc}",
                          source=self.NAME, exception=exc)
         finally:

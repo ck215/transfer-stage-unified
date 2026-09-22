@@ -91,7 +91,7 @@ class _Stub:
         # custom firmware's DEV: reply, so it has no identity byte.
         Rotator: ("SMC100 Rotator", None, True, False),
         # Screen capture, not hardware: no port, no gamepad.
-        RedMonitor: ("Red Percent Window", None, False, False),
+        RedMonitor: ("Red Percent", None, False, False),
     }
     FIELDS = ("NAME", "IDENTITY", "NEEDS_PORT", "NEEDS_GAMEPAD")
 
