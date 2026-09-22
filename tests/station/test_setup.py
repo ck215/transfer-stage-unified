@@ -4,6 +4,10 @@ Ported from `tests/core/test_app_bootstrap.py` (discover_ports,
 validate_assignment, the build_models rollback tests) and the setup half of
 `tests/core/test_composition_root.py`, adapted to the Panel contract: a
 refusal is a `Refused`, not an error string in a list.
+
+Addendum 2 reshaped the panel: one table row per model type, ONE Port
+dropdown per row carrying Off / SIM / a real port, no Mode dropdown, and a
+Refresh button instead of a Scan button.
 """
 import threading
 
@@ -15,7 +19,7 @@ from station.devices import gamepad as gamepad_module
 from station.devices import serial_port as serial_port_module
 from station.events import events
 from station.result import Refused
-from station.setup import HEADLESS, MODEL_TYPES, SIM, Setup
+from station.setup import MODEL_TYPES, OFF, ON, SIM, Setup
 
 
 # -- fakes -----------------------------------------------------------------
@@ -121,6 +125,11 @@ def select(panel, key, field, choice):
     return result
 
 
+def offer(panel, port):
+    """Pretend a scan found `port`, so the dropdown offers it."""
+    panel._ports.append(port)
+
+
 # -- the model registry ----------------------------------------------------
 
 def test_the_per_baud_probe_budget_is_the_one_probe_device_at_spent():
@@ -142,7 +151,73 @@ def test_model_types_is_the_only_list_of_models(panel, fake_types):
     builds. Four copies of this list disagreed before RC-7."""
     assert panel.model_types == list(fake_types)
     titles = [section["title"] for section in panel.schema["sections"]]
-    assert titles == ["Hardware Scan", *fake_types, "Launch"]
+    assert titles == ["Devices", *fake_types, "Launch"]
+
+
+# -- the table (Addendum 2) ------------------------------------------------
+
+def test_every_section_is_a_row_so_setup_is_a_table_not_a_column(panel):
+    """The owner's ruling: one compact table, one row per model type. Every
+    renderer lays a `layout="row"` section out horizontally."""
+    assert [s["layout"] for s in panel.schema["sections"]] == \
+        ["row"] * len(panel.schema["sections"])
+
+
+def test_a_row_is_name_then_one_port_dropdown_then_status(panel):
+    row = next(s for s in panel.schema["sections"] if s["title"] == "Alpha")
+    assert [(e["type"], e.get("model_attr")) for e in row["elements"]] == [
+        ("readonly", "alpha_name"),
+        ("dropdown", "alpha_port"),
+        ("dropdown", "alpha_gamepad"),
+        ("readonly", "alpha_status"),
+    ]
+    assert panel.alpha_name == "Alpha"
+
+
+def test_there_is_no_mode_dropdown_and_no_set_mode_command(panel):
+    """Addendum 2: the Port dropdown carries it all; "Off" is the disabled
+    state. A second control that could contradict the first is gone."""
+    commands = {e.get("command") for e in _elements(panel)}
+    assert not any(str(c).endswith("_mode") for c in commands if c)
+    assert not hasattr(panel, "set_alpha_mode")
+    assert not hasattr(panel, "alpha_mode")
+    assert "mode_options" not in {e.get("options_command") for e in _elements(panel)}
+
+
+def test_the_port_dropdown_offers_off_sim_and_every_scanned_port(panel):
+    panel._ports = ["/dev/ttyUSB0", "/dev/ttyUSB1"]
+    assert panel.port_options() == [OFF, SIM, "/dev/ttyUSB0", "/dev/ttyUSB1"]
+    assert panel.options("port_options") == panel.port_options()
+
+
+def test_a_model_that_needs_no_port_still_has_one_dropdown(panel):
+    """The screen monitor has nothing to plug in, so its dropdown is the same
+    control with the port names left out - not a different kind of widget."""
+    row = next(s for s in panel.schema["sections"] if s["title"] == "Screen")
+    dropdowns = [e for e in row["elements"] if e["type"] == "dropdown"]
+    assert len(dropdowns) == 1
+    assert dropdowns[0]["options_command"] == "device_options"
+    assert panel.options("device_options") == [OFF, ON, SIM]
+
+
+def test_the_header_row_offers_refresh_and_the_scan_status(panel):
+    header = panel.schema["sections"][0]
+    assert header["title"] == "Devices"
+    assert [(e["type"], e.get("command") or e.get("model_attr"))
+            for e in header["elements"]] == [("button", "refresh"),
+                                             ("readonly", "scan_status")]
+    assert "scan" not in {e.get("command") for e in _elements(panel)}
+
+
+def test_the_launch_row_is_launch_relaunch_and_stop(panel):
+    row = panel.schema["sections"][-1]
+    assert row["title"] == "Launch"
+    assert [e.get("text") for e in row["elements"]] == [
+        "Selected:", "Launch", "Relaunch", "Stop system"]
+
+
+def _elements(panel):
+    return [e for s in panel.schema["sections"] for e in s["elements"]]
 
 
 # -- scan_ports (was discover_ports) --------------------------------------
@@ -150,7 +225,7 @@ def test_model_types_is_the_only_list_of_models(panel, fake_types):
 def test_scan_ports_falls_back_when_the_serial_module_offers_no_listing(
         panel, monkeypatch, warnings):
     monkeypatch.delattr(serial_port_module, "list_ports", raising=False)
-    assert panel.scan_ports() == [HEADLESS, "COM1", "COM2", "COM3", "COM4"]
+    assert panel.scan_ports() == ["COM1", "COM2", "COM3", "COM4"]
     panel.scan_ports()      # a second call must not warn again
     assert [e.title for e in warnings] == ["Not Available"]
 
@@ -164,10 +239,8 @@ def test_scan_ports_filters_bluetooth_and_puts_usb_first(panel, monkeypatch):
         ("/dev/cu.debug-console", "n/a"),
     ], raising=False)
     ports = panel.scan_ports()
-    assert ports[0] == HEADLESS
     assert "/dev/cu.Bluetooth-Incoming-Port" not in ports
-    assert ports[1] == "/dev/cu.usbmodem1101"
-    assert ports[2] == "/dev/cu.debug-console"
+    assert ports == ["/dev/cu.usbmodem1101", "/dev/cu.debug-console"]
 
 
 def test_scan_ports_drops_linux_ttys_without_a_hwid(panel, monkeypatch):
@@ -183,7 +256,20 @@ def test_scan_ports_offers_everything_when_filtering_left_nothing(
         panel, monkeypatch):
     monkeypatch.setattr(serial_port_module, "list_ports",
                         lambda: [("/dev/ttyS0", "n/a")], raising=False)
-    assert panel.scan_ports() == [HEADLESS, "/dev/ttyS0"]
+    assert panel.scan_ports() == ["/dev/ttyS0"]
+
+
+def test_a_listing_that_found_nothing_invents_no_placeholder_port(
+        panel, monkeypatch):
+    """A working listing with nothing attached means no port is attached.
+    "Off" and "SIM" are always on offer, so there is nothing left for a
+    placeholder like COM1 to stand in for - and COM1..COM4 on a lab Mac read
+    as four ports that are not there."""
+    monkeypatch.setattr(serial_port_module, "list_ports", lambda: [],
+                        raising=False)
+    assert panel.scan_ports() == []
+    panel._ports = panel.scan_ports()
+    assert panel.port_options() == [OFF, SIM]
 
 
 def test_a_listing_that_raises_is_reported_not_swallowed(
@@ -192,7 +278,7 @@ def test_a_listing_that_raises_is_reported_not_swallowed(
         raise OSError("enumeration failed")
 
     monkeypatch.setattr(serial_port_module, "list_ports", boom, raising=False)
-    assert panel.scan_ports() == [HEADLESS, "COM1", "COM2", "COM3", "COM4"]
+    assert panel.scan_ports() == ["COM1", "COM2", "COM3", "COM4"]
     assert [e.title for e in warnings] == ["Port Listing Failed"]
 
 
@@ -259,7 +345,7 @@ def test_validate_allows_shared_sim_ports_and_any_number_of_no_gamepads(panel):
 
 def test_validate_refuses_a_hardware_row_with_no_port(panel):
     with pytest.raises(Refused) as refusal:
-        panel.validate([{"model": "Alpha", "port": HEADLESS, "gamepad": None,
+        panel.validate([{"model": "Alpha", "port": OFF, "gamepad": None,
                          "sim": False}])
     assert "Alpha port" in refusal.value.reason
 
@@ -286,6 +372,7 @@ def test_build_rolls_back_everything_when_a_later_model_fails(
     assert "Beta" in refusal.value.reason
     assert panel.controller.model_names == []
     assert "remove:Alpha" in panel.controller.calls
+    assert panel.is_launched is False
 
 
 def test_build_refuses_a_port_that_answered_as_another_model(panel):
@@ -306,9 +393,9 @@ def test_a_port_that_answered_nothing_is_still_allowed(panel):
     assert panel.controller.model_names == ["Alpha"]
 
 
-def test_a_disabled_row_builds_nothing(panel, fake_types):
+def test_a_row_left_off_builds_nothing(panel, fake_types):
     """WEB-4/MANAGER-12: Web dropped the enabled flag and built every row."""
-    select(panel, "alpha", "mode", "Simulated")
+    select(panel, "alpha", "port", SIM)
     assert [c["model"] for c in panel.configs] == ["Alpha"]
     panel.run("launch")
     assert panel.controller.model_names == ["Alpha"]
@@ -316,7 +403,7 @@ def test_a_disabled_row_builds_nothing(panel, fake_types):
 
 def test_sim_works_for_every_model(panel, fake_types):
     for key in ("alpha", "beta", "screen"):
-        select(panel, key, "mode", "Simulated")
+        select(panel, key, "port", SIM)
     built = panel.build()
     assert built == list(fake_types)
     for name, model_class in fake_types.items():
@@ -326,6 +413,15 @@ def test_sim_works_for_every_model(panel, fake_types):
         # A model that needs no port is built without one rather than with
         # the string "SIM".
         assert model.port == (SIM if model_class.NEEDS_PORT else None)
+
+
+def test_a_no_port_model_set_to_on_is_built_as_hardware(panel):
+    select(panel, "screen", "port", ON)
+    assert panel.configs == [{"model": "Screen", "port": None,
+                              "gamepad": None, "sim": False}]
+    panel.build()
+    model = panel.controller._model("Screen")
+    assert model.sim is False and model.port is None
 
 
 def test_build_sets_the_factory_so_reopen_works(panel):
@@ -342,19 +438,58 @@ def test_launch_refuses_when_nothing_is_selected(panel):
 
 
 def test_launch_refuses_a_collision_before_building_anything(panel):
+    offer(panel, "/dev/ttyUSB0")
     for key in ("alpha", "beta"):
-        select(panel, key, "mode", "Hardware")
-        panel._ports.append("/dev/ttyUSB0")
         select(panel, key, "port", "/dev/ttyUSB0")
     result = panel.run("launch")
     assert result.is_refused and "already assigned" in result.reason
     assert panel.controller.calls == []      # not even a reset
 
 
+# -- launched, and back again ---------------------------------------------
+
+def test_a_successful_launch_is_what_tells_a_view_to_collapse_the_panel(panel):
+    """The views collapse Setup themselves; `is_launched` is the fact they
+    collapse on, and it is in `state` so a polling view sees it."""
+    assert panel.is_launched is False and panel.state["is_launched"] is False
+    select(panel, "alpha", "port", SIM)
+    assert panel.run("launch").is_ok
+    assert panel.is_launched is True and panel.state["is_launched"] is True
+    assert panel.mode_name == "launched"
+
+
+def test_launch_gives_way_to_relaunch_once_the_system_is_up(panel):
+    select(panel, "alpha", "port", SIM)
+    launch, relaunch = [e for e in _elements(panel)
+                        if e.get("command") == "launch"]
+    from station import schema as sch
+    assert sch.is_enabled(launch, "ready") and not sch.is_enabled(launch, "launched")
+    assert sch.is_enabled(relaunch, "launched")
+    panel.run("launch")
+    # Both buttons carry the one command, and it stays runnable: a relaunch
+    # resets the Controller first, like any build.
+    assert panel.run("launch").is_ok
+    assert panel.controller.model_names == ["Alpha"]
+
+
+def test_stop_system_takes_everything_down_and_offers_launch_again(panel):
+    select(panel, "alpha", "port", SIM)
+    panel.run("launch")
+    model = panel.controller._model("Alpha")
+    assert panel.run("stop_system").is_ok
+    assert panel.controller.model_names == [] and model.closed == 1
+    assert panel.is_launched is False and panel.mode_name == "ready"
+
+
+def test_stop_system_refuses_when_nothing_is_running(panel):
+    result = panel.run("stop_system")
+    assert result.is_refused and "Nothing is running" in result.reason
+
+
 # -- selection and auto-assign --------------------------------------------
 
 def test_a_dropdown_choice_travels_as_the_command_argument(panel):
-    panel._ports.append("/dev/ttyUSB0")
+    offer(panel, "/dev/ttyUSB0")
     select(panel, "alpha", "port", "/dev/ttyUSB0")
     assert panel.alpha_port == "/dev/ttyUSB0"
     assert panel.state["values"]["alpha_port"] == "/dev/ttyUSB0"
@@ -365,27 +500,86 @@ def test_a_choice_that_is_not_on_offer_is_refused(panel):
     assert result.is_refused and "options" in result.reason
 
 
+def test_a_port_name_is_refused_for_a_model_that_has_no_port(panel):
+    offer(panel, "/dev/ttyUSB0")
+    result = panel.run("set_screen_port", args=("/dev/ttyUSB0",))
+    assert result.is_refused and "options" in result.reason
+
+
 def test_a_model_without_a_gamepad_has_no_gamepad_dropdown(panel):
-    commands = {e.get("command") for section in panel.schema["sections"]
-                for e in section["elements"]}
+    commands = {e.get("command") for e in _elements(panel)}
     assert "set_alpha_gamepad" in commands
     assert "set_screen_gamepad" not in commands
-    assert "set_screen_port" not in commands
+    assert "set_alpha_port" in commands and "set_screen_port" in commands
+
+
+def test_the_row_commands_are_named_after_the_model(panel, fake_types):
+    """The view agents render these generically, but the names are the
+    contract: `set_<row>_port` / `set_<row>_gamepad`, one per row."""
+    assert {e.get("command") for e in _elements(panel) if e["type"] == "dropdown"} == {
+        "set_alpha_port", "set_alpha_gamepad",
+        "set_beta_port", "set_beta_gamepad", "set_screen_port"}
 
 
 def test_auto_assign_points_each_row_at_the_port_that_answered(panel):
     panel._found = {"/dev/ttyUSB0": "Beta", "/dev/ttyUSB1": None}
-    panel.run("auto_assign")
+    assert panel.auto_assign() == ["Beta on /dev/ttyUSB0"]
     assert panel.beta_port == "/dev/ttyUSB0"
-    assert panel.beta_mode == "Hardware"
-    assert panel.alpha_mode == "Off"
-    assert panel.beta_found == "/dev/ttyUSB0"
-    assert panel.alpha_found == "not found"
+    assert panel.alpha_port == OFF
+    assert panel.beta_status == "detected: Beta"
+    assert panel.alpha_status == "off"
 
 
-def test_auto_assign_refuses_when_nothing_was_identified(panel):
-    result = panel.run("auto_assign")
-    assert result.is_refused and "scan first" in result.reason
+def test_auto_assign_never_overrides_what_the_operator_chose(panel):
+    """The machine's guess does not overrule a person's choice (Addendum 2:
+    auto-assign now runs by itself, so it has to be the polite one)."""
+    offer(panel, "/dev/ttyUSB7")
+    select(panel, "beta", "port", "/dev/ttyUSB7")
+    panel._found = {"/dev/ttyUSB0": "Beta"}
+    assert panel.auto_assign() == []
+    assert panel.beta_port == "/dev/ttyUSB7"
+    assert panel.auto_assign(force=True) == ["Beta on /dev/ttyUSB0"]
+
+
+def test_auto_assign_with_nothing_identified_is_not_an_error(panel):
+    """It runs on the scan worker now: "nothing was found" is an outcome, not
+    a refusal to raise at a thread that has no one to tell."""
+    assert panel.auto_assign() == []
+
+
+def test_two_ports_answering_as_one_model_keeps_the_first_and_warns(
+        panel, warnings):
+    panel._found = {"/dev/ttyUSB0": "Beta", "/dev/ttyUSB1": "Beta"}
+    assert panel.auto_assign() == ["Beta on /dev/ttyUSB0"]
+    assert panel.beta_port == "/dev/ttyUSB0"
+    assert [e.title for e in warnings if e.title != "Auto-assign"] == \
+        ["Two Devices Answered Alike"]
+
+
+# -- the status column -----------------------------------------------------
+
+def test_the_status_column_says_off_simulated_detected_or_not_detected(panel):
+    assert panel.alpha_status == "off"
+    select(panel, "alpha", "port", SIM)
+    assert panel.alpha_status == "simulated"
+    offer(panel, "/dev/ttyUSB0")
+    select(panel, "alpha", "port", "/dev/ttyUSB0")
+    assert panel.alpha_status == "not scanned"
+    panel._found["/dev/ttyUSB0"] = None
+    panel._refresh_rows()
+    assert panel.alpha_status == "not detected"
+    panel._found["/dev/ttyUSB0"] = "Alpha"
+    panel._refresh_rows()
+    assert panel.alpha_status == "detected: Alpha"
+
+
+def test_a_row_pointed_at_a_port_that_answered_otherwise_says_so(panel):
+    offer(panel, "/dev/ttyUSB0")
+    select(panel, "alpha", "port", "/dev/ttyUSB0")
+    panel._found["/dev/ttyUSB0"] = "Beta"
+    panel._refresh_rows()
+    assert panel.alpha_status == "detected: Beta"      # and build() refuses it
+    assert panel.run("launch").is_refused
 
 
 # -- the schema every view renders ----------------------------------------
@@ -405,21 +599,52 @@ def test_every_declared_command_and_options_source_exists(panel):
                 assert callable(getattr(panel, name)), name
 
 
-def test_options_come_from_the_scan(panel, monkeypatch):
-    panel._ports = [HEADLESS, "/dev/ttyUSB0"]
+def test_options_come_from_the_scan(panel):
+    panel._ports = ["/dev/ttyUSB0"]
     panel._gamepads = ["None", "ID 0: Pad"]
-    assert panel.options("port_options") == [HEADLESS, "/dev/ttyUSB0"]
+    assert panel.options("port_options") == [OFF, SIM, "/dev/ttyUSB0"]
     assert panel.options("gamepad_options") == ["None", "ID 0: Pad"]
-    assert panel.options("mode_options") == ["Off", "Hardware", "Simulated"]
+    assert panel.options("device_options") == [OFF, ON, SIM]
 
 
 def test_a_command_the_schema_does_not_declare_is_refused(panel):
     assert panel.run("build").is_refused
+    assert panel.run("auto_assign").is_refused   # automatic, not a button
 
 
-# -- gating while a scan runs ---------------------------------------------
+# -- state carries what a view needs to draw ------------------------------
 
-def test_launching_and_selecting_are_gated_while_a_scan_runs(panel):
+def test_state_carries_the_scan_phase_ports_rows_and_launch_flag(panel):
+    panel._ports = ["/dev/ttyUSB0"]
+    panel._found = {"/dev/ttyUSB0": "Alpha"}
+    panel._refresh_rows()
+    state = panel.state
+    assert state["scan"]["phase"] == "idle"
+    assert state["scan"]["ports"] == ["/dev/ttyUSB0"]
+    assert state["scan"]["found"] == {"/dev/ttyUSB0": "Alpha"}
+    assert state["is_scanning"] is False and state["is_launched"] is False
+    alpha = next(r for r in state["rows"] if r["key"] == "alpha")
+    assert alpha == {"key": "alpha", "name": "Alpha", "port": OFF,
+                     "gamepad": "None", "status": "off", "detected": None,
+                     "needs_port": True, "needs_gamepad": True,
+                     "is_chosen": False, "options_command": "port_options"}
+    assert state["values"]["scan_status"] == "not scanned yet"
+
+
+# -- refresh and gating ----------------------------------------------------
+
+def test_refresh_is_the_only_scan_button_and_starts_a_scan(panel, monkeypatch):
+    started = []
+    monkeypatch.setattr(Setup, "scan", lambda self: started.append(True) or True)
+    assert panel.run("refresh").is_ok
+    assert started == [True]
+
+
+def test_launching_is_gated_while_a_scan_runs_but_choosing_is_not(
+        panel, monkeypatch):
+    """The operator may point a row at a port while the scan is still walking
+    the rest of them; that choice then wins over auto-assign."""
+    monkeypatch.setattr(station_setup, "REFRESH_JOIN_SECONDS", 0.05)
     release = threading.Event()
     thread = threading.Thread(target=release.wait, daemon=True)
     thread.start()
@@ -427,10 +652,58 @@ def test_launching_and_selecting_are_gated_while_a_scan_runs(panel):
     try:
         assert panel.mode_name == "scanning"
         assert panel.run("launch").is_refused
-        assert panel.run("set_alpha_mode", args=("Simulated",)).is_refused
-        assert panel.run("scan").is_refused           # single-flight
-        assert panel.run("cancel_scan").is_ok
+        assert panel.run("set_alpha_port", args=(SIM,)).is_ok
+        # Refresh cancels the running scan first; this one will not stop, so
+        # it is refused rather than blocking the view thread any longer.
+        assert panel.run("refresh").is_refused
+        assert panel._abort.is_set()
     finally:
         release.set()
         thread.join(timeout=1)
     assert panel.mode_name == "ready"
+
+
+def test_refresh_cancels_a_running_scan_before_starting_the_next(
+        panel, monkeypatch):
+    stopping = threading.Event()
+    thread = threading.Thread(target=stopping.wait, daemon=True)
+    thread.start()
+    panel._scan_thread = thread
+    started = []
+
+    def scan(self):
+        started.append(True)
+        return True
+
+    monkeypatch.setattr(Setup, "scan", scan)
+    monkeypatch.setattr(Setup, "cancel_scan",
+                        lambda self: stopping.set() or True)
+    assert panel.run("refresh").is_ok
+    assert started == [True]
+    thread.join(timeout=1)
+
+
+def test_start_kicks_the_scan_off_by_itself(panel, monkeypatch):
+    """Addendum 2: Setup scans automatically at start; `app.launch()` calls
+    this right before the view opens."""
+    monkeypatch.setattr(serial_port_module, "list_ports", lambda: [],
+                        raising=False)
+    assert panel.start() is True
+    thread = panel._scan_thread
+    assert thread is not None and thread is not threading.current_thread()
+    thread.join(timeout=5)
+    assert not panel.is_scanning
+    assert panel.scan_phase == "done"
+    assert panel.state["scan"]["status"] == "ready"
+
+
+def test_start_never_raises_when_a_scan_is_already_running(panel):
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait, daemon=True)
+    thread.start()
+    panel._scan_thread = thread
+    try:
+        assert panel.start() is False
+    finally:
+        release.set()
+        thread.join(timeout=1)

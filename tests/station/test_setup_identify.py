@@ -17,7 +17,8 @@ from station import setup as station_setup
 from station.controller import Controller
 from station.devices import serial_port as serial_port_module
 from station.events import events
-from station.setup import HEADLESS, Setup
+from station.result import Refused
+from station.setup import OFF, SIM, Setup
 
 from tests.station.test_setup import RecordingController, make_model_class
 
@@ -315,28 +316,60 @@ def test_a_scan_runs_off_the_calling_thread_with_progress_in_state(
                         lambda self, port, should_abort=None: seen.append(
                             (port, threading.current_thread())) or "Stepper Probe")
 
-    assert panel.run("scan").is_ok
+    assert panel.scan() is True
     _join(panel)
 
     assert [port for port, _ in seen] == ["/dev/ttyUSB0", "/dev/ttyUSB1"]
     assert all(thread is not caller for _, thread in seen)
     state = panel.state
     assert state["scan"]["progress"] == 100
-    assert state["scan"]["status"] == "Scan complete."
+    assert state["scan"]["phase"] == "done"
+    assert state["scan"]["status"] == "ready - 2 device(s) detected"
     assert state["scan"]["found"] == {"/dev/ttyUSB0": "Stepper Probe",
                                       "/dev/ttyUSB1": "Stepper Probe"}
     assert state["is_scanning"] is False
 
 
-def test_the_headless_entry_is_never_probed(panel, monkeypatch):
+def test_the_scan_status_names_the_port_and_the_progress(panel, monkeypatch):
+    """"scanning 3 port(s)..." then "scanning <port> (2 of 3)...", so a view
+    that only shows the one status line still shows progress."""
+    seen = []
+    monkeypatch.setattr(serial_port_module, "list_ports",
+                        lambda: ["/dev/ttyUSB0", "/dev/ttyUSB1"], raising=False)
+    monkeypatch.setattr(Setup, "identify",
+                        lambda self, port, should_abort=None:
+                        seen.append(self.scan_status))
+    panel.scan()
+    _join(panel)
+    assert seen == ["scanning /dev/ttyUSB0 (1 of 2)...",
+                    "scanning /dev/ttyUSB1 (2 of 2)..."]
+    assert panel.state["values"]["scan_status"] == "ready"
+
+
+def test_a_scan_that_finds_no_port_says_so_instead_of_inventing_one(
+        panel, monkeypatch):
+    monkeypatch.setattr(serial_port_module, "list_ports", lambda: [],
+                        raising=False)
+    panel.scan()
+    _join(panel)
+    assert panel.state["scan"]["ports"] == []
+    assert panel.port_options() == [OFF, SIM]
+    assert panel.state["scan"]["status"] == "ready"
+
+
+def test_only_a_real_port_is_ever_probed(panel, monkeypatch):
+    """The Off and SIM entries the dropdown adds are not ports and never
+    reach the handshake."""
     probed = []
     monkeypatch.setattr(serial_port_module, "list_ports",
                         lambda: ["/dev/ttyUSB0"], raising=False)
     monkeypatch.setattr(Setup, "identify",
                         lambda self, port, should_abort=None: probed.append(port))
-    panel.run("scan")
+    panel.scan()
     _join(panel)
-    assert probed == ["/dev/ttyUSB0"] and HEADLESS not in probed
+    assert probed == ["/dev/ttyUSB0"]
+    assert OFF not in probed and SIM not in probed
+    assert panel.port_options() == [OFF, SIM, "/dev/ttyUSB0"]
 
 
 def test_a_running_scan_can_be_cancelled(panel, monkeypatch):
@@ -354,24 +387,107 @@ def test_a_running_scan_can_be_cancelled(panel, monkeypatch):
         return None
 
     monkeypatch.setattr(Setup, "identify", slow_identify)
-    panel.run("scan")
+    panel.scan()
     assert reached.wait(2), "the scan never started"
-    assert panel.run("cancel_scan").is_ok
+    assert panel.cancel_scan() is True
     _join(panel)
-    assert panel.state["scan"]["status"] == "Scan cancelled."
+    assert panel.state["scan"]["status"] == "scan cancelled"
+    assert panel.state["scan"]["phase"] == "cancelled"
     assert len(panel.state["scan"]["found"]) < 6
 
 
+def test_a_second_scan_is_refused_while_one_is_running(panel, monkeypatch):
+    """Single-flight: two scans over one set of ports is what made the web
+    wizard's progress jump backwards."""
+    reached, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(serial_port_module, "list_ports",
+                        lambda: ["/dev/ttyUSB0"], raising=False)
+
+    def slow_identify(self, port, should_abort=None):
+        reached.set()
+        release.wait(2)
+
+    monkeypatch.setattr(Setup, "identify", slow_identify)
+    panel.scan()
+    assert reached.wait(2), "the scan never started"
+    with pytest.raises(Refused):
+        panel.scan()
+    release.set()
+    _join(panel)
+
+
 def test_a_scan_drops_a_selection_whose_port_is_gone(panel, monkeypatch):
-    panel._ports = [HEADLESS, "/dev/ttyUSB9"]
+    panel._ports = ["/dev/ttyUSB9"]
     panel.stepper_probe_port = "/dev/ttyUSB9"
+    panel._chosen.add("stepper_probe")
     monkeypatch.setattr(serial_port_module, "list_ports",
                         lambda: ["/dev/ttyUSB0"], raising=False)
     monkeypatch.setattr(Setup, "identify",
                         lambda self, port, should_abort=None: None)
-    panel.run("scan")
+    panel.scan()
     _join(panel)
-    assert panel.stepper_probe_port == HEADLESS
+    assert panel.stepper_probe_port == OFF
+    assert "stepper_probe" not in panel._chosen
+
+
+# -- auto-assign runs by itself (Addendum 2) -------------------------------
+
+def test_a_completed_scan_assigns_what_it_identified_without_being_asked(
+        panel, monkeypatch):
+    """The owner struck out the Auto-assign button: identifying a device and
+    then making the operator press a second button to act on it."""
+    answers = {"/dev/ttyUSB0": "Stepper Probe",
+               "/dev/ttyUSB1": "Temperature Controller"}
+    monkeypatch.setattr(serial_port_module, "list_ports",
+                        lambda: list(answers), raising=False)
+    monkeypatch.setattr(Setup, "identify",
+                        lambda self, port, should_abort=None: answers[port])
+    panel.scan()
+    _join(panel)
+    assert panel.stepper_probe_port == "/dev/ttyUSB0"
+    assert panel.temperature_controller_port == "/dev/ttyUSB1"
+    assert panel.stepper_probe_status == "detected: Stepper Probe"
+    assert panel.smc100_rotator_port == OFF
+    assert panel.smc100_rotator_status == "off"
+
+
+def test_a_cancelled_scan_assigns_nothing(panel, monkeypatch):
+    """A half-finished picture of the bench is not something to wire a row
+    up from."""
+    reached = threading.Event()
+    monkeypatch.setattr(serial_port_module, "list_ports",
+                        lambda: [f"/dev/ttyUSB{n}" for n in range(6)],
+                        raising=False)
+
+    def slow_identify(self, port, should_abort=None):
+        reached.set()
+        for _ in range(200):
+            if should_abort and should_abort():
+                return None
+            time.sleep(0.005)
+        return "Stepper Probe"
+
+    monkeypatch.setattr(Setup, "identify", slow_identify)
+    panel.scan()
+    assert reached.wait(2)
+    panel.cancel_scan()
+    _join(panel)
+    assert panel.stepper_probe_port == OFF
+
+
+def test_a_scan_leaves_a_row_the_operator_set_by_hand_alone(panel, monkeypatch):
+    answers = {"/dev/ttyUSB0": "Stepper Probe"}
+    monkeypatch.setattr(serial_port_module, "list_ports",
+                        lambda: list(answers), raising=False)
+    monkeypatch.setattr(Setup, "identify",
+                        lambda self, port, should_abort=None: answers[port])
+    panel._ports = ["/dev/ttyUSB0"]
+    assert panel.run("set_stepper_probe_port", args=(SIM,)).is_ok
+    panel.scan()
+    _join(panel)
+    assert panel.stepper_probe_port == SIM
+    assert panel.stepper_probe_status == "simulated"
+    assert panel._found == {"/dev/ttyUSB0": "Stepper Probe"}
 
 
 def _join(panel, timeout=5.0):

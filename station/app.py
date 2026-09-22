@@ -112,6 +112,11 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
         ensure_application()
     view = (view_class(controller, setup, port=port, open_browser=open_browser)
             if view_name == "web" else view_class(controller, setup))
+    # The hardware scan starts BEFORE the window does (Addendum 2): the
+    # operator finds it already running instead of being shown a Scan button
+    # and asked to press it. It runs on its own thread and the view polls
+    # `setup.state`, so this never delays the window by the handshake budget.
+    setup.start()
     events.info("View", f"{view_name} starting", source="app")
     view.open()
     # A desktop view's open() runs its event loop and returns at close; the

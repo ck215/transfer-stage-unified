@@ -35,12 +35,16 @@ class FakeView:
 
 @pytest.fixture(autouse=True)
 def isolated_launch(monkeypatch, tmp_path):
-    """No exit hooks, no excepthooks and no log file outside the tmp dir."""
+    """No exit hooks, no excepthooks, no log file outside the tmp dir - and no
+    real hardware scan: `launch()` starts one, and a test must never open a
+    port."""
     FakeView.built = []
     hooks = []
     monkeypatch.setattr(Controller, "_hook_exit",
                         lambda self: hooks.append(("exit", self)))
     monkeypatch.setattr(events, "hook_exceptions", lambda: hooks.append(("exc",)))
+    monkeypatch.setattr(app.Setup, "start",
+                        lambda self: hooks.append(("scan", self)))
     monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path))
     monkeypatch.setattr(theme, "FONT_SIZE", theme.FONT_SIZE)
     yield hooks
@@ -101,8 +105,20 @@ def test_launch_builds_one_controller_hooks_the_exit_and_opens_the_view(
     assert isinstance(view, FakeView) and view.is_open
     assert isinstance(view.controller, Controller)
     assert view.setup.controller is view.controller
-    assert [kind for kind, *_ in isolated_launch] == ["exit", "exc"]
+    assert [kind for kind, *_ in isolated_launch] == ["exit", "exc", "scan"]
     assert len(FakeView.built) == 1
+
+
+def test_launch_starts_the_hardware_scan_before_the_view_opens(
+        fake_views, monkeypatch):
+    """Addendum 2: Setup scans automatically at start. It runs on its own
+    thread and the view polls `setup.state`, so the window is never waiting
+    on the handshake budget."""
+    order = []
+    monkeypatch.setattr(app.Setup, "start", lambda self: order.append("scan"))
+    monkeypatch.setattr(FakeView, "open", lambda self: order.append("open"))
+    app.launch("tk")
+    assert order == ["scan", "open"]
 
 
 def test_launch_opens_the_log_file_and_says_where_it_is(
