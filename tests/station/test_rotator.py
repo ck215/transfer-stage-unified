@@ -21,7 +21,7 @@ from station import schema as sch
 from station.events import events
 from station.models import rotator as rotator_module
 from station.models.rotator import Rotator
-from station.result import NeedsConfirm, Refused, Result
+from station.result import NeedsConfirm, Refused
 
 
 class FakeSMC:
@@ -666,3 +666,87 @@ def test_client_liveness_is_gone():
                  "_client_liveness_active", "_init_client_liveness",
                  "stop_client_liveness_watchdog", "connection_status"):
         assert not hasattr(Rotator, gone), f"{gone} came back"
+
+
+# -- the two halves, joined ------------------------------------------------
+#
+# Everything above drives a fake stage. This drives the real `SMC100` over
+# the real `SerialPort`, with only pyserial replaced -- the seam where a
+# model half and a transport half that were each correct in isolation have
+# been joined wrongly before (WEB-19, 2026-09-20).
+
+class _Handle:
+    """A pyserial-shaped SMC100 that answers TS? and TP?."""
+
+    def __init__(self):
+        self.is_open = True
+        self.wire = b""
+        self._partial = b""
+        self._pending = b""
+
+    @property
+    def in_waiting(self):
+        return len(self._pending)
+
+    def write(self, data):
+        self.wire += bytes(data)
+        self._partial += bytes(data)
+        while b"\r\n" in self._partial:
+            frame, self._partial = self._partial.split(b"\r\n", 1)
+            body = frame.decode("ascii")[1:]
+            if body == "TS?":
+                self._pending += b"1TS000032\r\n"
+            elif body == "TP?":
+                self._pending += b"1TP12.5000\r\n"
+        return len(data)
+
+    def read(self, size=1):
+        out, self._pending = self._pending[:size], self._pending[size:]
+        return out
+
+    def read_all(self):
+        return self.read(self.in_waiting)
+
+    def readline(self):
+        return self.read_all()
+
+    def reset_input_buffer(self):
+        pass
+
+    def reset_output_buffer(self):
+        pass
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.is_open = False
+
+
+def test_a_rotator_over_the_real_transport_polls_and_stops():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from station.devices import serial_port
+
+    handle = _Handle()
+    with patch.object(serial_port, "pyserial",
+                      SimpleNamespace(Serial=lambda **kwargs: handle)):
+        model = Rotator(port="/dev/fake-smc100")
+        model.open()
+        try:
+            assert _wait_until(lambda: model.position == 12.5), (
+                f"the stage never published through the real transport "
+                f"({model.motion_state!r}, wire={handle.wire!r})")
+            assert model.motion_state == "Ready"
+            assert model.is_connected is True
+            assert model.state["devices"]["SMC100"] == "verified", (
+                "a handshake=False port opens UNVERIFIED; the driver must "
+                "vouch for it once the controller answers")
+
+            assert model.estop() is True
+            assert handle.wire.endswith(b"1ST\r\n"), (
+                f"FULL STOP did not reach the wire: {handle.wire!r}")
+        finally:
+            model.close()
+    assert handle.is_open is False

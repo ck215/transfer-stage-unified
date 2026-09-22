@@ -15,9 +15,10 @@ rather than printing two long byte strings.
 """
 import importlib.util
 import pathlib
+from types import SimpleNamespace
+from unittest.mock import patch
 
-import pytest
-
+from station.devices import serial_port
 from station.devices.smc100 import SMC100
 
 
@@ -111,34 +112,42 @@ class OldPort:
         pass
 
 
-class NewPort:
-    """Shaped like `station.devices.serial_port.SerialPort` (pinned interface),
-    for the driver replacing it. A stub in this worktree, so the tests use a
-    minimal fake and the real one is joined at merge."""
+class Handle(OldPort):
+    """The same fake, with the two methods the real `SerialPort` also uses.
 
-    def __init__(self, stage):
-        self.stage = stage
-        self.writes = []
+    The new driver is run over the **real** transport here, not over a
+    double: `SerialPort` is what turns one `write()` into the bytes on the
+    wire, so a comparison that skipped it would be comparing the driver's
+    intentions rather than the station's output.
+    """
+
+    def __init__(self, stage, **kwargs):
+        super().__init__(stage, **kwargs)
         self.is_open = True
-        self.status = "verified"
 
-    def open(self):
-        self.is_open = True
+    @property
+    def in_waiting(self):
+        return len(self.stage._pending)
 
-    def wait_open(self, timeout=None):
-        return True
+    def read(self, size=1):
+        out = b""
+        for _ in range(size):
+            byte = self.stage.read_byte()
+            if not byte:
+                break
+            out += byte
+        return out
 
-    def write(self, payload, *, priority=False, abort_if=None):
-        if abort_if is not None and abort_if():
-            return False
-        self.writes.append((bytes(payload), priority))
-        self.stage.feed(payload)
-        return True
+    def read_all(self):
+        return self.read(self.in_waiting)
 
-    def read_line(self, timeout=None):
-        return self.stage.read_line()
+    def readline(self):
+        return self.read_all()
 
-    def flush(self, timeout=None):
+    def reset_input_buffer(self):
+        pass
+
+    def reset_output_buffer(self):
         pass
 
     def close(self):
@@ -164,8 +173,21 @@ def _old(stage, **kwargs):
 
 
 def _new(stage):
-    return SMC100(1, "SIM-PORT", transport=NewPort(stage),
-                  sleep=lambda seconds: None)
+    """The new driver, over the real `SerialPort`, over the same fake handle.
+
+    The transport is the one `SMC100.__init__` builds for itself, so the
+    settings under test are the ones the bench will get. Only pyserial is
+    replaced.
+    """
+    handle = Handle(stage)
+    with patch.object(serial_port, "pyserial",
+                      SimpleNamespace(Serial=lambda **kwargs: handle)):
+        smc = SMC100(1, "/dev/fake-smc100", sleep=lambda seconds: None)
+        # The port's own open, not the device's: `SMC100.open()` would put a
+        # TS? of its own on the wire, which the script did not ask for.
+        smc._port.open()
+        assert smc._port.wait_open(2.0), "the fake port never came up"
+    return smc
 
 
 def _both(script, states=("32",), position="12.5000"):
@@ -263,3 +285,14 @@ def test_the_comparison_can_fail():
     other = Stage(("32",))
     _new(other).move_absolute_deg(2.0, wait_stop=False)
     assert stage.wire != other.wire
+
+
+def test_the_transport_never_appends_a_terminator_of_its_own():
+    """The driver owns the CRLF. A transport that added one would double it
+    on every frame -- the exact failure this file exists to catch."""
+    stage = Stage(("32",))
+    smc = _new(stage)
+    smc.stop()
+    assert stage.wire == b"1ST\r\n"
+    assert smc._port.line_terminator == b"\r\n", (
+        "read_line needs CRLF to split the controller's replies")

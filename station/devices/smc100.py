@@ -129,11 +129,11 @@ class SMC100(Device):
     """
 
     #: `lib/smc100.py` opened exactly these. Copied, not re-derived.
+    #: 8 data bits, no parity and 1 stop bit are fixed in `SerialPort.
+    #: _open_handle` and already match what this device needs.
     BAUD_RATE = 57600
-    BYTE_SIZE = 8
-    STOP_BITS = 1
-    PARITY = "N"
     XONXOFF = True
+    LINE_TERMINATOR = "\r\n"
     TERMINATOR = b"\r\n"
     READ_TIMEOUT_SEC = 0.050
 
@@ -179,30 +179,31 @@ class SMC100(Device):
     def _build_transport(self, port):
         """The SMC100's own serial settings, on the station's one transport.
 
-        `handshake=False`: there is no identity byte to ask this controller
-        for, and a handshake write into a stage controller is not a harmless
-        probe. See the handoff's CORE CHANGE REQUESTS for the exact signature
-        this needs from `SerialPort`.
+        Exactly what `src/lib/smc100.py` passed `serial.Serial(...)`:
+        57600 8N1, software flow control, CRLF lines, a 50 ms read and a
+        200 ms bounded write (ROTATOR-16).
+
+        `handshake=False`: there is no `s\\n` -> `DEV: x` identity protocol
+        on a Newport controller, and a handshake write into a stage
+        controller is not a harmless probe. The link therefore opens
+        UNVERIFIED, and `open()` calls `mark_verified()` once the controller
+        has answered `TS?` in its own language.
         """
         try:
             return SerialPort(
-                port,
-                baud_rate=self.BAUD_RATE,
-                handshake=False,
-                byte_size=self.BYTE_SIZE,
-                stop_bits=self.STOP_BITS,
-                parity=self.PARITY,
+                port, self.BAUD_RATE,
                 xonxoff=self.XONXOFF,
-                terminator=self.TERMINATOR,
                 read_timeout=self.READ_TIMEOUT_SEC,
                 write_timeout=self.WRITE_TIMEOUT_SEC,
+                line_terminator=self.LINE_TERMINATOR,
+                handshake=False,
             )
-        except TypeError as exc:
+        except (TypeError, ValueError) as exc:
             # Loud, not papered over: an unbounded write timeout is the whole
             # of ROTATOR-16, so silently falling back to a narrower SerialPort
             # signature would re-open a safety defect to keep a constructor
             # working.
-            events.error("Rotator Transport", "SerialPort does not accept the "
+            events.error("Rotator Transport", "SerialPort would not take the "
                          "SMC100's serial settings; the stage cannot be opened "
                          "with a bounded write timeout", source="SMC100",
                          exception=exc)
@@ -210,7 +211,15 @@ class SMC100(Device):
 
     # -- Device ------------------------------------------------------------
     def open(self):
-        """Open the port, then prove the controller is actually answering."""
+        """Open the port, then prove the controller is actually answering.
+
+        A `handshake=False` port opens UNVERIFIED, which is honest: opening a
+        port proves nothing, and a cable into a powered-off controller opens
+        exactly like a working one. `TS?` is this device's own identity
+        question, so a reply to it is what earns `mark_verified` -- and what
+        makes the rotator's status word read `verified` rather than leaving
+        it permanently unverified.
+        """
         started = time.monotonic()
         self._port.open()
         if not self._port.wait_open(self.OPEN_TIMEOUT_SEC):
@@ -218,6 +227,9 @@ class SMC100(Device):
                          f"{self.OPEN_TIMEOUT_SEC}s", source="SMC100")
             raise SMC100Error(f"the port {self._port_name} did not open")
         errors, state = self.get_status()
+        mark_verified = getattr(self._port, "mark_verified", None)
+        if mark_verified is not None:
+            mark_verified(f"SMC100 #{self._smc_id}")
         events.debug("Open", f"{self._port_name} open in "
                      f"{(time.monotonic() - started) * 1000:.0f} ms; "
                      f"state {state} ({STATE_NAMES.get(state, 'unknown')}), "
@@ -430,10 +442,15 @@ class SMC100(Device):
             events.debug("Wire", f"{prefix} <- {frame.hex(' ')}", source="SMC100",
                          every=1.0 if command in ("TS", "TP") else 0.0)
             if not expect_response:
+                # A command with no reply has nothing else to prove it left,
+                # so it is drained -- bounded, unlike the old driver's
+                # unbounded `tcdrain`. A command that expects a reply is
+                # proven delivered by the reply, and draining it as well
+                # would put a thread and a log line on the 4 Hz poll path
+                # for no information.
                 port.flush(self.FLUSH_TIMEOUT_SEC)
                 self._pace()
                 return None
-            port.flush(self.FLUSH_TIMEOUT_SEC)
             try:
                 return self._read_reply(prefix, command)
             except SMC100Error:

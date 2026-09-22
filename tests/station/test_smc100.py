@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from station.devices import smc100 as driver
+from station.devices.serial_port import SerialPort
 from station.devices.smc100 import (
     SMC100, SMC100Corruption, SMC100DisabledState, SMC100Error,
     SMC100InvalidResponse, SMC100ReadTimeout, SMC100WaitTimeout,
@@ -78,49 +79,37 @@ def _smc(port=None, **kwargs):
 
 # -- one transport, with this device's settings ----------------------------
 
-def test_the_driver_builds_its_port_with_the_smc100s_own_serial_settings():
+def test_the_driver_builds_a_real_serial_port_with_the_smc100s_own_settings():
     """Copied from what `src/lib/smc100.py` opened, not re-derived: 57600 8N1,
-    software flow control, CRLF."""
-    built = {}
+    software flow control, CRLF lines, a 50 ms read and a bounded write.
 
-    def factory(port, **kwargs):
-        built["port"] = port
-        built["kwargs"] = kwargs
-        return FakePort()
+    Asserted against the real `SerialPort`, not a double -- constructing one
+    does no I/O, so this is the configuration the bench will actually get.
+    8/N/1 is fixed inside `SerialPort._open_handle` and already matches.
+    """
+    port = SMC100(1, "/dev/ttyS5")._port
 
-    with patch.object(driver, "SerialPort", side_effect=factory):
-        SMC100(1, "/dev/ttyS5")
-
-    assert built["port"] == "/dev/ttyS5"
-    kwargs = built["kwargs"]
-    assert kwargs["baud_rate"] == 57600
-    assert kwargs["parity"] == "N"
-    assert kwargs["byte_size"] == 8
-    assert kwargs["stop_bits"] == 1
-    assert kwargs["xonxoff"] is True
-    assert kwargs["terminator"] == b"\r\n"
+    assert isinstance(port, SerialPort)
+    assert port.port == "/dev/ttyS5"
+    assert port.baud_rate == 57600
+    assert port.xonxoff is True
+    assert port.read_timeout == 0.05
+    assert port.line_terminator == b"\r\n"
 
 
 def test_the_port_is_opened_with_no_handshake():
-    """There is no identity byte to ask an SMC100 for, and a handshake write
-    into a stage controller is not a harmless probe."""
-    built = {}
-    with patch.object(driver, "SerialPort",
-                      side_effect=lambda port, **kwargs: built.update(kwargs) or FakePort()):
-        SMC100(1, "/dev/ttyS5")
-    assert built["handshake"] is False
+    """There is no `s\\n` -> `DEV: x` protocol on a Newport controller, and a
+    handshake write into a stage controller is not a harmless probe."""
+    assert SMC100(1, "/dev/ttyS5")._port.has_handshake is False
 
 
 def test_the_write_is_bounded():
     """ROTATOR-16. `xonxoff=True` lets a busy or faulted controller withhold
     XON exactly when someone is pressing FULL STOP, and pyserial's default
     `write_timeout=None` means block forever."""
-    built = {}
-    with patch.object(driver, "SerialPort",
-                      side_effect=lambda port, **kwargs: built.update(kwargs) or FakePort()):
-        SMC100(1, "/dev/ttyS5")
-    assert built["write_timeout"] is not None
-    assert built["write_timeout"] == SMC100.WRITE_TIMEOUT_SEC
+    port = SMC100(1, "/dev/ttyS5")._port
+    assert port.write_timeout is not None
+    assert port.write_timeout == SMC100.WRITE_TIMEOUT_SEC == 0.2
 
 
 def test_a_transport_that_cannot_take_the_settings_fails_loudly():
@@ -129,6 +118,19 @@ def test_a_transport_that_cannot_take_the_settings_fails_loudly():
     with patch.object(driver, "SerialPort", side_effect=TypeError("no such kwarg")):
         with pytest.raises(TypeError):
             SMC100(1, "/dev/ttyS5")
+
+
+def test_opening_vouches_for_the_link_once_the_controller_answers():
+    """A `handshake=False` port opens UNVERIFIED by contract. `TS?` is this
+    device's own identity question, so answering it is what earns VERIFIED --
+    otherwise the rotator's status word stays 'unverified' however well the
+    stage is talking."""
+    port = FakePort(replies=["1TS000032"])
+    port.verified = []
+    port.mark_verified = lambda identity=None: port.verified.append(identity)
+    _smc(port).open()
+    assert port.verified, "the driver never vouched for the link"
+    assert "SMC100" in str(port.verified[0])
 
 
 # -- the FULL STOP latch, inside the port lock -----------------------------
