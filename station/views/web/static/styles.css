@@ -4,7 +4,8 @@
  * /api/theme.css, which is station/views/theme.py. There is no colour
  * literal here on purpose: the old stylesheet carried its own palette, so
  * the Web client looked like a different application from the two desktop
- * views and a theme change had to be made in three places (RC-7).
+ * views and a theme change had to be made in three places (RC-7). Sizes are
+ * relative (em / rem / %), so `--font-size` still scales the whole page.
  */
 
 * { box-sizing: border-box; }
@@ -16,22 +17,32 @@ html, body {
   color: var(--text);
   font-family: var(--font-family);
   font-size: var(--font-size);
+  line-height: 1.4;
 }
 
 /* -- the top bar -------------------------------------------------------- */
+/* Sticky, and the FULL STOP rides with it: the stop control is reachable
+   from anywhere on the page without scrolling to find it. */
 .top {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.6rem 1rem;
+  padding: 0.5rem 1rem;
   background: var(--surface);
   border-bottom: 1px solid var(--muted);
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 3;
+  box-shadow: 0 0.15rem 0.5rem var(--bg);
 }
 
-.brand { font-size: 1.1em; margin: 0; }
+.brand {
+  font-size: 1.05em;
+  font-weight: bold;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
 
 .closed { display: flex; align-items: center; gap: 0.4rem; margin-left: auto; }
 
@@ -39,17 +50,31 @@ html, body {
   padding: 0.15em 0.6em;
   border-radius: 1em;
   border: 1px solid var(--muted);
-  font-size: 0.85em;
+  font-size: 0.8em;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
-.full-stop { min-width: 12rem; font-weight: bold; }
+.full-stop {
+  min-width: 13rem;
+  padding: 0.55em 1.2em;
+  font-weight: bold;
+  font-size: 1.05em;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-width: 2px;
+  border-color: var(--danger-fg);
+}
 
 /* -- cards -------------------------------------------------------------- */
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
-  gap: 1rem;
-  padding: 1rem;
+  /* Dense: a short card fills the hole a wide one leaves, instead of the
+     page keeping a column-shaped gap next to it. */
+  grid-auto-flow: dense;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem 1rem;
   align-items: start;
 }
 
@@ -62,36 +87,119 @@ html, body {
 
 .card.stale { opacity: 0.75; }
 
+/* A card of row sections is a table - Setup, one line per model - and a
+   table is read across, so it takes the full width. A card that has no row
+   section is left in its column, whatever it is. */
+.card.table-card { grid-column: 1 / -1; }
+
+/* A card with a lot to say (Red Percent: ten sections) is twice as wide and
+   flows its sections in two columns, so it is not one very tall stripe
+   beside a mostly empty one. Only where two columns actually fit. */
+@media (min-width: 48rem) {
+  .card.wide { grid-column: span 2; }
+
+  .card.wide > .card-body {
+    column-count: 2;
+    column-gap: 1.25rem;
+  }
+
+  .card.wide > .card-body > .section {
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+    padding-top: 0;
+  }
+}
+
 .card-head {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
+  padding: 0.45rem 0.75rem;
+  background: var(--bg);
   border-bottom: 1px solid var(--muted);
 }
 
-.card-title { font-size: 1em; margin: 0; margin-right: auto; }
+.card-title {
+  font-size: 0.95em;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin: 0;
+  margin-right: auto;
+}
 
 .stale-badge { border-color: var(--warning-bg); color: var(--warning-bg); }
 
-.card-body { padding: 0.25rem 0.75rem 0.75rem; }
+.card.collapsed .card-head { border-bottom: 0; }
 
-.section { padding-top: 0.5rem; }
+.card-body { padding: 0.25rem 0.75rem 0.6rem; }
+
+.card-body[hidden] { display: none; }
+
+.section { padding-top: 0.35rem; }
+
+.section + .section { border-top: 1px solid var(--bg); }
 
 .section-title {
-  font-size: 0.85em;
+  font-size: 0.8em;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: var(--muted);
-  margin: 0.4rem 0;
+  margin: 0.45rem 0 0.25rem;
 }
+
+/* -- row sections: sch.section(..., layout="row") ------------------------ */
+/* One grid for the card body; each row section is `display: contents`, so
+   every row's cells land in the same columns. That is what makes the Setup
+   panel one table with one line per model. */
+.card-body.table {
+  display: grid;
+  align-items: center;
+  column-gap: 0.75rem;
+  row-gap: 0.1rem;
+  padding-top: 0.4rem;
+}
+
+.card-body.table > .section { display: contents; }
+
+.card-body.table > .section:not(.section-row) {
+  display: block;
+  grid-column: 1 / -1;
+}
+
+.section-row > .row-title {
+  font-weight: bold;
+  white-space: nowrap;
+  padding: 0.25rem 0;
+}
+
+.section-row > .cell {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0;
+  min-height: 2rem;
+}
+
+/* The label of a pair inside a row is a caption, not a column of its own. */
+.section-row > .cell > .label {
+  flex: 0 0 auto;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* The last cell is the row's status, hard right. */
+.section-row > :last-child { justify-self: end; }
+
+.section-row > .filler { min-height: 0; }
 
 /* -- rows and controls -------------------------------------------------- */
 .row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.2rem 0;
+  padding: 0.15rem 0;
   min-height: 2rem;
 }
 
@@ -101,11 +209,22 @@ html, body {
 
 .label { flex: 1 1 auto; color: var(--muted); }
 
-.value { font-variant-numeric: tabular-nums; }
+/* A readout is not an entry: it is inset and never bordered like a box the
+   operator could type in. */
+.value {
+  font-variant-numeric: tabular-nums;
+  background: var(--bg);
+  border: 1px solid var(--bg);
+  border-radius: 0.25rem;
+  padding: 0.2em 0.5em;
+  min-width: 4rem;
+  text-align: right;
+  white-space: nowrap;
+}
 
 .group { display: flex; align-items: center; gap: 0.3rem; }
 
-.unit { color: var(--muted); font-size: 0.85em; }
+.unit { color: var(--muted); font-size: 0.8em; }
 
 .input, .select {
   background: var(--bg);
@@ -117,6 +236,13 @@ html, body {
   font-size: inherit;
   min-width: 7rem;
 }
+
+.input[type="number"] { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Every dropdown is the same width, whatever is currently chosen. */
+.select { width: 10rem; min-width: 10rem; }
+
+.input:focus, .select:focus { outline: 2px solid var(--info-bg); }
 
 .input:disabled, .select:disabled, .button:disabled {
   opacity: 0.45;
@@ -131,10 +257,11 @@ html, body {
   padding: 0.35em 0.9em;
   font-family: inherit;
   font-size: inherit;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.button.small { padding: 0.15em 0.5em; font-size: 0.85em; }
+.button.small { padding: 0.15em 0.5em; font-size: 0.8em; }
 
 /* Roles: the meaning, not the colour. theme.py maps them. */
 .role-neutral { background: var(--neutral-bg); color: var(--neutral-fg); border-color: var(--neutral-bg); }
@@ -153,12 +280,13 @@ html, body {
 
 span.value.role-neutral, span.value.role-go, span.value.role-danger,
 span.value.role-warning, span.value.role-info {
-  background: transparent;
-  border: 0;
+  background: var(--bg);
+  border-color: var(--bg);
 }
 
 span.value.role-danger { color: var(--danger-bg); }
 span.value.role-warning { color: var(--warning-bg); }
+span.value.role-go { color: var(--go-bg); }
 
 .lamp {
   display: inline-block;
@@ -176,38 +304,61 @@ span.value.role-warning { color: var(--warning-bg); }
   border-radius: 0.25rem;
 }
 
+/* A rendered figure is a picture the model draws, so its own background is
+   whatever the model chose (see the handoff: an opaque light figure on a
+   dark page is a model-side palette, not a stylesheet one). What this side
+   controls is the surface it sits on and how much of the card it may take. */
+.picture {
+  display: block;
+  background: var(--surface);
+  max-height: 18rem;
+  object-fit: contain;
+}
+
 .feed {
   height: 9rem;
   overflow: auto;
   margin: 0;
   padding: 0.4rem;
-  font-size: 0.85em;
+  font-size: 0.8em;
   white-space: pre-wrap;
 }
 
 /* A refusal is a sentence on the card, never a popup. */
 .status {
   margin: 0;
-  padding: 0.4rem 0.75rem;
+  padding: 0.35rem 0.75rem;
   background: var(--warning-bg);
   color: var(--warning-fg);
-  font-size: 0.9em;
+  font-size: 0.85em;
 }
 
 /* -- the event log ------------------------------------------------------ */
-.log-panel { padding: 0 1rem 1rem; }
-
-.log {
-  height: 11rem;
-  overflow: auto;
-  background: var(--surface);
-  border: 1px solid var(--muted);
-  border-radius: 0.4rem;
-  padding: 0.5rem;
-  font-size: 0.9em;
+/* Compact and scrolled, pinned to the bottom of the viewport: the log is
+   reference, not the page. */
+.log-panel {
+  position: sticky;
+  bottom: 0;
+  padding: 0.25rem 1rem 0.5rem;
+  background: var(--bg);
+  border-top: 1px solid var(--muted);
+  z-index: 2;
 }
 
-.event { padding: 0.1rem 0; }
+.log-panel .section-title { margin: 0.25rem 0; }
+
+.log {
+  height: 7.5rem;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--muted);
+  border-radius: 0.3rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8em;
+  line-height: 1.35;
+}
+
+.event { padding: 0; }
 .severity-info { color: var(--text); }
 .severity-warning { color: var(--warning-bg); }
 .severity-error { color: var(--danger-bg); }
