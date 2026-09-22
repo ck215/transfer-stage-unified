@@ -5,17 +5,26 @@ a font size."""
 FONT_FAMILY = "Helvetica"
 FONT_SIZE = 12            # base, in points; launch with --font-size to change
 
-from station.palette import BACKGROUND, SURFACE, TEXT, MUTED  # noqa: F401  one palette
+from station.palette import (BACKGROUND, SURFACE, TEXT, MUTED,  # noqa: F401
+                             SIGNAL, TRACE)                      # one palette
 
 #: role -> (background, foreground)
+#:
+#: Owner ruling 2026-09-22: one red. `danger` is the signal colour and it is
+#: the ONLY role that carries it, so the eye has exactly one thing to find in
+#: a hurry. `warning` is the trace colour - the same amber a live number is
+#: drawn in, because a warning is something to read, not something to stop
+#: for. The other three are quiet steps of the panel, lit by ink: a ladder,
+#: so `go` (the one you press) is the lightest and `info` barely leaves the
+#: panel, and none of them competes with the stop.
 ROLES = {
-    "neutral": ("#3a3a3a", "#f0f0f0"),
-    "go": ("#1b5e20", "#ffffff"),
-    "danger": ("#8e0000", "#ffffff"),
-    "warning": ("#e65100", "#000000"),
-    "info": ("#0d47a1", "#ffffff"),
+    "info": ("#2f363f", TEXT),
+    "neutral": ("#363e49", TEXT),
+    "go": ("#414b58", TEXT),
+    "danger": (SIGNAL, "#ffffff"),
+    "warning": (TRACE, BACKGROUND),
 }
-DISABLED = ("#2a2a2a", "#6a6a6a")
+DISABLED = (SURFACE, "#6b7280")
 SEVERITY_ROLE = {"error": "danger", "warning": "warning", "info": "info"}
 
 
@@ -54,8 +63,8 @@ def toggle_colors(element, is_on):
 def css_variables():
     lines = [f"--font-family: {FONT_FAMILY}, sans-serif;", f"--font-size: {FONT_SIZE}pt;",
              f"--bg: {BACKGROUND};", f"--surface: {SURFACE};", f"--text: {TEXT};",
-             f"--muted: {MUTED};", f"--pad: {PAD}px;", f"--gap: {GAP}px;",
-             f"--inset: {INSET}px;"]
+             f"--muted: {MUTED};", f"--signal: {SIGNAL};", f"--trace: {TRACE};",
+             f"--pad: {PAD}px;", f"--gap: {GAP}px;", f"--inset: {INSET}px;"]
     for role, (bg, fg) in ROLES.items():
         lines += [f"--{role}-bg: {bg};", f"--{role}-fg: {fg};"]
     return ":root {\n  " + "\n  ".join(lines) + "\n}\n"

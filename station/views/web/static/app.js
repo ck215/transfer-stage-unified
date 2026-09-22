@@ -21,6 +21,9 @@ const DATA_POLL_MS = 1000;
 const HEARTBEAT_MS = 2000;
 const STALE_AFTER_S = 1.0;
 const SETUP_NAME = '__setup__';
+//: How many of a model's key numbers the status rail carries. More than this
+//: and the rail stops being readable at a glance, which is its whole job.
+const RAIL_READOUTS = 4;
 
 // ==========================================================================
 // fetch, bounded. Overridable so a test can shrink it.
@@ -76,8 +79,48 @@ function make(tag, className, text) {
 
 function row(element, extraClass) {
   const node = make('div', 'row' + (extraClass ? ' ' + extraClass : ''));
-  node.appendChild(make('span', 'label', element.text || element.model_attr || ''));
+  node.appendChild(make('span', 'label',
+                        sentenceCase(element.text || element.model_attr || '')));
   return node;
+}
+
+/** Sentence case, as the design brief asks for everywhere. Only a SHOUTED
+ *  word is brought back down - a word of four letters or more that is all
+ *  capitals - so "FULL STOP" becomes "Full stop" while "X Position:" and
+ *  "Sync X: OFF" keep the capitals that carry meaning. The schema is the
+ *  model's vocabulary and is not edited from here; this is presentation. */
+function sentence(text) {
+  const words = String(text === null || text === undefined ? '' : text)
+    .split(' ')
+    .map((word) => (/^[A-Z]{4,}[:.,]?$/.test(word) ? word.toLowerCase() : word));
+  const joined = words.join(' ');
+  return joined ? joined.charAt(0).toUpperCase() + joined.slice(1) : joined;
+}
+
+/** Sentence case for a heading or a label: `sentence` first, then the
+ *  interior Capitalised words come down too, so "Coordinate Frame" reads
+ *  "Coordinate frame" and "Probe Tilt Angle:" reads "Probe tilt angle". A
+ *  word that is not simply Capitalised - an initialism like ID or DC, an
+ *  axis letter, a unit - is left exactly as the model wrote it, and so is
+ *  the first word. The trailing colon goes with it: the value is beside the
+ *  label on a panel, not after it in a form. */
+function sentenceCase(text) {
+  const words = sentence(text).replace(/\s*:\s*$/, '').split(' ');
+  return words
+    .map((word, index) => (index > 0 && /^[A-Z][a-z]+$/.test(word)
+                           ? word.toLowerCase() : word))
+    .join(' ');
+}
+
+/** The one bold object on the page, in the two sizes it comes in: the
+ *  dashboard's stop on the rail and the per-model stop in a Safety section.
+ *  One control, one shape, wherever it appears. */
+function mushroom(label) {
+  const button = make('button', 'mushroom');
+  button.type = 'button';
+  const face = make('span', 'mushroom-face', label);
+  button.appendChild(face);
+  return { button, face };
 }
 
 // ==========================================================================
@@ -158,6 +201,27 @@ function isWideCard(sections) {
   if (list.some(isRowSection)) return false;
   const drawn = list.reduce((total, s) => total + (s.elements || []).length, 0);
   return list.length >= 6 || drawn >= 24;
+}
+
+/** The key numbers the status rail carries for a model, derived rather than
+ *  named: the readonly elements of its FIRST schema section, which is where
+ *  every model in this station puts what the operator watches (the probe's
+ *  coordinate frame, the heater's temperature, the rotator's stage). A first
+ *  section that happens to hold no readout falls through to the next one
+ *  that does, so a model is never silently absent from the rail. */
+function railElements(schema) {
+  for (const section of ((schema && schema.sections) || [])) {
+    const readouts = (section.elements || [])
+      .filter((element) => element.type === 'readonly' && element.model_attr);
+    if (readouts.length) return readouts.slice(0, RAIL_READOUTS);
+  }
+  return [];
+}
+
+/** "X Position:" is a form label; on the rail it is a caption beside a
+ *  number, so it drops the colon that pointed at the box. */
+function railLabel(element) {
+  return sentenceCase(element.text || element.model_attr || '');
 }
 
 /** `PanelView._refresh`: `age is not None and age > 1.0`. A model with no
@@ -241,7 +305,8 @@ function renderEntry(panel, element) {
 
 function renderButton(panel, element) {
   const node = make('div', 'row');
-  const button = make('button', 'button ' + roleClass(element.role), element.text || element.command);
+  const button = make('button', 'button ' + roleClass(element.role),
+                      sentenceCase(element.text || element.command));
   button.type = 'button';
   button.addEventListener('click', () => panel.run(element));
   node.appendChild(button);
@@ -252,17 +317,44 @@ function renderButton(panel, element) {
 }
 
 function renderToggle(panel, element) {
+  // The Safety section's stop is not a button that happens to be red: it is
+  // the same physical object as the dashboard's, one size down, so the
+  // operator never has to work out which control stops this model.
+  if (element.model_attr === 'is_estopped') return renderStopToggle(panel, element);
   const node = row(element);
-  const button = make('button', 'button toggle', element.false_text || 'OFF');
+  const button = make('button', 'button toggle',
+                      sentenceCase(element.false_text || 'off'));
   button.type = 'button';
   button.addEventListener('click', () => panel.runToggle(element));
   node.appendChild(button);
   return {
     node,
     setOn: (on) => {
-      button.textContent = on ? (element.true_text || 'ON') : (element.false_text || 'OFF');
+      button.textContent = sentenceCase(on ? (element.true_text || 'on')
+                                           : (element.false_text || 'off'));
       button.className = 'button toggle ' + roleClass(on ? element.on_role : element.off_role)
         + (on ? ' on' : ' off');
+    },
+    setEnabled: (flag) => { button.disabled = !flag; },
+  };
+}
+
+/** A model's own FULL STOP, drawn as the mushroom. The copy is the rail's
+ *  copy - "Stop" then "Clear" - because an action keeps its name through
+ *  the whole flow; the schema's own wording is the button's title. */
+function renderStopToggle(panel, element) {
+  const node = row(element);
+  const { button, face } = mushroom('Stop');
+  button.classList.add('mini');
+  button.addEventListener('click', () => panel.runToggle(element));
+  node.appendChild(button);
+  return {
+    node,
+    setOn: (on) => {
+      face.textContent = on ? 'Clear' : 'Stop';
+      button.classList.toggle('is-latched', Boolean(on));
+      button.title = sentence(on ? (element.true_text || '')
+                                 : (element.false_text || ''));
     },
     setEnabled: (flag) => { button.disabled = !flag; },
   };
@@ -298,7 +390,7 @@ function renderDropdown(panel, element) {
 
 function renderRegionSelect(panel, element) {
   const node = row(element);
-  const value = make('span', 'value', 'not set');
+  const value = make('span', 'value', 'Not set');
   const button = make('button', 'button ' + roleClass(element.role), 'Pick region');
   button.type = 'button';
   button.addEventListener('click', () => panel.pickRegion(element));
@@ -306,14 +398,15 @@ function renderRegionSelect(panel, element) {
   node.appendChild(button);
   return {
     node,
-    setText: (text) => { value.textContent = text === '' ? 'not set' : String(text); },
+    setText: (text) => { value.textContent = text === '' ? 'Not set' : String(text); },
     setEnabled: (flag) => { button.disabled = !flag; },
   };
 }
 
 function renderFileSave(panel, element) {
   const node = make('div', 'row');
-  const button = make('button', 'button ' + roleClass(element.role), element.text || 'Save');
+  const button = make('button', 'button ' + roleClass(element.role),
+                      sentenceCase(element.text || 'Save'));
   button.type = 'button';
   button.addEventListener('click', () => panel.download(element));
   node.appendChild(button);
@@ -329,7 +422,8 @@ function renderFileOpen(panel, element) {
   // argument; a model that needs one refuses, and the refusal shows on the
   // card. See the handoff: an upload route is an owner decision.
   const node = make('div', 'row');
-  const button = make('button', 'button ' + roleClass(element.role), element.text || 'Open');
+  const button = make('button', 'button ' + roleClass(element.role),
+                      sentenceCase(element.text || 'Open'));
   button.type = 'button';
   button.addEventListener('click', () => panel.run(element));
   node.appendChild(button);
@@ -441,7 +535,9 @@ function normalisePoints(data) {
 function drawSeries(canvas, data, element) {
   const context = canvas.getContext('2d');
   const style = getComputedStyle(document.documentElement);
-  const ink = style.getPropertyValue('--text');
+  // The series is drawn in the trace colour, which is the same colour every
+  // live number on the page is set in: one hue means "this is the data".
+  const trace = style.getPropertyValue('--trace');
   const muted = style.getPropertyValue('--muted');
   context.clearRect(0, 0, canvas.width, canvas.height);
   const points = normalisePoints(data);
@@ -449,7 +545,7 @@ function drawSeries(canvas, data, element) {
   context.strokeRect(0.5, 0.5, canvas.width - 1, canvas.height - 1);
   if (points.length < 2) {
     context.fillStyle = muted;
-    context.fillText('no samples yet', 12, canvas.height / 2);
+    context.fillText('No samples yet.', 12, canvas.height / 2);
     return;
   }
   const xs = points.map((p) => p[0]);
@@ -467,7 +563,7 @@ function drawSeries(canvas, data, element) {
     const y = canvas.height - pad - ((point[1] - y0) / spanY) * (canvas.height - pad * 2);
     if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
   });
-  context.strokeStyle = ink;
+  context.strokeStyle = trace;
   context.lineWidth = 1.5;
   context.stroke();
   context.fillStyle = muted;
@@ -489,28 +585,24 @@ class PanelCard {
     this.isCollapsed = false;
     this.node = make('section', 'card');
     const head = make('header', 'card-head');
-    head.appendChild(make('h2', 'card-title', (options && options.title) || name));
-    this.staleBadge = make('span', 'badge stale-badge', 'stale');
+    head.appendChild(make('h2', 'card-title',
+                          sentence((options && options.title) || name)));
+    this.staleBadge = make('span', 'stale-badge', 'stale');
     this.staleBadge.hidden = true;
     head.appendChild(this.staleBadge);
     if (options && options.collapsible) {
       // The collapsed card keeps its header bar, so the panel is always one
-      // click from being back (base.Dashboard._collapse_setup: "minimise the
-      // Setup panel; reopenable").
-      this.collapseButton = make('button', 'button small collapse', 'Collapse');
+      // click from being back.
+      this.collapseButton = make('button', 'ghost collapse', 'Collapse');
       this.collapseButton.type = 'button';
       this.collapseButton.addEventListener('click',
         () => this.setCollapsed(!this.isCollapsed));
       head.appendChild(this.collapseButton);
-      // The whole collapsed header bar is the return path, not just the
-      // small button at its far end.
-      head.classList.add('clickable');
-      head.addEventListener('click', (event) => {
-        if (this.isCollapsed && event.target === head) this.setCollapsed(false);
-      });
     }
     if (options && options.closable) {
-      const close = make('button', 'button role-danger small', 'Close');
+      // Closing a module is housekeeping, not a stop: it is chrome, and the
+      // signal red is spent on the mushroom alone (design brief, "one red").
+      const close = make('button', 'ghost', 'Close');
       close.type = 'button';
       close.addEventListener('click', () => dashboard.closeModel(name));
       head.appendChild(close);
@@ -548,8 +640,8 @@ class PanelCard {
       const hasTitle = !isRow || Boolean(section.title);
       if (hasTitle) {
         block.appendChild(isRow
-          ? make('span', 'row-title', section.title || '')
-          : make('h3', 'section-title', section.title || ''));
+          ? make('span', 'row-title', sentence(section.title || ''))
+          : make('h3', 'section-title', sentenceCase(section.title || '')));
       }
       const cells = [];
       for (const element of (section.elements || [])) {
@@ -591,11 +683,6 @@ class PanelCard {
     if (this.collapseButton) {
       // The label says what the click will do: collapsed -> "Expand".
       this.collapseButton.textContent = this.isCollapsed ? 'Expand' : 'Collapse';
-      const link = document.getElementById('setup-link');
-      if (link) {
-        link.hidden = !this.isCollapsed;
-        link.onclick = () => { this.setCollapsed(false); this.node.scrollIntoView({block: 'start'}); };
-      }
     }
   }
 
@@ -723,6 +810,13 @@ class PanelCard {
       widget.setEnabled(isEnabled(element, mode));
     }
     this.setStale(isStale(state));
+    // The grouping bar down the left of a rack panel is information, not
+    // trim: it lights in the trace colour while this model's loop is
+    // reporting fresh numbers, and turns signal red while it is latched.
+    const age = state ? state.age : null;
+    this.node.classList.toggle('is-live',
+      age !== null && age !== undefined && age <= STALE_AFTER_S);
+    this.node.classList.toggle('is-latched', Boolean(this.values.is_estopped));
   }
 
   loadData(widget) {
@@ -742,10 +836,18 @@ class PanelCard {
     this.node.classList.toggle('stale', Boolean(isStale));
   }
 
-  /** Non-modal: a refusal is a sentence on the card, never a popup. */
+  /** Non-modal: a refusal is a sentence on the card, never a popup. It
+   *  shakes once as it arrives - motion that answers an action - because a
+   *  line that simply appears at the top of a tall panel is a line the
+   *  operator never sees. */
   showRefused(reason) {
+    const isNew = Boolean(reason) && reason !== this.status.textContent;
     this.status.textContent = reason || '';
     this.status.hidden = !reason;
+    if (!isNew) return;
+    this.status.classList.remove('shake');
+    void this.status.offsetWidth;          // restart the animation
+    this.status.classList.add('shake');
   }
 
   close() {
@@ -772,8 +874,12 @@ class Dashboard {
     this.heartbeatTimer = null;
     this.setupCard = null;
     this.isLaunched = false;
+    this.isEstopped = false;
+    this.isDrawerOpen = false;
+    this.railGroups = new Map();
     this.dom = {
       stop: document.getElementById('full-stop'),
+      stopFace: document.querySelector('.mushroom-face'),
       cards: document.getElementById('cards'),
       closed: document.getElementById('closed-models'),
       log: document.getElementById('event-log'),
@@ -786,14 +892,46 @@ class Dashboard {
       connection: document.getElementById('connection'),
       logPanel: document.getElementById('log-panel'),
       logToggle: document.getElementById('log-toggle'),
+      trayLatest: document.getElementById('tray-latest'),
+      rail: document.getElementById('rail-readouts'),
+      drawer: document.getElementById('setup-drawer'),
+      drawerBody: document.getElementById('drawer-body'),
+      drawerClose: document.getElementById('drawer-close'),
+      scrim: document.getElementById('scrim'),
+      setupLink: document.getElementById('setup-link'),
     };
-    this.isLogCollapsed = false;
+    this.isLogCollapsed = true;
     this.dom.stop.addEventListener('click', () => this.toggleEstopAll());
     this.dom.modalOk.addEventListener('click', () => { this.dom.modal.hidden = true; });
     this.dom.pickerClose.addEventListener('click', () => { this.dom.picker.hidden = true; });
     this.dom.logToggle.addEventListener('click',
       () => this.setLogCollapsed(!this.isLogCollapsed));
+    this.dom.setupLink.addEventListener('click', () => this.setDrawerOpen(true));
+    this.dom.drawerClose.addEventListener('click', () => this.setDrawerOpen(false));
+    this.dom.scrim.addEventListener('click', () => this.setDrawerOpen(false));
+    // Escape closes the drawer, the way every other panel over a page does.
+    // It never closes anything else here: the acknowledgement modal wants an
+    // acknowledgement, and the region picker has its own Cancel.
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && this.isDrawerOpen) this.setDrawerOpen(false);
+    });
     window.addEventListener('resize', () => this.reserveLogSpace());
+  }
+
+  // -- the Setup drawer ----------------------------------------------------
+  //
+  // Open at boot, because Setup is where a run begins. It withdraws on launch
+  // - the one orchestrated moment on this page, together with the rail's
+  // readout groups arriving behind it - and the rail's Setup button, which
+  // only exists while the drawer is shut, brings it back.
+  setDrawerOpen(isOpen) {
+    this.isDrawerOpen = Boolean(isOpen);
+    this.dom.drawer.classList.toggle('open', this.isDrawerOpen);
+    // The scrim dims what the drawer is covering. At boot it is covering an
+    // empty rack, so there is nothing to dim and no scrim.
+    this.dom.scrim.hidden = !(this.isDrawerOpen && this.cards.size > 0);
+    this.dom.setupLink.hidden = this.isDrawerOpen;
+    if (this.isDrawerOpen) this.dom.drawerClose.focus({ preventScroll: true });
   }
 
   // -- the event bar ------------------------------------------------------
@@ -809,10 +947,11 @@ class Dashboard {
     document.body.style.paddingBottom = panel.offsetHeight + 'px';
   }
 
-  /** Collapsed, the bar is its one-line header and nothing else. */
+  /** Collapsed - which is how it starts - the tray is one line carrying the
+   *  latest event. Expanded it is about six. */
   setLogCollapsed(isCollapsed) {
     this.isLogCollapsed = Boolean(isCollapsed);
-    this.dom.logPanel.classList.toggle('collapsed', this.isLogCollapsed);
+    this.dom.logPanel.classList.toggle('open', !this.isLogCollapsed);
     this.dom.log.hidden = this.isLogCollapsed;
     this.dom.logToggle.textContent = this.isLogCollapsed
       ? 'Show events' : 'Hide events';
@@ -826,7 +965,7 @@ class Dashboard {
       const seen = await apiGet('/api/events?since=0');
       this.lastEventId = seen.latest_id || 0;
     } catch (err) { /* the first poll will retry */ }
-    this.setLogCollapsed(false);     // four lines, and the room to show them
+    this.setLogCollapsed(true);      // one line: the latest event
     await this.loadSetup();
     this.timer = setInterval(() => this.poll(), STATE_POLL_MS);
     this.startHeartbeat();
@@ -893,8 +1032,8 @@ class Dashboard {
   }
 
   setConnected(isConnected) {
-    this.dom.connection.textContent = isConnected ? 'connected' : 'no answer';
-    this.dom.connection.className = 'badge ' + (isConnected ? 'role-go' : 'role-danger');
+    this.dom.connection.textContent = isConnected ? 'Connected' : 'Not answering';
+    this.dom.connection.className = 'link-state' + (isConnected ? '' : ' is-down');
   }
 
   async applyState(state) {
@@ -907,6 +1046,8 @@ class Dashboard {
     for (const name of Array.from(this.cards.keys())) {
       if (!(name in models)) this.removeCard(name);
     }
+    this.renderRail(models);
+    this.renderEmptyRack();
     this.renderClosed(state.closed || []);
     this.renderEstop(Boolean(state.is_estopped));
     let setupState = null;
@@ -918,6 +1059,79 @@ class Dashboard {
       } catch (err) { /* the next cycle retries */ }
     }
     this.collapseSetupOnLaunch(models, setupState);
+  }
+
+  // -- the status rail -----------------------------------------------------
+  //
+  // One readout group per open model, carrying its key numbers - derived
+  // from the schema by `railElements`, never named here, so a model this
+  // file has never heard of still appears on the rail with the right
+  // numbers. The groups are built once per model and only their values are
+  // written after that, so the entrance animation plays exactly once.
+  renderRail(models) {
+    for (const name of Array.from(this.railGroups.keys())) {
+      if (name in models) continue;
+      const gone = this.railGroups.get(name);
+      if (gone.node.parentNode) gone.node.parentNode.removeChild(gone.node);
+      this.railGroups.delete(name);
+    }
+    let index = 0;
+    for (const name of Object.keys(models)) {
+      let group = this.railGroups.get(name);
+      if (!group) {
+        group = this.buildRailGroup(name, index);
+        if (!group) continue;
+        this.railGroups.set(name, group);
+        this.dom.rail.appendChild(group.node);
+      }
+      const values = (models[name] || {}).values || {};
+      for (const [attr, node] of group.values) {
+        const value = values[attr];
+        node.textContent = (value === undefined || value === null || value === '')
+          ? '--' : String(value);
+      }
+      index += 1;
+    }
+  }
+
+  /** An empty rack says what to do next, and the drawer that does it is
+   *  already open behind this. An empty screen is an invitation to act. */
+  renderEmptyRack() {
+    // Not while the drawer is open: the drawer IS the invitation, and a note
+    // underneath it is a sentence nobody can read.
+    const isEmpty = this.cards.size === 0 && !this.isDrawerOpen;
+    if (isEmpty && !this.emptyNote) {
+      this.emptyNote = make('p', 'rack-empty',
+        'No modules yet. In Setup, give each device you are using a port - '
+        + 'SIM to run against the simulator - and launch.');
+      this.dom.cards.appendChild(this.emptyNote);
+    } else if (!isEmpty && this.emptyNote) {
+      if (this.emptyNote.parentNode) {
+        this.emptyNote.parentNode.removeChild(this.emptyNote);
+      }
+      this.emptyNote = null;
+    }
+  }
+
+  buildRailGroup(name, index) {
+    const card = this.cards.get(name);
+    const elements = railElements(card && card.schema);
+    if (!elements.length) return null;
+    const node = make('div', 'readout-group is-entering');
+    node.style.setProperty('--stagger', String(index));
+    node.appendChild(make('span', 'readout-model', sentence(name)));
+    const line = make('div', 'readouts');
+    const values = new Map();
+    for (const element of elements) {
+      const readout = make('div', 'readout');
+      readout.appendChild(make('span', 'readout-label', railLabel(element)));
+      const value = make('span', 'readout-value', '--');
+      readout.appendChild(value);
+      line.appendChild(readout);
+      values.set(element.model_attr, value);
+    }
+    node.appendChild(line);
+    return { node, values };
   }
 
   /** `Dashboard._collapse_setup` in station/views/base.py, mirrored: the
@@ -939,7 +1153,7 @@ class Dashboard {
     const isLaunched = hasModels || Boolean(setupState.is_launched);
     if (isLaunched === this.isLaunched) return;
     this.isLaunched = isLaunched;
-    this.setupCard.setCollapsed(isLaunched);
+    this.setDrawerOpen(!isLaunched);
   }
 
   async addCard(name) {
@@ -966,19 +1180,22 @@ class Dashboard {
       const setup = await apiGet('/api/setup');
       if (!setup || !setup.schema || !setup.schema.sections) return;
       this.setupCard = new PanelCard(this, SETUP_NAME, setup.schema,
-                                     { title: 'Setup', collapsible: true });
+                                     { title: 'Setup' });
       this.setupCard.node.classList.add('setup-card');
-      this.dom.cards.appendChild(this.setupCard.node);
+      this.dom.drawerBody.appendChild(this.setupCard.node);
       this.setupCard.refresh(setup.state);
+      this.setDrawerOpen(true);        // Setup is where a run begins
     } catch (err) { /* setup is optional once models are built */ }
   }
 
+  /** A model the operator closed is not gone, it is put away. The way back
+   *  is on the rail, beside Setup - the other thing that reopens. */
   renderClosed(closed) {
     clear(this.dom.closed);
     if (!closed.length) return;
-    this.dom.closed.appendChild(make('span', 'label', 'Closed:'));
+    this.dom.closed.appendChild(make('span', 'closed-label', 'Reopen'));
     for (const name of closed) {
-      const button = make('button', 'button small', name);
+      const button = make('button', 'ghost', sentence(name));
       button.type = 'button';
       button.addEventListener('click', () => this.openModel(name));
       this.dom.closed.appendChild(button);
@@ -998,10 +1215,26 @@ class Dashboard {
   }
 
   // -- the global FULL STOP ----------------------------------------------
+  //
+  // The mushroom follows the state, never the click. Its copy is the action
+  // it will perform - "Stop", then "Clear" once the latch is set - and it
+  // pulses exactly once, at the moment the latch closes, not for as long as
+  // it stays closed.
   renderEstop(isEstopped) {
-    this.dom.stop.textContent = isEstopped ? 'LATCHED - click to clear' : 'FULL STOP';
-    this.dom.stop.className = 'button full-stop role-danger ' + (isEstopped ? 'on' : 'off');
+    const wasEstopped = this.isEstopped;
     this.isEstopped = isEstopped;
+    this.dom.stopFace.textContent = isEstopped ? 'Clear' : 'Stop';
+    this.dom.stop.classList.toggle('is-latched', isEstopped);
+    this.dom.stop.setAttribute(
+      'aria-label', isEstopped ? 'Clear the stop on every model'
+                               : 'Stop every model');
+    if (isEstopped && !wasEstopped) {
+      this.dom.stop.classList.remove('pulse');
+      void this.dom.stop.offsetWidth;      // restart the animation
+      this.dom.stop.classList.add('pulse');
+    } else if (!isEstopped) {
+      this.dom.stop.classList.remove('pulse');
+    }
   }
 
   async toggleEstopAll() {
@@ -1035,6 +1268,9 @@ class Dashboard {
       this.dom.log.removeChild(this.dom.log.firstChild);
     }
     this.dom.log.scrollTop = this.dom.log.scrollHeight;
+    // The collapsed tray is one line, and that line is the newest event.
+    this.dom.trayLatest.textContent = event.text;
+    this.dom.trayLatest.className = 'tray-latest severity-' + event.severity;
   }
 
   /** Only `needs_ack` opens a modal. Everything else is a line in the log. */
@@ -1093,7 +1329,7 @@ class Dashboard {
     const paint = (box) => {
       context.drawImage(picture, 0, 0);
       context.strokeStyle = getComputedStyle(document.documentElement)
-        .getPropertyValue('--danger-bg');
+        .getPropertyValue('--signal');
       context.lineWidth = 2;
       context.strokeRect(box[0], box[1], box[2], box[3]);
     };
