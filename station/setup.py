@@ -8,13 +8,22 @@ wizard invented placeholder gamepad names, dropped the `enabled` flag and so
 built every unchecked device, and ran its own port enumeration in a `python3`
 subprocess (WEB-4, WEB-15, WEB-16, MANAGER-12, MANAGER-18).
 
-What it does, in the order the operator does it:
+What it does, in the order the operator does it (Addendum 2):
 
+    start()                          the scan begins by itself, at startup
     scan_ports() / scan_gamepads()   what is attached
     scan()                           identify() every port, on a worker
-    auto_assign()                    identity byte -> the matching row's port
+    auto_assign()                    identity byte -> the matching row's port,
+                                     automatically, when a scan completes
+    refresh()                        the one button: cancel, re-scan, re-assign
     validate(configs)                refuse an impossible assignment
     build(configs)                   Controller.reset(), then construct
+
+**One dropdown per row.** The Mode dropdown is gone (owner ruling, Addendum
+2): a row's Port choice carries the whole state. "Off" is the disabled row,
+"SIM" is the simulator, and anything else is a real port. There is no second
+control to contradict the first, which is what made three launchers produce
+three different configs for one system.
 
 Autodetection is preserved exactly: the same Bluetooth/ttyS filtering and
 USB-first sort, the same three-step handshake (SMC100 at 57600 first because
@@ -41,19 +50,20 @@ from station.models.rotator import Rotator
 from station.panel import Panel
 from station.result import Refused
 
-#: The mode dropdown, one row per model type.
-OFF, HARDWARE, SIMULATED = "Off", "Hardware", "Simulated"
-MODES = (OFF, HARDWARE, SIMULATED)
-
-#: The desktop wizard's word for "no hardware"; the models' word is "SIM".
-#: The translation used to happen at three different points in three
-#: launchers - once *after* the collision check, so a headless device could
-#: be reported as colliding with itself.
-HEADLESS, SIM = "Headless", "SIM"
+#: The Port dropdown's three fixed entries. Everything else in the list is a
+#: real port name. `OFF` is the row's disabled state - the Mode dropdown it
+#: replaces could disagree with the port beside it, and did.
+OFF, SIM = "Off", "SIM"
+#: What a model that needs no port (the screen-capture monitor) offers instead
+#: of a port name: it is either on, simulated, or off.
+ON = "On"
 
 #: What `discover_ports` fell back to when pyserial was missing. Kept
-#: verbatim: an operator who sees it knows what it means.
-FALLBACK_PORTS = [HEADLESS, "COM1", "COM2", "COM3", "COM4"]
+#: verbatim: an operator who sees it knows what it means. It is offered ONLY
+#: when the listing itself is unavailable or raised - a listing that worked
+#: and found nothing means no port is attached, and now says so, because
+#: "Off" and "SIM" are always on offer and no longer need a placeholder.
+FALLBACK_PORTS = ["COM1", "COM2", "COM3", "COM4"]
 
 #: `DEV: s` / `<s>` - what the custom firmware answers with. Kept for the
 #: case where `SerialPort.identity` hands back the raw reply rather than the
@@ -69,6 +79,9 @@ LOST = ConnectionState.LOST.value
 #: The check that matters is the one *inside* the wait; between ports is not
 #: enough, because that is not where the time goes (MANAGER-20).
 PROBE_SLICE = 0.1
+#: How long Refresh waits for a cancelled scan to notice, before refusing
+#: rather than blocking the view thread any longer.
+REFRESH_JOIN_SECONDS = 1.0
 
 
 class _Stub:
@@ -152,7 +165,12 @@ class Setup(Panel):
     """
 
     NAME = "Setup"
-    SCANNING = "scanning"
+    #: `mode_name`, which is what `enabled_when` / `disabled_when` match.
+    READY, SCANNING, LAUNCHED = "ready", "scanning", "launched"
+    #: `state["scan"]["phase"]`: what the worker is doing right now, for a
+    #: view that wants to show more than the status line.
+    IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
+        "idle", "listing", "identifying", "done", "cancelled")
 
     def __init__(self, controller):
         super().__init__()
@@ -162,27 +180,30 @@ class Setup(Panel):
         self._lock = threading.RLock()
         self._scan_thread = None
         self._abort = threading.Event()
-        self._ports = list(FALLBACK_PORTS)
+        self._ports = []
         self._gamepads = ["None"]
         self._found = {}            # port -> model name the handshake gave
+        self._chosen = set()        # rows the operator set by hand
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
-        self.scan_status = "Ready to scan."
+        self._is_launched = False
+        self.scan_phase = self.IDLE
+        self.scan_status = "not scanned yet"
         self.scan_progress = 0
         self.summary = "nothing selected"
-        for key in self._rows:
-            setattr(self, f"{key}_mode", OFF)
-            setattr(self, f"{key}_port", HEADLESS)
+        for key, row in self._rows.items():
+            setattr(self, f"{key}_name", row["name"])
+            setattr(self, f"{key}_port", OFF)
             setattr(self, f"{key}_gamepad", "None")
-            setattr(self, f"{key}_found", "")
+            setattr(self, f"{key}_status", "off")
         # The selection commands are per row, because a view sends a dropdown
         # choice as the command's only argument and nothing else identifies
         # the row. Binding them here keeps one implementation.
         for key in self._rows:
-            for field in ("mode", "port", "gamepad"):
+            for field in ("port", "gamepad"):
                 setattr(self, f"set_{key}_{field}",
                         _Selector(self, key, field))
-        self._refresh_summary()
+        self._refresh_rows()
 
     # -- what a view reads -------------------------------------------------
     @property
@@ -191,8 +212,13 @@ class Setup(Panel):
 
     @property
     def mode_name(self):
-        """`scanning` gates Launch, Scan and every dropdown; nothing else."""
-        return self.SCANNING if self.is_scanning else "ready"
+        """`scanning` gates Launch and Relaunch; `launched` swaps Launch for
+        Relaunch. The dropdowns are gated by neither: the operator may point a
+        row at a port while the scan is still walking the rest of them, and
+        that choice then wins over auto-assign."""
+        if self.is_scanning:
+            return self.SCANNING
+        return self.LAUNCHED if self._is_launched else self.READY
 
     @property
     def is_scanning(self):
@@ -200,17 +226,43 @@ class Setup(Panel):
         return bool(thread is not None and thread.is_alive())
 
     @property
+    def is_launched(self):
+        """True once `build()` has put models into the Controller. The views
+        collapse the Setup panel on it; `stop_system()` clears it."""
+        return self._is_launched
+
+    @property
     def state(self):
         snapshot = super().state
         with self._lock:
             found = dict(self._found)
             ports, gamepads = list(self._ports), list(self._gamepads)
+            chosen = set(self._chosen)
+        is_scanning = self.is_scanning
+        rows = []
+        for key, row in self._rows.items():
+            choice = getattr(self, f"{key}_port")
+            rows.append({
+                "key": key,
+                "name": row["name"],
+                "port": choice,
+                "gamepad": getattr(self, f"{key}_gamepad"),
+                "status": getattr(self, f"{key}_status"),
+                "detected": found.get(choice) if choice not in (OFF, SIM, ON) else None,
+                "needs_port": row["needs_port"],
+                "needs_gamepad": row["needs_gamepad"],
+                "is_chosen": key in chosen,
+                "options_command": row["options_command"],
+            })
         snapshot.update({
-            "is_scanning": self.is_scanning,
-            "scan": {"status": self.scan_status, "progress": self.scan_progress,
-                     "is_scanning": self.is_scanning, "found": found},
+            "is_scanning": is_scanning,
+            "is_launched": self._is_launched,
+            "scan": {"phase": self.scan_phase, "status": self.scan_status,
+                     "progress": self.scan_progress, "is_scanning": is_scanning,
+                     "ports": ports, "found": found},
             "ports": ports,
             "gamepads": gamepads,
+            "rows": rows,
             "configs": self.configs,
         })
         return snapshot
@@ -222,52 +274,69 @@ class Setup(Panel):
 
     @property
     def configs(self):
-        """The operator's current choices as build configs. Disabled rows are
-        dropped here and nowhere else: Web used to carry them through with a
-        stripped `enabled` flag and build every one of them (WEB-4)."""
+        """The operator's current choices as build configs. Rows set to "Off"
+        are dropped here and nowhere else: Web used to carry them through with
+        a stripped `enabled` flag and build every one of them (WEB-4)."""
         configs = []
         for key, row in self._rows.items():
-            mode = getattr(self, f"{key}_mode")
-            if mode == OFF:
+            choice = getattr(self, f"{key}_port")
+            if choice == OFF:
                 continue
-            port = getattr(self, f"{key}_port")
-            is_sim = mode == SIMULATED or (row["needs_port"] and port == HEADLESS)
+            is_sim = choice == SIM
             if not row["needs_port"]:
-                port = None
+                port = None         # the screen monitor: on, or simulated
             elif is_sim:
                 port = SIM
+            else:
+                port = choice
             gamepad = getattr(self, f"{key}_gamepad") if row["needs_gamepad"] else "None"
             configs.append({
                 "model": row["name"],
                 "port": port,
                 "gamepad": None if gamepad in ("None", "", None) else gamepad,
-                # Derived from the port, never carried through: `mode` was an
-                # input the web wizard sent and the desktop ones did not, so
-                # two launchers produced different configs for one system.
+                # Derived from the one dropdown, never carried through as its
+                # own input: `mode` was an input the web wizard sent and the
+                # desktop ones did not, so two launchers produced different
+                # configs for one system.
                 "sim": bool(is_sim),
             })
         return configs
 
-    # -- options (one list serves every row) -------------------------------
+    # -- options (one list per row shape) ----------------------------------
     def port_options(self):
+        """What a row that needs a port offers: off, the simulator, or a port."""
         with self._lock:
-            return list(self._ports)
+            return [OFF, SIM, *self._ports]
+
+    def device_options(self):
+        """What a row that needs no port offers. The screen-capture monitor
+        has nothing to plug in, so its dropdown is the same control with the
+        port names left out rather than a second kind of widget."""
+        return [OFF, ON, SIM]
 
     def gamepad_options(self):
         with self._lock:
             return list(self._gamepads)
 
-    def mode_options(self):
-        return list(MODES)
-
     # -- scanning ----------------------------------------------------------
+    def start(self):
+        """Begin the automatic scan. `app.launch()` calls this immediately
+        before the view opens, so the operator finds the scan already running
+        instead of having to ask for one (Addendum 2). Never raises: a scan
+        that is somehow already running is simply left alone."""
+        if self.is_scanning:
+            events.debug("Scan", "start: already scanning", source=self.NAME)
+            return False
+        self.scan()
+        return True
+
     def scan_ports(self):
         """Attached serial ports as the wizard shows them.
         was <app_bootstrap>.discover_ports
 
         Same filtering and ordering as today: Bluetooth/Wireless out, Linux
         `/dev/ttyS*` without a hwid out, everything back if that left nothing,
-        USB first, "Headless" at the top.
+        USB first. "Off" and "SIM" are added by `port_options`, not here.
         """
         listing = getattr(serial_port_module, "list_ports", None)
         if listing is None:
@@ -291,11 +360,8 @@ class Setup(Panel):
         if not usable and entries:
             usable = [name for name, _ in entries]
 
-        ports = [HEADLESS] + sorted(usable, key=self._port_sort_key)
-        if ports == [HEADLESS]:
-            ports = list(FALLBACK_PORTS)
-        events.debug("Ports", f"{len(ports) - 1} port(s): {ports[1:]}",
-                     source=self.NAME)
+        ports = sorted(usable, key=self._port_sort_key)
+        events.debug("Ports", f"{len(ports)} port(s): {ports}", source=self.NAME)
         return ports
 
     @staticmethod
@@ -339,6 +405,25 @@ class Setup(Panel):
                         exception=exc)
             return ["None"]
 
+    def refresh(self):
+        """The one button: re-scan ports and gamepads.
+        was WebModelAdapter.start_hardware_scan (as a Scan button)
+
+        A scan already running is cancelled first, so Refresh always means
+        "start again from what is attached now" and never has to be pressed
+        twice. Single-flight: there is never a second scan over the same
+        ports, which is what made the web wizard's progress jump backwards.
+        """
+        if self.is_scanning:
+            self.cancel_scan()
+            thread = self._scan_thread
+            if thread is not None:
+                thread.join(REFRESH_JOIN_SECONDS)
+            if self.is_scanning:
+                self._refuse("The running scan has not stopped yet; "
+                             "try again in a moment.")
+        return self.scan()
+
     def scan(self):
         """Start a scan on a worker thread. Never blocks a view.
         was WebModelAdapter.scan_hardware / start_hardware_scan /
@@ -349,14 +434,17 @@ class Setup(Panel):
         """
         with self._lock:
             if self.is_scanning:
-                raise Refused("A hardware scan is already running.")
+                self._refuse("A hardware scan is already running.")
             self._abort.clear()
             self._warned_ports.clear()
-            self.scan_status = "Scanning..."
+            self._found.clear()
+            self.scan_phase = self.LISTING
+            self.scan_status = "scanning for ports..."
             self.scan_progress = 0
             thread = threading.Thread(target=self._scan_loop, daemon=True,
                                       name="setup-scan")
             self._scan_thread = thread
+        self._refresh_rows()
         events.debug("Scan", "started", source=self.NAME)
         thread.start()
         return True
@@ -364,7 +452,7 @@ class Setup(Panel):
     def cancel_scan(self):
         """Ask the scan to give up. It stops inside the current port's wait."""
         if not self.is_scanning:
-            raise Refused("No scan is running.")
+            self._refuse("No scan is running.")
         self._abort.set()
         events.debug("Scan", "cancel requested", source=self.NAME)
         return True
@@ -375,24 +463,43 @@ class Setup(Panel):
         with self._lock:
             self._ports, self._gamepads = ports, gamepads
         self._drop_stale_selections()
-        targets = [p for p in ports if p != HEADLESS]
+        targets = [p for p in ports if p not in (OFF, SIM, ON)]
+        self.scan_phase = self.IDENTIFYING
+        self.scan_status = (f"scanning {len(targets)} port(s)..." if targets
+                            else "no ports found")
+        self._refresh_rows()
         for index, port in enumerate(targets):
             if self._abort.is_set():
                 break
-            self.scan_status = f"Scanning {port}..."
+            self.scan_status = (f"scanning {port} "
+                                f"({index + 1} of {len(targets)})...")
             found = self.identify(port, should_abort=self._abort.is_set)
             with self._lock:
                 self._found[port] = found
             if found:
                 events.info("Device Found", f"{found} on {port}", source=self.NAME)
             self.scan_progress = int(((index + 1) / len(targets)) * 100)
+            self._refresh_rows()
         if self._abort.is_set():
-            self.scan_status = "Scan cancelled."
+            self.scan_phase = self.CANCELLED
+            self.scan_status = "scan cancelled"
+            self._refresh_rows()
         else:
             self.scan_progress = 100
-            self.scan_status = "Scan complete."
-        self._mark_found()
-        events.debug("Scan", f"{self.scan_status} {len(targets)} port(s) in "
+            self.scan_phase = self.DONE
+            # Auto-assign is not a button any more: identifying a device and
+            # then making the operator press "Auto-assign" to act on it was
+            # the step the owner struck out (Addendum 2).
+            try:
+                self.auto_assign()
+            except Exception as exc:       # never let a worker die silently
+                events.warn("Auto-assign Failed", str(exc), source=self.NAME,
+                            exception=exc)
+            with self._lock:
+                detected = sum(1 for name in self._found.values() if name)
+            self.scan_status = ("ready" if not detected else
+                                f"ready - {detected} device(s) detected")
+        events.debug("Scan", f"{self.scan_status}; {len(targets)} port(s) in "
                      f"{time.monotonic() - started:.1f} s", source=self.NAME)
 
     def identify(self, port, should_abort=None):
@@ -572,46 +679,73 @@ class Setup(Panel):
         events.warn("Not Available", message, source=self.NAME)
 
     # -- assignment --------------------------------------------------------
-    def auto_assign(self):
-        """Identity byte -> the matching model's port, for everything found."""
-        assigned = []
+    def auto_assign(self, force=False):
+        """Identity byte -> the matching row's port, for everything found.
+
+        Runs by itself when a scan completes (Addendum 2), so it never raises
+        for "nothing to assign": it returns what it assigned, possibly
+        nothing. A row the operator has already set by hand is left alone -
+        the machine's guess never overrides a person's choice - unless
+        `force` says otherwise.
+        """
+        assigned, kept, taken = [], [], {}
         with self._lock:
             found = dict(self._found)
+            chosen = set(self._chosen)
         for port, name in found.items():
             key = self._key_of(name)
             if key is None:
                 continue
+            if key in chosen and not force:
+                kept.append(f"{name}: operator chose "
+                            f"{getattr(self, f'{key}_port')}")
+                continue
+            if key in taken:
+                # Two boards answering as one model is a wiring question, not
+                # something to resolve by silently preferring the later port.
+                events.warn("Two Devices Answered Alike",
+                            f"{port} and {taken[key]} both answered as {name}; "
+                            f"{taken[key]} was assigned. Check the wiring or "
+                            "choose the port by hand.", source=self.NAME)
+                continue
+            taken[key] = port
+            if getattr(self, f"{key}_port") == port:
+                continue
             setattr(self, f"{key}_port", port)
-            setattr(self, f"{key}_mode", HARDWARE)
             assigned.append(f"{name} on {port}")
-        self._mark_found()
-        self._refresh_summary()
-        events.debug("Auto-assign", "; ".join(assigned) or "nothing to assign",
-                     source=self.NAME)
-        if not assigned:
-            raise Refused("Nothing was identified; scan first, or assign by hand.")
-        events.info("Auto-assign", ", ".join(assigned), source=self.NAME)
+        self._refresh_rows()
+        if assigned:
+            events.info("Auto-assign", ", ".join(assigned), source=self.NAME)
+        events.debug("Auto-assign", "; ".join(assigned + kept) or
+                     "nothing to assign", source=self.NAME)
         return assigned
 
     def _select(self, key, field, choice):
         """Apply one dropdown choice. Reached through `set_<row>_<field>`."""
         if key not in self._rows:
-            raise Refused(f"{key} is not a configurable model")
-        choices = {"mode": self.mode_options(), "port": self.port_options(),
-                   "gamepad": self.gamepad_options()}[field]
+            self._refuse(f"{key} is not a configurable model")
         row = self._rows[key]
-        if field == "port" and not row["needs_port"]:
-            raise Refused(f"{row['name']} does not use a port")
         if field == "gamepad" and not row["needs_gamepad"]:
-            raise Refused(f"{row['name']} does not use a gamepad")
+            self._refuse(f"{row['name']} does not use a gamepad")
+        choices = (self._port_choices(key) if field == "port"
+                   else self.gamepad_options())
         if choice not in choices:
-            raise Refused(f"{choice!r} is not one of {row['name']}'s "
-                          f"{field} options")
+            self._refuse(f"{choice!r} is not one of {row['name']}'s "
+                         f"{field} options")
         setattr(self, f"{key}_{field}", choice)
+        if field == "port":
+            # From here on auto-assign leaves this row alone: the operator
+            # has said what is plugged into it.
+            with self._lock:
+                self._chosen.add(key)
         events.debug("Selected", f"{row['name']} {field} = {choice}",
                      source=self.NAME)
-        self._refresh_summary()
+        self._refresh_rows()
         return choice
+
+    def _port_choices(self, key):
+        return (self.port_options() if self._rows[key]["needs_port"]
+                else self.device_options())
 
     def validate(self, configs):
         """Refuse an impossible assignment, naming the field.
@@ -629,9 +763,9 @@ class Setup(Panel):
                 self._refuse(f"{name!r} is not a known model")
             port, gamepad = config.get("port"), config.get("gamepad")
             if _declared(model_class, "NEEDS_PORT") and not config.get("sim"):
-                if not port or port in ("None", HEADLESS):
+                if not port or port in ("None", OFF):
                     self._refuse(f"{name} port: choose a port, or set the "
-                                 "row to Simulated")
+                                 "row to SIM")
                 if port in ports:
                     self._refuse(f"{name} port: {port} is already assigned "
                                  f"to {ports[port]}")
@@ -646,12 +780,28 @@ class Setup(Panel):
 
     # -- building ----------------------------------------------------------
     def launch(self):
-        """Validate the current choices and build them. The one Launch button."""
+        """Validate the current choices and build them. The Launch button,
+        and the Relaunch button once the system is up (a build resets the
+        Controller first, so relaunching is the same call)."""
         configs = self.configs
         if not configs:
-            raise Refused("Select at least one model to launch.")
+            self._refuse("Select at least one device: set a row's Port to a "
+                         "port or to SIM.")
         self.validate(configs)
         return self.build(configs)
+
+    def stop_system(self):
+        """Take the whole system down without leaving the panel. Every model
+        is estopped and closed by `Controller.reset()`; Launch comes back."""
+        running = self.controller.model_names
+        if not running and not self._is_launched:
+            self._refuse("Nothing is running.")
+        self.controller.reset()
+        self._is_launched = False
+        self._refresh_rows()
+        events.info("Stopped", ", ".join(running) or "nothing was running",
+                    source=self.NAME)
+        return running
 
     def build(self, configs=None):
         """Construct the configured models into the Controller.
@@ -673,6 +823,7 @@ class Setup(Panel):
 
         self.controller.factory = self.model_from_config
         self.controller.reset()
+        self._is_launched = False
         built = []
         for config in configs:
             name = config["model"]
@@ -691,6 +842,8 @@ class Setup(Panel):
                          f"gamepad={config.get('gamepad')} sim={config.get('sim')} "
                          f"in {(time.monotonic() - started) * 1000:.0f} ms",
                          source=self.NAME)
+        self._is_launched = True
+        self._refresh_rows()
         events.info("Launched", ", ".join(built), source=self.NAME)
         return built
 
@@ -737,79 +890,103 @@ class Setup(Panel):
     def _build_rows(self):
         rows = {}
         for name, model_class in MODEL_TYPES.items():
+            needs_port = bool(_declared(model_class, "NEEDS_PORT"))
             rows[_key_for(name)] = {
                 "name": name,
-                "needs_port": bool(_declared(model_class, "NEEDS_PORT")),
+                "needs_port": needs_port,
                 "needs_gamepad": bool(_declared(model_class, "NEEDS_GAMEPAD")),
+                "options_command": "port_options" if needs_port else "device_options",
             }
         return rows
 
     def _build_schema(self):
+        """One compact table: a Devices header row, one row per model type,
+        and a Launch row (Addendum 2). Every section is `layout="row"`, which
+        is the hint each renderer lays out horizontally."""
         sections = [sch.section(
-            "Hardware Scan",
-            sch.readonly("Status:", "scan_status"),
-            sch.readonly("Progress (%):", "scan_progress"),
-            sch.button("Scan", "scan", role="info",
-                       disabled_when=[self.SCANNING]),
-            sch.button("Cancel Scan", "cancel_scan", role="warning",
-                       enabled_when=[self.SCANNING]),
-            sch.button("Auto-assign", "auto_assign",
-                       disabled_when=[self.SCANNING]),
+            "Devices",
+            sch.button("Refresh", "refresh", role="info"),
+            sch.readonly("Scan:", "scan_status"),
+            layout="row",
         )]
         for key, row in self._rows.items():
-            elements = [sch.dropdown("Mode", f"{key}_mode",
-                                     f"set_{key}_mode", "mode_options",
-                                     disabled_when=[self.SCANNING])]
-            if row["needs_port"]:
-                elements.append(sch.dropdown("Port", f"{key}_port",
-                                             f"set_{key}_port", "port_options",
-                                             disabled_when=[self.SCANNING]))
+            elements = [
+                sch.readonly("Device:", f"{key}_name"),
+                sch.dropdown("Port", f"{key}_port", f"set_{key}_port",
+                             row["options_command"]),
+            ]
             if row["needs_gamepad"]:
                 elements.append(sch.dropdown("Gamepad", f"{key}_gamepad",
                                              f"set_{key}_gamepad",
-                                             "gamepad_options",
-                                             disabled_when=[self.SCANNING]))
-            elements.append(sch.readonly("Detected:", f"{key}_found"))
-            sections.append(sch.section(row["name"], *elements))
+                                             "gamepad_options"))
+            elements.append(sch.readonly("Status:", f"{key}_status"))
+            sections.append(sch.section(row["name"], *elements, layout="row"))
         sections.append(sch.section(
             "Launch",
             sch.readonly("Selected:", "summary"),
             sch.button("Launch", "launch", role="go",
-                       disabled_when=[self.SCANNING]),
+                       enabled_when=[self.READY]),
+            sch.button("Relaunch", "launch", role="go",
+                       enabled_when=[self.LAUNCHED]),
+            # Never gated: taking the system down must not depend on what the
+            # panel happens to be doing.
+            sch.button("Stop system", "stop_system", role="warning"),
+            layout="row",
         ))
         return sch.schema(*sections)
 
     # -- plumbing ----------------------------------------------------------
     def _key_of(self, name):
+        if not name:
+            return None
         for key, row in self._rows.items():
             if row["name"] == name:
                 return key
         return None
 
-    def _mark_found(self):
+    def _refresh_rows(self):
+        """Every row's status line and the launch summary, from one place."""
         with self._lock:
             found = dict(self._found)
         for key, row in self._rows.items():
-            if not row["needs_port"]:
-                continue        # nothing to find: no port, no handshake
-            where = [port for port, name in found.items() if name == row["name"]]
-            setattr(self, f"{key}_found", where[0] if where else
-                    ("" if not found else "not found"))
+            setattr(self, f"{key}_status", self._row_status(key, row, found))
+        self._refresh_summary()
+
+    def _row_status(self, key, row, found):
+        """What the row's Status cell says: off / simulated / detected: X /
+        not detected. The one sentence the operator reads to know whether the
+        handshake agreed with the dropdown."""
+        choice = getattr(self, f"{key}_port")
+        if choice == OFF:
+            return "off"
+        if choice == SIM:
+            return "simulated"
+        if not row["needs_port"]:
+            return "on"
+        if choice not in found:
+            return "not scanned"
+        answered = found[choice]
+        return f"detected: {answered}" if answered else "not detected"
 
     def _drop_stale_selections(self):
         """A port that is no longer attached must not stay selected: the old
-        wizard reset the dropdown to the first entry on every refresh."""
-        ports, gamepads = self.port_options(), self.gamepad_options()
+        wizard reset the dropdown to the first entry on every refresh. The
+        operator's claim on that row goes with it, so the next auto-assign is
+        free to fill the row in."""
+        gamepads = self.gamepad_options()
         for key, row in self._rows.items():
-            if row["needs_port"] and getattr(self, f"{key}_port") not in ports:
-                setattr(self, f"{key}_port", ports[0] if ports else HEADLESS)
+            if getattr(self, f"{key}_port") not in self._port_choices(key):
+                setattr(self, f"{key}_port", OFF)
+                with self._lock:
+                    self._chosen.discard(key)
             if row["needs_gamepad"] and getattr(self, f"{key}_gamepad") not in gamepads:
                 setattr(self, f"{key}_gamepad", "None")
 
     def _refresh_summary(self):
         parts = []
         for config in self.configs:
-            where = "simulated" if config["sim"] else config["port"]
+            where = ("simulated" if config["sim"]
+                     else (config["port"] or "on"))
             parts.append(f"{config['model']} ({where})")
         self.summary = ", ".join(parts) or "nothing selected"
 
