@@ -118,7 +118,7 @@ class Model(Panel):
 
     def toggle_estop(self, confirmed=False):
         if self.is_estopped:
-            return self.clear_estop(confirmed)
+            return self.clear_estop(confirmed)   # raises NeedsConfirm("clear_estop")
         if not self.estop():
             events.error("Stop Not Confirmed", f"{self.NAME} latched, but its "
                          "hardware stop did not confirm. Treat it as live.",
@@ -183,4 +183,8 @@ class Model(Panel):
                        on_role="danger", off_role="danger"),
             sch.indicator("Fault", "is_faulted"),
             sch.readonly("Fault reason:", "fault", role="danger"),
+            # Declared so the confirmation re-run of `clear_estop` passes the
+            # allow-list; it renders nothing (the toggle is the control).
+            {"type": "internal", "command": "clear_estop", "writable": False,
+             "role": "neutral"},
         )

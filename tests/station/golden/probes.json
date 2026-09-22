@@ -1,0 +1,2959 @@
+{
+  "_meta": {
+    "description": "probe wire frames: StepperProbe, DCProbe, ChuckPositioner",
+    "captured_from": "src/ (the old code), driven in simulator mode",
+    "regenerate_with": "python3 tests/station/golden/capture.py",
+    "handshake_frames_filtered": 0,
+    "handshake_note": "Transport ping traffic (b's\\n') is filtered out of every frame list and counted here. Simulator mode never runs the handshake at all, so this is 0; a non-zero value means a capture was taken against a live port and the pings were removed from the golden bytes.",
+    "scenario_count": 57
+  },
+  "scenarios": [
+    {
+      "id": "stepper.enable",
+      "device": "StepperProbe",
+      "description": "Operator arms the probe. `_arm` sends the energize byte, then `_transition`'s quiesce sends a zeroed motion frame so the board starts from rest.",
+      "prelude": [
+        "<construct on port 'SIM'>"
+      ],
+      "old_calls": [
+        "probe.enable()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.IDLE,))"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "65",
+          "length": 1,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'e' (0x65) - energize. Handled by stepper/chuck firmware; falls through to text on the DC board (SERIAL-10)."
+          }
+        },
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.auto_and_step",
+      "device": "StepperProbe",
+      "description": "Enter AUTONOMOUS (one zeroed frame from the quiesce), then one step. `macro_start_auton` transitions with quiesce=False, so the move frame is the only write it adds - no stop-then-go hiccup at the board.",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters written while IDLE; a write to one is refused once AUTONOMOUS or MANUAL (DC-6)>"
+      ],
+      "old_calls": [
+        "probe.enter_auton()",
+        "probe.macro_start_auton()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.AUTO,))",
+        "probe.run(\"step\", inputs=<motion parameters>)"
+      ],
+      "inputs": {
+        "x_step": "4",
+        "y_step": "8",
+        "z_step": "16",
+        "x_dist": "10",
+        "y_dist": "20",
+        "z_dist": "-5",
+        "full_speed": "250",
+        "man_full_speed": "175"
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        },
+        {
+          "hex": "342c382c31362c302c3235302e302c302c302c31302e302c32302e302c2d352e302c302c310a",
+          "length": 38,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "4,8,16,0,250.0,0,0,10.0,20.0,-5.0,0,1",
+            "fields": {
+              "x_step_size": "4",
+              "y_step_size": "8",
+              "z_step_size": "16",
+              "target_steps_unused": "0",
+              "full_speed": "250.0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "10.0",
+              "y_dist": "20.0",
+              "z_dist": "-5.0",
+              "command_code_manual": "0",
+              "command_code_auton": "1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.step_again_while_auto",
+      "device": "StepperProbe",
+      "description": "A second step while already AUTONOMOUS. One move frame and nothing else: step stays available while AUTO so repeated stepping works (DC-6, review finding 5).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_auton()",
+        "probe.macro_start_auton()"
+      ],
+      "old_calls": [
+        "probe.macro_start_auton()"
+      ],
+      "new_calls": [
+        "probe.run(\"step\", inputs=<motion parameters>)"
+      ],
+      "inputs": {
+        "x_step": "4",
+        "y_step": "8",
+        "z_step": "16",
+        "x_dist": "10",
+        "y_dist": "20",
+        "z_dist": "-5",
+        "full_speed": "250",
+        "man_full_speed": "175"
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "342c382c31362c302c3235302e302c302c302c31302e302c32302e302c2d352e302c302c310a",
+          "length": 38,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "4,8,16,0,250.0,0,0,10.0,20.0,-5.0,0,1",
+            "fields": {
+              "x_step_size": "4",
+              "y_step_size": "8",
+              "z_step_size": "16",
+              "target_steps_unused": "0",
+              "full_speed": "250.0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "10.0",
+              "y_dist": "20.0",
+              "z_dist": "-5.0",
+              "command_code_manual": "0",
+              "command_code_auton": "1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.manual_enter",
+      "device": "StepperProbe",
+      "description": "Enter MANUAL from IDLE. Already armed, so no energize byte; the quiesce frame is the whole of it.",
+      "prelude": [
+        "probe.enable()"
+      ],
+      "old_calls": [
+        "probe.enter_manual()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.MANUAL,))"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.neutral",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'neutral' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('neutral' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.x_full_positive",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'x_full_positive' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('x_full_positive' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 1.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000803f000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 1.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.x_full_negative",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'x_full_negative' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('x_full_negative' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": -1.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa01000080bf000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": -1.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.y_full_positive",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'y_full_positive' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('y_full_positive' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 1.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa01000000000000803f0000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 1.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.y_full_negative",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'y_full_negative' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('y_full_negative' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": -1.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000080bf0000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": -1.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.z_trigger_left_full",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'z_trigger_left_full' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('z_trigger_left_full' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": 1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000803f00008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 1.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.z_trigger_right_full",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'z_trigger_right_full' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('z_trigger_right_full' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": 1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000000000000000000080bf00008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": -1.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.dpad_left_right",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'dpad_left_right' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('dpad_left_right' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 1,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000000000000000000000000000804000000041000080410000803f000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 1.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.dpad_up_down",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'dpad_up_down' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('dpad_up_down' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": -1,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000080bf0000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": -1.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.bumper_left",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'bumper_left' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('bumper_left' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 1,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000000000000803f00002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 1.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.bumper_right",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'bumper_right' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('bumper_right' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 1
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000000000000000000000000000804000000041000080410000000000000000000080bf00002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": -1.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.all_deflected",
+      "device": "StepperProbe",
+      "description": "One 42-byte jog packet for the 'all_deflected' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('all_deflected' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 1.0,
+        "y_axisStatus": -1.0,
+        "z_axisStatusL": 1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 1,
+        "dpad_UD": -1,
+        "LBumper": 1,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000803f000080bf0000803f0000804000000041000080410000803f000080bf0000803f00002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 1.0,
+              "y_axis": -1.0,
+              "z_axis_combined": 1.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 1.0,
+              "dpad_UD": -1.0,
+              "bumpers_combined": 1.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.jog.zero_frame_on_exit",
+      "device": "StepperProbe",
+      "description": "The single zeroed jog frame `_input_loop` sends when manual mode ends or the input gate closes (I-4.2). Called with an empty dict, so every field comes from the transport's own defaults - the bytes must match the 'neutral' levels frame exactly.",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command({})"
+      ],
+      "new_calls": [
+        "probe._send_jog({})"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.disable",
+      "device": "StepperProbe",
+      "description": "Stop motion, then de-energize. The zeroed frame goes first and the 'd' is sent even if it raised - de-energizing is never skipped because an earlier step failed.",
+      "prelude": [
+        "probe.enable()"
+      ],
+      "old_calls": [
+        "probe.disable()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.DISABLED,))"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        },
+        {
+          "hex": "64",
+          "length": 1,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'd' (0x64) - de-energize, TOFF=0 on all three TMC2209 drivers. The DC board has no handler; it reads as text and produces a halt, not a de-energize (SERIAL-10)."
+          }
+        }
+      ]
+    },
+    {
+      "id": "stepper.full_stop",
+      "device": "StepperProbe",
+      "description": "FULL STOP: zeroed motion frame, 'd', then 'k\\n' - in that order, all on the priority lane. `emergency_stop()` latches and then runs exactly this on a worker, so the byte sequence is the same; it is captured synchronously here so the capture is deterministic.",
+      "prelude": [
+        "probe.enable()"
+      ],
+      "old_calls": [
+        "probe.power_down()",
+        "# probe.emergency_stop() sends the same three frames"
+      ],
+      "new_calls": [
+        "probe._halt_hardware()",
+        "# probe.run(\"estop\") -> Model.estop() -> _halt_hardware() on a worker"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        },
+        {
+          "hex": "64",
+          "length": 1,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'd' (0x64) - de-energize, TOFF=0 on all three TMC2209 drivers. The DC board has no handler; it reads as text and produces a halt, not a de-energize (SERIAL-10)."
+          }
+        },
+        {
+          "hex": "6b0a",
+          "length": 2,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'k' (0x6B) + LF - coil kill. **No firmware on any board has a handler for this.** It is sent unchanged because this is a stop path; making it real is owner decision D-7."
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.enable",
+      "device": "DCProbe",
+      "description": "Operator arms the probe. `_arm` sends the energize byte, then `_transition`'s quiesce sends a zeroed motion frame so the board starts from rest.",
+      "prelude": [
+        "<construct on port 'SIM'>"
+      ],
+      "old_calls": [
+        "probe.enable()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.IDLE,))"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "65",
+          "length": 1,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'e' (0x65) - energize. Handled by stepper/chuck firmware; falls through to text on the DC board (SERIAL-10)."
+          }
+        },
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.auto_and_step",
+      "device": "DCProbe",
+      "description": "Enter AUTONOMOUS (one zeroed frame from the quiesce), then one step. `macro_start_auton` transitions with quiesce=False, so the move frame is the only write it adds - no stop-then-go hiccup at the board.",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters written while IDLE; a write to one is refused once AUTONOMOUS or MANUAL (DC-6)>"
+      ],
+      "old_calls": [
+        "probe.enter_auton()",
+        "probe.macro_start_auton()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.AUTO,))",
+        "probe.run(\"step\", inputs=<motion parameters>)"
+      ],
+      "inputs": {
+        "x_step": "4",
+        "y_step": "8",
+        "z_step": "16",
+        "x_dist": "10",
+        "y_dist": "20",
+        "z_dist": "-5",
+        "full_speed": "250",
+        "man_full_speed": "175",
+        "slow_speed": "40",
+        "brake_distance": "12"
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        },
+        {
+          "hex": "342c382c31362c302c3235302e302c34302e302c31322e302c31302e302c32302e302c2d352e302c302c310a",
+          "length": 44,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "4,8,16,0,250.0,40.0,12.0,10.0,20.0,-5.0,0,1",
+            "fields": {
+              "x_step_size": "4",
+              "y_step_size": "8",
+              "z_step_size": "16",
+              "target_steps_unused": "0",
+              "full_speed": "250.0",
+              "slow_speed": "40.0",
+              "brake_distance": "12.0",
+              "x_dist": "10.0",
+              "y_dist": "20.0",
+              "z_dist": "-5.0",
+              "command_code_manual": "0",
+              "command_code_auton": "1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.step_again_while_auto",
+      "device": "DCProbe",
+      "description": "A second step while already AUTONOMOUS. One move frame and nothing else: step stays available while AUTO so repeated stepping works (DC-6, review finding 5).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_auton()",
+        "probe.macro_start_auton()"
+      ],
+      "old_calls": [
+        "probe.macro_start_auton()"
+      ],
+      "new_calls": [
+        "probe.run(\"step\", inputs=<motion parameters>)"
+      ],
+      "inputs": {
+        "x_step": "4",
+        "y_step": "8",
+        "z_step": "16",
+        "x_dist": "10",
+        "y_dist": "20",
+        "z_dist": "-5",
+        "full_speed": "250",
+        "man_full_speed": "175",
+        "slow_speed": "40",
+        "brake_distance": "12"
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "342c382c31362c302c3235302e302c34302e302c31322e302c31302e302c32302e302c2d352e302c302c310a",
+          "length": 44,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "4,8,16,0,250.0,40.0,12.0,10.0,20.0,-5.0,0,1",
+            "fields": {
+              "x_step_size": "4",
+              "y_step_size": "8",
+              "z_step_size": "16",
+              "target_steps_unused": "0",
+              "full_speed": "250.0",
+              "slow_speed": "40.0",
+              "brake_distance": "12.0",
+              "x_dist": "10.0",
+              "y_dist": "20.0",
+              "z_dist": "-5.0",
+              "command_code_manual": "0",
+              "command_code_auton": "1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.manual_enter",
+      "device": "DCProbe",
+      "description": "Enter MANUAL from IDLE. Already armed, so no energize byte; the quiesce frame is the whole of it.",
+      "prelude": [
+        "probe.enable()"
+      ],
+      "old_calls": [
+        "probe.enter_manual()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.MANUAL,))"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.neutral",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'neutral' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('neutral' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.x_full_positive",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'x_full_positive' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('x_full_positive' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 1.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000803f000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 1.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.x_full_negative",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'x_full_negative' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('x_full_negative' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": -1.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa01000080bf000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": -1.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.y_full_positive",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'y_full_positive' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('y_full_positive' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 1.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa01000000000000803f0000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 1.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.y_full_negative",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'y_full_negative' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('y_full_negative' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": -1.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000080bf0000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": -1.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.z_trigger_left_full",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'z_trigger_left_full' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('z_trigger_left_full' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": 1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000803f00008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 1.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.z_trigger_right_full",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'z_trigger_right_full' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('z_trigger_right_full' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": 1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000000000000000000080bf00008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": -1.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.dpad_left_right",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'dpad_left_right' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('dpad_left_right' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 1,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000000000000000000000000000804000000041000080410000803f000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 1.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.dpad_up_down",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'dpad_up_down' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('dpad_up_down' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": -1,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000080bf0000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": -1.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.bumper_left",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'bumper_left' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('bumper_left' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 1,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000000000000803f00002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 1.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.bumper_right",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'bumper_right' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('bumper_right' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 1
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000000000000000000000000000804000000041000080410000000000000000000080bf00002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": -1.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.all_deflected",
+      "device": "DCProbe",
+      "description": "One 42-byte jog packet for the 'all_deflected' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('all_deflected' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 1.0,
+        "y_axisStatus": -1.0,
+        "z_axisStatusL": 1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 1,
+        "dpad_UD": -1,
+        "LBumper": 1,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000803f000080bf0000803f0000804000000041000080410000803f000080bf0000803f00002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 1.0,
+              "y_axis": -1.0,
+              "z_axis_combined": 1.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 1.0,
+              "dpad_UD": -1.0,
+              "bumpers_combined": 1.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.jog.zero_frame_on_exit",
+      "device": "DCProbe",
+      "description": "The single zeroed jog frame `_input_loop` sends when manual mode ends or the input gate closes (I-4.2). Called with an empty dict, so every field comes from the transport's own defaults - the bytes must match the 'neutral' levels frame exactly.",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command({})"
+      ],
+      "new_calls": [
+        "probe._send_jog({})"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.disable",
+      "device": "DCProbe",
+      "description": "Stop motion, then de-energize. The zeroed frame goes first and the 'd' is sent even if it raised - de-energizing is never skipped because an earlier step failed.",
+      "prelude": [
+        "probe.enable()"
+      ],
+      "old_calls": [
+        "probe.disable()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.DISABLED,))"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        },
+        {
+          "hex": "64",
+          "length": 1,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'd' (0x64) - de-energize, TOFF=0 on all three TMC2209 drivers. The DC board has no handler; it reads as text and produces a halt, not a de-energize (SERIAL-10)."
+          }
+        }
+      ]
+    },
+    {
+      "id": "dc.full_stop",
+      "device": "DCProbe",
+      "description": "FULL STOP: zeroed motion frame, 'd', then 'k\\n' - in that order, all on the priority lane. `emergency_stop()` latches and then runs exactly this on a worker, so the byte sequence is the same; it is captured synchronously here so the capture is deterministic.",
+      "prelude": [
+        "probe.enable()"
+      ],
+      "old_calls": [
+        "probe.power_down()",
+        "# probe.emergency_stop() sends the same three frames"
+      ],
+      "new_calls": [
+        "probe._halt_hardware()",
+        "# probe.run(\"estop\") -> Model.estop() -> _halt_hardware() on a worker"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        },
+        {
+          "hex": "64",
+          "length": 1,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'd' (0x64) - de-energize, TOFF=0 on all three TMC2209 drivers. The DC board has no handler; it reads as text and produces a halt, not a de-energize (SERIAL-10)."
+          }
+        },
+        {
+          "hex": "6b0a",
+          "length": 2,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'k' (0x6B) + LF - coil kill. **No firmware on any board has a handler for this.** It is sent unchanged because this is a stop path; making it real is owner decision D-7."
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.enable",
+      "device": "ChuckPositioner",
+      "description": "Operator arms the probe. `_arm` sends the energize byte, then `_transition`'s quiesce sends a zeroed motion frame so the board starts from rest.",
+      "prelude": [
+        "<construct on port 'SIM'>"
+      ],
+      "old_calls": [
+        "probe.enable()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.IDLE,))"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "65",
+          "length": 1,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'e' (0x65) - energize. Handled by stepper/chuck firmware; falls through to text on the DC board (SERIAL-10)."
+          }
+        },
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.auto_and_step",
+      "device": "ChuckPositioner",
+      "description": "Enter AUTONOMOUS (one zeroed frame from the quiesce), then one step. `macro_start_auton` transitions with quiesce=False, so the move frame is the only write it adds - no stop-then-go hiccup at the board.",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters written while IDLE; a write to one is refused once AUTONOMOUS or MANUAL (DC-6)>"
+      ],
+      "old_calls": [
+        "probe.enter_auton()",
+        "probe.macro_start_auton()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.AUTO,))",
+        "probe.run(\"step\", inputs=<motion parameters>)"
+      ],
+      "inputs": {
+        "x_step": "4",
+        "y_step": "8",
+        "z_step": "16",
+        "x_dist": "10",
+        "y_dist": "20",
+        "z_dist": "-5",
+        "full_speed": "250",
+        "man_full_speed": "175"
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        },
+        {
+          "hex": "342c382c31362c302c3235302e302c302c302c31302e302c32302e302c2d352e302c302c310a",
+          "length": 38,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "4,8,16,0,250.0,0,0,10.0,20.0,-5.0,0,1",
+            "fields": {
+              "x_step_size": "4",
+              "y_step_size": "8",
+              "z_step_size": "16",
+              "target_steps_unused": "0",
+              "full_speed": "250.0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "10.0",
+              "y_dist": "20.0",
+              "z_dist": "-5.0",
+              "command_code_manual": "0",
+              "command_code_auton": "1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.step_again_while_auto",
+      "device": "ChuckPositioner",
+      "description": "A second step while already AUTONOMOUS. One move frame and nothing else: step stays available while AUTO so repeated stepping works (DC-6, review finding 5).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_auton()",
+        "probe.macro_start_auton()"
+      ],
+      "old_calls": [
+        "probe.macro_start_auton()"
+      ],
+      "new_calls": [
+        "probe.run(\"step\", inputs=<motion parameters>)"
+      ],
+      "inputs": {
+        "x_step": "4",
+        "y_step": "8",
+        "z_step": "16",
+        "x_dist": "10",
+        "y_dist": "20",
+        "z_dist": "-5",
+        "full_speed": "250",
+        "man_full_speed": "175"
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "342c382c31362c302c3235302e302c302c302c31302e302c32302e302c2d352e302c302c310a",
+          "length": 38,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "4,8,16,0,250.0,0,0,10.0,20.0,-5.0,0,1",
+            "fields": {
+              "x_step_size": "4",
+              "y_step_size": "8",
+              "z_step_size": "16",
+              "target_steps_unused": "0",
+              "full_speed": "250.0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "10.0",
+              "y_dist": "20.0",
+              "z_dist": "-5.0",
+              "command_code_manual": "0",
+              "command_code_auton": "1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.manual_enter",
+      "device": "ChuckPositioner",
+      "description": "Enter MANUAL from IDLE. Already armed, so no energize byte; the quiesce frame is the whole of it.",
+      "prelude": [
+        "probe.enable()"
+      ],
+      "old_calls": [
+        "probe.enter_manual()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.MANUAL,))"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.neutral",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'neutral' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('neutral' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.x_full_positive",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'x_full_positive' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('x_full_positive' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 1.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000803f000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 1.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.x_full_negative",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'x_full_negative' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('x_full_negative' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": -1.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa01000080bf000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": -1.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.y_full_positive",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'y_full_positive' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('y_full_positive' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 1.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa01000000000000803f0000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 1.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.y_full_negative",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'y_full_negative' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('y_full_negative' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": -1.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000080bf0000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": -1.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.z_trigger_left_full",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'z_trigger_left_full' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('z_trigger_left_full' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": 1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000803f00008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 1.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.z_trigger_right_full",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'z_trigger_right_full' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('z_trigger_right_full' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": 1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000000000000000000080bf00008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": -1.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.dpad_left_right",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'dpad_left_right' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('dpad_left_right' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 1,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000000000000000000000000000804000000041000080410000803f000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 1.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.dpad_up_down",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'dpad_up_down' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('dpad_up_down' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": -1,
+        "LBumper": 0,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000080bf0000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": -1.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.bumper_left",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'bumper_left' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('bumper_left' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 1,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000000000000803f00002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 1.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.bumper_right",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'bumper_right' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('bumper_right' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 0.0,
+        "y_axisStatus": 0.0,
+        "z_axisStatusL": -1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 0,
+        "dpad_UD": 0,
+        "LBumper": 0,
+        "RBumper": 1
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000000000000000000000000000804000000041000080410000000000000000000080bf00002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": -1.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.all_deflected",
+      "device": "ChuckPositioner",
+      "description": "One 42-byte jog packet for the 'all_deflected' gamepad state. Triggers are remapped from [-1, 1] to [0, 1] and combined as (L - R); bumpers combine as (L - R).",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command('all_deflected' levels)"
+      ],
+      "new_calls": [
+        "probe._send_jog(<levels>)  # driven by Probe._jog_loop, was BaseProbe._input_loop"
+      ],
+      "inputs": {
+        "x_axisStatus": 1.0,
+        "y_axisStatus": -1.0,
+        "z_axisStatusL": 1.0,
+        "z_axisStatusR": -1.0,
+        "dpad_LR": 1,
+        "dpad_UD": -1,
+        "LBumper": 1,
+        "RBumper": 0
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa010000803f000080bf0000803f0000804000000041000080410000803f000080bf0000803f00002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 1.0,
+              "y_axis": -1.0,
+              "z_axis_combined": 1.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 1.0,
+              "dpad_UD": -1.0,
+              "bumpers_combined": 1.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.jog.zero_frame_on_exit",
+      "device": "ChuckPositioner",
+      "description": "The single zeroed jog frame `_input_loop` sends when manual mode ends or the input gate closes (I-4.2). Called with an empty dict, so every field comes from the transport's own defaults - the bytes must match the 'neutral' levels frame exactly.",
+      "prelude": [
+        "probe.enable()",
+        "<motion parameters>",
+        "probe.enter_manual()"
+      ],
+      "old_calls": [
+        "probe.send_manual_mode_command({})"
+      ],
+      "new_calls": [
+        "probe._send_jog({})"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "aa0100000000000000000000000000008040000000410000804100000000000000000000000000002f43",
+          "length": 42,
+          "decode": {
+            "kind": "jog_packet",
+            "format": "<BBffffffffff (42 bytes)",
+            "fields": {
+              "start_marker": 170,
+              "packet_type": 1,
+              "x_axis": 0.0,
+              "y_axis": 0.0,
+              "z_axis_combined": 0.0,
+              "x_step_size": 4.0,
+              "y_step_size": 8.0,
+              "z_step_size": 16.0,
+              "dpad_LR": 0.0,
+              "dpad_UD": 0.0,
+              "bumpers_combined": 0.0,
+              "manual_jog_speed": 175.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.disable",
+      "device": "ChuckPositioner",
+      "description": "Stop motion, then de-energize. The zeroed frame goes first and the 'd' is sent even if it raised - de-energizing is never skipped because an earlier step failed.",
+      "prelude": [
+        "probe.enable()"
+      ],
+      "old_calls": [
+        "probe.disable()"
+      ],
+      "new_calls": [
+        "probe.run(\"set_mode\", args=(ProbeMode.DISABLED,))"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        },
+        {
+          "hex": "64",
+          "length": 1,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'd' (0x64) - de-energize, TOFF=0 on all three TMC2209 drivers. The DC board has no handler; it reads as text and produces a halt, not a de-energize (SERIAL-10)."
+          }
+        }
+      ]
+    },
+    {
+      "id": "chuck.full_stop",
+      "device": "ChuckPositioner",
+      "description": "FULL STOP: zeroed motion frame, 'd', then 'k\\n' - in that order, all on the priority lane. `emergency_stop()` latches and then runs exactly this on a worker, so the byte sequence is the same; it is captured synchronously here so the capture is deterministic.",
+      "prelude": [
+        "probe.enable()"
+      ],
+      "old_calls": [
+        "probe.power_down()",
+        "# probe.emergency_stop() sends the same three frames"
+      ],
+      "new_calls": [
+        "probe._halt_hardware()",
+        "# probe.run(\"estop\") -> Model.estop() -> _halt_hardware() on a worker"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "302c302c302c302c302c302c302c302c302c302c302c300a",
+          "length": 24,
+          "decode": {
+            "kind": "autonomous_frame",
+            "format": "12 comma-separated fields, LF-terminated",
+            "text": "0,0,0,0,0,0,0,0,0,0,0,0",
+            "fields": {
+              "x_step_size": "0",
+              "y_step_size": "0",
+              "z_step_size": "0",
+              "target_steps_unused": "0",
+              "full_speed": "0",
+              "slow_speed": "0",
+              "brake_distance": "0",
+              "x_dist": "0",
+              "y_dist": "0",
+              "z_dist": "0",
+              "command_code_manual": "0",
+              "command_code_auton": "0"
+            }
+          }
+        },
+        {
+          "hex": "64",
+          "length": 1,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'd' (0x64) - de-energize, TOFF=0 on all three TMC2209 drivers. The DC board has no handler; it reads as text and produces a halt, not a de-energize (SERIAL-10)."
+          }
+        },
+        {
+          "hex": "6b0a",
+          "length": 2,
+          "decode": {
+            "kind": "control_byte",
+            "text": "control byte 'k' (0x6B) + LF - coil kill. **No firmware on any board has a handler for this.** It is sent unchanged because this is a stop path; making it real is owner decision D-7."
+          }
+        }
+      ]
+    }
+  ]
+}
