@@ -210,6 +210,15 @@ function isWideCard(sections) {
  *  section that happens to hold no readout falls through to the next one
  *  that does, so a model is never silently absent from the rail. */
 function railElements(schema) {
+  // A model that SAYS what it watches (`rail: true` on a readonly) wins;
+  // the first-section rule below is the fallback for one that does not.
+  const flagged = [];
+  for (const section of ((schema && schema.sections) || [])) {
+    for (const element of (section.elements || [])) {
+      if (element.type === 'readonly' && element.model_attr && element.rail) flagged.push(element);
+    }
+  }
+  if (flagged.length) return flagged.slice(0, RAIL_READOUTS);
   for (const section of ((schema && schema.sections) || [])) {
     const readouts = (section.elements || [])
       .filter((element) => element.type === 'readonly' && element.model_attr);

@@ -195,7 +195,7 @@ class Rotator(Model):
         return sch.schema(
             sch.section(
                 "Stage",
-                sch.readonly("Position (deg):", "position"),
+                sch.readonly("Position (deg):", "position", rail=True),
                 sch.readonly("Motion state:", "motion_state"),
                 sch.indicator("Stage connected", "is_connected",
                               on_role="go", off_role="danger"),

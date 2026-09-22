@@ -987,9 +987,9 @@ class Probe(Model):
         return sch.schema(
             sch.section(
                 "Coordinate Frame",
-                sch.readonly("X Position:", "position_x"),
-                sch.readonly("Y Position:", "position_y"),
-                sch.readonly("Z Position:", "position_z"),
+                sch.readonly("X Position:", "position_x", rail=True),
+                sch.readonly("Y Position:", "position_y", rail=True),
+                sch.readonly("Z Position:", "position_z", rail=True),
                 sch.readonly("Velocity (x, y, z):", "velocity_text"),
                 sch.readonly("Position age (s):", "position_age", role="info"),
             ),

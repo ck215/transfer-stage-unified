@@ -187,6 +187,10 @@ class Controller:
             models = dict(self._models)
         results = self._estop_concurrently(models)
         unconfirmed = sorted(n for n, ok in results.items() if not ok)
+        confirmed = sorted(n for n, ok in results.items() if ok)
+        if confirmed:
+            events.info("FULL STOP", f"latched and confirmed on: {', '.join(confirmed)}",
+                        source="Controller")
         if unconfirmed:
             events.error("Stop Not Confirmed", "FULL STOP latched on every model, "
                          f"but these did not confirm within {self.ESTOP_ALL_BUDGET}s: "

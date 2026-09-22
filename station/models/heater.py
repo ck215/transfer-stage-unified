@@ -244,7 +244,7 @@ class Heater(Model):
         return sch.schema(
             sch.section(
                 "Temperature Readings",
-                sch.readonly("Current Temperature:", "temperature"),
+                sch.readonly("Current Temperature:", "temperature", rail=True),
                 sch.readonly("Connection:", "connection", role="info"),
                 sch.plot("Temperature over time", "series",
                          x_label="time (s)", y_label="temperature (°C)"),

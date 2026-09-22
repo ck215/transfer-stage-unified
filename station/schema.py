@@ -57,12 +57,17 @@ def schema(*sections):
     return {"version": 2, "sections": list(sections)}
 
 
-def readonly(text, model_attr, *, param=None, format=None, role="neutral"):
-    """A value the operator reads and cannot write."""
+def readonly(text, model_attr, *, param=None, format=None, role="neutral",
+             rail=False):
+    """A value the operator reads and cannot write. `rail=True` marks one of
+    the few numbers the operator watches constantly; a dashboard shows those
+    in its always-visible status rail."""
     element = {
         "type": "readonly", "text": text, "model_attr": model_attr,
         "writable": False, "role": role,
     }
+    if rail:
+        element["rail"] = True
     if param is not None:
         element.update(param.to_schema())
     if format is not None:

@@ -460,12 +460,16 @@ def test_an_unconfirmed_device_is_reported_to_every_frontend(controller):
         stalled.release()
 
 
-def test_a_confirmed_stop_of_everything_is_silent(controller):
+def test_a_confirmed_stop_of_everything_logs_but_never_pops_up(controller):
     controller.add("one", FakeModel())
     with EventRecorder() as log:
         controller.estop_all()
-    assert log.seen == [], "a modal on every successful FULL STOP is one "\
-        "operators learn to dismiss without reading"
+    # The log line is the operator's confirmation (the tray shows it); a
+    # modal on every successful FULL STOP is one operators learn to dismiss
+    # without reading, so nothing here may ask for an acknowledgement.
+    assert [e.severity for e in log.seen] == ["info"]
+    assert "one" in log.seen[0].message
+    assert not any(e.needs_ack for e in log.seen)
 
 
 def test_estop_all_is_bounded_even_with_a_hanging_model(controller):
