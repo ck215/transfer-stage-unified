@@ -91,6 +91,8 @@ class FakeWidget:
         self.children = []
         self.is_destroyed = False
         self.grid_info = None
+        self.is_packed = False
+        self.column_weights = {}
         self.tk = FakeTcl()
         self.scheduler = getattr(master, "scheduler", None) or SCHEDULER
         if isinstance(master, FakeWidget):
@@ -110,12 +112,26 @@ class FakeWidget:
     # -- geometry
     def pack(self, **kwargs):
         self.grid_info = self.grid_info or {}
+        self.is_packed = True
 
     def grid(self, **kwargs):
         self.grid_info = kwargs
 
+    def grid_configure(self, **kwargs):
+        self.grid_info = dict(self.grid_info or {}, **kwargs)
+
     def pack_forget(self):
-        pass
+        self.is_packed = False
+
+    def grid_columnconfigure(self, column, **options):
+        self.column_weights[column] = options
+
+    def yview(self, *_args):
+        return None
+
+    def set(self, *_args):
+        """A scrollbar's `set`; the Text's `yscrollcommand` is bound to it."""
+        return None
 
     # -- events
     def bind(self, sequence, callback=None, add=None):
@@ -331,6 +347,7 @@ class FakeTkModule:
     Frame = FakeWidget
     Label = FakeWidget
     Entry = FakeWidget
+    Scrollbar = FakeWidget
     Canvas = FakeCanvas
     Text = FakeText
     Menu = FakeMenu
@@ -362,13 +379,21 @@ class DemoPanel(Panel):
     PARAMS = {
         "speed": Param("speed", "float", default=1.0, minimum=0.0, maximum=10.0,
                        decimals=2, label="Speed"),
+        "steps": Param("steps", "int", default=5, minimum=0, maximum=100,
+                       label="Steps"),
         "note": Param("note", "text", default="hi", label="Note"),
     }
+    #: A readout the schema types but the Param table does not carry — the
+    #: shape `Setup.scan_progress` has, and the one where an int can still
+    #: arrive at a view as "7.0".
+    DONE_COUNT = Param("done_count", "int", label="Done")
 
     def __init__(self):
         super().__init__()
+        self.done_count = 7.0
         self.is_running = False
         self.is_latched = False
+        self.fault_reason = ""      # an empty coloured readout
         self.region = None
         self.source = None
         self.mode = "idle"
@@ -389,6 +414,8 @@ class DemoPanel(Panel):
             sch.section(
                 "Readouts",
                 sch.readonly("Speed now:", "speed", param=self.PARAMS["speed"]),
+                sch.readonly("Done:", "done_count", param=self.DONE_COUNT),
+                sch.readonly("Fault:", "fault_reason", role="info"),
                 sch.indicator("Latched", "is_latched"),
                 sch.plot("Series", "series", x_label="n", y_label="red"),
                 sch.image("Figure", "figure"),
@@ -398,6 +425,7 @@ class DemoPanel(Panel):
                 "Controls",
                 sch.entry("Speed", "speed", self.PARAMS["speed"],
                           disabled_when=["running"]),
+                sch.entry("Steps", "steps", self.PARAMS["steps"]),
                 sch.entry("Note", "note", self.PARAMS["note"]),
                 sch.button("Go", "go", inputs=["speed"], role="danger"),
                 sch.button("Refuse", "refuse_me"),
@@ -730,6 +758,225 @@ def test_dropdown_selection_runs_the_command(view, panel):
     assert panel.source == "beta"
 
 
+def test_an_indicator_is_a_lamp_and_never_repeats_its_own_label(view, panel):
+    """A lamp carries the state, not a second copy of the caption: the bench
+    build showed `Fault   Fault` and said nothing about the fault."""
+    element = element_of(view, "indicator")
+    widget = widget_of(view, element)
+    panel.is_latched = True
+    view._refresh()
+    assert widget.cget("text") == ""
+    on = theme.toggle_colors(element, True)
+    assert widget.cget("background") == on["background"]
+
+    panel.is_latched = False
+    view._refresh()
+    off = theme.toggle_colors(element, False)
+    assert widget.cget("text") == ""
+    assert widget.cget("background") == off["background"]
+    # ON and OFF differ by more than fill: the ring stays the role's colour,
+    # so an unlit lamp is still visibly a lamp.
+    assert widget.cget("highlightbackground") == off["border"]
+    assert widget.cget("highlightthickness")
+
+
+def test_an_empty_readout_says_so_instead_of_drawing_a_bare_stripe(view, panel):
+    """An empty `info` readout rendered as a thin blue bar, which reads as a
+    broken widget. Nothing to show is shown as nothing to show."""
+    element = element_of(view, "readonly", "Fault:")
+    panel.fault_reason = ""
+    view._refresh()
+    widget = widget_of(view, element)
+    assert view._widgets[id(element)]["var"].get() == tkmod.EMPTY_READOUT
+    assert widget.cget("background") == theme.SURFACE, "not a coloured stripe"
+    assert widget.cget("foreground") == theme.MUTED
+
+    panel.fault_reason = "over temperature"
+    view._refresh()
+    assert view._widgets[id(element)]["var"].get() == "over temperature"
+    assert widget.cget("background") == theme.colors("info")[0]
+
+
+def test_a_readout_is_not_drawn_like_a_box_to_type_in(view):
+    """RC-6's cousin: an operator who cannot tell a readout from an entry
+    tries to type into it. The readout sits on the surface with no border;
+    the entry is sunken."""
+    readout = widget_of(view, element_of(view, "readonly", "Speed now:"))
+    entry = widget_of(view, element_of(view, "entry", "Speed"))
+    assert readout.cget("relief") == "flat"
+    assert entry.cget("relief") == "sunken"
+    assert readout.cget("anchor") == "e"
+
+
+# ---------------------------------------------------------------------------
+# section layout: the row form is a table, the column form is a stack
+# ---------------------------------------------------------------------------
+
+class RowPanel(Panel):
+    """Setup's shape: one row section per model, then a column section.
+
+    `layout="row"` is the schema's hint (Addendum 2) and this is the panel
+    that proves the renderer honours it.
+    """
+
+    NAME = "Rows"
+    PARAMS = {"count": Param("count", "int", default=2, minimum=0, maximum=9,
+                             label="Count")}
+
+    def __init__(self):
+        super().__init__()
+        self.stepper_port = "SIM"
+        self.stepper_gamepad = "None"
+        self.stepper_found = ""
+        self.dc_port = "Off"
+        self.dc_gamepad = "None"
+        self.dc_found = ""
+        self.heater_port = "Off"
+        self.heater_found = ""
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section(
+                "Stepper Probe",
+                sch.dropdown("Port", "stepper_port", "set_stepper_port",
+                             "port_options"),
+                sch.dropdown("Gamepad", "stepper_gamepad", "set_stepper_port",
+                             "port_options"),
+                sch.readonly("Detected:", "stepper_found"),
+                layout="row"),
+            sch.section(
+                "DC Probe",
+                sch.dropdown("Port", "dc_port", "set_dc_port", "port_options"),
+                sch.dropdown("Gamepad", "dc_gamepad", "set_dc_port",
+                             "port_options"),
+                sch.readonly("Detected:", "dc_found"),
+                layout="row"),
+            # A heater takes no gamepad, so this row is one control shorter —
+            # the case that decides whether the status column is a column.
+            sch.section(
+                "Temperature",
+                sch.dropdown("Port", "heater_port", "set_heater_port",
+                             "port_options"),
+                sch.readonly("Detected:", "heater_found"),
+                layout="row"),
+            sch.section(
+                "Launch",
+                sch.entry("Count", "count", self.PARAMS["count"]),
+                sch.button("Launch", "launch", role="go")),
+        )
+
+    def set_stepper_port(self, name):
+        self.stepper_port = name
+        return name
+
+    def set_dc_port(self, name):
+        self.dc_port = name
+        return name
+
+    def set_heater_port(self, name):
+        self.heater_port = name
+        return name
+
+    def port_options(self):
+        return ["Off", "SIM", "COM3"]
+
+    def launch(self):
+        return "launched"
+
+
+@pytest.fixture
+def row_view():
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Rows=RowPanel()), "Rows")
+    yield built
+    built.close()
+
+
+def _cell(view, element):
+    return widget_of(view, element).grid_info
+
+
+def _right_edge(view, element):
+    info = _cell(view, element)
+    return info["column"] + info.get("columnspan", 1)
+
+
+#: `RowPanel._elements`, by name: three table rows then a column section.
+STEPPER_PORT, STEPPER_PAD, STEPPER_FOUND = 0, 1, 2
+DC_PORT, DC_PAD, DC_FOUND = 3, 4, 5
+HEATER_PORT, HEATER_FOUND = 6, 7
+COUNT, LAUNCH = 8, 9
+
+
+def test_a_row_section_puts_its_elements_on_one_grid_row(row_view):
+    cells = [_cell(row_view, row_view._elements[i])
+             for i in (STEPPER_PORT, STEPPER_PAD, STEPPER_FOUND)]
+    assert len({cell["row"] for cell in cells}) == 1
+    columns = [cell["column"] for cell in cells]
+    assert columns == sorted(columns) and len(set(columns)) == 3
+
+
+def test_every_row_section_shares_one_grid_so_its_columns_line_up(row_view):
+    """Six sibling frames each with their own grid is six rows that do not
+    line up. One grid, one row per section, is a table."""
+    port, found = row_view._elements[STEPPER_PORT], row_view._elements[STEPPER_FOUND]
+    dc_port, dc_found = row_view._elements[DC_PORT], row_view._elements[DC_FOUND]
+    assert widget_of(row_view, port).master is widget_of(row_view, dc_port).master
+    assert _cell(row_view, dc_port)["column"] == _cell(row_view, port)["column"]
+    assert _cell(row_view, dc_found)["column"] == _cell(row_view, found)["column"]
+    assert _cell(row_view, dc_port)["row"] == _cell(row_view, port)["row"] + 1
+
+
+def test_a_shorter_row_still_ends_its_status_in_the_status_column(row_view):
+    """The heater row carries no gamepad dropdown. Its status is stretched to
+    the table's width and right-aligned, so it lands under the other rows'
+    status instead of under their port."""
+    heater_found = row_view._elements[HEATER_FOUND]
+    assert _cell(row_view, heater_found)["column"] < _cell(
+        row_view, row_view._elements[STEPPER_FOUND])["column"]
+    assert _right_edge(row_view, heater_found) == _right_edge(
+        row_view, row_view._elements[STEPPER_FOUND])
+    assert _cell(row_view, heater_found)["sticky"] == "e"
+
+
+def test_a_row_section_captions_its_row_in_the_first_column(row_view):
+    captions = {label.cget("text"): label for label in row_view._section_titles}
+    assert captions["Stepper Probe"].grid_info["column"] == 0
+    assert captions["DC Probe"].grid_info["column"] == 0
+    assert (captions["DC Probe"].grid_info["row"]
+            == captions["Stepper Probe"].grid_info["row"] + 1)
+    # One width for every caption, or the first control column steps in and
+    # out with the length of the model's name.
+    assert captions["Stepper Probe"].cget("width") == captions["DC Probe"].cget("width")
+
+
+def test_the_status_of_a_row_is_right_aligned_and_takes_the_slack(row_view):
+    found = row_view._elements[STEPPER_FOUND]
+    widget = widget_of(row_view, found)
+    assert _cell(row_view, found)["sticky"] == "e"
+    assert widget.cget("anchor") == "e"
+    assert widget.master.column_weights[_cell(row_view, found)["column"]]["weight"] == 1
+
+
+def test_a_column_section_still_stacks_one_element_per_row(row_view):
+    entry, button = row_view._elements[COUNT], row_view._elements[LAUNCH]
+    assert _cell(row_view, button)["row"] == _cell(row_view, entry)["row"] + 1
+    assert _cell(row_view, entry)["column"] == 1      # column 0 is its caption
+
+
+def test_a_column_section_ends_the_table(row_view):
+    """A schema that goes row, row, column renders in that order, which it
+    cannot do if the column section joins the table frame."""
+    assert (widget_of(row_view, row_view._elements[COUNT]).master
+            is not widget_of(row_view, row_view._elements[STEPPER_PORT]).master)
+
+
+def test_dropdowns_in_a_table_share_one_width(row_view):
+    widths = {widget_of(row_view, e).cget("width") for e in row_view._elements
+              if e["type"] == "dropdown"}
+    assert widths == {tkmod.DROPDOWN_WIDTH}
+
+
 # ---------------------------------------------------------------------------
 # running commands
 # ---------------------------------------------------------------------------
@@ -805,6 +1052,46 @@ def test_keystroke_validation_follows_the_declared_type(view):
     assert view._validate_entry("0.5", speed) is True
     # a text field never gets a numeric validator at all
     assert widget_of(view, note).cget("validate") is None
+
+
+def test_an_int_entry_refuses_a_decimal_point(view):
+    """Addendum 2: an int accepts no decimal point — not even as a partial
+    entry, because there is no integer a "." is on the way to."""
+    steps = element_of(view, "entry", "Steps")
+    for text in ("", "-", "+", "5", "-5", "42"):
+        assert view._validate_entry(text, steps) is True, text
+    for text in (".", "5.", "5.0", "-.", "0.5", "1e3", "abc"):
+        assert view._validate_entry(text, steps) is False, text
+
+
+def test_a_float_entry_still_takes_the_partial_forms(view):
+    """The int rule must not cost the float fields their pass-throughs."""
+    speed = element_of(view, "entry", "Speed")
+    for text in ("", ".", "-.", "1.5", "0.5"):
+        assert view._validate_entry(text, speed) is True, text
+
+
+def test_refresh_never_writes_decimals_into_an_int_entry(view, panel):
+    steps = element_of(view, "entry", "Steps")
+    panel.steps = 5
+    view._refresh()
+    assert view._widgets[id(steps)]["var"].get() == "5"
+    # `Param.format` is the first line of defence and renders a declared int
+    # as one; the view is the backstop for a value that arrives as "5.000".
+    render = panel.PARAMS["steps"].format
+    assert render(5.0) == "5"
+    assert view._display_text(steps, "5.000") == "5"
+    assert view._display_text(element_of(view, "entry", "Speed"), "5.000") == "5.000"
+
+
+def test_an_int_readout_with_no_param_behind_it_still_shows_an_int(view, panel):
+    """`Panel._text_for` hands over `str(raw)` when the Param table has no
+    entry for the attribute, so "7.0" reaches the view. It does not reach the
+    operator."""
+    panel.done_count = 7.0
+    view._refresh()
+    element = element_of(view, "readonly", "Done:")
+    assert view._widgets[id(element)]["var"].get() == "7"
 
 
 def test_out_of_range_text_is_flagged_without_blocking_typing(view):
@@ -1099,6 +1386,108 @@ def test_the_setup_tab_cannot_be_closed(dashboard, controller):
     dashboard.open()
     dashboard._on_tab_close(0)          # index 0 is Setup
     assert controller.removed == []
+
+
+# ---------------------------------------------------------------------------
+# Setup minimises when the system launches, and comes back
+# ---------------------------------------------------------------------------
+
+def _launch_a_model(dashboard, controller):
+    """The event `Dashboard` collapses Setup on: a model added to a running
+    controller. `open()` adds the already-open ones directly, which is not a
+    launch."""
+    controller.remove("Demo")
+    SCHEDULER.pump()
+    controller.reopen("Demo")
+    SCHEDULER.pump()
+
+
+def _setup_tab_is_shown(dashboard):
+    """Asked of the notebook's own bookkeeping, not of `tabs()`.
+
+    A hidden ttk tab stays *managed* — real `Notebook.tabs()` still lists it,
+    which is exactly what lets `add` put it back in place, and is why the
+    collapse hides rather than forgets. The stand-in models the same two
+    sets, so this reads the same answer the real widget would give.
+    """
+    frame = dashboard._frames[dashboard.SETUP_TAB]
+    return (frame in dashboard.notebook._tabs
+            and frame not in dashboard.notebook._hidden)
+
+
+def test_the_setup_tab_minimises_when_the_first_model_launches(dashboard,
+                                                               controller):
+    dashboard.open()
+    assert _setup_tab_is_shown(dashboard)
+    _launch_a_model(dashboard, controller)
+    assert dashboard._is_setup_collapsed is True
+    assert not _setup_tab_is_shown(dashboard)
+    # Minimised, not destroyed: the panel and its widgets are still there.
+    assert dashboard.SETUP_TAB in dashboard._panels
+
+
+def test_the_toolbar_offers_setup_only_while_it_is_minimised(dashboard,
+                                                             controller):
+    dashboard.open()
+    assert dashboard._setup_button.is_packed is False
+    _launch_a_model(dashboard, controller)
+    assert dashboard._setup_button.is_packed is True
+
+    dashboard._setup_button.fire("<Button-1>")
+    assert dashboard._is_setup_collapsed is False
+    assert _setup_tab_is_shown(dashboard)
+    assert dashboard._setup_button.is_packed is False
+
+
+def test_the_menu_bar_brings_setup_back(dashboard, controller):
+    dashboard.open()
+    _launch_a_model(dashboard, controller)
+    entries = [e for e in dashboard._setup_menu.entries if e["label"] == "Show Setup"]
+    assert entries, "no way back to Setup on the menu bar"
+    entries[0]["command"]()
+    assert _setup_tab_is_shown(dashboard)
+
+
+def test_a_restored_setup_panel_still_runs_its_commands(dashboard, controller,
+                                                        setup_panel):
+    """Re-usable, not just re-showable: Refresh and Launch have to work after
+    the collapse, which they cannot if the panel was torn down."""
+    dashboard.open()
+    _launch_a_model(dashboard, controller)
+    assert dashboard.restore_setup() is True
+    view = dashboard._panels[dashboard.SETUP_TAB]
+    click(view, element_of(view, "button", "Go"))
+    assert setup_panel.commands == [("go", setup_panel.speed)]
+
+
+def test_setup_can_be_minimised_and_restored_more_than_once(dashboard,
+                                                            controller):
+    dashboard.open()
+    _launch_a_model(dashboard, controller)
+    for _ in range(2):
+        assert dashboard.restore_setup() is True
+        assert _setup_tab_is_shown(dashboard)
+        dashboard._collapse_setup()               # as a fresh launch would
+        assert not _setup_tab_is_shown(dashboard)
+
+
+def test_restoring_setup_twice_does_not_add_a_second_tab(dashboard, controller):
+    dashboard.open()
+    _launch_a_model(dashboard, controller)
+    dashboard.restore_setup()
+    before = list(dashboard.notebook._tabs)
+    dashboard.restore_setup()
+    assert list(dashboard.notebook._tabs) == before
+
+
+def test_the_setup_tab_is_not_collapsed_twice(dashboard, controller):
+    """The second model to launch must not hide something else: `_collapse_setup`
+    is called once by the base and is idempotent in any case."""
+    dashboard.open()
+    _launch_a_model(dashboard, controller)
+    hidden = set(dashboard.notebook._hidden)
+    dashboard._collapse_setup()
+    assert set(dashboard.notebook._hidden) == hidden
 
 
 def test_the_models_menu_lists_closed_models_to_reopen(dashboard, controller):
