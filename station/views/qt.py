@@ -468,10 +468,18 @@ class PanelTable:
         self._next_column = 1    # column 0 belongs to the row titles
 
     def add_row(self, title):
+        """One line. An **untitled** section claims no name column at all.
+
+        A schema that already carries the row's name as an element (Setup's
+        `Device:` readout) can title the section `""` and get a table with no
+        duplicated name and no dead column, without a renderer change.
+        """
         self.rows += 1
-        label = QLabel(title)
-        label.setObjectName("rowTitle")
-        self.grid.addWidget(label, self.rows, 0)
+        if title:
+            label = QLabel(title)
+            label.setObjectName("rowTitle")
+            self.grid.addWidget(label, self.rows, 0)
+            self.grid.setColumnMinimumWidth(0, TABLE_LABEL_MIN_PX)
         return TableRow(self, self.rows)
 
     def column_for(self, label):
@@ -837,7 +845,8 @@ class QtPanelView(PanelView, QWidget):
                                     CARD_PAD_PX)
             grid.setHorizontalSpacing(CARD_PAD_PX)
             grid.setVerticalSpacing(ROW_GAP_PX)
-            grid.setColumnMinimumWidth(0, TABLE_LABEL_MIN_PX)
+            # Column 0's width is claimed by the first *titled* row, so a
+            # table of untitled rows costs nothing.
             grid.setColumnStretch(0, 0)
             self._layout.addWidget(card)
             self._table = PanelTable(grid)

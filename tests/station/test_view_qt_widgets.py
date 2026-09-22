@@ -938,6 +938,26 @@ def test_the_table_names_each_row_and_captions_each_column_once(table_view):
     assert titles == ["Stepper Probe", "Rotator", "Red Percent"]
 
 
+def test_an_untitled_row_section_claims_no_name_column(qapp, monkeypatch):
+    """A schema that already carries the row's name as an element - Setup's
+    `Device:` readout - can title the section "" and get a table with no
+    duplicated name and no dead column, without a renderer change."""
+    panel = TablePanel()
+    schema = panel.schema
+    for section in schema["sections"]:
+        if section.get("layout") == "row":
+            section["title"] = ""
+    monkeypatch.setattr(type(panel), "schema", property(lambda self: schema))
+    built = qt.QtPanelView(FakeController(panel), "Table")
+    try:
+        grid = built._table.grid
+        assert grid.columnMinimumWidth(0) == 0
+        assert all(grid.itemAtPosition(r, 0) is None
+                   for r in range(grid.rowCount()))
+    finally:
+        built.close()
+
+
 def test_a_column_section_keeps_its_own_card_and_stays_out_of_the_table(table_view):
     """Only `layout="row"` sections join the table: the scan status and the
     Launch button are still a form apiece."""
