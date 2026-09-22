@@ -19,6 +19,12 @@ DISABLED = ("#2a2a2a", "#6a6a6a")
 SEVERITY_ROLE = {"error": "danger", "warning": "warning", "info": "info"}
 
 
+#: Spacing scale, in pixels. Every view lays out with these three numbers.
+PAD = 8        # around a panel or a section
+GAP = 4        # between a label and its control, between rows
+INSET = 12     # left indent of a section's body under its title
+
+
 def set_font_size(points):
     global FONT_SIZE
     FONT_SIZE = max(8, min(28, int(points)))
