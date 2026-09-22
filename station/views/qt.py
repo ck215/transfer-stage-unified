@@ -109,17 +109,22 @@ INPUT_DECIMALS = 9
 #: be handed to it at all.
 INT_LIMIT = 2 ** 31 - 1
 
-# -- geometry. Sizes, not colours and not font sizes: the theme owns those,
-# and a widget still has to be told how much room to take. Named here so the
-# table's columns, its dropdowns and the docks share one set of numbers
-# instead of six literals scattered through the builders.
-#: Padding inside a section card, and the gap between two of its lines.
-CARD_PAD_PX, ROW_GAP_PX = 12, 8
+# -- geometry. Padding and gaps come from `theme.PAD / GAP / INSET`; what is
+# left here is the handful of sizes the theme has no opinion about, and those
+# are measured from the font wherever the thing they size holds text.
 #: The table's first column - the model's name. Wide enough for the longest.
 TABLE_LABEL_MIN_PX = 170
 #: Every other table column, so a row with no gamepad still lines up with one
 #: that has one.
 TABLE_CONTROL_MIN_PX = 150
+#: More cards than this and a panel is laid out in two columns. Stacked in
+#: one, Red Percent's ten sections made a dock twice the screen's height and
+#: put Safety - the section that must stay reachable - below the fold.
+COLUMN_SPLIT_CARDS = 6
+#: Slack around the sidebar's widest line, in "M"s: the check indicator, the
+#: item padding and a scrollbar. Measured, not a pixel guess, so the sidebar
+#: follows --font-size.
+SIDEBAR_SLACK_CHARS = 5
 #: A dropdown sizes to this many characters rather than to its longest option,
 #: which is what makes a column of them one width instead of four.
 DROPDOWN_CHARS = 14
@@ -190,34 +195,37 @@ def stylesheet():
         _rule("QLabel#columnHeader", {"color": theme.MUTED,
                                       "font-size": f"{header_size}pt",
                                       "font-weight": "600",
-                                      "padding-bottom": "2px"}),
+                                      "padding-bottom": f"{theme.GAP // 2}px"}),
         _rule("QLabel#rowTitle", {"color": theme.TEXT, "font-weight": "600",
-                                  "padding-right": "12px"}),
+                                  "padding-right": f"{theme.INSET}px"}),
         # A readout is bold text straight on the card; an entry is a bordered
         # well sunk to the window colour. That is the whole distinction, and
         # it survives any palette because it is shape, not hue.
         _rule("QLabel#valueLabel", {"color": theme.TEXT, "font-weight": "600",
-                                    "padding": "4px 2px"}),
-        _rule("QLabel#statusLabel", {"color": danger_bg, "padding": "2px 4px"}),
-        _rule("QLabel#staleLabel", {"color": theme.MUTED, "padding": "2px 4px"}),
+                                    "padding": f"{theme.GAP}px {theme.GAP // 2}px"}),
+        _rule("QLabel#statusLabel", {"color": danger_bg,
+                                     "padding": f"{theme.GAP // 2}px {theme.GAP}px"}),
+        _rule("QLabel#staleLabel", {"color": theme.MUTED,
+                                    "padding": f"{theme.GAP // 2}px {theme.GAP}px"}),
         # `_set_stale` sets this property on the panel; every readout dims at
         # once, so a frozen value can never read as a live one.
         _rule('QWidget[stale="true"] QLabel#valueLabel', {"color": theme.MUTED}),
         _rule("QLineEdit, QComboBox, QTextEdit",
               {"background-color": theme.BACKGROUND, "color": theme.TEXT,
                "border": f"1px solid {neutral_bg}", "border-radius": "4px",
-               "padding": "5px 6px"}),
+               "padding": f"{theme.GAP}px {theme.PAD}px"}),
         _rule("QLineEdit:focus, QComboBox:focus",
               {"border": f"1px solid {info_bg}"}),
         _rule("QPushButton", {"background-color": neutral_bg,
                               "color": neutral_fg, "border": "none",
-                              "border-radius": "4px", "padding": "6px 12px",
+                              "border-radius": "4px",
+                              "padding": f"{theme.GAP}px {theme.INSET}px",
                               "font-weight": "600"}),
         _rule("QPushButton:disabled, QLineEdit:disabled, QComboBox:disabled",
               {"background-color": disabled_bg, "color": disabled_fg}),
         _rule("QListWidget", {"background-color": theme.BACKGROUND,
                               "border": "none"}),
-        _rule("QListWidget::item", {"padding": "6px"}),
+        _rule("QListWidget::item", {"padding": f"{theme.GAP}px"}),
         _rule("QDockWidget", {"color": theme.TEXT, "font-weight": "600"}),
         # A dock title is a heading, not a caption: the operator finds a panel
         # by reading these.
@@ -225,16 +233,17 @@ def stylesheet():
                                      "color": theme.TEXT,
                                      "font-size": f"{title_size}pt",
                                      "border-bottom": f"1px solid {neutral_bg}",
-                                     "padding": "8px 10px"}),
+                                     "padding": f"{theme.PAD}px {theme.INSET}px"}),
         # The toolbar is where a hidden dock comes back from, so a checked
         # action has to read as pressed rather than as merely hovered.
         _rule("QToolBar", {"background": theme.SURFACE, "border": "none",
-                           "padding": "4px", "spacing": "6px"}),
+                           "padding": f"{theme.GAP}px",
+                           "spacing": f"{theme.GAP}px"}),
         _rule("QToolBar QToolButton", {"background": "transparent",
                                        "color": theme.MUTED,
                                        "border": "none",
                                        "border-bottom": "2px solid transparent",
-                                       "padding": "6px 12px"}),
+                                       "padding": f"{theme.GAP}px {theme.INSET}px"}),
         _rule("QToolBar QToolButton:hover", {"background": neutral_bg,
                                              "color": theme.TEXT}),
         # A shown dock reads as a selected tab rather than as a filled button:
@@ -740,9 +749,11 @@ class QtPanelView(PanelView, QWidget):
         self._table = None          # built on the first layout="row" section
 
         self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(CARD_PAD_PX, CARD_PAD_PX,
-                                        CARD_PAD_PX, CARD_PAD_PX)
-        self._layout.setSpacing(ROW_GAP_PX)
+        self._layout.setContentsMargins(theme.PAD, theme.PAD, theme.PAD,
+                                        theme.PAD)
+        self._layout.setSpacing(theme.PAD)
+        self._columns, self._split = self._plan_columns()
+        self._cards_placed = 0
         self.status_label = QLabel("")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setWordWrap(True)
@@ -752,7 +763,8 @@ class QtPanelView(PanelView, QWidget):
 
         self._build()
 
-        self._layout.addStretch()
+        for column in self._columns:
+            column.addStretch()
         self._layout.addWidget(self.stale_label)
         self._layout.addWidget(self.status_label)
 
@@ -792,6 +804,46 @@ class QtPanelView(PanelView, QWidget):
             events.debug("Refresh Failed", f"{self.name}: {exc}",
                          source="QtView", exception=exc, every=1.0)
 
+    # -- how many columns the panel is laid out in --------------------------
+    def _plan_columns(self):
+        """(column layouts, index of the first card in the second column).
+
+        A panel is one column until it has more than `COLUMN_SPLIT_CARDS`
+        cards, and then two. Red Percent declares ten sections; stacked, its
+        dock was twice the height of the screen and Safety - the section that
+        must stay reachable - sat below the fold. Two columns keep it on
+        screen without a scroll area, which would hide it just as well.
+
+        The count is of **cards**, not sections: every `layout="row"` section
+        shares one table card, so Setup's eight rows are one card and stay in
+        one column.
+        """
+        sections = self._schema()["sections"]
+        cards = sum(1 for s in sections
+                    if s.get("layout", "column") != "row")
+        if any(s.get("layout") == "row" for s in sections):
+            cards += 1
+        if cards <= COLUMN_SPLIT_CARDS:
+            return [self._layout], 0
+        holder = QHBoxLayout()
+        holder.setContentsMargins(0, 0, 0, 0)
+        holder.setSpacing(theme.PAD)
+        columns = []
+        for _ in range(2):
+            column = QVBoxLayout()
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(theme.PAD)
+            holder.addLayout(column, 1)
+            columns.append(column)
+        self._layout.addLayout(holder)
+        return columns, (cards + 1) // 2
+
+    def _place_card(self, card):
+        """Put one section card in the column it belongs to."""
+        second = bool(self._split) and self._cards_placed >= self._split
+        self._columns[-1 if second else 0].addWidget(card)
+        self._cards_placed += 1
+
     # -- sections ----------------------------------------------------------
     def _make_section(self, title, layout="column"):
         """The container the section's elements are built into.
@@ -816,17 +868,24 @@ class QtPanelView(PanelView, QWidget):
         # its title floating in the middle of the empty space.
         card.setSizePolicy(QSizePolicy.Policy.Preferred,
                            QSizePolicy.Policy.Maximum)
-        form = QFormLayout(card)
-        form.setContentsMargins(CARD_PAD_PX, CARD_PAD_PX, CARD_PAD_PX,
-                                CARD_PAD_PX)
-        form.setHorizontalSpacing(CARD_PAD_PX)
-        form.setVerticalSpacing(ROW_GAP_PX)
-        form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        # Title, then the body indented under it by `theme.INSET` - which is
+        # what that theme value is for. A QFormLayout cannot indent one of its
+        # own rows, so the title is a sibling of the form rather than a row
+        # in it.
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
+        outer.setSpacing(theme.GAP)
         label = QLabel(title)
         label.setObjectName("sectionTitle")
-        form.addRow(label)
-        self._layout.addWidget(card)
+        outer.addWidget(label)
+        form = QFormLayout()
+        form.setContentsMargins(theme.INSET, 0, 0, 0)
+        form.setHorizontalSpacing(theme.INSET)
+        form.setVerticalSpacing(theme.GAP)
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        outer.addLayout(form)
+        self._place_card(card)
         return ColumnSection(form)
 
     def _panel_table(self):
@@ -841,14 +900,13 @@ class QtPanelView(PanelView, QWidget):
             card.setSizePolicy(QSizePolicy.Policy.Preferred,
                                QSizePolicy.Policy.Maximum)
             grid = QGridLayout(card)
-            grid.setContentsMargins(CARD_PAD_PX, CARD_PAD_PX, CARD_PAD_PX,
-                                    CARD_PAD_PX)
-            grid.setHorizontalSpacing(CARD_PAD_PX)
-            grid.setVerticalSpacing(ROW_GAP_PX)
+            grid.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
+            grid.setHorizontalSpacing(theme.INSET)
+            grid.setVerticalSpacing(theme.GAP)
             # Column 0's width is claimed by the first *titled* row, so a
             # table of untitled rows costs nothing.
             grid.setColumnStretch(0, 0)
-            self._layout.addWidget(card)
+            self._place_card(card)
             self._table = PanelTable(grid)
         return self._table
 
@@ -1359,6 +1417,8 @@ class QtDashboard(Dashboard, QMainWindow):
         self._sync_stop_button()
         self.resizeDocks([self.event_dock], [EVENT_LOG_PX],
                          Qt.Orientation.Vertical)
+        self.resizeDocks([self.sidebar], [self._sidebar_width()],
+                         Qt.Orientation.Horizontal)
         self.show()
         events.debug("View Opened", "Qt dashboard shown with the Setup panel",
                      source="QtView")
@@ -1542,13 +1602,11 @@ class QtDashboard(Dashboard, QMainWindow):
         self.sidebar.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
-        self.sidebar.setMinimumWidth(220)
 
         holder = QWidget()
         layout = QVBoxLayout(holder)
-        layout.setContentsMargins(ROW_GAP_PX, ROW_GAP_PX, ROW_GAP_PX,
-                                  ROW_GAP_PX)
-        layout.setSpacing(ROW_GAP_PX)
+        layout.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
+        layout.setSpacing(theme.PAD)
         self.model_list = QListWidget()
         self.model_list.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self.model_list)
@@ -1571,12 +1629,34 @@ class QtDashboard(Dashboard, QMainWindow):
         models_action.setText("Models")
         self.toolbar.addAction(models_action)
 
+    def _sidebar_width(self):
+        """A few characters wider than the longest thing the sidebar shows.
+
+        Measured in the widgets' own fonts, so it follows `--font-size`
+        instead of being a pixel guess. The floor is the stop button's own
+        widest label: the sidebar is never narrower than the one control it
+        exists to keep reachable.
+        """
+        metrics = self.model_list.fontMetrics()
+        names = list(self.controller.model_names) + list(
+            self.controller.closed_names)
+        widest = max((metrics.horizontalAdvance(str(n)) for n in names),
+                     default=0)
+        floor = self.stop_button.fontMetrics().horizontalAdvance(
+            "CLEAR FULL STOP")
+        slack = metrics.horizontalAdvance("M" * SIDEBAR_SLACK_CHARS)
+        return max(widest, floor) + slack
+
     def _build_sidebar(self):
         """Open models, checked; closed ones, unchecked. Checking reopens.
 
         The list is the Controller's, not a fourth hardcoded copy of the
         device names - the sidebar could offer a model the builder had never
         heard of.
+
+        Its width is capped to what it actually shows. Left uncapped it took a
+        third of the window as an empty column, and the model docks - the only
+        things with anything in them - shared what was left.
         """
         open_names = list(self.controller.model_names)
         closed_names = [n for n in self.controller.closed_names
@@ -1592,6 +1672,7 @@ class QtDashboard(Dashboard, QMainWindow):
                 self.model_list.addItem(item)
         finally:
             self.model_list.blockSignals(False)
+        self.sidebar.setMaximumWidth(self._sidebar_width())
 
     def _on_item_changed(self, item):
         name = item.text()

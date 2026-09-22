@@ -202,6 +202,34 @@ class TablePanel(Panel):
         return True
 
 
+class TallPanel(Panel):
+    """Red Percent's shape: ten sections, the last of them Safety.
+
+    Stacked in one column its dock was twice the height of the screen and
+    Safety - the section that must stay reachable - sat below the fold.
+    """
+
+    NAME = "Tall"
+    SECTIONS = ("Run", "Operator Annotation", "Probe Metadata", "Synced Axes",
+                "Red Detection", "Sampling", "Live", "Control", "Analysis",
+                "Safety")
+
+    def __init__(self):
+        super().__init__()
+        for name in self.SECTIONS:
+            setattr(self, self.attr(name), name)
+
+    @staticmethod
+    def attr(name):
+        return name.lower().replace(" ", "_")
+
+    @property
+    def schema(self):
+        return sch.schema(*[
+            sch.section(name, sch.readonly("Value:", self.attr(name)))
+            for name in self.SECTIONS])
+
+
 class FakeController:
     def __init__(self, panel):
         self.panel = panel
@@ -317,6 +345,25 @@ def element_of(view, kind):
 
 def element_named(view, attr):
     return next(e for e in view._elements if e.get("model_attr") == attr)
+
+
+@pytest.fixture
+def tall_view(qapp):
+    built = qt.QtPanelView(FakeController(TallPanel()), "Tall")
+    yield built
+    built.close()
+
+
+def column_of(view, element):
+    """Which of the panel's column layouts holds this element's card."""
+    widget = view._widget_for(element)
+    while widget is not None:
+        for index, column in enumerate(view._columns):
+            for position in range(column.count()):
+                if column.itemAt(position).widget() is widget:
+                    return index
+        widget = widget.parentWidget()
+    return None
 
 
 def cell_of(grid, widget):
@@ -987,6 +1034,84 @@ def test_a_dropdown_in_a_row_section_still_runs_its_command(table_view,
 
 def test_a_panel_with_no_row_section_builds_no_table(view):
     assert view._table is None
+
+
+# ---------------------------------------------------------------------------
+# Two columns when one would run off the bottom of the screen
+# ---------------------------------------------------------------------------
+
+def test_a_tall_panel_splits_its_sections_into_two_columns(tall_view):
+    """The split the lead asked for, pinned exactly: Run/Annotation/Metadata/
+    Synced Axes/Detection on the left, Sampling/Live/Control/Analysis/Safety
+    on the right."""
+    assert len(tall_view._columns) == 2
+    placed = {element["model_attr"]: column_of(tall_view, element)
+              for element in tall_view._elements}
+    assert placed == {
+        "run": 0, "operator_annotation": 0, "probe_metadata": 0,
+        "synced_axes": 0, "red_detection": 0,
+        "sampling": 1, "live": 1, "control": 1, "analysis": 1, "safety": 1}
+
+
+def test_safety_is_the_foot_of_a_column_rather_than_below_the_fold(tall_view):
+    safety = element_named(tall_view, "safety")
+    assert column_of(tall_view, safety) == len(tall_view._columns) - 1
+
+
+def test_a_panel_of_a_few_sections_stays_in_one_column(view):
+    assert len(view._columns) == 1
+    assert view._split == 0
+
+
+def test_row_sections_are_one_card_and_never_split_a_panel(qapp, monkeypatch):
+    """Counting *sections* rather than cards would split Setup - eight row
+    sections that share a single table - into two columns with one of them
+    empty."""
+    panel = TablePanel()
+    schema = sch.schema(*[
+        sch.section(f"Row {index}", sch.readonly("Port", "scan_status"),
+                    layout="row")
+        for index in range(10)])
+    monkeypatch.setattr(type(panel), "schema", property(lambda self: schema))
+    built = qt.QtPanelView(FakeController(panel), "Table")
+    try:
+        assert built._table is not None
+        assert len(built._columns) == 1
+    finally:
+        built.close()
+
+
+# ---------------------------------------------------------------------------
+# The sidebar is as wide as what it shows
+# ---------------------------------------------------------------------------
+
+def test_the_sidebar_is_capped_to_what_it_actually_shows(dashboard):
+    """Uncapped it took a third of the window as an empty column, and the
+    model docks - the only things with anything in them - shared the rest."""
+    dashboard._build_sidebar()
+    assert dashboard.sidebar.maximumWidth() == dashboard._sidebar_width()
+    assert dashboard.sidebar.maximumWidth() < 400
+
+
+def test_the_sidebar_is_never_narrower_than_its_stop_button(dashboard,
+                                                            controller):
+    controller.open_names, controller.closed = ["X"], []
+    dashboard._build_sidebar()
+    assert dashboard.sidebar.maximumWidth() >= (
+        dashboard.stop_button.fontMetrics().horizontalAdvance(
+            "CLEAR FULL STOP"))
+
+
+def test_the_sidebar_widens_for_a_long_model_name_and_no_further(dashboard,
+                                                                 controller):
+    """Measured in the list's own font, so it follows --font-size instead of
+    being a pixel guess."""
+    controller.open_names, controller.closed = ["Temperature Controller"], []
+    dashboard._build_sidebar()
+    wide = dashboard.sidebar.maximumWidth()
+    controller.open_names = ["X"]
+    dashboard._build_sidebar()
+    assert dashboard.sidebar.maximumWidth() < wide
 
 
 # ---------------------------------------------------------------------------
