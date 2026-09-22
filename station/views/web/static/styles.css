@@ -1,0 +1,243 @@
+/* Layout only.
+ *
+ * Every colour and every font size in this file is a var() defined by
+ * /api/theme.css, which is station/views/theme.py. There is no colour
+ * literal here on purpose: the old stylesheet carried its own palette, so
+ * the Web client looked like a different application from the two desktop
+ * views and a theme change had to be made in three places (RC-7).
+ */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-family);
+  font-size: var(--font-size);
+}
+
+/* -- the top bar -------------------------------------------------------- */
+.top {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--muted);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.brand { font-size: 1.1em; margin: 0; }
+
+.closed { display: flex; align-items: center; gap: 0.4rem; margin-left: auto; }
+
+.badge {
+  padding: 0.15em 0.6em;
+  border-radius: 1em;
+  border: 1px solid var(--muted);
+  font-size: 0.85em;
+}
+
+.full-stop { min-width: 12rem; font-weight: bold; }
+
+/* -- cards -------------------------------------------------------------- */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
+  gap: 1rem;
+  padding: 1rem;
+  align-items: start;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--muted);
+  border-radius: 0.4rem;
+  overflow: hidden;
+}
+
+.card.stale { opacity: 0.75; }
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--muted);
+}
+
+.card-title { font-size: 1em; margin: 0; margin-right: auto; }
+
+.stale-badge { border-color: var(--warning-bg); color: var(--warning-bg); }
+
+.card-body { padding: 0.25rem 0.75rem 0.75rem; }
+
+.section { padding-top: 0.5rem; }
+
+.section-title {
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0.4rem 0;
+}
+
+/* -- rows and controls -------------------------------------------------- */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+  min-height: 2rem;
+}
+
+.row.wide { flex-direction: column; align-items: stretch; }
+
+.row.disabled { opacity: 0.5; }
+
+.label { flex: 1 1 auto; color: var(--muted); }
+
+.value { font-variant-numeric: tabular-nums; }
+
+.group { display: flex; align-items: center; gap: 0.3rem; }
+
+.unit { color: var(--muted); font-size: 0.85em; }
+
+.input, .select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--muted);
+  border-radius: 0.25rem;
+  padding: 0.25em 0.4em;
+  font-family: inherit;
+  font-size: inherit;
+  min-width: 7rem;
+}
+
+.input:disabled, .select:disabled, .button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.button {
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  border: 1px solid var(--neutral-bg);
+  border-radius: 0.25rem;
+  padding: 0.35em 0.9em;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.button.small { padding: 0.15em 0.5em; font-size: 0.85em; }
+
+/* Roles: the meaning, not the colour. theme.py maps them. */
+.role-neutral { background: var(--neutral-bg); color: var(--neutral-fg); border-color: var(--neutral-bg); }
+.role-go      { background: var(--go-bg);      color: var(--go-fg);      border-color: var(--go-bg); }
+.role-danger  { background: var(--danger-bg);  color: var(--danger-fg);  border-color: var(--danger-bg); }
+.role-warning { background: var(--warning-bg); color: var(--warning-fg); border-color: var(--warning-bg); }
+.role-info    { background: var(--info-bg);    color: var(--info-fg);    border-color: var(--info-bg); }
+
+/* An OFF toggle is its role outlined on the surface, an ON toggle is filled:
+   the two states differ without relying on green-versus-red
+   (theme.toggle_colors). */
+.toggle.off, .lamp.off {
+  background: var(--surface);
+  color: var(--text);
+}
+
+span.value.role-neutral, span.value.role-go, span.value.role-danger,
+span.value.role-warning, span.value.role-info {
+  background: transparent;
+  border: 0;
+}
+
+span.value.role-danger { color: var(--danger-bg); }
+span.value.role-warning { color: var(--warning-bg); }
+
+.lamp {
+  display: inline-block;
+  min-width: 2.6rem;
+  text-align: center;
+  padding: 0.1em 0.5em;
+  border-radius: 0.8em;
+  border: 1px solid var(--muted);
+}
+
+.plot, .picture, .feed, .region-canvas {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--muted);
+  border-radius: 0.25rem;
+}
+
+.feed {
+  height: 9rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.4rem;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+}
+
+/* A refusal is a sentence on the card, never a popup. */
+.status {
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: 0.9em;
+}
+
+/* -- the event log ------------------------------------------------------ */
+.log-panel { padding: 0 1rem 1rem; }
+
+.log {
+  height: 11rem;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--muted);
+  border-radius: 0.4rem;
+  padding: 0.5rem;
+  font-size: 0.9em;
+}
+
+.event { padding: 0.1rem 0; }
+.severity-info { color: var(--text); }
+.severity-warning { color: var(--warning-bg); }
+.severity-error { color: var(--danger-bg); }
+
+/* -- overlays ----------------------------------------------------------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.overlay[hidden] { display: none; }
+
+.dialog {
+  background: var(--surface);
+  border: 1px solid var(--muted);
+  border-radius: 0.4rem;
+  padding: 1rem;
+  max-width: 32rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.wide-dialog { max-width: 90vw; }
+
+.dialog-text { margin: 0; white-space: pre-wrap; }
+
+.region-canvas { max-width: 86vw; max-height: 70vh; cursor: crosshair; }
