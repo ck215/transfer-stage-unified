@@ -1112,10 +1112,11 @@ class RedMonitor(Model):
 
     @property
     def screen_image(self):
-        """The desktop as PNG for the browser's region picker: `{"png": bytes,
-        "bounds": {...}}`, or None when capture is unavailable."""
+        """The desktop as PNG for the browser's region picker: `{"image":
+        bytes, "left", "top", "width", "height"}` (the full-size bounds the
+        picture was scaled from), or None when capture is unavailable."""
         png, bounds = self.screen.screenshot_png()
-        return None if png is None else {"png": png, "bounds": bounds}
+        return None if png is None else {"image": png, **bounds}
 
     @property
     def figure(self):
