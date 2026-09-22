@@ -46,8 +46,11 @@ ELEMENT_TYPES = frozenset({
 ROLES = frozenset({"neutral", "go", "danger", "warning", "info"})
 
 
-def section(title, *elements):
-    return {"title": title, "elements": [e for e in elements if e is not None]}
+def section(title, *elements, layout="column"):
+    """`layout="row"` asks the renderer to place the elements side by side
+    on one line (a table row: label, dropdown, dropdown, status)."""
+    return {"title": title, "layout": layout,
+            "elements": [e for e in elements if e is not None]}
 
 
 def schema(*sections):

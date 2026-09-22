@@ -387,7 +387,7 @@ class TkPanelView(PanelView):
         events.debug("Panel Closed", self.name, source=SOURCE)
 
     # -- layout helpers ----------------------------------------------------
-    def _make_section(self, title):
+    def _make_section(self, title, layout="column"):
         container = tk.Frame(self._body, background=theme.BACKGROUND)
         container.pack(fill="x", padx=8, pady=4)
         label = tk.Label(container, text=title, font=theme.font(1.0, bold=True),

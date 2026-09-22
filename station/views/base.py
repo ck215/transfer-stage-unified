@@ -48,7 +48,8 @@ class PanelView:
     # -- build -------------------------------------------------------------
     def _build(self):
         for section in self._schema()["sections"]:
-            container = self._make_section(section["title"])
+            container = self._make_section(section["title"],
+                                           section.get("layout", "column"))
             for element in section["elements"]:
                 getattr(self, f"_make_{element['type']}")(container, element)
                 self._elements.append(element)
@@ -115,7 +116,7 @@ class PanelView:
         self._elements.clear()
 
     # -- a toolkit subclass supplies these ---------------------------------
-    def _make_section(self, title): raise NotImplementedError
+    def _make_section(self, title, layout="column"): raise NotImplementedError
     def _read_entry(self, element): raise NotImplementedError
     def _entry_is_dirty(self, element): raise NotImplementedError
     def _set_text(self, element, text): raise NotImplementedError
@@ -132,6 +133,7 @@ class Dashboard:
     def __init__(self, controller, setup):
         self.controller, self.setup = controller, setup
         self._closing = False
+        self._launched = False
 
     def open(self):
         events.subscribe(self._on_event)
@@ -171,8 +173,15 @@ class Dashboard:
         self._marshal(show)
 
     def _on_models_changed(self, change, name):
-        self._marshal(lambda: self._add_panel(name) if change == "added"
-                      else self._remove_panel(name))
+        def apply():
+            if change == "added":
+                self._add_panel(name)
+                if not self._launched:
+                    self._launched = True
+                    self._collapse_setup()   # the wizard gives way to the models
+            else:
+                self._remove_panel(name)
+        self._marshal(apply)
 
     def _on_focus_change(self, is_focused):
         self.controller.set_input_focus(is_focused)
@@ -184,3 +193,4 @@ class Dashboard:
     def _confirm(self, prompt): raise NotImplementedError
     def _add_panel(self, name): raise NotImplementedError
     def _remove_panel(self, name): raise NotImplementedError
+    def _collapse_setup(self): pass          # minimise the Setup panel; reopenable

@@ -549,7 +549,7 @@ class QtPanelView(PanelView, QWidget):
                          source="QtView", exception=exc, every=1.0)
 
     # -- element builders --------------------------------------------------
-    def _make_section(self, title):
+    def _make_section(self, title, layout="column"):
         card = QFrame()
         card.setObjectName("card")
         form = QFormLayout(card)

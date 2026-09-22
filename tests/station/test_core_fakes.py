@@ -350,7 +350,7 @@ class FakePanelView(PanelView):
     def key(element):
         return element.get("model_attr") or element.get("text")
 
-    def _make_section(self, title):
+    def _make_section(self, title, layout="column"):
         self.sections.append(title)
         return title
 
