@@ -78,7 +78,7 @@ class Panel:
             return Result(Result.REFUSED, reason=refusal.reason)
         except NeedsConfirm as ask:
             return Result(Result.CONFIRM, reason=ask.prompt, command=ask.command,
-                          inputs=ask.inputs, args=ask.args)
+                          inputs=ask.inputs, args=ask.rerun_args)
         except Exception as exc:
             events.error("Command Failed", f"{command} failed: {exc}",
                          source=source, exception=exc)
@@ -100,6 +100,7 @@ class Panel:
     def options(self, command):
         """Choices for a dropdown. `command` must be a declared options_command."""
         declared = {e.get("options_command") for e in sch.elements(self.schema)}
+        declared.discard(None)
         if command not in declared:
             raise Refused(f"{command} is not an options source of {self.NAME}")
         found = getattr(self, command)
@@ -118,10 +119,14 @@ class Panel:
         if not matches:
             raise Refused(f"{command} is not a command of {self.NAME}")
         wanted = list(args)
-        element = next((e for e in matches
-                        if wanted and wanted in (e.get("on_args"), e.get("off_args"))),
-                       matches[0])
-        if not sch.is_enabled(element, self.mode_name):
+        candidates = [e for e in matches
+                      if wanted and wanted in (e.get("on_args"), e.get("off_args"))]
+        candidates = candidates or matches
+        # Two toggles may share a command and its off_args (Autonomous and
+        # Manual both leave through set_mode("idle")): the command is allowed
+        # if ANY declaring element is enabled in this mode.
+        if not any(sch.is_enabled(e, self.mode_name) for e in candidates):
+            element = candidates[0]
             raise Refused(f"{element.get('text', command)} is not available "
                           f"while {self.mode_name or 'in this state'}")
 

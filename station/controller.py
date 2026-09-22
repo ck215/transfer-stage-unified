@@ -126,11 +126,16 @@ class Controller:
             return dict(self._configs.get(name) or self._remembered.get(name) or {})
 
     def schema(self, name):
-        return self._model(name).schema
+        """A closed model has no schema; the view removes its panel on the
+        'removed' event, and until then it renders nothing."""
+        model = self._model_or_none(name)
+        return model.schema if model else {"version": 2, "sections": []}
 
     def state(self, name=None):
         if name is not None:
-            return self._model(name).state
+            model = self._model_or_none(name)
+            return model.state if model else {"name": name, "mode": "closed",
+                                              "values": {}, "closed": True}
         with self._lock:
             models = dict(self._models)
         return {"models": {n: m.state for n, m in models.items()},
@@ -150,7 +155,8 @@ class Controller:
             return model.run(command, inputs, args)
 
     def options(self, name, command):
-        return self._model(name).options(command)
+        model = self._model_or_none(name)
+        return model.options(command) if model else []
 
     def set_value(self, name, attr, value):
         return self.run(name, "_commit", inputs={attr: value})
@@ -250,6 +256,10 @@ class Controller:
     def _model(self, name):
         with self._lock:
             return self._models[name]
+
+    def _model_or_none(self, name):
+        with self._lock:
+            return self._models.get(name)
 
     def _lock_for(self, name):
         with self._lock:

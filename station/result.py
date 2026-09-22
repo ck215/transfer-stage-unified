@@ -23,7 +23,7 @@ class NeedsConfirm(Exception):
         self.prompt = prompt
         self.command = command
         self.inputs = inputs or {}
-        self.args = tuple(args)   # re-run as command(*args, True)
+        self.rerun_args = tuple(args)   # re-run as command(*rerun_args, True)
 
 
 class Result:
