@@ -54,7 +54,8 @@ def toggle_colors(element, is_on):
 def css_variables():
     lines = [f"--font-family: {FONT_FAMILY}, sans-serif;", f"--font-size: {FONT_SIZE}pt;",
              f"--bg: {BACKGROUND};", f"--surface: {SURFACE};", f"--text: {TEXT};",
-             f"--muted: {MUTED};"]
+             f"--muted: {MUTED};", f"--pad: {PAD}px;", f"--gap: {GAP}px;",
+             f"--inset: {INSET}px;"]
     for role, (bg, fg) in ROLES.items():
         lines += [f"--{role}-bg: {bg};", f"--{role}-fg: {fg};"]
     return ":root {\n  " + "\n  ".join(lines) + "\n}\n"
