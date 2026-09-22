@@ -910,8 +910,8 @@ class Setup(Panel):
             layout="row",
         )]
         for key, row in self._rows.items():
+            # The row's caption is the model's name; no second copy in a cell.
             elements = [
-                sch.readonly("Device:", f"{key}_name"),
                 sch.dropdown("Port", f"{key}_port", f"set_{key}_port",
                              row["options_command"]),
             ]

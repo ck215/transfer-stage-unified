@@ -30,6 +30,8 @@ rates this station now runs at, that would discard most of the dataset.
 """
 import csv
 import io
+
+from station import palette
 import json
 import re
 from pathlib import Path
@@ -275,7 +277,7 @@ def _aligned(red, series_list, values):
 def _draw(request):
     from matplotlib.figure import Figure
 
-    figure = Figure(figsize=(8, 6), dpi=100)
+    figure = Figure(figsize=(8, 6), dpi=100, facecolor=palette.SURFACE)
     try:
         # Explicit Agg: no pyplot, no global backend state, nothing that needs
         # a display. `savefig(format="png")` would pick Agg on its own, but
@@ -309,7 +311,18 @@ def _draw(request):
         axes.set_title(request["title"])
 
     buffer = io.BytesIO()
-    figure.savefig(buffer, format="png")
+    for axes in figure.get_axes():          # the station's dark surface
+        axes.set_facecolor(palette.SURFACE)
+        axes.tick_params(colors=palette.TEXT, labelcolor=palette.TEXT)
+        for spine in axes.spines.values():
+            spine.set_color(palette.MUTED)
+        axes.xaxis.label.set_color(palette.TEXT)
+        axes.yaxis.label.set_color(palette.TEXT)
+        axes.title.set_color(palette.TEXT)
+        axes.grid(True, color=palette.GRID, linewidth=0.5)
+        for text in axes.texts:
+            text.set_color(palette.TEXT)
+    figure.savefig(buffer, format="png", facecolor=figure.get_facecolor())
     return buffer.getvalue()
 
 

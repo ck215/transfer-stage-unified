@@ -167,14 +167,25 @@ class FakeSetup(Panel):
         super().__init__()
         self.scanned = 0
         self.ports = ["SIM", "COM3"]
+        self.detected = "not found"
 
     @property
     def schema(self):
-        return sch.schema(sch.section(
-            "Hardware",
-            sch.button("Scan", "scan"),
-            sch.dropdown("Port", "port", "set_port", "port_options"),
-        ))
+        # Addendum 2's shape: a header section, then one ROW per model type.
+        # `layout` is the renderer's only instruction to lay a section out
+        # horizontally, so it has to survive the trip to the browser.
+        return sch.schema(
+            sch.section(
+                "Hardware",
+                sch.button("Refresh", "scan"),
+            ),
+            sch.section(
+                "Fake Probe",
+                sch.dropdown("Port", "port", "set_port", "port_options"),
+                sch.readonly("Detected:", "detected"),
+                layout="row",
+            ),
+        )
 
     @property
     def port_options(self):
@@ -261,6 +272,34 @@ def test_setup_serves_its_schema_and_its_state(station):
     assert status == 200
     assert data["schema"]["sections"][0]["title"] == "Hardware"
     assert data["state"]["name"] == "Setup"
+
+
+def test_setup_carries_every_sections_layout_through_unchanged(station):
+    """Addendum 2: `layout` is how the schema asks for one line per model,
+    and the Web client is the renderer furthest from it - the hint crosses a
+    JSON boundary that no desktop view crosses. A route that dropped or
+    defaulted it would leave the browser drawing the vertical wizard the
+    owner rejected, with nothing failing anywhere else."""
+    view, _, _ = station
+    status, data = _get(view, "/api/setup")
+    assert status == 200
+    served = data["schema"]["sections"]
+    declared = view.setup.schema["sections"]
+    assert [s["layout"] for s in served] == [s["layout"] for s in declared]
+    assert [s["layout"] for s in served] == ["column", "row"]
+    rows = [s for s in served if s["layout"] == "row"]
+    assert [s["title"] for s in rows] == ["Fake Probe"]
+    assert [e["type"] for e in rows[0]["elements"]] == ["dropdown", "readonly"]
+
+
+def test_a_models_schema_carries_its_section_layout_too(station):
+    """The same hint, the other route: nothing about `layout` is specific to
+    Setup."""
+    view, controller, probe = station
+    status, data = _get(view, "/api/schema?name=Fake+Probe")
+    assert status == 200
+    declared = probe.schema["sections"]
+    assert [s["layout"] for s in data["sections"]] == [s["layout"] for s in declared]
 
 
 def test_theme_css_is_the_one_palette(station):

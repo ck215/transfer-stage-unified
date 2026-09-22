@@ -5,7 +5,7 @@ a font size."""
 FONT_FAMILY = "Helvetica"
 FONT_SIZE = 12            # base, in points; launch with --font-size to change
 
-BACKGROUND, SURFACE, TEXT, MUTED = "#1e1e1e", "#2a2a2a", "#f0f0f0", "#9a9a9a"
+from station.palette import BACKGROUND, SURFACE, TEXT, MUTED  # noqa: F401  one palette
 
 #: role -> (background, foreground)
 ROLES = {
@@ -17,6 +17,12 @@ ROLES = {
 }
 DISABLED = ("#2a2a2a", "#6a6a6a")
 SEVERITY_ROLE = {"error": "danger", "warning": "warning", "info": "info"}
+
+
+#: Spacing scale, in pixels. Every view lays out with these three numbers.
+PAD = 8        # around a panel or a section
+GAP = 4        # between a label and its control, between rows
+INSET = 12     # left indent of a section's body under its title
 
 
 def set_font_size(points):

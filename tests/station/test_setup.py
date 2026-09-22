@@ -166,7 +166,6 @@ def test_every_section_is_a_row_so_setup_is_a_table_not_a_column(panel):
 def test_a_row_is_name_then_one_port_dropdown_then_status(panel):
     row = next(s for s in panel.schema["sections"] if s["title"] == "Alpha")
     assert [(e["type"], e.get("model_attr")) for e in row["elements"]] == [
-        ("readonly", "alpha_name"),
         ("dropdown", "alpha_port"),
         ("dropdown", "alpha_gamepad"),
         ("readonly", "alpha_status"),
