@@ -5,7 +5,7 @@ a font size."""
 FONT_FAMILY = "Helvetica"
 FONT_SIZE = 12            # base, in points; launch with --font-size to change
 
-BACKGROUND, SURFACE, TEXT, MUTED = "#1e1e1e", "#2a2a2a", "#f0f0f0", "#9a9a9a"
+from station.palette import BACKGROUND, SURFACE, TEXT, MUTED  # noqa: F401  one palette
 
 #: role -> (background, foreground)
 ROLES = {
