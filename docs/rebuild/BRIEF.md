@@ -149,3 +149,20 @@ Popups stay rare: `events.error` only for a fault or an unconfirmed stop.
 `events.warn` for something the operator should see in the log panel and can act
 on. `events.info` for run/connection milestones. Everything else is `debug`.
 `app.launch()` calls `events.open_file()` and logs the path at startup.
+
+## Addendum 2 (lead, 2026-09-22): Setup and UI rulings from the first bench look
+
+Owner verdict: "a lot of good here; now make it pretty." Rulings:
+- Setup scans AUTOMATICALLY at start; the operator gets a Refresh button, not a Scan button.
+  Auto-assign runs by itself when a scan completes (identity byte -> port).
+- The Mode dropdown is GONE. One Port dropdown per model carries it all:
+  "Off" (disabled), "SIM" (simulator), or a real port. Nothing else to click.
+- Setup is NOT one long vertical list: one compact table, one ROW per model
+  type (name | port | gamepad-if-any | detected/status). `sch.section(...,
+  layout="row")` is the schema's hint; every renderer must lay a row section
+  out horizontally. `PanelView._make_section(title, layout)` receives it.
+- When the system launches, the Setup panel minimises (Dashboard base calls
+  `_collapse_setup()` on the first model added). It must stay reopenable
+  (menu item / sidebar entry / collapsed card) for a re-scan or re-launch.
+- Integers display as integers: entries whose Param is "int" show no decimals
+  and accept no decimal point.
