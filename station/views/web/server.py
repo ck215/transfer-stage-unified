@@ -650,6 +650,18 @@ class WebView:
         self.port = first
         return False
 
+    def wait(self):
+        """Block the launching thread until the view is closed (Ctrl-C, a
+        signal, or `close()`), the way the desktop views block in their event
+        loops. Without this the launcher returns and the process exits with
+        the server still starting."""
+        try:
+            while not self._halt.is_set():
+                self._halt.wait(0.5)
+        except KeyboardInterrupt:
+            pass
+        self.close()
+
     def close(self):
         """Watchdog, server, then the Controller. Runs at most once."""
         self._halt.set()

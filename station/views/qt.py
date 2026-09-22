@@ -1,3 +1,4 @@
+import sys
 """The PySide6 frontend: one window, one panel renderer, three pure widgets.
 
 Replaces `src/views/pyside/view.py` (1368 lines), `style.qss`, and the PySide
@@ -940,6 +941,24 @@ class QtDashboard(Dashboard, QMainWindow):
         self._stop_timer.start(self.STOP_REFRESH_MS)
 
     # -- lifecycle ---------------------------------------------------------
+    @staticmethod
+    def ensure_application(argv=None):
+        """The one QApplication, created on the launching (main) thread
+        before any widget. `app.launch()` calls this before constructing
+        the dashboard; tests create their own."""
+        application = QApplication.instance()
+        if application is None:
+            application = QApplication(list(argv or [sys.argv[0]]))
+        return application
+
+    def wait(self):
+        """Run the Qt event loop until the window closes. Blocks the launching
+        thread like Tk's mainloop; `close()` runs on aboutToQuit."""
+        application = QApplication.instance()
+        if application is None:
+            return 0
+        return application.exec()
+
     def open(self):
         """Subscribe, show the Setup panel, show the window.
 

@@ -18,6 +18,7 @@ stopping a manager that has already been replaced (which is what
 `lifecycle.current_manager` existed to work around).
 """
 import argparse
+import atexit
 import importlib
 import sys
 
@@ -78,6 +79,16 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
         raise ValueError(f"{view_name!r} is not a view: "
                          f"{', '.join(sorted(VIEWS))}")
 
+    # SDL must be initialised on the MAIN thread, before any view or request
+    # thread builds a model: initialised anywhere else it traps the process
+    # (SIGTRAP) at exit on macOS. Its teardown is registered FIRST so that
+    # atexit (last in, first out) runs it after the Controller has closed
+    # every model and stopped every poll loop; quitting SDL under a live
+    # poller is a bus error.
+    from station.devices.gamepad import hub
+    hub.open()
+    atexit.register(hub.close)
+
     controller = Controller()
     controller._hook_exit()
     events.hook_exceptions()
@@ -96,10 +107,18 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
     view_class = getattr(importlib.import_module(module_name), attribute)
     # --port / --no-browser are the Web view's alone; the desktop views take
     # the controller and the setup panel and nothing else.
+    ensure_application = getattr(view_class, "ensure_application", None)
+    if ensure_application is not None:      # Qt: one QApplication, main thread
+        ensure_application()
     view = (view_class(controller, setup, port=port, open_browser=open_browser)
             if view_name == "web" else view_class(controller, setup))
     events.info("View", f"{view_name} starting", source="app")
     view.open()
+    # A desktop view's open() runs its event loop and returns at close; the
+    # Web view serves on a thread and waits here for the same reason.
+    wait = getattr(view, "wait", None)
+    if wait is not None:
+        wait()
     return view
 
 
