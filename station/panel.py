@@ -4,6 +4,8 @@ Base of `Model` and `Setup`. There is no other way for a view to reach a
 model than `schema`, `state` and `run` (through the Controller), which is why
 the three views cannot drift apart.
 """
+import time
+
 from station import schema as sch
 from station.events import events
 from station.result import Result, Refused, NeedsConfirm
@@ -11,6 +13,7 @@ from station.result import Result, Refused, NeedsConfirm
 
 class Panel:
     NAME = "Panel"
+    _QUIET = frozenset({"_commit"})   # plus every data/source command, see run()
     PARAMS = {}     # {name: Param}; subclasses: PARAMS = {**Base.PARAMS, ...}
 
     def __init__(self):
@@ -61,7 +64,13 @@ class Panel:
         try:
             self._allows(command, args)
             self._apply_inputs(inputs)
-            return Result(Result.OK, value=getattr(self, command)(*args))
+            started = time.monotonic()
+            value = getattr(self, command)(*args)
+            if command not in self._QUIET and not self._is_data_command(command):
+                events.debug("Command", f"{command}{tuple(args)} ok in "
+                             f"{(time.monotonic() - started) * 1000:.1f} ms "
+                             f"inputs={inputs or {}}", source=source)
+            return Result(Result.OK, value=value)
         except Refused as refusal:
             events.info("Refused", refusal.reason, source=source)
             return Result(Result.REFUSED, reason=refusal.reason)
@@ -73,6 +82,11 @@ class Panel:
                          source=source, exception=exc)
             return Result(Result.FAILED, reason=f"{command} failed: {exc}",
                           exception=exc)
+
+    def _is_data_command(self, command):
+        """Plot, image and log sources are polled every refresh: never logged."""
+        return any(command in (e.get("data_command"), e.get("source_command"))
+                   for e in sch.elements(self.schema))
 
     def set_value(self, attr, value):
         """Commit one writable entry outside a command. Same validation."""
