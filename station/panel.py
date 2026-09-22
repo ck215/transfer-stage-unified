@@ -157,7 +157,10 @@ class Panel:
             return current == new
 
     def _defaults(self):
-        return {name: p.default for name, p in self.PARAMS.items()}
+        """A Param that is also a read-only property (a derived readout such
+        as `current_red`) is declared for its type and unit only; never seed it."""
+        return {name: p.default for name, p in self.PARAMS.items()
+                if not isinstance(getattr(type(self), name, None), property)}
 
     def _param(self, name):
         return self.PARAMS[name]
