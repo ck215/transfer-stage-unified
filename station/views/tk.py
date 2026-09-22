@@ -48,17 +48,19 @@ from station.views.base import Dashboard, PanelView
 
 SOURCE = "TkView"
 
-#: Spacing, in pixels. `theme` carries a palette and a font scale but no
-#: spacing scale, so every pad in this file comes from one of these three
-#: names rather than from a number at the call site — one place to change,
-#: and no "8 here, 6 there" drift. A `theme.PAD`/`GAP`/`INSET` request is in
-#: the handoff; when it lands these become aliases.
-PAD, GAP, INSET = 8, 4, 2
+#: Spacing comes from the theme (the request in `tk2.md` landed): PAD around
+#: a panel or a section, GAP between a label and its control and between
+#: rows, INSET for the left indent of a section's body under its title. No
+#: pad in this file is a number at the call site.
+PAD, GAP, INSET = theme.PAD, theme.GAP, theme.INSET
 
-#: Widths, in characters, for the controls that sit in a table column. A
-#: fixed width is what makes six rows of dropdowns line up as columns instead
-#: of stepping in and out with the length of a port name.
-CAPTION_WIDTH, DROPDOWN_WIDTH, ENTRY_WIDTH, READOUT_WIDTH = 20, 16, 10, 14
+#: Widths, in characters. A fixed width is what makes a column a column —
+#: six rows of dropdowns that line up rather than stepping in and out with
+#: the length of a port name, and a readout that sits exactly where the entry
+#: below it sits. `FIELD_WIDTH` is deliberately shared by entries and
+#: readouts: the two are meant to line up, and only the *styling* tells them
+#: apart.
+CAPTION_WIDTH, DROPDOWN_WIDTH, FIELD_WIDTH = 20, 16, 12
 
 #: Lines the dashboard event log shows before it scrolls. It is a footer, not
 #: a panel: eight lines of log was taking vertical space from the controls.
@@ -327,6 +329,9 @@ class TkPanelView(PanelView):
     #: How often an `image` element's data command may run. Producing one is
     #: a figure render, which must not happen ten times a second.
     IMAGE_REFRESH_MS = 1000
+    #: The wheel, per platform: `<MouseWheel>` on Aqua and Win32, buttons 4
+    #: and 5 on X11.
+    WHEEL_EVENTS = ("<MouseWheel>", "<Button-4>", "<Button-5>")
 
     def __init__(self, master, controller, name, panel=None):
         super().__init__(controller, name, panel)
@@ -348,20 +353,109 @@ class TkPanelView(PanelView):
         self._title = tk.Label(self.frame, text=name, font=theme.font(1.3, bold=True),
                                anchor="w", background=theme.BACKGROUND,
                                foreground=theme.TEXT)
-        self._title.pack(fill="x", padx=PAD, pady=(PAD, INSET))
+        self._title.pack(fill="x", padx=PAD, pady=(PAD, GAP))
         self._rule = tk.Frame(self.frame, height=1, background=theme.SURFACE)
         self._rule.pack(fill="x", padx=PAD, pady=(0, GAP))
-        self._body = tk.Frame(self.frame, background=theme.BACKGROUND)
-        self._body.pack(expand=True, fill="both")
         self._status = tk.Label(self.frame, text="", anchor="w",
                                 font=theme.font(0.9),
                                 background=theme.BACKGROUND, foreground=theme.MUTED)
         self._status.pack(fill="x", side="bottom", padx=PAD, pady=(0, GAP))
+        self._build_scroll_area()
 
         self._build()
         self._schedule_refresh()
         events.debug("Panel Built", f"{name}: {len(self._elements)} elements",
                      source=SOURCE)
+
+    # -- the scroll area ---------------------------------------------------
+    def _build_scroll_area(self):
+        """The panel's controls live on a scrolling canvas.
+
+        A panel taller than the window used to make the *window* taller, and
+        the window is not allowed to grow: the global FULL STOP bar lives at
+        the bottom of it, and a stop control pushed off the bottom of the
+        screen is the whole safety contract lost to a layout. A tall panel
+        scrolls; the stop bar does not move.
+        """
+        area = tk.Frame(self.frame, background=theme.BACKGROUND)
+        area.pack(side="top", fill="both", expand=True)
+        self._scrollbar = tk.Scrollbar(area, orient="vertical")
+        self._scrollbar.pack(side="right", fill="y")
+        self._canvas = tk.Canvas(area, background=theme.BACKGROUND,
+                                 highlightthickness=0,
+                                 yscrollcommand=self._scrollbar.set)
+        self._canvas.pack(side="left", fill="both", expand=True)
+        self._body = tk.Frame(self._canvas, background=theme.BACKGROUND)
+        try:
+            self._scrollbar.configure(command=self._canvas.yview)
+            self._body_window = self._canvas.create_window(
+                (0, 0), window=self._body, anchor="nw")
+        except Exception as exc:
+            self._body_window = None
+            events.debug("Scroll Area Not Wired", str(exc), source=SOURCE,
+                         exception=exc)
+        self._body.bind("<Configure>", self._on_body_resized)
+        self._canvas.bind("<Configure>", self._on_canvas_resized)
+        # The wheel is bound application-wide only while the pointer is over
+        # this panel, so two open panels never scroll each other.
+        self.frame.bind("<Enter>", self._on_pointer_enter)
+        self.frame.bind("<Leave>", self._on_pointer_leave)
+
+    def _on_body_resized(self, _event=None):
+        """The scrollable extent is whatever the controls actually occupy."""
+        try:
+            self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        except Exception as exc:
+            events.debug("Scrollregion Not Set", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+
+    def _on_canvas_resized(self, event=None):
+        """Keep the body as wide as the viewport: a canvas window is sized to
+        its content otherwise, and a table would stop at its widest row
+        instead of reaching the window's edge."""
+        width = getattr(event, "width", 0)
+        if self._body_window is None or not width:
+            return
+        try:
+            self._canvas.itemconfigure(self._body_window, width=width)
+        except Exception as exc:
+            events.debug("Body Width Not Set", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+
+    def _on_pointer_enter(self, _event=None):
+        for sequence in self.WHEEL_EVENTS:
+            try:
+                self.frame.bind_all(sequence, self._on_wheel)
+            except Exception as exc:
+                events.debug("Wheel Not Bound", f"{sequence}: {exc}",
+                             source=SOURCE, exception=exc)
+
+    def _on_pointer_leave(self, _event=None):
+        for sequence in self.WHEEL_EVENTS:
+            try:
+                self.frame.unbind_all(sequence)
+            except Exception:
+                pass
+
+    def _on_wheel(self, event):
+        """One notch, in whichever dialect the platform speaks: `delta` on
+        Aqua and Win32, Button-4/5 on X11. Only the sign is used — a Windows
+        notch is 120 and an Aqua one is 1."""
+        number, delta = getattr(event, "num", 0), getattr(event, "delta", 0)
+        if number == 4:
+            step = -1
+        elif number == 5:
+            step = 1
+        elif delta:
+            step = -1 if delta > 0 else 1
+        else:
+            return None
+        try:
+            self._canvas.yview_scroll(step, "units")
+        except Exception as exc:
+            events.debug("Wheel Scroll Failed", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+        return "break"
 
     def _call(self, command, inputs=None, args=()):
         """`PanelView._refresh` re-reads every plot, image and log source on
@@ -410,6 +504,9 @@ class TkPanelView(PanelView):
             except Exception:
                 pass
             self._after_id = None
+        # The wheel binding is application-wide while the pointer is here; a
+        # closed panel must not be left holding it.
+        self._on_pointer_leave()
         super().close()
         self._widgets.clear()
         try:
@@ -438,7 +535,7 @@ class TkPanelView(PanelView):
         label = tk.Label(container, text=title, font=theme.font(1.0, bold=True),
                          anchor="w", background=theme.BACKGROUND,
                          foreground=theme.TEXT)
-        label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(GAP, INSET))
+        label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(GAP, GAP))
         self._section_titles.append(label)
         self._grid[id(container)] = {"layout": "column", "row": 1,
                                     "column": 0, "width": 0, "ends": {}}
@@ -465,7 +562,7 @@ class TkPanelView(PanelView):
                            anchor="w", width=CAPTION_WIDTH,
                            background=theme.BACKGROUND, foreground=theme.TEXT)
         caption.grid(row=state["row"], column=0, sticky="w",
-                     padx=(0, GAP), pady=INSET)
+                     padx=(0, GAP), pady=GAP)
         state["column"] = 1
         self._section_titles.append(caption)
         return self._table
@@ -564,7 +661,7 @@ class TkPanelView(PanelView):
                          background=theme.BACKGROUND, foreground=theme.MUTED,
                          **options)
         self._place(container, label, row, column, sticky="w",
-                    padx=(0, INSET), pady=INSET)
+                    padx=(0, GAP), pady=GAP)
         return label
 
     def _button_label(self, container, element, on_click):
@@ -591,8 +688,17 @@ class TkPanelView(PanelView):
     # -- element renderers -------------------------------------------------
     def _make_readonly(self, container, element):
         """A readout, drawn so it cannot be mistaken for a box to type in:
-        raised off the panel onto the surface colour, right-aligned to a
-        fixed width, and never given the sunken border an entry carries."""
+        raised off the panel onto the surface colour, right-aligned inside a
+        box the width of an entry, and never given the sunken border an entry
+        carries.
+
+        In a **column** section it sits where an entry would, so a panel of
+        readouts and entries reads as two tidy columns. Stretching its column
+        there is what threw "X Position" to the far edge of the window while
+        the entries below it stayed beside their labels. In a **row** section
+        the stretch is the point: the status is the last cell of a table row
+        and belongs against the right-hand edge.
+        """
         self._caption(container, element.get("text", ""))
         var = tk.StringVar(value="")
         # A role on a readout means something (a connection state, a fault
@@ -601,13 +707,15 @@ class TkPanelView(PanelView):
         background, foreground = self._role_colors(role)
         if role == "neutral":
             background, foreground = theme.SURFACE, theme.TEXT
+        is_table = self._cursor(container)["layout"] == "row"
         row, column = self._next_cell(container)
         value = tk.Label(container, textvariable=var, font=theme.font(bold=True),
-                         anchor="e", width=READOUT_WIDTH, relief="flat",
+                         anchor="e", width=FIELD_WIDTH, relief="flat",
                          padx=GAP, background=background, foreground=foreground)
-        self._place(container, value, row, column, sticky="e",
-                    padx=INSET, pady=INSET)
-        self._stretch_column(container, column)
+        self._place(container, value, row, column,
+                    sticky="e" if is_table else "w", padx=GAP, pady=GAP)
+        if is_table:
+            self._stretch_column(container, column)
         self._register(element, widget=value, var=var)
         self._end_line(container)
 
@@ -616,13 +724,13 @@ class TkPanelView(PanelView):
         var = tk.StringVar(value="")
         row, column = self._next_cell(container)
         widget = tk.Entry(container, textvariable=var, font=theme.font(),
-                          width=ENTRY_WIDTH, justify="right", relief="sunken",
+                          width=FIELD_WIDTH, justify="right", relief="sunken",
                           borderwidth=1, background=theme.SURFACE,
                           foreground=theme.TEXT, insertbackground=theme.TEXT)
         if element.get("value_type") in ("int", "float"):
             self._attach_validator(widget, element)
         self._place(container, widget, row, column, sticky="w",
-                    padx=INSET, pady=INSET)
+                    padx=GAP, pady=GAP)
         widget.bind("<Return>", lambda _e, el=element: self._on_entry_commit(el))
         widget.bind("<FocusOut>", lambda _e, el=element: self._on_entry_commit(el))
         unit = element.get("unit")
@@ -711,7 +819,7 @@ class TkPanelView(PanelView):
         row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, lambda el: self._run(el))
         self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=INSET, pady=GAP)
+                    sticky="ew", padx=GAP, pady=GAP)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -720,7 +828,7 @@ class TkPanelView(PanelView):
         widget = self._button_label(container, element,
                                     lambda el: self._run_toggle(el))
         self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=INSET, pady=GAP)
+                    sticky="ew", padx=GAP, pady=GAP)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -735,14 +843,14 @@ class TkPanelView(PanelView):
         widget = ttk.Combobox(container, textvariable=var, state="readonly",
                               width=DROPDOWN_WIDTH)
         self._place(container, widget, row, column, sticky="w",
-                    padx=INSET, pady=INSET)
+                    padx=GAP, pady=GAP)
         widget.bind("<<ComboboxSelected>>",
                     lambda _e, el=element: self._on_dropdown_selected(el))
         row, column = self._next_cell(container)
         refresh = tk.Label(container, text="⟳", font=theme.font(bold=True),
                            background=theme.SURFACE, foreground=theme.TEXT,
                            cursor="hand2")
-        self._place(container, refresh, row, column, padx=INSET, pady=INSET)
+        self._place(container, refresh, row, column, padx=GAP, pady=GAP)
         refresh.bind("<Button-1>",
                      lambda _e, el=element: self._refresh_options(el))
         self._register(element, widget=widget, var=var, options=[])
@@ -783,7 +891,7 @@ class TkPanelView(PanelView):
         row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, self._on_region_clicked)
         self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=INSET, pady=GAP)
+                    sticky="ew", padx=GAP, pady=GAP)
         self._end_line(container)
         var = tk.StringVar(value=sch.format_region(None))
         row, column = self._next_cell(container, span=3)
@@ -791,7 +899,7 @@ class TkPanelView(PanelView):
                          anchor="w", background=theme.BACKGROUND,
                          foreground=theme.MUTED)
         self._place(container, shown, row, column, columnspan=3,
-                    sticky="w", padx=INSET)
+                    sticky="w", padx=GAP)
         # The captured region is *drawn*, not announced: PySide's confirming
         # modal over an always-on-top overlay is PYSIDE-12's deadlock.
         self._register(element, widget=widget, var=var)
@@ -810,7 +918,7 @@ class TkPanelView(PanelView):
         row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, self._on_save_clicked)
         self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=INSET, pady=GAP)
+                    sticky="ew", padx=GAP, pady=GAP)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -843,7 +951,7 @@ class TkPanelView(PanelView):
         row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, self._on_open_clicked)
         self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=INSET, pady=GAP)
+                    sticky="ew", padx=GAP, pady=GAP)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -866,7 +974,7 @@ class TkPanelView(PanelView):
         canvas = tk.Canvas(container, height=160, width=360,
                            background=theme.SURFACE, highlightthickness=0)
         self._place(container, canvas, row, column, columnspan=3,
-                    sticky="ew", padx=INSET, pady=GAP)
+                    sticky="ew", padx=GAP, pady=GAP)
         self._register(element, widget=canvas)
         self._end_line(container)
 
@@ -912,7 +1020,7 @@ class TkPanelView(PanelView):
         widget = tk.Label(container, background=theme.SURFACE,
                           foreground=theme.MUTED, text="")
         self._place(container, widget, row, column, columnspan=3,
-                    sticky="w", padx=INSET, pady=GAP)
+                    sticky="w", padx=GAP, pady=GAP)
         self._slow_commands.add(element.get("data_command"))
         self._register(element, widget=widget, photo=None, data=None)
         self._end_line(container)
@@ -947,9 +1055,9 @@ class TkPanelView(PanelView):
         self._caption(container, element.get("text", ""))
         row, column = self._next_cell(container)
         widget = tk.Label(container, text="", width=LAMP_WIDTH, relief="flat",
-                          highlightthickness=2, pady=INSET)
+                          highlightthickness=2, pady=GAP)
         self._place(container, widget, row, column, sticky="w",
-                    padx=INSET, pady=INSET)
+                    padx=GAP, pady=GAP)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -963,7 +1071,7 @@ class TkPanelView(PanelView):
                          background=theme.SURFACE, foreground=theme.TEXT,
                          wrap="word")
         self._place(container, widget, row, column, columnspan=3,
-                    sticky="ew", padx=INSET, pady=GAP)
+                    sticky="ew", padx=GAP, pady=GAP)
         self._register(element, widget=widget, last_text=None)
         self._end_line(container)
 
@@ -1182,7 +1290,7 @@ class TkPanelView(PanelView):
             pass
 
     def _apply_theme(self):
-        for widget in (self.frame, self._body):
+        for widget in (self.frame, self._body, self._canvas):
             try:
                 widget.configure(background=theme.BACKGROUND)
             except Exception:
@@ -1225,15 +1333,20 @@ class TkDashboard(Dashboard):
         self.root.geometry("1100x850")
         self.root.configure(background=theme.BACKGROUND)
 
-        # Packed before the notebook, so the strip sits above the tab bar
-        # rather than under it: pack order is allocation order.
+        # Pack order is allocation order, and the notebook is the one widget
+        # here that expands: everything it must never push off the window is
+        # packed BEFORE it. The FULL STOP bar went off the bottom of the
+        # screen the first time a tall panel opened, which is a stop control
+        # the operator cannot reach — the worst defect this view can have.
+        # The toolbar takes its strip at the top, the stop bar and the event
+        # log take theirs at the bottom, and the notebook gets what is left.
         self._build_toolbar()
+        self._build_stop_button()
+        self._build_event_panel()
 
         self.notebook = ClosableNotebook(self.root, on_close_tab=self._on_tab_close)
-        self.notebook.pack(fill="both", expand=True)
+        self.notebook.pack(side="top", fill="both", expand=True)
 
-        self._build_event_panel()
-        self._build_stop_button()
         self._build_menu_bar()
 
         # D-4: gate input on focus, never stop. Bound on the root, filtered to
@@ -1258,7 +1371,7 @@ class TkDashboard(Dashboard):
         self._setup_button = tk.Label(
             self._toolbar, text="Setup", font=theme.font(0.9, bold=True),
             background=background, foreground=foreground, relief="raised",
-            padx=PAD, pady=INSET, cursor="hand2")
+            padx=PAD, pady=GAP, cursor="hand2")
         self._setup_button.bind("<Button-1>", self._on_setup_clicked)
 
     def _build_stop_button(self):
@@ -1529,7 +1642,7 @@ class TkDashboard(Dashboard):
         window never offers two ways to the same visible panel."""
         try:
             if is_shown:
-                self._setup_button.pack(side="left", padx=PAD, pady=INSET)
+                self._setup_button.pack(side="left", padx=PAD, pady=GAP)
             else:
                 self._setup_button.pack_forget()
         except Exception as exc:

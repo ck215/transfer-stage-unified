@@ -113,6 +113,7 @@ class FakeWidget:
     def pack(self, **kwargs):
         self.grid_info = self.grid_info or {}
         self.is_packed = True
+        PACK_ORDER.append((self, kwargs))
 
     def grid(self, **kwargs):
         self.grid_info = kwargs
@@ -136,6 +137,12 @@ class FakeWidget:
     # -- events
     def bind(self, sequence, callback=None, add=None):
         self.bindings[sequence] = callback
+
+    def bind_all(self, sequence, callback=None, add=None):
+        ALL_BINDINGS[sequence] = callback
+
+    def unbind_all(self, sequence):
+        ALL_BINDINGS.pop(sequence, None)
 
     def fire(self, sequence, event=None):
         callback = self.bindings.get(sequence)
@@ -197,10 +204,13 @@ class FakeWidget:
 
 
 class FakeEvent:
-    def __init__(self, x=0, y=0, x_root=0, y_root=0, widget=None):
+    def __init__(self, x=0, y=0, x_root=0, y_root=0, widget=None, delta=0,
+                 num=0, width=0, height=0):
         self.x, self.y = x, y
         self.x_root, self.y_root = x_root, y_root
         self.widget = widget
+        self.delta, self.num = delta, num       # the wheel, in both dialects
+        self.width, self.height = width, height
 
 
 class FakeText(FakeWidget):
@@ -228,6 +238,26 @@ class FakeCanvas(FakeWidget):
     def __init__(self, master=None, **options):
         super().__init__(master, **options)
         self.items = []
+        self.windows = {}
+        self.scrolled = []
+
+    # -- the scroll area
+    def create_window(self, _position, window=None, **options):
+        handle = f"window#{len(self.windows) + 1}"
+        self.windows[handle] = dict(options, window=window)
+        return handle
+
+    def itemconfigure(self, handle, **options):
+        self.windows.setdefault(handle, {}).update(options)
+
+    def bbox(self, _what):
+        return (0, 0, 100, 400)
+
+    def yview(self, *_args):
+        return None
+
+    def yview_scroll(self, amount, what):
+        self.scrolled.append((amount, what))
 
     def create_line(self, *points, **options):
         self.items.append(("line", points, options))
@@ -362,6 +392,13 @@ class FakeTtkModule:
 
 
 SCHEDULER = Scheduler()
+#: `bind_all` is application-wide in Tk, so the stand-in keeps one table for
+#: the whole "application" — which is what lets a test see that a closed
+#: panel has let go of the wheel.
+ALL_BINDINGS = {}
+#: Every `pack`, in order. Pack order IS allocation order in Tk, which is the
+#: whole of why the FULL STOP bar can or cannot be pushed off the window.
+PACK_ORDER = []
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +636,8 @@ def tk_harness(monkeypatch):
     SCHEDULER = Scheduler()
     Focus.current = None
     FakePhotoImage.instances = []
+    ALL_BINDINGS.clear()
+    del PACK_ORDER[:]
     dialogs = FakeDialogs()
     monkeypatch.setattr(tkmod, "tk", FakeTkModule)
     monkeypatch.setattr(tkmod, "ttk", FakeTtkModule)
@@ -797,6 +836,21 @@ def test_an_empty_readout_says_so_instead_of_drawing_a_bare_stripe(view, panel):
     assert widget.cget("background") == theme.colors("info")[0]
 
 
+def test_a_readout_sits_where_an_entry_sits_in_a_column_section(view):
+    """Readouts were stretched to the far edge of the window while the
+    entries below them stayed beside their labels, so a panel read as one
+    column of labels and one of values a metre apart. Same column, same
+    width, same side."""
+    readout = element_of(view, "readonly", "Speed now:")
+    entry = element_of(view, "entry", "Speed")
+    assert _cell(view, readout)["column"] == _cell(view, entry)["column"]
+    assert _cell(view, readout)["sticky"] == _cell(view, entry)["sticky"] == "w"
+    assert (widget_of(view, readout).cget("width")
+            == widget_of(view, entry).cget("width") == tkmod.FIELD_WIDTH)
+    # and its column takes no slack: that is what threw it to the edge.
+    assert widget_of(view, readout).master.column_weights == {}
+
+
 def test_a_readout_is_not_drawn_like_a_box_to_type_in(view):
     """RC-6's cousin: an operator who cannot tell a readout from an entry
     tries to type into it. The readout sits on the surface with no border;
@@ -806,6 +860,55 @@ def test_a_readout_is_not_drawn_like_a_box_to_type_in(view):
     assert readout.cget("relief") == "flat"
     assert entry.cget("relief") == "sunken"
     assert readout.cget("anchor") == "e"
+
+
+# ---------------------------------------------------------------------------
+# a panel scrolls; the window does not grow
+# ---------------------------------------------------------------------------
+
+def test_the_controls_live_on_a_scrolling_canvas(view):
+    """A panel taller than the window must scroll. When it grew the window
+    instead, it pushed the global FULL STOP bar off the bottom of the
+    screen."""
+    assert view._body.master is view._canvas
+    assert view._canvas.windows[view._body_window]["window"] is view._body
+    assert view._scrollbar.cget("command") == view._canvas.yview
+    assert view._canvas.cget("yscrollcommand") == view._scrollbar.set
+
+
+def test_the_scrollregion_follows_the_controls(view):
+    view._on_body_resized()
+    assert view._canvas.cget("scrollregion") == view._canvas.bbox("all")
+
+
+def test_the_body_is_kept_as_wide_as_the_viewport(view):
+    """A canvas window is sized to its content, so without this a table stops
+    at its widest row instead of reaching the window's edge."""
+    view._on_canvas_resized(FakeEvent(width=800))
+    assert view._canvas.windows[view._body_window]["width"] == 800
+
+
+def test_the_wheel_scrolls_the_panel_under_the_pointer(view):
+    view.frame.fire("<Enter>")
+    assert set(tkmod.TkPanelView.WHEEL_EVENTS) <= set(ALL_BINDINGS)
+
+    ALL_BINDINGS["<MouseWheel>"](FakeEvent(delta=120))     # Aqua / Win32
+    assert view._canvas.scrolled == [(-1, "units")]
+    ALL_BINDINGS["<Button-5>"](FakeEvent(num=5))           # X11
+    assert view._canvas.scrolled[-1] == (1, "units")
+
+    view.frame.fire("<Leave>")
+    assert ALL_BINDINGS == {}, "two open panels must not scroll each other"
+
+
+def test_a_closed_panel_lets_go_of_the_wheel(controller):
+    """`bind_all` is application-wide: a destroyed panel still holding it
+    would take wheel events to a dead widget."""
+    built = tkmod.TkPanelView(FakeWidget(), controller, "Demo")
+    built.frame.fire("<Enter>")
+    assert ALL_BINDINGS
+    built.close()
+    assert ALL_BINDINGS == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1513,6 +1616,29 @@ def test_unticking_a_model_closes_it(dashboard, controller):
     dashboard._menu_vars["Demo"].set(False)
     dashboard._on_model_toggled("Demo")
     assert controller.removed == ["Demo"]
+
+
+def test_the_stop_bar_and_the_event_log_cannot_be_pushed_off_the_window(
+        controller, setup_panel, monkeypatch):
+    """SAFETY. Pack order is allocation order: the notebook is the one widget
+    that expands, so everything it must never push off the window is packed
+    before it. A FULL STOP the operator cannot reach is not a stop."""
+    packed = []
+    monkeypatch.setattr(tkmod.ClosableNotebook, "pack",
+                        lambda self, **kwargs: PACK_ORDER.append((self, kwargs)),
+                        raising=False)
+    built = tkmod.TkDashboard(controller, setup_panel)
+    packed = [widget for widget, _ in PACK_ORDER]
+    notebook = packed.index(built.notebook)
+    assert packed.index(built._stop_button) < notebook
+    assert packed.index(built._event_text.master.master) < notebook
+    # nothing docked at an edge is packed after the expanding widget
+    docked = [index for index, (_, options) in enumerate(PACK_ORDER)
+              if options.get("side") in ("bottom", "top")
+              and not options.get("expand")]
+    assert max(docked) < notebook
+    assert PACK_ORDER[packed.index(built._stop_button)][1]["side"] == "bottom"
+    built.close()
 
 
 def test_the_stop_button_label_follows_the_controller(dashboard, controller):
