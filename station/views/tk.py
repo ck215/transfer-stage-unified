@@ -48,6 +48,31 @@ from station.views.base import Dashboard, PanelView
 
 SOURCE = "TkView"
 
+#: Spacing, in pixels. `theme` carries a palette and a font scale but no
+#: spacing scale, so every pad in this file comes from one of these three
+#: names rather than from a number at the call site — one place to change,
+#: and no "8 here, 6 there" drift. A `theme.PAD`/`GAP`/`INSET` request is in
+#: the handoff; when it lands these become aliases.
+PAD, GAP, INSET = 8, 4, 2
+
+#: Widths, in characters, for the controls that sit in a table column. A
+#: fixed width is what makes six rows of dropdowns line up as columns instead
+#: of stepping in and out with the length of a port name.
+CAPTION_WIDTH, DROPDOWN_WIDTH, ENTRY_WIDTH, READOUT_WIDTH = 20, 16, 10, 14
+
+#: Lines the dashboard event log shows before it scrolls. It is a footer, not
+#: a panel: eight lines of log was taking vertical space from the controls.
+EVENT_LOG_LINES = 5
+
+#: Width of an indicator lamp, in characters. An indicator is a *lamp*: the
+#: caption already says what it is, so the lamp says only whether it is on.
+LAMP_WIDTH = 2
+
+#: What a readout with nothing in it shows. An empty coloured label renders as
+#: a bare stripe of colour, which reads as a broken widget rather than as "no
+#: value yet" — it is what "Position age (s):" looked like at the bench.
+EMPTY_READOUT = "--"
+
 
 def _tcl_error():
     """`tk.TclError`, or `Exception` when Tk is a stand-in.
@@ -306,7 +331,8 @@ class TkPanelView(PanelView):
     def __init__(self, master, controller, name, panel=None):
         super().__init__(controller, name, panel)
         self._widgets = {}          # id(element) -> {widget, var, ...}
-        self._rows = {}             # id(container) -> next grid row
+        self._grid = {}             # id(container) -> the grid cursor
+        self._table = None          # the frame the current run of row sections shares
         self._section_titles = []
         self._after_id = None
         self._options_due = 0
@@ -315,15 +341,22 @@ class TkPanelView(PanelView):
         self._cached_results = {}       # command -> (monotonic, Result)
 
         self.frame = tk.Frame(master, background=theme.BACKGROUND)
-        self._title = tk.Label(self.frame, text=name, font=theme.font(1.2, bold=True),
-                               background=theme.BACKGROUND, foreground=theme.TEXT)
-        self._title.pack(fill="x", padx=8, pady=(8, 4))
+        # A titled panel: the model's name, a rule under it, then the
+        # controls. The title used to be one padded label with nothing
+        # separating it from the first section's own bold heading, so a tab
+        # opened on two headings that looked alike.
+        self._title = tk.Label(self.frame, text=name, font=theme.font(1.3, bold=True),
+                               anchor="w", background=theme.BACKGROUND,
+                               foreground=theme.TEXT)
+        self._title.pack(fill="x", padx=PAD, pady=(PAD, INSET))
+        self._rule = tk.Frame(self.frame, height=1, background=theme.SURFACE)
+        self._rule.pack(fill="x", padx=PAD, pady=(0, GAP))
         self._body = tk.Frame(self.frame, background=theme.BACKGROUND)
         self._body.pack(expand=True, fill="both")
         self._status = tk.Label(self.frame, text="", anchor="w",
                                 font=theme.font(0.9),
                                 background=theme.BACKGROUND, foreground=theme.MUTED)
-        self._status.pack(fill="x", side="bottom", padx=8, pady=(0, 6))
+        self._status.pack(fill="x", side="bottom", padx=PAD, pady=(0, GAP))
 
         self._build()
         self._schedule_refresh()
@@ -388,19 +421,83 @@ class TkPanelView(PanelView):
 
     # -- layout helpers ----------------------------------------------------
     def _make_section(self, title, layout="column"):
+        """A section of the panel. `layout` is the schema's hint (Addendum 2).
+
+        `column` is the stacked form: a heading, then one element per grid
+        row. `row` is the table form: a caption, then every element of the
+        section side by side on ONE line — which is what turns the Setup
+        panel from six stacked cards into one table with a row per model.
+        """
+        if layout == "row":
+            return self._make_row_section(title)
+        # A column section ends the table: the next row section starts a new
+        # one, so a schema that interleaves the two still renders in order.
+        self._table = None
         container = tk.Frame(self._body, background=theme.BACKGROUND)
-        container.pack(fill="x", padx=8, pady=4)
+        container.pack(fill="x", padx=PAD, pady=(GAP, 0))
         label = tk.Label(container, text=title, font=theme.font(1.0, bold=True),
-                         background=theme.BACKGROUND, foreground=theme.TEXT)
-        label.grid(row=0, column=0, columnspan=3, sticky="w", pady=(6, 2))
+                         anchor="w", background=theme.BACKGROUND,
+                         foreground=theme.TEXT)
+        label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(GAP, INSET))
         self._section_titles.append(label)
-        self._rows[id(container)] = 1
+        self._grid[id(container)] = {"layout": "column", "row": 1, "column": 0}
         return container
 
-    def _next_row(self, container):
-        row = self._rows.get(id(container), 0)
-        self._rows[id(container)] = row + 1
-        return row
+    def _make_row_section(self, title):
+        """One table row: a caption in column 0, the elements after it.
+
+        Every row section in a run shares ONE grid, because columns only line
+        up inside a single grid — six sibling frames each with their own grid
+        is exactly the "everything in one vertical tab" the owner rejected,
+        rotated ninety degrees. The caption carries a fixed width so the
+        first control column starts at the same x on every row.
+        """
+        if self._table is None:
+            self._table = tk.Frame(self._body, background=theme.BACKGROUND)
+            self._table.pack(fill="x", padx=PAD, pady=GAP)
+            self._grid[id(self._table)] = {"layout": "row", "row": -1, "column": 0}
+        state = self._grid[id(self._table)]
+        state["row"] += 1
+        state["column"] = 0
+        caption = tk.Label(self._table, text=title, font=theme.font(bold=True),
+                           anchor="w", width=CAPTION_WIDTH,
+                           background=theme.BACKGROUND, foreground=theme.TEXT)
+        caption.grid(row=state["row"], column=0, sticky="w",
+                     padx=(0, GAP), pady=INSET)
+        state["column"] = 1
+        self._section_titles.append(caption)
+        return self._table
+
+    # A renderer asks for cells rather than computing a row and a column, so
+    # the same renderer draws both layouts and neither can drift from the
+    # other. `_next_cell` hands out the next slot on the current line;
+    # `_end_line` ends that line, which in a row section is deliberately
+    # nothing at all.
+    def _next_cell(self, container, span=1):
+        state = self._cursor(container)
+        row, column = state["row"], state["column"]
+        state["column"] += span
+        return row, column
+
+    def _end_line(self, container):
+        state = self._cursor(container)
+        if state["layout"] == "row":
+            return
+        state["row"] += 1
+        state["column"] = 0
+
+    def _cursor(self, container):
+        return self._grid.setdefault(
+            id(container), {"layout": "column", "row": 0, "column": 0})
+
+    def _stretch_column(self, container, column):
+        """Let one column absorb the slack, so what follows it is pushed to
+        the right edge instead of trailing the widest cell above it."""
+        try:
+            container.grid_columnconfigure(column, weight=1)
+        except Exception as exc:
+            events.debug("Column Weight Refused", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
 
     def _register(self, element, **widgets):
         entry = self._widgets.setdefault(id(element), {})
@@ -411,11 +508,15 @@ class TkPanelView(PanelView):
     def _entry_for(self, element):
         return self._widgets.get(id(element), {})
 
-    def _label(self, container, text, row, column=0, **options):
-        label = tk.Label(container, text=text, font=theme.font(),
-                         background=theme.BACKGROUND, foreground=theme.TEXT,
+    def _caption(self, container, text, **options):
+        """The label in front of a control. Muted on purpose: the *value* is
+        the thing to read, and a panel of equally bright label/value pairs
+        gives the eye nothing to land on."""
+        row, column = self._next_cell(container)
+        label = tk.Label(container, text=text, font=theme.font(), anchor="w",
+                         background=theme.BACKGROUND, foreground=theme.MUTED,
                          **options)
-        label.grid(row=row, column=column, sticky="w", padx=6, pady=2)
+        label.grid(row=row, column=column, sticky="w", padx=(0, INSET), pady=INSET)
         return label
 
     def _button_label(self, container, element, on_click):
@@ -441,36 +542,44 @@ class TkPanelView(PanelView):
 
     # -- element renderers -------------------------------------------------
     def _make_readonly(self, container, element):
-        row = self._next_row(container)
-        self._label(container, element.get("text", ""), row)
+        """A readout, drawn so it cannot be mistaken for a box to type in:
+        raised off the panel onto the surface colour, right-aligned to a
+        fixed width, and never given the sunken border an entry carries."""
+        self._caption(container, element.get("text", ""))
         var = tk.StringVar(value="")
         # A role on a readout means something (a connection state, a fault
-        # reason), so it is coloured; a neutral one sits on the panel.
+        # reason), so it is coloured; a neutral one sits on the surface.
         role = element.get("role") or "neutral"
         background, foreground = self._role_colors(role)
         if role == "neutral":
-            background, foreground = theme.BACKGROUND, theme.TEXT
+            background, foreground = theme.SURFACE, theme.TEXT
+        row, column = self._next_cell(container)
         value = tk.Label(container, textvariable=var, font=theme.font(bold=True),
-                         background=background, foreground=foreground)
-        value.grid(row=row, column=1, sticky="w", padx=6, pady=2)
+                         anchor="e", width=READOUT_WIDTH, relief="flat",
+                         padx=GAP, background=background, foreground=foreground)
+        value.grid(row=row, column=column, sticky="e", padx=INSET, pady=INSET)
+        self._stretch_column(container, column)
         self._register(element, widget=value, var=var)
+        self._end_line(container)
 
     def _make_entry(self, container, element):
-        row = self._next_row(container)
-        self._label(container, element.get("text", ""), row)
+        self._caption(container, element.get("text", ""))
         var = tk.StringVar(value="")
+        row, column = self._next_cell(container)
         widget = tk.Entry(container, textvariable=var, font=theme.font(),
-                          background=theme.SURFACE, foreground=theme.TEXT,
-                          insertbackground=theme.TEXT)
+                          width=ENTRY_WIDTH, justify="right", relief="sunken",
+                          borderwidth=1, background=theme.SURFACE,
+                          foreground=theme.TEXT, insertbackground=theme.TEXT)
         if element.get("value_type") in ("int", "float"):
             self._attach_validator(widget, element)
-        widget.grid(row=row, column=1, sticky="w", padx=6, pady=2)
+        widget.grid(row=row, column=column, sticky="w", padx=INSET, pady=INSET)
         widget.bind("<Return>", lambda _e, el=element: self._on_entry_commit(el))
         widget.bind("<FocusOut>", lambda _e, el=element: self._on_entry_commit(el))
         unit = element.get("unit")
         if unit:
-            self._label(container, unit, row, column=2)
+            self._caption(container, unit)
         self._register(element, widget=widget, var=var, last_text="")
+        self._end_line(container)
 
     def _attach_validator(self, widget, element):
         try:
@@ -493,11 +602,17 @@ class TkPanelView(PanelView):
         minimum of 10); `_bounds_hint` colours the field instead, and the
         model refuses out-of-range values as a set when the command runs.
         """
-        if text in ("", "-", "+", ".", "-.", "+."):
-            return True
         if element.get("value_type") == "int":
+            # An int field takes no decimal point at all — not as a partial
+            # entry either, because there is no integer a "." is on the way
+            # to. The float pass-throughs below would have let "." stand in
+            # the box until the commit refused it (Addendum 2).
+            if text in ("", "-", "+"):
+                return True
             body = text[1:] if text[0] in "+-" else text
             return body.isdigit()
+        if text in ("", "-", "+", ".", "-.", "+."):
+            return True
         try:
             number = float(text)
         except ValueError:
@@ -543,37 +658,45 @@ class TkPanelView(PanelView):
         return result
 
     def _make_button(self, container, element):
-        row = self._next_row(container)
+        row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, lambda el: self._run(el))
-        widget.grid(row=row, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
+        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
+                    padx=INSET, pady=GAP)
         self._register(element, widget=widget)
+        self._end_line(container)
 
     def _make_toggle(self, container, element):
-        row = self._next_row(container)
+        row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element,
                                     lambda el: self._run_toggle(el))
-        widget.grid(row=row, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
+        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
+                    padx=INSET, pady=GAP)
         self._register(element, widget=widget)
+        self._end_line(container)
 
     def _make_dropdown(self, container, element):
-        row = self._next_row(container)
-        self._label(container, element.get("text", ""), row)
+        self._caption(container, element.get("text", ""))
         var = tk.StringVar(value="")
+        row, column = self._next_cell(container)
         # No `font=` here: a ttk widget is styled through `ttk.Style`, not
         # per-widget options, and passing one is a TclError on some builds.
-        # The ttk theme pass is listed under UNVERIFIED.
-        widget = ttk.Combobox(container, textvariable=var, state="readonly")
-        widget.grid(row=row, column=1, sticky="ew", padx=6, pady=2)
+        # The ttk theme pass is listed under UNVERIFIED. `width` is in
+        # characters and is fixed, so a column of dropdowns is a column.
+        widget = ttk.Combobox(container, textvariable=var, state="readonly",
+                              width=DROPDOWN_WIDTH)
+        widget.grid(row=row, column=column, sticky="w", padx=INSET, pady=INSET)
         widget.bind("<<ComboboxSelected>>",
                     lambda _e, el=element: self._on_dropdown_selected(el))
+        row, column = self._next_cell(container)
         refresh = tk.Label(container, text="⟳", font=theme.font(bold=True),
                            background=theme.SURFACE, foreground=theme.TEXT,
                            cursor="hand2")
-        refresh.grid(row=row, column=2, padx=2, pady=2)
+        refresh.grid(row=row, column=column, padx=INSET, pady=INSET)
         refresh.bind("<Button-1>",
                      lambda _e, el=element: self._refresh_options(el))
         self._register(element, widget=widget, var=var, options=[])
         self._refresh_options(element)
+        self._end_line(container)
 
     def _on_dropdown_selected(self, element):
         entry = self._entry_for(element)
@@ -606,17 +729,21 @@ class TkPanelView(PanelView):
             pass
 
     def _make_region_select(self, container, element):
-        row = self._next_row(container)
+        row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, self._on_region_clicked)
-        widget.grid(row=row, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
+        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
+                    padx=INSET, pady=GAP)
+        self._end_line(container)
         var = tk.StringVar(value=sch.format_region(None))
+        row, column = self._next_cell(container, span=3)
         shown = tk.Label(container, textvariable=var, font=theme.font(0.9),
-                         background=theme.BACKGROUND, foreground=theme.MUTED)
-        shown.grid(row=self._next_row(container), column=0, columnspan=3,
-                   sticky="w", padx=6)
+                         anchor="w", background=theme.BACKGROUND,
+                         foreground=theme.MUTED)
+        shown.grid(row=row, column=column, columnspan=3, sticky="w", padx=INSET)
         # The captured region is *drawn*, not announced: PySide's confirming
         # modal over an always-on-top overlay is PYSIDE-12's deadlock.
         self._register(element, widget=widget, var=var)
+        self._end_line(container)
 
     def _on_region_clicked(self, element):
         picker = _RegionPicker(self.frame)
@@ -628,10 +755,12 @@ class TkPanelView(PanelView):
         return self._run(element, args=region)
 
     def _make_file_save(self, container, element):
-        row = self._next_row(container)
+        row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, self._on_save_clicked)
-        widget.grid(row=row, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
+        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
+                    padx=INSET, pady=GAP)
         self._register(element, widget=widget)
+        self._end_line(container)
 
     def _on_save_clicked(self, element):
         """Ask for a destination, let the model write, then copy it there.
@@ -659,10 +788,12 @@ class TkPanelView(PanelView):
         return result
 
     def _make_file_open(self, container, element):
-        row = self._next_row(container)
+        row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, self._on_open_clicked)
-        widget.grid(row=row, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
+        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
+                    padx=INSET, pady=GAP)
         self._register(element, widget=widget)
+        self._end_line(container)
 
     def _on_open_clicked(self, element):
         extensions = element.get("extensions") or ["csv"]
@@ -676,14 +807,16 @@ class TkPanelView(PanelView):
     def _make_plot(self, container, element):
         """A Canvas polyline. No matplotlib: the model publishes the series
         and each renderer draws it (D-6)."""
-        row = self._next_row(container)
         if element.get("text"):
-            self._label(container, element["text"], row)
-            row = self._next_row(container)
+            self._caption(container, element["text"])
+            self._end_line(container)
+        row, column = self._next_cell(container, span=3)
         canvas = tk.Canvas(container, height=160, width=360,
                            background=theme.SURFACE, highlightthickness=0)
-        canvas.grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
+        canvas.grid(row=row, column=column, columnspan=3, sticky="ew",
+                    padx=INSET, pady=GAP)
         self._register(element, widget=canvas)
+        self._end_line(container)
 
     def _redraw_plot(self, element, series):
         canvas = self._entry_for(element).get("widget")
@@ -720,15 +853,17 @@ class TkPanelView(PanelView):
                          exception=exc, every=5.0)
 
     def _make_image(self, container, element):
-        row = self._next_row(container)
         if element.get("text"):
-            self._label(container, element["text"], row)
-            row = self._next_row(container)
+            self._caption(container, element["text"])
+            self._end_line(container)
+        row, column = self._next_cell(container, span=3)
         widget = tk.Label(container, background=theme.SURFACE,
                           foreground=theme.MUTED, text="")
-        widget.grid(row=row, column=0, columnspan=3, sticky="w", padx=6, pady=4)
+        widget.grid(row=row, column=column, columnspan=3, sticky="w",
+                    padx=INSET, pady=GAP)
         self._slow_commands.add(element.get("data_command"))
         self._register(element, widget=widget, photo=None, data=None)
+        self._end_line(container)
 
     def _show_image(self, element, data):
         """PNG bytes (or base64 text) -> PhotoImage. Tk reads PNG natively."""
@@ -749,23 +884,35 @@ class TkPanelView(PanelView):
         entry["photo"], entry["data"] = photo, data
 
     def _make_indicator(self, container, element):
-        row = self._next_row(container)
-        self._label(container, element.get("text", ""), row)
-        widget = tk.Label(container, text="", font=theme.font(bold=True),
-                          relief="ridge", padx=10, pady=2)
-        widget.grid(row=row, column=1, sticky="w", padx=6, pady=2)
+        """A lamp, not a second copy of the label.
+
+        The label went on the lamp as well as in front of it, so a fault
+        indicator read "Fault   Fault" and said nothing about the fault. The
+        caption names it once; the lamp carries only the state, as fill
+        (`theme.toggle_colors`) against a ring of the same role, so ON and OFF
+        differ by shape as well as by colour.
+        """
+        self._caption(container, element.get("text", ""))
+        row, column = self._next_cell(container)
+        widget = tk.Label(container, text="", width=LAMP_WIDTH, relief="flat",
+                          highlightthickness=2, pady=INSET)
+        widget.grid(row=row, column=column, sticky="w", padx=INSET, pady=INSET)
         self._register(element, widget=widget)
+        self._end_line(container)
 
     def _make_log_stream(self, container, element):
-        row = self._next_row(container)
         if element.get("text"):
-            self._label(container, element["text"], row)
-            row = self._next_row(container)
-        widget = tk.Text(container, height=8, width=48, state="disabled",
-                         font=theme.font(0.9), background=theme.SURFACE,
-                         foreground=theme.TEXT, wrap="word")
-        widget.grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
+            self._caption(container, element["text"])
+            self._end_line(container)
+        row, column = self._next_cell(container, span=3)
+        widget = tk.Text(container, height=EVENT_LOG_LINES + 1, width=48,
+                         state="disabled", relief="flat", font=theme.font(0.9),
+                         background=theme.SURFACE, foreground=theme.TEXT,
+                         wrap="word")
+        widget.grid(row=row, column=column, columnspan=3, sticky="ew",
+                    padx=INSET, pady=GAP)
         self._register(element, widget=widget, last_text=None)
+        self._end_line(container)
 
     def _refresh_log(self, element, lines):
         entry = self._entry_for(element)
@@ -814,12 +961,60 @@ class TkPanelView(PanelView):
             pass
         return var.get() != entry.get("last_text", "")
 
+    def _display_text(self, element, text):
+        """What an int field shows: an integer, with no decimal point.
+
+        `Param.format` already renders a declared `int` as `str(int(number))`,
+        so a model whose Param table matches its schema arrives here correct.
+        This is the backstop for the values that reach a view without a Param
+        behind them — `Setup.scan_progress` is one, a plain attribute the
+        schema types and `Panel._text_for` hands over as `str(raw)` — because
+        an int box showing "5.000" while its validator refuses "." is a
+        contradiction the operator has to look at (Addendum 2).
+        """
+        if element["type"] == "readonly" and not str(text).strip():
+            # A readout with no value says so. It never says it with an empty
+            # coloured label, which is a stripe of colour with no meaning.
+            return EMPTY_READOUT
+        if element.get("value_type") != "int" or not text:
+            return text
+        try:
+            number = float(text)
+        except (TypeError, ValueError):
+            return text
+        return str(int(number))
+
+    def _style_readout(self, element, text):
+        """A role colours a readout that HAS a value. With nothing to show it
+        goes back to the surface colour, so an empty "info" readout is not a
+        blue bar with nothing in it."""
+        entry = self._entry_for(element)
+        widget = entry.get("widget")
+        role = element.get("role") or "neutral"
+        if widget is None:
+            return
+        if role == "neutral" or text == EMPTY_READOUT:
+            background, foreground = theme.SURFACE, (
+                theme.MUTED if text == EMPTY_READOUT else theme.TEXT)
+        else:
+            background, foreground = self._role_colors(role)
+        if entry.get("colors") == (background, foreground):
+            return              # nothing to redraw ten times a second
+        entry["colors"] = (background, foreground)
+        try:
+            widget.configure(background=background, foreground=foreground)
+        except Exception:
+            pass
+
     def _set_text(self, element, text):
         entry = self._entry_for(element)
         var = entry.get("var")
         if var is None:
             return
         text = "" if text is None else str(text)
+        text = self._display_text(element, text)
+        if element["type"] == "readonly":
+            self._style_readout(element, text)
         if element["type"] == "dropdown":
             options = entry.get("options") or []
             if text and text not in options:
@@ -838,9 +1033,15 @@ class TkPanelView(PanelView):
         colors = theme.toggle_colors(element, is_on)
         options = {"background": colors["background"],
                    "foreground": colors["foreground"],
-                   "highlightbackground": colors["border"]}
+                   "highlightbackground": colors["border"],
+                   "highlightcolor": colors["border"]}
         if element["type"] == "toggle":
             options["text"] = element["true_text"] if is_on else element["false_text"]
+        elif element["type"] == "indicator":
+            # Never text: the caption in front of the lamp already names it,
+            # and a lamp that repeats its own label ("Fault   Fault") is the
+            # one thing it must not say.
+            options["text"] = ""
         entry["is_on"] = is_on
         try:
             widget.configure(**options)
@@ -963,18 +1164,24 @@ class TkDashboard(Dashboard):
         self._menu_vars = {}    # name -> BooleanVar in the Models menu
         self._after_id = None
         self._is_focused = None
+        self._is_setup_collapsed = False
+        self._setup_menu = None      # the "Show Setup" menu, once built
 
         self.root = tk.Tk()
         self.root.title("Transfer Station")
         self.root.geometry("1100x850")
         self.root.configure(background=theme.BACKGROUND)
 
+        # Packed before the notebook, so the strip sits above the tab bar
+        # rather than under it: pack order is allocation order.
+        self._build_toolbar()
+
         self.notebook = ClosableNotebook(self.root, on_close_tab=self._on_tab_close)
         self.notebook.pack(fill="both", expand=True)
 
         self._build_event_panel()
         self._build_stop_button()
-        self._build_models_menu()
+        self._build_menu_bar()
 
         # D-4: gate input on focus, never stop. Bound on the root, filtered to
         # the root's own events so a child widget's focus traffic is not a
@@ -985,24 +1192,65 @@ class TkDashboard(Dashboard):
         self._hook_macos_quit()
 
     # -- construction ------------------------------------------------------
+    def _build_toolbar(self):
+        """The strip above the tabs. Empty while Setup has a tab of its own;
+        it carries the way back once Setup minimises.
+
+        The frame is packed now and stays packed even while empty, because a
+        frame packed after the notebook lands *below* it.
+        """
+        self._toolbar = tk.Frame(self.root, background=theme.BACKGROUND)
+        self._toolbar.pack(side="top", fill="x")
+        background, foreground = theme.colors("info")
+        self._setup_button = tk.Label(
+            self._toolbar, text="Setup", font=theme.font(0.9, bold=True),
+            background=background, foreground=foreground, relief="raised",
+            padx=PAD, pady=INSET, cursor="hand2")
+        self._setup_button.bind("<Button-1>", self._on_setup_clicked)
+
     def _build_stop_button(self):
         """Bottom-docked on purpose: directly above the tab bar it was an easy
-        accidental-click target when reaching for a tab."""
+        accidental-click target when reaching for a tab.
+
+        It is the largest control in the window, because it is the one the
+        operator has to find without looking for it.
+        """
         background, foreground = theme.colors("danger")
         self._stop_button = tk.Label(
-            self.root, text="FULL STOP", font=theme.font(1.2, bold=True),
+            self.root, text="FULL STOP", font=theme.font(1.5, bold=True),
             background=background, foreground=foreground, relief="raised",
-            pady=6, cursor="hand2")
+            borderwidth=3, pady=PAD + GAP, cursor="hand2")
         self._stop_button.bind("<Button-1>", self._on_stop_clicked)
-        self._stop_button.pack(side="bottom", fill="x", padx=6, pady=6)
+        self._stop_button.pack(side="bottom", fill="x", padx=PAD, pady=(GAP, PAD))
 
     def _build_event_panel(self):
+        """A footer, sized in lines and scrolled — not an expanding panel.
+
+        `height` is in text lines and `expand` is False, so the log cannot
+        take space from the controls as it fills: eight lines of log on an
+        expanding panel was the first thing the owner saw grow.
+        """
         frame = tk.Frame(self.root, background=theme.BACKGROUND)
-        frame.pack(side="bottom", fill="x", padx=6)
-        self._event_text = tk.Text(frame, height=8, state="disabled", wrap="word",
+        frame.pack(side="bottom", fill="x", padx=PAD, pady=(0, INSET))
+        caption = tk.Label(frame, text="Events", font=theme.font(0.9, bold=True),
+                           anchor="w", background=theme.BACKGROUND,
+                           foreground=theme.MUTED)
+        caption.pack(fill="x")
+        body = tk.Frame(frame, background=theme.BACKGROUND)
+        body.pack(fill="x")
+        scrollbar = tk.Scrollbar(body)
+        scrollbar.pack(side="right", fill="y")
+        self._event_text = tk.Text(body, height=EVENT_LOG_LINES, state="disabled",
+                                   wrap="word", relief="flat",
                                    font=theme.font(0.9),
-                                   background=theme.SURFACE, foreground=theme.TEXT)
-        self._event_text.pack(fill="both", expand=True)
+                                   background=theme.SURFACE, foreground=theme.TEXT,
+                                   yscrollcommand=scrollbar.set)
+        self._event_text.pack(side="left", fill="x", expand=True)
+        try:
+            scrollbar.configure(command=self._event_text.yview)
+        except Exception as exc:
+            events.debug("Event Scrollbar Not Wired", str(exc), source=SOURCE,
+                         exception=exc)
         for severity, role in theme.SEVERITY_ROLE.items():
             try:
                 self._event_text.tag_configure(
@@ -1010,13 +1258,19 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
 
-    def _build_models_menu(self):
-        """Tick to open, untick to close. A closed model is still listed, which
-        is the reopen path Tk never had: a forgotten tab was gone for the
-        session (VIEW-TKINTER-1)."""
+    def _build_menu_bar(self):
+        """The Models menu — tick to open, untick to close — and the way back
+        to Setup.
+
+        A closed model is still listed, which is the reopen path Tk never had:
+        a forgotten tab was gone for the session (VIEW-TKINTER-1). The Setup
+        entry is the same idea for the wizard, which minimises once the first
+        model launches.
+        """
         try:
             menubar = tk.Menu(self.root)
             menu = tk.Menu(menubar, tearoff=0)
+            setup_menu = tk.Menu(menubar, tearoff=0)
         except Exception as exc:
             events.debug("Menu Not Built", str(exc), source=SOURCE, exception=exc)
             return
@@ -1029,6 +1283,9 @@ class TkDashboard(Dashboard):
             menu.add_checkbutton(label=name, variable=variable,
                                  command=lambda n=name: self._on_model_toggled(n))
         menubar.add_cascade(label="Models", menu=menu)
+        setup_menu.add_command(label="Show Setup", command=self.restore_setup)
+        menubar.add_cascade(label=self.SETUP_TAB, menu=setup_menu)
+        self._setup_menu = setup_menu
         try:
             self.root.configure(menu=menubar)
         except Exception as exc:
@@ -1146,15 +1403,88 @@ class TkDashboard(Dashboard):
         self.notebook.add(frame, text=name)
         self._panels[name] = view
         self._frames[name] = frame
-        self._build_models_menu()
+        self._build_menu_bar()
         events.debug("Tab Opened", name, source=SOURCE)
 
     def _remove_panel(self, name):
         if name not in self._panels:
             return
         self._destroy_panel(name)
-        self._build_models_menu()
+        self._build_menu_bar()
         events.debug("Tab Closed", name, source=SOURCE)
+
+    # -- the Setup tab, minimised and brought back -------------------------
+    def _collapse_setup(self):
+        """`Dashboard` calls this when the first model launches: the wizard
+        has done its job and the models want the window.
+
+        The tab is *hidden*, never destroyed — the panel view keeps its
+        widgets, its state and its refresh tick, so Refresh and Launch work
+        the moment it comes back. Destroying it and rebuilding on demand
+        would be a second construction path for a panel that already exists,
+        and VIEW-TKINTER-1 is what a one-way removal costs.
+        """
+        frame = self._frames.get(self.SETUP_TAB)
+        if frame is None or self._is_setup_collapsed:
+            return
+        for step in (lambda: self.notebook.hide(frame),
+                     lambda: self.notebook.forget(frame)):
+            try:
+                step()
+                break
+            except Exception as exc:
+                events.debug("Setup Not Hidden", str(exc), source=SOURCE,
+                             exception=exc)
+        else:
+            return
+        self._is_setup_collapsed = True
+        self._show_setup_button(True)
+        self._build_menu_bar()
+        events.info("Setup Minimised", "Setup is on the toolbar and the menu "
+                    "bar; reopen it to re-scan or relaunch", source=SOURCE)
+
+    def restore_setup(self):
+        """Bring the Setup tab back and select it. -> bool.
+
+        Reopenable as often as the operator likes, and idempotent: asking for
+        Setup while it is already showing selects it rather than adding a
+        second tab.
+        """
+        frame = self._frames.get(self.SETUP_TAB)
+        if frame is None:
+            return False
+        try:
+            self.notebook.add(frame, text=self.SETUP_TAB)
+        except Exception as exc:
+            events.debug("Setup Not Restored", str(exc), source=SOURCE,
+                         exception=exc)
+            return False
+        try:
+            self.notebook.select(frame)
+        except Exception as exc:
+            events.debug("Setup Not Selected", str(exc), source=SOURCE,
+                         exception=exc)
+        if self._is_setup_collapsed:
+            events.debug("Setup Restored", "the Setup tab is back", source=SOURCE)
+        self._is_setup_collapsed = False
+        self._show_setup_button(False)
+        self._build_menu_bar()
+        return True
+
+    def _show_setup_button(self, is_shown):
+        """The toolbar button exists only while Setup has no tab, so the
+        window never offers two ways to the same visible panel."""
+        try:
+            if is_shown:
+                self._setup_button.pack(side="left", padx=PAD, pady=INSET)
+            else:
+                self._setup_button.pack_forget()
+        except Exception as exc:
+            events.debug("Setup Button Not Drawn", str(exc), source=SOURCE,
+                         exception=exc)
+
+    def _on_setup_clicked(self, _event=None):
+        return self.restore_setup()
 
     def _destroy_panel(self, name):
         view = self._panels.pop(name, None)
