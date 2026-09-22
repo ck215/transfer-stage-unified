@@ -91,15 +91,15 @@ class Probe(Model):
         Param("x_step", "int", default=16, minimum=1, label="X Step Size"),
         Param("y_step", "int", default=16, minimum=1, label="Y Step Size"),
         Param("z_step", "int", default=16, minimum=1, label="Z Step Size"),
-        Param("x_dist", "float", default=0, label="Target X Dist"),
-        Param("y_dist", "float", default=0, label="Target Y Dist"),
-        Param("z_dist", "float", default=0, label="Target Z Dist"),
-        Param("full_speed", "float", default=400, minimum=1,
+        Param("x_dist", "int", default=0, label="Target X Dist"),
+        Param("y_dist", "int", default=0, label="Target Y Dist"),
+        Param("z_dist", "int", default=0, label="Target Z Dist"),
+        Param("full_speed", "int", default=400, minimum=1,
               label="Autonomous Speed"),
-        Param("man_full_speed", "float", default=400, minimum=1,
+        Param("man_full_speed", "int", default=400, minimum=1,
               label="Manual Speed"),
-        Param("slow_speed", "float", default=0, label="Brake Speed (Slow)"),
-        Param("brake_distance", "float", default=0,
+        Param("slow_speed", "int", default=0, label="Brake Speed (Slow)"),
+        Param("brake_distance", "int", default=0,
               label="Brake Distance (steps)"),
     )}
 
@@ -520,16 +520,19 @@ class Probe(Model):
 
     def _frame(self):
         """The twelve fields of the move frame, in the firmware's order."""
+        # Speeds and distances are integers to the operator but floats on the
+        # wire ("250.0"): the firmware parses them as floats and the golden
+        # frames pin that rendering.
         return {
             "x_step_size": self._number("x_step"),
             "y_step_size": self._number("y_step"),
             "z_step_size": self._number("z_step"),
-            "full_speed": self._number("full_speed"),
+            "full_speed": float(self._number("full_speed")),
             "slow_speed": 0,
             "brake_distance": 0,
-            "x_dist": self._number("x_dist"),
-            "y_dist": self._number("y_dist"),
-            "z_dist": self._number("z_dist"),
+            "x_dist": float(self._number("x_dist")),
+            "y_dist": float(self._number("y_dist")),
+            "z_dist": float(self._number("z_dist")),
             "command_code_manual": int(self.is_manual),
             "command_code_auton": int(self.is_auto),
         }
@@ -1087,9 +1090,9 @@ class DCProbe(Probe):
         Param("x_step", "int", default=1, minimum=1, label="X Step Size"),
         Param("y_step", "int", default=1, minimum=1, label="Y Step Size"),
         Param("z_step", "int", default=1, minimum=1, label="Z Step Size"),
-        Param("full_speed", "float", default=120, minimum=1,
+        Param("full_speed", "int", default=120, minimum=1,
               label="Autonomous Speed"),
-        Param("man_full_speed", "float", default=120, minimum=1,
+        Param("man_full_speed", "int", default=120, minimum=1,
               label="Manual Speed"),
     )}}
 
@@ -1097,8 +1100,8 @@ class DCProbe(Probe):
 
     def _frame(self):
         fields = super()._frame()
-        fields["slow_speed"] = self._number("slow_speed")
-        fields["brake_distance"] = self._number("brake_distance")
+        fields["slow_speed"] = float(self._number("slow_speed"))
+        fields["brake_distance"] = float(self._number("brake_distance"))
         return fields
 
 

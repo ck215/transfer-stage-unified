@@ -248,7 +248,13 @@ class RedMonitor(Model):
     #: A row per captured frame / a row when the red percent changes / a row
     #: every `sample_interval_s`. The owner's ruling: fastest possible by
     #: default, the other two kept for a long unattended run.
-    SAMPLE_MODES = ("every_frame", "change", "fixed")
+    #: Green and blue caps of the red mask. Fixed (the operator tunes red
+    #: only); today's values, so the measurement is unchanged.
+    GREEN_MAX = 100
+    BLUE_MAX = 100
+    #: One sampling mode: a row when the red percentage changes (owner ruling
+    #: 2026-09-22). The loop still grabs as fast as it can.
+    SAMPLE_MODE = "change"
 
     #: The change `sample_mode="change"` triggers on, in percentage points.
     CHANGE_STEP = 0.1
@@ -266,8 +272,6 @@ class RedMonitor(Model):
     ANNOTATION_FIELDS = (
         Param("specimen_id", "text", default="", label="Specimen ID"),
         Param("consumable_id", "text", default="", label="Tip / Consumable ID"),
-        Param("stage_x", "float", default=0.0, decimals=3, label="Stage X"),
-        Param("stage_y", "float", default=0.0, decimals=3, label="Stage Y"),
         Param("note", "text", default="", label="Note"),
     )
 
@@ -280,15 +284,6 @@ class RedMonitor(Model):
             *ANNOTATION_FIELDS,
             Param("red_min", "int", default=150, minimum=0, maximum=255,
                   label="Red at least"),
-            Param("green_max", "int", default=100, minimum=0, maximum=255,
-                  label="Green at most"),
-            Param("blue_max", "int", default=100, minimum=0, maximum=255,
-                  label="Blue at most"),
-            Param("sample_interval_s", "float", default=0.05, minimum=0.001,
-                  maximum=60.0, decimals=3, unit="s",
-                  label="Fixed Sample Interval"),
-            Param("sample_mode", "text", default="every_frame",
-                  label="Sample Mode"),
             Param("sync_axes", "text", default="", label="Synced Axes"),
             Param("run_id", "text", default="", label="Run ID"),
             Param("current_red", "float", default=0.0, decimals=2, unit="%",
@@ -569,29 +564,13 @@ class RedMonitor(Model):
     def is_sync_z(self):
         return "Z" in self.sync_axes_list
 
-    def set_sample_mode(self, mode):
-        """`every_frame` (default), `change`, or `fixed`."""
-        if self.is_running:
-            raise Refused("The sample mode is fixed for the duration of a run.")
-        if mode not in self.SAMPLE_MODES:
-            raise Refused(f"{mode!r} is not a sample mode "
-                          f"({', '.join(self.SAMPLE_MODES)})")
-        self.sample_mode = mode
-        events.debug("Sample Mode", mode, source=self.NAME)
-        self._touch()
-        return mode
-
-    @property
-    def sample_mode_options(self):
-        return list(self.SAMPLE_MODES)
-
     @property
     def red_threshold(self):
         """The `_measure_red` decision, named so the sidecar can record it.
         Two runs with the same red percent and different thresholds are not
         comparable."""
-        return {"r_min": int(self.red_min), "g_max": int(self.green_max),
-                "b_max": int(self.blue_max)}
+        return {"r_min": int(self.red_min), "g_max": self.GREEN_MAX,
+                "b_max": self.BLUE_MAX}
 
     @property
     def annotations(self):
@@ -659,8 +638,8 @@ class RedMonitor(Model):
             annotations=self.annotations,
             source_name=self.source_name,
             baseline_red=None,          # taken from this run's first frame
-            sample_mode=self.sample_mode,
-            sample_interval_s=float(self.sample_interval_s),
+            sample_mode=self.SAMPLE_MODE,
+            sample_interval_s=0.0,
             red_threshold=self.red_threshold,
         )
         self._run = run
@@ -969,8 +948,7 @@ class RedMonitor(Model):
             "region": dict(self.region) if self.region else None,
             "baseline_red": self.baseline_red,
             "red_threshold": self.red_threshold,
-            "sample_mode": self.sample_mode,
-            "sample_interval_s": float(self.sample_interval_s),
+            "sample_mode": self.SAMPLE_MODE,
             "position_rate_hz": self.POSITION_RATE_HZ,
             "frames_captured": 0,
             "rows_written": 0,
@@ -1215,17 +1193,9 @@ class RedMonitor(Model):
                 "Red Detection",
                 sch.entry("Red at least:", "red_min", P["red_min"],
                           disabled_when=("running",)),
-                sch.entry("Green at most:", "green_max", P["green_max"],
-                          disabled_when=("running",)),
-                sch.entry("Blue at most:", "blue_max", P["blue_max"],
-                          disabled_when=("running",)),
             ),
             sch.section(
                 "Sampling",
-                sch.dropdown("Sample Mode:", "sample_mode", "set_sample_mode",
-                             "sample_mode_options", disabled_when=("running",)),
-                sch.entry("Fixed Sample Interval:", "sample_interval_s",
-                          P["sample_interval_s"], disabled_when=("running",)),
                 sch.readonly("Frame Rate:", "frame_rate", param=P["frame_rate"]),
                 sch.readonly("Frames:", "frames_captured",
                              param=P["frames_captured"]),
@@ -1276,4 +1246,4 @@ class RedMonitor(Model):
         anti-fix, because it only ever worked in Tk."""
         return ("run_name", "probe_name", "probe_tilt_angle",
                 *[field.name for field in self.ANNOTATION_FIELDS],
-                "red_min", "green_max", "blue_max", "sample_interval_s")
+                "red_min")
