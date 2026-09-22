@@ -1,0 +1,168 @@
+{
+  "_meta": {
+    "description": "heater (TemperatureSystem) wire frames",
+    "captured_from": "src/ (the old code), driven in simulator mode",
+    "regenerate_with": "python3 tests/station/golden/capture.py",
+    "handshake_frames_filtered": 0,
+    "handshake_note": "Transport ping traffic (b's\\n') is filtered out of every frame list and counted here. Simulator mode never runs the handshake at all, so this is 0; a non-zero value means a capture was taken against a live port and the pings were removed from the golden bytes.",
+    "scenario_count": 4
+  },
+  "scenarios": [
+    {
+      "id": "heater.open",
+      "device": "TemperatureSystem",
+      "description": "Construction writes the heater-off frame immediately, so a board left at a setpoint by a previous session is brought to zero before anything else happens.",
+      "prelude": [],
+      "old_calls": [
+        "TemperatureSystem('SIM')"
+      ],
+      "new_calls": [
+        "Heater(port='SIM').open()"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "3c302c362e302c302c302c302c303e",
+          "length": 15,
+          "decode": {
+            "kind": "heater_frame",
+            "format": "<setpoint,spdelay,P,I,D,offset>",
+            "text": "<0,6.0,0,0,0,0>",
+            "fields": {
+              "setpoint": "0",
+              "spdelay_s_per_C": "6.0",
+              "p": "0",
+              "i": "0",
+              "d": "0",
+              "offset": "0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "heater.apply_settings",
+      "device": "TemperatureSystem",
+      "description": "The settings frame. `ramp_rate` is spdelay (seconds per 1 C step) in the firmware's own unit, formatted to 2 decimals; every other field is interpolated as entered. A field that is not a number is refused outright rather than sent - strtok would shift every field after a blank one left (RC-6 item 4).",
+      "prelude": [
+        "TemperatureSystem('SIM')"
+      ],
+      "old_calls": [
+        "heater.send_settings()"
+      ],
+      "new_calls": [
+        "heater.run(\"apply_settings\", inputs=<settings>)"
+      ],
+      "inputs": {
+        "setpoint": "120.5",
+        "ramp_rate": "7.25",
+        "p_term": "2.5",
+        "i_term": "0.75",
+        "d_term": "0.125",
+        "offset": "-1.5"
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "3c3132302e352c372e32352c322e352c302e37352c302e3132352c2d312e353e",
+          "length": 32,
+          "decode": {
+            "kind": "heater_frame",
+            "format": "<setpoint,spdelay,P,I,D,offset>",
+            "text": "<120.5,7.25,2.5,0.75,0.125,-1.5>",
+            "fields": {
+              "setpoint": "120.5",
+              "spdelay_s_per_C": "7.25",
+              "p": "2.5",
+              "i": "0.75",
+              "d": "0.125",
+              "offset": "-1.5"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "heater.stop",
+      "device": "TemperatureSystem",
+      "description": "Heater off: setpoint 0 and zeroed gains, keeping the operator's ramp rate (1 decimal here, not 2 - `stop` formats it differently from `send_settings` and that difference is on the wire) and offset. Also what `disable()` sends, and what FULL STOP sends with priority=True.",
+      "prelude": [
+        "TemperatureSystem('SIM')",
+        "<settings written>"
+      ],
+      "old_calls": [
+        "heater.stop()",
+        "# heater.disable() and emergency_stop() send the same frame"
+      ],
+      "new_calls": [
+        "heater._halt_hardware()",
+        "# Model.halt() / Model.estop() / Heater.disable()"
+      ],
+      "inputs": {
+        "setpoint": "120.5",
+        "ramp_rate": "7.25",
+        "p_term": "2.5",
+        "i_term": "0.75",
+        "d_term": "0.125",
+        "offset": "-1.5"
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "3c302c372e322c302c302c302c2d312e353e",
+          "length": 18,
+          "decode": {
+            "kind": "heater_frame",
+            "format": "<setpoint,spdelay,P,I,D,offset>",
+            "text": "<0,7.2,0,0,0,-1.5>",
+            "fields": {
+              "setpoint": "0",
+              "spdelay_s_per_C": "7.2",
+              "p": "0",
+              "i": "0",
+              "d": "0",
+              "offset": "-1.5"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "heater.close",
+      "device": "TemperatureSystem",
+      "description": "Shutdown. The heater-off frame goes out on the priority lane and is drained before the port is released - the firmware has no watchdog, so a frame discarded by close() leaves the heater at its last setpoint (TEMP-11). Note it is the fixed literal frame, not the operator's ramp rate.",
+      "prelude": [
+        "TemperatureSystem('SIM')",
+        "<settings written>"
+      ],
+      "old_calls": [
+        "heater.close()"
+      ],
+      "new_calls": [
+        "heater.close()  # Model.close(); was close/disconnect/teardown"
+      ],
+      "inputs": {},
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "3c302c362e302c302c302c302c303e",
+          "length": 15,
+          "decode": {
+            "kind": "heater_frame",
+            "format": "<setpoint,spdelay,P,I,D,offset>",
+            "text": "<0,6.0,0,0,0,0>",
+            "fields": {
+              "setpoint": "0",
+              "spdelay_s_per_C": "6.0",
+              "p": "0",
+              "i": "0",
+              "d": "0",
+              "offset": "0"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
