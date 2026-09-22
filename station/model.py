@@ -97,8 +97,14 @@ class Model(Panel):
             finally:
                 done.set()
 
+        started = time.monotonic()
         threading.Thread(target=_stop, daemon=True, name=f"estop-{self.NAME}").start()
-        return bool(done.wait(self.ESTOP_BUDGET) and landed and landed[0])
+        in_time = done.wait(self.ESTOP_BUDGET)
+        confirmed = bool(in_time and landed and landed[0])
+        events.debug("Estop", f"latched; hardware stop "
+                     f"{'confirmed' if confirmed else 'still in flight' if not in_time else 'reported failure'}"
+                     f" after {(time.monotonic() - started) * 1000:.1f} ms", source=self.NAME)
+        return confirmed
 
     def clear_estop(self, confirmed=False):
         """Operator action only. Returns the model to refusable, not running."""
