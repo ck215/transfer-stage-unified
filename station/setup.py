@@ -89,7 +89,7 @@ class _Stub:
         Heater: ("Temperature Controller", "t", True, False),
         # The SMC100 answers an ASCII protocol at 57600 rather than the
         # custom firmware's DEV: reply, so it has no identity byte.
-        Rotator: ("SMC100 Rotator", None, True, False),
+        Rotator: ("Rotator", None, True, False),
         # Screen capture, not hardware: no port, no gamepad.
         RedMonitor: ("Red Percent", None, False, False),
     }

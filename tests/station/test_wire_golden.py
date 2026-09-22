@@ -262,8 +262,9 @@ def _build_heater(port):
 
 def _build_smc(port, replies=()):
     module = importlib.import_module("station.devices.smc100")
-    device = module.SMC100(SMC_ID_FROM_CAPTURE, port)
-    device.port = port
+    # The driver takes an already-built transport by keyword; a port NAME
+    # would make it build a real SerialPort.
+    device = module.SMC100(SMC_ID_FROM_CAPTURE, transport=port)
     port.replies = list(replies)
     return device
 
@@ -377,7 +378,6 @@ def _apply(model, inputs):
 
 
 @pytest.mark.transport
-@pytest.mark.xfail(strict=False, reason=AWAITING["probe"])
 @pytest.mark.parametrize("scenario", PROBE_SCENARIOS, ids=_ids(PROBE_SCENARIOS))
 def test_new_probe_is_byte_identical(scenario):
     port = RecordingPort()
@@ -389,7 +389,6 @@ def test_new_probe_is_byte_identical(scenario):
 
 
 @pytest.mark.transport
-@pytest.mark.xfail(strict=False, reason=AWAITING["heater"])
 @pytest.mark.parametrize("scenario", HEATER_SCENARIOS,
                          ids=_ids(HEATER_SCENARIOS))
 def test_new_heater_is_byte_identical(scenario):
@@ -439,7 +438,6 @@ def test_new_heater_is_byte_identical(scenario):
 
 
 @pytest.mark.transport
-@pytest.mark.xfail(strict=False, reason=AWAITING["smc100"])
 @pytest.mark.parametrize("scenario", SMC_SCENARIOS, ids=_ids(SMC_SCENARIOS))
 def test_new_smc100_is_byte_identical(scenario):
     """The SMC100 keeps its vendor protocol method names, so the mapping is
@@ -458,21 +456,21 @@ def test_new_smc100_is_byte_identical(scenario):
     kind = scenario["id"].split(".", 1)[1]
 
     if kind == "home":
-        device.home(waitStop=True)
+        device.home(wait_stop=True)
     elif kind == "home_no_wait":
-        device.home(waitStop=False)
+        device.home(wait_stop=False)
     elif kind == "move_absolute":
         device.move_absolute_deg(scenario["inputs"]["position_deg"],
-                                 waitStop=False)
+                                 wait_stop=False)
     elif kind in ("move_relative_positive", "move_relative_negative"):
         device.move_relative_deg(scenario["inputs"]["dist_deg"],
-                                 waitStop=False)
+                                 wait_stop=False)
     elif kind == "stop":
         device.stop()
     elif kind == "stop_priority":
         device.stop(priority=True)
     elif kind == "status":
-        device.get_status(silent=True)
+        device.get_status()
     elif kind == "position":
         device.get_position_deg()
     elif kind == "reset_and_configure":
@@ -480,13 +478,16 @@ def test_new_smc100_is_byte_identical(scenario):
     else:
         raise AssertionError(f"no mapping for {scenario['id']}")
 
-    assert _payloads(port) == _expected(scenario), (
+    # The old driver wrote a command and its "\r\n" as two `write()` calls;
+    # the new one sends each command as ONE frame, so a priority byte can
+    # never land between a command and its terminator. Same bytes on the
+    # wire: compare the byte stream, not the write boundaries.
+    assert b"".join(_payloads(port)) == b"".join(_expected(scenario)), (
         f"{scenario['id']}: the new SMC100 did not send the bytes the "
         f"controller expects")
 
 
 @pytest.mark.transport
-@pytest.mark.xfail(strict=False, reason=AWAITING["probe"])
 def test_full_stop_uses_the_priority_lane():
     """The stop bytes are not enough on their own.
 
@@ -505,7 +506,6 @@ def test_full_stop_uses_the_priority_lane():
 
 
 @pytest.mark.transport
-@pytest.mark.xfail(strict=False, reason=AWAITING["probe"])
 def test_motion_writes_pass_the_estop_as_abort_if():
     """A latched FULL STOP must abort a motion write *inside the lock*.
 

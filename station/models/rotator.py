@@ -221,18 +221,9 @@ class Rotator(Model):
         )
 
     def _step_button(self, text, sign, gated):
-        """One command, two buttons, and the sign travels with the button.
-
-        `sch.button` has no `args=` yet, so the key is added here; see the
-        handoff's CORE CHANGE REQUESTS for the two-line change that makes it
-        a declared part of the element. `Panel._allows` already accepts
-        `args` it does not recognise, so this works today -- what is missing
-        is only a renderer reading the sign back out of the schema.
-        """
-        element = sch.button(text, "move_by", inputs=("step_deg",),
-                             disabled_when=gated)
-        element["args"] = [sign]
-        return element
+        """One command, two buttons, and the sign travels with the button."""
+        return sch.button(text, "move_by", inputs=("step_deg",), args=(sign,),
+                          disabled_when=gated)
 
     # -- commands ----------------------------------------------------------
     def home(self, confirmed=False):

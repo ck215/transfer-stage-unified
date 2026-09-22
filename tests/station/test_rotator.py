@@ -221,14 +221,14 @@ def test_a_negative_step_is_the_same_command_with_a_sign():
 
 
 def test_the_confirmation_of_a_relative_move_carries_its_sign():
-    """`NeedsConfirm.args` is re-run as `command(*args, True)`; without the
+    """`NeedsConfirm.rerun_args` is re-run as `command(*rerun_args, True)`; without the
     sign, answering "yes" to a Move - would run a Move +."""
     model = _rotator(position=0.0)
     model.step_deg = 40
     with pytest.raises(NeedsConfirm) as ask:
         model.move_by(-1)
-    assert ask.value.args == (-1,)
-    assert model.move_by(*ask.value.args, True) is True
+    assert ask.value.rerun_args == (-1,)
+    assert model.move_by(*ask.value.rerun_args, True) is True
     assert _wait_until(lambda: model.smc.calls)
     assert model.smc.calls[0] == ("move_relative_deg", -40.0)
 
