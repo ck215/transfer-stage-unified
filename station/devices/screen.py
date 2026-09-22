@@ -106,6 +106,30 @@ class Screen(Device):
         return "capturing" if self._is_open else "closed"
 
     # -- capture -----------------------------------------------------------
+    def screenshot_png(self, max_width=1600):
+        """The whole virtual desktop as PNG bytes, downscaled to `max_width`,
+        plus its full-size bounds: `(png_bytes, {"left","top","width","height"})`.
+        For a view that has no overlay of its own (the browser) to draw a
+        region on. Returns (None, None) when capture is unavailable."""
+        if not self._is_open:
+            return None, None
+        try:
+            from PIL import Image
+            instance = self._instance()
+            bounds = dict(instance.monitors[0])   # the virtual desktop
+            shot = instance.grab(bounds)
+            image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+            if image.width > max_width:
+                image = image.resize((max_width, round(image.height * max_width / image.width)))
+            import io
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            return buffer.getvalue(), bounds
+        except Exception as exc:
+            events.debug("Screenshot Failed", str(exc), source=self.NAME,
+                         exception=exc, every=1.0)
+            return None, None
+
     def grab(self, region):
         """The frame under `region`, or None when the grab failed.
 
