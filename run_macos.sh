@@ -7,7 +7,14 @@
 set -e
 cd "$(dirname "$0")"
 
-source .venv/bin/activate
+# Use a local .venv when there is one; otherwise the venv already active in
+# the shell (a git worktree shares the main checkout's environment).
+if [ -f .venv/bin/activate ]; then
+    source .venv/bin/activate
+elif [ -z "$VIRTUAL_ENV" ]; then
+    echo "No .venv here and none active: activate the project's venv first." >&2
+    exit 1
+fi
 
 # Parse arguments to determine requested view mode or help
 VIEW_MODE=""
