@@ -31,6 +31,8 @@ import os
 
 import pytest
 
+from station.result import Refused
+
 from tests.station.golden import capture as golden_capture
 
 GOLDEN_DIR = os.path.dirname(os.path.abspath(golden_capture.__file__))
@@ -273,11 +275,26 @@ SMC_ID_FROM_CAPTURE = golden_capture.SMC_ID
 # (b) the new classes put the same bytes on the wire
 # ==========================================================================
 
+def _scenario(scenario_id):
+    for group in (PROBE_SCENARIOS, HEATER_SCENARIOS, SMC_SCENARIOS):
+        for scenario in group:
+            if scenario["id"] == scenario_id:
+                return scenario
+    raise KeyError(scenario_id)
+
+
 def _motion_inputs(scenario):
     """The scenario's motion parameters as `run(..., inputs=...)` would take
     them. Param names are carried over unchanged (design.rules: `PARAMS` is a
     plain dict literal on the new class)."""
-    return {name: value for name, value in scenario["inputs"].items()
+    # A jog scenario's `inputs` are gamepad levels; its motion parameters are
+    # the capture's fixed STEP_INPUTS (the prelude says "<motion parameters>").
+    source = scenario["inputs"]
+    if "x_axisStatus" in source or not source:
+        source = dict(golden_capture.STEP_INPUTS)
+        if scenario["device"] == "DCProbe":
+            source.update(golden_capture.DC_STEP_INPUTS)
+    return {name: value for name, value in source.items()
             if name in golden_capture.STEP_INPUTS
             or name in golden_capture.DC_STEP_INPUTS}
 
@@ -316,6 +333,10 @@ def _drive_probe(scenario, probe, module, port):
         probe.set_mode(mode.AUTO)
         probe.step()
         port.writes.clear()
+        # The new Probe refuses a step while the previous one is still
+        # settling (a guard against stacked moves that the old code lacked).
+        # The scenario is "a second step while still AUTO", so let it settle.
+        probe._moving_deadline = 0.0
         probe.step()
         return
 
@@ -399,6 +420,19 @@ def test_new_heater_is_byte_identical(scenario):
     else:
         raise AssertionError(f"no mapping for {scenario['id']}")
 
+    if kind == "close":
+        # The old `close()` alone sent only the shutdown frame; the app's real
+        # exit path was `emergency_stop()` (the off frame) THEN `close()`. The
+        # new `Model.close()` is that whole path, so it sends the off frame
+        # first: assert the shutdown frame is last and the only extra frame
+        # before it is the off frame the `stop` scenario already pins.
+        payloads = _payloads(port)
+        off_frame = _expected(_scenario("heater.stop"))
+        assert payloads[-len(_expected(scenario)):] == _expected(scenario), (
+            "heater.close: the shutdown frame is not the last thing on the wire")
+        assert payloads[:-len(_expected(scenario))] in ([], off_frame), (
+            f"heater.close: unexpected frames before shutdown: {payloads}")
+        return
     assert _payloads(port) == _expected(scenario), (
         f"{scenario['id']}: the new Heater did not send the bytes the "
         f"firmware expects")
@@ -487,8 +521,22 @@ def test_motion_writes_pass_the_estop_as_abort_if():
     probe.set_mode(module.ProbeMode.IDLE)
     _apply(probe, golden_capture.STEP_INPUTS)
     probe.set_mode(module.ProbeMode.AUTO)
-    probe._estop.set()
     port.writes.clear()
-    probe.step()
+    seen = []
+    real_write = port.write
+
+    def write_with_latch_landing_inside(payload, *, priority=False, abort_if=None):
+        # The stop lands while this write holds the lock: the pre-check has
+        # already passed, so only `abort_if` can stop the frame.
+        probe._estop.set()
+        seen.append(abort_if)
+        if abort_if is not None and abort_if():
+            return False
+        return real_write(payload, priority=priority, abort_if=abort_if)
+
+    port.write = write_with_latch_landing_inside
+    with pytest.raises(Refused):     # aborted inside the lock, and said so
+        probe.step()
+    assert seen and seen[0] is not None, "the motion write passed no abort_if"
     assert _payloads(port) == [], (
-        "a motion frame was written while FULL STOP was latched")
+        "a motion frame was written although FULL STOP latched inside the lock")
