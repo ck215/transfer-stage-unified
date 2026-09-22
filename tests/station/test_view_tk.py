@@ -117,6 +117,9 @@ class FakeWidget:
     def grid(self, **kwargs):
         self.grid_info = kwargs
 
+    def grid_configure(self, **kwargs):
+        self.grid_info = dict(self.grid_info or {}, **kwargs)
+
     def pack_forget(self):
         self.is_packed = False
 
@@ -823,9 +826,13 @@ class RowPanel(Panel):
     def __init__(self):
         super().__init__()
         self.stepper_port = "SIM"
+        self.stepper_gamepad = "None"
         self.stepper_found = ""
         self.dc_port = "Off"
+        self.dc_gamepad = "None"
         self.dc_found = ""
+        self.heater_port = "Off"
+        self.heater_found = ""
 
     @property
     def schema(self):
@@ -834,12 +841,24 @@ class RowPanel(Panel):
                 "Stepper Probe",
                 sch.dropdown("Port", "stepper_port", "set_stepper_port",
                              "port_options"),
+                sch.dropdown("Gamepad", "stepper_gamepad", "set_stepper_port",
+                             "port_options"),
                 sch.readonly("Detected:", "stepper_found"),
                 layout="row"),
             sch.section(
                 "DC Probe",
                 sch.dropdown("Port", "dc_port", "set_dc_port", "port_options"),
+                sch.dropdown("Gamepad", "dc_gamepad", "set_dc_port",
+                             "port_options"),
                 sch.readonly("Detected:", "dc_found"),
+                layout="row"),
+            # A heater takes no gamepad, so this row is one control shorter —
+            # the case that decides whether the status column is a column.
+            sch.section(
+                "Temperature",
+                sch.dropdown("Port", "heater_port", "set_heater_port",
+                             "port_options"),
+                sch.readonly("Detected:", "heater_found"),
                 layout="row"),
             sch.section(
                 "Launch",
@@ -853,6 +872,10 @@ class RowPanel(Panel):
 
     def set_dc_port(self, name):
         self.dc_port = name
+        return name
+
+    def set_heater_port(self, name):
+        self.heater_port = name
         return name
 
     def port_options(self):
@@ -873,21 +896,47 @@ def _cell(view, element):
     return widget_of(view, element).grid_info
 
 
+def _right_edge(view, element):
+    info = _cell(view, element)
+    return info["column"] + info.get("columnspan", 1)
+
+
+#: `RowPanel._elements`, by name: three table rows then a column section.
+STEPPER_PORT, STEPPER_PAD, STEPPER_FOUND = 0, 1, 2
+DC_PORT, DC_PAD, DC_FOUND = 3, 4, 5
+HEATER_PORT, HEATER_FOUND = 6, 7
+COUNT, LAUNCH = 8, 9
+
+
 def test_a_row_section_puts_its_elements_on_one_grid_row(row_view):
-    port, found = row_view._elements[0], row_view._elements[1]
-    assert _cell(row_view, port)["row"] == _cell(row_view, found)["row"]
-    assert _cell(row_view, found)["column"] > _cell(row_view, port)["column"]
+    cells = [_cell(row_view, row_view._elements[i])
+             for i in (STEPPER_PORT, STEPPER_PAD, STEPPER_FOUND)]
+    assert len({cell["row"] for cell in cells}) == 1
+    columns = [cell["column"] for cell in cells]
+    assert columns == sorted(columns) and len(set(columns)) == 3
 
 
 def test_every_row_section_shares_one_grid_so_its_columns_line_up(row_view):
     """Six sibling frames each with their own grid is six rows that do not
     line up. One grid, one row per section, is a table."""
-    stepper_port, stepper_found = row_view._elements[0], row_view._elements[1]
-    dc_port, dc_found = row_view._elements[2], row_view._elements[3]
-    assert widget_of(row_view, stepper_port).master is widget_of(row_view, dc_port).master
-    assert _cell(row_view, dc_port)["column"] == _cell(row_view, stepper_port)["column"]
-    assert _cell(row_view, dc_found)["column"] == _cell(row_view, stepper_found)["column"]
-    assert _cell(row_view, dc_port)["row"] == _cell(row_view, stepper_port)["row"] + 1
+    port, found = row_view._elements[STEPPER_PORT], row_view._elements[STEPPER_FOUND]
+    dc_port, dc_found = row_view._elements[DC_PORT], row_view._elements[DC_FOUND]
+    assert widget_of(row_view, port).master is widget_of(row_view, dc_port).master
+    assert _cell(row_view, dc_port)["column"] == _cell(row_view, port)["column"]
+    assert _cell(row_view, dc_found)["column"] == _cell(row_view, found)["column"]
+    assert _cell(row_view, dc_port)["row"] == _cell(row_view, port)["row"] + 1
+
+
+def test_a_shorter_row_still_ends_its_status_in_the_status_column(row_view):
+    """The heater row carries no gamepad dropdown. Its status is stretched to
+    the table's width and right-aligned, so it lands under the other rows'
+    status instead of under their port."""
+    heater_found = row_view._elements[HEATER_FOUND]
+    assert _cell(row_view, heater_found)["column"] < _cell(
+        row_view, row_view._elements[STEPPER_FOUND])["column"]
+    assert _right_edge(row_view, heater_found) == _right_edge(
+        row_view, row_view._elements[STEPPER_FOUND])
+    assert _cell(row_view, heater_found)["sticky"] == "e"
 
 
 def test_a_row_section_captions_its_row_in_the_first_column(row_view):
@@ -902,7 +951,7 @@ def test_a_row_section_captions_its_row_in_the_first_column(row_view):
 
 
 def test_the_status_of_a_row_is_right_aligned_and_takes_the_slack(row_view):
-    found = row_view._elements[1]
+    found = row_view._elements[STEPPER_FOUND]
     widget = widget_of(row_view, found)
     assert _cell(row_view, found)["sticky"] == "e"
     assert widget.cget("anchor") == "e"
@@ -910,7 +959,7 @@ def test_the_status_of_a_row_is_right_aligned_and_takes_the_slack(row_view):
 
 
 def test_a_column_section_still_stacks_one_element_per_row(row_view):
-    entry, button = row_view._elements[4], row_view._elements[5]
+    entry, button = row_view._elements[COUNT], row_view._elements[LAUNCH]
     assert _cell(row_view, button)["row"] == _cell(row_view, entry)["row"] + 1
     assert _cell(row_view, entry)["column"] == 1      # column 0 is its caption
 
@@ -918,8 +967,8 @@ def test_a_column_section_still_stacks_one_element_per_row(row_view):
 def test_a_column_section_ends_the_table(row_view):
     """A schema that goes row, row, column renders in that order, which it
     cannot do if the column section joins the table frame."""
-    assert (widget_of(row_view, row_view._elements[4]).master
-            is not widget_of(row_view, row_view._elements[0]).master)
+    assert (widget_of(row_view, row_view._elements[COUNT]).master
+            is not widget_of(row_view, row_view._elements[STEPPER_PORT]).master)
 
 
 def test_dropdowns_in_a_table_share_one_width(row_view):

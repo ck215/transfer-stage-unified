@@ -440,7 +440,8 @@ class TkPanelView(PanelView):
                          foreground=theme.TEXT)
         label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(GAP, INSET))
         self._section_titles.append(label)
-        self._grid[id(container)] = {"layout": "column", "row": 1, "column": 0}
+        self._grid[id(container)] = {"layout": "column", "row": 1,
+                                    "column": 0, "width": 0, "ends": {}}
         return container
 
     def _make_row_section(self, title):
@@ -455,7 +456,8 @@ class TkPanelView(PanelView):
         if self._table is None:
             self._table = tk.Frame(self._body, background=theme.BACKGROUND)
             self._table.pack(fill="x", padx=PAD, pady=GAP)
-            self._grid[id(self._table)] = {"layout": "row", "row": -1, "column": 0}
+            self._grid[id(self._table)] = {"layout": "row", "row": -1,
+                                           "column": 0, "width": 0, "ends": {}}
         state = self._grid[id(self._table)]
         state["row"] += 1
         state["column"] = 0
@@ -477,7 +479,47 @@ class TkPanelView(PanelView):
         state = self._cursor(container)
         row, column = state["row"], state["column"]
         state["column"] += span
+        state["width"] = max(state["width"], state["column"])
         return row, column
+
+    def _place(self, container, widget, row, column, **options):
+        """Grid one widget, and remember it as the rightmost cell of its line.
+
+        `_align_table` needs to know where each table row ends, and the row
+        that ends earliest is the one that would otherwise put its status
+        under the next row's port: the models with no gamepad dropdown are
+        two columns shorter than the ones with.
+        """
+        widget.grid(row=row, column=column, **options)
+        state = self._cursor(container)
+        if state["layout"] == "row":
+            state["ends"][row] = (widget, column,
+                                  options.get("columnspan") or 1)
+        return widget
+
+    def _build(self):
+        super()._build()
+        self._align_table()
+
+    def _align_table(self):
+        """Square off the right-hand column of every table.
+
+        The last cell of each row is stretched to the width of the widest
+        row and right-aligned, so the status column is a column even when
+        the rows above it carry one control more.
+        """
+        for state in self._grid.values():
+            if state["layout"] != "row":
+                continue
+            width = state["width"]
+            for row, (widget, column, span) in state["ends"].items():
+                if column + span >= width:
+                    continue
+                try:
+                    widget.grid_configure(columnspan=width - column, sticky="e")
+                except Exception as exc:
+                    events.debug("Row Not Squared", f"row {row}: {exc}",
+                                 source=SOURCE, exception=exc, every=5.0)
 
     def _end_line(self, container):
         state = self._cursor(container)
@@ -487,8 +529,13 @@ class TkPanelView(PanelView):
         state["column"] = 0
 
     def _cursor(self, container):
-        return self._grid.setdefault(
-            id(container), {"layout": "column", "row": 0, "column": 0})
+        """The grid cursor for one container, created on first use.
+
+        `width` is the widest row so far and `ends` is the last widget on
+        each line; `_align_table` reads both.
+        """
+        return self._grid.setdefault(id(container), {
+            "layout": "column", "row": 0, "column": 0, "width": 0, "ends": {}})
 
     def _stretch_column(self, container, column):
         """Let one column absorb the slack, so what follows it is pushed to
@@ -516,7 +563,8 @@ class TkPanelView(PanelView):
         label = tk.Label(container, text=text, font=theme.font(), anchor="w",
                          background=theme.BACKGROUND, foreground=theme.MUTED,
                          **options)
-        label.grid(row=row, column=column, sticky="w", padx=(0, INSET), pady=INSET)
+        self._place(container, label, row, column, sticky="w",
+                    padx=(0, INSET), pady=INSET)
         return label
 
     def _button_label(self, container, element, on_click):
@@ -557,7 +605,8 @@ class TkPanelView(PanelView):
         value = tk.Label(container, textvariable=var, font=theme.font(bold=True),
                          anchor="e", width=READOUT_WIDTH, relief="flat",
                          padx=GAP, background=background, foreground=foreground)
-        value.grid(row=row, column=column, sticky="e", padx=INSET, pady=INSET)
+        self._place(container, value, row, column, sticky="e",
+                    padx=INSET, pady=INSET)
         self._stretch_column(container, column)
         self._register(element, widget=value, var=var)
         self._end_line(container)
@@ -572,7 +621,8 @@ class TkPanelView(PanelView):
                           foreground=theme.TEXT, insertbackground=theme.TEXT)
         if element.get("value_type") in ("int", "float"):
             self._attach_validator(widget, element)
-        widget.grid(row=row, column=column, sticky="w", padx=INSET, pady=INSET)
+        self._place(container, widget, row, column, sticky="w",
+                    padx=INSET, pady=INSET)
         widget.bind("<Return>", lambda _e, el=element: self._on_entry_commit(el))
         widget.bind("<FocusOut>", lambda _e, el=element: self._on_entry_commit(el))
         unit = element.get("unit")
@@ -660,8 +710,8 @@ class TkPanelView(PanelView):
     def _make_button(self, container, element):
         row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, lambda el: self._run(el))
-        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
-                    padx=INSET, pady=GAP)
+        self._place(container, widget, row, column, columnspan=2,
+                    sticky="ew", padx=INSET, pady=GAP)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -669,8 +719,8 @@ class TkPanelView(PanelView):
         row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element,
                                     lambda el: self._run_toggle(el))
-        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
-                    padx=INSET, pady=GAP)
+        self._place(container, widget, row, column, columnspan=2,
+                    sticky="ew", padx=INSET, pady=GAP)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -684,14 +734,15 @@ class TkPanelView(PanelView):
         # characters and is fixed, so a column of dropdowns is a column.
         widget = ttk.Combobox(container, textvariable=var, state="readonly",
                               width=DROPDOWN_WIDTH)
-        widget.grid(row=row, column=column, sticky="w", padx=INSET, pady=INSET)
+        self._place(container, widget, row, column, sticky="w",
+                    padx=INSET, pady=INSET)
         widget.bind("<<ComboboxSelected>>",
                     lambda _e, el=element: self._on_dropdown_selected(el))
         row, column = self._next_cell(container)
         refresh = tk.Label(container, text="⟳", font=theme.font(bold=True),
                            background=theme.SURFACE, foreground=theme.TEXT,
                            cursor="hand2")
-        refresh.grid(row=row, column=column, padx=INSET, pady=INSET)
+        self._place(container, refresh, row, column, padx=INSET, pady=INSET)
         refresh.bind("<Button-1>",
                      lambda _e, el=element: self._refresh_options(el))
         self._register(element, widget=widget, var=var, options=[])
@@ -731,15 +782,16 @@ class TkPanelView(PanelView):
     def _make_region_select(self, container, element):
         row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, self._on_region_clicked)
-        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
-                    padx=INSET, pady=GAP)
+        self._place(container, widget, row, column, columnspan=2,
+                    sticky="ew", padx=INSET, pady=GAP)
         self._end_line(container)
         var = tk.StringVar(value=sch.format_region(None))
         row, column = self._next_cell(container, span=3)
         shown = tk.Label(container, textvariable=var, font=theme.font(0.9),
                          anchor="w", background=theme.BACKGROUND,
                          foreground=theme.MUTED)
-        shown.grid(row=row, column=column, columnspan=3, sticky="w", padx=INSET)
+        self._place(container, shown, row, column, columnspan=3,
+                    sticky="w", padx=INSET)
         # The captured region is *drawn*, not announced: PySide's confirming
         # modal over an always-on-top overlay is PYSIDE-12's deadlock.
         self._register(element, widget=widget, var=var)
@@ -757,8 +809,8 @@ class TkPanelView(PanelView):
     def _make_file_save(self, container, element):
         row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, self._on_save_clicked)
-        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
-                    padx=INSET, pady=GAP)
+        self._place(container, widget, row, column, columnspan=2,
+                    sticky="ew", padx=INSET, pady=GAP)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -790,8 +842,8 @@ class TkPanelView(PanelView):
     def _make_file_open(self, container, element):
         row, column = self._next_cell(container, span=2)
         widget = self._button_label(container, element, self._on_open_clicked)
-        widget.grid(row=row, column=column, columnspan=2, sticky="ew",
-                    padx=INSET, pady=GAP)
+        self._place(container, widget, row, column, columnspan=2,
+                    sticky="ew", padx=INSET, pady=GAP)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -813,8 +865,8 @@ class TkPanelView(PanelView):
         row, column = self._next_cell(container, span=3)
         canvas = tk.Canvas(container, height=160, width=360,
                            background=theme.SURFACE, highlightthickness=0)
-        canvas.grid(row=row, column=column, columnspan=3, sticky="ew",
-                    padx=INSET, pady=GAP)
+        self._place(container, canvas, row, column, columnspan=3,
+                    sticky="ew", padx=INSET, pady=GAP)
         self._register(element, widget=canvas)
         self._end_line(container)
 
@@ -859,8 +911,8 @@ class TkPanelView(PanelView):
         row, column = self._next_cell(container, span=3)
         widget = tk.Label(container, background=theme.SURFACE,
                           foreground=theme.MUTED, text="")
-        widget.grid(row=row, column=column, columnspan=3, sticky="w",
-                    padx=INSET, pady=GAP)
+        self._place(container, widget, row, column, columnspan=3,
+                    sticky="w", padx=INSET, pady=GAP)
         self._slow_commands.add(element.get("data_command"))
         self._register(element, widget=widget, photo=None, data=None)
         self._end_line(container)
@@ -896,7 +948,8 @@ class TkPanelView(PanelView):
         row, column = self._next_cell(container)
         widget = tk.Label(container, text="", width=LAMP_WIDTH, relief="flat",
                           highlightthickness=2, pady=INSET)
-        widget.grid(row=row, column=column, sticky="w", padx=INSET, pady=INSET)
+        self._place(container, widget, row, column, sticky="w",
+                    padx=INSET, pady=INSET)
         self._register(element, widget=widget)
         self._end_line(container)
 
@@ -909,8 +962,8 @@ class TkPanelView(PanelView):
                          state="disabled", relief="flat", font=theme.font(0.9),
                          background=theme.SURFACE, foreground=theme.TEXT,
                          wrap="word")
-        widget.grid(row=row, column=column, columnspan=3, sticky="ew",
-                    padx=INSET, pady=GAP)
+        self._place(container, widget, row, column, columnspan=3,
+                    sticky="ew", padx=INSET, pady=GAP)
         self._register(element, widget=widget, last_text=None)
         self._end_line(container)
 
