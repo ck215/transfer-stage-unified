@@ -8,12 +8,17 @@ A toolkit subclass supplies widgets only. Every `_make_<element type>` is
 required, so a view that cannot render an element type cannot be built -
 which is how feature parity is enforced rather than hoped for.
 """
+import time
+
 from station import schema as sch
 from station.events import events
 
 
 class PanelView:
     REFRESH_MS = 100
+    #: Minimum ms between re-running a data command, by element type. A plot
+    #: series is cheap; an `image` (a rendered figure) is not.
+    DATA_REFRESH_MS = {"plot": 0, "log_stream": 0, "image": 1000}
 
     def __init__(self, controller, name, panel=None):
         """`panel` is given only for panels the Controller does not own (Setup)."""
@@ -23,6 +28,7 @@ class PanelView:
         if missing:
             raise TypeError(f"{type(self).__name__} cannot render: {', '.join(missing)}")
         self._elements = []     # every built element, for refresh and gating
+        self._data_last = {}    # id(element) -> monotonic time of the last data call
 
     # -- the three calls a view makes -------------------------------------
     def _schema(self):
@@ -86,12 +92,21 @@ class PanelView:
             elif kind in ("toggle", "indicator"):
                 self._set_on(element, bool(values.get(attr)))
             elif kind in ("plot", "image", "log_stream"):
-                key = "source_command" if kind == "log_stream" else "data_command"
-                data = self._call(element[key])
-                if data.is_ok:
-                    self._set_data(element, data.value)
+                if self._data_is_due(element, kind):
+                    key = "source_command" if kind == "log_stream" else "data_command"
+                    data = self._call(element[key])
+                    if data.is_ok:
+                        self._set_data(element, data.value)
             self._set_enabled(element, sch.is_enabled(element, mode))
         self._set_stale(state.get("age", 0) > 1.0)
+
+    def _data_is_due(self, element, kind):
+        interval = self.DATA_REFRESH_MS.get(kind, 0) / 1000.0
+        now = time.monotonic()
+        if now - self._data_last.get(id(element), 0.0) < interval:
+            return False
+        self._data_last[id(element)] = now
+        return True
 
     _sync_gates = _refresh   # gating is part of every refresh, entries included
 

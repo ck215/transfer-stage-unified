@@ -65,7 +65,9 @@ class Panel:
             self._allows(command, args)
             self._apply_inputs(inputs)
             started = time.monotonic()
-            value = getattr(self, command)(*args)
+            found = getattr(self, command)
+            # A data source (`series`, `figure`, `log`) may be a property.
+            value = found(*args) if callable(found) else found
             if command not in self._QUIET and not self._is_data_command(command):
                 events.debug("Command", f"{command}{tuple(args)} ok in "
                              f"{(time.monotonic() - started) * 1000:.1f} ms "
@@ -134,20 +136,31 @@ class Panel:
             param = self.PARAMS.get(name)
             if param is None or name not in writable:
                 raise Refused(f"{name} is not an editable field of {self.NAME}")
-            if not sch.is_enabled(writable[name], self.mode_name):
-                if param.format(getattr(self, name, None)) == str(raw):
-                    continue  # unchanged value of a gated field: not an edit
-                raise Refused(f"{param.label or name} cannot be changed "
-                              f"while {self.mode_name}")
             ok, value = param.parse(raw)
             if not ok:
                 raise Refused(value)
+            if not sch.is_enabled(writable[name], self.mode_name):
+                if self._same_value(getattr(self, name, None), value):
+                    continue  # unchanged value of a gated field: not an edit
+                raise Refused(f"{param.label or name} cannot be changed "
+                              f"while {self.mode_name}")
             parsed[name] = value
         for name, value in parsed.items():
             setattr(self, name, value)
 
+    @staticmethod
+    def _same_value(current, new):
+        """Parsed values, not display text: "5" and 5.000 are the same edit."""
+        try:
+            return abs(float(current) - float(new)) < 1e-9
+        except (TypeError, ValueError):
+            return current == new
+
     def _defaults(self):
-        return {name: p.default for name, p in self.PARAMS.items()}
+        """A Param that is also a read-only property (a derived readout such
+        as `current_red`) is declared for its type and unit only; never seed it."""
+        return {name: p.default for name, p in self.PARAMS.items()
+                if not isinstance(getattr(type(self), name, None), property)}
 
     def _param(self, name):
         return self.PARAMS[name]
