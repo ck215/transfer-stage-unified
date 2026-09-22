@@ -1,3 +1,14 @@
+# transfer-stage-unified — REBUILD branch
+
+**This worktree is the `rebuild` branch: the new `station/` package replaces
+`src/`.** Read `docs/rebuild/STATUS.md` first (cold resume), then
+`docs/rebuild/BRIEF.md` (architecture contract + addenda) and
+`docs/rebuild/WEB_DESIGN_BRIEF.md`. The sections below describe the OLD
+`src/` tree and the `mvc-refactor` repair branch; they remain accurate for
+`src/` until cutover and are otherwise historical.
+
+---
+
 # transfer-stage-unified — MVC refactor
 
 A lab-instrument control app: stepper and DC probes, a chuck positioner, a
