@@ -100,7 +100,8 @@ class PanelView:
                     if data.is_ok:
                         self._set_data(element, data.value)
             self._set_enabled(element, sch.is_enabled(element, mode))
-        self._set_stale(state.get("age", 0) > 1.0)
+        age = state.get("age")
+        self._set_stale(age is not None and age > 1.0)
 
     def _data_is_due(self, element, kind):
         interval = self.DATA_REFRESH_MS.get(kind, 0) / 1000.0

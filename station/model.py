@@ -161,13 +161,20 @@ class Model(Panel):
     def _touch(self):
         self._updated_at = time.monotonic()
 
+    def _expects_heartbeat(self):
+        """True when a background loop should be touching this model."""
+        return True
+
     @property
     def state(self):
         snapshot = super().state
         snapshot.update({
             "is_estopped": self.is_estopped, "is_faulted": self.is_faulted,
             "fault": self.fault, "is_active": self.is_active,
-            "age": round(time.monotonic() - self._updated_at, 2),
+            # Seconds since this model's own loop last reported alive; None
+            # when it has no loop to be stale about (an idle recorder).
+            "age": (round(time.monotonic() - self._updated_at, 2)
+                    if self._expects_heartbeat() else None),
             "devices": {type(d).__name__: d.status for d in self.devices},
         })
         root = getattr(self, "output_root", None)

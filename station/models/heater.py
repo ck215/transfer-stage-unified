@@ -518,6 +518,7 @@ class Heater(Model):
         """
         failures = 0
         while not self._reader_wake.is_set():
+            self._touch()   # the reader is alive; a frozen value shows in `age` of the reading
             line, why, error = None, None, None
             try:
                 if not self.port.is_open:

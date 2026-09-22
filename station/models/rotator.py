@@ -443,6 +443,7 @@ class Rotator(Model):
         the previous poll is still out is skipped rather than queued.
         """
         while not self._loops_stop.wait(self.SAMPLE_INTERVAL):
+            self._touch()   # the loop is alive
             if not self._poll_busy.acquire(blocking=False):
                 events.debug("Poll", "tick skipped: the previous poll is still "
                              "out", source=self.NAME, every=5.0)

@@ -690,6 +690,7 @@ class Probe(Model):
         counted_from = time.monotonic()
         seen = 0
         while not self._threads_stop.wait(self.SAMPLE_INTERVAL):
+            self._touch()   # the loop is alive; data freshness is position_age
             try:
                 position = self._read_position()
                 if position is not None:

@@ -1088,6 +1088,9 @@ class RedMonitor(Model):
         self._touch()
         return self.plot_dims
 
+    def _expects_heartbeat(self):
+        return self.is_running        # idle, there is no loop to be stale
+
     @property
     def screen_image(self):
         """The desktop as PNG for the browser's region picker: `{"image":
