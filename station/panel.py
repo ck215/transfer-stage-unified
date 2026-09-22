@@ -65,7 +65,9 @@ class Panel:
             self._allows(command, args)
             self._apply_inputs(inputs)
             started = time.monotonic()
-            value = getattr(self, command)(*args)
+            found = getattr(self, command)
+            # A data source (`series`, `figure`, `log`) may be a property.
+            value = found(*args) if callable(found) else found
             if command not in self._QUIET and not self._is_data_command(command):
                 events.debug("Command", f"{command}{tuple(args)} ok in "
                              f"{(time.monotonic() - started) * 1000:.1f} ms "
