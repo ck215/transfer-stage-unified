@@ -80,6 +80,94 @@ function row(element, extraClass) {
   return node;
 }
 
+// ==========================================================================
+// int entries: an "int" Param shows no decimals and takes none (Addendum 2).
+//
+// Both of these are pure string functions on purpose - they are the only
+// part of the client a test can run without a browser.
+// ==========================================================================
+
+/** The text an int box shows for a served value. The state carries a
+ *  formatted string ("5.000" for a float-formatted attribute, "5" for an
+ *  int), and refresh must never put a decimal into an int box. A value that
+ *  is not a number at all is handed back untouched rather than blanked. */
+function intText(value) {
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  if (text === '') return '';
+  const number = Number(text);
+  if (!isFinite(number)) return text;
+  return String(Math.trunc(number));
+}
+
+/** Typed input an int box refuses: a decimal separator or an exponent.
+ *  `input.step = '1'` only makes the browser's own stepper move by one; it
+ *  does not stop the operator typing "2.5" and the box handing that to a
+ *  command. */
+function rejectsIntInput(data) {
+  return typeof data === 'string' && /[.,eE]/.test(data);
+}
+
+// ==========================================================================
+// row sections: `sch.section(..., layout="row")` is laid out horizontally by
+// every renderer (Addendum 2). The desktop views use a grid; so does this
+// one, and the columns line up across rows because every row section in a
+// card is a `display: contents` child of one grid - the Setup panel is one
+// table, one line per model, not one vertical tab per model.
+// ==========================================================================
+function isRowSection(section) {
+  return section && section.layout === 'row';
+}
+
+//: Element types that DO something rather than say something.
+const COMMAND_TYPES = ['button', 'file_save', 'file_open'];
+
+/** A row of commands is not a table row: Setup's Launch row carries the
+ *  whole selection summary, and in a shared grid that one long sentence
+ *  widens the first column of every model row. A row that holds a command
+ *  spans the table instead of lining up with it. */
+function isCommandRow(section) {
+  return isRowSection(section)
+    && (section.elements || []).some((e) => COMMAND_TYPES.indexOf(e.type) !== -1);
+}
+
+/** How many element columns the widest data row needs. */
+function rowColumnCount(sections) {
+  let widest = 0;
+  for (const section of (sections || [])) {
+    if (!isRowSection(section) || isCommandRow(section)) continue;
+    const drawn = (section.elements || []).filter((e) => e.type !== 'internal');
+    if (drawn.length > widest) widest = drawn.length;
+  }
+  return widest;
+}
+
+/** The grid: a label column, then one column per element, the last of which
+ *  takes the slack so a row's status sits hard right. */
+function rowGridColumns(columns) {
+  const middle = columns > 1 ? 'repeat(' + (columns - 1) + ', max-content) ' : '';
+  return 'max-content ' + middle + 'minmax(0, 1fr)';
+}
+
+/** A card with a lot to say takes two columns of the page and lays its own
+ *  sections out in two columns, rather than becoming one very tall stripe
+ *  beside a mostly empty one (the bench look, 2026-09-22). A row-layout card
+ *  is a table and is never split into columns. */
+function isWideCard(sections) {
+  const list = sections || [];
+  if (list.some(isRowSection)) return false;
+  const drawn = list.reduce((total, s) => total + (s.elements || []).length, 0);
+  return list.length >= 6 || drawn >= 24;
+}
+
+/** `PanelView._refresh`: `age is not None and age > 1.0`. A model with no
+ *  loop to be stale about reports a null age, and null is not stale - every
+ *  card wore a "stale" badge in SIM when this was a bare comparison. */
+function isStale(state) {
+  const age = state ? state.age : null;
+  return age !== null && age !== undefined && age > STALE_AFTER_S;
+}
+
 function roleClass(role) {
   return 'role-' + (role || 'neutral');
 }
@@ -112,10 +200,23 @@ function renderEntry(panel, element) {
   const input = make('input', 'input');
   // The input type comes from the schema (`value_type`), never from sniffing
   // the current value - which is what reclassified a cleared box as text.
-  const numeric = element.value_type === 'int' || element.value_type === 'float';
+  const isInt = element.value_type === 'int';
+  const numeric = isInt || element.value_type === 'float';
   input.type = numeric ? 'number' : 'text';
-  if (element.value_type === 'int') input.step = '1';
-  else if (numeric) input.step = String(Math.pow(10, -(element.decimals === undefined ? 3 : element.decimals)));
+  if (isInt) {
+    input.step = '1';
+    input.inputMode = 'numeric';
+    // A decimal point is refused as it is typed, pasted or dropped, in both
+    // of the ways a browser offers to refuse it.
+    input.addEventListener('beforeinput', (event) => {
+      if (rejectsIntInput(event.data)) event.preventDefault();
+    });
+    input.addEventListener('keydown', (event) => {
+      if (rejectsIntInput(event.key)) event.preventDefault();
+    });
+  } else if (numeric) {
+    input.step = String(Math.pow(10, -(element.decimals === undefined ? 3 : element.decimals)));
+  }
   if (element.min !== undefined && element.min !== null) input.min = String(element.min);
   if (element.max !== undefined && element.max !== null) input.max = String(element.max);
   group.appendChild(input);
@@ -129,7 +230,9 @@ function renderEntry(panel, element) {
     isDirty: () => document.activeElement === input || input.value !== served,
     readValue: () => input.value,
     setText: (text) => {
-      served = (text === null || text === undefined) ? '' : String(text);
+      // An int box never shows "5.000", whatever the state formatted.
+      served = isInt ? intText(text)
+        : ((text === null || text === undefined) ? '' : String(text));
       input.value = served;
     },
     setEnabled: (flag) => { input.disabled = !flag; node.classList.toggle('disabled', !flag); },
@@ -383,12 +486,23 @@ class PanelCard {
     this.widgets = [];
     this.values = {};
     this.lastData = 0;
+    this.isCollapsed = false;
     this.node = make('section', 'card');
     const head = make('header', 'card-head');
     head.appendChild(make('h2', 'card-title', (options && options.title) || name));
     this.staleBadge = make('span', 'badge stale-badge', 'stale');
     this.staleBadge.hidden = true;
     head.appendChild(this.staleBadge);
+    if (options && options.collapsible) {
+      // The collapsed card keeps its header bar, so the panel is always one
+      // click from being back (base.Dashboard._collapse_setup: "minimise the
+      // Setup panel; reopenable").
+      this.collapseButton = make('button', 'button small collapse', 'Hide');
+      this.collapseButton.type = 'button';
+      this.collapseButton.addEventListener('click',
+        () => this.setCollapsed(!this.isCollapsed));
+      head.appendChild(this.collapseButton);
+    }
     if (options && options.closable) {
       const close = make('button', 'button role-danger small', 'Close');
       close.type = 'button';
@@ -405,21 +519,65 @@ class PanelCard {
   }
 
   build() {
-    for (const section of (this.schema.sections || [])) {
-      const block = make('div', 'section');
-      block.appendChild(make('h3', 'section-title', section.title || ''));
+    const sections = this.schema.sections || [];
+    if (isWideCard(sections)) this.node.classList.add('wide');
+    const columns = rowColumnCount(sections);
+    if (columns) {
+      // One grid for the whole card body; every row section is a
+      // `display: contents` child of it, so the columns line up down the
+      // card instead of each row measuring itself.
+      this.body.classList.add('table');
+      // A table earns the full width of the page: its columns are only
+      // worth aligning if there is room to read them across.
+      this.node.classList.add('table-card');
+      this.body.style.gridTemplateColumns = rowGridColumns(columns);
+    }
+    for (const section of sections) {
+      const isRow = isRowSection(section);
+      const spans = isRow && isCommandRow(section);
+      const block = make('div', 'section' + (isRow ? ' section-row' : '')
+                         + (spans ? ' section-span' : ''));
+      block.appendChild(isRow
+        ? make('span', 'row-title', section.title || '')
+        : make('h3', 'section-title', section.title || ''));
+      const cells = [];
       for (const element of (section.elements || [])) {
         const render = ELEMENT_RENDERERS[element.type];
         if (!render) {
-          block.appendChild(make('p', 'status', 'cannot render ' + element.type));
+          cells.push(make('p', 'status', 'cannot render ' + element.type));
           continue;
         }
         const widget = render(this, element);
         widget.element = element;
         this.widgets.push(widget);
-        if (widget.node) block.appendChild(widget.node);
+        if (widget.node) {
+          if (isRow) widget.node.classList.add('cell');
+          cells.push(widget.node);
+        }
       }
+      // A row with fewer controls than the widest one is padded just before
+      // its last cell, so the status column stays the status column. A row
+      // that spans the table has no columns to line up with.
+      if (isRow && !spans) {
+        while (cells.length && cells.length < columns) {
+          cells.splice(cells.length - 1, 0, make('span', 'cell filler'));
+        }
+      }
+      for (const cell of cells) block.appendChild(cell);
       this.body.appendChild(block);
+    }
+  }
+
+  /** Minimise to the header bar, or open again. The card stays in the page
+   *  either way: collapsed is a state, not a removal (Addendum 2). */
+  setCollapsed(isCollapsed) {
+    this.isCollapsed = Boolean(isCollapsed);
+    this.body.hidden = this.isCollapsed;
+    this.node.classList.toggle('collapsed', this.isCollapsed);
+    // The status line lives above the body, so a refusal raised by a
+    // collapsed card is still a sentence the operator can read.
+    if (this.collapseButton) {
+      this.collapseButton.textContent = this.isCollapsed ? 'Expand' : 'Hide';
     }
   }
 
@@ -546,7 +704,7 @@ class PanelCard {
       }
       widget.setEnabled(isEnabled(element, mode));
     }
-    this.setStale((state && state.age) > STALE_AFTER_S);
+    this.setStale(isStale(state));
   }
 
   loadData(widget) {
@@ -595,6 +753,7 @@ class Dashboard {
     this.isPolling = false;
     this.heartbeatTimer = null;
     this.setupCard = null;
+    this.isLaunched = false;
     this.dom = {
       stop: document.getElementById('full-stop'),
       cards: document.getElementById('cards'),
@@ -702,12 +861,37 @@ class Dashboard {
     }
     this.renderClosed(state.closed || []);
     this.renderEstop(Boolean(state.is_estopped));
+    let setupState = null;
     if (this.setupCard) {
       try {
         const setup = await apiGet('/api/setup');
-        this.setupCard.refresh(setup.state);
+        setupState = setup.state;
+        this.setupCard.refresh(setupState);
       } catch (err) { /* the next cycle retries */ }
     }
+    this.collapseSetupOnLaunch(models, setupState);
+  }
+
+  /** `Dashboard._collapse_setup` in station/views/base.py, mirrored: the
+   *  first time a model exists, the wizard gives way to it. The desktop
+   *  views hear `added`; the browser polls, so the same signal is "models
+   *  exist" - or the Setup panel's own `is_launched`, which it flips inside
+   *  `build()` and clears in `stop_system()`.
+   *
+   *  Edge-triggered, deliberately: the card is collapsed as the station
+   *  launches and opened again when it is stopped, and in between the
+   *  operator's own Hide / Expand is left alone - a level-triggered version
+   *  would slam the card shut 250 ms after every re-open. */
+  collapseSetupOnLaunch(models, setupState) {
+    if (!this.setupCard) return;
+    const hasModels = Object.keys(models || {}).length > 0;
+    // No setup state and no models: the setup poll failed, which is not an
+    // edge and must not be read as "stopped".
+    if (!hasModels && !setupState) return;
+    const isLaunched = hasModels || Boolean(setupState.is_launched);
+    if (isLaunched === this.isLaunched) return;
+    this.isLaunched = isLaunched;
+    this.setupCard.setCollapsed(isLaunched);
   }
 
   async addCard(name) {
@@ -733,7 +917,9 @@ class Dashboard {
     try {
       const setup = await apiGet('/api/setup');
       if (!setup || !setup.schema || !setup.schema.sections) return;
-      this.setupCard = new PanelCard(this, SETUP_NAME, setup.schema, { title: 'Setup' });
+      this.setupCard = new PanelCard(this, SETUP_NAME, setup.schema,
+                                     { title: 'Setup', collapsible: true });
+      this.setupCard.node.classList.add('setup-card');
       this.dom.cards.appendChild(this.setupCard.node);
       this.setupCard.refresh(setup.state);
     } catch (err) { /* setup is optional once models are built */ }
