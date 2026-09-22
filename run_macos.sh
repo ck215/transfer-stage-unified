@@ -43,7 +43,7 @@ done
 
 # If help was requested, show python help directly without PySide check
 if [ "$SHOW_HELP" = true ]; then
-    python3 src/app.py "$@"
+    python3 -m station.app "$@"
     exit 0
 fi
 
@@ -80,4 +80,4 @@ else
     echo "[Launcher] Launching in mode '$VIEW_MODE' (skipping PySide6 repair checks)..."
 fi
 
-python3 src/app.py "$@"
+python3 -m station.app "$@"
