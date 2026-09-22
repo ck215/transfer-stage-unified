@@ -117,11 +117,10 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             name = self._one(query, "name")
             if name == SETUP_NAME:
                 return self._send_json(200, self.view.setup.schema)
-            try:
-                return self._send_json(200, self.controller.schema(name))
-            except KeyError:
+            if name not in self.controller.model_names:
                 return self._send_json(404, {"status": "error",
                                              "reason": f"{name} is not open"})
+            return self._send_json(200, self.controller.schema(name))
 
         if route == "/api/setup":
             return self._send_json(200, {"schema": self.view.setup.schema,
