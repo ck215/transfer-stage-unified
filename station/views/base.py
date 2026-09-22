@@ -64,6 +64,7 @@ class PanelView:
 
     def _run(self, element, args=()):
         command = element.get("command")
+        args = tuple(element.get("args") or ()) + tuple(args)
         result = self._call(command, self._gather_inputs(), tuple(args))
         if result.needs_confirm and self._confirm(result.reason):
             result = self._call(result.command, result.inputs, (*result.args, True))
