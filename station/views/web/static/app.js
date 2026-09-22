@@ -502,6 +502,12 @@ class PanelCard {
       this.collapseButton.addEventListener('click',
         () => this.setCollapsed(!this.isCollapsed));
       head.appendChild(this.collapseButton);
+      // The whole collapsed header bar is the return path, not just the
+      // small button at its far end.
+      head.classList.add('clickable');
+      head.addEventListener('click', (event) => {
+        if (this.isCollapsed && event.target === head) this.setCollapsed(false);
+      });
     }
     if (options && options.closable) {
       const close = make('button', 'button role-danger small', 'Close');
@@ -585,6 +591,11 @@ class PanelCard {
     if (this.collapseButton) {
       // The label says what the click will do: collapsed -> "Expand".
       this.collapseButton.textContent = this.isCollapsed ? 'Expand' : 'Collapse';
+      const link = document.getElementById('setup-link');
+      if (link) {
+        link.hidden = !this.isCollapsed;
+        link.onclick = () => { this.setCollapsed(false); this.node.scrollIntoView({block: 'start'}); };
+      }
     }
   }
 

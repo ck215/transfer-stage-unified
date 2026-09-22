@@ -28,11 +28,11 @@ for arg in "$@"; do
         --web)
             VIEW_MODE="web"
             ;;
-        --pyside)
+        --pyside|--qt)
             VIEW_MODE="pyside"
             ;;
-        --legacy)
-            VIEW_MODE="legacy"
+        --legacy|--tk|--tkinter)
+            VIEW_MODE="tk"
             ;;
     esac
 done
@@ -60,6 +60,7 @@ if [ -z "$VIEW_MODE" ]; then
 fi
 
 # Only perform PySide6 self-heal and plugin inspection if launching PySide
+case "$VIEW_MODE" in qt|pyside) VIEW_MODE="pyside" ;; esac
 if [ "$VIEW_MODE" = "pyside" ]; then
     PYSIDE6_DIR=$(python3 -c "import PySide6, os; print(os.path.dirname(PySide6.__file__))" 2>/dev/null || echo "")
 

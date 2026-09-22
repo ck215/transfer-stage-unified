@@ -429,3 +429,5 @@ span.value.role-go { color: var(--go-bg); }
 .dialog-text { margin: 0; white-space: pre-wrap; }
 
 .region-canvas { max-width: 86vw; max-height: 70vh; cursor: crosshair; }
+
+.card.collapsed > .card-head.clickable { cursor: pointer; }
