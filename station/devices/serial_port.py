@@ -15,9 +15,13 @@ import time
 
 try:
     import serial as pyserial
-    from serial.tools import list_ports as _list_ports
 except ImportError:  # the station still runs in SIM without pyserial
     pyserial = None
+try:
+    # Separately, on purpose: a pyserial without `tools` must cost us the
+    # port *listing*, not every real port in the station.
+    from serial.tools import list_ports as _list_ports
+except ImportError:
     _list_ports = None
 
 from station.devices.device import Device
@@ -82,6 +86,9 @@ class SimulatedPort:
         return len(payload)
 
     def read(self, _size=1):
+        return b""
+
+    def read_all(self):
         return b""
 
     def readline(self):
@@ -218,6 +225,11 @@ class SerialPort(Device):
     WRITE_IO_LOCK_TIMEOUT = 0.25
     #: Default bound on one `handle.write()`. Never None.
     WRITE_TIMEOUT = 1.0
+    #: Rate limit on the debug line for an ORDINARY write. A model may stream
+    #: jog frames through `write()` at 50 Hz, and the log file is not the
+    #: place to keep 50 lines a second; the suppressed count reports the rate
+    #: instead (Addendum 1). Priority writes and failures are never limited.
+    WRITE_DEBUG_INTERVAL = 1.0
     #: Default for `read_line(timeout=None)`.
     READ_TIMEOUT = 1.0
     #: Default budget for `flush()`, and for the drain `close()` does first.
@@ -317,6 +329,17 @@ class SerialPort(Device):
         handle = self._handle
         return handle is not None and bool(getattr(handle, "is_open", False))
 
+    def _note_state(self, old, new, why):
+        """Diagnostics for one connection-state transition (Addendum 1).
+
+        Always called *after* the lock that made the transition has been
+        released: `_state_lock` is documented as never held across I/O, and
+        a log line is I/O. A transition that changes nothing is not logged.
+        """
+        if old is not new:
+            events.debug("State Change", f"{old.value} -> {new.value} ({why})",
+                         source=self._source)
+
     # -- open / close ------------------------------------------------------
     def open(self):
         """Start connecting and return at once (SERIAL-6).
@@ -330,6 +353,7 @@ class SerialPort(Device):
         with self._state_lock:
             if self._state == ConnectionState.CONNECTING or self._verify():
                 return
+            was = self._state
             self._generation += 1
             generation = self._generation
             self._identity = None
@@ -345,6 +369,12 @@ class SerialPort(Device):
                     target=self._connect_loop, args=(generation,), daemon=True,
                     name=f"serial-connect-{self.port}")
                 thread = self._connect_thread
+        events.debug("Opening", f"port={self.port!r} baud={self.baud_rate} "
+                     f"xonxoff={self.xonxoff} read_timeout={self.read_timeout} "
+                     f"write_timeout={self.write_timeout} "
+                     f"handshake={self.has_handshake} generation={generation}",
+                     source=self._source)
+        self._note_state(was, self._state, "open() requested")
         if self.is_simulated:
             events.info("Simulator Mode", "commands are acknowledged locally",
                         source=self._source)
@@ -375,6 +405,8 @@ class SerialPort(Device):
             self._state = ConnectionState.VERIFIED
             if identity is not None:
                 self._identity = str(identity)
+        self._note_state(ConnectionState.UNVERIFIED, ConnectionState.VERIFIED,
+                         f"protocol driver vouched for it as {self._identity!r}")
         return True
 
     def close(self):
@@ -387,9 +419,11 @@ class SerialPort(Device):
         """
         with self._state_lock:
             self._generation += 1  # a connect still in flight is now stale
-            was_usable = self._state.is_usable or self._state == ConnectionState.CONNECTING
+            was = self._state
+            was_usable = was.is_usable or was == ConnectionState.CONNECTING
+        drained = None
         if was_usable and self._verify():
-            self.flush()
+            drained = self.flush()
 
         close_error = None
         acquired = self._lock.acquire(timeout=self.CLOSE_LOCK_TIMEOUT)
@@ -409,6 +443,10 @@ class SerialPort(Device):
             if acquired:
                 self._lock.release()
         # Reported outside every lock: a subscriber is arbitrary code.
+        events.debug("Closing", f"drained={drained} "
+                     f"had_transaction_lock={acquired} error={close_error}",
+                     source=self._source, exception=close_error)
+        self._note_state(was, ConnectionState.CLOSED, "close() requested")
         if close_error is not None:
             events.warn("Port Close Failed", str(close_error),
                         source=self._source, exception=close_error)
@@ -435,6 +473,7 @@ class SerialPort(Device):
         moved `state` first wins: a stale result never overwrites CLOSED or
         LOST.
         """
+        started = time.monotonic()
         try:
             handle = self._open_handle()
         except Exception as exc:
@@ -443,15 +482,23 @@ class SerialPort(Device):
                 if is_current:
                     self._state = ConnectionState.LOST
             if is_current:
+                self._note_state(ConnectionState.CONNECTING, ConnectionState.LOST,
+                                 f"the port would not open: {exc}")
                 events.warn("Port Open Failed", f"{self.port}: {exc}",
                             source=self._source, exception=exc)
             return
+        events.debug("Handle Open", f"{self.port} opened in "
+                     f"{time.monotonic() - started:.3f}s; "
+                     f"{'starting handshake' if self.has_handshake else 'no handshake'}",
+                     source=self._source)
 
         with self._state_lock:
             is_current = self._is_current(generation)
             if is_current:
                 self._handle = handle
         if not is_current:  # close() got there while the port was opening
+            events.debug("Open Abandoned", "close() or a reopen got there "
+                         "first; discarding the handle", source=self._source)
             try:
                 handle.close()
             except Exception:
@@ -464,19 +511,32 @@ class SerialPort(Device):
                 with self._lock:
                     handle.reset_input_buffer()
                     handle.reset_output_buffer()
-            except Exception:
-                pass  # the handshake is attempted on its own merits
+            except Exception as exc:
+                # the handshake is attempted on its own merits
+                events.debug("Buffer Reset Failed", str(exc),
+                             source=self._source, exception=exc)
             time.sleep(self.BOOTLOADER_WAIT)
             try:
                 verified = self._handshake(handle, generation)
-            except Exception:
+            except Exception as exc:
                 verified = False
+                events.debug("Handshake Raised", str(exc), source=self._source,
+                             exception=exc)
 
         with self._state_lock:
             if not self._is_current(generation):
+                events.debug("Handshake Discarded", f"verified={verified}; the "
+                             "link moved on while the handshake ran",
+                             source=self._source)
                 return
             self._state = (ConnectionState.VERIFIED if verified
                            else ConnectionState.UNVERIFIED)
+        events.debug("Handshake Result",
+                     f"verified={verified} identity={self._identity!r} "
+                     f"after {time.monotonic() - started:.3f}s",
+                     source=self._source)
+        self._note_state(ConnectionState.CONNECTING, self._state,
+                         f"handshake {'answered' if verified else 'unanswered'}")
         if verified:
             events.info("Port Verified", f"{self.port} answered as "
                         f"'{self._identity}'", source=self._source)
@@ -494,7 +554,7 @@ class SerialPort(Device):
         in flight are not left for the owner's reader to wade through.
         """
         deadline = time.monotonic() + self.HANDSHAKE_TIMEOUT
-        buffer, next_ping = "", 0.0
+        buffer, next_ping, pings = "", 0.0, 0
         while time.monotonic() < deadline:
             if not self._is_current(generation):
                 return False
@@ -506,6 +566,11 @@ class SerialPort(Device):
                 except Exception as exc:
                     self._mark_lost(exc)
                     return False
+                pings += 1
+                # In a loop, so rate-limited (Addendum 1): the count carries
+                # the rate, one line per second carries the fact.
+                events.debug("Identity Ping", f"{self.PING!r} x{pings}",
+                             source=self._source, every=1.0)
                 next_ping = now + self.PING_INTERVAL
             try:
                 with self._lock:
@@ -519,14 +584,21 @@ class SerialPort(Device):
             identity = self._identity_from(buffer)
             if identity is not None:
                 self._identity = identity
+                events.debug("Identity", f"{identity!r} after {pings} ping(s); "
+                             f"draining {len(buffer)} buffered byte(s)",
+                             source=self._source)
                 try:
                     with self._lock:
                         handle.reset_input_buffer()
                         self._read_buffer = b""
-                except Exception:
-                    pass
+                except Exception as exc:
+                    events.debug("Post-Identity Drain Failed", str(exc),
+                                 source=self._source, exception=exc)
                 return True
             time.sleep(self._HANDSHAKE_POLL)
+        events.debug("Handshake Timed Out",
+                     f"{pings} ping(s) in {self.HANDSHAKE_TIMEOUT}s, no DEV: "
+                     f"line; buffer={buffer[-120:]!r}", source=self._source)
         return False
 
     @staticmethod
@@ -564,31 +636,57 @@ class SerialPort(Device):
         if isinstance(payload, str):
             payload = payload.encode("utf-8")
 
-        is_wedged = False
+        started = time.monotonic()
+        outcome, is_wedged, failure = "not attempted", False, None
         acquired = self._lock.acquire(
             timeout=self.PRIORITY_LOCK_TIMEOUT if priority else -1)
+        lock_wait = time.monotonic() - started
         io_acquired = False
         try:
             io_acquired = self._write_io_lock.acquire(
                 timeout=self.WRITE_IO_LOCK_TIMEOUT if priority else -1)
             is_wedged = not io_acquired
             if abort_if is not None and abort_if():
+                outcome = "aborted"
                 return False
             handle = self._handle
             if handle is None or not getattr(handle, "is_open", False):
+                outcome = "port not open"
                 raise TransportError(
                     f"port {self.port} is not open; {payload!r} was not sent")
             try:
                 handle.write(payload)
             except Exception as exc:
-                failure = exc
+                failure, outcome = exc, f"failed: {exc}"
             else:
-                failure = None
+                outcome = "sent"
         finally:
             if io_acquired:
                 self._write_io_lock.release()
             if acquired:
                 self._lock.release()
+            # Every exit reports, the abort and the raise included: a write
+            # that did NOT happen is the thing worth having in the log.
+            total = time.monotonic() - started
+            detail = (f"{outcome}: {len(payload)}B {payload.hex()} "
+                      f"lock_wait={lock_wait * 1000:.1f}ms "
+                      f"total={total * 1000:.1f}ms")
+            if priority:
+                # Rare and safety-critical, so never rate-limited: the lock
+                # wait is the number the bench wants when a stop feels slow.
+                events.debug("Priority Write", f"{detail} forced="
+                             f"{not acquired} wedged={is_wedged}",
+                             source=self._source, exception=failure)
+            elif outcome == "sent":
+                # A model may stream through here at 50 Hz, so this call site
+                # is rate-limited and the suppressed count reports the rate.
+                events.debug("Write", detail, source=self._source,
+                             every=self.WRITE_DEBUG_INTERVAL)
+            else:
+                # Aborts and failures are not the stream, and are never
+                # rate-limited away.
+                events.debug("Write Not Sent", detail, source=self._source,
+                             exception=failure)
 
         if is_wedged:
             events.warn("Write Wedged", "a write was stuck on the wire; a "
@@ -611,16 +709,22 @@ class SerialPort(Device):
         """
         with self._state_lock:
             if self._state in (ConnectionState.LOST, ConnectionState.CLOSED):
+                events.debug("Loss Already Recorded",
+                             f"state is {self._state.value}; not reporting "
+                             f"again: {why}", source=self._source)
                 return
+            was = self._state
             self._state = ConnectionState.LOST
             handle = self._handle
             if not self.is_simulated:
                 self._handle = None
+        self._note_state(was, ConnectionState.LOST, f"transport failure: {why}")
         if handle is not None:
             try:
                 handle.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                events.debug("Close After Loss Failed", str(exc),
+                             source=self._source, exception=exc)
         # warn, not error: the owning model faults on the TransportError it
         # is about to receive, and that fault is the acknowledged popup.
         events.warn("Connection Lost", f"{self.port}: {why}",
@@ -718,9 +822,15 @@ class SerialPort(Device):
             finally:
                 drained.set()
 
+        started = time.monotonic()
         threading.Thread(target=_drain, daemon=True,
                          name=f"serial-flush-{self.port}").start()
-        if not drained.wait(budget):
+        ok = drained.wait(budget)
+        events.debug("Drain", f"completed={ok} in "
+                     f"{(time.monotonic() - started) * 1000:.1f}ms "
+                     f"(budget {budget}s) error={failure[0] if failure else None}",
+                     source=self._source)
+        if not ok:
             events.warn("Port Did Not Drain", f"{self.port} did not drain in "
                         f"{budget}s; treat the last frame as undelivered",
                         source=self._source)
