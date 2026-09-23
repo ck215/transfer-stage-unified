@@ -28,7 +28,7 @@ import pytest
 from error_routing import ErrorRouter
 from model.probes import BaseProbe, ChuckPositioner, DCProbe, StepperProbe
 
-FIRMWARE = pathlib.Path(__file__).resolve().parents[2] / "firmware"
+FIRMWARE = pathlib.Path(__file__).resolve().parents[3] / "firmware"
 
 
 def _writes(probe):
