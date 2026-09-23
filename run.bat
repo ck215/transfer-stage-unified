@@ -1,4 +1,4 @@
 @echo off
 cd /d "%~dp0"
 call .venv\Scripts\activate.bat
-python -m station.app %*
+python src\app.py %*
