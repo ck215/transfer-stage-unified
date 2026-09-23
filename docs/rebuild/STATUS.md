@@ -8,9 +8,9 @@ ranked defect list with a delegation route per item).
 
 | What | Where |
 |---|---|
-| The new app | `station/` on branch `rebuild`, worktree `../rebuild` (this checkout). 98 commits past `mvc-refactor`; pushed to `origin/rebuild` 2026-09-23. `mvc-refactor` stays frozen. |
-| The old app | `src/` in the same tree, untouched; still the reference for the golden wire tests. Branch `mvc-refactor` (worktree `../mvc-refactor`) is the pre-rebuild repair branch, untouched since `91b5dc9`. |
-| Agent worktrees | `../rb-serial … ../rb-golden` (12) and their `rb-*` branches: ALL fully merged into `rebuild`, all clean. Safe to `git worktree remove` each; branches can be deleted. |
+| The new app | `station/`. Branch `rebuild` (worktree `../rebuild`) is the MVC refactor redone from scratch and is fast-forwarded onto `mvc-refactor` (worktree `../mvc-refactor`); both are pushed. Push `mvc-refactor` after every merge. |
+| The old app | `src/` in the same tree, untouched; still the reference for the golden wire tests. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
+| Agent worktrees | Removed 2026-09-23: the 12 `rb-*` worktrees and branches were all merged into `rebuild` and clean. Worktrees now: `main`, `mvc-refactor`, `rebuild`. |
 | Agent handoffs | `../rebuild-handoff/*.md` (outside every repo). `serial, gamepad, probe, heater, rotator, redmonitor, setup, tk, qt, web, coretests, golden`, then `setup2, tk2, qt2, web2` (polish pass), `web3` (console redesign). Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
 | Screenshots | `../rebuild-handoff/shots/`: `tk_*`, `qt_*` (polish pass), `web4_*` (console: drawer, launched, stopped), `web3_*` (agent's own rounds). Capture scripts: `/tmp/shoot_tk.py`, `/tmp/shoot_qt.py`, `/tmp/shoot_web.cjs` (temp; recreate from the procedure below if gone). |
 | Design data | `docs/rebuild/design.json` (every new class/member with origins), `design.rules` (one line per old method: kept/renamed/merged/purged/implied), `carry.json` (all 229 old ledger findings classified against the design), `narrative.json`. Interactive pages (temp, may be gone): `/private/tmp/claude-501/.../412595fe.../scratchpad/{control_system_uml,ideal_system_uml}.html`. |
