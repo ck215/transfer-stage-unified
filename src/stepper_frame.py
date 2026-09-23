@@ -405,6 +405,13 @@ class AppLogic:
     def on_controller_dropdown_selected(self, event):
         selected = self.gui.controller_var.get()
 
+        # HOTFIX 2026-09-22: change_controller() -> _initialize_pygame_joystick() calls
+        # stop_polling() and never restarts it on a successful swap, so a swap made during
+        # MANUAL MODE kept streaming frozen axis values. Stop the hardware first.
+        if self.manualFlag:
+            print(f"[{self.process_name}] Controller changed during MANUAL MODE. FULL STOP engaged; re-enter MANUAL MODE to resume.")
+            self.full_stop_button()
+
         success = self.controller.change_controller(selected)
 
         try:
@@ -609,6 +616,10 @@ class AppLogic:
             
         except Exception as e:
             print(f"[AppLogic] Error in manual mode loop: {e}")
+            # HOTFIX 2026-09-22: the loop used to just die here. Firmware has no host-liveness
+            # timeout, so it keeps executing the last velocity packet forever = stage drift.
+            # Command an autonomous FULL STOP instead of silently returning.
+            self.full_stop_button()
 
     # We are going to allow mode switching WITHOUT a full stop first, for convenience
     def enter_manual_mode_button(self):
