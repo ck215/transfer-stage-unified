@@ -169,3 +169,40 @@ For persistent issues, contact Carter or Ian via the lab Slack.
 - **PWM (Pulse Width Modulation)**: A method of controlling the amount of power sent to a motor by rapidly turning the power on and off. A higher PWM threshold means the motor can receive more average power and spin faster.
 - **Serial connection**: A type of communication where data is sent one bit at a time over a wire. This is how the PC talks to the Arduino Mega.
 - **USB-A to USB-B cable**: The standard, squarish USB cable (often used for printers) connecting the PC (USB-A end) to the Arduino Mega (USB-B end).
+
+## Flashing firmware
+
+`firmware/flash_firmware.py` detects each connected board over the app's own
+`DEV:` handshake and flashes it with the sketch in this repo. Prerequisites:
+[arduino-cli](https://arduino.github.io/arduino-cli/latest/installation/) and,
+for the Teensy-based Temperature Controller,
+[teensy_loader_cli](https://www.pjrc.com/teensy/loader_cli.html), both on PATH.
+Run `python firmware/flash_firmware.py --install-deps` once to install the
+`arduino:avr` and `teensy:avr` cores plus AccelStepper, TMCStepper and the
+Adafruit MAX6675 library. One library cannot be installed that way: the
+Temperature Controller needs the **NewLiquidCrystal** fork of
+`LiquidCrystal_I2C` (the one with the 10-argument constructor), which is not in
+the arduino-cli index — install it by hand from
+<https://github.com/fmalpartida/New-LiquidCrystal>. `--install-deps` prints a
+warning naming it.
+
+The three commands:
+
+```
+python firmware/flash_firmware.py --list                       # detect only
+python firmware/flash_firmware.py                              # detect, confirm each, flash
+python firmware/flash_firmware.py --port "Stepper Probe=COM7"  # assign a port by hand
+```
+
+Use `--port` for a blank board that cannot answer the handshake yet, `--dry-run`
+to print the commands without running them, and `--yes` to skip the per-board
+confirmation.
+
+**Why you must flash these sketches to run this branch's app.** The sketches
+here speak one specific protocol: enable/disable is a `'t'` toggle, and manual
+control is a 28-byte binary packet in `struct` format `<BBfffhhhhhhh`, which is
+exactly what `src/serialDrive.py` sends. A board carrying newer or otherwise
+different firmware will enumerate and answer the identity query but will not
+drive correctly from this branch. Flashing with this tool is how you restore
+compatibility; the script prints the protocol before it touches a board so you
+know what you are putting on it.
