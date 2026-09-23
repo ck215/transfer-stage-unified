@@ -99,10 +99,15 @@ def test_load_preset_ignores_unknown_keys(manager, tmp_path):
     file_path = tmp_path / "extra_keys.json"
     file_path.write_text('{"exposure_us": 5000, "unknown_key": "ignore_me"}')
     
-    with patch('camera_control.filedialog.askopenfilename', return_value=str(file_path)):
-        with patch('camera_control.messagebox.showinfo') as mock_showinfo:
+    # apply_settings() runs against a mocked camera and raises into showerror,
+    # a real Tk modal that blocked the suite forever; neither is under test here.
+    with patch('camera_control.filedialog.askopenfilename', return_value=str(file_path)), \
+         patch('camera_control.messagebox.showinfo') as mock_showinfo, \
+         patch('camera_control.messagebox.showerror') as mock_showerror, \
+         patch.object(manager, 'apply_settings'):
             manager.load_preset()
             assert manager.settings["exposure_us"].get() == 5000
+            mock_showerror.assert_not_called()
             # mock_showinfo.assert_called_once()
 
 def test_save_preset_cancelled(manager):

@@ -206,3 +206,17 @@ different firmware will enumerate and answer the identity query but will not
 drive correctly from this branch. Flashing with this tool is how you restore
 compatibility; the script prints the protocol before it touches a board so you
 know what you are putting on it.
+
+## Running the tests
+
+```
+python tests/run_isolated.py            # every tests/test_*.py in its own process
+python tests/run_isolated.py serial     # only files whose name contains "serial"
+```
+
+Nine test files replace `serial`, `pygame` or `numpy` in `sys.modules` at
+import time, so a single shared `pytest tests` process lets the first file
+collected decide what those names mean for every file after it — six tests
+that pass on their own fail that way. Until those preambles become fixtures,
+the per-file runner is the honest run; it also times out any test that blocks
+on a Tk dialog instead of stalling forever.
