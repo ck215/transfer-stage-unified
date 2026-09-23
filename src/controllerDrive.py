@@ -56,6 +56,10 @@ class ControllerPoller:
         self.process_name = process_name
         self.joystick = None
 
+        # HOTFIX 2026-09-22: per-instance deadzone. The module-level DEADZONE is the default;
+        # per-controller overrides below used to rebind a LOCAL and never reached _poll_loop.
+        self.deadzone = DEADZONE
+
         self._initialize_pygame_joystick(controllerID)
 
     def _is_os_connected(self): # OS check for controller
@@ -114,6 +118,7 @@ class ControllerPoller:
     # Initalizes Pygame instance, ONCE PER APPLICATION START
     def _initialize_pygame_joystick(self, controllerID):
         self.stop_polling()
+        self.deadzone = DEADZONE                                # HOTFIX 2026-09-22: reset to module default before per-controller overrides
 
         if not controllerID or "None" in controllerID or "Virtual" in controllerID:
             print(f"[{self.process_name}] Joystick set to None.")
@@ -168,10 +173,10 @@ class ControllerPoller:
                                         raise ValueError("Error connecting Xbox Controller: Connection bus not recognized!")
                         case "T.16000M": 
                             self.controller_binds = [0,1,9,10,7,9] # WINDOWS name; 9 and 10 will be buttons simulated to be axes
-                            DEADZONE = 0.03
+                            self.deadzone = 0.03                # HOTFIX 2026-09-22: was `DEADZONE = 0.03`, a local rebind (no-op)
                         case "Thrustmaster T.16000M":
                             self.controller_binds = [0,1,10,9,7,9] # MINT name; 2 and 3 will be buttons simulated to be axes
-                            DEADZONE = 0.03
+                            self.deadzone = 0.03                # HOTFIX 2026-09-22: was `DEADZONE = 0.03`, a local rebind (no-op)
                         case "Logitech Gamepad F310": self.controller_binds = STANDARD_CONTROLLER_BINDS
                         case _: raise ValueError("Unsupported joystick detected! Add axis binds in controllerDrive.py!")
 
@@ -278,7 +283,7 @@ class ControllerPoller:
                 current_val = self.joystick.get_axis(i)  # type: ignore
                 
                 # Original polling logic (with smaller deadzone)
-                if abs(current_val) < DEADZONE: 
+                if abs(current_val) < self.deadzone:                     # HOTFIX 2026-09-22: honours the per-controller override
                     current_val = 0.0
                 
                 if round(current_val, 2) != round(self.prev_axis_states.get(i, 0.0), 2):
