@@ -1,5 +1,7 @@
 # Audit: serial (src/controller/serial.py, class `serial`, aliases `SerialArduino`, `Serial`)
 
+> **Input (banner added 2026-09-23).** Audit of the old tree (now `legacy/src/`); current until the rebuild replaced it on 2026-09-23. Kept because the ledger in `docs/implementation/progress.md` and `docs/rebuild/carry.json` cite these finding IDs.
+
 ## Object summary
 
 - Class: `serial` in `src/controller/serial.py:20` (aliases at :267-268). Has an `RLock` (`_lock`, :35), `ser` (pyserial handle or None), `_read_buffer`, `device_type` (set at :78, never read anywhere in src/ -- grep verified).

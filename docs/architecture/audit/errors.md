@@ -1,5 +1,7 @@
 # Audit: errors (ErrorRouter and per-view popup managers)
 
+> **Input (banner added 2026-09-23).** Audit of the old tree (now `legacy/src/`); current until the rebuild replaced it on 2026-09-23. Kept because the ledger in `docs/implementation/progress.md` and `docs/rebuild/carry.json` cite these finding IDs.
+
 ## Object summary
 
 - `ErrorRouter` (`src/error_routing.py`, 53 lines) is a class-level singleton. Callbacks are set through `set_callbacks` (line 12). There is no instance, so nothing is constructed or torn down. Callbacks are never cleared or reset.

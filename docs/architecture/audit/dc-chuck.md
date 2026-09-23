@@ -1,5 +1,7 @@
 # Audit: DC Probe / Chuck Positioner (ui_schema, numeric commit, limits, teardown)
 
+> **Input (banner added 2026-09-23).** Audit of the old tree (now `legacy/src/`); current until the rebuild replaced it on 2026-09-23. Kept because the ledger in `docs/implementation/progress.md` and `docs/rebuild/carry.json` cite these finding IDs.
+
 ## Object summary
 
 - `DCProbe` (src/model/probes.py:501-528) and `ChuckPositioner` (probes.py:531-536) are thin subclasses of `BaseProbe` (probes.py:14-490). Chuck overrides only step defaults ("2"); DC overrides step defaults ("1"), speeds ("120"), adds `slow_speed`/`brake_distance` (probes.py:508-511), extends `ui_schema` (514-522) and `get_params` (524-528). All command paths (enable, enter_auton, enter_manual, macro_start_auton, full_stop, power_down, teardown, emergency_stop, watchdog) live in BaseProbe. `src/model/numeric.py` (`num`, `safe_float`) and `src/model/base.py` (`ManagedModel` Protocol) are as described below.

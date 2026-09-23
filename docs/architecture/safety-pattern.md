@@ -1,5 +1,7 @@
 # The emergency-stop pattern
 
+> **Input (banner added 2026-09-23).** The emergency-stop contract as built in the old tree (paths here mean `legacy/src/`, `legacy/tests/`); current until 2026-09-23. The four assertions still bind: the rebuild pins them in `tests/test_core_model.py`.
+
 S8 built this for the probes. The rotator and the heater did not have a
 weaker version of it — they had none, and that gap survived three stages
 because the invariant's test built a probe. It is written down here so the

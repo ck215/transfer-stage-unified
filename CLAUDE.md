@@ -1,90 +1,102 @@
-# transfer-stage-unified — mvc-refactor (rebuilt)
+# transfer-stage-unified — mvc-refactor
 
-**This branch carries the rebuild: the new `station/` package replaces
-`src/`.** The MVC refactor was redone from scratch on a `rebuild` branch and
-fast-forwarded onto `mvc-refactor` on 2026-09-23; `rebuild` is retired. Read `docs/rebuild/STATUS.md` first (cold resume), then
-`docs/rebuild/BRIEF.md` (architecture contract + addenda) and
-`docs/rebuild/WEB_DESIGN_BRIEF.md`. The sections below describe the OLD
-`src/` tree and the `mvc-refactor` repair branch; they remain accurate for
-`src/` until cutover and are otherwise historical.
+A lab-instrument control app, "the station": stepper and DC probes, a chuck
+positioner, a Temperature Controller, an SMC100 Rotator, and a
+screen-capture Red Percent monitor. Three frontends — Web (the candidate
+primary), Tkinter and PySide6 — over one Controller. Firmware is untouched;
+every byte on the wire is identical to the old app's.
 
----
+## Tree
 
-# transfer-stage-unified — MVC refactor
+```
+src/                     the app
+  app.py                 run as a script: python3 src/app.py --web | --qt | --tk
+  events.py panel.py param.py schema.py result.py palette.py
+  controller/            controller.py (owns the models), setup.py (port scan, builds models)
+  model/                 base.py (Model, the one estop latch), probe.py heater.py
+                         rotator.py red_monitor.py plot_data.py
+  devices/               serial_port, gamepad, smc100, screen (only place hardware libs are imported)
+  views/                 tk.py, qt.py, web/ (hold the Controller and nothing else)
+tests/                   the app's suite; tests/golden/ holds the wire captures
+legacy/src/              the old MVC repair tree: reference for the golden wire captures only
+legacy/tests/            the old suite; still runnable
+firmware/                Arduino / Teensy sketches, unchanged
+docs/rebuild/            current docs; docs/archive/ is history
+```
 
-A lab-instrument control app: stepper and DC probes, a chuck positioner, a
-temperature controller, an SMC100 rotator, and a screen-capture Red Percent
-monitor. **Three frontends** — Tkinter, PySide6, and a Web client (HTTP +
-vanilla JS) — over one set of models.
-
-This branch (`mvc-refactor`) is a staged repair of 13 root causes across 213
-audited findings. It is not feature work.
+The import rules between these layers are a test (`tests/test_architecture.py`).
 
 ## Read these first, in this order
 
-1. **`docs/implementation/progress.md`** — the single source of truth.
-   Stage status, owner decisions, session log, and the 213-finding ledger.
-   Its header has the full cold-resume procedure.
-2. **`docs/implementation/plan.md`** — the 17 stages (S0–S16), the standing
-   rules, and the commit protocol.
-3. **`docs/architecture/root-causes.md`** — RC-1..RC-13, each with the
-   invariants that prove it fixed and an **anti-fix table** naming the
-   patches that must *not* be applied.
-4. **`docs/architecture/audit/*.md`** — the 213 findings, by subsystem.
-5. **`docs/architecture/safety-pattern.md`** — the emergency-stop contract
-   every motion/heat subsystem must match, and how to test it.
+1. `docs/rebuild/STATUS.md` — cold resume: where things are, how to run and
+   verify, the owner rulings, the open items.
+2. `docs/rebuild/BRIEF.md` — the architecture contract and its addenda
+   (paths in it are pre-move; its banner maps them).
+3. `docs/rebuild/WEB_DESIGN_BRIEF.md` — the Web view's design ruling.
+4. `docs/rebuild/BUGFIX_PLAN.md` — the ranked defect list, a route per item.
+
+Inputs that open work still reads, kept with a banner: the finding ledger
+`docs/implementation/progress.md` (`docs/rebuild/carry.json` cites its IDs),
+`docs/architecture/audit/*.md`, `root-causes.md`, `safety-pattern.md`,
+`docs/implementation/bench-checklist.md`, and `tests/TEST_PORTING.md` (the
+second test wave).
+
+## Commands (from the repo root)
+
+```
+python3 src/app.py --web --no-browser --port 8080
+python3 -m pytest tests -q -p no:cacheprovider -m "not qt"                        # 1498 pass
+QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 85 pass
+python3 -m pytest tests/test_wire_golden.py -q                                    # 78 scenarios byte-identical to legacy/src
+cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
+```
+
+Launchers: `run.sh` / `run_macos.sh` / `run.bat`, passing `--web|--qt|--tk`
+through. Agents do not run the Qt pass (a native SIGABRT can kill the
+session); the lead does. Write test output to a file and read pytest's exit
+code unpiped.
 
 ## Skills
 
-Invoke these rather than re-deriving the procedure from the docs:
-
 | Skill | When |
 |---|---|
-| `verify` | after any change to `src/` or `tests/`; before closing a stage |
-| `stage-close` | a stage is green and needs to land, or any commit touches `progress.md` |
-| `reconcile-ledger` | open-finding counts look inflated, or before planning off them |
-| `fix-a-finding` | before fixing any one finding — checks the audit is still true |
-| `parallel-stage` | several independent findings are open and one-at-a-time is the bottleneck |
+| `station-map` | before auditing, pruning or relocating anything: the three code trees, the owner rulings that make a "missing" feature intentional, the traps |
 
 ## Standing rules
 
-- **One stage per commit**, `progress.md` updated in the *same* commit, and
-  pushed immediately to `origin mvc-refactor`.
-- **Never amend a commit to insert its own SHA.** Leave the stage row's
-  Commit cell blank and fill it in the next commit. This branch already has
-  one orphaned citation (`addb0b8`) from getting this wrong.
-- **A ledger row moves to `closed` only with a verified test name or a
-  verification note.** `open (mitigated)` and `open (partly closed: ...)`
-  are honest answers; rounding a partial up to `closed` is not.
-- **Never answer an owner decision (`D-n`).** If a stage is blocked on one,
-  mark it `BLOCKED` and stop. **D-7** (firmware v2) is the only one still
-  open, and it is S16, at the bench, owner-only.
-- **Safety paths before feature paths** within a stage. If it can energize a
-  coil or move an axis, the stop path is implemented and tested first.
-- **Tests before implementation**, and never bump a structural invariant's
-  baseline to make it green.
-- Scratch files, patches and logs never land in the repo root — use the
-  session scratch directory.
+- **Safety paths before feature paths.** If it can energize a coil or move
+  an axis, the stop path is implemented and tested first.
+- **Tests before implementation**: prove the defect against the pre-fix
+  code, then fix. Never bump a baseline to make a test green.
+- **Never answer an owner decision (`D-n`).** D-7 (the DC board has no coil
+  kill) is open, bench-only, owner-only. Bench values are the owner's.
+- **Work lands by worktree, not by stage** (replaces "one stage per
+  commit"): each agent works in its own worktree on an exclusive write set
+  and commits there; the lead diffs the write set, re-runs the tests,
+  hand-drives the feature, and merges. Core files change only by the lead.
+- Never push, never amend, unless the lead says so.
+- `progress.md` is frozen; do not flip its rows.
+- Scratch files, patches and logs never land in the repo root.
 
 ## Two traps this codebase sets
 
-1. **Comments quote the old broken code.** `src/` documents its own repairs
-   at length, so a grep hit for a defect is not evidence the defect
-   survives. `_active_poller_count` and `subprocess` both still match, and
-   both matches are prose about their own removal. Read the matching line.
-2. **A stage row saying `done` does not mean its findings are closed.** The
-   ledger drifts in one direction: fixes land, rows are not flipped. A
-   2026-09-20 reconciliation found 28 of 66 such rows were already fixed —
-   and, going the other way, that S8's `I-5.2` holds only for probes; the
-   rotator's `emergency_stop` still blocks on the SMC100 serial lock.
+1. **Comments quote the old broken code.** `src/` and `legacy/src/` document
+   their own repairs at length, so a grep hit for a defect is often prose
+   about its removal. Read the matching line.
+2. **The ledger drifts.** In `progress.md`, fixes landed and rows were not
+   flipped: a stage marked `done` does not mean its findings are closed, and
+   a 2026-09-20 reconciliation found 28 of 66 such rows already fixed.
+   Check the code, never the ledger, before calling a finding open.
 
-## Running things
+## History
 
-```
-python3 -m pytest tests/ -m "not slow and not order_dependent and not qt"
-```
-
-is the working loop (~60 s). See the `verify` skill for the rest. The
-three-pass full sweep is **retired** (owner instruction, 2026-09-20).
-
-Launchers: `run.sh` / `run_macos.sh` / `run.bat`.
+- Aug–Sep 2026: `src/` was a staged MVC repair (S0–S16) of 13 root causes
+  across 213 audited findings. Plan and test policy are in `docs/archive/`.
+- 2026-09-23: the refactor redone from scratch as `station/` on a `rebuild`
+  branch was fast-forwarded here; `rebuild` retired. The same day `station/`
+  became `src/`, the old tree became `legacy/`, and stale docs were archived.
+- Old-process skills, pending rewrite by the lead: `verify`, `stage-close`,
+  `reconcile-ledger`, `fix-a-finding`, `parallel-stage`. They still describe
+  stages and the old `src/`.
+- `legacy/` is deleted once every file in `tests/TEST_PORTING.md` has a
+  ported equivalent; then `mvc-refactor` merges to `main`.

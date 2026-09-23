@@ -1,5 +1,7 @@
 # Rebuild brief — read this first, all of it
 
+> **Paths below are pre-move (banner added 2026-09-23).** This contract was written for the agents that built the rebuild, when it was the `station/` package beside the old `src/`. Since the relayout: `station/` → `src/` (`station/model.py` → `src/model/base.py`, `station/models/*` → `src/model/*`, `station/controller.py` → `src/controller/controller.py`, `station/setup.py` → `src/controller/setup.py`), old `src/` → `legacy/src/`, `tests/station/` → `tests/`. Module names in the import rules (`station.controller`, ...) follow the same move; `tests/test_architecture.py` is the authority on them. The design itself is unchanged.
+
 We are rebuilding the backend of a lab-instrument control app as a new package,
 `station/`, beside the old `src/`. The old code stays in place as your reference
 and is deleted at cutover. **Firmware is not touched and every byte on the wire

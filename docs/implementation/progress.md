@@ -1,5 +1,7 @@
 # Progress
 
+> **Frozen input (banner added 2026-09-23).** The repair branch's 213-finding ledger; current until the rebuild replaced the repair on 2026-09-23. `docs/rebuild/carry.json` cites its IDs. Do not update it; `src/`/`tests/` below mean `legacy/src/`/`legacy/tests/`, and `plan.md`/`testing.md` are now in `docs/archive/implementation/`. Current state: `docs/rebuild/STATUS.md`.
+
 **The trail.** This file is the single source of truth for what is done,
 what is next, and what is blocked. Update it in the *same commit* as the
 work it describes, then push. If this file and your memory disagree, this

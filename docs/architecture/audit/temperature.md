@@ -1,5 +1,7 @@
 # Audit: TemperatureSystem (temperature)
 
+> **Input (banner added 2026-09-23).** Audit of the old tree (now `legacy/src/`); current until the rebuild replaced it on 2026-09-23. Kept because the ledger in `docs/implementation/progress.md` and `docs/rebuild/carry.json` cite these finding IDs.
+
 ## Object summary
 
 - Class: `src/model/temperature_system.py` `TemperatureSystem` (202 lines). Serial 115200 to `firmware/temp_controller/temp_controller.ino`.
