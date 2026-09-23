@@ -40,7 +40,8 @@ class App:
         Label(master, text="Current Temperature:").grid(row=7, column=0, sticky="W", padx=5)
 
         # Labels for inputs
-        fields = ["Set Temperature", "Ramping Rate", "P Term", "I Term", "D Term", "Temperature Offset"]
+        # HOTFIX 2026-09-22: label the units — firmware spdelay is seconds per °C, not °C/min
+        fields = ["Set Temperature (°C)", "Ramping Rate (s per °C)", "P Term", "I Term", "D Term", "Temperature Offset (°C)"]
         for i, text in enumerate(fields, start=1):
             Label(master, text=text).grid(row=i, column=0, sticky="W", padx=5)
 
