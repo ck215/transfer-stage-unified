@@ -8,9 +8,9 @@ ranked defect list with a delegation route per item).
 
 | What | Where |
 |---|---|
-| The new app | `station/`. Branch `rebuild` (worktree `../rebuild`) is the MVC refactor redone from scratch and is fast-forwarded onto `mvc-refactor` (worktree `../mvc-refactor`); both are pushed. Push `mvc-refactor` after every merge. |
+| The new app | `station/` on branch `mvc-refactor`, worktree `../mvc-refactor` (this checkout). The `rebuild` branch was the refactor redone from scratch; fast-forwarded here and retired 2026-09-23. |
 | The old app | `src/` in the same tree, untouched; still the reference for the golden wire tests. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
-| Agent worktrees | Removed 2026-09-23: the 12 `rb-*` worktrees and branches were all merged into `rebuild` and clean. Worktrees now: `main`, `mvc-refactor`, `rebuild`. |
+| Agent worktrees | Removed 2026-09-23: the 12 `rb-*` worktrees and branches were all merged and clean; `../rebuild` retired the same day. Worktrees now: `main`, `mvc-refactor`. |
 | Agent handoffs | `../rebuild-handoff/*.md` (outside every repo). `serial, gamepad, probe, heater, rotator, redmonitor, setup, tk, qt, web, coretests, golden`, then `setup2, tk2, qt2, web2` (polish pass), `web3` (console redesign). Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
 | Screenshots | `../rebuild-handoff/shots/`: `tk_*`, `qt_*` (polish pass), `web4_*` (console: drawer, launched, stopped), `web3_*` (agent's own rounds). Capture scripts: `/tmp/shoot_tk.py`, `/tmp/shoot_qt.py`, `/tmp/shoot_web.cjs` (temp; recreate from the procedure below if gone). |
 | Design data | `docs/rebuild/design.json` (every new class/member with origins), `design.rules` (one line per old method: kept/renamed/merged/purged/implied), `carry.json` (all 229 old ledger findings classified against the design), `narrative.json`. Interactive pages (temp, may be gone): `/private/tmp/claude-501/.../412595fe.../scratchpad/{control_system_uml,ideal_system_uml}.html`. |
@@ -20,7 +20,7 @@ ranked defect list with a delegation route per item).
 ## How to run and verify
 
 ```
-cd ../rebuild
+cd ../mvc-refactor
 ./run_macos.sh --web | --qt | --tk        # uses the already-active venv (main/.venv)
 python3 -m station.app --web --no-browser --port 8080
 
@@ -87,7 +87,7 @@ the bench questions below are its Tier B.
    files (PORT 22 / PORT-ADAPTED 103 / VOID 10) and 26 safety tests that must
    have ported equivalents before `src/` is deleted.
 4. **Cutover**: delete `src/`, `tests/` (old), re-point `tests/pytest.ini`,
-   regenerate `docs/`. Then merge `rebuild` → `main` and push.
+   regenerate `docs/`. Then merge `mvc-refactor` → `main` and push.
 5. `Rotator.home()` target-commit ordering is tested now (rb-rotator); the
    `COLUMN_SPLIT_CARDS = 6` Qt rule is a judgement, not a measurement.
 6. Heater refusals new vs old: 300 °C ceiling, PID/ramp bounds, 31-char

@@ -3,8 +3,8 @@
 Written 2026-09-23 from a sweep of `station/`, `tests/station/` and
 `docs/rebuild/` for swallowed exceptions, unverified constants, stop-path
 gaps and dead test scaffolding. Baseline at the time of writing: 1498 fast
-tests pass (47 s), 78 golden wire scenarios byte-identical, `rebuild` pushed
-to `origin/rebuild`.
+tests pass (47 s), 78 golden wire scenarios byte-identical, pushed to
+`origin/mvc-refactor` (the `rebuild` branch was fast-forwarded onto it and retired).
 
 Each item names its **route** (direct / `router` / `agy`) up front, per the
 delegation rule: decided at plan time, not improvised. Bench items are

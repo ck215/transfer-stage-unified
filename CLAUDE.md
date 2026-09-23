@@ -1,7 +1,8 @@
-# transfer-stage-unified — REBUILD branch
+# transfer-stage-unified — mvc-refactor (rebuilt)
 
-**This worktree is the `rebuild` branch: the new `station/` package replaces
-`src/`.** Read `docs/rebuild/STATUS.md` first (cold resume), then
+**This branch carries the rebuild: the new `station/` package replaces
+`src/`.** The MVC refactor was redone from scratch on a `rebuild` branch and
+fast-forwarded onto `mvc-refactor` on 2026-09-23; `rebuild` is retired. Read `docs/rebuild/STATUS.md` first (cold resume), then
 `docs/rebuild/BRIEF.md` (architecture contract + addenda) and
 `docs/rebuild/WEB_DESIGN_BRIEF.md`. The sections below describe the OLD
 `src/` tree and the `mvc-refactor` repair branch; they remain accurate for
