@@ -1,13 +1,14 @@
 # Rebuild status — cold-resume document
 
-Last updated 2026-09-22 (session close). Read this first; then `BRIEF.md`
-(the architecture contract and its addenda) and `WEB_DESIGN_BRIEF.md`.
+Last updated 2026-09-23. Read this first; then `BRIEF.md` (the architecture
+contract and its addenda), `WEB_DESIGN_BRIEF.md`, and `BUGFIX_PLAN.md` (the
+ranked defect list with a delegation route per item).
 
 ## Where things are
 
 | What | Where |
 |---|---|
-| The new app | `station/` on branch `rebuild`, worktree `../rebuild` (this checkout). 547 commits. Not pushed. |
+| The new app | `station/` on branch `rebuild`, worktree `../rebuild` (this checkout). 98 commits past `mvc-refactor`; pushed to `origin/rebuild` 2026-09-23. `mvc-refactor` stays frozen. |
 | The old app | `src/` in the same tree, untouched; still the reference for the golden wire tests. Branch `mvc-refactor` (worktree `../mvc-refactor`) is the pre-rebuild repair branch, untouched since `91b5dc9`. |
 | Agent worktrees | `../rb-serial … ../rb-golden` (12) and their `rb-*` branches: ALL fully merged into `rebuild`, all clean. Safe to `git worktree remove` each; branches can be deleted. |
 | Agent handoffs | `../rebuild-handoff/*.md` (outside every repo). `serial, gamepad, probe, heater, rotator, redmonitor, setup, tk, qt, web, coretests, golden`, then `setup2, tk2, qt2, web2` (polish pass), `web3` (console redesign). Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
@@ -72,6 +73,9 @@ wire is pinned by `tests/station/golden/`.
   backups. Making Web the default is `VIEW_MODE` in the launchers.
 
 ## Open items
+
+Code defects found by the 2026-09-23 sweep are in `BUGFIX_PLAN.md` (Tier A);
+the bench questions below are its Tier B.
 
 1. **Bench**: region-picker display scaling (all views), the four gamepad
    layouts (`Gamepad.LAYOUTS`, marked UNVERIFIED), achieved Red Percent
