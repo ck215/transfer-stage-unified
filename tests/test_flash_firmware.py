@@ -93,8 +93,8 @@ def test_probe_identifies_stepper_from_dev_s(fast_clock):
     kwargs = ser_cls.call_args.kwargs
     assert ser_cls.call_args.args[0] == "COM3"
     assert kwargs["baudrate"] == 500000
-    assert kwargs["timeout"] == pytest.approx(0.1)
-    assert kwargs["write_timeout"] == pytest.approx(0.2)
+    assert kwargs["timeout"] == flash_firmware.HANDSHAKE_TIMEOUT == 0.1
+    assert kwargs["write_timeout"] == flash_firmware.HANDSHAKE_WRITE_TIMEOUT == 0.2
     assert fake.written == [b"s\n"]
 
 
