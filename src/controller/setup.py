@@ -930,7 +930,7 @@ class Setup(Panel):
                        enabled_when=[self.LAUNCHED]),
             # Never gated: taking the system down must not depend on what the
             # panel happens to be doing.
-            sch.button("Stop system", "stop_system", role="warning"),
+            sch.button("Stop system", "stop_system", role="neutral"),
             layout="row",
         ))
         return sch.schema(*sections)
