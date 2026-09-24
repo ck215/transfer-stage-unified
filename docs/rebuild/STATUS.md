@@ -25,7 +25,7 @@ cd ../mvc-refactor
 ./run_macos.sh --web | --qt | --tk        # uses the already-active venv (main/.venv)
 python3 src/app.py --web --no-browser --port 8080
 
-python3 -m pytest tests -q -p no:cacheprovider -m "not qt"             # 1498 pass, ~46 s
+python3 -m pytest tests -q -p no:cacheprovider -m "not qt"             # 1527 pass, ~46 s
 QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt   # 85 pass
 python3 -m pytest tests/test_wire_golden.py -q                         # 78 scenarios byte-identical to legacy/src/
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
@@ -77,7 +77,11 @@ wire is pinned by `tests/golden/`.
 ## Open items
 
 Code defects found by the 2026-09-23 sweep are in `BUGFIX_PLAN.md` (Tier A);
-the bench questions below are its Tier B.
+the bench questions below are its Tier B. **Tier D** (same day) is the
+`main`-vs-rebuild audit: 17 operator-facing regressions, the first five
+safety-adjacent (probes open at the wrong baud rate; the rotator can report a
+move done mid-motion; D-pad steps are dead; gamepad swap no longer stops the
+stage). Nothing in the rebuild has touched real hardware yet.
 
 1. **Bench**: region-picker display scaling (all views), the four gamepad
    layouts (`Gamepad.LAYOUTS`, marked UNVERIFIED), achieved Red Percent

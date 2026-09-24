@@ -66,6 +66,51 @@ the code change afterwards is a number edit plus its test, routed `router`.
 | C3 | `src/devices/gamepad.py` silent swallows at 198, 219, 273, 305, 419, 762, 791. Same audit as C2. | same as C2 |
 | C4 | `STATUS.md` said 547 commits; `git rev-list --count mvc-refactor..rebuild` says 98. Corrected in this commit. | done |
 
+## Tier D — `main` vs the rebuild: operator-facing regressions (audit of 2026-09-23)
+
+Four read-only Opus auditors compared the lab's original app on `main`
+against the rebuild, one subsystem each, reporting only behaviour that is
+missing or changed with a negative or neutral consequence and excluding
+everything an owner ruling covers. Full reports:
+`../rebuild-handoff/audit-{probes,heater-rotator,redpercent-camera,shell}.md`
+(outside the repo). The lead re-verified every row marked **verified**.
+
+Framing correction the auditors missed: `main`'s firmware is not what the
+bench runs. The lab ran `legacy/src` from 2026-08-26, which already speaks
+the new `'e'`/`'d'` + 42-byte protocol, so the boards were presumably
+reflashed before then (unverified, see D13).
+
+| # | Where | Defect | Fix | Route |
+|---|---|---|---|---|
+| D1 | `src/model/probe.py` `_build_port` (`SerialPort(name)`, no rate) | **Probes open at 115200; the stepper and chuck firmware and `legacy/src` run at 500000.** SIM ignores baud and the golden gate compares bytes only, so nothing caught it. No probe will talk to a real board. **verified** | Pass `baud_rate=500000` from the probe; test that a probe built with a port *name* records 500000 (and the heater 115200). Prove against pre-fix. | `agy` (safety: first in the batch) |
+| D2 | `src/devices/smc100.py` `sendcmd` | **Move/Home can report done while the stage is still turning.** `legacy/src` held the serial lock from write to reply and cleared the input first; the rebuild does neither, so the 4 Hz position poll and the move's status loop read each other's replies. **verified**: lead's rerun of the auditor's repro, 4/10 early returns at 20 ms reply latency (0/10 at 5, 10, 40, 60 ms). | Hold one lock across write+read in `sendcmd`, discard stale input before the write; regression test with a latency-injecting fake at 20 ms, ≥25 trials. Bytes unchanged. | direct decision on lock scope → `agy` |
+| D3 | `src/devices/gamepad.py` `drain_edges`, `src/model/probe.py` | **D-pad and bumper steps do nothing.** Edges are parked for `drain_edges()`, which nothing calls. **verified** (grep: only its own docstring). Tests miss it because the fakes put D-pad values straight into the stick readings. | Consume edges in the probe's poll; test with a fake that reports edges the way the real device does. | `agy` |
+| D4 | `src/model/probe.py` gamepad swap | **Swapping the gamepad during manual mode no longer stops the stage** — undoes `main`'s last hotfix (`68e412f`). Auditor confirmed in SIM. | On swap while manual: stop packet on the still-open port, leave manual. Test first. | `agy` (safety) |
+| D5 | `src/model/probe.py` / `src/devices/serial_port.py` write failure | A failed jog write marks the port lost and closes it; no stop is attempted, runtime reconnect is gone, the stage can drift at the last jog speed. `main` sent a stop on the still-open port. Medium confidence (no hardware). | Diagnose with a fake that fails one write; then: attempt the stop frame before closing. | direct diagnosis → `agy` (safety) |
+| D6 | `src/controller/setup.py` Refresh | **Refresh after launch probes ports held by running models**, reopening them at another baud. Shown on a pty (held handle went 9600→115200, board side received the identity query and twelve `s`). On Windows the open fails with a warning instead. | Skip ports owned by live models; disable Refresh while any model exists, or scan only unowned ports. Test with a model holding a fake port. | `agy` |
+| D7 | `src/controller/setup.py` build | A bad Rotator port blocks the whole launch (build is all-or-nothing; probes and heater on bad ports still build and show port errors). `main` launched each device separately. | Build per model; a failed SMC100 open surfaces as that model's port error. | `agy` |
+| D8 | `src/model/heater.py` frame length check | The heater refuses settings `main` sent intact: the ramp is always written with two decimals (`.05`→`0.05`), lengthening the frame past the 31-char refusal (`<250.5,120,12.25,0.25,.05,-1.5>` is 29 chars on `main`, 33 here). The two-decimal format is `legacy/src`'s and is pinned by the bytes ruling; the refusal is new. | Decision: measure the *actual* frame the model will send and refuse only when that exceeds 31, with a message naming the field to shorten. | direct decision → `router patch-plan` |
+| D9 | `src/model/red_monitor.py` baseline, Tk Save | Reset Baseline mid-run overwrites the starting baseline and the sidecar keeps only the last value; `main` logged `BASELINE SET/RESET` rows. Auditor reproduced (first 20.0 %, sidecar 50.0 after two resets). Tk Save copies only the CSV; the sidecar stays under the runs folder. | Append a baseline row to the CSV on every set/reset and keep a list in the sidecar; Save copies both files. | `agy` |
+| D10 | `src/devices/gamepad.py` T.16000M rows, deadzone | One mapping for both T.16000M device names (Z reversed on Linux Mint per `main`); throttle buttons map to ±1 vs `main`'s ±0.5; deadzone 0.12 for every pad vs `main`'s final 0.03 hotfix; first 5 % of trigger travel ignored. | Values from `main` are known: restore ±0.5 and 0.03 with tests. **Direction per OS name is B1 (bench).** | `router patch-plan` → direct; direction: bench |
+| D11 | `src/model/rotator.py` Step default | Step defaults to 0 (was 1.0), so Move ± does nothing and says nothing. | Default 1.0; refuse a zero step with a message. | `router` |
+| D12 | `firmware/flash_firmware.py` | Imports `discover_ports`/`probe_device_at` from the old tree (re-pointed to `legacy/src` on 2026-09-23 so it still runs); `flash.sh`/`flash.bat` deleted on this branch; auto-detect drops every `COM*` port so it finds nothing on Windows; `main`'s 20 tests for it are gone. | Port onto `src/controller/setup.py`'s scan and identify; restore the two launchers; keep COM ports; port the tests. | `agy` |
+| D13 | `src/controller/setup.py` identify | A board still on `main`'s firmware answers the identity query identically and launches with no warning, then never enables and misreads every jog packet. | **Owner question**: is a protocol-version reply worth a firmware change? Until then, a one-line note in the README's flashing section. | owner |
+| D14 | `src/model/probe.py` manual mode | Manual speed and step sizes cannot be changed in manual mode; changing them means leaving manual, which de-energizes the coils. The ruling locks distances only in autonomous. | Allow edits in manual; keep the autonomous lock. | `agy` |
+| D15 | `src/views/web/server.py` | No quit control; closing the browser leaves the process holding the serial ports (until the watchdog latches FULL STOP, which does not exit). | Design call: a Quit command that shuts the Controller down and exits. | direct design → `agy` |
+| D16 | `run_macos.sh` | Prints that it is launching Web but starts Tk. | One-line fix. | direct |
+| D17 | `src/devices/smc100.py` | Controller address fixed at 1; `main` had an ID field. Low impact. | Expose the address in Setup only if the bench has more than one SMC100. | owner |
+
+Neutral differences recorded in the audits and not planned (operator-manual
+material, not bugs): Red Change readout lost its sign and colour; save
+format moved from one session text file to per-run CSV + sidecar; Red
+Percent no longer opens from a probe window; port/controller collisions are
+a status line, not a popup; the terminal no longer shows tracebacks (they go
+to the run log); the Tk view shows one instrument at a time; every detected
+device is switched on at launch; a dead port costs ~9.5 s of scan.
+
+Batch order for Tier D: D1 → D4 → D2 → D5 → D3 (safety and hardware first),
+then D6/D7 together (one write set: `setup.py`), then the rest.
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.
@@ -78,3 +123,4 @@ the code change afterwards is a number edit plus its test, routed `router`.
 3. Lead verification: fast suite, golden gate, Qt suite, screenshot ritual for the Web console with a forced watchdog fault.
 4. Bench checklist (Tier B) printed for the next lab visit.
 5. Tier C audits when the bench items are back.
+6. Tier D in the batch order above, in parallel worktrees (`parallel-stage`), after D1–D5 have landed one at a time.

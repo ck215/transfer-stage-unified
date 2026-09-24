@@ -36,7 +36,7 @@ done
 # even when no other agent touched it.
 for t in "${trees[@]}"; do
   bad="$(git -C "$t" diff --name-only "$base"..HEAD \
-        | grep -E '^docs/|^tests/architecture/test_invariants\.py$' || true)"
+        | grep -E '^docs/|^CLAUDE\.md$|^README\.md$|^\.claude/|^tests/test_architecture\.py$|^tests/golden/' || true)"
   if [ -n "$bad" ]; then
     echo "LEAD-ONLY FILE TOUCHED by $(basename "$t")"
     echo "$bad" | sed 's/^/           /'

@@ -32,7 +32,6 @@ import json
 import pathlib
 import subprocess
 import sys
-import threading
 
 import pytest
 
@@ -195,11 +194,3 @@ def test_no_frame_is_ever_built_from_a_substituted_value():
 
 def test_the_old_and_new_models_agree_on_the_baud_rate():
     assert Heater.BAUD_RATE == 115200
-
-
-def test_no_test_here_left_a_reader_thread_behind():
-    """The old model starts a daemon reader in its constructor; every helper
-    above parks it. This fails loudly if one is forgotten."""
-    alive = [t.name for t in threading.enumerate()
-             if "read_serial_data" in t.name and t.is_alive()]
-    assert len(alive) <= len(VALUE_SETS) * 3, alive

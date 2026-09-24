@@ -7,48 +7,36 @@ A brief carries only what changes between runs. Substitute `<...>`.
 ---
 
 ```
-# <STAGE> — <one-line scope>. Worktree brief.
+# <batch name> — <one-line scope>. Worktree brief.
 
-Worktree: <../s14-web>   Branch: <s14-web>   Base: <sha>
+Worktree: <../rb-probes>   Branch: <rb-probes>   Base: <sha>
+Python: <abs path to ../main/.venv/bin/python>   Handoff: <../rebuild-handoff/fix-probes.md>
 
 ## THE WRITE SET — a hard contract
 
 You may create or modify ONLY these paths:
 
-  <src/views/web/**>
-  <src/model/system_manager.py>
-  <tests/web/**>
+  <src/model/probe.py>
+  <src/devices/gamepad.py>
+  <tests/test_probe.py  tests/test_gamepad.py>
 
 Everything else is owned by someone working RIGHT NOW in another worktree:
 
-  <src/model/probes.py>          -> the lead
-  <src/model/rotator_system.py>  -> the lead
-  <src/controller/gamepad.py>    -> agent B (s15-local-ok)
-  <src/views/pyside/**>          -> agent B (s15-local-ok)
-  docs/**                        -> the lead (includes progress.md)
-  tests/architecture/test_invariants.py -> the lead
+  <src/devices/serial_port.py>   -> the lead
+  <src/devices/smc100.py>        -> agent B (rb-rotator)
+  <src/controller/setup.py>      -> agent C (rb-setup)
+  docs/**, CLAUDE.md, README.md, .claude/**, tests/test_architecture.py, tests/golden/**, legacy/** -> the lead
 
-If a fix needs a file outside your write set, STOP that finding, leave it,
-and report it `partly` with the blocking file named. That is a successful
-outcome, not a failure. Do not edit it "just a little".
+## The items you own
 
-## The findings you own
-
-### <WEB-14>
-Audit: `docs/architecture/audit/<view-web.md>`, entry `### <WEB-14>`
+### <D1> — <title>
+Plan: `docs/rebuild/BUGFIX_PLAN.md`, Tier D row <D1>. Audit: `../rebuild-handoff/audit-<area>.md`, <ID>.
 <One or two lines on what the audit claims. Note that it may be stale.>
-
-### <WEB-21>
-...
 
 ## Explicitly NOT yours
 
-<WEB-19> — needs <the D-8 client-liveness watchdog in probes.py>, which is
-outside this write set. Do not attempt it; note it and move on.
-
-## What to hand back
-
-Write `<SCRATCH>/handoff-<stage>.md`. Nothing else outside the write set.
+<D6> — needs <src/controller/setup.py>, which is outside this write set. Do
+not attempt it; note it and move on.
 ```
 
 ---
@@ -57,6 +45,6 @@ Write `<SCRATCH>/handoff-<stage>.md`. Nothing else outside the write set.
 
 - Name the *owner* of each denied path, not just the path.
 - Give the base SHA explicitly; the agent needs it to prove defects.
-- Keep "not yours" findings in the brief. An agent that does not know why a
-  neighbouring finding is excluded will try to be helpful and take it.
-- Do not ask for a qt pass. Agents cannot run one safely; you run it on merge.
+- Keep "not yours" items in the brief. An agent that does not know why a
+  neighbouring item is excluded will try to be helpful and take it.
+- Do not ask for a Qt pass. Agents cannot run one safely; you run it on merge.

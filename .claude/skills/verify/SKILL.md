@@ -1,57 +1,38 @@
 ---
 name: verify
-description: Run the right test pass for the MVC refactor at the right time — fast gate during work, the three gates at a stage boundary. Use before closing a stage, after any change to src/ or tests/, or when deciding whether a fuller run is warranted.
+description: Run the right test gates for the station at the right time — the fast suite while working, all four gates plus a launch before anything merges. Use after any change under src/ or tests/, before merging an agent's worktree, and when deciding whether the Qt pass is warranted.
 ---
 
 # Verifying
 
-Full policy: `docs/implementation/testing.md`. This is the operational part.
-
-Run from the repo root with `python3 -m pytest`.
+Run from the repo root. `$PY` is the venv's python (`../main/.venv/bin/python`
+on this Mac); `$S` is the session scratch directory.
 
 ## The working loop
 
 ```
-python3 -m pytest tests/ -m "not slow and not order_dependent and not qt"
+$PY -m pytest tests -q -p no:cacheprovider -m "not qt"
 ```
 
-~60 s. This is what you run after every edit. Nothing else, until the stage
-is done.
+~50 s. Run after every edit. Baseline **1527 passed, 85 deselected** (the
+85 are the Qt tests). A count that moved is a finding, not noise.
 
-Narrower, when iterating on one concern (markers are assigned per file in
-`tests/conftest.py::_FILE_MARKERS`):
-
-```
-python3 -m pytest tests/ -m "<concern> and not slow and not order_dependent"
-```
-
-## The stage boundary
-
-Three passes, in this order. They are disjoint; together they cover the
-suite.
+## Before a merge: four gates and a launch
 
 ```
-python3 -m pytest tests/ -m "not slow and not order_dependent and not qt"   # fast gate
-python3 -m pytest tests/ -m "slow and not qt"                                # ~140 s
-python3 -m pytest tests/ -m "qt"                                             # ~6 s
+$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                          # 1527 passed
+$PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                  # 78 passed; recaptures from legacy/src in a subprocess
+QT_QPA_PLATFORM=offscreen $PY -m pytest tests -q -p no:cacheprovider -m qt      # 85 passed; lead only, see below
+cd legacy && $PY -m pytest tests -q -p no:cacheprovider -m "not slow and not order_dependent and not qt"
+                                                                                # 1038 passed, 1 skipped, 89 deselected, 1 xfailed
+$PY src/app.py --web --no-browser --port 8081 &  sleep 8;  curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/setup;  kill %1
 ```
 
-Record the three counts in the session-log entry.
+The launch is not optional: a suite that passes on an app that cannot start
+has proved nothing. The legacy gate exists only to prove the old tree is
+still a valid golden reference; nothing in it is edited on purpose.
 
-**The three-pass full sweep is retired** (owner instruction, 2026-09-20). It
-re-ran the same tests the three gates already cover and cost more wall-clock
-than it bought. Do not reintroduce it. If you suspect genuine flakiness,
-re-run *the one suspect pass* three times, not the whole suite.
-
-## Why the passes are separate
-
-Qt tests are split out because a native Qt `SIGABRT` kills the pytest
-session and discards every already-passed result — an abort in the Qt pass
-must not be able to take the rest of the suite with it. They are auto-marked
-by fixture (`qapp`/`qtbot`), not by filename.
-
-`order_dependent` is two web wall-clock tests. They are excluded from the
-gates by design; run them alone if you touched web timing.
+On macOS, before the Qt pass: `chflags -R nohidden "$(python -c 'import PySide6,os;print(os.path.dirname(PySide6.__file__))')"`.
 
 ## Never read a result through a pipe
 
@@ -59,40 +40,35 @@ gates by design; run them alone if you touched web timing.
 pytest ... | tail -4          # WRONG: $? is tail's, not pytest's
 ```
 
-A gate was reported green this way on 2026-09-20; the run proved nothing.
 Redirect, capture the code, then grep:
 
 ```
-pytest tests/ -m "not slow and not order_dependent and not qt" -q > "$S/gate.log" 2>&1
-echo "EXIT=$?"; grep -E "passed|failed" "$S/gate.log" | tail -1
+$PY -m pytest tests -q -p no:cacheprovider -m "not qt" > "$S/fast.txt" 2>&1
+echo "EXIT=$?"; tail -1 "$S/fast.txt"
 ```
 
-## qt tests you did not run are not evidence
+## The Qt pass is the lead's
 
-The qt pass cannot run inside a session that must survive — a native Qt
-`SIGABRT` kills pytest and discards every already-passed result. Run it as a
-**background** job so the abort cannot take the session with it, and only
-then close a row that depends on it.
+A native Qt `SIGABRT` kills the pytest session and discards every
+already-passed result, which is why Qt tests are a separate pass and why
+agents never run it. A Qt-marked test an agent wrote but did not run is
+`## UNVERIFIED` in its handoff, never evidence.
 
-Any qt-marked test written but not yet run is `## UNVERIFIED`, never
-`closed`. On 2026-09-20 eleven came back from a parallel round and **two
-failed** — both bad tests, one asserting on a `matplotlib` that
-`tests/conftest.py` replaces with a MagicMock, so it would have passed
-against code that did nothing.
+## What is real and what is a stand-in
 
-Which leads to the general trap: `matplotlib`, `PIL`, `mss`, `serial` and the
-Qt backends are all `MagicMock` for the whole suite. **Iterating a MagicMock
-yields nothing**, so a loop-based assertion over one passes vacuously. Check
-what you are really asserting on before believing a green test.
+The suite under `tests/` runs against the real `serial`, `pygame`, `mss`,
+`PIL` and `matplotlib`; the only stand-in is `tkinter` (a `MagicMock` in
+`tests/conftest.py`, so the Tk view's tests exercise logic, not widgets).
+The legacy suite mocks all of them. **Iterating a MagicMock yields
+nothing**, so a loop-based assertion over one passes vacuously; check what
+you are really asserting on before believing a green test.
 
 ## Reading a result
 
-- **XPASS is a failure**, deliberately. `xfail(strict=True)` markers in
-  `tests/architecture/test_invariants.py` carry the stage that fixes them;
-  an XPASS means that stage landed and the marker should now be deleted.
-- **Never bump a structural invariant's baseline to make it green.** If the
-  hit count dropped but is not zero, find out which remaining hits belong to
-  which stage and write that down. A bumped baseline hides the difference
-  between "fixed" and "partly fixed" permanently.
-- The invariant harness has a vacuity guard: a grep test that matches
-  nothing anywhere is a broken test, not a passing one.
+- Never mark a test skipped or xfail to get green, never delete a test to
+  silence it, never bump a baseline. If a count dropped, find which tests
+  and say why.
+- The golden gate compares **bytes**, not baud rate, timing or lock
+  discipline. Green there says the frames match; it says nothing about
+  whether the port was opened at the right speed or whether two threads can
+  read each other's replies. The 2026-09-23 audit found both.

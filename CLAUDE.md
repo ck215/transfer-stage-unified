@@ -4,7 +4,8 @@ A lab-instrument control app, "the station": stepper and DC probes, a chuck
 positioner, a Temperature Controller, an SMC100 Rotator, and a
 screen-capture Red Percent monitor. Three frontends — Web (the candidate
 primary), Tkinter and PySide6 — over one Controller. Firmware is untouched;
-every byte on the wire is identical to the old app's.
+every byte on the wire is identical to `legacy/src`'s (the repair tree
+the lab ran Aug 26–Sep 22, 2026), pinned by `tests/golden/`.
 
 ## Tree
 
@@ -45,7 +46,7 @@ second test wave).
 
 ```
 python3 src/app.py --web --no-browser --port 8080
-python3 -m pytest tests -q -p no:cacheprovider -m "not qt"                        # 1498 pass
+python3 -m pytest tests -q -p no:cacheprovider -m "not qt"                        # 1527 pass
 QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 85 pass
 python3 -m pytest tests/test_wire_golden.py -q                                    # 78 scenarios byte-identical to legacy/src
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
@@ -61,6 +62,13 @@ code unpiped.
 | Skill | When |
 |---|---|
 | `station-map` | before auditing, pruning or relocating anything: the three code trees, the owner rulings that make a "missing" feature intentional, the traps |
+| `verify` | after any change under `src/` or `tests/`; the four gates and a launch before any merge |
+| `parallel-stage` | several independent BUGFIX_PLAN items at once: exclusive write sets, one worktree per agent, the lead verifies and merges |
+
+Agent profiles in `.claude/agents/`: `worktree-fixer` (fixes plan items in a
+worktree), `main-feature-auditor` (read-only, `main` vs the rebuild, one
+subsystem each), `docs-pruner`, `mvc-relayout`. All Opus, fresh context,
+briefed by the lead.
 
 ## Standing rules
 
@@ -95,8 +103,8 @@ code unpiped.
 - 2026-09-23: the refactor redone from scratch as `station/` on a `rebuild`
   branch was fast-forwarded here; `rebuild` retired. The same day `station/`
   became `src/`, the old tree became `legacy/`, and stale docs were archived.
-- Old-process skills, pending rewrite by the lead: `verify`, `stage-close`,
-  `reconcile-ledger`, `fix-a-finding`, `parallel-stage`. They still describe
-  stages and the old `src/`.
+- 2026-09-23: `verify` and `parallel-stage` rewritten for the new tree;
+  `stage-close`, `reconcile-ledger` and `fix-a-finding` retired with the
+  ledger process (in git history before `beb7b94`).
 - `legacy/` is deleted once every file in `tests/TEST_PORTING.md` has a
   ported equivalent; then `mvc-refactor` merges to `main`.
