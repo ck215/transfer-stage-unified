@@ -59,7 +59,7 @@ Never yours: `docs/**`, `CLAUDE.md`, `README.md`, `.claude/**`,
 The gates you run, and the only ones:
 
 ```
-$PY -m pytest tests -q -p no:cacheprovider -m "not qt" > "$S/fast.txt" 2>&1; echo EXIT=$?; tail -1 "$S/fast.txt"   # 1527 passed at base
+$PY -m pytest tests -q -p no:cacheprovider -m "not qt" > "$S/fast.txt" 2>&1; echo EXIT=$?; tail -1 "$S/fast.txt"   # 1675 passed at base
 $PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                                                     # 78 passed
 ```
 

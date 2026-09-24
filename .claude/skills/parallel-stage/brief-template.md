@@ -10,7 +10,7 @@ A brief carries only what changes between runs. Substitute `<...>`.
 # <batch name> — <one-line scope>. Worktree brief.
 
 Worktree: <../rb-probes>   Branch: <rb-probes>   Base: <sha>
-Python: <abs path to ../main/.venv/bin/python>   Handoff: <../rebuild-handoff/fix-probes.md>
+Python: <abs path to ../main/.venv/bin/python>   Handoff: <handoff/fix-probes.md>
 
 ## THE WRITE SET — a hard contract
 
@@ -30,7 +30,7 @@ Everything else is owned by someone working RIGHT NOW in another worktree:
 ## The items you own
 
 ### <D1> — <title>
-Plan: `docs/rebuild/BUGFIX_PLAN.md`, Tier D row <D1>. Audit: `../rebuild-handoff/audit-<area>.md`, <ID>.
+Plan: `docs/rebuild/BUGFIX_PLAN.md`, Tier D row <D1>. Audit: `handoff/audit-<area>.md`, <ID>.
 <One or two lines on what the audit claims. Note that it may be stale.>
 
 ## Explicitly NOT yours

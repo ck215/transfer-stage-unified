@@ -11,7 +11,7 @@ description: Orientation for any agent working on transfer-stage-unified — whe
 /Users/ianalbinogonzalez/Documents/GitHub/transfer-stage-unified/
   main/             worktree, branch `main`         — the LAB's original app
   mvc-refactor/     worktree, branch `mvc-refactor` — the working branch (work here)
-  rebuild-handoff/  NOT in any repo — agent reports (audit-*.md, relayout.md, docs-prune.md), screenshots
+  handoff/  NOT in any repo — agent reports (audit-*.md, relayout.md, docs-prune.md), screenshots
   rebuild/          stray directory, no .git; the `rebuild` branch was retired 2026-09-23. Do not use.
 ```
 
@@ -21,7 +21,7 @@ Three generations of the app exist:
 |---|---|---|---|
 | Original | `main/src/` | flat Tk files: `mainGUI.py`, `stepper_frame.py`, `DC_frame.py`, `chuck_frame.py`, `controllerDrive.py`, `serialDrive.py`, `temp_control.py`, `rotator.py`, `lib/{smc100,redpercent,toupcam}.py` | The behaviour the lab knows. Reference for "what the app is supposed to do". |
 | MVC repair | `mvc-refactor/legacy/src/` (+ `legacy/tests/`) | `controller/ model/ views/{tkinter,pyside,web} lib/` | Ran in the lab 2026-08-26 → 09-22. Frozen. Reference for the golden wire captures only; deleted once `tests/TEST_PORTING.md` is worked off. |
-| Rebuild | `mvc-refactor/src/` (+ `tests/`) | `app.py`, `events panel param schema result palette`, `controller/{controller,setup}.py`, `model/{base,probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/{tk,qt,web/}` | **The app.** 13.7k lines; 1527 fast tests, 85 Qt, 78 golden wire scenarios byte-identical to `legacy/src`. Has never touched real hardware (see BUGFIX_PLAN Tier D). |
+| Rebuild | `mvc-refactor/src/` (+ `tests/`) | `app.py`, `events panel param schema result palette`, `controller/{controller,setup}.py`, `model/{base,probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/{tk,qt,web/}` | **The app.** 13.7k lines; 1675 fast tests, 127 Qt, 78 golden wire scenarios byte-identical to `legacy/src`. Has never touched real hardware (see BUGFIX_PLAN Tier D). |
 
 Firmware (`firmware/`) is untouched by the rebuild, but it is **not** the
 same as `main`'s: the stepper, chuck and temperature sketches changed on
@@ -55,7 +55,7 @@ every old `legacy/src` method to kept/renamed/merged/purged.
 ```
 PY=/Users/ianalbinogonzalez/Documents/GitHub/transfer-stage-unified/main/.venv/bin/python
 $PY src/app.py --web --no-browser --port 8080          # then set ports to "SIM" via /api/setup
-$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                  # 1527 passed, ~50 s
+$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                  # 1675 passed, ~80 s (12 headless-Chrome tests included)
 $PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider          # 78 passed; recaptures legacy/src in a subprocess
 cd legacy && $PY -m pytest tests -q -p no:cacheprovider -m "not slow and not order_dependent and not qt"   # old suite: 1038 passed
 ```
@@ -109,7 +109,7 @@ finding. Cite the ruling and move on.
 ## Hygiene
 
 - Scratch files go in the session scratch directory or
-  `rebuild-handoff/`, never a repo root.
+  `handoff/`, never a repo root.
 - Never push. Never amend. Commit only if your brief says to.
 - `docs/**`, `CLAUDE.md`, `README.md`, `.claude/**`, `tests/golden/**`,
   `legacy/**`, `firmware/**` belong to the lead unless the brief says

@@ -20,7 +20,7 @@ else.
 3. Your skill's SKILL.md and the reference file(s) the brief names. Run it
    the way it says to run. If the skill wants sub-agents and you have the
    Agent tool, use them; if not, run inline and say so in the header.
-4. The current captures in `../rebuild-handoff/shots/` (`round2_web_final_*`,
+4. The current captures in `handoff/shots/` (`round2_web_final_*`,
    `round2_qt_final_*`, `round2_tk_interim_*`) and the round-2 handoffs
    (`web5.md`, `qt3.md`, `tk3.md`), so you do not re-report what was just
    fixed or what the handoffs list as kept-on-purpose.

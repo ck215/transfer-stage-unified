@@ -58,7 +58,7 @@ checked in the summary line.
 
 ## What to hand back
 
-Write `rebuild-handoff/audit-<area>.md` (the brief gives `<area>`).
+Write `handoff/audit-<area>.md` (the brief gives `<area>`).
 Nothing else outside the scratch directory.
 
 ```

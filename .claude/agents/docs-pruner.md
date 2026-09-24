@@ -63,7 +63,7 @@ History goes under a final `## History` heading in at most ten lines.
 
 ## What to hand back
 
-Write `rebuild-handoff/docs-prune.md`:
+Write `handoff/docs-prune.md`:
 
 ```
 # Docs prune

@@ -23,6 +23,7 @@ legacy/src/              the old MVC repair tree: reference for the golden wire 
 legacy/tests/            the old suite; still runnable
 firmware/                Arduino / Teensy sketches, unchanged
 docs/rebuild/            current docs; docs/archive/ is history
+handoff/                 git-ignored: agent handoffs, audit reports, captures (shots/)
 ```
 
 The import rules between these layers are a test (`tests/test_architecture.py`).
@@ -46,8 +47,8 @@ second test wave).
 
 ```
 python3 src/app.py --web --no-browser --port 8080
-python3 -m pytest tests -q -p no:cacheprovider -m "not qt"                        # 1527 pass
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 85 pass
+python3 -m pytest tests -q -p no:cacheprovider -m "not qt"                        # 1675 pass
+QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 127 pass
 python3 -m pytest tests/test_wire_golden.py -q                                    # 78 scenarios byte-identical to legacy/src
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
 ```

@@ -34,7 +34,7 @@ Write set for the `agy` batch: `src/model/probe.py`, `src/model/rotator.py`,
 `src/model/red_monitor.py`, `src/model/plot_data.py`,
 `src/views/web/server.py`, `src/controller/setup.py`, `src/events.py`, and
 their tests under `tests/`. One worktree, one branch (`rb-bugfix-a`),
-one handoff in `../rebuild-handoff/bugfix-a.md`. Lead re-runs the three
+one handoff in `handoff/bugfix-a.md`. Lead re-runs the three
 verify commands and hand-drives A1/A2 in the Web view before merge.
 
 ## Tier B — bench only (owner; never delegated)
@@ -72,7 +72,7 @@ Four read-only Opus auditors compared the lab's original app on `main`
 against the rebuild, one subsystem each, reporting only behaviour that is
 missing or changed with a negative or neutral consequence and excluding
 everything an owner ruling covers. Full reports:
-`../rebuild-handoff/audit-{probes,heater-rotator,redpercent-camera,shell}.md`
+`handoff/audit-{probes,heater-rotator,redpercent-camera,shell}.md`
 (outside the repo). The lead re-verified every row marked **verified**.
 
 Framing correction the auditors missed: `main`'s firmware is not what the
@@ -120,14 +120,19 @@ then D6/D7 together (one write set: `setup.py`), then the rest.
 | E3 | `src/views/theme.py` | A severity → text-colour map for event logs (Tk and Qt each hard-wire one now; `ROLES["info"]` as a text colour was the unreadable-log bug in both). | direct |
 | E4 | `src/views/theme.py` `FONT_FAMILY` | The brief names IBM Plex Sans; Tk/Qt can use it only if installed on the station PC. Owner: install it there, or accept Helvetica for the desktop views. | owner |
 | E5 | `src/controller/setup.py` `stop_system` | Owner call: confirm before tearing every model down? | owner |
-| E6 | Tk after-shots | Capture the three states at 1400×900 and 900×900 when the Mac is free (`../rebuild-handoff/tk3.md`, UNVERIFIED). | direct |
+| E6 | Tk after-shots | Capture the three states at 1400×900 and 900×900 when the Mac is free (`handoff/tk3.md`, UNVERIFIED). | direct |
+| E7 | `src/devices/serial_port.py` ~730 | "Connection Lost" is published with the port as source; views want the owning model's name so the tray line reads "Stepper Probe lost its serial port". | `router` |
+| E8 | `src/model/red_monitor.py` `load_run` | Refuse with a sentence when called without a path (the Web view now always sends one; Tk/Qt dialogs cancel → no call). | `router` |
+| E9 | `src/views/base.py` | One shared list of at-rest ("muted") words and one `_show_refused(element, …)` signature so all three views place refusals the same way; a failed command clears the previous refusal in `PanelView._run`. | direct |
+| E10 | Web / Qt | The alert queue has no cap; the Web type scale ignores `theme.size()`; Safari keeps ⌘. so only Ctrl+. reaches the page there. | `router` |
+| E11 | Tk, Qt on screen | Tk after-shots (rounds 2 and 3) and the ⌘. chord on a real Aqua display are unseen: run the capture commands in `handoff/fix-tk.md` when the Mac is free. | direct |
 
 ## Tier F — UI audit round (2026-09-24): six skills, six read-only auditors, one ranked list
 
 Auditors (all Opus, fresh context, `ui-auditor` profile): Impeccable `critique` (Web),
 Impeccable `harden`+`clarify` (all views), Impeccable `audit` (Tk, Qt), UI UX Pro
 Max guideline sweep (all views), Vercel Web Design Guidelines (Web), `design-system`
-token audit (theme + three consumers). Reports: `../rebuild-handoff/audit-ui-*.md`.
+token audit (theme + three consumers). Reports: `handoff/audit-ui-*.md`.
 Duplicates across reports are merged here; **verified** = the lead reproduced it.
 Severity: S1 misleads about hardware state or weakens the stop path; S2 blocks or
 makes a task error-prone; S3 inconsistent or off-brief; S4 nit.
@@ -164,6 +169,8 @@ makes a task error-prone; S3 inconsistent or off-brief; S4 nit.
 **Owner decisions surfaced by the audits** (not routed): (a) signal on panel is 2.73:1 for bars, lamps and the latch ring — the brief's pinned colour vs the 3:1 non-text floor; (b) `--danger-fg #ffffff` and `palette.GRID` are a seventh and eighth colour in a six-token file; (c) the Setup drawer holds a primary action (Launch); (d) "Clear" on the big red button as a mode-error risk; (e) how "latched" should read from across the bench; (f) what the console should do when the station stops answering; (g) whether the latch should pre-disable commands (F11) — the lead recommends yes.
 
 **Model-side items surfaced by the audits, for Tier A/D:** pressing Stop in SIM raises "Stop Not Confirmed: Rotator" (this is A1 — a portless stop is unconfirmed; the popup then triggers F1); the Qt harden run saw Step refused in autonomous mode with "cannot be changed while autonomous" when nothing had been edited — diagnose before F11 changes the gating.
+
+**Status after the fix round (2026-09-24, lead-verified on the merged tree):** F1–F5, F7–F21, F23–F25 landed (`handoff/fix-{core,tk,qt,web}.md`). Open: **F6** (latched sentence and ring contrast — the ring is an owner call), **F22 Web part** (six-model rail at 900×600), **F26**, and the Web type scale (its rem steps do not match `theme.size()`). Follow-ups filed as E7–E11.
 
 Batch order for Tier F: F1, F2+F4, F3, F9 (the stop path, one at a time, lead-verified) → F5, F7, F8 (desktop rail and stop) → F14, F23 (theme tokens, one worktree) → F10–F13, F15–F22 in parallel worktrees by view → F24–F26.
 

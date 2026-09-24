@@ -14,15 +14,15 @@ on this Mac); `$S` is the session scratch directory.
 $PY -m pytest tests -q -p no:cacheprovider -m "not qt"
 ```
 
-~50 s. Run after every edit. Baseline **1527 passed, 85 deselected** (the
+~50 s. Run after every edit. Baseline **1675 passed, 127 deselected** (the
 85 are the Qt tests). A count that moved is a finding, not noise.
 
 ## Before a merge: four gates and a launch
 
 ```
-$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                          # 1527 passed
+$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                          # 1675 passed
 $PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                  # 78 passed; recaptures from legacy/src in a subprocess
-QT_QPA_PLATFORM=offscreen $PY -m pytest tests -q -p no:cacheprovider -m qt      # 85 passed; lead only, see below
+QT_QPA_PLATFORM=offscreen $PY -m pytest tests -q -p no:cacheprovider -m qt      # 127 passed; lead only, see below
 cd legacy && $PY -m pytest tests -q -p no:cacheprovider -m "not slow and not order_dependent and not qt"
                                                                                 # 1038 passed, 1 skipped, 89 deselected, 1 xfailed
 $PY src/app.py --web --no-browser --port 8081 &  sleep 8;  curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/setup;  kill %1
