@@ -395,10 +395,13 @@ class Rotator(Model):
                 # something the next relative move may be measured against.
                 self._forget_target()
                 if self._estop.is_set():
-                    events.info("Move Aborted", f"{what} was cut short by FULL "
-                                "STOP", source=self.NAME)
+                    events.info("Move Aborted", f"{what} was cut short by "
+                                "the stop.", source=self.NAME)
                 else:
-                    self._fault(f"{what} failed: {exc}")
+                    events.debug("Motion Failed", f"{what}: {exc!r}",
+                                 source=self.NAME, exception=exc)
+                    self._fault(f"{what} did not complete. Check the stage, "
+                                "then try again.")
                 events.debug("Motion", f"{what} raised after "
                              f"{time.monotonic() - started:.2f}s", source=self.NAME,
                              exception=exc)
@@ -432,8 +435,8 @@ class Rotator(Model):
             # `Controller.estop_all` own the acknowledged "Stop Not Confirmed"
             # error, and raising a second one from inside a close path would
             # block the exit.
-            events.warn("Stop Not Written", "the priority ST was not written; "
-                        "treat the stage as live", source=self.NAME)
+            events.warn("Stop Not Written", "The stop did not reach the "
+                        "rotator. Treat the stage as live.", source=self.NAME)
         return landed
 
     # -- sampling ----------------------------------------------------------
@@ -482,19 +485,26 @@ class Rotator(Model):
             if self._poll_ok is not False:
                 # Once per transition, not once per tick: the loop rule is
                 # that nothing publishes per iteration.
-                events.warn("Rotator Unreachable", f"the stage stopped "
-                            f"answering: {exc}", source=self.NAME, exception=exc)
+                events.debug("Rotator Unreachable", repr(exc),
+                             source=self.NAME, exception=exc)
+                events.warn("Rotator Unreachable", "The stage stopped "
+                            "answering. Check its cable and power.",
+                            source=self.NAME, exception=exc)
             self._poll_ok = False
             events.debug("Poll", f"failed: {exc}", source=self.NAME,
                          exception=exc, every=5.0)
             return
         self._publish(round(position, 4), self._motion_state_name(code))
         if errors:
-            self._fault(f"controller error 0x{errors:04X}")
+            events.debug("Controller Error", f"0x{errors:04X}",
+                         source=self.NAME, every=5.0)
+            self._fault(f"The rotator controller reported an error "
+                        f"(code {errors:04X}). Use Reset & Configure to "
+                        "clear it.")
         else:
             self._clear_fault()
         if self._poll_ok is False:
-            events.info("Rotator Back", "the stage is answering again",
+            events.info("Rotator Back", "The stage is answering again.",
                         source=self.NAME)
         self._poll_ok = True
         events.debug("Poll", f"{self._poll_count} polls; {position:.4f} deg, "

@@ -107,10 +107,26 @@ class Panel:
             return Result(Result.CONFIRM, reason=ask.prompt, command=ask.command,
                           inputs=ask.inputs, args=ask.rerun_args)
         except Exception as exc:
-            events.error("Command Failed", f"{command} failed: {exc}",
-                         source=source, exception=exc)
-            return Result(Result.FAILED, reason=f"{command} failed: {exc}",
-                          exception=exc)
+            # F19: the command name, the exception and any bytes it quotes go
+            # to the file log only; the view gets a sentence.
+            events.debug("Command Failed", f"{command}{tuple(args)} failed: "
+                         f"{exc!r}", source=source, exception=exc)
+            reason = (f"{self._label_of(command)} did not complete. Check that "
+                      f"the {source} is connected, then try again; the "
+                      "details are in the log file.")
+            events.error("Command Failed", reason, source=source,
+                         exception=exc)
+            return Result(Result.FAILED, reason=reason, exception=exc)
+
+    def _label_of(self, command):
+        """The operator's name for a command: its control's text."""
+        try:
+            for element in sch.elements(self.schema):
+                if element.get("command") == command and element.get("text"):
+                    return str(element["text"]).rstrip(": ")
+        except Exception:
+            pass
+        return "That command"
 
     def _is_data_command(self, command):
         """Plot, image and log sources are polled every refresh: never logged."""
@@ -174,8 +190,9 @@ class Panel:
             if not self._is_enabled(writable[name]):
                 if self._same_value(getattr(self, name, None), value):
                     continue  # unchanged value of a gated field: not an edit
-                raise Refused(f"{param.label or name} cannot be changed "
-                              f"while {self.mode_name}")
+                raise Refused(f"{param.label or name} cannot be changed in "
+                              f"{self.mode_name} mode. Leave {self.mode_name} "
+                              "mode to edit it.")
             parsed[name] = value
         for name, value in parsed.items():
             setattr(self, name, value)

@@ -44,13 +44,20 @@ class Model(Panel):
             try:
                 step()
             except Exception as exc:
-                events.warn("Close Step Failed", f"{step.__name__}: {exc}",
-                            source=self.NAME, exception=exc)
+                events.debug("Close Step Failed", f"{step.__name__}: {exc!r}",
+                             source=self.NAME, exception=exc)
+                events.warn("Close Step Failed", f"{self.NAME} did not close "
+                            "cleanly. Check that it is stopped before you "
+                            "unplug it.", source=self.NAME, exception=exc)
         for device in self.devices:
             try:
                 device.close()
             except Exception as exc:
-                events.warn("Device Close Failed", str(exc), source=self.NAME,
+                events.debug("Device Close Failed", f"{device!r}: {exc!r}",
+                             source=self.NAME, exception=exc)
+                events.warn("Device Close Failed", f"A device of {self.NAME} "
+                            "did not close cleanly. If it will not reconnect, "
+                            "unplug it and plug it back in.", source=self.NAME,
                             exception=exc)
 
     def _start_threads(self):
@@ -93,7 +100,11 @@ class Model(Panel):
                 landed.append(bool(self._halt_hardware()))
             except Exception as exc:
                 landed.append(False)
-                events.warn("Stop Raised", str(exc), source=self.NAME, exception=exc)
+                events.debug("Stop Raised", repr(exc), source=self.NAME,
+                             exception=exc)
+                events.warn("Stop Raised", f"The stop on {self.NAME} raised an "
+                            "error. Treat it as live and check it by hand.",
+                            source=self.NAME, exception=exc)
             finally:
                 done.set()
 
@@ -140,10 +151,16 @@ class Model(Panel):
         `abort_if` to the device write as well: the check that counts is the
         one inside the lock."""
         if self._estop.is_set():
-            raise Refused(f"{what} refused: FULL STOP is latched on {self.NAME}")
+            events.debug("Guard", f"{what} refused: latched", source=self.NAME)
+            raise Refused(f"{self.NAME} is stopped. Clear the stop, then try "
+                          "again.")
 
     # -- fault -------------------------------------------------------------
     def _fault(self, reason):
+        if not str(reason or "").strip():
+            # An empty reason used to come up as a blank fault (F19).
+            reason = (f"{self.NAME} reported a fault without a reason. Stop "
+                      "it and check the device.")
         if reason != self._fault_reason:
             self._fault_reason = reason
             events.error("Fault", reason, source=self.NAME)

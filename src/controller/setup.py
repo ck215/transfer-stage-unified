@@ -393,8 +393,11 @@ class Setup(Panel):
         try:
             entries = [self._port_entry(e) for e in listing()]
         except Exception as exc:
-            events.warn("Port Listing Failed", str(exc), source=self.NAME,
-                        exception=exc)
+            events.debug("Port Listing Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            events.warn("Port Listing Failed", "The port list could not be "
+                        "read, so a placeholder list is offered. Press Refresh "
+                        "to try again.", source=self.NAME, exception=exc)
             return list(FALLBACK_PORTS)
 
         usable = []
@@ -448,8 +451,11 @@ class Setup(Panel):
         try:
             return ["None"] + [str(n) for n in hub.names]
         except Exception as exc:
-            events.warn("Gamepad Listing Failed", str(exc), source=self.NAME,
-                        exception=exc)
+            events.debug("Gamepad Listing Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            events.warn("Gamepad Listing Failed", "The gamepad list could not "
+                        "be read. Press Refresh to try again.",
+                        source=self.NAME, exception=exc)
             return ["None"]
 
     def refresh(self):
@@ -577,8 +583,11 @@ class Setup(Panel):
             try:
                 self.auto_assign()
             except Exception as exc:       # never let a worker die silently
-                events.warn("Auto-assign Failed", str(exc), source=self.NAME,
-                            exception=exc)
+                events.debug("Auto-assign Failed", repr(exc), source=self.NAME,
+                             exception=exc)
+                events.warn("Auto-assign Failed", "Ports could not be assigned "
+                            "automatically. Choose them by hand.",
+                            source=self.NAME, exception=exc)
             with self._lock:
                 detected = sum(1 for name in self._found.values() if name)
             self.scan_status = ("ready" if not detected else
@@ -743,11 +752,14 @@ class Setup(Panel):
     def _warn_probe(self, port, exc):
         """One warning per port per scan; the rest go to the log file."""
         message = f"{port}: {exc or type(exc).__name__}"
+        events.debug("Probe Failed", message, source=self.NAME, exception=exc)
         if port in self._warned_ports:
-            events.debug("Probe Failed", message, source=self.NAME, exception=exc)
             return
         self._warned_ports.add(port)
-        events.warn("Probe Failed", message, source=self.NAME, exception=exc)
+        cause = re.sub(r"b'[^']*'|b\"[^\"]*\"", "", str(exc or "")).strip(" :;")
+        events.warn("Probe Failed", f"{port} could not be checked"
+                    f"{f' ({cause})' if cause else ''}. If a device is on it, "
+                    "choose the port by hand.", source=self.NAME, exception=exc)
 
     def _refuse(self, reason):
         """Every refusal reaches the log file, even when `build()` was called
@@ -760,7 +772,21 @@ class Setup(Panel):
         if what in self._warned_missing:
             return
         self._warned_missing.add(what)
-        events.warn("Not Available", message, source=self.NAME)
+        events.debug("Not Available", message, source=self.NAME)
+        events.warn("Not Available", self._MISSING_SENTENCES.get(
+            what, "Part of hardware detection is unavailable. Choose ports "
+            "by hand."), source=self.NAME)
+
+    #: What the operator reads when a collaborator is missing (F19); the
+    #: module-level detail goes to the file log.
+    _MISSING_SENTENCES = {
+        "list_ports": "Ports cannot be listed on this computer, so a "
+                      "placeholder list is offered. Choose ports by hand.",
+        "hub": "Gamepads cannot be listed on this computer, so none can be "
+               "assigned.",
+        "query": "The rotator cannot be detected automatically. Choose its "
+                 "port by hand.",
+    }
 
     # -- assignment --------------------------------------------------------
     def auto_assign(self, force=False):
@@ -918,9 +944,9 @@ class Setup(Panel):
                 self._roll_back(built)
                 events.debug("Build Failed", f"{name}: {exc}", source=self.NAME,
                              exception=exc)
-                raise Refused(f"Could not start {name}: {exc}. Nothing was "
-                              "left running; adjust the configuration and "
-                              "try again.")
+                raise Refused(f"Could not start the {name}. Nothing was "
+                              "left running; check its port and try again. "
+                              "The details are in the log file.")
             built.append(name)
             events.debug("Built", f"{name} port={config.get('port')} "
                          f"gamepad={config.get('gamepad')} sim={config.get('sim')} "
@@ -967,8 +993,12 @@ class Setup(Panel):
             try:
                 self.controller.remove(name)
             except Exception as exc:
-                events.warn("Rollback Failed", f"{name}: {exc}",
-                            source=self.NAME, exception=exc)
+                events.debug("Rollback Failed", f"{name}: {exc!r}",
+                             source=self.NAME, exception=exc)
+                events.warn("Rollback Failed", f"The {name} could not be shut "
+                            "down after the failed launch. Restart the app "
+                            "before launching again.", source=self.NAME,
+                            exception=exc)
 
     # -- schema ------------------------------------------------------------
     def _build_rows(self):

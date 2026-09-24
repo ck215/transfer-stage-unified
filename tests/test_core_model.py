@@ -138,7 +138,10 @@ def test_a_guarded_command_is_refused_while_latched():
     model.estop()
     result = model.run("move")
     assert result.is_refused
-    assert "Move refused" in result.reason and "FULL STOP" in result.reason
+    # F19/F20: one vocabulary ("stopped", "Clear the stop") and a sentence
+    # that says what to do; the command name goes to the file log.
+    assert "Fake is stopped" in result.reason
+    assert "Clear the stop" in result.reason
     assert model.moved == [], "a move landed after the FULL STOP"
 
 
@@ -471,3 +474,14 @@ def test_the_base_model_owns_no_devices():
             return sch.schema(self._safety_section())
 
     assert Bare().devices == []
+
+
+def test_a_fault_with_no_reason_still_says_something():
+    """F19: an empty-reason fault came up blank in every view."""
+    model = FakeModel()
+    with EventRecorder() as log:
+        model._fault("")
+    assert model.is_faulted
+    assert model.fault.startswith("Fake reported a fault without a reason.")
+    errors = [e for e in log.seen if e.severity == "error"]
+    assert errors and errors[0].message == model.fault

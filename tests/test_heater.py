@@ -122,7 +122,7 @@ def test_apply_settings_refuses_while_the_latch_is_set(heater, port):
     port.forget()
     with pytest.raises(Refused) as refusal:
         heater.apply_settings()
-    assert "FULL STOP" in refusal.value.reason
+    assert "is stopped" in refusal.value.reason   # F20 vocabulary
     assert port.frames == []
 
 

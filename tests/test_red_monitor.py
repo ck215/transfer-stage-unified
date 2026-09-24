@@ -457,7 +457,7 @@ def test_start_refuses_while_the_stop_latch_is_set(monitor):
 
     with pytest.raises(Refused) as refusal:
         monitor.start_run(confirmed=True)
-    assert "FULL STOP" in str(refusal.value)
+    assert "is stopped" in str(refusal.value)   # F20 vocabulary
 
 
 def test_start_refuses_when_screen_capture_is_unavailable(tmp_path, monkeypatch):

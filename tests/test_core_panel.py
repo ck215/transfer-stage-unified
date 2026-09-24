@@ -276,12 +276,23 @@ def test_a_refused_command_is_an_info_event_and_never_a_popup():
     assert log.acknowledged == [], "a refusal is not a fault"
 
 
-def test_an_exception_becomes_failed_and_exactly_one_acknowledged_event():
+def test_an_exception_becomes_failed_and_exactly_one_acknowledged_event(
+        monkeypatch):
+    import panel as panel_module
+    logged = []
+    real_debug = panel_module.events.debug
+    monkeypatch.setattr(panel_module.events, "debug",
+                        lambda title, message, **kw: logged.append(message)
+                        or real_debug(title, message, **kw))
     model = FakeModel()
     with EventRecorder() as log:
         result = model.run("boom")
     assert result.is_failed
-    assert "boom failed" in result.reason and "the board said no" in result.reason
+    # F19: the operator gets a sentence naming the control; the command name
+    # and the exception text go to the file log (a debug event) only.
+    assert result.reason.startswith("Boom did not complete.")
+    assert "boom failed" not in result.reason
+    assert any("boom" in m and "the board said no" in m for m in logged)
     assert isinstance(result.exception, RuntimeError)
     assert len(log.acknowledged) == 1, (
         f"a failed command raised {len(log.acknowledged)} popups")

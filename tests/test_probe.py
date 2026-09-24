@@ -905,3 +905,39 @@ def test_the_latch_greys_out_step_and_both_mode_toggles(probe):
     probe.clear_estop(confirmed=True)
     assert probe.state["mode"] == probe.mode_name
     assert sch.is_enabled(_by_command(probe, "step"), probe.state["mode"])
+
+
+# -- F19: operator sentences ------------------------------------------------
+
+@pytest.mark.estop
+def test_the_coil_kill_warning_is_a_sentence_without_ids_or_bytes():
+    """audit-ui-harden-clarify: 'SERIAL-10 ... D-7' and the byte list reached
+    the operator. The finding IDs go to the file log only."""
+    dc, _, _ = make_probe(DCProbe)
+    with Collected() as log:
+        dc.halt()
+    warning = next(e for e in log.of("warning") if "Power Down" in e.title)
+    for jargon in ("SERIAL-10", "D-7", "['s']", "coil-kill"):
+        assert jargon not in warning.message, jargon
+    assert "treat it as live" in warning.message
+
+
+def test_a_failed_move_write_reaches_the_view_as_a_sentence(probe):
+    """'step failed: ... b'1,1,1,...' was not sent' reached the operator."""
+    probe.port.fail_on = lambda payload: payload.startswith(b"1,")
+    original = probe.port.write
+
+    def write(payload, **kwargs):
+        if payload.startswith(b"1,"):
+            raise OSError(f"port is not open; {payload!r} was not sent")
+        return original(payload, **kwargs)
+
+    probe.port.write = write
+    with Collected() as log:
+        result = probe.run("step")
+    assert result.is_failed
+    for jargon in ("b'", "step failed", "was not sent"):
+        assert jargon not in result.reason, jargon
+    assert result.reason.startswith("Step did not complete.")
+    shown = [e for e in log.seen if e.severity != "debug"]
+    assert all("b'" not in e.message for e in shown)

@@ -284,8 +284,9 @@ class Heater(Model):
         generation = self._stop_generation
         frame, setpoint = self._build_settings_frame()
         if not self.port.is_open:
-            self._refuse(f"Settings not sent: {self.NAME} is not connected "
-                         f"({self.port.status})")
+            self._refuse(f"Settings not sent: the {self.NAME} is not "
+                         f"connected ({self.port.status}). Check its port in "
+                         "Setup.")
 
         def _is_superseded():
             return self._estop.is_set() or self._stop_generation != generation
@@ -309,9 +310,11 @@ class Heater(Model):
                      f"{(time.monotonic() - started) * 1000:.1f} ms", source=self.NAME)
         if not is_written:
             self._guard("Settings")   # name the latch when the latch is why
-            self._refuse("Settings not sent: a stop arrived while the frame "
-                         "was waiting for the port")
-        events.info("Settings Sent", frame.decode("ascii"), source=self.NAME)
+            self._refuse("Settings not sent: a stop arrived while they were "
+                         "waiting to be sent. Send them again.")
+        events.debug("Settings Sent", frame.decode("ascii"), source=self.NAME)
+        events.info("Settings Sent", "The settings reached the controller.",
+                    source=self.NAME)
         return setpoint
 
     def _halt_hardware(self):
@@ -351,7 +354,11 @@ class Heater(Model):
             is_drained = self.port.flush(self.FLUSH_TIMEOUT) is not False
         except Exception as exc:
             is_drained = False
-            events.warn("Flush Failed", str(exc), source=self.NAME, exception=exc)
+            events.debug("Flush Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            events.warn("Flush Failed", "The heater-off command may not have "
+                        "left the computer. Check the heater is off at the "
+                        "controller.", source=self.NAME, exception=exc)
         events.debug("Disable", f"off={is_off} drained={is_drained}",
                      source=self.NAME)
         if not (is_off and is_drained):
@@ -388,7 +395,11 @@ class Heater(Model):
                          source=self.NAME)
             is_written = bool(self.port.write(frame, priority=True))
         except Exception as exc:
-            events.warn("Heater Off Not Sent", str(exc), source=self.NAME,
+            events.debug("Heater Off Not Sent", repr(exc), source=self.NAME,
+                         exception=exc)
+            events.warn("Heater Off Not Sent", "The heater-off command could "
+                        "not be sent. The heater may still be on; switch it "
+                        "off at the controller.", source=self.NAME,
                         exception=exc)
             return False
         finally:
@@ -550,13 +561,18 @@ class Heater(Model):
 
             failures += 1
             if failures == 1:
-                events.warn("Temperature Read Error", why, source=self.NAME,
+                events.debug("Temperature Read Error", why, source=self.NAME,
+                             exception=error)
+                events.warn("Temperature Read Error", "A temperature reading "
+                            "failed. Retrying; check the controller's cable "
+                            "if this repeats.", source=self.NAME,
                             exception=error)
             if failures > self.PERSISTENT_AFTER and not self._is_link_lost:
                 self._is_link_lost = True
                 events.warn("Temperature Disconnected",
-                            f"no reading after {failures} attempts; still "
-                            "retrying", source=self.NAME)
+                            f"No temperature reading after {failures} "
+                            "attempts. Still retrying; check the controller's "
+                            "cable and power.", source=self.NAME)
             backoff = min(self.MIN_BACKOFF * 2 ** (failures - 1),
                           self.MAX_BACKOFF)
             events.debug("Reader Backoff",

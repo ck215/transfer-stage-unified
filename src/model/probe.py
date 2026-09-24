@@ -205,8 +205,13 @@ class Probe(Model):
             try:
                 self.gamepad.bind(self._gamepad_name)
             except Exception as exc:
+                events.debug("Gamepad Bind Failed",
+                             f"{self._gamepad_name!r}: {exc!r}",
+                             source=self.NAME, exception=exc)
                 events.warn("Gamepad Bind Failed",
-                            f"{self._gamepad_name!r}: {exc}", source=self.NAME,
+                            f"Could not connect to the gamepad "
+                            f"{self._gamepad_name}. Check it is plugged in, "
+                            "then choose it again.", source=self.NAME,
                             exception=exc)
         events.debug("Devices Open", f"port={getattr(self.port, 'status', '?')} "
                      f"gamepad={self.gamepad_name}", source=self.NAME)
@@ -296,7 +301,7 @@ class Probe(Model):
         for mode in ProbeMode:
             if text in (mode.value, mode.name.lower()):
                 return mode
-        self._refuse(f"{target!r} is not a mode of {self.NAME}")
+        self._refuse(f"{target} is not a mode of the {self.NAME}.")
 
     def _set_mode(self, target, reason, quiesce=True):
         """Change mode and own the hardware side effects. The only writer.
@@ -320,12 +325,13 @@ class Probe(Model):
             if target is ProbeMode.DISABLED:
                 return self._deenergize(reason)
             if target is ProbeMode.FAULT:
-                self._refuse("fault is not a mode an operator may select")
+                self._refuse("Fault is not a mode you can select.")
             if target is ProbeMode.MANUAL and not self._is_gamepad_bound:
                 # Before the enable, never after: checking afterwards can
                 # revert the Python flag, but the firmware has already been
                 # told to energize.
-                self._refuse("Manual mode refused: no gamepad is bound")
+                self._refuse("Manual mode needs a gamepad. Choose one under "
+                             "Gamepad first.")
             self._guard(f"Mode change to {target.value}")
 
             self._energize(reason)
@@ -361,13 +367,18 @@ class Probe(Model):
         try:
             written = self.port.write(b"e", abort_if=self._estop.is_set)
         except Exception as exc:
-            events.warn("Enable Failed", f"the enable did not reach the board: "
-                        f"{exc}", source=self.NAME, exception=exc)
-            self._refuse(f"enable failed: {exc}")
+            events.debug("Enable Failed", f"b'e' not written: {exc!r}",
+                         source=self.NAME, exception=exc)
+            events.warn("Enable Failed", "The enable did not reach the board. "
+                        "Check the connection and try again.",
+                        source=self.NAME, exception=exc)
+            self._refuse("The enable did not reach the board. Check the "
+                         "connection and try again.")
         events.debug("Frame", f"enable {b'e'.hex()} written={bool(written)} "
                      f"({reason})", source=self.NAME)
         if not written:
-            self._refuse("enable aborted: FULL STOP is latched")
+            self._refuse(f"{self.NAME} is stopped. Clear the stop before "
+                         "enabling it.")
         return True
 
     def _deenergize(self, reason):
@@ -391,14 +402,18 @@ class Probe(Model):
                 # The disable did not reach the board, so the coils may still
                 # be energized. Recording DISABLED here would report the
                 # system safe on the strength of a command that failed.
-                self._enter_fault(f"disable not confirmed — coils may be "
-                                  f"energized: {exc}")
+                events.debug("Disable Failed", f"b'd' not written: {exc!r}",
+                             source=self.NAME, exception=exc)
+                self._enter_fault("The disable did not reach the board, so "
+                                  "the motors may still be powered. Treat it "
+                                  "as live and check the connection.")
                 return self._mode.value
             events.debug("Frame", f"disable {b'd'.hex()} written={bool(written)} "
                          f"({reason})", source=self.NAME)
             if not written:
-                self._enter_fault("disable not confirmed — the write did "
-                                  "not land; coils may be energized")
+                self._enter_fault("The disable did not reach the board, so "
+                                  "the motors may still be powered. Treat it "
+                                  "as live and check the connection.")
                 return self._mode.value
         self._mode = ProbeMode.DISABLED
         self._clear_fault()
@@ -461,8 +476,9 @@ class Probe(Model):
                 events.debug("Mode", f"{previous.value} -> disabled (halt)",
                              source=self.NAME)
         elif self.port is not None:
-            self._enter_fault("stop not confirmed — the disable byte did "
-                              "not land; coils may be energized")
+            self._enter_fault("The stop did not reach the board, so the "
+                              "motors may still be powered. Treat it as live "
+                              "and check the connection.")
         if not self.can_kill_coils:
             self._report_no_coil_kill()
         return all(landed.values())
@@ -490,14 +506,15 @@ class Probe(Model):
         if self._coil_kill_reported:
             return
         self._coil_kill_reported = True
+        events.debug("Power Down Not Supported",
+                     f"firmware handles "
+                     f"{sorted(b.decode() for b in self.FIRMWARE_CONTROL_BYTES)} "
+                     f"only; no coil-kill byte (SERIAL-10, owner decision D-7)",
+                     source=self.NAME)
         events.warn("Power Down Not Supported",
-                    f"{self.NAME}: this board's firmware has no coil-kill "
-                    f"command — it handles "
-                    f"{sorted(b.decode() for b in self.FIRMWARE_CONTROL_BYTES)} "
-                    f"and nothing else. A stop was sent and the motion frame "
-                    f"was zeroed, but the driver outputs were NOT "
-                    f"de-energized. Treat the device as live. (SERIAL-10; "
-                    f"firmware support is owner decision D-7.)",
+                    f"The {self.NAME} cannot power down its motors: its "
+                    f"firmware has no command for it. A stop halts the motion, "
+                    f"but the motors stay powered, so treat it as live.",
                     source=self.NAME)
 
     # -- motion -----------------------------------------------------------
@@ -510,7 +527,8 @@ class Probe(Model):
         """
         self._guard("Step")
         if self.is_moving:
-            self._refuse("Step refused: the stage is still moving")
+            self._refuse("The stage is still moving. Wait for it to stop, "
+                         "then step again.")
         self._set_mode(ProbeMode.AUTO, "step", quiesce=False)
         self._mark_moving()
         self._send_move()
@@ -584,7 +602,8 @@ class Probe(Model):
         events.debug("Frame", f"move {payload.hex()} written={written}",
                      source=self.NAME)
         if not written:
-            self._refuse("Move aborted: FULL STOP is latched")
+            self._refuse(f"The move was not sent: {self.NAME} is stopped. "
+                         "Clear the stop first.")
         return written
 
     def _send_jog(self, levels):
@@ -598,8 +617,8 @@ class Probe(Model):
         levels = dict(levels or {})
         if self.is_manual and not self._is_gamepad_bound:
             events.warn("Manual Mode Stopped",
-                        "the gamepad is no longer bound; disabling",
-                        source=self.NAME)
+                        "The gamepad disconnected, so manual mode stopped and "
+                        "the motors were disabled.", source=self.NAME)
             self._set_mode(ProbeMode.DISABLED, "gamepad lost")
             levels = {}
         if self.port is None:
@@ -676,7 +695,11 @@ class Probe(Model):
                              every=1.0)
                 was_pumping = False
             except Exception as exc:
-                self._enter_fault(f"manual jog pump failed: {exc}")
+                events.debug("Jog Pump Failed", repr(exc), source=self.NAME,
+                             exception=exc)
+                self._enter_fault("Manual control stopped working. Treat the "
+                                  "probe as live, stop it, and check the "
+                                  "gamepad and the connection.")
                 return
 
     def _sample_loop(self):
@@ -837,8 +860,11 @@ class Probe(Model):
         try:
             bound = bool(self.gamepad.bind(wanted))
         except Exception as exc:
-            events.warn("Gamepad Bind Failed", f"{name!r}: {exc}",
-                        source=self.NAME, exception=exc)
+            events.debug("Gamepad Bind Failed", f"{name!r}: {exc!r}",
+                         source=self.NAME, exception=exc)
+            events.warn("Gamepad Bind Failed", f"Could not connect to the "
+                        f"gamepad {name}. Check it is plugged in, then choose "
+                        "it again.", source=self.NAME, exception=exc)
         if wanted is None:
             self._gamepad_name = None
             events.debug("Gamepad", "unbound by operator", source=self.NAME)
@@ -853,7 +879,8 @@ class Probe(Model):
                 self._set_mode(ProbeMode.DISABLED, "gamepad bind failed")
             events.debug("Gamepad", f"bind to {name!r} failed; selection "
                          f"reverted to {previous!r}", source=self.NAME)
-            self._refuse(f"could not bind gamepad {name!r}")
+            self._refuse(f"Could not connect to the gamepad {name}. Check it "
+                         "is plugged in, then choose it again.")
         self._gamepad_name = wanted
         events.debug("Gamepad", f"bound to {wanted!r}", source=self.NAME)
         return wanted
@@ -871,9 +898,11 @@ class Probe(Model):
         try:
             return dict(self.gamepad.levels or {})
         except Exception as exc:
+            events.debug("Gamepad Read Failed", repr(exc), source=self.NAME,
+                         exception=exc)
             events.warn("Gamepad Read Failed",
-                        f"could not read the gamepad: {exc}. Treating every "
-                        f"axis as neutral until it recovers.",
+                        "The gamepad could not be read. Every axis is held at "
+                        "neutral until it recovers.",
                         source=self.NAME, exception=exc)
             return {}
 
@@ -923,13 +952,19 @@ class Probe(Model):
                 if idle > self.INTERLOCK_TIMEOUT:
                     events.debug("Interlock", f"fired after {idle:.1f} s idle "
                                  f"in {self._mode.value}", source=self.NAME)
-                    events.warn("Idle Timeout", f"{idle:.0f} s of inactivity; "
-                                f"disabling {self.NAME}", source=self.NAME)
+                    events.warn("Idle Timeout", f"{self.NAME} was idle for "
+                                f"{idle:.0f} s, so its motors were disabled. "
+                                "Enter a mode again to continue.",
+                                source=self.NAME)
                     try:
                         self._set_mode(ProbeMode.DISABLED, "idle interlock")
                     except Exception as exc:
-                        events.warn("Idle Disable Failed", str(exc),
-                                    source=self.NAME, exception=exc)
+                        events.debug("Idle Disable Failed", repr(exc),
+                                     source=self.NAME, exception=exc)
+                        events.warn("Idle Disable Failed", "The idle timeout "
+                                    f"could not disable {self.NAME}. Treat it "
+                                    "as live and stop it.", source=self.NAME,
+                                    exception=exc)
                     return
 
         self._interlock_thread = threading.Thread(
@@ -982,7 +1017,8 @@ class Probe(Model):
                 if ok and self._same_value(self._param_store.get(name), parsed):
                     return
                 label = element.get("text", name).rstrip(":")
-                self._refuse(f"{label} cannot be changed while {self.mode_name}")
+                self._refuse(f"{label} cannot be changed in {self.mode_name} "
+                             f"mode. Leave {self.mode_name} mode to edit it.")
             self._param_store[name] = value
 
         return property(getter, setter)

@@ -502,7 +502,7 @@ class RedMonitor(Model):
         # path after a probe went away — has no other way to learn that the
         # source under them just changed (ERRORS-7).
         events.info("Position Source Changed",
-                    f"position now read from: {name}", source=self.NAME)
+                    f"Position is now read from {name}.", source=self.NAME)
         self._touch()
         return name
 
@@ -788,9 +788,12 @@ class RedMonitor(Model):
                     break
         except Exception as exc:
             run.failure = exc
-            events.error("Red Percent Run Failed",
-                         f"run {run.run_id} stopped unexpectedly: {exc}",
+            events.debug("Red Percent Run Failed", f"{run.run_id}: {exc!r}",
                          source=self.NAME, exception=exc)
+            events.error("Red Percent Run Failed",
+                         f"Run {run.run_id} stopped unexpectedly. The rows "
+                         "recorded so far are kept; save them, then start a "
+                         "new run.", source=self.NAME, exception=exc)
         finally:
             run.end()
             events.debug("Run Loop", f"exited after {run.frames} frame(s), "
@@ -1018,12 +1021,15 @@ class RedMonitor(Model):
         except Refused:
             return None
         except Exception as exc:
-            events.error("Autosave Failed",
-                         f"could not autosave the run ({why}): {exc}",
+            events.debug("Autosave Failed", f"{why}: {exc!r}",
                          source=self.NAME, exception=exc)
+            events.error("Autosave Failed",
+                         f"The run could not be saved automatically ({why}). "
+                         "Save it by hand now.", source=self.NAME,
+                         exception=exc)
             return None
         events.info("Run Autosaved",
-                    f"unsaved data was saved automatically ({why}): {path}",
+                    f"Unsaved data was saved automatically ({why}): {path}",
                     source=self.NAME)
         return path
 
@@ -1037,7 +1043,10 @@ class RedMonitor(Model):
         try:
             loaded = plot_data.load_run(path)
         except OSError as exc:
-            raise Refused(f"Could not read {path}: {exc}")
+            events.debug("Load Failed", f"{path}: {exc!r}", source=self.NAME,
+                         exception=exc)
+            raise Refused(f"Could not read {Path(path).name}. Check that the "
+                          "file exists and is a saved run.")
         if not loaded["red_percents"]:
             raise Refused(f"No samples found in {Path(path).name}.")
         self._loaded = loaded
