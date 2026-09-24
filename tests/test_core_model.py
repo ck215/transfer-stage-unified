@@ -185,7 +185,10 @@ def test_clear_estop_without_confirmation_asks_instead_of_clearing():
     model.estop()
     with pytest.raises(NeedsConfirm) as raised:
         model.clear_estop()
-    assert "FULL STOP" in raised.value.prompt
+    # F20: one vocabulary ("Clear the stop"), and one sentence saying what
+    # clearing does.
+    assert raised.value.prompt.startswith("Clear the stop on the Fake?")
+    assert "nothing restarts" in raised.value.prompt
     assert model.is_estopped, "the latch released on an unconfirmed request"
 
 
@@ -195,7 +198,7 @@ def test_clear_estop_with_confirmation_releases_the_latch_and_says_so():
     with EventRecorder() as log:
         model.clear_estop(confirmed=True)
     assert model.is_estopped is False
-    assert [e.title for e in log.seen] == ["FULL STOP Cleared"]
+    assert [e.title for e in log.seen] == ["Stop Cleared"]   # F20 vocabulary
     assert log.acknowledged == [], "clearing a latch is not a fault"
 
 

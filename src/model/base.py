@@ -121,19 +121,20 @@ class Model(Panel):
         """Operator action only. Returns the model to refusable, not running."""
         if not confirmed:
             raise NeedsConfirm(
-                f"Release the FULL STOP latch on {self.NAME}?\n\nCheck that the "
-                "cause has been dealt with. This does not restart anything.",
+                f"Clear the stop on the {self.NAME}?\n\nClearing lets it "
+                "accept commands again; nothing restarts by itself.",
                 "clear_estop")
         self._estop.clear()
-        events.info("FULL STOP Cleared", "latch released by operator", source=self.NAME)
+        events.info("Stop Cleared", f"The stop on the {self.NAME} was cleared. "
+                    "Nothing restarts until you start it.", source=self.NAME)
 
     def toggle_estop(self, confirmed=False):
         if self.is_estopped:
             return self.clear_estop(confirmed)   # raises NeedsConfirm("clear_estop")
         if not self.estop():
-            events.error("Stop Not Confirmed", f"{self.NAME} latched, but its "
-                         "hardware stop did not confirm. Treat it as live.",
-                         source=self.NAME)
+            events.error("Stop Not Confirmed", f"The {self.NAME} is stopped, "
+                         "but its hardware did not confirm the stop. Treat it "
+                         "as live.", source=self.NAME)
 
     @property
     def is_estopped(self):
@@ -212,9 +213,18 @@ class Model(Panel):
         wired together."""
         return sch.section(
             "Safety",
+            # F20: one vocabulary - the object is "Stop", its latched state
+            # "Stopped", the action "Clear". The tooltip names the model, so
+            # six per-model stops are not six controls called "Stop".
+            # The label stays "FULL STOP" for now: tests/test_core_theme.py
+            # and tests/test_core_views_base.py pin it (outside this write
+            # set); the lead renames it to "Stop" with them.
             sch.toggle("FULL STOP", "is_estopped", "toggle_estop",
-                       "LATCHED - click to clear", "FULL STOP",
-                       on_role="danger", off_role="danger"),
+                       "Stopped", "Stop",
+                       on_role="danger", off_role="danger",
+                       tooltip=f"Stop the {self.NAME}",
+                       tooltip_on=f"The {self.NAME} is stopped. Press to "
+                                  "clear the stop."),
             sch.indicator("Fault", "is_faulted"),
             sch.readonly("Fault reason:", "fault", role="danger"),
             # Declared so the confirmation re-run of `clear_estop` passes the

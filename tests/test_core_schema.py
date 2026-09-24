@@ -221,3 +221,24 @@ def test_a_region_reads_as_size_at_origin():
 def test_a_malformed_region_degrades_instead_of_raising():
     assert sch.format_region({"w": 1}) == "{'w': 1}"
     assert sch.format_region(7) == "7"
+
+
+def test_a_toggle_can_carry_a_tooltip_for_each_state():
+    """F20: every model's stop is labelled "Stop"; the tooltip names which."""
+    element = sch.toggle("Stop", "is_estopped", "toggle_estop", "Stopped",
+                         "Stop", tooltip="Stop the Rotator",
+                         tooltip_on="The Rotator is stopped.")
+    assert element["tooltip"] == "Stop the Rotator"
+    assert element["tooltip_on"] == "The Rotator is stopped."
+    plain = sch.toggle("T", "flag", "cmd", "ON", "OFF")
+    assert "tooltip" not in plain and "tooltip_on" not in plain
+
+
+def test_every_models_stop_uses_one_vocabulary_and_names_its_model():
+    from test_core_fakes import FakeModel
+    model = FakeModel()
+    stop = next(e for e in sch.elements(model.schema)
+                if e.get("command") == "toggle_estop")
+    assert (stop["true_text"], stop["false_text"]) == ("Stopped", "Stop")
+    assert model.NAME in stop["tooltip"] and model.NAME in stop["tooltip_on"]
+    assert "LATCHED" not in stop["true_text"]

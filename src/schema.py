@@ -102,7 +102,8 @@ def button(text, command, *, inputs=(), args=(), role="neutral", confirm=None,
 
 def toggle(text, model_attr, command, true_text, false_text, *,
            on_args=(), off_args=(), on_role="go", off_role="neutral",
-           enabled_when=None, disabled_when=None):
+           enabled_when=None, disabled_when=None, tooltip=None,
+           tooltip_on=None):
     """A two-state control. Never writable: the attribute is derived state and
     the command is the only way to change it.
 
@@ -111,6 +112,11 @@ def toggle(text, model_attr, command, true_text, false_text, *,
     say what each state MEANS; `theme.toggle_colors` turns that into colour in
     every view. A latched estop is `on_role="danger"` - not green because it
     happens to be "on".
+
+    `tooltip` / `tooltip_on` are the control's accessible name and hover
+    text while off / on, for when `text` alone would not say which control
+    it is (every model's stop is labelled "Stop"; the tooltip names the
+    model, F20).
     """
     element = {
         "type": "toggle", "text": text, "model_attr": model_attr,
@@ -119,6 +125,10 @@ def toggle(text, model_attr, command, true_text, false_text, *,
         "on_role": on_role, "off_role": off_role,
         "writable": False, "role": off_role,
     }
+    if tooltip:
+        element["tooltip"] = tooltip
+    if tooltip_on:
+        element["tooltip_on"] = tooltip_on
     return _gate(element, enabled_when, disabled_when)
 
 
