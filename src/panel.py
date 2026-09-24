@@ -163,9 +163,20 @@ class Panel:
 
     def _defaults(self):
         """A Param that is also a read-only property (a derived readout such
-        as `current_red`) is declared for its type and unit only; never seed it."""
-        return {name: p.default for name, p in self.PARAMS.items()
-                if not isinstance(getattr(type(self), name, None), property)}
+        as `current_red`) is declared for its type and unit only; never seed it.
+
+        A property **with a setter** is a stored parameter behind a gate (the
+        probe's motion fields) and is seeded like any other. Skipping it left
+        the store empty, so the model read `''` while every view showed the
+        default, and the first re-send of that default in autonomous mode
+        looked like an edit and was refused (Tier F item 1)."""
+        seeded = {}
+        for name, p in self.PARAMS.items():
+            found = getattr(type(self), name, None)
+            if isinstance(found, property) and found.fset is None:
+                continue
+            seeded[name] = p.default
+        return seeded
 
     def _param(self, name):
         return self.PARAMS[name]

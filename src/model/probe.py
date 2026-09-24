@@ -974,6 +974,11 @@ class Probe(Model):
         def setter(self, value):
             element = self._gate_for(name)
             if element is not None and not sch.is_enabled(element, self.mode_name):
+                # A write of the value already held is not a change: compare
+                # the normalised value, so 5, "5" and 5.0 are one write.
+                ok, parsed = self.PARAMS[name].parse(value)
+                if ok and self._same_value(self._param_store.get(name), parsed):
+                    return
                 label = element.get("text", name).rstrip(":")
                 self._refuse(f"{label} cannot be changed while {self.mode_name}")
             self._param_store[name] = value

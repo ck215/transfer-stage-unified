@@ -798,3 +798,61 @@ def test_no_thread_outlives_the_model(probe):
     probe.close()
     time.sleep(0.05)
     assert threading.active_count() <= before + 1
+
+
+# -- Tier F item 1: an unchanged value while locked is not a change ----------
+
+@pytest.mark.params
+@pytest.mark.parametrize("cls", [StepperProbe, DCProbe, ChuckPositioner])
+def test_every_motion_parameter_holds_its_declared_default_from_construction(cls):
+    """The gated params are properties, and `Panel._defaults` skipped every
+    property, so the store started empty: the model read `''` while the view
+    showed the default. The first write of that default in autonomous mode
+    then looked like an edit and was refused."""
+    probe, _, _ = make_probe(cls)
+    for name, param in cls.PARAMS.items():
+        assert getattr(probe, name) == param.default, name
+
+
+@pytest.mark.mode
+def test_step_in_autonomous_mode_with_unchanged_distances_is_not_refused(probe):
+    """audit-ui-harden-clarify, could-not-explain: every Step input travels
+    with every command, so pressing Step while autonomous re-sent the held
+    distances and was refused 'X ... cannot be changed while autonomous'."""
+    # The operator enters autonomous mode with the toggle, then presses Step
+    # with the fields showing what the schema declared (nothing was typed).
+    probe.set_mode("autonomous")
+    probe.port.writes.clear()
+    inputs = {"x_dist": "0", "y_dist": "0", "z_dist": "0", "full_speed": "400"}
+    result = probe.run("step", inputs=inputs)
+    assert result.is_ok, result.reason
+    probe._moving_deadline = None            # the move arrived
+    result = probe.run("step", inputs=inputs)
+    assert result.is_ok, result.reason
+    assert probe.mode is ProbeMode.AUTO
+    assert len(probe.port.writes) == 2
+    # A committed field (a desktop view's focus-out) is the same case.
+    assert probe.run("_commit", inputs={"x_step": "1"}).is_ok
+
+
+@pytest.mark.mode
+def test_step_in_autonomous_mode_is_refused_when_a_distance_changed(probe):
+    probe.x_dist = 5
+    assert probe.run("step", inputs={"x_dist": "5"}).is_ok
+    probe._moving_deadline = None
+    result = probe.run("step", inputs={"x_dist": "6"})
+    assert result.is_refused
+    assert probe.x_dist == 5
+
+
+@pytest.mark.params
+def test_writing_the_held_value_while_locked_is_not_a_change(probe):
+    """The property setter compares the normalised value: 5, "5" and 5.0 are
+    the same write; 6 is an edit and is refused."""
+    probe.x_step = 5
+    probe.set_mode("autonomous")
+    for same in (5, "5", 5.0, " 5 "):
+        probe.x_step = same
+    assert probe.x_step == 5
+    with pytest.raises(Refused):
+        probe.x_step = 6
