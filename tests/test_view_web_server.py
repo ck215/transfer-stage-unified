@@ -913,17 +913,23 @@ def test_offline_every_readout_is_muted_and_marked_stale(station, tmp_path):
 
 @needs_browser
 def test_the_stop_has_a_keyboard_path_and_an_ink_focus_ring(station, tmp_path):
-    """F9 + F17: Alt+. stops from inside a text box; Enter on the focused
+    """F9 + F17: Ctrl+. and Cmd+. stop from inside a text box; Enter on the focused
     mushroom stops; its focus ring is --stop-focus, not the latched trace;
     the clear confirmation opens on Cancel and Enter there does not clear."""
     view, controller, probe = station
     out = _browse(view, r"""
       const r = {};
       await page.focus('input[name="label"]');
-      await page.keyboard.down('Alt'); await page.keyboard.press('Period'); await page.keyboard.up('Alt');
+      await page.keyboard.down('Control'); await page.keyboard.press('Period'); await page.keyboard.up('Control');
       await sleep(500);
       r.byShortcut = (await api('/api/state')).is_estopped;
       r.typed = await page.evaluate(() => document.querySelector('input[name="label"]').value);
+      await api('/api/clear_estop_all', { confirmed: true });
+      await sleep(500);
+      await page.focus('input[name="label"]');
+      await page.keyboard.down('Meta'); await page.keyboard.press('Period'); await page.keyboard.up('Meta');
+      await sleep(500);
+      r.byCmd = (await api('/api/state')).is_estopped;
       await api('/api/clear_estop_all', { confirmed: true });
       await sleep(500);
       for (let i = 0; i < 40; i++) {
@@ -951,9 +957,10 @@ def test_the_stop_has_a_keyboard_path_and_an_ink_focus_ring(station, tmp_path):
       r.confirmHidden = await page.evaluate(() => document.getElementById('confirm-modal').hidden);
       return r;
     """, tmp_path)
-    assert out["byShortcut"] is True, "Alt+. did not stop from a text box"
+    assert out["byShortcut"] is True, "Ctrl+. did not stop from a text box"
+    assert out["byCmd"] is True, "Cmd+. did not stop"
     assert out["typed"] == "", "the shortcut typed into the entry"
-    assert "Alt+." in out["title"]
+    assert "Ctrl+." in out["title"] and "Cmd+." in out["title"]
     assert out["ring"] == out["focusToken"], out
     assert out["byEnter"] is True, "Enter on the focused stop did not stop"
     assert out["defaultFocus"] == "confirm-no", "the clear confirmation defaults to clearing"

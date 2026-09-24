@@ -353,6 +353,15 @@ button, select, .mushroom {
 
 .closed-label { font-size: var(--t-sm); color: var(--muted); }
 
+/* The stop's keyboard path, a caption beside it. */
+.stop-hint {
+  font-size: var(--t-xs);
+  line-height: 1.3;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
 /* -- the mushroom -------------------------------------------------------- */
 /* The one bold element on the page. Round, signal red, a darker ring around
    it and a highlight sunk into the top of the disc, so it reads as a thing

@@ -27,12 +27,14 @@
     <div id="rail-readouts" class="rail-readouts" aria-label="Key readouts"></div>
     <div class="rail-side">
       <div id="closed-models" class="closed"></div>
+      <!-- The stop's keyboard path, said where the stop is (F9). -->
+      <span class="stop-hint" aria-hidden="true">Stop: Ctrl+.<br>Cmd+. on a Mac</span>
       <button id="setup-link" type="button" class="ghost rail-control"
               title="Open Setup: ports, devices and launch">Setup</button>
     </div>
     <button id="full-stop" type="button" class="mushroom" aria-label="Stop every model"
-            aria-keyshortcuts="Alt+Period"
-            title="Stop every model. Keyboard: Alt+. (Option+. on a Mac), from anywhere on the page.">
+            aria-keyshortcuts="Control+Period Meta+Period"
+            title="Stop every model. Keyboard: Ctrl+. (Cmd+. on a Mac), from anywhere on the page.">
       <span class="mushroom-face">Stop</span>
     </button>
     <!-- What the operator must read from across the bench and must not lose

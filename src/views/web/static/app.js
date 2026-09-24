@@ -24,13 +24,12 @@ const SETUP_NAME = '__setup__';
 //: How many of a model's key numbers the status rail carries. More than this
 //: and the rail stops being readable at a glance, which is its whole job.
 const RAIL_READOUTS = 4;
-//: The keyboard path to the stop (F9). Alt+. - Option+. on a Mac - is bound
-//: by no browser on any platform this station runs on, works with focus in
-//: a text box, and is matched on the physical key so the character a Mac
-//: types for Option+. ("≥") does not matter. It only ever STOPS; clearing
-//: the latch stays a deliberate, confirmed act.
-const STOP_KEY_CODE = 'Period';
-const STOP_KEY_HINT = 'Alt+. (Option+. on a Mac)';
+//: The keyboard path to the stop (F9): Ctrl+. - Cmd+. on a Mac - the chord
+//: the Tk view already ships and Qt adopts, so the stop has one shortcut in
+//: every view. It works with focus in a text box. It only ever STOPS;
+//: clearing the latch stays a deliberate, confirmed act.
+const STOP_KEY = '.';
+const STOP_KEY_HINT = 'Ctrl+. (Cmd+. on a Mac)';
 //: How many characters of a dropdown option are shown before it is elided
 //: from the middle: the tail of a port or gamepad name is what tells two
 //: devices apart, so the middle goes, never the end (F15).
@@ -1414,12 +1413,12 @@ class Dashboard {
     this.dom.drawerClose.addEventListener('click', () => this.setDrawerOpen(false));
     this.dom.scrim.addEventListener('click', () => this.setDrawerOpen(false));
     // One keyboard handler, in the capture phase so nothing on the page can
-    // swallow it first. Alt+. stops every model from anywhere, a text box
-    // included (F9). Escape answers the top-most thing over the page: a
+    // swallow it first. Ctrl+. / Cmd+. stops every model from anywhere, a
+    // text box included (F9). Escape answers the top-most thing over the page: a
     // confirmation is cancelled, the region picker closes, the drawer
     // withdraws. It never dismisses an acknowledgement - that wants one.
-    document.addEventListener('keydown', (event) => {
-      if (event.code === STOP_KEY_CODE && event.altKey && !event.ctrlKey && !event.metaKey) {
+    window.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === STOP_KEY) {
         event.preventDefault();
         this.stopAll();
         return;

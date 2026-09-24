@@ -624,7 +624,8 @@ def test_the_stop_face_stays_legible_and_its_focus_is_not_the_latch():
     assert highlight and int(highlight.group(1)) >= 95, "the highlight washes out the word"
     ring = re.search(r"\.mushroom:focus-visible\s*\{([^}]*)\}", STYLES)
     assert ring and "var(--stop-focus)" in ring.group(1) and "trace" not in ring.group(1)
-    assert "aria-keyshortcuts=\"Alt+Period\"" in INDEX
+    assert 'aria-keyshortcuts="Control+Period Meta+Period"' in INDEX
+    assert "Ctrl+." in INDEX and "Cmd+." in INDEX, "the rail does not say the shortcut"
 
 
 def test_every_overlay_starts_below_the_rail():
