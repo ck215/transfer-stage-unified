@@ -53,9 +53,14 @@ def test_both_section_layouts_offer_the_builders_one_api():
 # ---------------------------------------------------------------------------
 
 def test_the_stylesheet_uses_only_theme_colours():
+    """Updated (F23): the sheet now also names the theme's rules, well, lift
+    and severity inks, and the one input border derived with `theme.mix`."""
     known = {theme.BACKGROUND, theme.SURFACE, theme.TEXT, theme.MUTED}
     known |= {value for pair in theme.ROLES.values() for value in pair}
     known |= set(theme.DISABLED)
+    known |= {theme.RULE, theme.RULE_STRONG, theme.WELL, theme.LIFT,
+              theme.STOP_FOCUS, qt.INPUT_BORDER}
+    known |= set(theme.SEVERITY_INK.values())
     used = set(re.findall(r"#[0-9a-fA-F]{3,8}", qt.stylesheet()))
     assert used <= {c.lower() for c in known} | known, f"not from theme: {used - known}"
 
@@ -120,8 +125,11 @@ def test_every_control_has_hover_focus_pressed_and_disabled_states():
                      "QComboBox:hover", "QComboBox:focus",
                      "QLineEdit:hover", "QLineEdit:focus"):
         assert selector in sheet, selector
+    # Updated (F25): focus is two pixels of ink, not trace - a trace ring is
+    # what the latched stop looks like.
     focus = sheet.split("QPushButton:focus {")[1].split("}")[0]
-    assert f"2px solid {theme.TRACE}" in focus
+    assert f"2px solid {theme.STOP_FOCUS}" in focus
+    assert f"2px solid {theme.TRACE}" not in sheet
 
 
 def test_signal_red_is_spent_on_the_stop_object_alone():
@@ -219,10 +227,80 @@ def test_a_row_that_runs_something_is_an_action_line():
     assert qt.is_action_row(column) is False       # not a row at all
 
 
-def test_colour_helpers_derive_from_a_theme_value():
-    assert qt.rgba("#ffffff", 0.5) == "rgba(255, 255, 255, 0.50)"
-    assert qt.mix("#ffffff", "#000000", 0.5) == "#808080"
-    assert qt.mix(theme.SIGNAL, theme.BACKGROUND, 1.0) == theme.SIGNAL.lower()
+def _contrast(a, b):
+    def luminance(colour):
+        channels = [int(colour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        channels = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+                    for c in channels]
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+    high, low = sorted((luminance(a), luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_the_view_mixes_colours_with_the_themes_one_mix():
+    """Updated (F23, DS-12): qt.py had its own `mix` that read its amount in
+    the opposite direction to Tk's; it is gone, and so is `rgba`."""
+    assert not hasattr(qt, "mix") and not hasattr(qt, "rgba")
+    assert qt.INPUT_BORDER == theme.mix(theme.SURFACE, theme.TEXT, 0.40)
+
+
+def test_an_input_border_is_at_least_3_to_1_on_the_card():
+    """WCAG 1.4.11 (AUD-11): the well's border was 1.67:1 on the card."""
+    assert _contrast(qt.INPUT_BORDER, theme.SURFACE) >= 3.0
+    sheet = qt.stylesheet()
+    entries = sheet.split("QLineEdit, QComboBox, QTextEdit {")[1].split("}")[0]
+    assert f"border: 1px solid {qt.INPUT_BORDER}" in entries
+
+
+def test_every_focusable_has_an_ink_ring_including_tabs_and_scroll_areas():
+    sheet = qt.stylesheet()
+    for selector in ("QTabBar::tab:focus", "QScrollArea#panelScroll:focus",
+                     "QFrame#tray QTextEdit:focus", "QPushButton#ghost:focus",
+                     "QPushButton#iconButton:focus"):
+        rule = sheet.split(selector)[1].split("}")[0]
+        assert qt.FOCUS_RING in rule, selector
+
+
+def test_the_rail_readout_is_capped_one_step_up():
+    """F25: two steps up made the 28 pt rail and tray a third of the window."""
+    original = theme.FONT_SIZE
+    try:
+        theme.set_font_size(28)
+        sheet = qt.stylesheet()
+        value = sheet.split("QFrame#rail QLabel#railValue {")[1].split("}")[0]
+        assert f"font-size: {theme.size(1)}pt" in value
+    finally:
+        theme.set_font_size(original)
+
+
+def test_the_sheet_uses_the_spacing_scale_not_sums():
+    source = open(qt.__file__).read()
+    assert not re.findall(r"(PAD|GAP|INSET)\s*[+*]\s*\d", source)
+    assert not re.findall(r"(PAD|GAP|INSET)\s*//\s*\d", source)
+
+
+@pytest.mark.parametrize("kind, word", [("SerialPort", "serial port"),
+                                        ("Gamepad", "gamepad"),
+                                        ("SMC100", "SMC100")])
+def test_a_device_is_named_as_the_operator_would_say_it(kind, word):
+    assert qt.device_word(kind) == word
+
+
+def test_only_a_lost_device_is_reported():
+    assert qt.lost_devices({"devices": {"SerialPort": "lost",
+                                        "Gamepad": "open"}}) == ["serial port"]
+    assert qt.lost_devices({"values": {}}) == []
+    assert qt.lost_sentence("Stepper Probe", ["serial port"]) == (
+        "Stepper Probe lost its serial port")
+
+
+def test_no_motion_is_read_from_the_environment(monkeypatch):
+    monkeypatch.delenv("STATION_NO_MOTION", raising=False)
+    assert qt.motion_reduced() is False
+    monkeypatch.setenv("STATION_NO_MOTION", "1")
+    assert qt.motion_reduced() is True
+    monkeypatch.setenv("STATION_NO_MOTION", "0")
+    assert qt.motion_reduced() is False
 
 
 def test_the_module_declares_no_colour_and_no_pixel_font_size():
