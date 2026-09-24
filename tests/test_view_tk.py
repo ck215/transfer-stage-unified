@@ -169,7 +169,7 @@ class FakeWidget:
         Focus.current = self
 
     def grab_set(self):
-        pass
+        GRABS.append(self)
 
     def grab_release(self):
         pass
@@ -264,6 +264,9 @@ class FakeCanvas(FakeWidget):
 
     def yview_scroll(self, amount, what):
         self.scrolled.append((amount, what))
+
+    def yview_moveto(self, fraction):
+        self.moved_to = fraction
 
     def create_line(self, *points, **options):
         self.items.append(("line", points, options))
@@ -400,10 +403,27 @@ class FakeTkModule:
     PhotoImage = FakePhotoImage
 
 
+class FakeStyle:
+    """`ttk.Style`, recording what the view configured."""
+
+    def __init__(self, master=None):
+        STYLE.clear()
+
+    def theme_use(self, _name):
+        pass
+
+    def configure(self, name, **options):
+        STYLE.setdefault(name, {}).update(options)
+
+    def map(self, name, **options):
+        STYLE.setdefault(name + ":map", {}).update(options)
+
+
 class FakeTtkModule:
     Frame = FakeWidget
     Combobox = FakeWidget
     Scrollbar = FakeWidget
+    Style = FakeStyle
 
 
 SCHEDULER = Scheduler()
@@ -414,6 +434,10 @@ ALL_BINDINGS = {}
 #: Every `pack`, in order. Pack order IS allocation order in Tk, which is the
 #: whole of why the FULL STOP bar can or cannot be pushed off the window.
 PACK_ORDER = []
+#: Every `grab_set`: a grab is what makes a window modal.
+GRABS = []
+#: What `ttk.Style` was configured with, by style name.
+STYLE = {}
 
 
 # ---------------------------------------------------------------------------
@@ -653,11 +677,19 @@ def tk_harness(monkeypatch):
     FakePhotoImage.instances = []
     ALL_BINDINGS.clear()
     del PACK_ORDER[:]
+    del GRABS[:]
+    STYLE.clear()
     dialogs = FakeDialogs()
     monkeypatch.setattr(tkmod, "tk", FakeTkModule)
     monkeypatch.setattr(tkmod, "ttk", FakeTtkModule)
     monkeypatch.setattr(tkmod, "filedialog", dialogs)
-    monkeypatch.setattr(tkmod, "messagebox", dialogs)
+    monkeypatch.setattr(tkmod, "messagebox", dialogs, raising=False)
+    # The confirmation window is driven by its own tests below; everywhere
+    # else a question is answered by `dialogs.confirm_answer`.
+    monkeypatch.setattr(tkmod, "_confirm",
+                        lambda _master, prompt: dialogs.askyesno("Confirm", prompt),
+                        raising=False)
+    monkeypatch.delenv("STATION_NO_MOTION", raising=False)
     return dialogs
 
 
@@ -691,6 +723,11 @@ def widget_of(view, element):
 
 def click(view, element):
     widget_of(view, element).fire("<Button-1>")
+
+
+def refusal(view):
+    """The refusal the panel is showing, wherever it is drawn."""
+    return getattr(view, "_notice_text", None) or view._status.cget("text") or ""
 
 
 def last_call(controller, command):
@@ -764,30 +801,38 @@ def test_indicator_and_toggle_take_their_colours_from_the_theme(view, panel):
 def test_a_command_is_outlined_by_a_frame_so_aqua_draws_it(view, panel):
     """Aqua does not draw a Label's highlight ring, so an OFF toggle (its
     role outlined on the panel) rendered as bare text. The outline is a
-    one-pixel frame around the label; keyboard focus turns it trace."""
+    one-pixel frame around the label inside a one-pixel ring; keyboard
+    focus turns BOTH ink - a 2 px ink ring, not a 1 px trace one (F25)."""
     toggle = element_of(view, "toggle")
     panel.is_running = False
     view._refresh()
     entry = view._widgets[id(toggle)]
-    outline = entry["outline"]
+    outline, ring = entry["outline"], entry["ring"]
     assert widget_of(view, toggle).master is outline
+    assert outline.master is ring.outer
     resting = outline.cget("background")
     assert resting == entry["border"]
     assert resting not in (tkmod._page(), theme.TRACE), "an outline you can see"
+    assert ring.outer.cget("background") == tkmod._page()
     widget_of(view, toggle).fire("<FocusIn>")
-    assert outline.cget("background") == theme.TRACE
+    assert outline.cget("background") == theme.TEXT
+    assert ring.outer.cget("background") == theme.TEXT
+    assert ring.outer.cget("padx") + outline.cget("padx") == 2
     widget_of(view, toggle).fire("<FocusOut>")
     assert outline.cget("background") == resting
+    assert ring.outer.cget("background") == tkmod._page()
 
 
-def test_a_danger_command_is_outlined_never_filled(view):
-    """One red: only the stop object is filled with the signal colour. A
-    danger command ("Go" here, a model's own "Stop" in the app) is outlined
-    in it, as the Web view does."""
+def test_a_danger_command_renders_neutral_like_qt_and_web(view):
+    """One red (DS-9): only the stop object carries the signal colour. A
+    danger command ("Go" here, Red Percent's "Stop run" in the app) was
+    outlined in signal in Tk alone; it renders neutral, as in Qt and Web."""
     go = element_of(view, "button", "Go")
     entry = view._widgets[id(go)]
-    assert widget_of(view, go).cget("background") != theme.SIGNAL
-    assert entry["outline"].cget("background") == theme.SIGNAL
+    assert widget_of(view, go).cget("background") == theme.colors("neutral")[0]
+    assert entry["outline"].cget("background") == tkmod.INPUT_BORDER
+    assert theme.SIGNAL not in (widget_of(view, go).cget("background"),
+                                entry["outline"].cget("background"))
 
 
 def test_a_command_has_hover_and_disabled_states(view, panel):
@@ -920,7 +965,7 @@ def test_a_readout_sits_where_an_entry_sits_in_a_column_section(view):
     assert _cell(view, readout)["column"] == _cell(view, entry)["column"] == 1
     assert _cell(view, readout)["sticky"] == _cell(view, entry)["sticky"] == "ew"
     for element in (readout, entry):
-        weights = widget_of(view, element).master.column_weights
+        weights = cell_widget(view, element).master.column_weights
         assert weights[1]["minsize"] == tkmod.VALUE_PX
         assert weights[0]["weight"] == 1     # the caption takes the slack
 
@@ -955,7 +1000,9 @@ def test_a_readout_is_not_drawn_like_a_box_to_type_in(view):
     assert readout.cget("relief") == "flat"
     assert not readout.cget("highlightthickness")
     assert readout.cget("background") == tkmod._page()
-    assert entry.cget("highlightthickness") == 1
+    ring = view._widgets[id(element_of(view, "entry", "Speed"))]["ring"]
+    assert ring.inner.cget("background") == tkmod.INPUT_BORDER   # a border
+    assert entry.master is ring.inner
     assert entry.cget("background") == theme.BACKGROUND
     assert readout.cget("anchor") == "e"
     # numbers first: the readout is one step larger than the entry's text
@@ -1095,8 +1142,15 @@ def row_view():
     built.close()
 
 
+def cell_widget(view, element):
+    """What a control is gridded by: an entry or a dropdown sits in its
+    focus ring, and the ring is the cell."""
+    entry = view._widgets[id(element)]
+    return entry.get("cell") or entry["widget"]
+
+
 def _cell(view, element):
-    return widget_of(view, element).grid_info
+    return cell_widget(view, element).grid_info
 
 
 def _right_edge(view, element):
@@ -1124,10 +1178,11 @@ def test_every_row_section_shares_one_grid_so_its_columns_line_up(row_view):
     line up. One grid, one row per section, is a table."""
     port, found = row_view._elements[STEPPER_PORT], row_view._elements[STEPPER_FOUND]
     dc_port, dc_found = row_view._elements[DC_PORT], row_view._elements[DC_FOUND]
-    assert widget_of(row_view, port).master is widget_of(row_view, dc_port).master
+    assert cell_widget(row_view, port).master is cell_widget(row_view, dc_port).master
     assert _cell(row_view, dc_port)["column"] == _cell(row_view, port)["column"]
     assert _cell(row_view, dc_found)["column"] == _cell(row_view, found)["column"]
-    assert _cell(row_view, dc_port)["row"] == _cell(row_view, port)["row"] + 1
+    # the next row, with the first row's refusal line between them (F10)
+    assert _cell(row_view, dc_port)["row"] == _cell(row_view, port)["row"] + 2
 
 
 def test_a_shorter_row_still_ends_its_status_in_the_status_column(row_view):
@@ -1141,7 +1196,7 @@ def test_a_shorter_row_still_ends_its_status_in_the_status_column(row_view):
 def test_a_table_says_each_caption_once_in_a_header_row(row_view):
     """Captions shared by the rows ("Port", "Gamepad", "Detected") are a
     header, once; the rows carry values only."""
-    table = widget_of(row_view, row_view._elements[STEPPER_PORT]).master
+    table = cell_widget(row_view, row_view._elements[STEPPER_PORT]).master
     texts = [child.cget("text") for child in table.children]
     for caption in ("Port", "Gamepad", "Detected"):
         assert texts.count(caption) == 1
@@ -1160,7 +1215,7 @@ def test_a_row_section_captions_its_row_in_the_first_column(row_view):
     assert captions["Stepper Probe"].grid_info["column"] == 0
     assert captions["DC Probe"].grid_info["column"] == 0
     assert (captions["DC Probe"].grid_info["row"]
-            == captions["Stepper Probe"].grid_info["row"] + 1)
+            == captions["Stepper Probe"].grid_info["row"] + 2)   # + refusal line
 
 
 def test_the_status_of_a_row_takes_the_slack(row_view):
@@ -1194,15 +1249,15 @@ def test_a_row_of_its_own_captions_is_a_bar_across_the_table():
 
 def test_a_column_section_still_stacks_one_element_per_row(row_view):
     entry, button = row_view._elements[COUNT], row_view._elements[LAUNCH]
-    strip = row_view._widgets[id(button)]["outline"].master
-    assert strip.grid_info["row"] == _cell(row_view, entry)["row"] + 1
+    strip = row_view._widgets[id(button)]["ring"].outer.master
+    assert strip.grid_info["row"] == _cell(row_view, entry)["row"] + 2   # + refusal line
     assert _cell(row_view, entry)["column"] == 1      # column 0 is its caption
 
 
 def test_consecutive_commands_share_one_line(view):
     """A section's run of commands is one line of buttons, not a stack of
     full-width bars (the Stepper Probe's System control)."""
-    lines = {view._widgets[id(element_of(view, "button", text))]["outline"].master
+    lines = {view._widgets[id(element_of(view, "button", text))]["ring"].outer.master
              for text in ("Go", "Refuse", "Ask")}
     assert len(lines) == 1
 
@@ -1263,17 +1318,19 @@ def test_every_entry_travels_with_a_command(view, panel, controller):
     assert inputs["speed"] == "7.5"
 
 
-def test_refused_reaches_the_status_line_and_not_a_popup(view, tk_harness):
+def test_refused_reaches_the_panel_and_not_a_popup(view, tk_harness):
     click(view, element_of(view, "button", "Refuse"))
-    assert "the bench is busy" in view._status.cget("text")
+    assert "the bench is busy" in refusal(view)
     assert tk_harness.errors == [], "a refusal is not a popup"
 
 
-def test_a_later_success_clears_the_status_line(view):
+def test_a_later_success_clears_the_refusal(view):
     click(view, element_of(view, "button", "Refuse"))
-    assert view._status.cget("text")
+    assert refusal(view)
+    notice = view._notice
     click(view, element_of(view, "button", "Go"))
-    assert view._status.cget("text") == ""
+    assert refusal(view) == ""
+    assert view._notice is None and notice.is_destroyed
 
 
 def test_needs_confirm_asks_once_and_re_runs(view, panel, tk_harness):
@@ -1303,7 +1360,7 @@ def test_entry_commit_validates_through_the_model(view, panel):
     view._widgets[id(speed)]["var"].set("99")     # above the declared maximum
     widget_of(view, speed).fire("<Return>")
     assert panel.speed != 99
-    assert "at most 10" in view._status.cget("text")
+    assert "at most 10" in refusal(view)
 
     view._widgets[id(speed)]["var"].set("3")
     widget_of(view, speed).fire("<Return>")
@@ -1515,7 +1572,7 @@ def test_a_cancelled_region_shows_the_reason_and_runs_nothing(view, panel,
     monkeypatch.setattr(tkmod, "_RegionPicker", Cancelled)
     click(view, element_of(view, "region_select"))
     assert panel.region is None
-    assert "cancel" in view._status.cget("text").lower()
+    assert "cancel" in refusal(view).lower()
 
 
 def test_the_captured_region_is_drawn_not_announced(view, panel, tk_harness):
@@ -1700,14 +1757,14 @@ def test_the_setup_tab_minimises_when_the_first_model_launches(dashboard,
 def test_the_toolbar_offers_setup_only_while_it_is_minimised(dashboard,
                                                              controller):
     dashboard.open()
-    assert dashboard._setup_button.is_packed is False
+    assert dashboard._setup_press.frame.is_packed is False
     _launch_a_model(dashboard, controller)
-    assert dashboard._setup_button.is_packed is True
+    assert dashboard._setup_press.frame.is_packed is True
 
     dashboard._setup_button.fire("<Button-1>")
     assert dashboard._is_setup_collapsed is False
     assert _setup_tab_is_shown(dashboard)
-    assert dashboard._setup_button.is_packed is False
+    assert dashboard._setup_press.frame.is_packed is False
 
 
 def test_the_menu_bar_brings_setup_back(dashboard, controller):
@@ -1827,7 +1884,7 @@ def test_the_stop_button_label_follows_the_controller(dashboard, controller):
     dashboard._sync_stop_button()
     assert faces() == ["Stop"]
     assert disc()["fill"] == theme.SIGNAL
-    assert dashboard._stop_hint.cget("text") == tkmod.STOP_HINT
+    assert dashboard._stop_hint.cget("text").startswith(tkmod.STOP_HINT)
 
     controller.is_estopped = True
     dashboard._sync_stop_button()
@@ -1876,8 +1933,14 @@ def test_a_models_own_stop_is_the_same_disc(controller, monkeypatch):
     built = tkmod.TkPanelView(FakeWidget(), FakeController(Safe=Safe()), "Safe")
     element = built._elements[0]
     entry = built._widgets[id(element)]
-    assert entry["mushroom"].diameter == tkmod.MINI_STOP_DIAMETER
+    assert entry["mushroom"].diameter >= tkmod.MINI_STOP_DIAMETER
+    assert entry["mushroom"].diameter < built_stop_floor()
     built.close()
+
+
+def built_stop_floor():
+    """The dashboard disc's floor: a model's own disc is the smaller one."""
+    return tkmod.STOP_DIAMETER
 
 
 def test_the_stop_button_toggles_the_global_estop(dashboard, controller,
@@ -1904,19 +1967,23 @@ def test_clearing_the_latch_asks_first(dashboard, controller, tk_harness):
 
 def test_events_reach_the_log_panel_coloured_by_severity(dashboard):
     """Two steps of ink and never fainter than muted: the newest line is ink,
-    older info lines muted, warnings trace, errors signal. Info used to be
-    drawn in the `info` role's *background*, a shade off the log's own
-    background, which is why older lines were unreadable."""
+    older info lines muted, warnings trace. An error line is INK behind a
+    signal mark and the word "Error" (F14): signal text is 3.21:1 on the
+    log, and severity was colour alone."""
     dashboard.open()
     for severity in ("info", "warning", "error"):
         dashboard._show_event(_event(severity, needs_ack=False))
     assert dashboard._event_text.written_tags == [
-        ("info", "latest"), ("warning", "latest"), ("error", "latest")]
+        ("mark-info",), ("info", "latest"), ("mark-warning",), ("warning", "latest"),
+        ("mark-error",), ("error", "latest")]
     tags = dashboard._event_text.tags
-    assert tags["info"]["foreground"] == theme.MUTED
+    for severity in ("info", "warning", "error"):
+        assert tags[severity]["foreground"] == theme.SEVERITY_INK[severity]
+        assert tags[f"mark-{severity}"]["foreground"] == theme.SEVERITY_MARK[severity]
+    assert tags["error"]["foreground"] == theme.TEXT
     assert tags["latest"]["foreground"] == theme.TEXT
-    assert tags["warning"]["foreground"] == theme.TRACE
-    assert tags["error"]["foreground"] == theme.SIGNAL
+    body = dashboard._event_text.body
+    assert "Error  [Demo] error-event" in body and "Warning  " in body
     # `latest` moves: it is taken off the old lines before each new one.
     assert dashboard._event_text.removed_tags.count("latest") == 3
     # and it is created after `info`, before `warning`/`error` - priority.
@@ -1924,12 +1991,13 @@ def test_events_reach_the_log_panel_coloured_by_severity(dashboard):
         < list(tags).index("warning")
 
 
-def test_only_a_needs_ack_event_becomes_a_popup(dashboard, tk_harness):
+def test_only_a_needs_ack_event_reaches_the_alert_band(dashboard, tk_harness):
     dashboard.open()
     dashboard._on_event(_event("warning", needs_ack=False))
     dashboard._on_event(_event("error", needs_ack=True))
     SCHEDULER.pump()
-    assert [title for title, _ in tk_harness.errors] == ["error-event"]
+    assert [event.title for event in dashboard._alerts] == ["error-event"]
+    assert tk_harness.errors == [], "never an application-modal showerror"
 
 
 def test_an_event_is_marshalled_onto_the_tk_thread(dashboard):
@@ -1948,6 +2016,7 @@ def test_no_popup_once_close_has_begun(dashboard, tk_harness):
     dashboard._on_event(_event("error", needs_ack=True))
     SCHEDULER.pump()
     assert tk_harness.errors == []
+    assert getattr(dashboard, "_alerts", []) == []
 
 
 def test_close_unsubscribes_and_closes_the_controller(dashboard, controller):
@@ -2048,3 +2117,506 @@ def test_the_type_scale_steps_by_the_operate_ratio():
     sizes = [abs(tkmod._font(step)[1]) for step in
              (tkmod.SMALL, tkmod.BASE, tkmod.STEP_1, tkmod.STEP_2)]
     assert sizes == sorted(sizes) and len(set(sizes)) == 4
+
+
+# ---------------------------------------------------------------------------
+# Tier F (UI audit 2026-09-24): the stop path first
+# ---------------------------------------------------------------------------
+
+def _helvetica(font, text):
+    """The audit's measurement stood in for Tk's: Helvetica is about 0.55 em
+    a glyph, 0.62 em in bold (it gives the 88 px the auditor measured for a
+    bold "Clear" at 28 px). A negative size is pixels, a positive points."""
+    size = abs(font[1]) * (4 / 3 if font[1] > 0 else 1)
+    return round(size * (0.62 if font[2] == "bold" else 0.55) * len(text))
+
+
+@pytest.mark.parametrize("pixel_fonts", [True, False])
+def test_clear_fits_both_stop_discs_at_every_font_size(monkeypatch, pixel_fonts):
+    """F7 / AUD-2. The disc was a fixed 64 px (34 px for a model's own), so
+    "Clear" ran off both from about 18 pt and the canvas cut the main face
+    at 28 pt. The disc is now sized from its face font; the check is the
+    auditor's own: `measure("Clear") <= inner - 4`, inner = the disc less
+    its ring, and the canvas holds the disc at the top of its pulse."""
+    monkeypatch.setattr(tkmod, "_text_width", _helvetica)
+    monkeypatch.setattr(tkmod, "_PIXEL_FONTS", pixel_fonts)
+    original = theme.FONT_SIZE
+    try:
+        for points in range(8, 29):
+            theme.set_font_size(points)
+            for step, floor in ((tkmod.STEP_1, tkmod.STOP_DIAMETER),
+                                (tkmod.SMALL, tkmod.MINI_STOP_DIAMETER)):
+                disc = tkmod._Mushroom(FakeWidget(), lambda: None,
+                                       background=theme.BACKGROUND,
+                                       face_step=step, floor=floor)
+                inner = disc.diameter - 2 * disc.ring_width(disc.diameter)
+                clear = _helvetica(tkmod._font(step, bold=True), "Clear")
+                assert clear <= inner - 4, (points, step, disc.diameter)
+                assert disc.diameter >= floor
+                assert disc.size >= disc.diameter * max(tkmod.PULSE_FRAMES)
+                assert disc.canvas.cget("width") == disc.size
+    finally:
+        theme.set_font_size(original)
+
+
+def test_the_stop_disc_keeps_its_size_at_the_default_font(monkeypatch):
+    """At 12 pt the main disc is still the 64 px object the bench knows."""
+    monkeypatch.setattr(tkmod, "_text_width", _helvetica)
+    monkeypatch.setattr(tkmod, "_PIXEL_FONTS", True)
+    monkeypatch.setattr(theme, "FONT_SIZE", 12)
+    disc = tkmod._Mushroom(FakeWidget(), lambda: None, background=theme.BACKGROUND)
+    assert disc.diameter == tkmod.STOP_DIAMETER
+
+
+def test_a_fault_is_a_band_beside_the_stop_never_a_modal(dashboard, tk_harness):
+    """F1 / HC-2 / UXPM-1. `messagebox.showerror` was application-modal:
+    five queued errors were five dialogs and the stop took no click while
+    one was up. An error that needs acknowledging now joins a band packed
+    directly above the stop bar; nothing grabs, and the stop still works."""
+    dashboard.open()
+    for index in range(3):
+        dashboard._on_event(Event(index, "error", "Rotator", f"Fault {index}",
+                                  "move failed", None, True, 0.0))
+    SCHEDULER.pump()
+    assert tk_harness.errors == [] and GRABS == []
+    assert len(dashboard._alerts) == 3, "stacked, not overwritten"
+    band = dashboard._band
+    assert band.is_packed
+    packed = [options for widget, options in PACK_ORDER if widget is band][-1]
+    assert packed["after"] is dashboard._stop_bar and packed["side"] == "bottom"
+    text = dashboard._band_text.cget("text")
+    assert "3 errors" in text and all(f"Fault {i}" in text for i in range(3))
+    assert text.count("Error") >= 3, "a word beside the colour"
+
+    dashboard._stop_button.fire("<Button-1>")          # the stop still works
+    assert tk_harness.errors == [] and dashboard.controller.estop_calls == 1
+
+    dashboard._band_ack.widget.fire("<Button-1>")      # one press clears all
+    assert dashboard._alerts == [] and not band.is_packed
+
+
+def test_the_band_is_never_placed_over_anything(dashboard):
+    """It is packed into the window's strips, never `place`d or a Toplevel,
+    so it can take space but never cover the stop."""
+    dashboard.open()
+    dashboard._show_popup(_event("error", needs_ack=True))
+    assert dashboard._band.master is dashboard.root
+    assert not hasattr(dashboard._band, "place_info_called")
+
+
+def test_the_clear_confirmation_defaults_to_no():
+    """F17 / AUD-6 / UXPM-15. `askyesno` defaulted to Yes: Return released
+    the latch. Focus starts on No; Return, Escape and the close button all
+    answer No; only a press on Yes answers Yes."""
+    master = FakeRoot()
+    for gesture in ("<Return>", "<Escape>", "close"):
+        dialog = tkmod._ConfirmDialog(master, "Release the latch?")
+        dialog._build()
+        assert Focus.current is dialog.no.widget, "focus starts on No"
+        if gesture == "close":
+            dialog.top.protocols["WM_DELETE_WINDOW"]()
+        else:
+            dialog.top.fire(gesture)
+        assert dialog.answer is False, gesture
+        assert dialog.top.is_destroyed
+    dialog = tkmod._ConfirmDialog(master, "Release the latch?")
+    dialog._build()
+    dialog.yes.widget.fire("<Button-1>")
+    assert dialog.answer is True
+
+
+def test_the_confirmation_takes_no_grab_so_the_stop_stays_live():
+    """F1: a question may be open while the operator needs the stop."""
+    dialog = tkmod._ConfirmDialog(FakeRoot(), "Release the latch?")
+    assert dialog.ask() is False          # the stand-in's wait returns at once
+    assert GRABS == []
+
+
+def test_the_panel_and_the_dashboard_ask_through_the_one_dialog(dashboard,
+                                                               monkeypatch):
+    asked = []
+    monkeypatch.setattr(tkmod._ConfirmDialog, "ask",
+                        lambda self: asked.append(self.prompt) or False)
+    monkeypatch.setattr(tkmod, "_confirm",
+                        lambda master, prompt: tkmod._ConfirmDialog(master, prompt).ask())
+    dashboard.open()
+    dashboard.controller.is_estopped = True
+    dashboard.controller.clear_needs_confirm = True
+    dashboard._stop_button.fire("<Button-1>")
+    assert asked == ["Release the latch?"]
+    assert dashboard.controller.is_estopped is True, "declined: still latched"
+
+
+def test_a_global_key_stops_every_model_and_never_clears(dashboard, controller):
+    """F9. The stop from anywhere in the window, whatever holds focus. It
+    only ever stops: clearing stays a press on the disc and a question."""
+    dashboard.open()
+    handler = ALL_BINDINGS["<Control-period>"]
+    handler(FakeEvent())
+    assert controller.estop_calls == 1 and controller.is_estopped
+    handler(FakeEvent())
+    assert controller.clear_calls == 0, "the shortcut never clears the latch"
+    assert dashboard._stop.face == tkmod.CLEAR_FACE
+
+
+def test_the_stop_shortcut_is_written_where_the_operator_looks(dashboard,
+                                                              controller):
+    dashboard.open()
+    hint = dashboard._stop_hint.cget("text")
+    assert tkmod.STOP_KEY_NAME in hint
+    assert tkmod.STOP_KEY_NAME in dashboard._stop.tooltip.text
+
+
+def test_space_and_return_both_press_the_stop(dashboard, controller):
+    dashboard.open()
+    dashboard._stop_button.fire("<space>")
+    assert controller.estop_calls == 1
+    dashboard._stop_button.fire("<Return>")
+    assert controller.clear_calls == 1
+
+
+def test_the_stop_focus_ring_is_ink_two_pixels_latched_or_not(dashboard,
+                                                               controller):
+    """A trace ring is what "latched" looks like; focus is STOP_FOCUS."""
+    dashboard.open()
+    for latched in (False, True):
+        controller.is_estopped = latched
+        dashboard._sync_stop_button()
+        dashboard._stop_button.fire("<FocusIn>")
+        rings = [item[2] for item in dashboard._stop_button.items
+                 if item[0] == "oval" and not item[2].get("fill")]
+        assert rings and rings[0]["outline"] == theme.STOP_FOCUS
+        assert rings[0]["width"] == 2
+        dashboard._stop_button.fire("<FocusOut>")
+
+
+class LostPanel(DemoPanel):
+    """A model whose serial link has gone: `Model.state` says so in
+    `devices`, and nothing else changes - the loop keeps ticking."""
+
+    def __init__(self):
+        super().__init__()
+        self.link = "verified"
+
+    @property
+    def state(self):
+        state = dict(super().state)
+        state["devices"] = {"SerialPort": self.link, "Gamepad": "bound"}
+        return state
+
+
+def test_a_lost_serial_port_no_longer_looks_live(tk_harness):
+    """F3 / HC-1: the grouping rule turns signal, the values are muted, the
+    title and a line under it say what was lost."""
+    panel = LostPanel()
+    panel.speed = 2.5
+    view = tkmod.TkPanelView(FakeWidget(), FakeController(Probe=panel), "Probe")
+    readout = widget_of(view, element_of(view, "readonly", "Speed now:"))
+    assert readout.cget("foreground") == theme.TRACE
+    assert view._rule.cget("background") == theme.RULE
+
+    panel.link = "lost"
+    view._refresh()
+    assert view.lost_devices == ("SerialPort",)
+    assert view._rule.cget("background") == theme.SIGNAL
+    assert readout.cget("foreground") == theme.MUTED
+    assert "connection lost" in view._title.cget("text")
+    assert "serial port" in view._health.cget("text")
+    assert view._health.is_packed
+
+    panel.link = "verified"
+    view._refresh()
+    assert view._rule.cget("background") == theme.RULE
+    assert readout.cget("foreground") == theme.TRACE
+    assert view._title.cget("text") == "Probe"
+    view.close()
+
+
+def test_the_stop_bar_names_the_model_and_the_device_it_lost(controller,
+                                                             setup_panel):
+    panel = LostPanel()
+    built = tkmod.TkDashboard(FakeController(**{"Stepper Probe": panel}), setup_panel)
+    built.open()
+    panel.link = "lost"
+    built._panels["Stepper Probe"]._refresh()
+    built._on_refresh_tick()
+    line = built._station_line.cget("text")
+    assert "Stepper Probe" in line and "serial port" in line
+    assert any(item[2].get("fill") == theme.SIGNAL
+               for item in built._station_mark.items)
+    panel.link = "verified"
+    built._panels["Stepper Probe"]._refresh()
+    built._on_refresh_tick()
+    assert built._station_line.cget("text") == ""
+    built.close()
+
+
+# ---------------------------------------------------------------------------
+# Tier F: refusals, severity, long names, repaint cost, focus, tokens
+# ---------------------------------------------------------------------------
+
+def test_a_refusal_is_shown_at_the_control_that_caused_it(view):
+    """F10: the row under the pressed control, wrapped in ink on a tinted
+    band - not one line at the foot of the panel cut at 60 %."""
+    refuse = element_of(view, "button", "Refuse")
+    click(view, refuse)
+    notice = view._notice
+    assert notice is not None and notice.cget("text") == "the bench is busy"
+    container, row, column, span = view._widgets[id(refuse)]["slot"]
+    strip = view._widgets[id(refuse)]["ring"].outer.master
+    assert notice.master is container is strip.master
+    assert notice.grid_info["row"] == strip.grid_info["row"] + 1 == row
+    assert notice.cget("wraplength") > 0 and notice.cget("justify") == "left"
+    assert notice.cget("foreground") == theme.TEXT, "ink, not trace"
+
+
+def test_an_entry_refusal_sits_under_the_entry(view):
+    speed = element_of(view, "entry", "Speed")
+    view._widgets[id(speed)]["var"].set("99")
+    widget_of(view, speed).fire("<Return>")
+    assert view._notice.grid_info["row"] == cell_widget(view, speed).grid_info["row"] + 1
+
+
+def test_a_refusal_below_the_fold_is_scrolled_into_view(view):
+    """The body is 1000 px tall and the viewport shows its top 400: a
+    refusal at 700 px is scrolled to, just enough to show it whole."""
+    refuse = element_of(view, "button", "Refuse")
+    container = view._widgets[id(refuse)]["slot"][0]
+    container.winfo_y = lambda: 690
+    view._body.winfo_height = lambda: 1000
+    view._canvas.yview = lambda *args: (0.0, 0.4)
+    original = FakeWidget.__init__
+
+    def with_geometry(self, master=None, **options):
+        original(self, master, **options)
+        self.winfo_y = lambda: 10
+        self.winfo_reqheight = lambda: 40
+        self.update_idletasks = lambda: None
+    FakeTkModule.Label = type("GeometryLabel", (FakeWidget,), {"__init__": with_geometry})
+    try:
+        click(view, refuse)
+    finally:
+        FakeTkModule.Label = FakeWidget
+    moved = view._canvas.moved_to
+    assert 0.0 < moved <= 1.0
+    assert moved * 1000 + 400 >= 700 + 40, "the whole line is in view"
+
+
+def test_a_failed_command_clears_an_old_refusal(view, panel):
+    click(view, element_of(view, "button", "Refuse"))
+    assert refusal(view)
+    panel.go = lambda: (_ for _ in ()).throw(RuntimeError("port gone"))
+    click(view, element_of(view, "button", "Go"))
+    assert refusal(view) == "", "the failure is on the alert band"
+
+
+def test_a_fault_reason_is_ink_with_a_signal_mark(controller):
+    """F14 / AUD-5: "Fault reason" in signal was 2.73:1 on the panel."""
+    class Faulted(DemoPanel):
+        def __init__(self):
+            super().__init__()
+            self.fault = ""
+
+        @property
+        def schema(self):
+            return sch.schema(sch.section("Safety", sch.readonly(
+                "Fault reason:", "fault", role="danger")))
+
+    panel = Faulted()
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(F=panel), "F")
+    element = built._elements[0]
+    entry = built._widgets[id(element)]
+    assert entry["mark"] is not None and entry["mark"].items == []
+    panel.fault = "Move failed: stage did not answer"
+    built._refresh()
+    assert entry["widget"].cget("foreground") == theme.TEXT
+    assert [item[2]["fill"] for item in entry["mark"].items] == [theme.SIGNAL]
+    panel.fault = ""
+    built._refresh()
+    assert entry["mark"].items == []
+    built.close()
+
+
+def test_long_port_names_are_cut_in_the_middle_and_map_back(row_view):
+    """F15 / HC-6: the tail is what tells two ports apart; the box shows a
+    middle-elided name, the command gets the whole one, the tooltip has it."""
+    names = ["/dev/cu.usbmodem1234567890123", "/dev/cu.usbmodem1234567890456"]
+    row_view._panel = None
+    element = row_view._elements[STEPPER_PORT]
+    entry = row_view._widgets[id(element)]
+    row_view._options = lambda _command: names
+    entry["var"].set("")
+    row_view._refresh_options(element)
+    labels = entry["widget"].cget("values")
+    assert all(tkmod.ELLIPSIS in label for label in labels)
+    assert labels[0][-5:] == "90123" and labels[1][-5:] == "90456"
+    assert len(set(labels)) == 2
+    assert all(len(label) <= tkmod.DROPDOWN_WIDTH for label in labels)
+
+    entry["var"].set(labels[1])
+    ran = []
+    row_view._run = lambda el, args=(): ran.append(args)
+    row_view._on_dropdown_selected(element)
+    assert ran == [(names[1],)]
+
+    row_view._set_text(element, names[0])
+    assert entry["var"].get() == labels[0]
+    assert entry["tooltip"].text == names[0]
+
+
+def test_a_long_run_id_is_cut_in_the_middle(view, panel, monkeypatch):
+    element = element_of(view, "readonly", "Fault:")
+    widget = widget_of(view, element)
+    monkeypatch.setattr(tkmod, "_text_width", lambda _font, text: 10 * len(text))
+    widget.winfo_width = lambda: 200
+    widget.options["padx"] = 0
+    panel.fault_reason = "RUN-2026-09-24-WSe2-hBN-sample-3-cut-0017"
+    view._refresh()
+    shown = widget.cget("text")
+    assert tkmod.ELLIPSIS in shown and not shown.endswith(tkmod.ELLIPSIS)
+    assert shown.endswith("0017") and len(shown) * 10 <= 200
+
+
+def test_the_stop_discs_are_not_rebuilt_while_nothing_changes(dashboard,
+                                                              controller):
+    """F21 / AUD-9: the disc was deleted and redrawn 24 times a second."""
+    dashboard.open()
+    dashboard._sync_stop_button()
+    before = dashboard._stop.draws
+    for _ in range(25):
+        dashboard._on_refresh_tick()
+    assert dashboard._stop.draws == before
+    controller.is_estopped = True
+    dashboard._sync_stop_button()
+    assert dashboard._stop.draws == before + 1
+
+
+def test_an_unchanged_toggle_is_not_repainted(view, panel, monkeypatch):
+    painted = []
+    original = tkmod.TkPanelView._paint_command
+    monkeypatch.setattr(tkmod.TkPanelView, "_paint_command",
+                        lambda self, el: (painted.append(el), original(self, el)))
+    for _ in range(10):
+        view._refresh()
+    assert painted == []
+    panel.is_running = True
+    view._refresh()
+    assert len(painted) == 1
+
+
+def test_an_unchanged_plot_is_not_redrawn(view, panel):
+    panel.samples = [1, 2, 3]
+    view._refresh()
+    canvas = widget_of(view, element_of(view, "plot"))
+    canvas.items.append(("marker", (), {}))
+    view._refresh()
+    assert ("marker", (), {}) in canvas.items, "same series: not redrawn"
+    panel.samples = [1, 2, 3, 4]
+    view._refresh()
+    assert ("marker", (), {}) not in canvas.items
+
+
+def test_the_minimised_setup_panel_stops_ticking(dashboard, controller):
+    """F21 / AUD-9: hidden, it re-read its schema ten times a second."""
+    dashboard.open()
+    setup = dashboard._panels[dashboard.SETUP_TAB]
+    assert setup.is_ticking
+    _launch_a_model(dashboard, controller)
+    assert dashboard._is_setup_collapsed and not setup.is_ticking
+    SCHEDULER.pump()
+    assert not setup.is_ticking, "nothing rescheduled it"
+    dashboard.restore_setup()
+    assert setup.is_ticking
+
+
+def test_a_reopened_model_is_brought_forward(dashboard, controller):
+    """AUD-13: the Models-menu reopen changed nothing on screen."""
+    dashboard.open()
+    controller.remove("Demo")
+    SCHEDULER.pump()
+    dashboard.notebook.select(dashboard._frames[dashboard.SETUP_TAB])
+    controller.reopen("Demo")
+    SCHEDULER.pump()
+    assert dashboard.notebook.select() == str(dashboard._frames["Demo"]) or \
+        dashboard.notebook._selected is dashboard._frames["Demo"]
+
+
+def test_no_motion_disables_the_pulse(dashboard, controller, monkeypatch):
+    """AUD-14: `STATION_NO_MOTION=1`; the face and ring still change."""
+    monkeypatch.setenv("STATION_NO_MOTION", "1")
+    dashboard.open()
+    dashboard._sync_stop_button()
+    controller.is_estopped = True
+    dashboard._sync_stop_button()
+    assert dashboard._stop._pulse_ids == []
+    assert dashboard._stop.face == tkmod.CLEAR_FACE
+
+
+def test_every_focus_mark_is_two_pixels_of_ink(dashboard):
+    """F25 / AUD-10: tabs showed nothing (focus colour = the strip), entries
+    and commands 1 px of trace."""
+    dashboard.open()
+    tab = STYLE["TNotebook.Tab"]
+    assert tab["focuscolor"] == theme.TEXT and tab["focusthickness"] == 2
+    view = dashboard._panels["Demo"]
+    speed = element_of(view, "entry", "Speed")
+    ring = view._widgets[id(speed)]["ring"]
+    widget_of(view, speed).fire("<FocusIn>")
+    assert ring.outer.cget("background") == ring.inner.cget("background") == theme.TEXT
+    assert ring.outer.cget("padx") + ring.inner.cget("padx") == 2
+    source = view._widgets[id(element_of(view, "dropdown"))]["ring"]
+    widget_of(view, element_of(view, "dropdown")).fire("<FocusIn>")
+    assert source.outer.cget("background") == theme.TEXT
+    dashboard._setup_button.fire("<FocusIn>")
+    assert dashboard._setup_press.ring.outer.cget("background") == theme.TEXT
+
+
+def _contrast(a, b):
+    def luminance(colour):
+        channels = [int(colour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        channels = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+                    for c in channels]
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+    high, low = sorted((luminance(a), luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_input_and_command_borders_are_three_to_one_on_the_panel(view):
+    """F25 / AUD-11: they measured 1.88:1."""
+    speed = view._widgets[id(element_of(view, "entry", "Speed"))]
+    go = view._widgets[id(element_of(view, "button", "Go"))]
+    for border in (speed["ring"].inner.cget("background"),
+                   go["outline"].cget("background")):
+        assert _contrast(border, theme.SURFACE) >= 3.0
+
+
+def test_targets_are_at_least_24_px_at_every_font_size(monkeypatch):
+    """F25 / AUD-12, WCAG 2.5.8: a command is its line, its padding and its
+    two ring pixels on each side."""
+    monkeypatch.setattr(tkmod, "_PIXEL_FONTS", True)
+    original = theme.FONT_SIZE
+    try:
+        for points in range(8, 29):
+            theme.set_font_size(points)
+            height = tkmod._line_px() + 2 * tkmod._target_pady() + 2 * tkmod.FOCUS_PX
+            assert height >= 24, points
+            assert tkmod._lamp_px() >= tkmod.LAMP_PX
+        assert tkmod._lamp_px() > tkmod.LAMP_PX, "a lamp grows with 28 pt text"
+    finally:
+        theme.set_font_size(original)
+
+
+def test_the_type_scale_is_the_theme_scale():
+    """F23: the four steps are `theme.size(step)`, not a private ratio."""
+    for step in (tkmod.SMALL, tkmod.BASE, tkmod.STEP_1, tkmod.STEP_2):
+        assert abs(tkmod._font(step)[1]) == theme.size(step)
+
+
+def test_no_private_mixer_and_no_spacing_sums():
+    """F23 / DS-7, DS-12: one `theme.mix`, and a distance is a SPACE step,
+    never `GAP + 2` or `PAD * 2`."""
+    code = _executable_source(tkmod.__file__)
+    assert "def _mix" not in code and "_mix(" not in code
+    sums = re.findall(r"\b(?:PAD|GAP|INSET)\s*[-+*/]\s*\w|\w\s*[-+*/]\s*(?:PAD|GAP|INSET)\b",
+                      code)
+    assert not sums, sums
