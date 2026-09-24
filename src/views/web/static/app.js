@@ -79,9 +79,37 @@ function make(tag, className, text) {
 
 function row(element, extraClass) {
   const node = make('div', 'row' + (extraClass ? ' ' + extraClass : ''));
-  node.appendChild(make('span', 'label',
+  node.appendChild(make('label', 'label',
                         sentenceCase(element.text || element.model_attr || '')));
   return node;
+}
+
+/** Tie a row's caption to its control, so the caption is clickable and a
+ *  screen reader names the control by it. Ids are per panel and per
+ *  attribute, which is unique inside one page. */
+let controlSerial = 0;
+function labelControl(node, control, element) {
+  controlSerial += 1;
+  control.id = 'control-' + controlSerial;
+  const caption = node.querySelector('.label');
+  if (caption) caption.htmlFor = control.id;
+  control.setAttribute('aria-label',
+    sentenceCase(element.text || element.model_attr || element.command || ''));
+}
+
+/** What an empty data element says. The view owns this copy: an empty
+ *  state says what to do next, not that there is nothing. A model that
+ *  declares its own (`empty` on the element) wins. */
+const EMPTY_STATES = {
+  series: 'No samples yet. Start a run and red % is plotted here as it records.',
+  figure: 'No run loaded. Load run opens a saved CSV and plots it here.',
+  gamepad_log: 'No gamepad input yet. Choose a gamepad under Configuration, '
+    + 'then enter manual mode to drive with it.',
+};
+
+function emptyText(element, command) {
+  return element.empty || EMPTY_STATES[command]
+    || 'Nothing here yet. It fills in as the model reports.';
 }
 
 /** Sentence case, as the design brief asks for everywhere. Only a SHOUTED
@@ -107,9 +135,28 @@ function sentence(text) {
 function sentenceCase(text) {
   const words = sentence(text).replace(/\s*:\s*$/, '').split(' ');
   return words
-    .map((word, index) => (index > 0 && /^[A-Z][a-z]+$/.test(word)
+    .map((word, index) => (index > 0 && /^\(?[A-Z][a-z]+\)?$/.test(word)
                            ? word.toLowerCase() : word))
     .join(' ');
+}
+
+/** The face of a toggle's state, rendered from the schema's true/false
+ *  text. The schema writes "Sync X: OFF" beside a row captioned "Sync X",
+ *  and "AUTONOMOUS MODE (Click to Stop)"; on a panel the caption is already
+ *  beside the control, so the repeated caption goes, a bare ON/OFF reads as
+ *  a word, and an aside in brackets becomes the control's tooltip. Returns
+ *  { text, hint }. Presentation only - the schema is not edited from here. */
+function toggleFace(text, caption) {
+  let face = String(text === null || text === undefined ? '' : text).trim();
+  let hint = '';
+  const aside = face.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+  if (aside && aside[1]) { face = aside[1]; hint = sentenceCase(aside[2]); }
+  const lead = String(caption || '').replace(/\s*:\s*$/, '').trim();
+  if (lead && face.toLowerCase().indexOf(lead.toLowerCase() + ':') === 0) {
+    face = face.slice(lead.length + 1).trim();
+  }
+  if (/^(ON|OFF)$/.test(face)) face = face.charAt(0) + face.slice(1).toLowerCase();
+  return { text: sentenceCase(face), hint };
 }
 
 /** The one bold object on the page, in the two sizes it comes in: the
@@ -241,6 +288,15 @@ function isStale(state) {
   return age !== null && age !== undefined && age > STALE_AFTER_S;
 }
 
+/** What a readout shows for a served value. A boolean reads as a word an
+ *  operator would say ("Yes" / "No"), not as a programming literal. */
+function readoutText(text) {
+  if (text === '' || text === null || text === undefined) return '--';
+  const word = String(text);
+  if (/^(true|false)$/i.test(word)) return /^true$/i.test(word) ? 'Yes' : 'No';
+  return word;
+}
+
 function roleClass(role) {
   return 'role-' + (role || 'neutral');
 }
@@ -262,7 +318,13 @@ function renderReadonly(panel, element) {
   node.appendChild(value);
   return {
     node,
-    setText: (text) => { value.textContent = text === '' ? '--' : String(text); },
+    setText: (text) => {
+      const shown = readoutText(text);
+      value.textContent = shown;
+      // Nothing to report is not a reading: it is muted, whatever the
+      // element's role, so an empty fault line is never a red "--".
+      value.classList.toggle('is-empty', shown === '--');
+    },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
 }
@@ -271,6 +333,10 @@ function renderEntry(panel, element) {
   const node = row(element);
   const group = make('div', 'group');
   const input = make('input', 'input');
+  labelControl(node, input, element);
+  input.name = element.model_attr || '';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
   // The input type comes from the schema (`value_type`), never from sniffing
   // the current value - which is what reclassified a cleared box as text.
   const isInt = element.value_type === 'int';
@@ -313,7 +379,7 @@ function renderEntry(panel, element) {
 }
 
 function renderButton(panel, element) {
-  const node = make('div', 'row');
+  const node = make('div', 'row command');
   const button = make('button', 'button ' + roleClass(element.role),
                       sentenceCase(element.text || element.command));
   button.type = 'button';
@@ -330,20 +396,34 @@ function renderToggle(panel, element) {
   // the same physical object as the dashboard's, one size down, so the
   // operator never has to work out which control stops this model.
   if (element.model_attr === 'is_estopped') return renderStopToggle(panel, element);
+  // A toggle looks like a toggle: a lamp that is lit or not, the state's
+  // words beside it, and aria-pressed for anything that cannot see the lamp.
   const node = row(element);
-  const button = make('button', 'button toggle',
-                      sentenceCase(element.false_text || 'off'));
+  const button = make('button', 'button toggle off');
   button.type = 'button';
+  const lamp = make('span', 'toggle-lamp');
+  lamp.setAttribute('aria-hidden', 'true');
+  const face = make('span', 'toggle-face');
+  button.appendChild(lamp);
+  button.appendChild(face);
+  labelControl(node, button, element);
   button.addEventListener('click', () => panel.runToggle(element));
   node.appendChild(button);
+  const show = (on) => {
+    const shown = toggleFace(on ? (element.true_text || 'On')
+                                : (element.false_text || 'Off'), element.text);
+    face.textContent = shown.text;
+    // The aside, if the schema wrote one; otherwise the words themselves,
+    // so a face cut short by the fixed width is still readable in full.
+    button.title = shown.hint || shown.text;
+    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    button.className = 'button toggle ' + roleClass(on ? element.on_role : element.off_role)
+      + (on ? ' on' : ' off');
+  };
+  show(false);
   return {
     node,
-    setOn: (on) => {
-      button.textContent = sentenceCase(on ? (element.true_text || 'on')
-                                           : (element.false_text || 'off'));
-      button.className = 'button toggle ' + roleClass(on ? element.on_role : element.off_role)
-        + (on ? ' on' : ' off');
-    },
+    setOn: show,
     setEnabled: (flag) => { button.disabled = !flag; },
   };
 }
@@ -372,7 +452,9 @@ function renderStopToggle(panel, element) {
 function renderDropdown(panel, element) {
   const node = row(element);
   const select = make('select', 'select');
-  const placeholder = make('option', null, 'Select...');
+  labelControl(node, select, element);
+  select.name = element.model_attr || '';
+  const placeholder = make('option', null, 'Select…');
   placeholder.value = '';
   placeholder.disabled = true;
   select.appendChild(placeholder);
@@ -413,7 +495,7 @@ function renderRegionSelect(panel, element) {
 }
 
 function renderFileSave(panel, element) {
-  const node = make('div', 'row');
+  const node = make('div', 'row command');
   const button = make('button', 'button ' + roleClass(element.role),
                       sentenceCase(element.text || 'Save'));
   button.type = 'button';
@@ -430,7 +512,7 @@ function renderFileOpen(panel, element) {
   // has no route that takes one (old finding 9). The command runs with no
   // argument; a model that needs one refuses, and the refusal shows on the
   // card. See the handoff: an upload route is an owner decision.
-  const node = make('div', 'row');
+  const node = make('div', 'row command');
   const button = make('button', 'button ' + roleClass(element.role),
                       sentenceCase(element.text || 'Open'));
   button.type = 'button';
@@ -444,23 +526,42 @@ function renderFileOpen(panel, element) {
 
 function renderPlot(panel, element) {
   const node = row(element, 'wide');
+  const frame = make('div', 'plot-frame');
   const canvas = make('canvas', 'plot');
   canvas.width = 420;
   canvas.height = 180;
-  node.appendChild(canvas);
+  canvas.setAttribute('role', 'img');
+  canvas.setAttribute('aria-label', sentence(element.text || 'plot'));
+  // The empty state is text on the page, not pixels on the canvas: it reads
+  // at the page's size and a screen reader can find it.
+  const empty = make('p', 'empty-note', emptyText(element, element.data_command));
+  frame.appendChild(canvas);
+  frame.appendChild(empty);
+  node.appendChild(frame);
   return {
     node,
     dataCommand: element.data_command,
-    setData: (data) => drawSeries(canvas, data, element),
+    setData: (data) => { empty.hidden = drawSeries(canvas, data, element); },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
 }
 
 function renderImage(panel, element) {
   const node = row(element, 'wide');
+  const frame = make('div', 'plot-frame');
   const picture = make('img', 'picture');
-  picture.alt = element.text || 'image';
-  node.appendChild(picture);
+  picture.alt = sentence(element.text || 'image');
+  picture.width = 640;
+  picture.height = 360;
+  // A model with nothing to draw can answer with no picture at all; the
+  // frame then says what to do next instead of showing a broken image.
+  const empty = make('p', 'empty-note', emptyText(element, element.data_command));
+  empty.hidden = true;
+  picture.addEventListener('load', () => { empty.hidden = true; picture.hidden = false; });
+  picture.addEventListener('error', () => { empty.hidden = false; picture.hidden = true; });
+  frame.appendChild(picture);
+  frame.appendChild(empty);
+  node.appendChild(frame);
   return {
     node,
     dataCommand: element.data_command,
@@ -479,7 +580,7 @@ function renderIndicator(panel, element) {
     setOn: (on) => {
       lamp.className = 'lamp ' + roleClass(on ? element.on_role : element.off_role)
         + (on ? ' on' : ' off');
-      lamp.textContent = on ? 'yes' : 'no';
+      lamp.textContent = on ? 'Yes' : 'No';
     },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
@@ -488,6 +589,9 @@ function renderIndicator(panel, element) {
 function renderLogStream(panel, element) {
   const node = row(element, 'wide');
   const feed = make('pre', 'feed');
+  feed.dataset.empty = emptyText(element, element.source_command);
+  feed.tabIndex = 0;
+  feed.setAttribute('aria-label', sentence(element.text || 'log'));
   node.appendChild(feed);
   return {
     node,
@@ -552,11 +656,9 @@ function drawSeries(canvas, data, element) {
   const points = normalisePoints(data);
   context.strokeStyle = muted;
   context.strokeRect(0.5, 0.5, canvas.width - 1, canvas.height - 1);
-  if (points.length < 2) {
-    context.fillStyle = muted;
-    context.fillText('No samples yet.', 12, canvas.height / 2);
-    return;
-  }
+  // Fewer than two points is not a line: the frame's empty state says so,
+  // in page text, rather than a caption painted small into the canvas.
+  if (points.length < 2) return false;
   const xs = points.map((p) => p[0]);
   const ys = points.map((p) => p[1]);
   const x0 = Math.min.apply(null, xs);
@@ -578,6 +680,47 @@ function drawSeries(canvas, data, element) {
   context.fillStyle = muted;
   context.fillText(String(element.y_label || ''), 4, 12);
   context.fillText(String(element.x_label || ''), canvas.width - pad, canvas.height - 6);
+  return true;
+}
+
+/** The header row of a row-section table: an empty name cell, then the
+ *  captions of the widest data row, whose cells define the columns. The
+ *  per-cell captions stay in the DOM as the controls' labels, but are only
+ *  shown here, once (styles.css). */
+function tableHead(sections, columns) {
+  let widest = null;
+  for (const section of (sections || [])) {
+    if (!isRowSection(section) || isCommandRow(section)) continue;
+    const drawn = (section.elements || []).filter((e) => e.type !== 'internal');
+    if (drawn.length === columns) { widest = drawn; break; }
+  }
+  if (!widest) return null;
+  const head = make('div', 'section section-row table-head');
+  head.setAttribute('aria-hidden', 'true');
+  head.appendChild(make('span', 'row-title'));
+  for (const element of widest) {
+    head.appendChild(make('span', 'cell head-cell',
+                          sentenceCase(element.text || element.model_attr || '')));
+  }
+  return head;
+}
+
+/** Consecutive commands sit on one line, as one action group, instead of
+ *  stacking one per row at four different widths ("Start", "Stop", "Reset
+ *  baseline", "Save" were four rows). Order is the schema's; only the
+ *  grouping is the view's. A data row keeps its cells, because they are
+ *  its table columns. */
+function groupCommands(cells, isTableRow) {
+  if (isTableRow) return cells;
+  const out = [];
+  let group = null;
+  for (const cell of cells) {
+    const isCommand = cell.classList && cell.classList.contains('command');
+    if (!isCommand) { group = null; out.push(cell); continue; }
+    if (!group) { group = make('div', 'actions'); out.push(group); }
+    group.appendChild(cell);
+  }
+  return out;
 }
 
 // ==========================================================================
@@ -611,13 +754,21 @@ class PanelCard {
     if (options && options.closable) {
       // Closing a module is housekeeping, not a stop: it is chrome, and the
       // signal red is spent on the mushroom alone (design brief, "one red").
-      const close = make('button', 'ghost', 'Close');
+      // But it destructs the model (owner ruling: close = destruct), so it
+      // is the quietest control on the panel, it says what it does when
+      // pointed at, and it asks first (Dashboard.closeModel).
+      const close = make('button', 'ghost card-close', 'Close');
       close.type = 'button';
+      close.title = 'Close ' + name + ': it stops and disconnects. '
+        + 'Reopen it from the rail.';
+      close.setAttribute('aria-label', 'Close ' + name);
       close.addEventListener('click', () => dashboard.closeModel(name));
       head.appendChild(close);
     }
     this.node.appendChild(head);
     this.status = make('p', 'status');
+    this.status.setAttribute('role', 'status');
+    this.status.setAttribute('aria-live', 'polite');
     this.status.hidden = true;
     this.node.appendChild(this.status);
     this.body = make('div', 'card-body');
@@ -639,9 +790,17 @@ class PanelCard {
       this.node.classList.add('table-card');
       this.body.style.gridTemplateColumns = rowGridColumns(columns);
     }
+    let hasHead = false;
     for (const section of sections) {
       const isRow = isRowSection(section);
       const spans = isRow && isCommandRow(section);
+      // A table has one header row: the column captions are said once,
+      // above the first data row, instead of beside every cell.
+      if (isRow && !spans && !hasHead) {
+        hasHead = true;
+        const head = tableHead(sections, columns);
+        if (head) this.body.appendChild(head);
+      }
       const block = make('div', 'section' + (isRow ? ' section-row' : '')
                          + (spans ? ' section-span' : ''));
       // An untitled row claims no name column (the rule views/qt.py settled
@@ -676,7 +835,7 @@ class PanelCard {
           cells.splice(cells.length - 1, 0, make('span', 'cell filler'));
         }
       }
-      for (const cell of cells) block.appendChild(cell);
+      for (const cell of groupCommands(cells, isRow && !spans)) block.appendChild(cell);
       this.body.appendChild(block);
     }
   }
@@ -750,7 +909,7 @@ class PanelCard {
     const options = answer.options || [];
     const previous = select.value;
     clear(select);
-    const placeholder = make('option', null, 'Select...');
+    const placeholder = make('option', null, 'Select…');
     placeholder.value = '';
     placeholder.disabled = true;
     select.appendChild(placeholder);
@@ -925,6 +1084,24 @@ class Dashboard {
       if (event.key === 'Escape' && this.isDrawerOpen) this.setDrawerOpen(false);
     });
     window.addEventListener('resize', () => this.reserveLogSpace());
+    // The rail wraps on a narrow window and the tray grows when it opens;
+    // the drawer and the scrim are fixed against both, so both heights are
+    // measured, not assumed.
+    if (typeof ResizeObserver !== 'undefined') {
+      const watch = new ResizeObserver(() => this.reserveLogSpace());
+      watch.observe(document.querySelector('.rail'));
+      watch.observe(this.dom.logPanel);
+    }
+    this.paintBrowserChrome();
+  }
+
+  /** The browser's own chrome takes the page's base colour. The value is
+   *  read from the theme, so this file still names no colour. */
+  paintBrowserChrome() {
+    const base = getComputedStyle(document.documentElement)
+      .getPropertyValue('--bg').trim();
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta && base) meta.setAttribute('content', base);
   }
 
   // -- the Setup drawer ----------------------------------------------------
@@ -940,7 +1117,11 @@ class Dashboard {
     // empty rack, so there is nothing to dim and no scrim.
     this.dom.scrim.hidden = !(this.isDrawerOpen && this.cards.size > 0);
     this.dom.setupLink.hidden = this.isDrawerOpen;
-    if (this.isDrawerOpen) this.dom.drawerClose.focus({ preventScroll: true });
+    this.dom.drawer.setAttribute('aria-hidden', this.isDrawerOpen ? 'false' : 'true');
+    this.dom.drawer.inert = !this.isDrawerOpen;
+    // Focus moves into the drawer - to the drawer itself, not to its Close
+    // button, which is not the thing the operator came to press.
+    if (this.isDrawerOpen) this.dom.drawer.focus({ preventScroll: true });
   }
 
   // -- the event bar ------------------------------------------------------
@@ -954,6 +1135,10 @@ class Dashboard {
     const panel = this.dom.logPanel;
     if (!panel || !document.body || panel.offsetHeight === undefined) return;
     document.body.style.paddingBottom = panel.offsetHeight + 'px';
+    const root = document.documentElement.style;
+    root.setProperty('--tray-h', panel.offsetHeight + 'px');
+    const rail = document.querySelector('.rail');
+    if (rail) root.setProperty('--rail-h', rail.offsetHeight + 'px');
   }
 
   /** Collapsed - which is how it starts - the tray is one line carrying the
@@ -1041,7 +1226,8 @@ class Dashboard {
   }
 
   setConnected(isConnected) {
-    this.dom.connection.textContent = isConnected ? 'Connected' : 'Not answering';
+    this.dom.connection.textContent = isConnected ? 'Connected'
+      : 'Not answering. Is the station still running?';
     this.dom.connection.className = 'link-state' + (isConnected ? '' : ' is-down');
   }
 
@@ -1096,8 +1282,14 @@ class Dashboard {
       const values = (models[name] || {}).values || {};
       for (const [attr, node] of group.values) {
         const value = values[attr];
-        node.textContent = (value === undefined || value === null || value === '')
+        const text = (value === undefined || value === null || value === '')
           ? '--' : String(value);
+        if (node.textContent !== text) {
+          node.textContent = text;
+          // A long value is cut with an ellipsis on the rail; the whole of
+          // it is one hover away, never silently lost.
+          node.title = text;
+        }
       }
       index += 1;
     }
@@ -1128,6 +1320,8 @@ class Dashboard {
     if (!elements.length) return null;
     const node = make('div', 'readout-group is-entering');
     node.style.setProperty('--stagger', String(index));
+    node.setAttribute('role', 'group');
+    node.setAttribute('aria-label', sentence(name));
     node.appendChild(make('span', 'readout-model', sentence(name)));
     const line = make('div', 'readouts');
     const values = new Map();
@@ -1135,6 +1329,7 @@ class Dashboard {
       const readout = make('div', 'readout');
       readout.appendChild(make('span', 'readout-label', railLabel(element)));
       const value = make('span', 'readout-value', '--');
+      value.setAttribute('translate', 'no');
       readout.appendChild(value);
       line.appendChild(readout);
       values.set(element.model_attr, value);
@@ -1206,6 +1401,7 @@ class Dashboard {
     for (const name of closed) {
       const button = make('button', 'ghost', sentence(name));
       button.type = 'button';
+      button.title = 'Reopen ' + name + ': it is built and connected again.';
       button.addEventListener('click', () => this.openModel(name));
       this.dom.closed.appendChild(button);
     }
@@ -1218,7 +1414,8 @@ class Dashboard {
   }
 
   async closeModel(name) {
-    if (!window.confirm('Close ' + name + '? It stops and disconnects.')) return;
+    if (!window.confirm('Close ' + name + '?\n\nIt stops and disconnects. '
+                        + 'You can reopen it from the rail.')) return;
     await apiPost('/api/close_model', { name });
     await this.refreshNow();
   }
@@ -1286,12 +1483,14 @@ class Dashboard {
   showAck(event) {
     this.dom.modalText.textContent = event.text;
     this.dom.modal.hidden = false;
+    this.dom.modalOk.focus({ preventScroll: true });
   }
 
   // -- the region picker --------------------------------------------------
   async openRegionPicker(card, element) {
     const canvas = this.dom.pickerCanvas;
     this.dom.picker.hidden = false;
+    this.dom.pickerClose.focus({ preventScroll: true });
     const context = canvas.getContext('2d');
     context.clearRect(0, 0, canvas.width, canvas.height);
     let frame;
@@ -1347,9 +1546,13 @@ class Dashboard {
       Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]),
     ];
 
-    canvas.onmousedown = (event) => { start = at(event); };
-    canvas.onmousemove = (event) => { if (start) paint(boxFrom(start, at(event))); };
-    canvas.onmouseup = (event) => {
+    // Pointer events, so a pen or a touchscreen at the bench can drag too.
+    canvas.onpointerdown = (event) => {
+      start = at(event);
+      if (canvas.setPointerCapture) canvas.setPointerCapture(event.pointerId);
+    };
+    canvas.onpointermove = (event) => { if (start) paint(boxFrom(start, at(event))); };
+    canvas.onpointerup = (event) => {
       if (!start) return;
       const box = boxFrom(start, at(event));
       start = null;

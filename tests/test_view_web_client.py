@@ -527,6 +527,125 @@ def test_the_region_picker_scales_the_drag_to_screen_coordinates():
 
 
 # --------------------------------------------------------------------------
+# round 2 of the console: one red, one control vocabulary, empty states that
+# say what to do next, a rail that wraps instead of clipping
+# --------------------------------------------------------------------------
+def test_a_danger_role_command_is_a_quiet_command_not_a_second_red():
+    """Signal red is the stop object, the latch and a fault. Red Percent's
+    "Stop" (end the run) was a red button beside the mushroom."""
+    rule = re.search(r"button\.button\.role-danger\s*\{([^}]*)\}", STYLES)
+    assert rule, "nothing quiets a danger-role command"
+    assert "var(--neutral-bg)" in rule.group(1)
+    assert "signal" not in rule.group(1)
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_a_toggle_face_drops_the_repeated_caption_and_moves_an_aside_to_its_title():
+    assert _node_value("toggleFace('Sync X: OFF', 'Sync X')") == {
+        "text": "Off", "hint": ""}
+    assert _node_value("toggleFace('AUTONOMOUS MODE (Click to Stop)', 'Autonomous:')") == {
+        "text": "Autonomous mode", "hint": "Click to stop"}
+    assert _node_value("toggleFace('Enter Manual Mode', 'Manual / Gamepad:')") == {
+        "text": "Enter manual mode", "hint": ""}
+    toggle = _body(r"function renderToggle\(panel, element\) \{(.*?)\n\}")
+    assert "aria-pressed" in toggle, "a toggle must say its state without the lamp"
+    assert re.search(r"button\.button\.toggle\s*\{[^}]*width:\s*[0-9.]+rem", STYLES), (
+        "every toggle in a panel is one width")
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_a_boolean_readout_reads_as_a_word_and_an_empty_one_is_muted():
+    assert _node_value("readoutText('false')") == "No"
+    assert _node_value("readoutText('True')") == "Yes"
+    assert _node_value("readoutText('')") == "--"
+    assert _node_value("readoutText('0.00')") == "0.00"
+    assert re.search(r"span\.value\.is-empty\s*\{[^}]*color:\s*var\(--muted\)", STYLES), (
+        "an empty fault line read as a red '--'")
+
+
+def test_consecutive_commands_are_one_action_group():
+    build = _body(r"\n  build\(\) \{(.*?)\n  \}")
+    assert "groupCommands(cells, isRow && !spans)" in build
+    group = _body(r"function groupCommands\(cells, isTableRow\) \{(.*?)\n\}")
+    assert "if (isTableRow) return cells;" in group, (
+        "a data row's cells are its table columns and must not be regrouped")
+    assert re.search(r"\n\.actions\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fill",
+                     STYLES), "the commands of a group are not one width"
+    assert re.search(r"\.drawer \.section-span > \.actions:last-child\s*\{[^}]*"
+                     r"flex:\s*1 0 100%", STYLES), (
+        "Setup's Launch row crowds its summary and four commands onto one line")
+
+
+def test_empty_data_elements_say_what_to_do_next():
+    assert "feed.dataset.empty = emptyText(" in APP_JS
+    assert re.search(r"\.feed:empty::before\s*\{[^}]*content:\s*attr\(data-empty\)",
+                     STYLES)
+    plot = _body(r"function renderPlot\(panel, element\) \{(.*?)\n\}")
+    assert "empty-note" in plot and "empty.hidden = drawSeries(" in plot
+    image = _body(r"function renderImage\(panel, element\) \{(.*?)\n\}")
+    assert "'error'" in image and "empty-note" in image
+    assert "fillText('No samples" not in APP_JS, (
+        "the empty plot is painted small into the canvas again")
+
+
+def test_a_row_table_says_its_captions_once_in_a_header_row():
+    build = _body(r"\n  build\(\) \{(.*?)\n  \}")
+    assert "tableHead(sections, columns)" in build
+    assert re.search(r"\.section-row:not\(\.section-span\):not\(\.table-head\) > "
+                     r"\.cell > \.label\s*\{[^}]*clip-path", STYLES), (
+        "the per-cell captions must stay as labels but not repeat on every row")
+
+
+def test_the_rail_wraps_and_the_fixed_layers_measure_it():
+    readouts = re.search(r"\n\.rail-readouts\s*\{([^}]*)\}", STYLES)
+    assert readouts and "flex-wrap: wrap" in readouts.group(1)
+    assert "overflow: hidden" not in readouts.group(1), (
+        "a narrow window clipped the rail's numbers to '0...'")
+    reserve = _body(r"\n  reserveLogSpace\(\) \{(.*?)\n  \}")
+    assert "setProperty('--rail-h'" in reserve and "setProperty('--tray-h'" in reserve
+    assert re.search(r"\.drawer\s*\{[^}]*bottom:\s*var\(--tray-h\)", STYLES), (
+        "the drawer covered the start of the latest event")
+    assert re.search(r"\.rail\s*\{[^}]*min-height:\s*var\(--rail-min\)", STYLES), (
+        "the rail's floor must not be the height measured from the rail itself")
+
+
+def test_the_rack_collapses_three_two_one_and_never_opens_a_phantom_column():
+    assert re.search(r"\.rack\s*\{[^}]*minmax\(min\(24rem, 100%\), 1fr\)", STYLES)
+    assert "@media (min-width: 76.5rem)" in STYLES, (
+        "a double-width panel must only span where three columns fit")
+
+
+def test_rail_and_tray_controls_are_real_touch_targets():
+    assert re.search(r"--hit:\s*2\.75rem", STYLES), "44 px is the floor"
+    assert re.search(r"\.rail-control, \.closed \.ghost\s*\{[^}]*min-height:\s*var\(--hit\)",
+                     STYLES)
+    for control in ("setup-link", "drawer-close", "log-toggle"):
+        tag = re.search(r'<button id="' + control + r'"[^>]*>', INDEX)
+        assert tag and "rail-control" in tag.group(0), control
+
+
+def test_closing_a_module_is_quiet_says_what_it_does_and_asks_first():
+    head = _body(r"constructor\(dashboard, name, schema, options\) \{(.*?)\n  \}")
+    assert "'ghost card-close'" in head and "close.title" in head
+    close = _body(r"async closeModel\(name\) \{(.*?)\n  \}")
+    assert "window.confirm(" in close
+
+
+def test_every_font_size_is_on_the_scale():
+    sizes = re.findall(r"font-size:\s*([^;]+);", STYLES)
+    off = [size for size in sizes
+           if not re.fullmatch(r"var\(--(t-(xs|sm|md|lg|readout)|font-size)\)", size.strip())]
+    assert not off, f"font sizes off the type scale: {off}"
+
+
+def test_form_controls_are_labelled():
+    assert "labelControl(node, input, element)" in APP_JS
+    assert "labelControl(node, select, element)" in APP_JS
+    assert "caption.htmlFor = control.id" in APP_JS
+    assert "'Select...'" not in APP_JS, "an ellipsis is one character"
+
+
+# --------------------------------------------------------------------------
 # the two rules this file does not bend
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("sink", MARKUP_SINKS)

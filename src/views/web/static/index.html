@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Filled from the theme's --bg by the client, so this file names no colour. -->
+  <meta name="theme-color" content="">
   <title>Transfer Stage</title>
   <!-- The palette comes from src/views/theme.py, served as CSS
        variables, so the browser and the two desktop views cannot drift
@@ -13,32 +15,35 @@
   <link rel="preload" href="/fonts/ibm-plex-sans-500.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body>
+  <a class="skip-link" href="#cards">Skip to the modules</a>
   <!-- The status rail is the instrument's face: the numbers the operator
        watches, and one stop that is never in doubt. -->
   <header class="rail">
     <div class="rail-head">
       <h1 class="station-name">Transfer stage</h1>
-      <span id="connection" class="link-state">Connecting</span>
+      <span id="connection" class="link-state" role="status" aria-live="polite">Connecting…</span>
     </div>
-    <div id="rail-readouts" class="rail-readouts"></div>
+    <div id="rail-readouts" class="rail-readouts" aria-label="Key readouts"></div>
     <div class="rail-side">
       <div id="closed-models" class="closed"></div>
-      <button id="setup-link" type="button" class="ghost">Setup</button>
+      <button id="setup-link" type="button" class="ghost rail-control"
+              title="Open Setup: ports, devices and launch">Setup</button>
     </div>
     <button id="full-stop" type="button" class="mushroom" aria-label="Stop every model">
       <span class="mushroom-face">Stop</span>
     </button>
   </header>
 
-  <main id="cards" class="rack"></main>
+  <main id="cards" class="rack" tabindex="-1"></main>
 
   <!-- Setup is a drawer, not a module: it is where a run begins and where it
        is re-planned, and it withdraws once the station is running. -->
   <div id="scrim" class="scrim" hidden></div>
-  <aside id="setup-drawer" class="drawer" aria-label="Setup">
+  <aside id="setup-drawer" class="drawer" aria-label="Setup" tabindex="-1">
     <header class="drawer-head">
       <h2 class="drawer-title">Setup</h2>
-      <button id="drawer-close" type="button" class="ghost">Close</button>
+      <button id="drawer-close" type="button" class="ghost rail-control"
+              title="Close Setup (Escape). The Setup button on the rail brings it back.">Close</button>
     </header>
     <div id="drawer-body" class="drawer-body"></div>
   </aside>
@@ -47,15 +52,16 @@
        read the last few when you ask for it. -->
   <section id="log-panel" class="tray">
     <div class="tray-head">
-      <span id="tray-latest" class="tray-latest">Waiting for the station.</span>
-      <button id="log-toggle" type="button" class="ghost">Show events</button>
+      <span id="tray-latest" class="tray-latest" role="status" aria-live="polite">Waiting for the station…</span>
+      <button id="log-toggle" type="button" class="ghost rail-control"
+              aria-controls="event-log">Show events</button>
     </div>
     <div id="event-log" class="tray-log"></div>
   </section>
 
   <!-- Only an event that asks to be acknowledged opens this. -->
   <div id="ack-modal" class="overlay" hidden>
-    <div class="dialog">
+    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="ack-text">
       <p id="ack-text" class="dialog-text"></p>
       <button id="ack-ok" type="button" class="button role-neutral">OK</button>
     </div>
@@ -63,9 +69,10 @@
 
   <!-- The region picker: drag on the station's own screen grab. -->
   <div id="region-picker" class="overlay" hidden>
-    <div class="dialog wide-dialog">
-      <p class="dialog-text">Drag a rectangle to set the region.</p>
-      <canvas id="region-canvas" class="region-canvas" width="800" height="450"></canvas>
+    <div class="dialog wide-dialog" role="dialog" aria-modal="true" aria-labelledby="region-help">
+      <p id="region-help" class="dialog-text">Drag a rectangle over the part of the screen to watch.</p>
+      <canvas id="region-canvas" class="region-canvas" width="800" height="450"
+              aria-label="The station's screen. Drag to choose the capture region."></canvas>
       <button id="region-close" type="button" class="button role-neutral">Cancel</button>
     </div>
   </div>

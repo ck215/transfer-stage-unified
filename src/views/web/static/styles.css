@@ -45,18 +45,43 @@
   src: url("/fonts/ibm-plex-sans-600.woff2") format("woff2");
 }
 
+/* One type scale, fixed rem, ratio ~1.14 (Operate mode): a caption, a label,
+   body, a heading, and the one display size the rail's numbers use. Every
+   font-size in this file is one of these five. */
 :root {
-  /* The rail's height is a layout constant two other fixed things measure
-     themselves against, so it is named once. */
+  color-scheme: dark;
+  /* The rail's floor height. What the drawer and the scrim measure against
+     is --rail-h, which the client overwrites with the rail's MEASURED height:
+     the rail wraps on a narrow window and grows with it. */
+  --rail-min: 6.25rem;
   --rail-h: 6.25rem;
+  /* The event tray's measured height, likewise written by the client. */
+  --tray-h: 3.5rem;
+  --t-xs: 0.75rem;
+  --t-sm: 0.875rem;
+  --t-md: 1rem;
+  --t-lg: 1.125rem;
+  --t-readout: 1.5rem;
+  /* Touch targets: a rail or tray control is at least 44 px on its short
+     side; a panel control at least 36. */
+  --hit: 2.75rem;
+  --hit-panel: 2.25rem;
   /* Derived from the six tokens, never beside them. */
   --rule: color-mix(in srgb, var(--muted) 30%, transparent);
   --rule-strong: color-mix(in srgb, var(--muted) 52%, transparent);
   --well: color-mix(in srgb, var(--bg) 70%, var(--surface));
+  --lift: color-mix(in srgb, var(--neutral-bg) 86%, var(--text));
   --page-gutter: 1.25rem;
 }
 
 * { box-sizing: border-box; }
+
+html {
+  /* The sticky rail and the fixed tray must never cover what has focus. */
+  scroll-padding-top: calc(var(--rail-h) + 0.5rem);
+  scroll-padding-bottom: calc(var(--tray-h) + 0.5rem);
+  scrollbar-color: var(--rule-strong) transparent;
+}
 
 html, body {
   margin: 0;
@@ -73,13 +98,42 @@ html, body {
    this is only what the page starts with, before the client has measured. */
 body { padding-bottom: 3.5rem; }
 
-h1, h2, h3 { font-weight: 600; margin: 0; }
+h1, h2, h3 { font-weight: 600; margin: 0; text-wrap: balance; }
+
+/* The parts of the page the browser draws still belong to the instrument. */
+::selection { background: color-mix(in srgb, var(--trace) 35%, transparent); color: var(--text); }
+
+input, select, textarea { caret-color: var(--trace); }
+
+button, select, .mushroom {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
 
 /* One focus ring, everywhere, in the colour nothing else claims for chrome. */
 :focus-visible {
   outline: 2px solid var(--trace);
   outline-offset: 2px;
 }
+
+/* A container that takes focus only so focus has somewhere to land (the
+   drawer when it opens, the rack from the skip link) draws no ring: it is
+   not a control. */
+.drawer:focus, .rack:focus { outline: none; }
+
+.skip-link {
+  position: absolute;
+  left: var(--page-gutter);
+  top: 0;
+  z-index: 11;
+  padding: 0.6rem 0.9rem;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--t-sm);
+  transform: translateY(-120%);
+}
+
+.skip-link:focus { transform: none; }
 
 /* -- the status rail ----------------------------------------------------- */
 /* Sticky, and the stop rides with it: the one control that is never in doubt
@@ -95,7 +149,7 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   align-items: center;
   gap: 1.5rem;
   padding: 0.7rem var(--page-gutter);
-  min-height: var(--rail-h);
+  min-height: var(--rail-min);
   background: var(--surface);
   border-bottom: 1px solid var(--rule-strong);
 }
@@ -103,51 +157,70 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 .rail-head {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.2rem;
   flex: 0 0 auto;
-  padding-right: 1.5rem;
-  border-right: 1px solid var(--rule);
+  padding-right: 0.25rem;
   align-self: stretch;
   justify-content: center;
 }
 
 .station-name {
-  font-size: 0.95rem;
+  font-size: var(--t-md);
   font-weight: 600;
   white-space: nowrap;
 }
 
-/* The link state is a word, not a pill: it says what is true and gets out of
-   the way. It only takes a colour when it is bad news. */
+/* The link state is a lamp and a word: lit in the trace colour while the
+   station answers. When it stops answering the lamp goes out and turns to
+   the signal colour, because a station that does not answer is a fault. */
 .link-state {
-  font-size: 0.75rem;
-  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: var(--t-sm);
+  color: var(--text);
   white-space: nowrap;
 }
 
-.link-state.is-down { color: var(--trace); }
-
-/* -- the readout groups: one per open model ------------------------------ */
-.rail-readouts {
-  display: flex;
-  align-items: stretch;
-  gap: 1.75rem;
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
+.link-state::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--trace);
 }
 
+.link-state.is-down { white-space: normal; max-width: 14rem; }
+
+.link-state.is-down::before {
+  background: none;
+  border: 2px solid var(--signal);
+}
+
+/* -- the readout groups: one per open model ------------------------------ */
+/* They wrap rather than clip: on a narrow window a group moves to a second
+   line of the rail, and the rail grows to hold it. */
+.rail-readouts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.6rem 1.75rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Every group carries its own rule on the left - the first one separates
+   the numbers from the station's name - so a group that wraps to a second
+   line of the rail starts exactly where the first line's groups do. */
 .readout-group {
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 0.3rem;
   min-width: 0;
-}
-
-.readout-group + .readout-group {
-  padding-left: 1.75rem;
-  border-left: 1px solid var(--rule);
+  padding-left: 1.5rem;
+  border-left: 1px solid var(--rule-strong);
 }
 
 /* The one orchestrated moment: on launch the drawer withdraws and the
@@ -164,13 +237,18 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 }
 
 .readout-model {
-  font-size: 0.72rem;
-  font-weight: 500;
-  color: var(--muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--text);
   white-space: nowrap;
 }
 
-.readouts { display: flex; align-items: baseline; gap: 1.1rem; }
+.readouts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 1.1rem;
+}
 
 .readout {
   display: flex;
@@ -180,13 +258,13 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 }
 
 .readout-label {
-  font-size: 0.78rem;
+  font-size: var(--t-xs);
   color: var(--muted);
   white-space: nowrap;
 }
 
 .readout-value {
-  font-size: 1.5rem;
+  font-size: var(--t-readout);
   font-weight: 500;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
@@ -195,7 +273,8 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   overflow: hidden;
   text-overflow: ellipsis;
   /* A readout that is an identifier rather than a number must not be
-     allowed to eat the rail the other models are on. */
+     allowed to eat the rail the other models are on. Its whole text is its
+     title (app.js), so the ellipsis never hides anything for good. */
   max-width: 13ch;
 }
 
@@ -206,9 +285,9 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   flex: 0 0 auto;
 }
 
-.closed { display: flex; align-items: center; gap: 0.4rem; }
+.closed { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 
-.closed-label { font-size: 0.78rem; color: var(--muted); }
+.closed-label { font-size: var(--t-sm); color: var(--muted); }
 
 /* -- the mushroom -------------------------------------------------------- */
 /* The one bold element on the page. Round, signal red, a darker ring around
@@ -238,10 +317,12 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 }
 
 .mushroom-face {
-  font-size: 1rem;
+  font-size: var(--t-md);
   font-weight: 600;
   letter-spacing: 0.01em;
 }
+
+.mushroom:hover { border-color: color-mix(in srgb, var(--signal) 62%, var(--bg)); }
 
 .mushroom:active { border-color: color-mix(in srgb, var(--signal) 32%, var(--bg)); }
 
@@ -263,7 +344,7 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
    it is recognisably the same control and unmistakably the smaller one. */
 .mushroom.mini { --disc: 2.9rem; border-width: 0.22rem; }
 
-.mushroom.mini .mushroom-face { font-size: 0.72rem; }
+.mushroom.mini .mushroom-face { font-size: var(--t-xs); }
 
 /* -- the rack ------------------------------------------------------------ */
 /* An empty rack is an invitation, not a void: it says what to do next and
@@ -273,12 +354,15 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   max-width: 34rem;
   padding: 2.5rem 0 0;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: var(--t-md);
 }
 
+/* Three columns on a wide window, two below about 1220 px, one below about
+   820: `auto-fill` does the collapsing, and `min()` keeps a lone column
+   from ever being wider than the window. */
 .rack {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(24rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(24rem, 100%), 1fr));
   /* Dense: a short panel fills the hole a wide one leaves, instead of the
      page keeping a column-shaped gap next to it. */
   grid-auto-flow: dense;
@@ -292,6 +376,7 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
    the trace colour while the model is live and the signal colour when the
    model is latched. */
 .card {
+  min-width: 0;
   background: var(--surface);
   border-left: 0.2rem solid var(--rule-strong);
   border-top: 1px solid var(--rule);
@@ -307,8 +392,12 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 
 /* A card with a lot to say (Red Percent: ten sections) is twice as wide and
    flows its sections in two columns, so it is not one very tall stripe
-   beside a mostly empty one. Only where two columns actually fit. */
-@media (min-width: 48rem) {
+   beside a mostly empty one. Only where the rack has THREE columns: with
+   two, a double-width panel would sit alone on its row and leave the other
+   module a half-empty row of its own; with one, it would open a column the
+   window does not have. 76.5rem is three 24rem columns, two gaps and the
+   gutters. */
+@media (min-width: 76.5rem) {
   .card.wide { grid-column: span 2; }
 
   .card.wide > .card-body {
@@ -325,20 +414,21 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 
 .card-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.6rem;
-  padding: 0.6rem 0.9rem 0.5rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.9rem;
+  min-height: var(--hit);
   border-bottom: 1px solid var(--rule);
 }
 
 .card-title {
-  font-size: 0.95rem;
+  font-size: var(--t-md);
   font-weight: 600;
   margin-right: auto;
 }
 
 .stale-badge {
-  font-size: 0.72rem;
+  font-size: var(--t-xs);
   color: var(--trace);
   border: 1px solid color-mix(in srgb, var(--trace) 45%, transparent);
   border-radius: 2px;
@@ -353,17 +443,17 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 .card > .card-body[hidden],
 .card.collapsed > .card-body { display: none; }
 
-.section { padding: 0.35rem 0; }
+.section { padding: 0.4rem 0 0.5rem; }
 
 .section + .section { border-top: 1px solid var(--rule); }
 
 /* Sentence case, as the schema writes it. No tracked-out capitals: a label
    that shouts is a label the eye has to decode before it can skip it. */
 .section-title {
-  font-size: 0.78rem;
-  font-weight: 500;
+  font-size: var(--t-sm);
+  font-weight: 600;
   color: var(--muted);
-  margin: 0.3rem 0 0.35rem;
+  margin: 0.4rem 0 0.3rem;
 }
 
 /* -- row sections: sch.section(..., layout="row") ------------------------ */
@@ -391,10 +481,11 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
    right, where the status column ends. */
 .card-body.table > .section.section-span {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.5rem 0.75rem;
   grid-column: 1 / -1;
-  padding: 0.35rem 0;
+  padding: 0.5rem 0;
 }
 
 .section-span > :last-child { margin-left: auto; }
@@ -416,7 +507,26 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 /* The label of a pair inside a row is a caption, not a column of its own. */
 .section-row > .cell > .label {
   flex: 0 0 auto;
-  font-size: 0.78rem;
+  font-size: var(--t-xs);
+}
+
+/* A table says its column captions once, in its header row; the caption
+   beside each cell stays in the page as that control's label, for a screen
+   reader, and is hidden from sight. */
+.table-head > .head-cell {
+  min-height: 0;
+  padding: 0.2rem 0 0.1rem;
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+.section-row:not(.section-span):not(.table-head) > .cell > .label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* The last cell is the row's status, hard right. */
@@ -430,14 +540,14 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   align-items: center;
   gap: 0.6rem;
   padding: 0.15rem 0;
-  min-height: 1.9rem;
+  min-height: var(--hit-panel);
 }
 
 .row.wide { flex-direction: column; align-items: stretch; }
 
 .row.disabled { opacity: 0.45; }
 
-.label { flex: 1 1 auto; color: var(--muted); font-size: 0.88rem; }
+.label { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: var(--t-sm); }
 
 /* A readout is the point of the page: sunk into the panel like a window in
    a machined face, set in the trace colour at display size with tabular
@@ -447,7 +557,7 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   background: none;
   border: 0;
   padding: 0;
-  font-size: 1.05rem;
+  font-size: var(--t-lg);
   font-weight: 500;
   color: var(--trace);
   text-align: right;
@@ -456,7 +566,7 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 
 .group { display: flex; align-items: center; gap: 0.35rem; }
 
-.unit { color: var(--muted); font-size: 0.78rem; }
+.unit { color: var(--muted); font-size: var(--t-xs); }
 
 /* Controls are compact and recessed: they sit below the surface of the
    panel, which is where a control belongs on an instrument. */
@@ -465,12 +575,15 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   color: var(--text);
   border: 1px solid var(--muted);
   border-radius: 2px;
-  padding: 0.2em 0.45em;
+  padding: 0.3em 0.5em;
+  min-height: 2rem;
   font-family: inherit;
-  font-size: 0.88rem;
+  font-size: var(--t-sm);
   width: 9rem;
   min-width: 0;
 }
+
+.input:hover:not(:disabled), .select:hover:not(:disabled) { border-color: var(--text); }
 
 /* A number is as wide as a number needs to be, not as wide as a text box:
    a bench panel of identical wide wells is a form, not an instrument. */
@@ -488,35 +601,93 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   cursor: not-allowed;
 }
 
+/* One command vocabulary, in every panel: the same height, the same face,
+   the same hover and press. */
 .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--hit-panel);
   background: var(--neutral-bg);
   color: var(--neutral-fg);
   border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
   border-radius: 2px;
-  padding: 0.28em 0.75em;
+  padding: 0.3em 0.9em;
   font-family: inherit;
-  font-size: 0.85rem;
+  font-size: var(--t-sm);
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
 }
 
-.button.small { padding: 0.12em 0.45em; font-size: 0.78rem; }
+.button:hover:not(:disabled) {
+  background: var(--lift);
+  border-color: color-mix(in srgb, var(--text) 32%, transparent);
+}
+
+.button:active:not(:disabled) {
+  background: var(--well);
+}
+
+.button.small { padding: 0.12em 0.45em; font-size: var(--t-xs); }
+
+/* Consecutive commands are one action group: equal cells, two or three to
+   a line, so Start and Stop are a pair on one line and every command in a
+   column is the same width (app.js groupCommands). */
+.actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+}
+
+.actions > .row { padding: 0; min-height: 0; }
+
+.actions .button { width: 100%; }
+
+/* Inside a spanning table row the group sits on the row's line and keeps
+   its buttons at their own, shared, minimum width. */
+.section-span .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0;
+}
+
+.section-span .actions .button { width: auto; min-width: 7.5rem; }
 
 /* A ghost is chrome, not an instrument control: the rail's Setup, the
    tray's toggle, a closed model waiting to be reopened. */
 .ghost {
   background: none;
-  color: var(--muted);
+  color: var(--text);
   border: 1px solid var(--rule-strong);
   border-radius: 2px;
-  padding: 0.22em 0.65em;
+  padding: 0.3em 0.8em;
   font-family: inherit;
-  font-size: 0.8rem;
+  font-size: var(--t-sm);
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.ghost:hover { color: var(--text); border-color: var(--muted); }
+.ghost:hover { border-color: var(--text); background: var(--well); }
+
+/* The rail's and the tray's secondary controls: a real target (44 px on the
+   short side), quiet enough that the stop is still the only thing that
+   shouts. */
+.rail-control, .closed .ghost { min-height: var(--hit); padding: 0 1rem; }
+
+/* Closing a module destructs its model (owner ruling), so it is the
+   quietest control on the panel: no frame until it is pointed at, a title
+   that says what it does, and a confirmation before it does it. */
+.card-close {
+  border-color: transparent;
+  color: var(--muted);
+  min-height: var(--hit-panel);
+  padding: 0 0.7rem;
+}
+
+.card-close:hover { color: var(--text); border-color: var(--rule-strong); }
 
 /* Roles: the meaning, not the colour. theme.py maps them, and only `danger`
    carries the signal red - the brief's "one red". */
@@ -526,9 +697,8 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
                 border-color: color-mix(in srgb, var(--signal) 55%, var(--bg)); }
 /* A warning-role COMMAND is outlined rather than filled. Filled, it is the
    loudest thing on a panel and out-shouts the action the operator actually
-   came for ("Stop system" over "Launch"); the trace colour still marks it.
-   A warning-role readout or lamp keeps the fill - it is reporting, not
-   asking. */
+   came for; the trace colour still marks it. A warning-role readout or lamp
+   keeps the fill - it is reporting, not asking. */
 .role-warning { background: var(--warning-bg); color: var(--warning-fg); }
 
 button.button.role-warning {
@@ -538,15 +708,46 @@ button.button.role-warning {
 }
 .role-info    { background: var(--info-bg);    color: var(--info-fg); }
 
-/* An OFF toggle is its role outlined on the surface, an ON toggle is filled:
-   the two states differ without relying on green-versus-red
-   (theme.toggle_colors). */
-.toggle.off, .lamp.off {
-  background: none;
-  color: var(--text);
+/* One red: signal is the stop object, the latch and a fault - never a
+   command. A danger-role COMMAND (ending a recording, a halt) is a quiet
+   command like any other; the mushroom in every Safety section is what
+   stops a model. */
+button.button.role-danger {
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  border-color: color-mix(in srgb, var(--text) 16%, transparent);
 }
 
-.toggle.off.role-danger { border-color: var(--signal); color: var(--text); }
+button.button.role-danger:hover:not(:disabled) { background: var(--lift); }
+
+/* A toggle looks like a toggle, whatever its role: one width in every
+   panel, a lamp at its leading edge that is lit (trace) when ON and an
+   empty ring when OFF, and the state in words beside it. */
+button.button.toggle {
+  width: 14rem;
+  justify-content: flex-start;
+  gap: 0.55rem;
+  background: var(--neutral-bg);
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--text) 16%, transparent);
+  text-align: left;
+}
+
+button.button.toggle:hover:not(:disabled) { background: var(--lift); }
+
+button.button.toggle.on { border-color: color-mix(in srgb, var(--trace) 60%, transparent); }
+
+.toggle-face { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.toggle-lamp, .lamp::before {
+  flex: 0 0 auto;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  border: 1.5px solid var(--muted);
+}
+
+.toggle.on .toggle-lamp { background: var(--trace); border-color: var(--trace); }
 
 span.value.role-neutral, span.value.role-go, span.value.role-danger,
 span.value.role-warning, span.value.role-info {
@@ -557,29 +758,29 @@ span.value.role-danger { color: var(--signal); }
 span.value.role-warning { color: var(--trace); }
 span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(--trace); }
 
-/* A lamp is lit or it is not: ON is the trace colour, OFF is an empty ring. */
+/* "--" is the absence of a reading, not a reading: muted, whatever the role. */
+span.value.is-empty { color: var(--muted); }
+
+/* A lamp is lit or it is not: a dot and a word, not a box that looks like
+   a button. ON is the trace colour; a lit danger lamp is a fault, so it is
+   the signal colour; OFF is an empty ring. */
+span.lamp { background: none; }
+
 .lamp {
-  display: inline-block;
-  min-width: 2.4rem;
-  text-align: center;
-  padding: 0.05em 0.5em;
-  border-radius: 2px;
-  border: 1px solid var(--rule-strong);
-  font-size: 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: var(--t-sm);
+  color: var(--muted);
 }
 
-.lamp.on.role-go, .lamp.on.role-info, .lamp.on.role-neutral,
-.lamp.on.role-warning {
-  background: none;
-  color: var(--trace);
-  border-color: var(--trace);
-}
+.lamp::before { content: ""; }
 
-.lamp.on.role-danger {
-  background: var(--signal);
-  color: var(--danger-fg);
-  border-color: var(--signal);
-}
+.lamp.on { color: var(--text); }
+
+.lamp.on::before { background: var(--trace); border-color: var(--trace); }
+
+.lamp.on.role-danger::before { background: var(--signal); border-color: var(--signal); }
 
 .plot, .picture, .feed, .region-canvas {
   width: 100%;
@@ -588,6 +789,31 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
   border-radius: 2px;
 }
 
+.plot { display: block; height: auto; }
+
+/* A plot or a figure in its frame, with the empty state that stands in for
+   it until there is something to draw. */
+.plot-frame { position: relative; }
+
+.empty-note {
+  margin: 0;
+  padding: 1.25rem 1rem;
+  min-height: 7rem;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  text-wrap: balance;
+  font-size: var(--t-sm);
+  color: var(--muted);
+  border: 1px dashed var(--rule-strong);
+  border-radius: 2px;
+}
+
+.empty-note[hidden] { display: none; }
+
+/* Over a canvas the note sits inside the plot's own frame. */
+.plot + .empty-note { position: absolute; inset: 0; border: 0; }
+
 /* A rendered figure is a picture the model draws, so its own background is
    whatever the model chose. What this side controls is the surface it sits
    on and how much of the panel it may take. */
@@ -595,16 +821,41 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
   display: block;
   background: var(--surface);
   max-height: 18rem;
+  height: auto;
   object-fit: contain;
 }
 
+.picture[hidden] { display: none; }
+
+/* A log is data, set in the page's face with tabular figures, compact, and
+   when it is empty it says what would fill it. */
 .feed {
-  height: 9rem;
+  height: 6.5rem;
   overflow: auto;
+  overscroll-behavior: contain;
   margin: 0;
-  padding: 0.4rem;
-  font-size: 0.78rem;
+  padding: 0.45rem 0.6rem;
+  font-family: inherit;
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
   white-space: pre-wrap;
+}
+
+.feed:empty {
+  display: grid;
+  place-items: center;
+  background: none;
+  border-style: dashed;
+  border-color: var(--rule-strong);
+}
+
+.feed:empty::before {
+  content: attr(data-empty);
+  font-size: var(--t-sm);
+  color: var(--muted);
+  text-align: center;
+  white-space: normal;
+  text-wrap: balance;
 }
 
 /* A refusal is a sentence on the panel, never a popup - and it shakes once
@@ -612,11 +863,12 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
    long panel is a line nobody sees. */
 .status {
   margin: 0;
-  padding: 0.35rem 0.9rem;
-  background: color-mix(in srgb, var(--signal) 18%, var(--surface));
-  border-left: 0.2rem solid var(--signal);
+  padding: 0.45rem 0.9rem;
+  background: color-mix(in srgb, var(--signal) 14%, var(--surface));
+  border-top: 1px solid color-mix(in srgb, var(--signal) 55%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--signal) 55%, var(--surface));
   color: var(--text);
-  font-size: 0.85rem;
+  font-size: var(--t-sm);
 }
 
 .status.shake { animation: refused-shake 200ms ease-in-out 1; }
@@ -630,12 +882,13 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
 /* -- the Setup drawer ---------------------------------------------------- */
 /* Setup is where a run begins, so it is open at boot and it takes the left
    edge rather than a slot in the rack. It withdraws on launch - the one
-   orchestrated moment - and the rail's Setup button brings it back. */
+   orchestrated moment - and the rail's Setup button brings it back. It
+   stops at the tray, so the latest event is never hidden behind it. */
 .drawer {
   position: fixed;
   top: var(--rail-h);
   left: 0;
-  bottom: 0;
+  bottom: var(--tray-h);
   z-index: 8;
   width: min(560px, 100%);
   display: flex;
@@ -652,15 +905,16 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.85rem 1rem;
+  padding: 0.5rem 0.75rem 0.5rem 1rem;
   border-bottom: 1px solid var(--rule-strong);
 }
 
-.drawer-title { font-size: 1rem; margin-right: auto; }
+.drawer-title { font-size: var(--t-lg); margin-right: auto; }
 
 .drawer-body {
   flex: 1 1 auto;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 0.25rem 0.5rem 1rem;
 }
 
@@ -683,19 +937,22 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
 
 /* The device name and the status read at panel scale, not at heading scale:
    what the row is for is the two dropdowns between them. */
-.drawer .section-row > .row-title { font-size: 0.85rem; }
+.drawer .section-row > .row-title { font-size: var(--t-sm); }
 
-.drawer .value { min-width: 0; font-size: 0.8rem; }
+.drawer .value { min-width: 0; font-size: var(--t-sm); }
 
 .drawer .section-row > .cell { min-width: 0; }
 
-.drawer .section-row > .cell > .label { font-size: 0.7rem; }
+/* Setup's Launch row is two lines: what is selected, then the commands,
+   right-aligned as one group, so four things of four widths do not fight
+   for one line of the drawer. */
+.drawer .section-span > .actions:last-child {
+  flex: 1 0 100%;
+  justify-content: flex-end;
+}
 
-/* Setup's Launch row carries a summary that grows with the selection. It
-   gives way to the buttons rather than pushing them off the drawer. */
-.drawer .card-body.table > .section.section-span { flex-wrap: wrap; }
-
-.section-span > .value {
+.section-span > .value,
+.section-span > .cell > .value {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -711,7 +968,7 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
 
 .scrim {
   position: fixed;
-  inset: var(--rail-h) 0 0 0;
+  inset: var(--rail-h) 0 var(--tray-h) 0;
   z-index: 7;
   background: color-mix(in srgb, var(--bg) 66%, transparent);
 }
@@ -736,13 +993,13 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.35rem var(--page-gutter);
+  padding: 0.25rem var(--page-gutter);
 }
 
 .tray-latest {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 0.82rem;
+  font-size: var(--t-sm);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -755,8 +1012,9 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
 .tray-log {
   height: 8.6em;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.25rem var(--page-gutter) 0.6rem;
-  font-size: 0.82rem;
+  font-size: var(--t-sm);
   line-height: 1.45;
 }
 
@@ -795,19 +1053,31 @@ span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(-
   gap: 0.85rem;
 }
 
+.dialog .button { align-self: flex-end; min-width: 7.5rem; }
+
 .wide-dialog { max-width: 90vw; }
 
 .dialog-text { margin: 0; white-space: pre-wrap; }
 
-.region-canvas { max-width: 86vw; max-height: 70vh; cursor: crosshair; }
+.region-canvas {
+  max-width: 86vw;
+  max-height: 70vh;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
 
 /* -- narrow screens ------------------------------------------------------ */
+/* Below the drawer's own width the rail stacks: the name and the stop on
+   the first line, the readouts on a line of their own under them. The stop
+   never leaves the viewport and is never smaller than a thumb. */
 @media (max-width: 40rem) {
   .rail { flex-wrap: wrap; gap: 0.75rem; }
   .rail-head { border-right: 0; padding-right: 0; }
-  .rail-readouts { order: 3; width: 100%; overflow-x: auto; }
+  .rail-readouts { order: 3; width: 100%; }
   .mushroom { --disc: 4rem; margin-left: auto; }
-  .readout-value { font-size: 1.25rem; }
+  .readout-value { font-size: var(--t-lg); }
+  .actions { grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); }
   :root { --page-gutter: 0.85rem; }
 }
 
