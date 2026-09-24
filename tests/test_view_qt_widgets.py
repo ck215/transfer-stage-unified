@@ -11,14 +11,16 @@ could be raised, because there is nobody to click it.
 """
 import functools
 import os
+import sys
 import threading
 
 import pytest
 
-from PySide6.QtGui import QIntValidator
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import (QFileDialog, QFrame, QLabel, QMessageBox,
-                               QSizePolicy)
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QIntValidator,
+                           QKeySequence)
+from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame,
+                               QLabel, QMessageBox, QSizePolicy)
 
 import schema as sch
 from events import events
@@ -876,14 +878,19 @@ def test_an_event_published_from_a_worker_thread_still_arrives(
     assert len(shown) == 1
 
 
-def test_an_acknowledged_event_opens_exactly_one_modal(dashboard, qapp,
-                                                       monkeypatch):
+def test_an_acknowledged_event_joins_the_alert_band_and_opens_no_modal(
+        dashboard, qapp, monkeypatch):
+    """Updated (F1): it asserted exactly one `QMessageBox.exec` per event -
+    the blocking modal that stacked over the stop. It is now one line in the
+    rail's alert band, and nothing modal."""
     raised = []
     monkeypatch.setattr(QMessageBox, "exec", lambda self: raised.append(self.text()))
     dashboard.open()
     events.error("Fault", "stop not confirmed", source="Test")
     qapp.processEvents()
-    assert len(raised) == 1
+    assert raised == []
+    assert dashboard.alert_band.isHidden() is False
+    assert "stop not confirmed" in dashboard.alert_text.full_text()
 
 
 def test_no_modal_opens_while_the_dashboard_is_closing(dashboard, qapp,
@@ -1197,13 +1204,16 @@ def test_an_indicator_is_a_lamp_and_never_repeats_its_own_caption(view, panel):
 
 
 def test_a_lamp_takes_its_colour_from_the_state_not_from_a_literal(view, panel):
+    """Updated (F8): it asserted the toggle's role fills, which made a lit
+    lamp 1.50:1 and an unlit one 1.23:1 on the card. Lamps now use Tk's rule
+    (`qt.lamp_colours`): a Fault lamp is a muted ring off, signal when on."""
     element = element_of(view, "indicator")
     lamp = view._widget_for(element)
     view._refresh()
-    assert theme.toggle_colors(element, False)["border"] in lamp.styleSheet()
+    assert f"border: 2px solid {theme.MUTED}" in lamp.styleSheet()
     panel.is_faulted = True
     view._refresh()
-    assert theme.toggle_colors(element, True)["background"] in lamp.styleSheet()
+    assert f"background-color: {theme.SIGNAL}" in lamp.styleSheet()
     assert lamp.text() == ""
 
 
@@ -1253,13 +1263,14 @@ def test_a_section_card_keeps_its_natural_height(table_view):
 
 def test_the_full_stop_button_is_tall_and_set_in_the_theme_size(dashboard):
     """Updated: a round disc sized in lines of the base font (so it follows
-    --font-size), where it was a fixed-height slab."""
+    --font-size), where it was a fixed-height slab. Updated again (F25): the
+    face is `theme.size(1)` - the same 14 pt at 12 pt as the old 1.2 scale -
+    and shrinks only when a capped disc needs it."""
     button = dashboard.stop_button
     assert button.width() == button.height()
     assert button.width() == round(button.line_height() * qt.STOP_DISC_LINES)
     dashboard._sync_stop_button()
-    _, size, _ = theme.font(qt.STOP_FONT_SCALE, bold=True)
-    assert f"font-size: {size}pt" in dashboard.stop_button.styleSheet()
+    assert f"font-size: {theme.size(qt.STOP_FACE_STEP)}pt" in button.styleSheet()
 
 
 def test_the_event_log_keeps_only_its_tail(dashboard):
@@ -1575,3 +1586,477 @@ def test_an_action_line_spans_the_table_and_wraps_its_message(action_view):
     assert column == 0 and span == grid.columnCount()
     assert scan.wordWrap() is True
 
+
+
+# ---------------------------------------------------------------------------
+# Tier F (UI audit round, 2026-09-24). Each of these fails on 77ac52d.
+# ---------------------------------------------------------------------------
+
+class RailPanel(Panel):
+    """Three position readouts on the rail, like a probe."""
+
+    NAME = "Rail"
+
+    def __init__(self):
+        super().__init__()
+        self.x_position = "12345.678"
+        self.y_position = "0.00"
+        self.z_position = "-9876.5"
+        self.is_on = False
+        self.refuse = False
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Coordinate frame",
+                        sch.readonly("X Position:", "x_position", rail=True),
+                        sch.readonly("Y Position:", "y_position", rail=True),
+                        sch.readonly("Z Position:", "z_position", rail=True)),
+            *[sch.section(f"Section {n}", sch.readonly("Value:", "x_position"))
+              for n in range(8)],
+            sch.section("Last", sch.button("Go", "go")))
+
+    def go(self):
+        if self.refuse:
+            raise Refused("the stage is not homed")
+        return None
+
+
+@pytest.fixture
+def restore_font(qapp):
+    original = theme.FONT_SIZE
+    yield
+    theme.set_font_size(original)
+    qapp.setStyleSheet(qt.stylesheet())
+
+
+def rail_dashboard(qapp, names, width, height):
+    controller = FakeController(RailPanel())
+    controller.open_names = list(names)
+    controller.closed = []
+    window = qt.QtDashboard(controller, controller.panel)
+    window.open()
+    window.resize(width, height)
+    for _ in range(5):
+        qapp.processEvents()
+    window._on_rail_tick()
+    for _ in range(5):
+        qapp.processEvents()
+    return window
+
+
+def clipped_rail_numbers(window):
+    """Every visible rail number drawn narrower than its own text - the
+    desktop auditor's measure (AUD-1), with the clip of every ancestor."""
+    clipped = []
+    for label in window.rail.findChildren(QLabel):
+        if label.objectName() != "railValue" or not label.isVisible():
+            continue
+        need = label.fontMetrics().horizontalAdvance(label.text())
+        have = min(label.contentsRect().width(),
+                   label.visibleRegion().boundingRect().width())
+        if need > have + 1:
+            clipped.append((label.text(), have, need))
+    return clipped
+
+
+@pytest.mark.parametrize("font, names, width", [
+    (12, ["Stepper Probe", "DC Probe", "Temperature Controller", "Red Percent"], 1000),
+    (28, ["Stepper Probe", "Red Percent"], 1000),
+])
+def test_f5_the_rail_never_clips_a_number(qapp, restore_font, font, names,
+                                           width):
+    theme.set_font_size(font)
+    window = rail_dashboard(qapp, names, width, 700)
+    try:
+        assert clipped_rail_numbers(window) == []
+        for name in names:
+            group, readouts = window._rail_groups[name]
+            shown = [v for _, v in readouts if v.isVisible()]
+            assert shown, f"{name} lost every readout"
+            assert all(v.text() in ("12345.678", "0.00", "-9876.5")
+                       for v in shown)
+        stop = window.stop_button
+        top_left = stop.mapTo(window, QPoint(0, 0))
+        assert top_left.x() + stop.width() <= window.width()
+    finally:
+        window._closing = False
+        window.close()
+        events.unsubscribe(window._on_event)
+
+
+def test_f5_past_two_lines_a_model_shows_fewer_readouts_not_a_clipped_one(
+        qapp, restore_font):
+    """At 28 pt two models' three readouts do not fit on two lines of a
+    1000 px rail; each model then shows fewer, never a clipped one. (Past one
+    readout a model cannot shed more, and a third line is allowed.)"""
+    theme.set_font_size(28)
+    window = rail_dashboard(qapp, ["A", "B"], 1000, 700)
+    try:
+        assert window.rail_readouts.lines <= qt.RAIL_LINES
+        shown = [sum(v.isVisible() for _, v in r)
+                 for _, r in window._rail_groups.values()]
+        assert min(shown) >= 1 and max(shown) < 3
+        group = window._rail_groups["A"][0]
+        assert "12345.678" in group.toolTip()      # the hidden ones, on hover
+        assert clipped_rail_numbers(window) == []
+    finally:
+        window._closing = False
+        window.close()
+        events.unsubscribe(window._on_event)
+
+
+def test_f25_the_stop_stays_at_most_96_px_at_28_pt_and_its_face_fits(
+        qapp, restore_font):
+    theme.set_font_size(28)
+    button = qt.StopButton()
+    assert button.width() == button.height() <= qt.STOP_MAX_PX
+    font = QFont(theme.FONT_FAMILY, button.face_size())
+    font.setBold(True)
+    inside = button.width() - 2 * (button.FOCUS_GAP + button._ring)
+    assert QFontMetrics(font).horizontalAdvance("Clear") <= inside
+
+
+# -- F1: errors never block the stop -----------------------------------------
+
+def test_f1_after_many_failures_the_stop_is_clickable_and_nothing_is_modal(
+        dashboard, qapp, controller, monkeypatch):
+    raised = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: raised.append(1))
+    monkeypatch.setattr(QDialog, "exec", lambda self: raised.append(1))
+    dashboard.open()
+    for n in range(20):
+        events.error("Command Failed", f"failure {n}", source="Test")
+    qapp.processEvents()
+    assert raised == []
+    assert QApplication.activeModalWidget() is None
+    assert dashboard.stop_button.isEnabled() is True
+    dashboard.stop_button.click()
+    assert controller.estop_calls == 1
+    # The errors queue, oldest first; none overwrote another.
+    assert len(dashboard.alerts) == 20
+    assert "failure 0" in dashboard.alert_text.full_text()
+    assert dashboard.alert_count.text() == "1 of 20"
+    dashboard.acknowledge()
+    assert "failure 1" in dashboard.alert_text.full_text()
+    dashboard.acknowledge_all()
+    assert dashboard.alert_band.isHidden() is True
+
+
+def test_f1_f17_a_question_leaves_the_stop_clickable_and_defaults_to_no(
+        dashboard, qapp, controller, monkeypatch):
+    """`QMessageBox.question` was application-modal: while it was up the
+    rail's stop could not be pressed. The stop now answers the open question
+    No and then stops."""
+    def modal(*_args, **_kwargs):
+        raise AssertionError("a modal question blocks the stop")
+    monkeypatch.setattr(QMessageBox, "question", modal)
+    monkeypatch.setattr(QMessageBox, "exec", modal)
+    dashboard.open()
+    seen = {}
+
+    def while_asking():
+        pending = getattr(qt, "_PENDING_CONFIRMS", [])
+        box = pending[0] if pending else None
+        seen["modal"] = QApplication.activeModalWidget()
+        if box is not None:
+            no = box.button(QMessageBox.StandardButton.No)
+            seen["default_is_no"] = box.defaultButton() is no
+            seen["escape_is_no"] = box.escapeButton() is no
+        dashboard.stop_button.click()
+    QTimer.singleShot(0, while_asking)
+    answer = dashboard._confirm("Clear the stop?")
+    assert seen["modal"] is None
+    assert seen["default_is_no"] and seen["escape_is_no"]
+    assert controller.estop_calls == 1
+    assert answer is False
+    assert qt._PENDING_CONFIRMS == []
+
+
+# -- F8: lamps -------------------------------------------------------------
+
+def test_f8_lamps_are_visible_and_named(view, panel):
+    element = element_of(view, "indicator")
+    lamp = view._widget_for(element)
+    view._refresh()
+    assert lamp.accessibleName() == "Fault: off"
+    panel.is_faulted = True
+    view._refresh()
+    assert lamp.accessibleName() == "Fault: on"
+
+
+def test_f8_a_disconnected_stage_is_an_ink_ring_not_a_second_red():
+    connected = sch.indicator("Stage connected", "is_connected",
+                              on_role="go", off_role="danger")
+    assert qt.lamp_colours(connected, True) == (theme.TRACE, theme.TRACE)
+    fill, ring = qt.lamp_colours(connected, False)
+    assert ring == theme.TEXT and theme.SIGNAL not in (fill, ring)
+    fault = sch.indicator("Fault", "is_faulted")
+    assert qt.lamp_colours(fault, True) == (theme.SIGNAL, theme.SIGNAL)
+    assert qt.lamp_colours(fault, False)[1] == theme.MUTED
+
+
+# -- F9: the keyboard path to the stop ----------------------------------------
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                                 Qt.Key.Key_Space])
+def test_f9_return_enter_and_space_all_press_the_stop(qapp, key):
+    from PySide6.QtTest import QTest
+    button = qt.StopButton()
+    pressed = []
+    button.clicked.connect(lambda: pressed.append(1))
+    QTest.keyClick(button, key)
+    assert pressed == [1]
+
+
+def test_f9_the_latched_stop_shows_focus_in_ink(qapp, monkeypatch):
+    button = qt.StopButton()
+    button.set_latched(True)
+    button._pulse.stop()
+    button._dress()
+    unfocused = button.grab().toImage()
+    monkeypatch.setattr(button, "hasFocus", lambda: True)
+    focused = button.grab().toImage()
+    assert focused != unfocused
+    edge = QColor(focused.pixel(1, button.height() // 2))
+    ink = QColor(theme.STOP_FOCUS)
+    assert abs(edge.red() - ink.red()) + abs(edge.green() - ink.green()) < 90
+
+
+def test_f9_a_global_shortcut_stops_and_never_clears(dashboard, controller):
+    """Ctrl+. everywhere - Qt's Ctrl is Cmd on macOS, where the physical
+    Control+. is bound too, as Tk binds both. Named on the face's tooltip and
+    on the rail's hint, in Tk's words."""
+    keys = [s.key() for s in dashboard.stop_shortcuts]
+    assert QKeySequence("Ctrl+.") in keys
+    if sys.platform == "darwin":
+        assert QKeySequence("Meta+.") in keys
+    assert all(s.context() == Qt.ShortcutContext.ApplicationShortcut
+               for s in dashboard.stop_shortcuts)
+    dashboard._sync_stop_button()
+    hint = f"Stop every model ({dashboard.stop_shortcut_text()})"
+    assert dashboard.stop_button.toolTip().startswith(hint)
+    assert dashboard.stop_hint.full_text() == hint
+    dashboard.stop_shortcuts[-1].activated.emit()
+    assert controller.estop_calls == 1 and controller.is_estopped
+    for shortcut in dashboard.stop_shortcuts:   # latched: it does not clear
+        shortcut.activated.emit()
+    assert controller.is_estopped is True and controller.estop_calls == 1
+    dashboard._sync_stop_button()
+    assert dashboard.stop_hint.full_text() == "Clear the stop on every model"
+
+
+# -- F3: a lost device ---------------------------------------------------------
+
+def test_f3_a_lost_port_is_said_on_the_panel_the_dock_and_the_rail(
+        dashboard, qapp, controller, monkeypatch):
+    live = controller.state
+
+    def lost(name=None):
+        snapshot = live(name)
+        snapshot["devices"] = {"SerialPort": "lost"}
+        return snapshot
+    monkeypatch.setattr(controller, "state", lost)
+    dashboard.open()
+    panel_view = dashboard._panels["Fake"]
+    panel_view._refresh()
+    dashboard._on_rail_tick()
+    assert panel_view.lost_devices == ["serial port"]
+    assert panel_view.notice.isVisibleTo(panel_view)
+    assert "Fake lost its serial port" in panel_view.notice.text()
+    assert panel_view.property("stale") == "true"
+    dock = dashboard._docks["Fake"]
+    assert dock.title_bar.lost_label.isVisibleTo(dock)
+    group, readouts = dashboard._rail_groups["Fake"]
+    assert group.lost_label.text() == "Serial port lost"
+    assert all(v.property("lost") == "true" for _, v in readouts)
+    assert "Fake lost its serial port" in dashboard.rail_status.full_text()
+
+
+def test_f3_stale_readouts_really_are_repolished(view, panel):
+    """The stale rule is a descendant selector; polishing the panel alone
+    never re-read it for the labels, so a stale panel stayed trace."""
+    label = view._widget_for(element_named(view, "reading"))
+    view._refresh()
+    live = label.palette().color(label.foregroundRole()).name()
+    view._set_stale(True)
+    dim = label.palette().color(label.foregroundRole()).name()
+    assert live.lower() == theme.TRACE.lower()
+    assert dim.lower() == theme.MUTED.lower()
+
+
+# -- F10: a refusal at the control -----------------------------------------------
+
+def test_f10_a_refusal_lands_in_the_card_of_the_control_and_scrolls_into_view(
+        qapp):
+    panel = RailPanel()
+    panel.refuse = True
+    view = qt.QtPanelView(FakeController(panel), "Rail")
+    scroll = qt.QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setWidget(view)
+    scroll.resize(500, 240)
+    scroll.show()
+    qapp.processEvents()
+    try:
+        button = view._widget_for(next(e for e in view._elements
+                                       if e.get("command") == "go"))
+        view._run(next(e for e in view._elements if e.get("command") == "go"))
+        for _ in range(3):
+            qapp.processEvents()
+        line = view.status_label
+        assert "not homed" in line.text()
+        card = line.parentWidget()
+        assert card.objectName() == "card" and card.isAncestorOf(button)
+        assert scroll.verticalScrollBar().value() > 0
+        top = line.mapTo(scroll.viewport(), QPoint(0, 0)).y()
+        assert 0 <= top <= scroll.viewport().height()
+        panel.refuse = False
+        view._run(next(e for e in view._elements if e.get("command") == "go"))
+        assert line.isHidden() and view.status_label.text() == ""
+    finally:
+        view.close()
+        scroll.close()
+
+
+# -- F14: severity is a mark and a word, the text stays legible ---------------------
+
+def test_f14_an_error_line_is_ink_with_a_signal_mark_beside_the_word(dashboard):
+    class Spoof:
+        severity, source, title, message, count = "error", "T", "t", "m", 1
+        needs_ack = False
+        text = "[T] t: the heater did not answer"
+
+    dashboard._show_event(Spoof())
+    page = dashboard.event_view.toHtml().lower()
+    assert f"background-color:{theme.SEVERITY_MARK['error']}".lower() in page
+    assert f"color:{theme.SEVERITY_INK['error']}".lower() in page
+    assert f"color:{theme.SIGNAL}".lower() not in page.replace(
+        "background-color", "")
+    assert "Error" in dashboard.event_view.toPlainText()
+    assert dashboard.event_latest.property("severity") == "error"
+
+
+# -- F15: long names elide from the middle ----------------------------------
+
+def test_f15_a_long_port_name_keeps_the_end_that_tells_ports_apart(view, panel):
+    combo = view._widget_for(element_of(view, "dropdown"))
+    long_name = "/dev/cu.usbmodem1234567890ABCDEF4401"
+    view._set_combo_text(combo, long_name)
+    combo.resize(160, combo.height())
+    shown = combo.shown_text()
+    assert "…" in shown and shown.endswith("4401")
+    assert shown.startswith("/dev")
+    assert combo.toolTip() == long_name
+    index = combo.findText(long_name)
+    assert combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == long_name
+
+
+def test_f15_a_long_run_id_elides_rather_than_pushing_the_column(view, panel):
+    label = view._widget_for(element_named(view, "reading"))
+    run_id = "run_20260924_104848_" + "x" * 40
+    panel.reading = run_id
+    view._refresh()
+    cap = label.fontMetrics().averageCharWidth() * qt.READOUT_MAX_CHARS
+    assert label.sizeHint().width() <= cap
+    assert label.text() == run_id               # the value itself is whole
+    label.resize(200, label.height())
+    assert "…" in label.shown_text()
+    assert label.toolTip() == run_id
+
+
+# -- F21: no restyle when nothing changed; a hidden panel does not tick -------
+
+def test_f21_an_idle_tick_restyles_nothing(dashboard, qapp, monkeypatch):
+    from PySide6.QtWidgets import QWidget
+    dashboard.open()
+    panel_view = dashboard._panels["Fake"]
+    panel_view._refresh()
+    dashboard._on_rail_tick()
+    calls = []
+    real = QWidget.setStyleSheet
+    monkeypatch.setattr(QWidget, "setStyleSheet",
+                        lambda self, sheet: (calls.append(type(self).__name__),
+                                             real(self, sheet)))
+    for _ in range(5):
+        panel_view._refresh()
+        dashboard._on_rail_tick()
+    assert calls == []
+
+
+def test_f21_the_hidden_setup_panel_stops_ticking(fresh_dashboard, qapp,
+                                                  controller):
+    dashboard = fresh_dashboard
+    dashboard.open()
+    setup_view = dashboard._setup_dock.widget()
+    assert setup_view._timer.isActive() is True
+    controller.notify("added", "Fake")
+    qapp.processEvents()
+    assert dashboard._setup_dock.isHidden() is True
+    assert setup_view._timer.isActive() is False
+    dashboard.show_setup()
+    assert setup_view._timer.isActive() is True
+
+
+# -- F22: many models become tabs, not slivers --------------------------------------
+
+def test_f22_the_fourth_model_onward_are_tabs_in_the_last_column(dashboard,
+                                                                 controller):
+    controller.open_names = ["One", "Two", "Three", "Four", "Five"]
+    dashboard.open()
+    docks = dashboard._docks
+    assert dashboard.tabifiedDockWidgets(docks["One"]) == []
+    assert dashboard.tabifiedDockWidgets(docks["Two"]) == []
+    tabs = set(dashboard.tabifiedDockWidgets(docks["Three"]))
+    assert {docks["Four"], docks["Five"]} <= tabs
+    assert len(dashboard._dock_columns()) == qt.MAX_DOCK_COLUMNS
+
+
+# -- F25: targets, focus, reopen, motion --------------------------------------------
+
+def test_f25_the_rescan_and_the_dock_close_are_at_least_24_px_and_grow(
+        qapp, controller, restore_font):
+    sizes = {}
+    for font in (12, 28):
+        theme.set_font_size(font)
+        view = qt.QtPanelView(controller, "Fake")
+        rescan = next(b for b in view.findChildren(qt.QPushButton)
+                      if b.objectName() == "iconButton")
+        dock = qt.DeviceDock("Fake")
+        close = dock.title_bar.close_button
+        sizes[font] = (rescan.width(), rescan.height(), close.width(),
+                       close.height())
+        assert min(sizes[font]) >= 24
+        assert close.accessibleName() == "Close Fake"
+        view.close()
+        dock.deleteLater()
+    assert min(sizes[28]) > min(sizes[12])
+
+
+def test_f25_a_reopened_model_is_brought_forward(dashboard, qapp, controller,
+                                                 monkeypatch):
+    raised = []
+    monkeypatch.setattr(type(dashboard), "_bring_forward",
+                        staticmethod(lambda dock: raised.append(dock.windowTitle())))
+    dashboard.open()
+    dashboard._sync_rail()
+    dashboard.reopen_buttons["Gone"].click()
+    controller.notify("added", "Gone")
+    qapp.processEvents()
+    assert raised == ["Gone"]
+
+
+def test_f25_no_motion_turns_the_pulse_off(qapp, monkeypatch):
+    monkeypatch.setenv("STATION_NO_MOTION", "1")
+    button = qt.StopButton()
+    button.set_latched(True)
+    assert button._pulse.state() != button._pulse.State.Running
+    assert button.text() == "Clear"
+
+
+def test_f25_a_panel_scroll_area_shows_focus(dashboard):
+    dock = dashboard._add_panel("Fake")
+    scroll = dock.widget()
+    assert scroll.objectName() == "panelScroll"
+    sheet = qt.stylesheet()
+    assert f"QScrollArea#panelScroll:focus {{\n    border: {qt.FOCUS_RING};" in sheet
