@@ -873,3 +873,35 @@ def test_a_stop_with_no_port_is_not_confirmed():
         assert probe.is_estopped is True, "the latch holds either way"
     finally:
         probe._stop_threads()
+
+
+# -- F11: the latch pre-disables what it will refuse -------------------------
+
+def _by_command(model, command, args=None):
+    import schema as sch
+    for element in sch.elements(model.schema):
+        if element.get("command") == command and (
+                args is None or list(args) in (element.get("on_args"),
+                                               element.get("off_args"))):
+            return element
+    raise AssertionError(f"no element for {command} {args}")
+
+
+@pytest.mark.schema
+def test_the_latch_greys_out_step_and_both_mode_toggles(probe):
+    import schema as sch
+    probe.estop()
+    mode = probe.state["mode"]
+    assert mode == "latched"
+    assert probe.state["model_mode"] == probe.mode_name
+    for element in (_by_command(probe, "step"),
+                    _by_command(probe, "set_mode", ["autonomous"]),
+                    _by_command(probe, "set_mode", ["manual"])):
+        assert sch.is_enabled(element, mode) is False, element["text"]
+    stop = _by_command(probe, "toggle_estop")
+    assert sch.is_enabled(stop, mode) is True, "Clear must stay reachable"
+    refused = probe.run("step")
+    assert refused.is_refused and "stop" in refused.reason.lower()
+    probe.clear_estop(confirmed=True)
+    assert probe.state["mode"] == probe.mode_name
+    assert sch.is_enabled(_by_command(probe, "step"), probe.state["mode"])

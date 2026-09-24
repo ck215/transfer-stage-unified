@@ -192,6 +192,10 @@ class Rotator(Model):
     def schema(self):
         parameters = self.PARAMS
         gated = ("disconnected",)
+        # F11: what moves the stage is greyed out while latched as well.
+        # "Stop motion" and the entries are not: a stop is never gated by
+        # the stop, and editing a number moves nothing.
+        moves = gated + ("latched",)
         return sch.schema(
             sch.section(
                 "Stage",
@@ -205,17 +209,17 @@ class Rotator(Model):
                 sch.entry("Target (deg):", "target_deg", parameters["target_deg"],
                           disabled_when=gated),
                 sch.button("Move To", "move_to", inputs=("target_deg",),
-                           role="go", disabled_when=gated),
+                           role="go", disabled_when=moves),
                 sch.entry("Step (deg):", "step_deg", parameters["step_deg"],
                           disabled_when=gated),
-                self._step_button("Move +", 1, gated),
-                self._step_button("Move -", -1, gated),
+                self._step_button("Move +", 1, moves),
+                self._step_button("Move -", -1, moves),
             ),
             sch.section(
                 "Commands",
-                sch.button("Home", "home", role="go", disabled_when=gated),
+                sch.button("Home", "home", role="go", disabled_when=moves),
                 sch.button("Stop motion", "halt", role="neutral", disabled_when=gated),
-                sch.button("Reset & Configure", "configure", disabled_when=gated),
+                sch.button("Reset & Configure", "configure", disabled_when=moves),
             ),
             self._safety_section(),
         )

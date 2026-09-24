@@ -261,7 +261,8 @@ class Heater(Model):
                 # model reads whatever it happens to hold, one edit behind
                 # what was just typed (TEMP-4).
                 sch.button("Enter Settings", "apply_settings",
-                           inputs=self.FRAME_FIELDS, role="go"),
+                           inputs=self.FRAME_FIELDS, role="go",
+                           disabled_when=("latched",)),
                 sch.button("Stop heater", "halt", role="neutral"),
             ),
             self._safety_section(),

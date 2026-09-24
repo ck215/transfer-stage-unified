@@ -673,3 +673,16 @@ def test_a_reader_left_running_by_a_test_would_be_noticed():
     leaked = [t.name for t in threading.enumerate()
               if t.name.startswith("reader-") and t.is_alive()]
     assert leaked == [], leaked
+
+
+def test_the_latch_greys_out_enter_settings_but_not_stop_heater(heater):
+    """F11: `latched` is the gate token while the latch is set."""
+    heater.estop()
+    mode = heater.state["mode"]
+    assert mode == "latched"
+    by_command = {e.get("command"): e for e in sch.elements(heater.schema)}
+    assert sch.is_enabled(by_command["apply_settings"], mode) is False
+    assert sch.is_enabled(by_command["halt"], mode) is True
+    assert sch.is_enabled(by_command["toggle_estop"], mode) is True
+    heater.clear_estop(confirmed=True)
+    assert sch.is_enabled(by_command["apply_settings"], heater.state["mode"])

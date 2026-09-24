@@ -128,6 +128,13 @@ class Model(Panel):
     def is_estopped(self):
         return self._estop.is_set()
 
+    @property
+    def gate_mode(self):
+        """`latched` while the stop is set, so every control the latch would
+        refuse is greyed out before it is pressed (F11); the model's own mode
+        otherwise. `state["model_mode"]` keeps the underlying mode."""
+        return "latched" if self.is_estopped else self.mode_name
+
     def _guard(self, what="this"):
         """Raise Refused while latched. Pass `self._estop.is_set` as
         `abort_if` to the device write as well: the check that counts is the

@@ -344,6 +344,15 @@ class RedMonitor(Model):
         return "running" if self.is_running else "idle"
 
     @property
+    def gate_mode(self):
+        """`latched` outranks everything; then `no_region` while idle with no
+        capture region, so Start run is greyed out until it can start (F11)."""
+        token = super().gate_mode
+        if token == "idle" and not self.region:
+            return "no_region"
+        return token
+
+    @property
     def is_active(self):
         return self.is_running
 
@@ -1224,7 +1233,8 @@ class RedMonitor(Model):
                                   model_attr="region", role="info",
                                   data_command="screen_image"),
                 sch.button("Start run", "start_run", inputs=self._entry_names,
-                           role="go", disabled_when=("running",)),
+                           role="go",
+                           disabled_when=("running", "latched", "no_region")),
                 sch.button("Stop run", "end_run", role="neutral",
                            enabled_when=("running",)),
                 sch.button("Reset Baseline", "reset_baseline"),

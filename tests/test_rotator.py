@@ -760,3 +760,21 @@ def test_a_stop_with_no_controller_is_not_confirmed():
     assert model._halt_hardware() is False
     assert model.estop() is False
     assert model.is_estopped is True
+
+
+def test_the_latch_greys_out_home_and_every_move_but_not_stop_motion():
+    """F11: while latched the model reports the gate token `latched`."""
+    model = _rotator(position=0.0)
+    try:
+        model.estop()
+        mode = model.state["mode"]
+        assert mode == "latched"
+        by_command = {}
+        for element in sch.elements(model.schema):
+            by_command.setdefault(element.get("command"), element)
+        for command in ("home", "move_to", "move_by", "configure"):
+            assert sch.is_enabled(by_command[command], mode) is False, command
+        assert sch.is_enabled(by_command["halt"], mode) is True
+        assert sch.is_enabled(by_command["toggle_estop"], mode) is True
+    finally:
+        _settle(model)

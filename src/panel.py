@@ -28,8 +28,34 @@ class Panel:
 
     @property
     def mode_name(self):
-        """The name `enabled_when` / `disabled_when` are matched against."""
+        """This panel's own mode: what it is doing."""
         return ""
+
+    #: Gate tokens that are not a mode of their own, with the sentence a
+    #: refusal gives for them. A view sees only the token (`state["mode"]`).
+    GATE_REASONS = {
+        "latched": "the stop is set on {name}. Clear the stop first.",
+        "no_region": "no capture region is set. Set one first.",
+    }
+
+    @property
+    def gate_mode(self):
+        """The token `enabled_when` / `disabled_when` are matched against, and
+        what a view reads as `state["mode"]`. The mode, unless a condition
+        that outranks it (the stop latch) is in force."""
+        return self.mode_name
+
+    def _is_enabled(self, element):
+        """Enabled under the gate token AND the underlying mode, so a token
+        that outranks the mode never loosens what the mode alone refused."""
+        return (sch.is_enabled(element, self.gate_mode)
+                and sch.is_enabled(element, self.mode_name))
+
+    def _gate_reason(self):
+        token = self.gate_mode
+        if token in self.GATE_REASONS:
+            return self.GATE_REASONS[token].format(name=self.NAME)
+        return f"{self.NAME} is {token or 'in this state'}."
 
     @property
     def state(self):
@@ -40,7 +66,8 @@ class Panel:
             attr = element.get("model_attr")
             if attr:
                 values[attr] = self._text_for(element)
-        return {"name": self.NAME, "mode": self.mode_name, "values": values}
+        return {"name": self.NAME, "mode": self.gate_mode,
+                "model_mode": self.mode_name, "values": values}
 
     def _text_for(self, element):
         raw = getattr(self, element["model_attr"], None)
@@ -125,10 +152,10 @@ class Panel:
         # Two toggles may share a command and its off_args (Autonomous and
         # Manual both leave through set_mode("idle")): the command is allowed
         # if ANY declaring element is enabled in this mode.
-        if not any(sch.is_enabled(e, self.mode_name) for e in candidates):
+        if not any(self._is_enabled(e) for e in candidates):
             element = candidates[0]
-            raise Refused(f"{element.get('text', command)} is not available "
-                          f"while {self.mode_name or 'in this state'}")
+            label = str(element.get("text", command)).rstrip(":")
+            raise Refused(f"{label} is not available: {self._gate_reason()}")
 
     def _apply_inputs(self, inputs):
         """All or nothing. Refusal names the field."""
@@ -144,7 +171,7 @@ class Panel:
             ok, value = param.parse(raw)
             if not ok:
                 raise Refused(value)
-            if not sch.is_enabled(writable[name], self.mode_name):
+            if not self._is_enabled(writable[name]):
                 if self._same_value(getattr(self, name, None), value):
                     continue  # unchanged value of a gated field: not an edit
                 raise Refused(f"{param.label or name} cannot be changed "

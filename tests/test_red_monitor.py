@@ -1109,3 +1109,33 @@ def test_the_mode_name_is_what_the_gates_are_matched_against(monitor):
         assert monitor.is_active
     finally:
         monitor.end_run()
+
+
+# ---------------------------------------------------------------------
+# F11: Start run is greyed out while latched or with no capture region
+# ---------------------------------------------------------------------
+
+def _start_element(model):
+    import schema as sch
+    return next(e for e in sch.elements(model.schema)
+                if e.get("command") == "start_run")
+
+
+def test_start_run_is_greyed_out_until_a_capture_region_is_set(monitor):
+    import schema as sch
+    assert monitor.region is None
+    assert monitor.state["mode"] == "no_region"
+    assert sch.is_enabled(_start_element(monitor), "no_region") is False
+    refused = monitor.run("start_run")
+    assert refused.is_refused and "capture region" in refused.reason
+    monitor.set_region(0, 0, 10, 10)
+    assert monitor.state["mode"] == "idle"
+    assert sch.is_enabled(_start_element(monitor), "idle") is True
+
+
+def test_start_run_is_greyed_out_while_latched(monitor):
+    import schema as sch
+    monitor.set_region(0, 0, 10, 10)
+    monitor.estop()
+    assert monitor.state["mode"] == "latched"
+    assert sch.is_enabled(_start_element(monitor), "latched") is False

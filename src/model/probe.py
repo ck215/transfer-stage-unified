@@ -1014,22 +1014,27 @@ class Probe(Model):
                 # removed: enable/disable is reachable through the mode
                 # toggles, and the dashboard's global FULL STOP already
                 # reaches every model.
+                # F11: greyed out while latched. A latched probe is never in
+                # AUTO or MANUAL (the halt leaves both), so the toggle's "off"
+                # direction is not what this takes away.
                 sch.toggle("Autonomous:", "is_auto", "set_mode",
                            "Autonomous mode (press to stop)",
                            "Enter Autonomous Mode",
                            on_args=[ProbeMode.AUTO.value],
-                           off_args=[ProbeMode.DISABLED.value]),
+                           off_args=[ProbeMode.DISABLED.value],
+                           disabled_when=("latched",)),
                 sch.toggle("Manual / Gamepad:", "is_manual", "set_mode",
                            "Manual mode (press to stop)", "Enter Manual Mode",
                            on_args=[ProbeMode.MANUAL.value],
-                           off_args=[ProbeMode.DISABLED.value]),
+                           off_args=[ProbeMode.DISABLED.value],
+                           disabled_when=("latched",)),
                 # D-5: the distances and the speed travel with the command and
                 # are validated as a set. **Not** gated on "autonomous": a
                 # second step while already AUTO is the normal way to work
                 # (DC-6, review finding 5). `is_moving` is what refuses.
                 sch.button("Step", "step",
                            inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
-                           role="go", disabled_when=("manual",)),
+                           role="go", disabled_when=("manual", "latched")),
                 sch.log_stream("Gamepad Log:", "gamepad_log"),
             ),
             self._safety_section(),
