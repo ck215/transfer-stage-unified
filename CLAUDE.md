@@ -68,7 +68,8 @@ code unpiped.
 Agent profiles in `.claude/agents/`: `worktree-fixer` (fixes plan items in a
 worktree), `main-feature-auditor` (read-only, `main` vs the rebuild, one
 subsystem each), `docs-pruner`, `mvc-relayout`, `ui-refiner` (one view per agent, Impeccable
-in Operate mode, before/after captures). All Opus, fresh context, briefed by
+in Operate mode, before/after captures), `ui-auditor` (read-only, one design
+skill per agent, fixed finding format). All Opus, fresh context, briefed by
 the lead. Design skills in `~/.claude/skills`: `impeccable` (primary),
 `web-design-guidelines` (Web accessibility gate), `ui-ux-pro-max` (guideline
 lookups only; its design-system generator is off-target for this product).
