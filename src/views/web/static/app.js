@@ -24,6 +24,17 @@ const SETUP_NAME = '__setup__';
 //: How many of a model's key numbers the status rail carries. More than this
 //: and the rail stops being readable at a glance, which is its whole job.
 const RAIL_READOUTS = 4;
+//: The keyboard path to the stop (F9). Alt+. - Option+. on a Mac - is bound
+//: by no browser on any platform this station runs on, works with focus in
+//: a text box, and is matched on the physical key so the character a Mac
+//: types for Option+. ("≥") does not matter. It only ever STOPS; clearing
+//: the latch stays a deliberate, confirmed act.
+const STOP_KEY_CODE = 'Period';
+const STOP_KEY_HINT = 'Alt+. (Option+. on a Mac)';
+//: How many characters of a dropdown option are shown before it is elided
+//: from the middle: the tail of a port or gamepad name is what tells two
+//: devices apart, so the middle goes, never the end (F15).
+const OPTION_CHARS = 22;
 
 // ==========================================================================
 // fetch, bounded. Overridable so a test can shrink it.
@@ -53,6 +64,22 @@ async function apiPost(path, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
   });
+  return await response.json();
+}
+
+/** apiPost for the stop path: an answer that is not a 200 is a failure to
+ *  report, not a body to read (F2). */
+async function apiPostChecked(path, body) {
+  const response = await api(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  if (!response.ok) {
+    const failure = new Error('HTTP ' + response.status);
+    failure.status = response.status;
+    throw failure;
+  }
   return await response.json();
 }
 
@@ -305,6 +332,81 @@ function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
+/** Write text only when it changed. A poll that rewrites an unchanged node
+ *  costs a layout, re-announces a live region and drops hover and focus
+ *  (F21, WDG-3/6). */
+function putText(node, text) {
+  const next = String(text === null || text === undefined ? '' : text);
+  if (node.textContent !== next) node.textContent = next;
+}
+
+function putAttr(node, name, value) {
+  const next = String(value);
+  if (node.getAttribute(name) !== next) node.setAttribute(name, next);
+}
+
+/** Shorten from the middle, keeping the head and the tail:
+ *  "/dev/cu.usbmodem1234567890123" -> "/dev/cu.us…34567890123". */
+function elideMiddle(text, max) {
+  const whole = String(text === null || text === undefined ? '' : text);
+  const limit = Math.max(5, max || OPTION_CHARS);
+  if (whole.length <= limit) return whole;
+  const tail = Math.ceil((limit - 1) / 2);
+  const head = limit - 1 - tail;
+  return whole.slice(0, head) + '…' + whole.slice(whole.length - tail);
+}
+
+/** Words that report an absence or an at-rest state. They are read, not
+ *  watched, so they are muted - trace is for numbers and lit lamps only
+ *  (F24, CRIT-6, HC-16). */
+const QUIET_WORDS = ['--', 'off', 'none', 'no', 'not set', 'not scanned',
+  'not detected', 'not found', 'nothing selected', 'simulated', 'idle',
+  'closed', 'unbound'];
+
+/** How a readout is set: a number in trace, a quiet word muted, any other
+ *  word (an identifier, a state name) in ink. */
+function readoutKind(text) {
+  const word = String(text === null || text === undefined ? '' : text).trim();
+  if (word === '' || QUIET_WORDS.indexOf(word.toLowerCase()) !== -1) return 'quiet';
+  if (/^[-+−]?(\d|\.\d)/.test(word)) return 'number';
+  return 'word';
+}
+
+/** A device class as an operator would say it. */
+const DEVICE_WORDS = {
+  SerialPort: 'serial port',
+  Gamepad: 'gamepad',
+  SMC100: 'SMC100 controller',
+  Screen: 'screen capture',
+};
+
+function deviceWord(kind) {
+  if (DEVICE_WORDS[kind]) return DEVICE_WORDS[kind];
+  return String(kind || 'device').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+}
+
+/** The devices a model reports as lost, as words: `state.devices` is
+ *  `{SerialPort: "lost", ...}` (model/base.py). */
+function lostDevices(state) {
+  const devices = (state && state.devices) || {};
+  return Object.keys(devices).filter((kind) => devices[kind] === 'lost').map(deviceWord);
+}
+
+/** What went wrong with a request, as the end of a sentence. */
+function failureReason(err) {
+  if (err && err.name === 'AbortError') {
+    return 'no answer within ' + Math.round(fetchTimeoutMs() / 1000) + ' s';
+  }
+  if (err && err.status) return 'the station answered ' + err.status;
+  return 'the connection failed';
+}
+
+/** A clock time for "since …" sentences. */
+function clockTime(date) {
+  const pad = (n) => (n < 10 ? '0' : '') + n;
+  return pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
+}
+
 // ==========================================================================
 // The renderers: one per entry in schema.ELEMENT_TYPES.
 //
@@ -314,16 +416,24 @@ function clear(node) {
 // ==========================================================================
 function renderReadonly(panel, element) {
   const node = row(element);
-  const value = make('span', 'value ' + roleClass(element.role), '--');
+  const value = make('span', 'value is-empty ' + roleClass(element.role), '--');
+  value.setAttribute('translate', 'no');
   node.appendChild(value);
   return {
     node,
     setText: (text) => {
       const shown = readoutText(text);
+      if (value.textContent === shown) return;
       value.textContent = shown;
       // Nothing to report is not a reading: it is muted, whatever the
-      // element's role, so an empty fault line is never a red "--".
-      value.classList.toggle('is-empty', shown === '--');
+      // element's role, so an empty fault line is never a red "--". A word
+      // is not a number either: trace is for numbers (F24).
+      const kind = readoutKind(shown);
+      value.classList.toggle('is-empty', kind === 'quiet');
+      value.classList.toggle('is-word', kind === 'word');
+      // A long identifier wraps inside its row; its whole text is also one
+      // hover away (F15, HC-8).
+      value.title = kind === 'word' ? shown : '';
     },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
@@ -355,6 +465,7 @@ function renderEntry(panel, element) {
     });
   } else if (numeric) {
     input.step = String(Math.pow(10, -(element.decimals === undefined ? 3 : element.decimals)));
+    input.inputMode = 'decimal';
   }
   if (element.min !== undefined && element.min !== null) input.min = String(element.min);
   if (element.max !== undefined && element.max !== null) input.max = String(element.max);
@@ -362,6 +473,8 @@ function renderEntry(panel, element) {
   if (element.unit) group.appendChild(make('span', 'unit', element.unit));
   node.appendChild(group);
   let served = '';
+  // A text box narrower than what it holds shows the whole of it on hover.
+  if (!numeric) input.addEventListener('input', () => { input.title = input.value; });
   return {
     node,
     // Never overwrite what the operator is typing: focused, or edited away
@@ -370,12 +483,24 @@ function renderEntry(panel, element) {
     readValue: () => input.value,
     setText: (text) => {
       // An int box never shows "5.000", whatever the state formatted.
-      served = isInt ? intText(text)
+      const next = isInt ? intText(text)
         : ((text === null || text === undefined) ? '' : String(text));
+      if (next === served && input.value === served) return;
+      served = next;
       input.value = served;
+      if (!numeric) input.title = served;
     },
-    setEnabled: (flag) => { input.disabled = !flag; node.classList.toggle('disabled', !flag); },
+    setEnabled: (flag) => {
+      if (input.disabled === !flag) return;
+      input.disabled = !flag;
+      node.classList.toggle('disabled', !flag);
+    },
   };
+}
+
+/** `disabled`, written only when it changes (F21). */
+function enabler(control) {
+  return (flag) => { if (control.disabled === !flag) return; control.disabled = !flag; };
 }
 
 function renderButton(panel, element) {
@@ -387,7 +512,7 @@ function renderButton(panel, element) {
   node.appendChild(button);
   return {
     node,
-    setEnabled: (flag) => { button.disabled = !flag; },
+    setEnabled: enabler(button),
   };
 }
 
@@ -409,7 +534,10 @@ function renderToggle(panel, element) {
   labelControl(node, button, element);
   button.addEventListener('click', () => panel.runToggle(element));
   node.appendChild(button);
+  let last = null;
   const show = (on) => {
+    if (last === Boolean(on)) return;
+    last = Boolean(on);
     const shown = toggleFace(on ? (element.true_text || 'On')
                                 : (element.false_text || 'Off'), element.text);
     face.textContent = shown.text;
@@ -424,7 +552,7 @@ function renderToggle(panel, element) {
   return {
     node,
     setOn: show,
-    setEnabled: (flag) => { button.disabled = !flag; },
+    setEnabled: enabler(button),
   };
 }
 
@@ -437,15 +565,25 @@ function renderStopToggle(panel, element) {
   button.classList.add('mini');
   button.addEventListener('click', () => panel.runToggle(element));
   node.appendChild(button);
+  let last = null;
+  const model = sentence(panel.title || panel.name);
+  const show = (on) => {
+    if (last === Boolean(on)) return;
+    last = Boolean(on);
+    face.textContent = on ? 'Clear' : 'Stop';
+    button.classList.toggle('is-latched', last);
+    button.title = sentence(on ? (element.true_text || '')
+                               : (element.false_text || ''));
+    // Named for its model, so a list of buttons does not read "Stop, Stop"
+    // (WDG-4).
+    button.setAttribute('aria-label', on ? 'Clear the stop on ' + model : 'Stop ' + model);
+    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+  };
+  show(false);
   return {
     node,
-    setOn: (on) => {
-      face.textContent = on ? 'Clear' : 'Stop';
-      button.classList.toggle('is-latched', Boolean(on));
-      button.title = sentence(on ? (element.true_text || '')
-                                 : (element.false_text || ''));
-    },
-    setEnabled: (flag) => { button.disabled = !flag; },
+    setOn: show,
+    setEnabled: enabler(button),
   };
 }
 
@@ -459,6 +597,7 @@ function renderDropdown(panel, element) {
   placeholder.disabled = true;
   select.appendChild(placeholder);
   select.addEventListener('change', () => {
+    select.title = select.value;
     if (select.value !== '') panel.run(element, [select.value]);
   });
   // Options are re-read on focus, not once at first render: a probe added
@@ -474,14 +613,16 @@ function renderDropdown(panel, element) {
         const known = Array.prototype.some.call(select.options, (o) => o.value === wanted);
         if (known || wanted === '') select.value = wanted;
       }
+      // The whole name of what is chosen, one hover away (F15).
+      if (select.title !== select.value) select.title = select.value;
     },
-    setEnabled: (flag) => { select.disabled = !flag; },
+    setEnabled: enabler(select),
   };
 }
 
 function renderRegionSelect(panel, element) {
   const node = row(element);
-  const value = make('span', 'value', 'Not set');
+  const value = make('span', 'value is-empty', 'Not set');
   const button = make('button', 'button ' + roleClass(element.role), 'Pick region');
   button.type = 'button';
   button.addEventListener('click', () => panel.pickRegion(element));
@@ -489,8 +630,13 @@ function renderRegionSelect(panel, element) {
   node.appendChild(button);
   return {
     node,
-    setText: (text) => { value.textContent = text === '' ? 'Not set' : String(text); },
-    setEnabled: (flag) => { button.disabled = !flag; },
+    setText: (text) => {
+      const shown = (text === '' || text === null || text === undefined) ? 'Not set' : String(text);
+      if (value.textContent === shown) return;
+      value.textContent = shown;
+      value.classList.toggle('is-empty', shown === 'Not set');
+    },
+    setEnabled: enabler(button),
   };
 }
 
@@ -503,24 +649,70 @@ function renderFileSave(panel, element) {
   node.appendChild(button);
   return {
     node,
-    setEnabled: (flag) => { button.disabled = !flag; },
+    setEnabled: enabler(button),
   };
 }
 
+/** The file a `file_open` command reads is a path on the STATION, which is
+ *  this same machine (the server answers localhost only). Two ways to name
+ *  it: type the path, or choose a file here, which is uploaded into the
+ *  model's own output folder (/api/upload) and loaded from there. Either
+ *  way the command gets the path it declares (F13, WDG-5). */
 function renderFileOpen(panel, element) {
-  // The browser cannot hand the station a path, and this API deliberately
-  // has no route that takes one (old finding 9). The command runs with no
-  // argument; a model that needs one refuses, and the refusal shows on the
-  // card. See the handoff: an upload route is an owner decision.
-  const node = make('div', 'row command');
-  const button = make('button', 'button ' + roleClass(element.role),
-                      sentenceCase(element.text || 'Open'));
+  const node = make('div', 'row file-open');
+  const label = sentenceCase(element.text || 'Open');
+  const path = make('input', 'input path-input');
+  path.type = 'text';
+  path.autocomplete = 'off';
+  path.spellcheck = false;
+  path.placeholder = 'Path to a saved run';
+  path.setAttribute('aria-label', label + ': path on the station');
+  path.addEventListener('input', () => { path.title = path.value; });
+  const extensions = (element.extensions || []).map((e) => '.' + String(e).replace(/^\./, ''));
+  const picker = make('input', 'file-picker');
+  picker.type = 'file';
+  if (extensions.length) picker.accept = extensions.join(',');
+  picker.tabIndex = -1;
+  picker.setAttribute('aria-hidden', 'true');
+  const choose = make('button', 'button', 'Choose file…');
+  choose.type = 'button';
+  choose.title = 'Choose a ' + (extensions.join(' or ') || 'file')
+    + ' on this computer; it is copied to the station and loaded';
+  choose.addEventListener('click', () => picker.click());
+  picker.addEventListener('change', async () => {
+    const file = picker.files && picker.files[0];
+    picker.value = '';
+    if (!file) return;
+    const saved = await panel.upload(element, file);
+    if (saved) {
+      path.value = saved;
+      path.title = saved;
+      await panel.run(element, [saved]);
+    }
+  });
+  const button = make('button', 'button ' + roleClass(element.role), label);
   button.type = 'button';
-  button.addEventListener('click', () => panel.run(element));
+  const load = () => {
+    const typed = path.value.trim();
+    if (!typed) {
+      panel.showRefused('Type the path of a saved run, or choose a file.', element);
+      path.focus();
+      return;
+    }
+    panel.run(element, [typed]);
+  };
+  button.addEventListener('click', load);
+  path.addEventListener('keydown', (event) => { if (event.key === 'Enter') load(); });
+  node.appendChild(path);
+  node.appendChild(choose);
   node.appendChild(button);
+  node.appendChild(picker);
+  const setButton = enabler(button);
+  const setChoose = enabler(choose);
+  const setPath = enabler(path);
   return {
     node,
-    setEnabled: (flag) => { button.disabled = !flag; },
+    setEnabled: (flag) => { setButton(flag); setChoose(flag); setPath(flag); },
   };
 }
 
@@ -538,10 +730,17 @@ function renderPlot(panel, element) {
   frame.appendChild(canvas);
   frame.appendChild(empty);
   node.appendChild(frame);
+  let drawn = null;
   return {
     node,
     dataCommand: element.data_command,
-    setData: (data) => { empty.hidden = drawSeries(canvas, data, element); },
+    setData: (data) => {
+      // Redrawn only when the series changed (F21).
+      const key = JSON.stringify(data);
+      if (key === drawn) return;
+      drawn = key;
+      empty.hidden = drawSeries(canvas, data, element);
+    },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
 }
@@ -557,8 +756,13 @@ function renderImage(panel, element) {
   // frame then says what to do next instead of showing a broken image.
   const empty = make('p', 'empty-note', emptyText(element, element.data_command));
   empty.hidden = true;
-  picture.addEventListener('load', () => { empty.hidden = true; picture.hidden = false; });
-  picture.addEventListener('error', () => { empty.hidden = false; picture.hidden = true; });
+  // Written only when they change: the picture reloads every second (F21).
+  const shown = (isShown) => {
+    if (empty.hidden !== isShown) empty.hidden = isShown;
+    if (picture.hidden !== !isShown) picture.hidden = !isShown;
+  };
+  picture.addEventListener('load', () => shown(true));
+  picture.addEventListener('error', () => shown(false));
   frame.appendChild(picture);
   frame.appendChild(empty);
   node.appendChild(frame);
@@ -575,9 +779,12 @@ function renderIndicator(panel, element) {
   const node = row(element);
   const lamp = make('span', 'lamp');
   node.appendChild(lamp);
+  let last = null;
   return {
     node,
     setOn: (on) => {
+      if (last === Boolean(on)) return;
+      last = Boolean(on);
       lamp.className = 'lamp ' + roleClass(on ? element.on_role : element.off_role)
         + (on ? ' on' : ' off');
       lamp.textContent = on ? 'Yes' : 'No';
@@ -597,8 +804,9 @@ function renderLogStream(panel, element) {
     node,
     dataCommand: element.source_command,
     setData: (data) => {
-      const lines = (data && data.lines) || [];
-      feed.textContent = lines.join('\n');
+      const text = ((data && data.lines) || []).join('\n');
+      if (feed.textContent === text) return;
+      feed.textContent = text;
       feed.scrollTop = feed.scrollHeight;
     },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
@@ -735,11 +943,15 @@ class PanelCard {
     this.values = {};
     this.lastData = 0;
     this.isCollapsed = false;
+    this.isOffline = false;
+    this.lost = [];
+    this.title = (options && options.title) || name;
     this.node = make('section', 'card');
     const head = make('header', 'card-head');
-    head.appendChild(make('h2', 'card-title',
-                          sentence((options && options.title) || name)));
-    this.staleBadge = make('span', 'stale-badge', 'stale');
+    const title = make('h2', 'card-title', sentence(this.title));
+    title.setAttribute('translate', 'no');
+    head.appendChild(title);
+    this.staleBadge = make('span', 'stale-badge', 'Stale');
     this.staleBadge.hidden = true;
     head.appendChild(this.staleBadge);
     if (options && options.collapsible) {
@@ -766,6 +978,13 @@ class PanelCard {
       head.appendChild(close);
     }
     this.node.appendChild(head);
+    // A lost device is a standing condition, not a refusal: it has its own
+    // line under the header, and it stays until the device is back (F3).
+    this.alert = make('p', 'card-alert');
+    this.alert.hidden = true;
+    this.node.appendChild(this.alert);
+    // The refusal line. It starts under the header and moves to sit under
+    // the control that caused it (showRefused, F10).
     this.status = make('p', 'status');
     this.status.setAttribute('role', 'status');
     this.status.setAttribute('aria-live', 'polite');
@@ -878,18 +1097,51 @@ class PanelCard {
     let result;
     try {
       result = await this.call(element.command, this.gatherInputs(), args || []);
+      // The page's own confirmation, not window.confirm: it defaults to
+      // Cancel, and it never blocks the page's stop the way a native
+      // dialog blocks every script on it (F17, HC-2).
+      if (result.status === 'needs_confirm'
+          && await this.dashboard.confirm(result.reason, confirmLabel(result))) {
+        const again = (result.args || []).concat([true]);
+        result = await this.call(result.command, result.inputs || {}, again);
+      }
     } catch (err) {
-      this.showRefused('the station did not answer: ' + err);
+      this.showRefused('The station did not answer (' + failureReason(err)
+        + '). Check that it is running, then try again.', element);
       return { status: 'failed', reason: String(err) };
     }
-    if (result.status === 'needs_confirm' && window.confirm(result.reason)) {
-      const again = (result.args || []).concat([true]);
-      result = await this.call(result.command, result.inputs || {}, again);
-    }
     if (result.status === 'ok') this.showRefused('');
-    else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '');
+    else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '', element);
     await this.dashboard.refreshNow();
     return result;
+  }
+
+  /** Copy a chosen file to the station; the path it was saved at, or null
+   *  with the reason on the card. */
+  async upload(element, file) {
+    let content;
+    try {
+      content = await readAsBase64(file);
+    } catch (err) {
+      this.showRefused('Could not read ' + file.name + ' on this computer.', element);
+      return null;
+    }
+    let answer;
+    try {
+      answer = await apiPost('/api/upload', {
+        name: this.name, command: element.command, filename: file.name, content,
+      });
+    } catch (err) {
+      this.showRefused('The station did not answer (' + failureReason(err)
+        + '), so ' + file.name + ' was not copied to it.', element);
+      return null;
+    }
+    if (!answer || answer.status !== 'ok' || !answer.path) {
+      this.showRefused((answer && answer.reason) || ('The station did not take '
+        + file.name + '.'), element);
+      return null;
+    }
+    return answer.path;
   }
 
   runToggle(element) {
@@ -914,10 +1166,14 @@ class PanelCard {
     placeholder.disabled = true;
     select.appendChild(placeholder);
     for (const option of options) {
-      const node = make('option', null, String(option));
+      // Elided from the middle, whole name as the title: two ports that
+      // differ only in their serial suffix stay two different lines (F15).
+      const node = make('option', null, elideMiddle(String(option), OPTION_CHARS));
       node.value = String(option);
+      node.title = String(option);
       select.appendChild(node);
     }
+    select.title = select.value;
     select.value = options.map(String).indexOf(previous) !== -1 ? previous : '';
   }
 
@@ -931,13 +1187,15 @@ class PanelCard {
     try {
       response = await api(url, { method: 'GET' });
     } catch (err) {
-      this.showRefused('the station did not answer: ' + err);
+      this.showRefused('The station did not answer (' + failureReason(err)
+        + '). Check that it is running, then save again.', element);
       return;
     }
     const type = response.headers.get('Content-Type') || '';
     if (!response.ok || type.indexOf('application/json') === 0) {
-      const answer = await response.json().catch(() => ({ reason: 'download failed' }));
-      this.showRefused(answer.reason || 'download failed');
+      const failed = 'The file did not download. Try saving again.';
+      const answer = await response.json().catch(() => ({ reason: failed }));
+      this.showRefused(answer.reason || failed, element);
       return;
     }
     const blob = await response.blob();
@@ -957,6 +1215,7 @@ class PanelCard {
 
   // -- refresh -----------------------------------------------------------
   refresh(state) {
+    this.isOffline = false;
     this.values = (state && state.values) || {};
     const mode = (state && state.mode) || '';
     const now = Date.now();
@@ -977,14 +1236,38 @@ class PanelCard {
       }
       widget.setEnabled(isEnabled(element, mode));
     }
-    this.setStale(isStale(state));
+    // A lost device freezes the numbers even while the model's own loop
+    // keeps ticking, so `age` alone would call them fresh (F3, HC-1).
+    this.lost = lostDevices(state);
+    const isLost = this.lost.length > 0;
+    this.setStale(isStale(state) || isLost, isLost ? 'Connection lost' : 'Stale');
+    this.setAlert(isLost ? sentence(this.title) + ' lost its ' + this.lost.join(' and ')
+      + '. Its readings are frozen. Press Stop, check the cable, then relaunch from Setup.'
+      : '');
     // The grouping bar down the left of a rack panel is information, not
     // trim: it lights in the trace colour while this model's loop is
-    // reporting fresh numbers, and turns signal red while it is latched.
+    // reporting fresh numbers, and turns signal red while it is latched or
+    // has lost a device.
     const age = state ? state.age : null;
-    this.node.classList.toggle('is-live',
-      age !== null && age !== undefined && age <= STALE_AFTER_S);
+    this.node.classList.toggle('is-live', !isLost
+      && age !== null && age !== undefined && age <= STALE_AFTER_S);
+    this.node.classList.toggle('is-lost', isLost);
     this.node.classList.toggle('is-latched', Boolean(this.values.is_estopped));
+  }
+
+  /** The station stopped answering: nothing on this card is a live number
+   *  any more, whatever it last said (F4, CRIT-1). The next good poll's
+   *  refresh() undoes it. */
+  setOffline() {
+    if (this.isOffline) return;
+    this.isOffline = true;
+    this.setStale(true, 'Stale');
+    this.node.classList.remove('is-live');
+  }
+
+  setAlert(text) {
+    putText(this.alert, text);
+    if (this.alert.hidden !== !text) this.alert.hidden = !text;
   }
 
   loadData(widget) {
@@ -999,29 +1282,68 @@ class PanelCard {
     }).catch(() => {});
   }
 
-  setStale(isStale) {
-    this.staleBadge.hidden = !isStale;
+  setStale(isStale, label) {
+    putText(this.staleBadge, label || 'Stale');
+    if (this.staleBadge.hidden !== !isStale) this.staleBadge.hidden = !isStale;
     this.node.classList.toggle('stale', Boolean(isStale));
   }
 
-  /** Non-modal: a refusal is a sentence on the card, never a popup. It
-   *  shakes once as it arrives - motion that answers an action - because a
-   *  line that simply appears at the top of a tall panel is a line the
-   *  operator never sees. */
-  showRefused(reason) {
-    const isNew = Boolean(reason) && reason !== this.status.textContent;
-    this.status.textContent = reason || '';
-    this.status.hidden = !reason;
-    if (!isNew) return;
+  /** Where a refusal about `element` is shown: right under the control, or
+   *  under the action group or table row that holds it (F10, CRIT-3). */
+  anchorFor(element) {
+    const widget = element && this.widgets.find((w) => w.element === element);
+    const node = widget && widget.node;
+    if (!node || !node.isConnected || !this.node.contains(node)) return null;
+    return node.closest('.section-row') || node.closest('.actions') || node;
+  }
+
+  /** Non-modal: a refusal is a sentence on the card, never a popup. It sits
+   *  under the control that caused it, is brought into view, and shakes as
+   *  it arrives - every time, a repeated refusal included - because a line
+   *  that simply appears somewhere on a tall panel is a line the operator
+   *  never sees. The next successful command from this card clears it. */
+  showRefused(reason, element) {
+    if (!reason) {
+      if (!this.status.hidden) this.status.hidden = true;
+      putText(this.status, '');
+      return;
+    }
+    const anchor = this.anchorFor(element);
+    if (anchor && anchor.nextSibling !== this.status) {
+      anchor.parentNode.insertBefore(this.status, anchor.nextSibling);
+    } else if (!anchor && this.status.previousSibling !== this.alert) {
+      this.node.insertBefore(this.status, this.alert.nextSibling);
+    }
+    putText(this.status, reason);
+    this.status.hidden = false;
     this.status.classList.remove('shake');
     void this.status.offsetWidth;          // restart the animation
     this.status.classList.add('shake');
+    if (this.status.scrollIntoView && !this.node.closest('[hidden]')) {
+      this.status.scrollIntoView({ block: 'nearest' });
+    }
   }
 
   close() {
     this.widgets = [];
     if (this.node.parentNode) this.node.parentNode.removeChild(this.node);
   }
+}
+
+/** The label on a confirmation's yes-button: the action, not "OK". */
+function confirmLabel(result) {
+  const command = String((result && result.command) || '');
+  if (/clear_estop/.test(command)) return 'Clear the stop';
+  return 'Continue';
+}
+
+function readAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ''));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 function filenameFrom(response) {
@@ -1044,16 +1366,28 @@ class Dashboard {
     this.isLaunched = false;
     this.isEstopped = false;
     this.isDrawerOpen = false;
+    this.isConnected = null;
+    this.isActive = false;
     this.railGroups = new Map();
+    this.railLines = new Map();
+    this.closedKey = null;
+    this.ackQueue = [];
+    this.confirmPending = null;
     this.dom = {
       stop: document.getElementById('full-stop'),
       stopFace: document.querySelector('.mushroom-face'),
+      railAlert: document.getElementById('rail-alert'),
       cards: document.getElementById('cards'),
       closed: document.getElementById('closed-models'),
       log: document.getElementById('event-log'),
       modal: document.getElementById('ack-modal'),
+      modalCount: document.getElementById('ack-count'),
       modalText: document.getElementById('ack-text'),
       modalOk: document.getElementById('ack-ok'),
+      confirm: document.getElementById('confirm-modal'),
+      confirmText: document.getElementById('confirm-text'),
+      confirmYes: document.getElementById('confirm-yes'),
+      confirmNo: document.getElementById('confirm-no'),
       picker: document.getElementById('region-picker'),
       pickerCanvas: document.getElementById('region-canvas'),
       pickerClose: document.getElementById('region-close'),
@@ -1070,18 +1404,38 @@ class Dashboard {
     };
     this.isLogCollapsed = true;
     this.dom.stop.addEventListener('click', () => this.toggleEstopAll());
-    this.dom.modalOk.addEventListener('click', () => { this.dom.modal.hidden = true; });
-    this.dom.pickerClose.addEventListener('click', () => { this.dom.picker.hidden = true; });
+    this.dom.modalOk.addEventListener('click', () => this.acknowledge());
+    this.dom.pickerClose.addEventListener('click', () => this.closeRegionPicker());
+    this.dom.confirmYes.addEventListener('click', () => this.answerConfirm(true));
+    this.dom.confirmNo.addEventListener('click', () => this.answerConfirm(false));
     this.dom.logToggle.addEventListener('click',
       () => this.setLogCollapsed(!this.isLogCollapsed));
     this.dom.setupLink.addEventListener('click', () => this.setDrawerOpen(true));
     this.dom.drawerClose.addEventListener('click', () => this.setDrawerOpen(false));
     this.dom.scrim.addEventListener('click', () => this.setDrawerOpen(false));
-    // Escape closes the drawer, the way every other panel over a page does.
-    // It never closes anything else here: the acknowledgement modal wants an
-    // acknowledgement, and the region picker has its own Cancel.
+    // One keyboard handler, in the capture phase so nothing on the page can
+    // swallow it first. Alt+. stops every model from anywhere, a text box
+    // included (F9). Escape answers the top-most thing over the page: a
+    // confirmation is cancelled, the region picker closes, the drawer
+    // withdraws. It never dismisses an acknowledgement - that wants one.
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && this.isDrawerOpen) this.setDrawerOpen(false);
+      if (event.code === STOP_KEY_CODE && event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        this.stopAll();
+        return;
+      }
+      if (event.key !== 'Escape') return;
+      if (this.confirmPending) { event.preventDefault(); this.answerConfirm(false); return; }
+      if (!this.dom.picker.hidden) { this.closeRegionPicker(); return; }
+      if (this.isDrawerOpen && this.dom.modal.hidden) this.setDrawerOpen(false);
+    }, true);
+    // Closing the tab silences the heartbeat, and 15 s later the watchdog
+    // stops the station: while anything is moving, heating or recording,
+    // the browser asks first (F24, WDG-12).
+    window.addEventListener('beforeunload', (event) => {
+      if (!this.isActive) return;
+      event.preventDefault();
+      event.returnValue = '';
     });
     window.addEventListener('resize', () => this.reserveLogSpace());
     // The rail wraps on a narrow window and the tray grows when it opens;
@@ -1111,17 +1465,57 @@ class Dashboard {
   // readout groups arriving behind it - and the rail's Setup button, which
   // only exists while the drawer is shut, brings it back.
   setDrawerOpen(isOpen) {
+    const wasOpen = this.isDrawerOpen;
+    const active = document.activeElement;
+    const hadFocus = this.dom.drawer.contains(active);
     this.isDrawerOpen = Boolean(isOpen);
+    if (this.isDrawerOpen && !wasOpen && active && active !== document.body && !hadFocus) {
+      this.drawerReturn = active;
+    }
     this.dom.drawer.classList.toggle('open', this.isDrawerOpen);
     // The scrim dims what the drawer is covering. At boot it is covering an
     // empty rack, so there is nothing to dim and no scrim.
     this.dom.scrim.hidden = !(this.isDrawerOpen && this.cards.size > 0);
     this.dom.setupLink.hidden = this.isDrawerOpen;
     this.dom.drawer.setAttribute('aria-hidden', this.isDrawerOpen ? 'false' : 'true');
-    this.dom.drawer.inert = !this.isDrawerOpen;
+    // While the drawer is open the rack behind it is inert, so Tab walks the
+    // drawer, the tray and the rail - never a control under the scrim - and
+    // the stop on the rail is always one of the places it walks (F12).
+    this.updateInert();
     // Focus moves into the drawer - to the drawer itself, not to its Close
-    // button, which is not the thing the operator came to press.
-    if (this.isDrawerOpen) this.dom.drawer.focus({ preventScroll: true });
+    // button, which is not the thing the operator came to press - and back
+    // to what opened it when it withdraws (after launch: the Setup button
+    // that brings it back).
+    if (this.isDrawerOpen && !wasOpen) {
+      this.dom.drawer.focus({ preventScroll: true });
+    } else if (!this.isDrawerOpen && wasOpen
+               && (hadFocus || document.activeElement === document.body)) {
+      this.restoreFocus(this.drawerReturn, this.dom.setupLink);
+    }
+  }
+
+  /** What may take focus right now: the rail never goes inert - the stop
+   *  must be reachable from under anything - and every other layer does
+   *  while something sits over it (F1, F12, WDG-8). */
+  updateInert() {
+    const overlays = [this.dom.modal, this.dom.picker, this.dom.confirm];
+    const open = overlays.filter((layer) => !layer.hidden);
+    const top = open[open.length - 1] || null;
+    const covered = Boolean(top);
+    const setInert = (node, flag) => { if (node && node.inert !== flag) node.inert = flag; };
+    setInert(this.dom.cards, covered || this.isDrawerOpen);
+    setInert(this.dom.logPanel, covered);
+    setInert(this.dom.drawer, covered || !this.isDrawerOpen);
+    for (const layer of overlays) setInert(layer, layer !== top);
+  }
+
+  /** Put focus back where it came from, or on a sensible neighbour when
+   *  that control has gone, is hidden, or is behind something. */
+  restoreFocus(target, fallback) {
+    const usable = (node) => node && node.isConnected && !node.hidden
+      && !node.closest('[inert]') && node.getClientRects().length > 0;
+    const next = usable(target) ? target : (usable(fallback) ? fallback : this.dom.cards);
+    if (next && next.focus) next.focus({ preventScroll: true });
   }
 
   // -- the event bar ------------------------------------------------------
@@ -1154,10 +1548,16 @@ class Dashboard {
 
   async start() {
     // Start from the newest event id so a fresh tab does not replay the
-    // whole session's log as if it had just happened (ERRORS-3).
+    // whole session's log as if it had just happened (ERRORS-3). What has
+    // happened is still history: the last few lines go into the log, and
+    // the newest is the tray's line, so the tray does not say "Waiting for
+    // the station…" beside a rail that says it is connected (WDG-11).
     try {
       const seen = await apiGet('/api/events?since=0');
       this.lastEventId = seen.latest_id || 0;
+      const history = (seen.events || []).slice(-20);
+      for (const event of history) this.showEvent(event);
+      if (!history.length) putText(this.dom.trayLatest, 'No events yet.');
     } catch (err) { /* the first poll will retry */ }
     this.setLogCollapsed(true);      // one line: the latest event
     await this.loadSetup();
@@ -1225,14 +1625,88 @@ class Dashboard {
     await this.poll();
   }
 
+  /** The link line is a live region, so it is written when the link
+   *  changes and at no other time (WDG-6). Down, it says since when, and
+   *  every number on the page goes muted with the stale mark: a frozen
+   *  number must never look like a live one (F4, CRIT-1). */
   setConnected(isConnected) {
-    this.dom.connection.textContent = isConnected ? 'Connected'
-      : 'Not answering. Is the station still running?';
-    this.dom.connection.className = 'link-state' + (isConnected ? '' : ' is-down');
+    if (this.isConnected === isConnected) return;
+    this.isConnected = isConnected;
+    const link = this.dom.connection;
+    if (isConnected) {
+      link.textContent = 'Connected';
+      link.title = '';
+    } else {
+      const since = clockTime(new Date());
+      link.textContent = 'Not answering since ' + since;
+      link.title = 'The station has not answered since ' + since
+        + '. Every number on this page is frozen. Is the station still running?';
+      for (const card of this.cards.values()) card.setOffline();
+      if (this.setupCard) this.setupCard.setOffline();
+      for (const group of this.railGroups.values()) {
+        group.node.classList.add('is-stale');
+        putText(group.flag, 'Stale');
+      }
+    }
+    link.className = 'link-state' + (isConnected ? '' : ' is-down');
+    document.body.classList.toggle('is-offline', !isConnected);
+  }
+
+  // -- the rail's alert lines --------------------------------------------
+  //
+  // Sentences that must be read from across the bench and must not be
+  // replaced by the next event: a stop that did not land, a model that lost
+  // its device. They sit on the rail, beside the stop, and the rail grows to
+  // hold them. Keyed, so a poll that repeats a line does not rewrite it.
+  setRailLine(key, text, canDismiss) {
+    let line = this.railLines.get(key);
+    if (!text) {
+      if (line) {
+        line.node.remove();
+        this.railLines.delete(key);
+      }
+    } else {
+      if (!line) {
+        const node = make('div', 'rail-alert-line');
+        const words = make('span', 'rail-alert-text');
+        node.appendChild(words);
+        if (canDismiss) {
+          const dismiss = make('button', 'ghost rail-alert-dismiss', 'Dismiss');
+          dismiss.type = 'button';
+          dismiss.addEventListener('click', () => this.setRailLine(key, ''));
+          node.appendChild(dismiss);
+        }
+        line = { node, words };
+        this.railLines.set(key, line);
+        // The stop's own line is always the first thing read.
+        if (key === 'stop') this.dom.railAlert.insertBefore(node, this.dom.railAlert.firstChild);
+        else this.dom.railAlert.appendChild(node);
+      }
+      putText(line.words, text);
+    }
+    const isEmpty = this.railLines.size === 0;
+    if (this.dom.railAlert.hidden !== isEmpty) this.dom.railAlert.hidden = isEmpty;
+  }
+
+  /** One line per model that has lost a device, named by model and device
+   *  (F3, HC-1). */
+  renderLostLines(models) {
+    const lost = new Set();
+    for (const name of Object.keys(models)) {
+      const devices = lostDevices(models[name]);
+      if (!devices.length) continue;
+      lost.add('lost:' + name);
+      this.setRailLine('lost:' + name, sentence(name) + ' lost its '
+        + devices.join(' and ') + '. Its readings are frozen.');
+    }
+    for (const key of Array.from(this.railLines.keys())) {
+      if (key.indexOf('lost:') === 0 && !lost.has(key)) this.setRailLine(key, '');
+    }
   }
 
   async applyState(state) {
     const models = state.models || {};
+    this.isActive = Boolean(state.is_active);
     for (const name of Object.keys(models)) {
       if (!this.cards.has(name)) await this.addCard(name);
       const card = this.cards.get(name);
@@ -1242,6 +1716,7 @@ class Dashboard {
       if (!(name in models)) this.removeCard(name);
     }
     this.renderRail(models);
+    this.renderLostLines(models);
     this.renderEmptyRack();
     this.renderClosed(state.closed || []);
     this.renderEstop(Boolean(state.is_estopped));
@@ -1289,8 +1764,19 @@ class Dashboard {
           // A long value is cut with an ellipsis on the rail; the whole of
           // it is one hover away, never silently lost.
           node.title = text;
+          const kind = readoutKind(text);
+          node.classList.toggle('is-empty', kind === 'quiet');
+          node.classList.toggle('is-word', kind === 'word');
         }
       }
+      // A model whose numbers are not live says so on the rail, in words,
+      // and its numbers go muted (F3, F4).
+      const state = models[name] || {};
+      const isLost = lostDevices(state).length > 0;
+      const flag = isLost ? 'Connection lost' : (isStale(state) ? 'Stale' : '');
+      putText(group.flag, flag);
+      group.node.classList.toggle('is-stale', Boolean(flag));
+      group.node.classList.toggle('is-lost', isLost);
       index += 1;
     }
   }
@@ -1322,7 +1808,11 @@ class Dashboard {
     node.style.setProperty('--stagger', String(index));
     node.setAttribute('role', 'group');
     node.setAttribute('aria-label', sentence(name));
-    node.appendChild(make('span', 'readout-model', sentence(name)));
+    const head = make('div', 'readout-head');
+    head.appendChild(make('span', 'readout-model', sentence(name)));
+    const flag = make('span', 'readout-flag');
+    head.appendChild(flag);
+    node.appendChild(head);
     const line = make('div', 'readouts');
     const values = new Map();
     for (const element of elements) {
@@ -1335,7 +1825,7 @@ class Dashboard {
       values.set(element.model_attr, value);
     }
     node.appendChild(line);
-    return { node, values };
+    return { node, values, flag };
   }
 
   /** `Dashboard._collapse_setup` in src/views/base.py, mirrored: the
@@ -1395,6 +1885,11 @@ class Dashboard {
   /** A model the operator closed is not gone, it is put away. The way back
    *  is on the rail, beside Setup - the other thing that reopens. */
   renderClosed(closed) {
+    // Rebuilt only when the list changes: rebuilt every poll, a Reopen
+    // button lost keyboard focus four times a second (WDG-3, F21).
+    const key = closed.join('\n');
+    if (key === this.closedKey) return;
+    this.closedKey = key;
     clear(this.dom.closed);
     if (!closed.length) return;
     this.dom.closed.appendChild(make('span', 'closed-label', 'Reopen'));
@@ -1408,16 +1903,64 @@ class Dashboard {
   }
 
   async openModel(name) {
-    const answer = await apiPost('/api/open_model', { name });
-    if (answer.status !== 'ok') window.alert(answer.reason || 'could not reopen ' + name);
+    let answer;
+    try {
+      answer = await apiPost('/api/open_model', { name });
+    } catch (err) {
+      answer = { status: 'error', reason: 'the station did not answer (' + failureReason(err) + ')' };
+    }
+    // Not a popup: only an error event may open one. The tray says it.
+    if (answer.status !== 'ok') {
+      this.notice(sentence(name) + ' did not reopen: ' + (answer.reason || 'no reason given')
+        + '. Check its port in Setup.');
+    }
     await this.refreshNow();
   }
 
   async closeModel(name) {
-    if (!window.confirm('Close ' + name + '?\n\nIt stops and disconnects. '
-                        + 'You can reopen it from the rail.')) return;
-    await apiPost('/api/close_model', { name });
+    const isSure = await this.confirm('Close ' + name + '?\n\nIt stops and disconnects. '
+                                      + 'You can reopen it from the rail.', 'Close ' + name);
+    if (!isSure) return;
+    try {
+      await apiPost('/api/close_model', { name });
+    } catch (err) {
+      this.notice(sentence(name) + ' did not close: the station did not answer ('
+        + failureReason(err) + ').');
+    }
     await this.refreshNow();
+  }
+
+  /** A line the page itself has to say, on the tray. */
+  notice(text) {
+    this.showEvent({ severity: 'warning', text });
+  }
+
+  // -- confirmations -------------------------------------------------------
+  //
+  // The page's own, not window.confirm: a native dialog blocks every script
+  // on the page, the stop's included, and its default button is OK. This
+  // one sits below the rail, focuses Cancel, and Escape answers No (F17).
+  confirm(text, yesLabel) {
+    if (this.confirmPending) this.answerConfirm(false);
+    return new Promise((resolve) => {
+      const returnTo = document.activeElement;
+      putText(this.dom.confirmText, text);
+      putText(this.dom.confirmYes, yesLabel || 'Continue');
+      this.dom.confirm.hidden = false;
+      this.updateInert();
+      this.dom.confirmNo.focus({ preventScroll: true });
+      this.confirmPending = (answer) => {
+        this.confirmPending = null;
+        this.dom.confirm.hidden = true;
+        this.updateInert();
+        this.restoreFocus(returnTo, this.dom.cards);
+        resolve(Boolean(answer));
+      };
+    });
+  }
+
+  answerConfirm(answer) {
+    if (this.confirmPending) this.confirmPending(answer);
   }
 
   // -- the global FULL STOP ----------------------------------------------
@@ -1429,11 +1972,14 @@ class Dashboard {
   renderEstop(isEstopped) {
     const wasEstopped = this.isEstopped;
     this.isEstopped = isEstopped;
-    this.dom.stopFace.textContent = isEstopped ? 'Clear' : 'Stop';
+    putText(this.dom.stopFace, isEstopped ? 'Clear' : 'Stop');
     this.dom.stop.classList.toggle('is-latched', isEstopped);
-    this.dom.stop.setAttribute(
-      'aria-label', isEstopped ? 'Clear the stop on every model'
-                               : 'Stop every model');
+    putAttr(this.dom.stop, 'aria-label',
+            isEstopped ? 'Clear the stop on every model' : 'Stop every model');
+    // The keyboard path is written on the object itself (F9).
+    putAttr(this.dom.stop, 'title', isEstopped
+      ? 'Clear the stop on every model (asks first). ' + STOP_KEY_HINT + ' stops again.'
+      : 'Stop every model. Keyboard: ' + STOP_KEY_HINT + ', from anywhere on the page.');
     if (isEstopped && !wasEstopped) {
       this.dom.stop.classList.remove('pulse');
       void this.dom.stop.offsetWidth;      // restart the animation
@@ -1445,15 +1991,49 @@ class Dashboard {
 
   async toggleEstopAll() {
     if (!this.isEstopped) {
-      await apiPost('/api/estop_all', {});
-      await this.refreshNow();
+      await this.stopAll();
       return;
     }
-    let result = await apiPost('/api/clear_estop_all', {});
-    if (result.status === 'needs_confirm' && window.confirm(result.reason)) {
-      result = await apiPost('/api/clear_estop_all', { confirmed: true });
+    try {
+      let result = await apiPostChecked('/api/clear_estop_all', {});
+      if (result.status === 'needs_confirm'
+          && await this.confirm(result.reason, 'Clear the stop')) {
+        result = await apiPostChecked('/api/clear_estop_all', { confirmed: true });
+      }
+    } catch (err) {
+      this.stopFailed('Clear', err);
+      return;
     }
     await this.refreshNow();
+  }
+
+  /** Stop every model. Never silent: a stop that did not reach the station
+   *  says so on the rail, and so does one that reached it but was not
+   *  confirmed by every model (F2, WDG-2, CRIT-1, HC-3). */
+  async stopAll() {
+    // A pending question is moot once the operator has pressed stop.
+    this.answerConfirm(false);
+    let answer;
+    try {
+      answer = await apiPostChecked('/api/estop_all', {});
+    } catch (err) {
+      this.stopFailed('Stop', err);
+      return;
+    }
+    const unconfirmed = (answer && answer.unconfirmed) || [];
+    this.setRailLine('stop', unconfirmed.length
+      ? 'Stop latched, but ' + unconfirmed.map(sentence).join(', ')
+        + (unconfirmed.length > 1 ? ' have' : ' has') + ' not confirmed it. Treat '
+        + (unconfirmed.length > 1 ? 'them' : 'it') + ' as live.'
+      : '', true);
+    await this.refreshNow();
+  }
+
+  stopFailed(action, err) {
+    this.setRailLine('stop', action + ' did not reach the station — ' + failureReason(err)
+      + (action === 'Stop' ? '. Press it again, or stop the hardware at the bench.' : '.'),
+      true);
+    this.setConnected(false);
   }
 
   // -- events -------------------------------------------------------------
@@ -1479,17 +2059,41 @@ class Dashboard {
     this.dom.trayLatest.className = 'tray-latest severity-' + event.severity;
   }
 
-  /** Only `needs_ack` opens a modal. Everything else is a line in the log. */
+  /** Only `needs_ack` opens a modal. Everything else is a line in the log.
+   *  The messages queue: a second one arriving before the first is
+   *  acknowledged is added under it, never written over it (F1, HC-2). The
+   *  modal starts below the rail, so the stop stays in reach. */
   showAck(event) {
-    this.dom.modalText.textContent = event.text;
-    this.dom.modal.hidden = false;
-    this.dom.modalOk.focus({ preventScroll: true });
+    const wasHidden = this.dom.modal.hidden;
+    if (wasHidden) this.ackReturn = document.activeElement;
+    this.ackQueue.push(String(event.text || ''));
+    const list = this.dom.modalText;
+    list.appendChild(make('p', 'ack-line', event.text));
+    const count = this.ackQueue.length;
+    putText(this.dom.modalCount, count > 1 ? count + ' messages need acknowledging' : '');
+    this.dom.modalCount.hidden = count < 2;
+    putText(this.dom.modalOk, count > 1 ? 'Acknowledge all' : 'Acknowledge');
+    if (wasHidden) {
+      this.dom.modal.hidden = false;
+      this.updateInert();
+      this.dom.modalOk.focus({ preventScroll: true });
+    }
+  }
+
+  acknowledge() {
+    this.ackQueue = [];
+    clear(this.dom.modalText);
+    this.dom.modal.hidden = true;
+    this.updateInert();
+    this.restoreFocus(this.ackReturn, this.dom.cards);
   }
 
   // -- the region picker --------------------------------------------------
   async openRegionPicker(card, element) {
     const canvas = this.dom.pickerCanvas;
+    this.pickerReturn = document.activeElement;
     this.dom.picker.hidden = false;
+    this.updateInert();
     this.dom.pickerClose.focus({ preventScroll: true });
     const context = canvas.getContext('2d');
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -1497,13 +2101,14 @@ class Dashboard {
     try {
       frame = await apiGet('/api/screen?name=' + encodeURIComponent(card.name));
     } catch (err) {
-      card.showRefused('no screen image: ' + err);
-      this.dom.picker.hidden = true;
+      this.closeRegionPicker();
+      card.showRefused('No screen image came back (' + failureReason(err)
+        + '). Check that the station is running, then pick again.', element);
       return;
     }
     if (!frame || !frame.image) {
-      card.showRefused((frame && frame.reason) || 'the station offers no screen image');
-      this.dom.picker.hidden = true;
+      this.closeRegionPicker();
+      card.showRefused((frame && frame.reason) || 'The station offers no screen image.', element);
       return;
     }
     const picture = new Image();
@@ -1536,8 +2141,10 @@ class Dashboard {
     };
     const paint = (box) => {
       context.drawImage(picture, 0, 0);
+      // Trace, not signal: the box marks what will be measured, and red is
+      // the stop's alone (F24, UXPM-12).
       context.strokeStyle = getComputedStyle(document.documentElement)
-        .getPropertyValue('--signal');
+        .getPropertyValue('--trace');
       context.lineWidth = 2;
       context.strokeRect(box[0], box[1], box[2], box[3]);
     };
@@ -1552,12 +2159,18 @@ class Dashboard {
       if (canvas.setPointerCapture) canvas.setPointerCapture(event.pointerId);
     };
     canvas.onpointermove = (event) => { if (start) paint(boxFrom(start, at(event))); };
+    // An interrupted gesture leaves no stale origin behind (HC-20).
+    canvas.onpointercancel = canvas.onlostpointercapture = () => {
+      if (!start) return;
+      start = null;
+      context.drawImage(picture, 0, 0);
+    };
     canvas.onpointerup = (event) => {
       if (!start) return;
       const box = boxFrom(start, at(event));
       start = null;
       if (box[2] < 4 || box[3] < 4) return;
-      this.dom.picker.hidden = true;
+      this.closeRegionPicker();
       card.run(element, [
         Math.round(box[0] * scaleX) + left,
         Math.round(box[1] * scaleY) + top,
@@ -1565,6 +2178,13 @@ class Dashboard {
         Math.round(box[3] * scaleY),
       ]);
     };
+  }
+
+  closeRegionPicker() {
+    if (this.dom.picker.hidden) return;
+    this.dom.picker.hidden = true;
+    this.updateInert();
+    this.restoreFocus(this.pickerReturn, this.dom.cards);
   }
 }
 

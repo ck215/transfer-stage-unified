@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="preload" href="/fonts/ibm-plex-sans-400.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/fonts/ibm-plex-sans-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/ibm-plex-sans-600.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body>
   <a class="skip-link" href="#cards">Skip to the modules</a>
@@ -29,9 +30,14 @@
       <button id="setup-link" type="button" class="ghost rail-control"
               title="Open Setup: ports, devices and launch">Setup</button>
     </div>
-    <button id="full-stop" type="button" class="mushroom" aria-label="Stop every model">
+    <button id="full-stop" type="button" class="mushroom" aria-label="Stop every model"
+            aria-keyshortcuts="Alt+Period"
+            title="Stop every model. Keyboard: Alt+. (Option+. on a Mac), from anywhere on the page.">
       <span class="mushroom-face">Stop</span>
     </button>
+    <!-- What the operator must read from across the bench and must not lose
+         to the next event: a stop that did not land, a lost device. -->
+    <div id="rail-alert" class="rail-alert" role="alert" hidden></div>
   </header>
 
   <main id="cards" class="rack" tabindex="-1"></main>
@@ -59,11 +65,24 @@
     <div id="event-log" class="tray-log"></div>
   </section>
 
-  <!-- Only an event that asks to be acknowledged opens this. -->
+  <!-- Only an event that asks to be acknowledged opens this. Every layer
+       below starts under the rail: nothing this page opens covers the stop. -->
   <div id="ack-modal" class="overlay" hidden>
     <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="ack-text">
-      <p id="ack-text" class="dialog-text"></p>
-      <button id="ack-ok" type="button" class="button role-neutral">OK</button>
+      <p id="ack-count" class="dialog-count" hidden></p>
+      <div id="ack-text" class="dialog-text ack-list"></div>
+      <button id="ack-ok" type="button" class="button role-neutral">Acknowledge</button>
+    </div>
+  </div>
+
+  <!-- The page's own confirmation: Cancel is the default, Escape is Cancel. -->
+  <div id="confirm-modal" class="overlay" hidden>
+    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-text">
+      <p id="confirm-text" class="dialog-text"></p>
+      <div class="dialog-actions">
+        <button id="confirm-no" type="button" class="button role-neutral">Cancel</button>
+        <button id="confirm-yes" type="button" class="button role-neutral">Continue</button>
+      </div>
     </div>
   </div>
 

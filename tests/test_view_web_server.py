@@ -7,9 +7,13 @@ where it matters, playing a cross-site page instead.
 Ported from `tests/web/test_web_server.py`, `test_web_security.py`,
 `test_web_19_client_heartbeat.py` and `test_dc6_web_refusal_is_403.py`.
 """
+import base64
 import email.message
 import json
 import os
+import re
+import shutil
+import subprocess
 import tempfile
 import urllib.error
 import urllib.parse
@@ -50,6 +54,12 @@ class FakeProbe(Panel):
         self.written = None
         self.state_raises = False
         self.runs = []
+        # For the browser tests (Tier F): what the model says about its
+        # devices, whether its stop confirms, and what it was asked to load.
+        self.devices_state = {}
+        self.stop_confirms = True
+        self.jams = 0
+        self.loaded = None
 
     # -- what the Controller needs -------------------------------------
     def open(self):
@@ -60,7 +70,7 @@ class FakeProbe(Panel):
 
     def estop(self):
         self.is_estopped = True
-        return True
+        return self.stop_confirms
 
     def clear_estop(self, confirmed=False):
         self.is_estopped = False
@@ -99,6 +109,8 @@ class FakeProbe(Panel):
                 sch.image("Figure", "figure"),
                 sch.log_stream("Log", "log_lines"),
                 sch.indicator("Fault", "is_faulted"),
+                sch.button("Jam", "jam"),
+                sch.file_open("Load run", "load_run", extensions=("csv",)),
             ))
 
     @property
@@ -108,6 +120,7 @@ class FakeProbe(Panel):
         snapshot = super().state
         snapshot.update({"age": 0.0, "is_estopped": self.is_estopped,
                          "is_active": self.is_active,
+                         "devices": dict(self.devices_state),
                          "values": dict(snapshot["values"],
                                         output_root=self.output_root or "")})
         return snapshot
@@ -119,6 +132,16 @@ class FakeProbe(Panel):
 
     def park(self):
         raise Refused("the stage is not parked from here")
+
+    def jam(self):
+        # A command that FAILS (not refuses): each one is an error that asks
+        # to be acknowledged, and each message is new so none are merged.
+        self.jams += 1
+        raise OSError(f"the port did not answer ({self.jams})")
+
+    def load_run(self, path):
+        self.loaded = path
+        return {"samples": 1}
 
     def toggle_estop(self, confirmed=False):
         if not confirmed:
@@ -667,3 +690,443 @@ def test_a_route_that_does_not_exist_is_a_json_404(station):
     view, _, _ = station
     status, data = _get(view, "/api/nope")
     assert status == 404 and data["status"] == "error"
+
+
+# --------------------------------------------------------------------------
+# /api/upload: a file chosen in the browser, for a file_open command (F13)
+# --------------------------------------------------------------------------
+def _upload(view, filename, content=b"red,x\n1,2\n", command="load_run"):
+    return _post(view, "/api/upload", {
+        "name": "Fake Probe", "command": command, "filename": filename,
+        "content": base64.b64encode(content).decode("ascii")})
+
+
+def test_an_uploaded_run_lands_in_the_models_output_folder(station, tmp_path):
+    view, _, _ = station
+    status, data = _upload(view, "run 1.csv")
+    assert status == 200 and data["status"] == "ok"
+    assert data["path"] == os.path.join(os.path.realpath(tmp_path), "uploads", "run 1.csv")
+    with open(data["path"], "rb") as handle:
+        assert handle.read() == b"red,x\n1,2\n"
+    # never overwritten
+    _, again = _upload(view, "run 1.csv", b"second")
+    assert again["path"].endswith("run 1-1.csv")
+
+
+def test_an_upload_is_a_bare_name_with_a_declared_extension(station, tmp_path):
+    view, _, _ = station
+    _, data = _upload(view, "../../escape.csv")
+    assert data["path"] == os.path.join(os.path.realpath(tmp_path), "uploads", "escape.csv")
+    status, data = _upload(view, "notes.txt")
+    assert status == 400 and data["status"] == "refused"
+    assert data["reason"].startswith("Choose a .csv file")
+    status, data = _upload(view, "run.csv", command="home")
+    assert status == 403, "an upload for a command that opens no file"
+
+
+def test_an_upload_goes_through_the_same_guards_as_a_command(station):
+    view, _, _ = station
+    status, _ = _post(view, "/api/upload", {"name": "Fake Probe"},
+                      headers={"Origin": "http://evil.example"})
+    assert status == 403
+
+
+# --------------------------------------------------------------------------
+# The client in a real browser (Tier F). Headless Chrome through puppeteer,
+# against the real server above; skipped where node or puppeteer is absent.
+# Each test is a stop-path or focus behaviour a static read of app.js cannot
+# see: what is on top at the stop's centre, what happens when a fetch fails.
+# --------------------------------------------------------------------------
+PUPPETEER = os.environ.get(
+    "STATION_PUPPETEER",
+    "/opt/homebrew/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/puppeteer")
+NODE = shutil.which("node")
+needs_browser = pytest.mark.skipif(
+    NODE is None or not os.path.isdir(PUPPETEER),
+    reason="node and puppeteer are not available in this environment")
+
+#: What every scenario starts with: the page loaded and the probe's card up.
+_PRELUDE = r"""
+const puppeteer = require(%(puppeteer)s);
+const BASE = %(base)s;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+(async () => {
+  const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+  const errors = [];
+  let result;
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1400, height: 900 });
+    page.on('pageerror', (e) => errors.push(e.message));
+    const until = async (fn, ms) => {
+      const end = Date.now() + (ms || 5000);
+      for (;;) {
+        const got = await page.evaluate(fn);
+        if (got || Date.now() > end) return got;
+        await sleep(100);
+      }
+    };
+    const card = () => until(() => Array.from(document.querySelectorAll('.card'))
+      .some((c) => !c.classList.contains('setup-card')));
+    const api = (path, body) => page.evaluate(async (p, b) => {
+      const r = await fetch(p, b === undefined ? {} : { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
+      return r.json();
+    }, path, body);
+    await page.goto(BASE + '/', { waitUntil: 'load' });
+    await card();
+    await sleep(400);
+    result = await (async () => {
+%(body)s
+    })();
+  } finally {
+    await browser.close();
+  }
+  console.log('RESULT ' + JSON.stringify({ result, errors }));
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+def _browse(view, body, tmp_path):
+    script = tmp_path / "scenario.cjs"
+    script.write_text(_PRELUDE % {"puppeteer": json.dumps(PUPPETEER),
+                                  "base": json.dumps(f"http://127.0.0.1:{view.port}"),
+                                  "body": body})
+    done = subprocess.run([NODE, str(script)], capture_output=True, text=True, timeout=90)
+    assert done.returncode == 0, done.stderr[-2000:]
+    line = [ln for ln in done.stdout.splitlines() if ln.startswith("RESULT ")][-1]
+    out = json.loads(line[len("RESULT "):])
+    assert not out["errors"], f"the page threw: {out['errors']}"
+    return out["result"]
+
+
+#: What is on top at the centre of the rail's stop.
+_STOP_HIT = r"""() => {
+  const b = document.getElementById('full-stop').getBoundingClientRect();
+  const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+  return Boolean(hit && hit.closest('#full-stop'));
+}"""
+
+
+@needs_browser
+def test_an_acknowledgement_never_covers_the_stop_and_two_both_show(station, tmp_path):
+    """F1 (WDG-1, HC-2): with an ack open the stop is still what a click at
+    its centre lands on, it still stops, and a second ack is added under the
+    first instead of replacing it."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      await api('/api/run', { name: 'Fake Probe', command: 'jam', inputs: {}, args: [] });
+      await api('/api/run', { name: 'Fake Probe', command: 'jam', inputs: {}, args: [] });
+      await until(() => !document.getElementById('ack-modal').hidden
+        && document.querySelectorAll('#ack-text .ack-line').length === 2);
+      const lines = await page.evaluate(() => Array.from(
+        document.querySelectorAll('#ack-text .ack-line')).map((n) => n.textContent));
+      const onTop = await page.evaluate(%s);
+      const box = await page.evaluate(() => {
+        const b = document.getElementById('full-stop').getBoundingClientRect();
+        return [b.left + b.width / 2, b.top + b.height / 2];
+      });
+      await page.mouse.click(box[0], box[1]);
+      await sleep(600);
+      const state = await api('/api/state');
+      return { lines, onTop, latched: state.is_estopped };
+    """ % _STOP_HIT, tmp_path)
+    assert out["onTop"], "the ack overlay covers the stop"
+    assert len(out["lines"]) == 2 and out["lines"][0] != out["lines"][1], out["lines"]
+    assert all("the port did not answer" in line for line in out["lines"])
+    assert out["latched"] is True, "a click on the stop under an open ack did not stop"
+
+
+@needs_browser
+def test_a_stop_that_never_reaches_the_station_says_so_on_the_rail(station, tmp_path):
+    """F2 (WDG-2, CRIT-1, HC-3): the fetch is refused; the rail says the stop
+    did not reach the station and the link says it is not answering."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      await page.setRequestInterception(true);
+      page.on('request', (r) => (r.url().includes('/api/estop_all') ? r.abort() : r.continue()));
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      return page.evaluate(() => ({
+        alert: document.getElementById('rail-alert').textContent,
+        link: document.getElementById('connection').textContent,
+        face: document.querySelector('#full-stop .mushroom-face').textContent,
+      }));
+    """, tmp_path)
+    assert out["alert"].startswith("Stop did not reach the station — "), out
+    assert out["link"].startswith("Not answering"), out
+    assert out["face"] == "Stop", "the stop claims a latch it never delivered"
+    assert probe.is_estopped is False
+
+
+@needs_browser
+def test_a_stop_a_model_did_not_confirm_names_that_model(station, tmp_path):
+    """F2: `unconfirmed` is surfaced by model name, on the rail."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, r"""
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      return page.evaluate(() => document.getElementById('rail-alert').textContent);
+    """, tmp_path)
+    assert "Fake Probe has not confirmed it" in out, out
+
+
+@needs_browser
+def test_offline_every_readout_is_muted_and_marked_stale(station, tmp_path):
+    """F4 (CRIT-1): the state poll fails; nothing still looks live."""
+    view, _, _ = station
+    out = _browse(view, r"""
+      const live = await page.evaluate(() => {
+        const v = Array.from(document.querySelectorAll('.card .value'))
+          .find((n) => n.textContent === '0.000');
+        return getComputedStyle(v).color;
+      });
+      await page.setRequestInterception(true);
+      page.on('request', (r) => (r.url().includes('/api/state') ? r.abort() : r.continue()));
+      await until(() => document.body.classList.contains('is-offline'));
+      await sleep(300);
+      return page.evaluate((live) => {
+        const card = Array.from(document.querySelectorAll('.card'))
+          .find((c) => !c.classList.contains('setup-card'));
+        const v = Array.from(card.querySelectorAll('.value')).find((n) => n.textContent === '0.000');
+        const rail = document.querySelector('.readout-value');
+        const muted = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim();
+        const probe = document.createElement('span');
+        probe.style.color = muted;
+        document.body.appendChild(probe);
+        const mutedRgb = getComputedStyle(probe).color;
+        return {
+          live, mutedRgb, card: getComputedStyle(v).color, rail: getComputedStyle(rail).color,
+          badge: !card.querySelector('.stale-badge').hidden,
+          isLive: card.classList.contains('is-live'),
+          railFlag: document.querySelector('.readout-flag').textContent,
+          link: document.getElementById('connection').textContent,
+        };
+      }, live);
+    """, tmp_path)
+    assert out["live"] != out["mutedRgb"]
+    assert out["card"] == out["mutedRgb"] and out["rail"] == out["mutedRgb"], out
+    assert out["badge"] and not out["isLive"] and out["railFlag"] == "Stale", out
+    assert re.fullmatch(r"Not answering since \d\d:\d\d:\d\d", out["link"]), out
+
+
+@needs_browser
+def test_the_stop_has_a_keyboard_path_and_an_ink_focus_ring(station, tmp_path):
+    """F9 + F17: Alt+. stops from inside a text box; Enter on the focused
+    mushroom stops; its focus ring is --stop-focus, not the latched trace;
+    the clear confirmation opens on Cancel and Enter there does not clear."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      const r = {};
+      await page.focus('input[name="label"]');
+      await page.keyboard.down('Alt'); await page.keyboard.press('Period'); await page.keyboard.up('Alt');
+      await sleep(500);
+      r.byShortcut = (await api('/api/state')).is_estopped;
+      r.typed = await page.evaluate(() => document.querySelector('input[name="label"]').value);
+      await api('/api/clear_estop_all', { confirmed: true });
+      await sleep(500);
+      for (let i = 0; i < 40; i++) {
+        await page.keyboard.press('Tab');
+        if (await page.evaluate(() => document.activeElement.id === 'full-stop')) break;
+      }
+      r.ring = await page.evaluate(() => getComputedStyle(document.getElementById('full-stop')).outlineColor);
+      r.focusToken = await page.evaluate(() => {
+        const s = document.createElement('span');
+        s.style.color = getComputedStyle(document.documentElement).getPropertyValue('--stop-focus').trim();
+        document.body.appendChild(s);
+        return getComputedStyle(s).color;
+      });
+      r.title = await page.evaluate(() => document.getElementById('full-stop').title);
+      await page.keyboard.press('Enter');
+      await sleep(600);
+      r.byEnter = (await api('/api/state')).is_estopped;
+      await page.focus('#full-stop');
+      await page.keyboard.press('Enter');
+      await until(() => !document.getElementById('confirm-modal').hidden);
+      r.defaultFocus = await page.evaluate(() => document.activeElement.id);
+      await page.keyboard.press('Enter');
+      await sleep(600);
+      r.afterCancel = (await api('/api/state')).is_estopped;
+      r.confirmHidden = await page.evaluate(() => document.getElementById('confirm-modal').hidden);
+      return r;
+    """, tmp_path)
+    assert out["byShortcut"] is True, "Alt+. did not stop from a text box"
+    assert out["typed"] == "", "the shortcut typed into the entry"
+    assert "Alt+." in out["title"]
+    assert out["ring"] == out["focusToken"], out
+    assert out["byEnter"] is True, "Enter on the focused stop did not stop"
+    assert out["defaultFocus"] == "confirm-no", "the clear confirmation defaults to clearing"
+    assert out["afterCancel"] is True and out["confirmHidden"], out
+
+
+@needs_browser
+def test_a_lost_device_turns_the_card_signal_and_the_rail_names_it(station, tmp_path):
+    """F3 (HC-1): `state.devices` says the serial port is lost while the
+    model's own loop still ticks - the card must not look live."""
+    view, _, probe = station
+    probe.devices_state = {"SerialPort": "lost"}
+    out = _browse(view, r"""
+      await until(() => !document.getElementById('rail-alert').hidden);
+      return page.evaluate(() => {
+        const card = Array.from(document.querySelectorAll('.card'))
+          .find((c) => !c.classList.contains('setup-card'));
+        const s = document.createElement('span');
+        s.style.color = getComputedStyle(document.documentElement).getPropertyValue('--signal').trim();
+        document.body.appendChild(s);
+        const muted = document.createElement('span');
+        muted.style.color = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim();
+        document.body.appendChild(muted);
+        const v = Array.from(card.querySelectorAll('.value')).find((n) => n.textContent === '0.000');
+        return {
+          cls: card.className, bar: getComputedStyle(card).borderLeftColor,
+          signal: getComputedStyle(s).color, value: getComputedStyle(v).color,
+          muted: getComputedStyle(muted).color,
+          badge: card.querySelector('.stale-badge').hidden ? '' : card.querySelector('.stale-badge').textContent,
+          rail: document.getElementById('rail-alert').textContent,
+          flag: document.querySelector('.readout-flag').textContent,
+        };
+      });
+    """, tmp_path)
+    assert "is-lost" in out["cls"] and "is-live" not in out["cls"], out
+    assert out["bar"] == out["signal"] and out["value"] == out["muted"], out
+    assert out["badge"] == "Connection lost" and out["flag"] == "Connection lost", out
+    assert "Fake Probe lost its serial port" in out["rail"], out
+
+
+@needs_browser
+def test_load_run_sends_a_typed_path_or_an_uploaded_file(station, tmp_path):
+    """F13 (WDG-5): the command gets the path it declares."""
+    view, _, probe = station
+    chosen = tmp_path / "chosen.csv"
+    chosen.write_text("red,x\n1,2\n")
+    out = _browse(view, r"""
+      await page.type('.path-input', '/data/runs/typed.csv');
+      await page.evaluate(() => Array.from(document.querySelectorAll('.file-open button'))
+        .find((b) => b.textContent === 'Load run').click());
+      await sleep(600);
+      const typed = await page.evaluate(() => document.querySelector('.file-open').closest('.card')
+        .querySelector('.status').hidden);
+      const input = await page.$('.file-picker');
+      await input.uploadFile(%s);
+      await sleep(1200);
+      return { typedStatusHidden: typed };
+    """ % json.dumps(str(chosen)), tmp_path)
+    assert out["typedStatusHidden"] is True
+    assert probe.loaded == os.path.join(os.path.realpath(tmp_path), "uploads", "chosen.csv")
+
+
+@needs_browser
+def test_a_refusal_sits_under_its_control_in_view_and_clears_on_success(station, tmp_path):
+    """F10 (CRIT-3): the refusal is next to Park, visible below the rail, and
+    the next good command from the card clears it."""
+    view, _, _ = station
+    out = _browse(view, r"""
+      const click = (text) => page.evaluate((t) => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === t).click(), text);
+      await click('Park');
+      await until(() => Array.from(document.querySelectorAll('.card .status')).some((s) => !s.hidden));
+      const placed = await page.evaluate(() => {
+        const status = Array.from(document.querySelectorAll('.card .status')).find((s) => !s.hidden);
+        const park = Array.from(document.querySelectorAll('.card button')).find((b) => b.textContent === 'Park');
+        const group = park.closest('.actions') || park.closest('.row');
+        const box = status.getBoundingClientRect();
+        const rail = document.querySelector('.rail').getBoundingClientRect();
+        return { next: group.nextElementSibling === status, text: status.textContent,
+                 inView: box.top >= rail.bottom && box.bottom <= innerHeight };
+      });
+      await click('Home');
+      await sleep(600);
+      placed.cleared = await page.evaluate(() => Array.from(document.querySelectorAll('.card .status')).every((s) => s.hidden));
+      return placed;
+    """, tmp_path)
+    assert out["next"], "the refusal is not under the control that caused it"
+    assert out["text"] == "the stage is not parked from here"
+    assert out["inView"], "the refusal landed off screen or under the rail"
+    assert out["cleared"], "a successful command did not clear the refusal"
+
+
+@needs_browser
+def test_focus_is_contained_returned_and_never_torn_down_by_a_poll(station, tmp_path):
+    """F12 (CRIT-5, WDG-3/6/7): the open drawer keeps Tab out of the rack;
+    Escape returns focus to Setup; a Reopen button survives the poll; the
+    link live region is not rewritten while nothing changes."""
+    view, controller, _ = station
+    out = _browse(view, r"""
+      const r = {};
+      await page.click('#setup-link');
+      await sleep(400);
+      const visited = [];
+      for (let i = 0; i < 30; i++) {
+        await page.keyboard.press('Tab');
+        visited.push(await page.evaluate(() => Boolean(document.activeElement.closest('#cards'))));
+      }
+      r.leaked = visited.some(Boolean);
+      await page.focus('#drawer-body select');
+      await page.keyboard.press('Escape');
+      await sleep(400);
+      r.returned = await page.evaluate(() => document.activeElement.id);
+      r.mutations = await page.evaluate(() => new Promise((done) => {
+        let n = 0;
+        const watch = new MutationObserver((m) => { n += m.length; });
+        watch.observe(document.getElementById('connection'), { childList: true, characterData: true, subtree: true });
+        setTimeout(() => { watch.disconnect(); done(n); }, 1500);
+      }));
+      await api('/api/close_model', { name: 'Fake Probe' });
+      await until(() => document.querySelector('#closed-models button'));
+      await page.focus('#closed-models button');
+      await sleep(1200);
+      r.kept = await page.evaluate(() => Boolean(document.activeElement.closest('#closed-models')));
+      return r;
+    """, tmp_path)
+    assert not out["leaked"], "Tab walked into the rack behind the open drawer"
+    assert out["returned"] == "setup-link", out
+    assert out["mutations"] == 0, "the link live region is rewritten every poll"
+    assert out["kept"], "the Reopen button lost focus to a poll"
+
+
+@needs_browser
+def test_an_idle_poll_changes_nothing_and_a_word_is_not_a_number(station, tmp_path):
+    """F21, F24, F15: two seconds of idle polling mutate nothing in the rack
+    (the figure's own reload aside - F16 is core); trace is for numbers and
+    "Not set" is muted; a long option is elided from the middle with its
+    whole name as the title; leaving the page while active asks first."""
+    view, _, probe = station
+    probe.source_options = ["None", "/dev/cu.usbmodem1234567890123"]
+    probe.is_active = True
+    out = _browse(view, r"""
+      const r = {};
+      r.mutations = await page.evaluate(() => new Promise((done) => {
+        const seen = [];
+        const watch = new MutationObserver((list) => {
+          for (const m of list) {
+            if (m.type === 'attributes' && m.target.tagName === 'IMG' && m.attributeName === 'src') continue;
+            seen.push(m.type + ':' + (m.target.className || m.target.nodeName) + ':' + (m.attributeName || ''));
+          }
+        });
+        watch.observe(document.getElementById('cards'), { subtree: true, childList: true, attributes: true, characterData: true });
+        setTimeout(() => { watch.disconnect(); done(seen); }, 2000);
+      }));
+      r.colors = await page.evaluate(() => {
+        const root = getComputedStyle(document.documentElement);
+        const as = (token) => { const s = document.createElement('span'); s.style.color = root.getPropertyValue(token).trim(); document.body.appendChild(s); return getComputedStyle(s).color; };
+        const value = (t) => getComputedStyle(Array.from(document.querySelectorAll('.card .value')).find((n) => n.textContent === t)).color;
+        return { number: value('0.000'), notSet: value('Not set'), trace: as('--trace'), muted: as('--muted') };
+      });
+      r.option = await page.evaluate(() => {
+        const o = Array.from(document.querySelectorAll('.card select option')).find((x) => x.value.startsWith('/dev/'));
+        return o ? { text: o.textContent, title: o.title } : null;
+      });
+      r.leaveAsks = await page.evaluate(() => {
+        const e = new Event('beforeunload', { cancelable: true });
+        window.dispatchEvent(e);
+        return e.defaultPrevented;
+      });
+      return r;
+    """, tmp_path)
+    assert out["mutations"] == [], out["mutations"][:10]
+    assert out["colors"]["number"] == out["colors"]["trace"]
+    assert out["colors"]["notSet"] == out["colors"]["muted"]
+    assert out["option"]["title"] == "/dev/cu.usbmodem1234567890123"
+    assert "…" in out["option"]["text"] and out["option"]["text"].endswith("7890123")
+    assert out["leaveAsks"] is True

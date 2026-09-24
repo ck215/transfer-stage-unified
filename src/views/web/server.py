@@ -64,6 +64,9 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
     #: A body here is always the small JSON this API accepts. The read used to
     #: be `Content-Length` bytes, unbounded (WEB-21).
     MAX_BODY_BYTES = 1 * 1024 * 1024
+    #: `/api/upload` carries a whole saved run, base64 in JSON (F13). Its own
+    #: cap, so every other route keeps the small one.
+    MAX_UPLOAD_BYTES = 32 * 1024 * 1024
     #: Routes polled every cycle: logged at debug once a second, not per call.
     POLLED = frozenset({"/api/state", "/api/events", "/api/data", "/api/screen"})
 
@@ -167,7 +170,8 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         route = urlparse(self.path).path
         if not self._is_local(require_json=True):
             return
-        ok, body = self._read_body()
+        ok, body = self._read_body(self.MAX_UPLOAD_BYTES if route == "/api/upload"
+                                   else self.MAX_BODY_BYTES)
         if not ok:
             return
         if not isinstance(body, dict):
@@ -222,6 +226,9 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             self.view.beat()
             return self._send_json(200, {"status": "ok",
                                          "age": self.view.heartbeat_age})
+
+        if route == "/api/upload":
+            return self._receive_upload(body)
 
         return self._send_json(404, {"status": "error",
                                      "reason": f"no route {route}"})
@@ -322,6 +329,64 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         name_only = os.path.basename(full).replace('"', "")
         return self._send_bytes(200, content_type, payload, headers={
             "Content-Disposition": f'attachment; filename="{name_only}"'})
+
+    def _receive_upload(self, body):
+        """A file chosen in the browser, for a `file_open` command (F13).
+
+        New route, because `file_open` hands its command a path on the
+        station and the browser cannot name one: the file is copied into
+        `<model output root>/uploads/` and the path it landed at is handed
+        back for the client to run the command with. Same guards as a
+        command (loopback, JSON, Origin); the model and command must be open
+        and declared as `file_open`; the name is reduced to a bare, safe
+        basename with an extension the element declares; nothing is ever
+        overwritten.
+        """
+        name, command = body.get("name"), body.get("command")
+        filename, content = body.get("filename"), body.get("content")
+        if name not in self.controller.model_names:
+            return self._send_json(404, {"status": "error",
+                                         "reason": f"{name} is not open."})
+        element = next((e for e in sch.elements(self.controller.schema(name))
+                        if e.get("type") == "file_open" and e.get("command") == command),
+                       None)
+        if element is None:
+            return self._send_json(403, {
+                "status": "refused",
+                "reason": f"{name} does not open files with {command}."})
+        base = os.path.basename(str(filename or "").replace("\\", "/")).strip()
+        safe = "".join(c if (c.isalnum() or c in "._- ") else "_" for c in base).strip(". ")
+        extensions = [str(x).lower().lstrip(".") for x in element.get("extensions") or []]
+        extension = safe.rsplit(".", 1)[-1].lower() if "." in safe else ""
+        if not safe or (extensions and extension not in extensions):
+            wanted = " or ".join("." + x for x in extensions) or "a file"
+            return self._send_json(400, {
+                "status": "refused",
+                "reason": f"Choose a {wanted} file; {base or 'that file'} is not one."})
+        try:
+            payload = base64.b64decode(str(content or ""), validate=True)
+        except (ValueError, TypeError):
+            return self._send_json(400, {"status": "error",
+                                         "reason": "The file did not arrive intact. Choose it again."})
+        root = self._output_root(name)
+        if not root:
+            return self._send_json(409, {
+                "status": "error",
+                "reason": f"{name} has no output folder to copy the file into."})
+        folder = os.path.join(os.path.realpath(root), "uploads")
+        os.makedirs(folder, exist_ok=True)
+        stem, dot, ext = safe.rpartition(".")
+        full, n = os.path.join(folder, safe), 1
+        while os.path.exists(full):
+            full = os.path.join(folder, f"{stem}-{n}{dot}{ext}" if dot else f"{safe}-{n}")
+            n += 1
+        if not self._inside(os.path.realpath(full), folder):
+            return self._send_json(403, {"status": "refused",
+                                         "reason": "That file name is not allowed."})
+        with open(full, "xb") as handle:
+            handle.write(payload)
+        events.info("File Received", f"{base} copied to {full} for {name}", source=SOURCE)
+        return self._send_json(200, {"status": "ok", "reason": "", "path": full})
 
     def _send_screen(self, name=None):
         """A bounded screenshot for the region picker.
@@ -504,9 +569,10 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         events.debug("Access", format % args, source=SOURCE, every=1.0)
 
     # -- request bodies ----------------------------------------------------
-    def _read_body(self):
+    def _read_body(self, limit=None):
+        limit = self.MAX_BODY_BYTES if limit is None else limit
         length = self._int(self.headers.get("Content-Length"), 0)
-        if length > self.MAX_BODY_BYTES:
+        if length > limit:
             # Drain the declared body in bounded chunks before answering.
             # Bailing out without draining races the client's in-flight
             # write: the connection resets under it and the client sees a
@@ -519,7 +585,7 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                 remaining -= len(chunk)
             self._send_json(413, {
                 "status": "refused",
-                "reason": f"body larger than {self.MAX_BODY_BYTES} bytes"})
+                "reason": f"body larger than {limit} bytes"})
             return False, None
         raw = self.rfile.read(length) if length > 0 else b"{}"
         try:
