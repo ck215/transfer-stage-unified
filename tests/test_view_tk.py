@@ -121,6 +121,9 @@ class FakeWidget:
     def grid_configure(self, **kwargs):
         self.grid_info = dict(self.grid_info or {}, **kwargs)
 
+    def grid_remove(self):
+        self.grid_info = None
+
     def pack_forget(self):
         self.is_packed = False
 
@@ -233,6 +236,9 @@ class FakeText(FakeWidget):
     def tag_configure(self, name, **options):
         self.tags[name] = options
 
+    def tag_remove(self, name, *_indices):
+        self.removed_tags = getattr(self, "removed_tags", []) + [name]
+
 
 class FakeCanvas(FakeWidget):
     def __init__(self, master=None, **options):
@@ -269,6 +275,14 @@ class FakeCanvas(FakeWidget):
 
     def create_rectangle(self, *coords, **options):
         self.items.append(("rect", coords, options))
+        return len(self.items)
+
+    def create_oval(self, *coords, **options):
+        self.items.append(("oval", coords, options))
+        return len(self.items)
+
+    def create_arc(self, *coords, **options):
+        self.items.append(("arc", coords, options))
         return len(self.items)
 
     def coords(self, _item, *values):
@@ -389,6 +403,7 @@ class FakeTkModule:
 class FakeTtkModule:
     Frame = FakeWidget
     Combobox = FakeWidget
+    Scrollbar = FakeWidget
 
 
 SCHEDULER = Scheduler()
@@ -733,7 +748,9 @@ def test_indicator_and_toggle_take_their_colours_from_the_theme(view, panel):
     expected = theme.toggle_colors(toggle, True)
     assert widget.cget("background") == expected["background"]
     assert widget.cget("foreground") == expected["foreground"]
-    assert widget.cget("text") == "RUNNING"
+    # Sentence case, as the Web view renders it: "RUNNING" is the schema's
+    # word, "Running" is how every frontend shows it.
+    assert widget.cget("text") == "Running"
     # A danger toggle is the theme's danger colour, not a literal red.
     assert expected["background"] == theme.colors("danger")[0]
 
@@ -741,7 +758,65 @@ def test_indicator_and_toggle_take_their_colours_from_the_theme(view, panel):
     view._refresh()
     off = theme.toggle_colors(toggle, False)
     assert widget.cget("background") == off["background"]
-    assert widget.cget("text") == "STOPPED"
+    assert widget.cget("text") == "Stopped"
+
+
+def test_a_command_is_outlined_by_a_frame_so_aqua_draws_it(view, panel):
+    """Aqua does not draw a Label's highlight ring, so an OFF toggle (its
+    role outlined on the panel) rendered as bare text. The outline is a
+    one-pixel frame around the label; keyboard focus turns it trace."""
+    toggle = element_of(view, "toggle")
+    panel.is_running = False
+    view._refresh()
+    entry = view._widgets[id(toggle)]
+    outline = entry["outline"]
+    assert widget_of(view, toggle).master is outline
+    resting = outline.cget("background")
+    assert resting == entry["border"]
+    assert resting not in (tkmod._page(), theme.TRACE), "an outline you can see"
+    widget_of(view, toggle).fire("<FocusIn>")
+    assert outline.cget("background") == theme.TRACE
+    widget_of(view, toggle).fire("<FocusOut>")
+    assert outline.cget("background") == resting
+
+
+def test_a_danger_command_is_outlined_never_filled(view):
+    """One red: only the stop object is filled with the signal colour. A
+    danger command ("Go" here, a model's own "Stop" in the app) is outlined
+    in it, as the Web view does."""
+    go = element_of(view, "button", "Go")
+    entry = view._widgets[id(go)]
+    assert widget_of(view, go).cget("background") != theme.SIGNAL
+    assert entry["outline"].cget("background") == theme.SIGNAL
+
+
+def test_a_command_has_hover_and_disabled_states(view, panel):
+    go = element_of(view, "button", "Go")
+    widget = widget_of(view, go)
+    resting = widget.cget("background")
+    widget.fire("<Enter>")
+    assert widget.cget("background") != resting
+    widget.fire("<Leave>")
+    assert widget.cget("background") == resting
+    speed = element_of(view, "entry", "Speed")
+    panel.mode = "running"
+    view._refresh()
+    assert widget_of(view, speed).cget("state") == "disabled"
+
+
+def test_labels_are_sentence_case_without_a_colon(view):
+    """The Web view's `sentenceCase`: the schema's "Speed now:" reads "Speed
+    now", section titles come down to sentence case."""
+    captions = [child.cget("text") for child in widget_of(
+        view, element_of(view, "readonly", "Speed now:")).master.children]
+    assert "Speed now" in captions and "Speed now:" not in captions
+    assert tkmod._label("Coordinate Frame") == "Coordinate frame"
+    assert tkmod._label("X Position:") == "X position"
+    assert tkmod._label("Target X Dist:") == "Target X dist"
+    assert tkmod._label("FULL STOP") == "Full stop"
+    assert tkmod._label("AUTONOMOUS MODE (Click to Stop)") == \
+        "Autonomous mode (Click to Stop)"
+    assert tkmod._sentence("DC Probe") == "DC Probe"
 
 
 def test_plot_draws_a_polyline_without_matplotlib(view, panel):
@@ -799,24 +874,22 @@ def test_dropdown_selection_runs_the_command(view, panel):
 
 def test_an_indicator_is_a_lamp_and_never_repeats_its_own_label(view, panel):
     """A lamp carries the state, not a second copy of the caption: the bench
-    build showed `Fault   Fault` and said nothing about the fault."""
+    build showed `Fault   Fault` and said nothing about the fault. It is a
+    round light: lit, filled (signal for a danger lamp); unlit, a ring."""
     element = element_of(view, "indicator")
     widget = widget_of(view, element)
     panel.is_latched = True
     view._refresh()
-    assert widget.cget("text") == ""
-    on = theme.toggle_colors(element, True)
-    assert widget.cget("background") == on["background"]
+    ovals = [item for item in widget.items if item[0] == "oval"]
+    assert ovals and ovals[-1][2]["fill"] == theme.SIGNAL     # on_role danger
+    assert not [item for item in widget.items if item[0] == "text"]
 
     panel.is_latched = False
     view._refresh()
-    off = theme.toggle_colors(element, False)
-    assert widget.cget("text") == ""
-    assert widget.cget("background") == off["background"]
-    # ON and OFF differ by more than fill: the ring stays the role's colour,
-    # so an unlit lamp is still visibly a lamp.
-    assert widget.cget("highlightbackground") == off["border"]
-    assert widget.cget("highlightthickness")
+    ovals = [item for item in widget.items if item[0] == "oval"]
+    assert ovals[-1][2]["fill"] != theme.SIGNAL
+    # ON and OFF differ by more than fill: an unlit lamp is still a ring.
+    assert ovals[-1][2]["outline"] == theme.MUTED
 
 
 def test_an_empty_readout_says_so_instead_of_drawing_a_bare_stripe(view, panel):
@@ -827,39 +900,66 @@ def test_an_empty_readout_says_so_instead_of_drawing_a_bare_stripe(view, panel):
     view._refresh()
     widget = widget_of(view, element)
     assert view._widgets[id(element)]["var"].get() == tkmod.EMPTY_READOUT
-    assert widget.cget("background") == theme.SURFACE, "not a coloured stripe"
+    assert widget.cget("background") == tkmod._page(), "not a coloured stripe"
     assert widget.cget("foreground") == theme.MUTED
 
     panel.fault_reason = "over temperature"
     view._refresh()
     assert view._widgets[id(element)]["var"].get() == "over temperature"
-    assert widget.cget("background") == theme.colors("info")[0]
+    assert widget.cget("text") == "over temperature"
+    # A live value is drawn in the trace colour, on the panel.
+    assert widget.cget("foreground") == theme.TRACE
+    assert widget.cget("background") == tkmod._page()
 
 
 def test_a_readout_sits_where_an_entry_sits_in_a_column_section(view):
-    """Readouts were stretched to the far edge of the window while the
-    entries below them stayed beside their labels, so a panel read as one
-    column of labels and one of values a metre apart. Same column, same
-    width, same side."""
+    """One value column per section, the same width for every entry and
+    every readout: both fill it, so they end at the same right edge."""
     readout = element_of(view, "readonly", "Speed now:")
     entry = element_of(view, "entry", "Speed")
-    assert _cell(view, readout)["column"] == _cell(view, entry)["column"]
-    assert _cell(view, readout)["sticky"] == _cell(view, entry)["sticky"] == "w"
-    assert (widget_of(view, readout).cget("width")
-            == widget_of(view, entry).cget("width") == tkmod.FIELD_WIDTH)
-    # and its column takes no slack: that is what threw it to the edge.
-    assert widget_of(view, readout).master.column_weights == {}
+    assert _cell(view, readout)["column"] == _cell(view, entry)["column"] == 1
+    assert _cell(view, readout)["sticky"] == _cell(view, entry)["sticky"] == "ew"
+    for element in (readout, entry):
+        weights = widget_of(view, element).master.column_weights
+        assert weights[1]["minsize"] == tkmod.VALUE_PX
+        assert weights[0]["weight"] == 1     # the caption takes the slack
+
+
+def test_a_long_readout_is_elided_and_its_whole_text_is_the_tooltip(
+        view, panel, monkeypatch):
+    """Nothing clips silently: a value too long for its cell ends in an
+    ellipsis and the full text is on hover."""
+    element = element_of(view, "readonly", "Fault:")
+    widget = widget_of(view, element)
+    monkeypatch.setattr(tkmod, "_text_width", lambda _font, text: 10 * len(text))
+    widget.winfo_width = lambda: 100
+    widget.options["padx"] = 0
+    panel.fault_reason = "identifying /dev/cu.debug-console (2 of 2)..."
+    view._refresh()
+    shown = widget.cget("text")
+    assert shown.endswith(tkmod.ELLIPSIS) and len(shown) * 10 <= 100
+    assert view._widgets[id(element)]["tooltip"].text == panel.fault_reason
+
+    panel.fault_reason = "short"
+    view._refresh()
+    assert widget.cget("text") == "short"
+    assert view._widgets[id(element)]["tooltip"].text == ""
 
 
 def test_a_readout_is_not_drawn_like_a_box_to_type_in(view):
     """RC-6's cousin: an operator who cannot tell a readout from an entry
-    tries to type into it. The readout sits on the surface with no border;
-    the entry is sunken."""
+    tries to type into it. The readout is a number on the panel with no box;
+    the entry is a dark field with a border."""
     readout = widget_of(view, element_of(view, "readonly", "Speed now:"))
     entry = widget_of(view, element_of(view, "entry", "Speed"))
     assert readout.cget("relief") == "flat"
-    assert entry.cget("relief") == "sunken"
+    assert not readout.cget("highlightthickness")
+    assert readout.cget("background") == tkmod._page()
+    assert entry.cget("highlightthickness") == 1
+    assert entry.cget("background") == theme.BACKGROUND
     assert readout.cget("anchor") == "e"
+    # numbers first: the readout is one step larger than the entry's text
+    assert abs(readout.cget("font")[1]) > abs(entry.cget("font")[1])
 
 
 # ---------------------------------------------------------------------------
@@ -1031,15 +1131,28 @@ def test_every_row_section_shares_one_grid_so_its_columns_line_up(row_view):
 
 
 def test_a_shorter_row_still_ends_its_status_in_the_status_column(row_view):
-    """The heater row carries no gamepad dropdown. Its status is stretched to
-    the table's width and right-aligned, so it lands under the other rows'
-    status instead of under their port."""
+    """The heater row carries no gamepad dropdown. Its status goes in the
+    Status column all the same, and its Gamepad cell is left empty."""
     heater_found = row_view._elements[HEATER_FOUND]
-    assert _cell(row_view, heater_found)["column"] < _cell(
+    assert _cell(row_view, heater_found)["column"] == _cell(
         row_view, row_view._elements[STEPPER_FOUND])["column"]
-    assert _right_edge(row_view, heater_found) == _right_edge(
-        row_view, row_view._elements[STEPPER_FOUND])
-    assert _cell(row_view, heater_found)["sticky"] == "e"
+
+
+def test_a_table_says_each_caption_once_in_a_header_row(row_view):
+    """Captions shared by the rows ("Port", "Gamepad", "Detected") are a
+    header, once; the rows carry values only."""
+    table = widget_of(row_view, row_view._elements[STEPPER_PORT]).master
+    texts = [child.cget("text") for child in table.children]
+    for caption in ("Port", "Gamepad", "Detected"):
+        assert texts.count(caption) == 1
+    header = {child.cget("text"): child for child in table.children
+              if child.cget("text") in ("Port", "Gamepad", "Detected")}
+    first_row = _cell(row_view, row_view._elements[STEPPER_PORT])["row"]
+    for caption, element in (("Port", STEPPER_PORT), ("Gamepad", STEPPER_PAD),
+                             ("Detected", STEPPER_FOUND)):
+        assert header[caption].grid_info["column"] == _cell(
+            row_view, row_view._elements[element])["column"]
+        assert header[caption].grid_info["row"] < first_row
 
 
 def test_a_row_section_captions_its_row_in_the_first_column(row_view):
@@ -1048,23 +1161,69 @@ def test_a_row_section_captions_its_row_in_the_first_column(row_view):
     assert captions["DC Probe"].grid_info["column"] == 0
     assert (captions["DC Probe"].grid_info["row"]
             == captions["Stepper Probe"].grid_info["row"] + 1)
-    # One width for every caption, or the first control column steps in and
-    # out with the length of the model's name.
-    assert captions["Stepper Probe"].cget("width") == captions["DC Probe"].cget("width")
 
 
-def test_the_status_of_a_row_is_right_aligned_and_takes_the_slack(row_view):
+def test_the_status_of_a_row_takes_the_slack(row_view):
+    """The status column absorbs the window's spare width, so a long status
+    has room; it reads left to right, like the text it is."""
     found = row_view._elements[STEPPER_FOUND]
     widget = widget_of(row_view, found)
-    assert _cell(row_view, found)["sticky"] == "e"
-    assert widget.cget("anchor") == "e"
+    assert _cell(row_view, found)["sticky"] == "ew"
+    assert widget.cget("anchor") == "w"
     assert widget.master.column_weights[_cell(row_view, found)["column"]]["weight"] == 1
+
+
+def test_a_row_of_its_own_captions_is_a_bar_across_the_table():
+    """A row section whose captions no other row shares (Setup's "Scan",
+    "Selected") keeps them inline, in a bar spanning the table."""
+    class BarPanel(RowPanel):
+        @property
+        def schema(self):
+            base = RowPanel.schema.fget(self)
+            bar = sch.section("Devices", sch.button("Refresh", "launch"),
+                              sch.readonly("Scan:", "stepper_found"), layout="row")
+            return sch.schema(bar, *base["sections"])
+
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Rows=BarPanel()), "Rows")
+    scan = element_of(built, "readonly", "Scan:")
+    bar = widget_of(built, scan).master
+    assert "Scan" in [child.cget("text") for child in bar.children]
+    assert bar.grid_info["column"] == 1 and bar.grid_info["columnspan"] == 3
+    built.close()
 
 
 def test_a_column_section_still_stacks_one_element_per_row(row_view):
     entry, button = row_view._elements[COUNT], row_view._elements[LAUNCH]
-    assert _cell(row_view, button)["row"] == _cell(row_view, entry)["row"] + 1
+    strip = row_view._widgets[id(button)]["outline"].master
+    assert strip.grid_info["row"] == _cell(row_view, entry)["row"] + 1
     assert _cell(row_view, entry)["column"] == 1      # column 0 is its caption
+
+
+def test_consecutive_commands_share_one_line(view):
+    """A section's run of commands is one line of buttons, not a stack of
+    full-width bars (the Stepper Probe's System control)."""
+    lines = {view._widgets[id(element_of(view, "button", text))]["outline"].master
+             for text in ("Go", "Refuse", "Ask")}
+    assert len(lines) == 1
+
+
+def test_sections_flow_into_columns_by_width(view):
+    """One column narrow, two at the default window, up to three when wide
+    - never more columns than the run has sections."""
+    def homes():
+        placed = {}
+        for widget, options in PACK_ORDER:
+            if widget in view._runs[0]["sections"]:
+                placed[widget] = options.get("in_")
+        return set(placed.values())
+
+    view._reflow(500)
+    assert view._layout_columns == 1 and len(homes()) == 1
+    view._reflow(900)
+    assert view._layout_columns == 2 and len(homes()) == 2
+    view._reflow(1400)
+    assert view._layout_columns == 3
+    assert len(homes()) == 2, "two sections: no empty third column"
 
 
 def test_a_column_section_ends_the_table(row_view):
@@ -1078,6 +1237,15 @@ def test_dropdowns_in_a_table_share_one_width(row_view):
     widths = {widget_of(row_view, e).cget("width") for e in row_view._elements
               if e["type"] == "dropdown"}
     assert widths == {tkmod.DROPDOWN_WIDTH}
+
+
+def test_a_dropdown_rereads_its_options_when_opened(row_view):
+    """The ⟳ glyph beside every dropdown is gone; opening the list does it."""
+    element = row_view._elements[STEPPER_PORT]
+    post = widget_of(row_view, element).cget("postcommand")
+    assert callable(post)
+    post()
+    assert widget_of(row_view, element).cget("values") == ["Off", "SIM", "COM3"]
 
 
 # ---------------------------------------------------------------------------
@@ -1637,20 +1805,79 @@ def test_the_stop_bar_and_the_event_log_cannot_be_pushed_off_the_window(
               if options.get("side") in ("bottom", "top")
               and not options.get("expand")]
     assert max(docked) < notebook
-    assert PACK_ORDER[packed.index(built._stop_button)][1]["side"] == "bottom"
+    # The disc lives in the stop bar, and the bar is docked at the bottom.
+    assert built._stop_button.master is built._stop_bar
+    assert packed.index(built._stop_bar) < notebook
+    assert PACK_ORDER[packed.index(built._stop_bar)][1]["side"] == "bottom"
     built.close()
 
 
 def test_the_stop_button_label_follows_the_controller(dashboard, controller):
+    """The Web view's mushroom, in Tk: `Stop`, then `Clear` once latched; the
+    disc stays signal red (it is never dimmed) and its ring turns trace."""
+    def faces():
+        return [item[2]["text"] for item in dashboard._stop_button.items
+                if item[0] == "text"]
+
+    def disc():
+        return [item[2] for item in dashboard._stop_button.items
+                if item[0] == "oval" and item[2].get("fill")][-1]
+
     dashboard.open()
     dashboard._sync_stop_button()
-    assert dashboard._stop_button.cget("text") == "FULL STOP"
-    assert dashboard._stop_button.cget("background") == theme.colors("danger")[0]
+    assert faces() == ["Stop"]
+    assert disc()["fill"] == theme.SIGNAL
+    assert dashboard._stop_hint.cget("text") == tkmod.STOP_HINT
 
     controller.is_estopped = True
     dashboard._sync_stop_button()
-    assert dashboard._stop_button.cget("text") == "CLEAR FULL STOP"
-    assert dashboard._stop_button.cget("background") == theme.colors("warning")[0]
+    assert faces() == ["Clear"]
+    assert disc()["fill"] == theme.SIGNAL
+    assert disc()["outline"] == theme.TRACE
+    assert dashboard._stop_hint.cget("text") == tkmod.CLEAR_HINT
+
+
+def test_the_stop_pulses_once_on_the_edge_and_not_while_latched(dashboard,
+                                                                controller):
+    dashboard.open()
+    dashboard._sync_stop_button()
+    assert not dashboard._stop._pulse_ids
+    controller.is_estopped = True
+    dashboard._sync_stop_button()
+    assert len(dashboard._stop._pulse_ids) == len(tkmod.PULSE_FRAMES)
+    pulses = list(dashboard._stop._pulse_ids)
+    dashboard._sync_stop_button()           # still latched: no second breath
+    assert dashboard._stop._pulse_ids == pulses
+    controller.is_estopped = False
+    dashboard._sync_stop_button()
+    assert not dashboard._stop._pulse_ids
+
+
+def test_the_stop_answers_the_keyboard(dashboard, controller):
+    dashboard.open()
+    dashboard._stop_button.fire("<Return>")
+    assert controller.estop_calls == 1
+
+
+def test_a_models_own_stop_is_the_same_disc(controller, monkeypatch):
+    """A Safety section's stop toggle (`is_estopped`) is the stop object,
+    bench-sized, not a red bar."""
+    class Safe(DemoPanel):
+        def __init__(self):
+            super().__init__()
+            self.is_estopped = False
+
+        @property
+        def schema(self):
+            return sch.schema(sch.section("Safety", sch.toggle(
+                "FULL STOP", "is_estopped", "set_running", "LATCHED",
+                "FULL STOP", on_role="danger", off_role="danger")))
+
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Safe=Safe()), "Safe")
+    element = built._elements[0]
+    entry = built._widgets[id(element)]
+    assert entry["mushroom"].diameter == tkmod.MINI_STOP_DIAMETER
+    built.close()
 
 
 def test_the_stop_button_toggles_the_global_estop(dashboard, controller,
@@ -1676,13 +1903,25 @@ def test_clearing_the_latch_asks_first(dashboard, controller, tk_harness):
 
 
 def test_events_reach_the_log_panel_coloured_by_severity(dashboard):
+    """Two steps of ink and never fainter than muted: the newest line is ink,
+    older info lines muted, warnings trace, errors signal. Info used to be
+    drawn in the `info` role's *background*, a shade off the log's own
+    background, which is why older lines were unreadable."""
     dashboard.open()
     for severity in ("info", "warning", "error"):
         dashboard._show_event(_event(severity, needs_ack=False))
-    assert dashboard._event_text.written_tags == ["info", "warning", "error"]
-    for severity, role in theme.SEVERITY_ROLE.items():
-        assert dashboard._event_text.tags[severity]["foreground"] == \
-            theme.colors(role)[0]
+    assert dashboard._event_text.written_tags == [
+        ("info", "latest"), ("warning", "latest"), ("error", "latest")]
+    tags = dashboard._event_text.tags
+    assert tags["info"]["foreground"] == theme.MUTED
+    assert tags["latest"]["foreground"] == theme.TEXT
+    assert tags["warning"]["foreground"] == theme.TRACE
+    assert tags["error"]["foreground"] == theme.SIGNAL
+    # `latest` moves: it is taken off the old lines before each new one.
+    assert dashboard._event_text.removed_tags.count("latest") == 3
+    # and it is created after `info`, before `warning`/`error` - priority.
+    assert list(tags).index("info") < list(tags).index("latest") \
+        < list(tags).index("warning")
 
 
 def test_only_a_needs_ack_event_becomes_a_popup(dashboard, tk_harness):
@@ -1779,3 +2018,33 @@ def test_the_dashboard_tick_stops_after_close(dashboard):
 def _event(severity, needs_ack):
     return Event(1, severity, "Demo", f"{severity}-event", "something happened",
                  None, needs_ack, 0.0)
+
+
+def test_closing_the_last_model_brings_setup_back(dashboard, controller):
+    """An empty notebook is a dead end: with no model open, the next step is
+    Setup, so Setup comes back instead of a blank page."""
+    dashboard.open()
+    _launch_a_model(dashboard, controller)
+    assert not _setup_tab_is_shown(dashboard)
+    controller.remove("Demo")
+    SCHEDULER.pump()
+    assert _setup_tab_is_shown(dashboard)
+
+
+def test_on_aqua_a_point_is_a_pixel(monkeypatch):
+    """Tk on Aqua assumes 96 dpi, so 12 pt came out 16 px tall — a third
+    larger than every native control. There the theme's points go to Tk as
+    pixels (a negative size); elsewhere they stay points."""
+    monkeypatch.setattr(tkmod, "_PIXEL_FONTS", True)
+    family, size, weight = tkmod._font(tkmod.BASE)
+    assert size == -theme.FONT_SIZE
+    assert abs(tkmod._font(tkmod.STEP_1)[1]) > theme.FONT_SIZE
+    monkeypatch.setattr(tkmod, "_PIXEL_FONTS", False)
+    assert tkmod._font(tkmod.BASE)[1] == theme.FONT_SIZE
+
+
+def test_the_type_scale_steps_by_the_operate_ratio():
+    assert 1.125 <= tkmod.RATIO <= 1.2
+    sizes = [abs(tkmod._font(step)[1]) for step in
+             (tkmod.SMALL, tkmod.BASE, tkmod.STEP_1, tkmod.STEP_2)]
+    assert sizes == sorted(sizes) and len(set(sizes)) == 4

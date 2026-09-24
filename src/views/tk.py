@@ -36,10 +36,12 @@ Tk-specific hazards this file is deliberate about:
   gates input and never stops anything (D-4).
 """
 import base64
+import re
 import shutil
 import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from tkinter import font as tkfont
 
 import schema as sch
 from events import events
@@ -54,26 +56,147 @@ SOURCE = "TkView"
 #: pad in this file is a number at the call site.
 PAD, GAP, INSET = theme.PAD, theme.GAP, theme.INSET
 
-#: Widths, in characters. A fixed width is what makes a column a column —
-#: six rows of dropdowns that line up rather than stepping in and out with
-#: the length of a port name, and a readout that sits exactly where the entry
-#: below it sits. `FIELD_WIDTH` is deliberately shared by entries and
-#: readouts: the two are meant to line up, and only the *styling* tells them
-#: apart.
-CAPTION_WIDTH, DROPDOWN_WIDTH, FIELD_WIDTH = 20, 16, 12
+#: The type scale (Operate mode): one family, `theme.font()`, and a fixed
+#: ratio between steps. SMALL is a table header or the event log, BASE is a
+#: caption, an entry or a button, STEP_1 is a section title and a readout
+#: (numbers first: the value is one step louder than its label), STEP_2 is a
+#: panel's name. A section title is one step up from its body, not two.
+RATIO = 1.125
+SMALL, BASE, STEP_1, STEP_2 = -1, 0, 1, 2
+
+#: Widths. In a column section every entry, dropdown and readout fills ONE
+#: value column at least `VALUE_PX` wide, so a readout and the entry under it
+#: are the same width and end at the same right edge; the caption column
+#: takes the slack. `FIELD_WIDTH` (characters) is only an entry's *request*,
+#: deliberately below `VALUE_PX`, so the column decides and not the font.
+#: `DROPDOWN_WIDTH` is a table's dropdown, wide enough for a macOS port name.
+VALUE_PX, FIELD_WIDTH, DROPDOWN_WIDTH = 168, 8, 22
+
+#: A panel lays its column sections out in as many columns as give each at
+#: least `COLUMN_PX` (a caption and a `VALUE_PX` value without crowding), up
+#: to `MAX_COLUMNS`: one on a narrow window, two at the default 1100 px, three
+#: on a wide one, where two would put a caption half a screen from its value.
+COLUMN_PX, MAX_COLUMNS = 400, 3
 
 #: Lines the dashboard event log shows before it scrolls. It is a footer, not
 #: a panel: eight lines of log was taking vertical space from the controls.
 EVENT_LOG_LINES = 5
 
-#: Width of an indicator lamp, in characters. An indicator is a *lamp*: the
-#: caption already says what it is, so the lamp says only whether it is on.
-LAMP_WIDTH = 2
+#: Size of an indicator lamp, in pixels. An indicator is a *lamp*: a round
+#: light that the caption already names, so it says only whether it is on.
+LAMP_PX = 16
 
 #: What a readout with nothing in it shows. An empty coloured label renders as
 #: a bare stripe of colour, which reads as a broken widget rather than as "no
 #: value yet" — it is what "Position age (s):" looked like at the bench.
 EMPTY_READOUT = "--"
+
+#: The end of a value too long for its cell. The whole value is the cell's
+#: tooltip, so nothing is ever cut off silently.
+ELLIPSIS = "…"
+
+#: The stop object. The dashboard's disc and the per-model disc in a Safety
+#: section are the same object in two sizes, as in the Web view. The pulse
+#: is one breath (up 7 %, back) when the latch closes, about 400 ms.
+STOP_DIAMETER, MINI_STOP_DIAMETER = 64, 34
+PULSE_FRAMES, PULSE_FRAME_MS = (1.03, 1.06, 1.07, 1.05, 1.025, 1.0), 65
+
+#: Copy the view owns: the stop's face, and what the bar beside it says the
+#: press will do. The Web view's words, so an action keeps its name in every
+#: frontend.
+STOP_FACE, CLEAR_FACE = "Stop", "Clear"
+STOP_HINT, CLEAR_HINT = "Stop every model", "Clear the stop on every model"
+
+#: True once the dashboard has found itself on Aqua. Tk there assumes 96 dpi
+#: (`tk scaling` 1.33), so a 12 pt font is drawn 16 px tall: a third larger
+#: than every native Mac control around it, which is the "everything is
+#: oversized" the owner saw. A Mac point IS a logical pixel, so on Aqua the
+#: theme's points are handed to Tk as pixels (a negative size).
+_PIXEL_FONTS = False
+
+
+def _font(step=BASE, bold=False):
+    """One step of the type scale, from `theme.font()`."""
+    family, size, weight = theme.font(RATIO ** step, bold)
+    return (family, -size if _PIXEL_FONTS else size, weight)
+
+
+def _mix(colour, other, amount):
+    """`colour` moved `amount` (0..1) of the way to `other`: a derived step of
+    two theme tokens (a rule, a hover), never a new colour."""
+    try:
+        a = [int(colour[i:i + 2], 16) for i in (1, 3, 5)]
+        b = [int(other[i:i + 2], 16) for i in (1, 3, 5)]
+    except (TypeError, ValueError, IndexError):
+        return colour
+    return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(a, b))
+
+
+def _page():
+    """A notebook page's surface: the panel colour, as the Web view's cards."""
+    return theme.SURFACE
+
+
+def _rule(on=None):
+    """A hairline: ink at low strength on whatever it sits on."""
+    return _mix(on or _page(), theme.TEXT, 0.14)
+
+
+_SHOUTED = re.compile(r"^[A-Z]{4,}[:.,]?$")
+_CAPITALISED = re.compile(r"^[A-Z][a-z]+$")
+
+
+def _sentence(text):
+    """The Web view's `sentence`: a SHOUTED word of four letters or more comes
+    down ("FULL STOP" -> "Full stop"); capitals that carry meaning ("X",
+    "DC", "ID") stay. The schema is the model's vocabulary and is not edited;
+    this is presentation."""
+    words = [word.lower() if _SHOUTED.match(word) else word
+             for word in str("" if text is None else text).split(" ")]
+    joined = " ".join(words)
+    return joined[:1].upper() + joined[1:]
+
+
+def _label(text):
+    """The Web view's `sentenceCase`, for a caption, heading or button: the
+    interior Capitalised words come down too ("Coordinate Frame" ->
+    "Coordinate frame") and the trailing colon goes - the value sits beside
+    its label on a panel, not after it in a form."""
+    words = re.sub(r"\s*:\s*$", "", _sentence(text)).split(" ")
+    return " ".join(word.lower() if index and _CAPITALISED.match(word) else word
+                    for index, word in enumerate(words))
+
+
+_MEASURES = {}
+
+
+def _text_width(font, text):
+    """Pixels `text` takes in `font`, or None when Tk cannot say (no display,
+    or the test stand-in)."""
+    try:
+        measure = _MEASURES.get(font)
+        if measure is None:
+            measure = _MEASURES[font] = tkfont.Font(font=font)
+        width = measure.measure(text)
+    except Exception:
+        return None
+    return width if isinstance(width, int) else None
+
+
+def _elide(font, text, room):
+    """`text`, or as much of it as fits in `room` px followed by an ellipsis."""
+    full = _text_width(font, text)
+    if full is None or room is None or room <= 1 or full <= room:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        width = _text_width(font, text[:middle].rstrip() + ELLIPSIS)
+        if width is not None and width <= room:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low].rstrip() + ELLIPSIS
 
 
 def _tcl_error():
@@ -272,7 +395,7 @@ class _RegionPicker:
         try:
             self._band = self.canvas.create_rectangle(
                 event.x, event.y, event.x, event.y,
-                outline=theme.colors("info")[0], width=2)
+                outline=theme.TRACE, width=2)
         except Exception:
             self._band = None
 
@@ -314,6 +437,196 @@ class _RegionPicker:
         return "break"
 
 
+class _Tooltip:
+    """The whole of a value that its cell had to shorten.
+
+    Shown after a short hover, gone on leave or on a click; says nothing when
+    the value fitted (`text` is then empty)."""
+
+    DELAY_MS = 450
+
+    def __init__(self, widget):
+        self.widget = widget
+        self.text = ""
+        self._after_id = None
+        self._top = None
+        for sequence, handler in (("<Enter>", self._on_enter),
+                                  ("<Leave>", self._on_leave),
+                                  ("<ButtonPress>", self._on_leave)):
+            try:
+                widget.bind(sequence, handler, add="+")
+            except Exception:
+                pass
+
+    def _on_enter(self, _event=None):
+        if not self.text or self._after_id is not None:
+            return
+        try:
+            self._after_id = self.widget.after(self.DELAY_MS, self._show)
+        except Exception:
+            self._after_id = None
+
+    def _show(self):
+        self._after_id = None
+        if not self.text or self._top is not None:
+            return
+        try:
+            top = tk.Toplevel(self.widget)
+            top.overrideredirect(True)
+            tk.Label(top, text=self.text, font=_font(SMALL), justify="left",
+                     background=theme.BACKGROUND, foreground=theme.TEXT,
+                     padx=PAD, pady=GAP, highlightthickness=1,
+                     highlightbackground=_rule(theme.BACKGROUND),
+                     wraplength=480).pack()
+            x = self.widget.winfo_pointerx() + 12
+            y = self.widget.winfo_pointery() + 18
+            top.geometry(f"+{x}+{y}")
+            self._top = top
+        except Exception as exc:
+            events.debug("Tooltip Failed", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+
+    def _on_leave(self, _event=None):
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+        if self._top is not None:
+            try:
+                self._top.destroy()
+            except Exception:
+                pass
+            self._top = None
+
+    close = _on_leave
+
+
+class _Mushroom:
+    """The stop object: a round signal-red disc with a darker ring and a
+    highlight sunk into its top, reading `Stop`, or `Clear` once latched.
+
+    The same object as the Web view's mushroom. It is never dimmed; latched,
+    its ring turns the trace colour and it breathes ONCE, on the edge, not
+    for as long as the latch stays closed. A Canvas, because a round control
+    is the one shape Tk's widgets do not have, and because `tk.Button`
+    ignores its colours on Aqua anyway.
+    """
+
+    def __init__(self, master, diameter, on_press, background, face_step=STEP_2):
+        self.diameter = diameter
+        self.on_press = on_press
+        self.background = background
+        self.face_step = face_step
+        self.face = STOP_FACE
+        self.is_latched = None           # unknown until the first sync
+        self.scale = 1.0
+        self.is_hovered = self.is_focused = False
+        self._pulse_ids = []
+        # Room around the disc for the pulse and the focus ring.
+        self.size = int(diameter * 1.08) + 10
+        self.canvas = tk.Canvas(master, width=self.size, height=self.size,
+                                background=background, highlightthickness=0,
+                                takefocus=1, cursor="hand2")
+        bindings = (("<Button-1>", self._on_press), ("<Return>", self._on_press),
+                    ("<space>", self._on_press),
+                    ("<Enter>", lambda _e: self._set_flag("is_hovered", True)),
+                    ("<Leave>", lambda _e: self._set_flag("is_hovered", False)),
+                    ("<FocusIn>", lambda _e: self._set_flag("is_focused", True)),
+                    ("<FocusOut>", lambda _e: self._set_flag("is_focused", False)))
+        for sequence, handler in bindings:
+            self.canvas.bind(sequence, handler)
+        self.draw()
+
+    # -- input -------------------------------------------------------------
+    def _on_press(self, _event=None):
+        try:
+            self.canvas.focus_set()
+        except Exception:
+            pass
+        self.on_press()
+        return "break"
+
+    def _set_flag(self, name, value):
+        """Hover and keyboard focus: the ring lightens under the pointer and
+        a focus ring in ink shows where Return / Space will land."""
+        setattr(self, name, value)
+        self.draw()
+
+    # -- state -------------------------------------------------------------
+    def set_latched(self, is_latched):
+        """Face and ring follow the latch; the pulse answers its closing."""
+        is_latched = bool(is_latched)
+        was = self.is_latched
+        self.is_latched = is_latched
+        self.face = CLEAR_FACE if is_latched else STOP_FACE
+        if is_latched and was is False:
+            self.pulse()
+        elif not is_latched:
+            self.cancel()
+            self.scale = 1.0
+        self.draw()
+
+    def pulse(self):
+        self.cancel()
+        for index, scale in enumerate(PULSE_FRAMES):
+            try:
+                self._pulse_ids.append(self.canvas.after(
+                    PULSE_FRAME_MS * (index + 1),
+                    lambda s=scale: self._pulse_frame(s)))
+            except Exception:
+                break
+
+    def _pulse_frame(self, scale):
+        self.scale = scale
+        self.draw()
+
+    def cancel(self):
+        for token in self._pulse_ids:
+            try:
+                self.canvas.after_cancel(token)
+            except Exception:
+                pass
+        self._pulse_ids = []
+
+    # -- drawing -----------------------------------------------------------
+    def draw(self):
+        canvas = self.canvas
+        try:
+            canvas.delete("all")
+        except Exception:
+            return
+        centre = self.size / 2
+        radius = self.diameter / 2 * self.scale
+        ring = max(3, round(self.diameter * 0.07))
+        if self.is_latched:
+            ring_colour = theme.TRACE
+        elif self.is_hovered:
+            ring_colour = _mix(theme.SIGNAL, theme.TEXT, 0.25)
+        else:
+            ring_colour = _mix(theme.SIGNAL, theme.BACKGROUND, 0.45)
+        try:
+            if self.is_focused:
+                canvas.create_oval(centre - radius - 4, centre - radius - 4,
+                                   centre + radius + 4, centre + radius + 4,
+                                   outline=theme.TEXT, width=1)
+            canvas.create_oval(centre - radius + ring / 2, centre - radius + ring / 2,
+                               centre + radius - ring / 2, centre + radius - ring / 2,
+                               fill=theme.SIGNAL, outline=ring_colour, width=ring)
+            inset = ring + 2
+            canvas.create_arc(centre - radius + inset, centre - radius + inset,
+                              centre + radius - inset, centre + radius - inset,
+                              start=35, extent=110, style="arc", width=1,
+                              outline=_mix(theme.SIGNAL, theme.TEXT, 0.35))
+            canvas.create_text(centre, centre, text=self.face,
+                               fill=theme.colors("danger")[1],
+                               font=_font(self.face_step, bold=True))
+        except Exception as exc:
+            events.debug("Stop Draw Failed", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+
+
 class TkPanelView(PanelView):
     """One panel of controls, rendered from a schema.
 
@@ -338,6 +651,13 @@ class TkPanelView(PanelView):
         self._widgets = {}          # id(element) -> {widget, var, ...}
         self._grid = {}             # id(container) -> the grid cursor
         self._table = None          # the frame the current run of row sections shares
+        self._section_run = None            # the current run of column sections
+        self._runs = []             # every run: its holder, two columns, its sections
+        self._row_kinds = []        # per schema section: "table" | "bar" | None
+        self._table_columns = {}    # a table's shared caption -> its grid column
+        self._section_index = 0
+        self._layout_columns = None
+        self._is_scrollbar_shown = True
         self._section_titles = []
         self._after_id = None
         self._options_due = 0
@@ -345,21 +665,21 @@ class TkPanelView(PanelView):
         self._slow_commands = set()     # data commands worth caching
         self._cached_results = {}       # command -> (monotonic, Result)
 
-        self.frame = tk.Frame(master, background=theme.BACKGROUND)
+        self.frame = tk.Frame(master, background=_page())
         # A titled panel: the model's name, a rule under it, then the
         # controls. The title used to be one padded label with nothing
         # separating it from the first section's own bold heading, so a tab
         # opened on two headings that looked alike.
-        self._title = tk.Label(self.frame, text=name, font=theme.font(1.3, bold=True),
-                               anchor="w", background=theme.BACKGROUND,
+        self._title = tk.Label(self.frame, text=name, font=_font(STEP_2, bold=True),
+                               anchor="w", background=_page(),
                                foreground=theme.TEXT)
-        self._title.pack(fill="x", padx=PAD, pady=(PAD, GAP))
-        self._rule = tk.Frame(self.frame, height=1, background=theme.SURFACE)
-        self._rule.pack(fill="x", padx=PAD, pady=(0, GAP))
+        self._title.pack(fill="x", padx=INSET, pady=(INSET, GAP))
+        self._rule = tk.Frame(self.frame, height=1, background=_rule())
+        self._rule.pack(fill="x", padx=INSET, pady=(0, GAP))
         self._status = tk.Label(self.frame, text="", anchor="w",
-                                font=theme.font(0.9),
-                                background=theme.BACKGROUND, foreground=theme.MUTED)
-        self._status.pack(fill="x", side="bottom", padx=PAD, pady=(0, GAP))
+                                font=_font(SMALL),
+                                background=_page(), foreground=theme.MUTED)
+        self._status.pack(fill="x", side="bottom", padx=INSET, pady=(0, GAP))
         self._build_scroll_area()
 
         self._build()
@@ -372,20 +692,21 @@ class TkPanelView(PanelView):
         """The panel's controls live on a scrolling canvas.
 
         A panel taller than the window used to make the *window* taller, and
-        the window is not allowed to grow: the global FULL STOP bar lives at
-        the bottom of it, and a stop control pushed off the bottom of the
+        the window is not allowed to grow: the global stop lives at the
+        bottom of it, and a stop control pushed off the bottom of the
         screen is the whole safety contract lost to a layout. A tall panel
-        scrolls; the stop bar does not move.
+        scrolls; the stop bar does not move. The scrollbar shows only while
+        there is something to scroll to.
         """
-        area = tk.Frame(self.frame, background=theme.BACKGROUND)
+        area = tk.Frame(self.frame, background=_page())
         area.pack(side="top", fill="both", expand=True)
-        self._scrollbar = tk.Scrollbar(area, orient="vertical")
+        self._scrollbar = ttk.Scrollbar(area, orient="vertical")
         self._scrollbar.pack(side="right", fill="y")
-        self._canvas = tk.Canvas(area, background=theme.BACKGROUND,
+        self._canvas = tk.Canvas(area, background=_page(),
                                  highlightthickness=0,
                                  yscrollcommand=self._scrollbar.set)
         self._canvas.pack(side="left", fill="both", expand=True)
-        self._body = tk.Frame(self._canvas, background=theme.BACKGROUND)
+        self._body = tk.Frame(self._canvas, background=_page())
         try:
             self._scrollbar.configure(command=self._canvas.yview)
             self._body_window = self._canvas.create_window(
@@ -408,11 +729,13 @@ class TkPanelView(PanelView):
         except Exception as exc:
             events.debug("Scrollregion Not Set", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
+        self._sync_scrollbar()
 
     def _on_canvas_resized(self, event=None):
         """Keep the body as wide as the viewport: a canvas window is sized to
         its content otherwise, and a table would stop at its widest row
-        instead of reaching the window's edge."""
+        instead of reaching the window's edge. The width also decides one
+        column of sections or two."""
         width = getattr(event, "width", 0)
         if self._body_window is None or not width:
             return
@@ -420,6 +743,32 @@ class TkPanelView(PanelView):
             self._canvas.itemconfigure(self._body_window, width=width)
         except Exception as exc:
             events.debug("Body Width Not Set", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+        self._reflow(width)
+        self._sync_scrollbar()
+
+    def _sync_scrollbar(self):
+        """A scrollbar only when the controls are taller than the viewport; a
+        bare trough beside a panel that fits is chrome with nothing to do."""
+        try:
+            content = self._body.winfo_reqheight()
+            viewport = self._canvas.winfo_height()
+        except Exception:
+            return
+        if not (isinstance(content, int) and isinstance(viewport, int)) or viewport <= 1:
+            return
+        needed = content > viewport
+        if needed == self._is_scrollbar_shown:
+            return
+        self._is_scrollbar_shown = needed
+        try:
+            if needed:
+                self._scrollbar.pack(side="right", fill="y", before=self._canvas)
+            else:
+                self._scrollbar.pack_forget()
+                self._canvas.yview_moveto(0)
+        except Exception as exc:
+            events.debug("Scrollbar Not Synced", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
 
     def _on_pointer_enter(self, _event=None):
@@ -516,132 +865,315 @@ class TkPanelView(PanelView):
                          exception=exc)
         events.debug("Panel Closed", self.name, source=SOURCE)
 
-    # -- layout helpers ----------------------------------------------------
+    # -- layout: planning a table --------------------------------------------
+    #: Element types drawn with a caption in front of them. A button names
+    #: itself; these name the value beside them.
+    CAPTIONED = ("readonly", "entry", "dropdown", "indicator")
+    #: Element types that are commands, and share one line of buttons.
+    COMMANDS = ("button", "toggle", "file_save", "file_open", "region_select")
+
+    def _build(self):
+        self._plan_tables()
+        super()._build()
+        self._reflow()
+
+    def _plan_tables(self):
+        """Decide, before anything is drawn, which row sections are the rows
+        of a table and what its columns are.
+
+        A caption that two or more row sections share ("Port", "Gamepad",
+        "Status") is a column: it is said ONCE, in a header row, and every
+        row puts its control for it in that column — so a row with no
+        gamepad leaves the Gamepad cell empty and its status still lands in
+        the Status column. A row section whose captions are its own
+        ("Scan", "Selected") is not a row of that table: it is a bar across
+        the table, and keeps its caption inline. Setup is six rows of the
+        first kind between a bar of each kind.
+        """
+        sections = list(self._schema().get("sections") or [])
+        captions = []
+        for section in sections:
+            if section.get("layout") != "row":
+                captions.append(None)
+                continue
+            captions.append([_label(element.get("text", ""))
+                             for element in section.get("elements") or []
+                             if element.get("type") in self.CAPTIONED])
+        counts = {}
+        for names in captions:
+            for name in set(names or ()):
+                counts[name] = counts.get(name, 0) + 1
+        shared = {name for name, count in counts.items() if count > 1}
+        self._row_kinds, order = [], []
+        for names in captions:
+            if names is None:
+                self._row_kinds.append(None)
+            elif names and set(names) <= shared:
+                self._row_kinds.append("table")
+                order += [name for name in names if name not in order]
+            else:
+                self._row_kinds.append("bar")
+        self._table_columns = {name: index + 1 for index, name in enumerate(order)}
+
+    # -- layout: sections ----------------------------------------------------
     def _make_section(self, title, layout="column"):
         """A section of the panel. `layout` is the schema's hint (Addendum 2).
 
-        `column` is the stacked form: a heading, then one element per grid
-        row. `row` is the table form: a caption, then every element of the
-        section side by side on ONE line — which is what turns the Setup
-        panel from six stacked cards into one table with a row per model.
+        `column` is the stacked form: a heading, then one caption and one
+        value per line, the value column the same width for every entry,
+        dropdown and readout. `row` is the table form (`_make_row_section`).
+        Consecutive column sections are a *run*, laid out in one or two
+        columns by `_reflow` according to the panel's width.
         """
+        index = self._section_index
+        self._section_index += 1
         if layout == "row":
-            return self._make_row_section(title)
+            kinds = self._row_kinds
+            return self._make_row_section(
+                title, kinds[index] if index < len(kinds) and kinds[index] else "bar")
         # A column section ends the table: the next row section starts a new
         # one, so a schema that interleaves the two still renders in order.
         self._table = None
-        container = tk.Frame(self._body, background=theme.BACKGROUND)
-        container.pack(fill="x", padx=PAD, pady=(GAP, 0))
-        label = tk.Label(container, text=title, font=theme.font(1.0, bold=True),
-                         anchor="w", background=theme.BACKGROUND,
-                         foreground=theme.TEXT)
-        label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(GAP, GAP))
+        if self._section_run is None:
+            holder = tk.Frame(self._body, background=_page())
+            holder.pack(fill="x", padx=INSET, pady=(0, GAP))
+            self._section_run = {"holder": holder, "sections": [],
+                         "columns": tuple(tk.Frame(holder, background=_page())
+                                         for _ in range(MAX_COLUMNS))}
+            self._runs.append(self._section_run)
+        container = tk.Frame(self._body, background=_page())
+        label = tk.Label(container, text=_label(title), font=_font(STEP_1, bold=True),
+                         anchor="w", background=_page(), foreground=theme.TEXT)
+        label.grid(row=0, column=0, columnspan=3, sticky="w", pady=(INSET, GAP))
         self._section_titles.append(label)
-        self._grid[id(container)] = {"layout": "column", "row": 1,
-                                    "column": 0, "width": 0, "ends": {}}
+        try:
+            # The caption column takes the slack, so values end at the
+            # section's right edge; the value column is one width for all.
+            container.grid_columnconfigure(0, weight=1)
+            container.grid_columnconfigure(1, minsize=VALUE_PX)
+        except Exception as exc:
+            events.debug("Section Columns Refused", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+        self._grid[id(container)] = {"layout": "column", "row": 1, "strip": None}
+        self._section_run["sections"].append(container)
         return container
 
-    def _make_row_section(self, title):
-        """One table row: a caption in column 0, the elements after it.
+    def _make_row_section(self, title, kind):
+        """One line of the table: the row's name in column 0, then its cells.
 
         Every row section in a run shares ONE grid, because columns only line
-        up inside a single grid — six sibling frames each with their own grid
-        is exactly the "everything in one vertical tab" the owner rejected,
-        rotated ninety degrees. The caption carries a fixed width so the
-        first control column starts at the same x on every row.
+        up inside a single grid. A `table` row puts each control under its
+        caption's header; a `bar` row (its captions are its own) spans the
+        table with its captions inline. A rule sets the header off from the
+        rows, and the rows off from a bar that follows them.
         """
+        self._section_run = None
         if self._table is None:
-            self._table = tk.Frame(self._body, background=theme.BACKGROUND)
-            self._table.pack(fill="x", padx=PAD, pady=GAP)
-            self._grid[id(self._table)] = {"layout": "row", "row": -1,
-                                           "column": 0, "width": 0, "ends": {}}
+            self._table = tk.Frame(self._body, background=_page())
+            self._table.pack(fill="x", padx=INSET, pady=(INSET, GAP))
+            width = len(self._table_columns)
+            self._grid[id(self._table)] = {
+                "layout": "row", "row": -1, "kind": None, "bar": None,
+                "has_header": False, "width": width, "extra": width + 1}
+            if width:
+                # The last shared column (the status) takes the slack, so a
+                # long status has room instead of being cut off.
+                self._stretch_column(self._table, width)
         state = self._grid[id(self._table)]
+        span = max(1, state["width"])
+        if kind == "table" and not state["has_header"]:
+            state["row"] += 1
+            for caption, column in self._table_columns.items():
+                tk.Label(self._table, text=caption, font=_font(SMALL), anchor="w",
+                         background=_page(), foreground=theme.MUTED
+                         ).grid(row=state["row"], column=column, sticky="w",
+                                padx=(0, PAD * 2), pady=(GAP, 0))
+            state["row"] += 1
+            self._hairline(self._table, state["row"], span + 1)
+            state["has_header"] = True
+        elif kind == "bar" and state["kind"] == "table":
+            state["row"] += 1
+            self._hairline(self._table, state["row"], span + 1)
         state["row"] += 1
-        state["column"] = 0
-        caption = tk.Label(self._table, text=title, font=theme.font(bold=True),
-                           anchor="w", width=CAPTION_WIDTH,
-                           background=theme.BACKGROUND, foreground=theme.TEXT)
+        state["kind"] = kind
+        state["extra"] = state["width"] + 1
+        caption = tk.Label(self._table, text=_sentence(title), font=_font(bold=True),
+                           anchor="w", background=_page(), foreground=theme.TEXT)
         caption.grid(row=state["row"], column=0, sticky="w",
-                     padx=(0, GAP), pady=GAP)
-        state["column"] = 1
+                     padx=(0, PAD * 2), pady=GAP)
         self._section_titles.append(caption)
+        state["bar"] = None
+        if kind == "bar":
+            bar = tk.Frame(self._table, background=_page())
+            bar.grid(row=state["row"], column=1, columnspan=span, sticky="ew",
+                     pady=GAP)
+            state["bar"] = bar
         return self._table
 
-    # A renderer asks for cells rather than computing a row and a column, so
-    # the same renderer draws both layouts and neither can drift from the
-    # other. `_next_cell` hands out the next slot on the current line;
-    # `_end_line` ends that line, which in a row section is deliberately
-    # nothing at all.
-    def _next_cell(self, container, span=1):
-        state = self._cursor(container)
-        row, column = state["row"], state["column"]
-        state["column"] += span
-        state["width"] = max(state["width"], state["column"])
-        return row, column
+    def _hairline(self, container, row, span):
+        tk.Frame(container, height=1, background=_rule()).grid(
+            row=row, column=0, columnspan=span, sticky="ew", pady=(GAP, GAP))
 
-    def _place(self, container, widget, row, column, **options):
-        """Grid one widget, and remember it as the rightmost cell of its line.
+    def _reflow(self, width=None):
+        """One column of sections, or more once the panel is wide enough.
 
-        `_align_table` needs to know where each table row ends, and the row
-        that ends earliest is the one that would otherwise put its status
-        under the next row's port: the models with no gamepad dropdown are
-        two columns shorter than the ones with.
+        Columns are filled shortest-first in schema order, so a tall
+        section (Configuration) sits beside two short ones instead of leaving
+        a hole under its neighbour. Sections are packed `in_` a column frame:
+        Tk cannot re-parent a widget, but it can manage one inside any
+        descendant of its parent.
         """
-        widget.grid(row=row, column=column, **options)
-        state = self._cursor(container)
-        if state["layout"] == "row":
-            state["ends"][row] = (widget, column,
-                                  options.get("columnspan") or 1)
-        return widget
-
-    def _build(self):
-        super()._build()
-        self._align_table()
-
-    def _align_table(self):
-        """Square off the right-hand column of every table.
-
-        The last cell of each row is stretched to the width of the widest
-        row and right-aligned, so the status column is a column even when
-        the rows above it carry one control more.
-        """
-        for state in self._grid.values():
-            if state["layout"] != "row":
-                continue
-            width = state["width"]
-            for row, (widget, column, span) in state["ends"].items():
-                if column + span >= width:
-                    continue
-                try:
-                    widget.grid_configure(columnspan=width - column, sticky="e")
-                except Exception as exc:
-                    events.debug("Row Not Squared", f"row {row}: {exc}",
-                                 source=SOURCE, exception=exc, every=5.0)
-
-    def _end_line(self, container):
-        state = self._cursor(container)
-        if state["layout"] == "row":
+        if width is None:
+            try:
+                width = self._canvas.winfo_width()
+            except Exception:
+                width = 0
+        columns = (max(1, min(MAX_COLUMNS, width // COLUMN_PX))
+                   if isinstance(width, int) else 1)
+        if columns == self._layout_columns:
             return
-        state["row"] += 1
-        state["column"] = 0
+        self._layout_columns = columns
+        for run in self._runs:
+            self._lay_out_run(run, columns)
 
+    def _lay_out_run(self, run, columns):
+        holder, frames = run["holder"], run["columns"]
+        columns = max(1, min(columns, len(run["sections"]) or 1))
+        try:
+            for index, frame in enumerate(frames):
+                is_used = index < columns
+                holder.grid_columnconfigure(index, weight=1 if is_used else 0,
+                                            uniform="run" if is_used else "")
+                if is_used:
+                    frame.grid(row=0, column=index, sticky="new",
+                               padx=(INSET * 2 if index else 0, 0))
+                else:
+                    frame.grid_remove()
+        except Exception as exc:
+            events.debug("Run Not Laid Out", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+        heights = [0] * columns
+        for section in run["sections"]:
+            target = heights.index(min(heights))
+            try:
+                section.pack_forget()
+                section.pack(in_=frames[target], fill="x", anchor="n")
+            except Exception as exc:
+                events.debug("Section Not Placed", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
+            heights[target] += self._height_of(section)
+
+    def _height_of(self, section):
+        try:
+            section.update_idletasks()
+            height = section.winfo_reqheight()
+        except Exception:
+            height = None
+        if isinstance(height, int) and height > 1:
+            return height
+        return self._grid.get(id(section), {}).get("row") or 1
+
+    # -- layout: cells ---------------------------------------------------------
     def _cursor(self, container):
-        """The grid cursor for one container, created on first use.
-
-        `width` is the widest row so far and `ends` is the last widget on
-        each line; `_align_table` reads both.
-        """
         return self._grid.setdefault(id(container), {
-            "layout": "column", "row": 0, "column": 0, "width": 0, "ends": {}})
+            "layout": "column", "row": 1, "strip": None})
 
     def _stretch_column(self, container, column):
-        """Let one column absorb the slack, so what follows it is pushed to
-        the right edge instead of trailing the widest cell above it."""
+        """Let one column absorb the slack."""
         try:
             container.grid_columnconfigure(column, weight=1)
         except Exception as exc:
             events.debug("Column Weight Refused", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
+
+    def _field(self, container, element):
+        """Where one captioned control goes. -> (parent, place)
+
+        `place(widget, fill)` positions the control; `fill` says what it is:
+        "value" a readout (always takes its cell's width, so it can elide),
+        "field" an entry or dropdown (the value column's width in a section,
+        its own width in a table), "mark" a lamp or a stop disc (its own size,
+        at the value column's right edge).
+        """
+        state = self._cursor(container)
+        text = _label(element.get("text", ""))
+        if state["layout"] == "column":
+            row = state["row"]
+            state["row"] += 1
+            state["strip"] = None
+            tk.Label(container, text=text, font=_font(), anchor="w",
+                     background=_page(), foreground=theme.MUTED
+                     ).grid(row=row, column=0, sticky="w", padx=(0, PAD), pady=GAP)
+
+            def place(widget, fill):
+                widget.grid(row=row, column=1, pady=GAP,
+                            sticky="e" if fill == "mark" else "ew")
+                return widget
+            return container, place
+        bar = state.get("bar")
+        if bar is not None:
+            tk.Label(bar, text=text, font=_font(), anchor="w", background=_page(),
+                     foreground=theme.MUTED).pack(side="left", padx=(0, GAP * 2))
+
+            def place(widget, fill):
+                widget.pack(side="left", fill="x" if fill == "value" else None,
+                            expand=fill == "value", padx=(0, PAD * 2))
+                return widget
+            return bar, place
+        column = self._table_columns.get(text)
+        if column is None:
+            column = state["extra"]
+            state["extra"] += 1
+
+        def place(widget, fill):
+            widget.grid(row=state["row"], column=column, pady=GAP,
+                        padx=(0, PAD * 2), sticky="ew" if fill == "value" else "w")
+            return widget
+        return container, place
+
+    def _command_slot(self, container):
+        """Where one command goes. -> (parent, place)
+
+        In a section, consecutive commands share ONE line — "Enter autonomous
+        mode", "Enter manual mode", "Step" — instead of a stack of full-width
+        bars; the line ends at the next control that is not a command.
+        """
+        state = self._cursor(container)
+        if state["layout"] == "column":
+            strip = state.get("strip")
+            if strip is None:
+                strip = tk.Frame(container, background=_page())
+                strip.grid(row=state["row"], column=0, columnspan=3, sticky="w",
+                           pady=GAP)
+                state["row"] += 1
+                state["strip"] = strip
+            return strip, lambda widget: widget.pack(side="left", padx=(0, PAD))
+        bar = state.get("bar")
+        if bar is not None:
+            return bar, lambda widget: widget.pack(side="left", padx=(0, PAD))
+        column = state["extra"]
+        state["extra"] += 1
+        return container, lambda widget: widget.grid(
+            row=state["row"], column=column, sticky="w", padx=(0, PAD), pady=GAP)
+
+    def _wide_slot(self, container, caption=None):
+        """Where a plot, a picture or a log goes: the full width of its
+        section, under its caption. -> (parent, place)"""
+        state = self._cursor(container)
+        if state["layout"] == "column":
+            state["strip"] = None
+            if caption:
+                tk.Label(container, text=_label(caption), font=_font(), anchor="w",
+                         background=_page(), foreground=theme.MUTED
+                         ).grid(row=state["row"], column=0, columnspan=3,
+                                sticky="w", pady=(GAP, 0))
+                state["row"] += 1
+            row = state["row"]
+            state["row"] += 1
+            return container, lambda widget, sticky="ew": widget.grid(
+                row=row, column=0, columnspan=3, sticky=sticky, pady=GAP)
+        parent, place = self._command_slot(container)
+        return parent, lambda widget, sticky=None: place(widget)
 
     def _register(self, element, **widgets):
         entry = self._widgets.setdefault(id(element), {})
@@ -652,25 +1184,25 @@ class TkPanelView(PanelView):
     def _entry_for(self, element):
         return self._widgets.get(id(element), {})
 
-    def _caption(self, container, text, **options):
-        """The label in front of a control. Muted on purpose: the *value* is
-        the thing to read, and a panel of equally bright label/value pairs
-        gives the eye nothing to land on."""
-        row, column = self._next_cell(container)
-        label = tk.Label(container, text=text, font=theme.font(), anchor="w",
-                         background=theme.BACKGROUND, foreground=theme.MUTED,
-                         **options)
-        self._place(container, label, row, column, sticky="w",
-                    padx=(0, GAP), pady=GAP)
-        return label
+    # -- commands: a label drawn as a button -------------------------------------
+    def _button_label(self, parent, element, on_click, text=None):
+        """A `tk.Label` styled as a button: `tk.Button` ignores bg/fg on Aqua.
+        -> the frame to place.
 
-    def _button_label(self, container, element, on_click):
-        """A `tk.Label` styled as a button: `tk.Button` ignores bg/fg on Aqua."""
-        background, foreground = self._role_colors(element.get("role"))
-        widget = tk.Label(container, text=element.get("text", ""),
-                          font=theme.font(bold=True), background=background,
-                          foreground=foreground, relief="raised", pady=5,
-                          cursor="hand2")
+        Its border is a one-pixel frame around it, because Aqua does not
+        draw a Label's highlight ring - an outlined command (an OFF toggle, a
+        danger "Stop") rendered as bare text. It has every state a control
+        needs: hover (a step lighter), keyboard focus (the border turns the
+        trace colour; Return and Space press it), disabled (the theme's
+        disabled pair, and a click does nothing).
+        """
+        outline = tk.Frame(parent, background=_rule(), padx=1, pady=1)
+        widget = tk.Label(outline, text=_label(element.get("text", "") if text is None
+                                              else text),
+                          font=_font(), relief="flat", padx=PAD + GAP, pady=GAP,
+                          cursor="hand2", takefocus=1, highlightthickness=0)
+        widget.pack(fill="both", expand=True)
+        self._register(element, widget=widget, outline=outline)
 
         def _on_widget_click(_event=None, element=element):
             if not self._entry_for(element).get("is_enabled", True):
@@ -678,8 +1210,66 @@ class TkPanelView(PanelView):
             on_click(element)
             return "break"
 
+        def _on_flag(name, value, element=element):
+            self._entry_for(element)[name] = value
+            self._paint_command(element)
+
         widget.bind("<Button-1>", _on_widget_click)
-        return widget
+        widget.bind("<Return>", _on_widget_click)
+        widget.bind("<space>", _on_widget_click)
+        widget.bind("<Enter>", lambda _e: _on_flag("is_hovered", True))
+        widget.bind("<Leave>", lambda _e: _on_flag("is_hovered", False))
+        widget.bind("<FocusIn>", lambda _e: _on_flag("is_focused", True))
+        widget.bind("<FocusOut>", lambda _e: _on_flag("is_focused", False))
+        self._paint_command(element)
+        return outline
+
+    @staticmethod
+    def _command_colors(role):
+        """(background, foreground, border) of a command, from its role.
+
+        Only the stop object is FILLED with the signal colour. A danger
+        command (a model's own "Stop") is outlined in it, and a warning one
+        in the trace colour, as the Web view does: marked, but never louder
+        than the stop."""
+        if role == "danger":
+            return _page(), theme.TEXT, theme.SIGNAL
+        if role == "warning":
+            return _page(), theme.TRACE, theme.TRACE
+        background, foreground = theme.colors(role or "neutral")
+        return background, foreground, _mix(background, theme.TEXT, 0.16)
+
+    def _paint_command(self, element):
+        entry = self._entry_for(element)
+        widget = entry.get("widget")
+        if widget is None:
+            return
+        if not entry.get("is_enabled", True):
+            background, foreground = theme.DISABLED
+            border = _rule()
+        elif element["type"] == "toggle":
+            colors = theme.toggle_colors(element, bool(entry.get("is_on")))
+            background, foreground, border = (colors["background"],
+                                              colors["foreground"], colors["border"])
+            if not entry.get("is_on") and border != theme.SIGNAL:
+                # An OFF toggle is its role outlined on the panel; a quiet
+                # role's own fill is too close to the panel to be an outline.
+                border = _mix(border, theme.TEXT, 0.3)
+        else:
+            background, foreground, border = self._command_colors(element.get("role"))
+        if entry.get("is_hovered") and entry.get("is_enabled", True):
+            background = _mix(background, theme.TEXT, 0.08)
+        if entry.get("is_focused"):
+            border = theme.TRACE
+        entry["border"] = border
+        try:
+            widget.configure(background=background, foreground=foreground,
+                             cursor="hand2" if entry.get("is_enabled", True)
+                             else "arrow")
+            if entry.get("outline") is not None:
+                entry["outline"].configure(background=border)
+        except Exception:
+            pass
 
     def _role_colors(self, role):
         """The schema names the meaning; the theme owns the palette."""
@@ -687,57 +1277,82 @@ class TkPanelView(PanelView):
 
     # -- element renderers -------------------------------------------------
     def _make_readonly(self, container, element):
-        """A readout, drawn so it cannot be mistaken for a box to type in:
-        raised off the panel onto the surface colour, right-aligned inside a
-        box the width of an entry, and never given the sunken border an entry
-        carries.
+        """A readout: a number in the trace colour, one step larger than its
+        caption, on the panel itself - no box, so it is never mistaken for a
+        field to type into - right-aligned at the same edge as the entries.
 
-        In a **column** section it sits where an entry would, so a panel of
-        readouts and entries reads as two tidy columns. Stretching its column
-        there is what threw "X Position" to the far edge of the window while
-        the entries below it stayed beside their labels. In a **row** section
-        the stretch is the point: the status is the last cell of a table row
-        and belongs against the right-hand edge.
+        It takes its cell's width and never asks for more: a value longer
+        than the cell ("identifying /dev/cu.debug-console (2 of 2)...") is
+        cut at a word with an ellipsis and the whole of it is the tooltip.
+        In a table's status column and in a bar it reads left to right like
+        the text it is; in a section it is a number and aligns right.
         """
-        self._caption(container, element.get("text", ""))
+        parent, place = self._field(container, element)
+        state = self._cursor(container)
+        is_text = state["layout"] == "row"
         var = tk.StringVar(value="")
-        # A role on a readout means something (a connection state, a fault
-        # reason), so it is coloured; a neutral one sits on the surface.
-        role = element.get("role") or "neutral"
-        background, foreground = self._role_colors(role)
-        if role == "neutral":
-            background, foreground = theme.SURFACE, theme.TEXT
-        is_table = self._cursor(container)["layout"] == "row"
-        row, column = self._next_cell(container)
-        value = tk.Label(container, textvariable=var, font=theme.font(bold=True),
-                         anchor="e", width=FIELD_WIDTH, relief="flat",
-                         padx=GAP, background=background, foreground=foreground)
-        self._place(container, value, row, column,
-                    sticky="e" if is_table else "w", padx=GAP, pady=GAP)
-        if is_table:
-            self._stretch_column(container, column)
-        self._register(element, widget=value, var=var)
-        self._end_line(container)
+        font = _font(STEP_1)
+        value = tk.Label(parent, text="", font=font, width=1,
+                         anchor="w" if is_text else "e", relief="flat",
+                         background=_page(), foreground=theme.TRACE)
+        place(value, "value")
+        tooltip = _Tooltip(value)
+        self._register(element, widget=value, var=var, font=font, tooltip=tooltip,
+                       shown=None)
+        value.bind("<Configure>", lambda _e, el=element: self._fit_readout(el),
+                   add="+")
+
+    def _fit_readout(self, element):
+        """Show as much of the value as the cell holds; the rest is the
+        tooltip. With no measure of the cell, show it all."""
+        entry = self._entry_for(element)
+        widget, var = entry.get("widget"), entry.get("var")
+        if widget is None or var is None:
+            return
+        text = str(var.get() or "")
+        try:
+            room = widget.winfo_width() - 2 * int(widget.cget("padx") or 0) - 2
+        except Exception:
+            room = None
+        shown = _elide(entry.get("font"), text, room if isinstance(room, int) else None)
+        tooltip = entry.get("tooltip")
+        if tooltip is not None:
+            tooltip.text = text if shown != text else ""
+        if entry.get("shown") == shown:
+            return
+        entry["shown"] = shown
+        try:
+            widget.configure(text=shown)
+        except Exception:
+            pass
 
     def _make_entry(self, container, element):
-        self._caption(container, element.get("text", ""))
+        parent, place = self._field(container, element)
         var = tk.StringVar(value="")
-        row, column = self._next_cell(container)
-        widget = tk.Entry(container, textvariable=var, font=theme.font(),
-                          width=FIELD_WIDTH, justify="right", relief="sunken",
-                          borderwidth=1, background=theme.SURFACE,
-                          foreground=theme.TEXT, insertbackground=theme.TEXT)
+        widget = tk.Entry(parent, textvariable=var, font=_font(),
+                          width=FIELD_WIDTH, justify="right", relief="flat",
+                          borderwidth=0, highlightthickness=1,
+                          highlightbackground=_mix(_page(), theme.TEXT, 0.22),
+                          highlightcolor=theme.TRACE,
+                          background=theme.BACKGROUND, foreground=theme.TEXT,
+                          insertbackground=theme.TEXT,
+                          disabledbackground=_page(),
+                          disabledforeground=theme.DISABLED[1])
         if element.get("value_type") in ("int", "float"):
             self._attach_validator(widget, element)
-        self._place(container, widget, row, column, sticky="w",
-                    padx=GAP, pady=GAP)
+        place(widget, "field")
         widget.bind("<Return>", lambda _e, el=element: self._on_entry_commit(el))
         widget.bind("<FocusOut>", lambda _e, el=element: self._on_entry_commit(el))
         unit = element.get("unit")
-        if unit:
-            self._caption(container, unit)
+        if unit and self._cursor(container)["layout"] == "column":
+            tk.Label(parent, text=unit, font=_font(SMALL), anchor="w",
+                     background=_page(), foreground=theme.MUTED
+                     ).grid(row=self._cursor(container)["row"] - 1, column=2,
+                            sticky="w", padx=(GAP, 0))
+        elif unit:
+            tk.Label(parent, text=unit, font=_font(SMALL), background=_page(),
+                     foreground=theme.MUTED).pack(side="left", padx=(0, PAD))
         self._register(element, widget=widget, var=var, last_text="")
-        self._end_line(container)
 
     def _attach_validator(self, widget, element):
         try:
@@ -815,48 +1430,6 @@ class TkPanelView(PanelView):
             self._show_refused("")
         return result
 
-    def _make_button(self, container, element):
-        row, column = self._next_cell(container, span=2)
-        widget = self._button_label(container, element, lambda el: self._run(el))
-        self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=GAP, pady=GAP)
-        self._register(element, widget=widget)
-        self._end_line(container)
-
-    def _make_toggle(self, container, element):
-        row, column = self._next_cell(container, span=2)
-        widget = self._button_label(container, element,
-                                    lambda el: self._run_toggle(el))
-        self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=GAP, pady=GAP)
-        self._register(element, widget=widget)
-        self._end_line(container)
-
-    def _make_dropdown(self, container, element):
-        self._caption(container, element.get("text", ""))
-        var = tk.StringVar(value="")
-        row, column = self._next_cell(container)
-        # No `font=` here: a ttk widget is styled through `ttk.Style`, not
-        # per-widget options, and passing one is a TclError on some builds.
-        # The ttk theme pass is listed under UNVERIFIED. `width` is in
-        # characters and is fixed, so a column of dropdowns is a column.
-        widget = ttk.Combobox(container, textvariable=var, state="readonly",
-                              width=DROPDOWN_WIDTH)
-        self._place(container, widget, row, column, sticky="w",
-                    padx=GAP, pady=GAP)
-        widget.bind("<<ComboboxSelected>>",
-                    lambda _e, el=element: self._on_dropdown_selected(el))
-        row, column = self._next_cell(container)
-        refresh = tk.Label(container, text="⟳", font=theme.font(bold=True),
-                           background=theme.SURFACE, foreground=theme.TEXT,
-                           cursor="hand2")
-        self._place(container, refresh, row, column, padx=GAP, pady=GAP)
-        refresh.bind("<Button-1>",
-                     lambda _e, el=element: self._refresh_options(el))
-        self._register(element, widget=widget, var=var, options=[])
-        self._refresh_options(element)
-        self._end_line(container)
-
     def _on_dropdown_selected(self, element):
         entry = self._entry_for(element)
         if not entry.get("is_enabled", True):
@@ -887,24 +1460,6 @@ class TkPanelView(PanelView):
         except Exception:
             pass
 
-    def _make_region_select(self, container, element):
-        row, column = self._next_cell(container, span=2)
-        widget = self._button_label(container, element, self._on_region_clicked)
-        self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=GAP, pady=GAP)
-        self._end_line(container)
-        var = tk.StringVar(value=sch.format_region(None))
-        row, column = self._next_cell(container, span=3)
-        shown = tk.Label(container, textvariable=var, font=theme.font(0.9),
-                         anchor="w", background=theme.BACKGROUND,
-                         foreground=theme.MUTED)
-        self._place(container, shown, row, column, columnspan=3,
-                    sticky="w", padx=GAP)
-        # The captured region is *drawn*, not announced: PySide's confirming
-        # modal over an always-on-top overlay is PYSIDE-12's deadlock.
-        self._register(element, widget=widget, var=var)
-        self._end_line(container)
-
     def _on_region_clicked(self, element):
         picker = _RegionPicker(self.frame)
         region = picker.pick()
@@ -913,14 +1468,6 @@ class TkPanelView(PanelView):
             return None
         self._show_refused("")
         return self._run(element, args=region)
-
-    def _make_file_save(self, container, element):
-        row, column = self._next_cell(container, span=2)
-        widget = self._button_label(container, element, self._on_save_clicked)
-        self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=GAP, pady=GAP)
-        self._register(element, widget=widget)
-        self._end_line(container)
 
     def _on_save_clicked(self, element):
         """Ask for a destination, let the model write, then copy it there.
@@ -947,14 +1494,6 @@ class TkPanelView(PanelView):
                          f"{destination}: {exc}", source=SOURCE, exception=exc)
         return result
 
-    def _make_file_open(self, container, element):
-        row, column = self._next_cell(container, span=2)
-        widget = self._button_label(container, element, self._on_open_clicked)
-        self._place(container, widget, row, column, columnspan=2,
-                    sticky="ew", padx=GAP, pady=GAP)
-        self._register(element, widget=widget)
-        self._end_line(container)
-
     def _on_open_clicked(self, element):
         extensions = element.get("extensions") or ["csv"]
         path = filedialog.askopenfilename(
@@ -963,20 +1502,6 @@ class TkPanelView(PanelView):
         if not path:
             return None
         return self._run(element, args=(path,))
-
-    def _make_plot(self, container, element):
-        """A Canvas polyline. No matplotlib: the model publishes the series
-        and each renderer draws it (D-6)."""
-        if element.get("text"):
-            self._caption(container, element["text"])
-            self._end_line(container)
-        row, column = self._next_cell(container, span=3)
-        canvas = tk.Canvas(container, height=160, width=360,
-                           background=theme.SURFACE, highlightthickness=0)
-        self._place(container, canvas, row, column, columnspan=3,
-                    sticky="ew", padx=GAP, pady=GAP)
-        self._register(element, widget=canvas)
-        self._end_line(container)
 
     def _redraw_plot(self, element, series):
         canvas = self._entry_for(element).get("widget")
@@ -989,13 +1514,20 @@ class TkPanelView(PanelView):
         values = [v for v in list((series or {}).get("y") or [])
                   if isinstance(v, (int, float))]
         width, height = 360, 160
+        try:
+            # The canvas fills its section; draw to the size it was given.
+            measured = canvas.winfo_width(), canvas.winfo_height()
+            if all(isinstance(v, int) and v > 1 for v in measured):
+                width, height = measured
+        except Exception:
+            pass
         if len(values) < 2:
             # An empty plot that says why, rather than a blank rectangle
             # (REDPERCENT-17).
             text = "no data yet" if not values else "one sample so far"
             try:
                 canvas.create_text(width / 2, height / 2, text=text,
-                                   fill=theme.MUTED, font=theme.font(0.9))
+                                   fill=theme.MUTED, font=_font(SMALL))
             except Exception:
                 pass
             return
@@ -1007,23 +1539,10 @@ class TkPanelView(PanelView):
             points.append(index * step)
             points.append(height - ((value - low) / span) * (height - 10) - 5)
         try:
-            canvas.create_line(*points, fill=theme.colors("danger")[0], width=2)
+            canvas.create_line(*points, fill=theme.TRACE, width=2)
         except Exception as exc:
             events.debug("Plot Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
-
-    def _make_image(self, container, element):
-        if element.get("text"):
-            self._caption(container, element["text"])
-            self._end_line(container)
-        row, column = self._next_cell(container, span=3)
-        widget = tk.Label(container, background=theme.SURFACE,
-                          foreground=theme.MUTED, text="")
-        self._place(container, widget, row, column, columnspan=3,
-                    sticky="w", padx=GAP, pady=GAP)
-        self._slow_commands.add(element.get("data_command"))
-        self._register(element, widget=widget, photo=None, data=None)
-        self._end_line(container)
 
     def _show_image(self, element, data):
         """PNG bytes (or base64 text) -> PhotoImage. Tk reads PNG natively."""
@@ -1043,38 +1562,6 @@ class TkPanelView(PanelView):
         # Tk drops an image the moment Python does: keep the reference.
         entry["photo"], entry["data"] = photo, data
 
-    def _make_indicator(self, container, element):
-        """A lamp, not a second copy of the label.
-
-        The label went on the lamp as well as in front of it, so a fault
-        indicator read "Fault   Fault" and said nothing about the fault. The
-        caption names it once; the lamp carries only the state, as fill
-        (`theme.toggle_colors`) against a ring of the same role, so ON and OFF
-        differ by shape as well as by colour.
-        """
-        self._caption(container, element.get("text", ""))
-        row, column = self._next_cell(container)
-        widget = tk.Label(container, text="", width=LAMP_WIDTH, relief="flat",
-                          highlightthickness=2, pady=GAP)
-        self._place(container, widget, row, column, sticky="w",
-                    padx=GAP, pady=GAP)
-        self._register(element, widget=widget)
-        self._end_line(container)
-
-    def _make_log_stream(self, container, element):
-        if element.get("text"):
-            self._caption(container, element["text"])
-            self._end_line(container)
-        row, column = self._next_cell(container, span=3)
-        widget = tk.Text(container, height=EVENT_LOG_LINES + 1, width=48,
-                         state="disabled", relief="flat", font=theme.font(0.9),
-                         background=theme.SURFACE, foreground=theme.TEXT,
-                         wrap="word")
-        self._place(container, widget, row, column, columnspan=3,
-                    sticky="ew", padx=GAP, pady=GAP)
-        self._register(element, widget=widget, last_text=None)
-        self._end_line(container)
-
     def _refresh_log(self, element, lines):
         entry = self._entry_for(element)
         widget = entry.get("widget")
@@ -1093,6 +1580,127 @@ class TkPanelView(PanelView):
         except Exception as exc:
             events.debug("Log Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
+
+    def _make_button(self, container, element):
+        parent, place = self._command_slot(container)
+        place(self._button_label(parent, element, lambda el: self._run(el)))
+
+    def _make_toggle(self, container, element):
+        """A two-state command. A model's own stop (`is_estopped`) is not a
+        button at all: it is the stop object, the same disc as the
+        dashboard's, bench-sized, reading `Stop` / `Clear`."""
+        if element.get("model_attr") == "is_estopped":
+            parent, place = self._field(container, element)
+            disc = _Mushroom(parent, MINI_STOP_DIAMETER,
+                             lambda el=element: self._on_mushroom_pressed(el),
+                             background=_page(), face_step=SMALL)
+            place(disc.canvas, "mark")
+            self._register(element, widget=disc.canvas, mushroom=disc)
+            return
+        parent, place = self._command_slot(container)
+        place(self._button_label(parent, element, lambda el: self._run_toggle(el),
+                                 text=element.get("false_text", "")))
+
+    def _on_mushroom_pressed(self, element):
+        if not self._entry_for(element).get("is_enabled", True):
+            return None
+        return self._run_toggle(element)
+
+    def _make_dropdown(self, container, element):
+        """A dropdown whose choices are re-read when it is opened
+        (`postcommand`) and every `OPTIONS_REFRESH_MS` — the ⟳ glyph beside
+        every dropdown did what opening it now does."""
+        parent, place = self._field(container, element)
+        var = tk.StringVar(value="")
+        is_table = self._cursor(container)["layout"] == "row"
+        options = dict(textvariable=var, state="readonly",
+                       width=DROPDOWN_WIDTH if is_table else FIELD_WIDTH,
+                       postcommand=lambda el=element: self._refresh_options(el))
+        try:
+            widget = ttk.Combobox(parent, font=_font(), **options)
+        except Exception:
+            # ttk takes `font` on a Combobox on current builds; an older one
+            # refuses it, and the style's font is then used.
+            widget = ttk.Combobox(parent, **options)
+        place(widget, "field")
+        widget.bind("<<ComboboxSelected>>",
+                    lambda _e, el=element: self._on_dropdown_selected(el))
+        self._register(element, widget=widget, var=var, options=[],
+                       tooltip=_Tooltip(widget))
+        self._refresh_options(element)
+
+    def _make_region_select(self, container, element):
+        parent, place = self._command_slot(container)
+        place(self._button_label(parent, element, self._on_region_clicked))
+        var = tk.StringVar(value=sch.format_region(None))
+        shown = tk.Label(parent, textvariable=var, font=_font(SMALL), anchor="w",
+                         background=_page(), foreground=theme.MUTED)
+        place(shown)
+        # The captured region is *drawn*, not announced: PySide's confirming
+        # modal over an always-on-top overlay is PYSIDE-12's deadlock.
+        self._register(element, var=var)
+        # A line of commands never continues past the region it reports.
+        self._cursor(container)["strip"] = None
+
+    def _make_file_save(self, container, element):
+        parent, place = self._command_slot(container)
+        place(self._button_label(parent, element, self._on_save_clicked))
+
+    def _make_file_open(self, container, element):
+        parent, place = self._command_slot(container)
+        place(self._button_label(parent, element, self._on_open_clicked))
+
+    def _make_plot(self, container, element):
+        """A Canvas polyline in the trace colour. No matplotlib: the model
+        publishes the series and each renderer draws it (D-6)."""
+        parent, place = self._wide_slot(container, element.get("text"))
+        canvas = tk.Canvas(parent, height=160, width=360,
+                           background=theme.BACKGROUND, highlightthickness=1,
+                           highlightbackground=_rule())
+        place(canvas)
+        self._register(element, widget=canvas)
+
+    def _make_image(self, container, element):
+        parent, place = self._wide_slot(container, element.get("text"))
+        widget = tk.Label(parent, background=theme.BACKGROUND,
+                          foreground=theme.MUTED, text="No figure yet",
+                          font=_font(SMALL), padx=PAD, pady=PAD)
+        place(widget, "w")
+        self._slow_commands.add(element.get("data_command"))
+        self._register(element, widget=widget, photo=None, data=None)
+
+    def _make_indicator(self, container, element):
+        """A lamp, not a second copy of the label.
+
+        The label went on the lamp as well as in front of it, so a fault
+        indicator read "Fault   Fault" and said nothing about the fault. The
+        caption names it once; the lamp carries only the state: lit, it is
+        filled with the trace colour (the signal colour for a danger lamp -
+        a latch, a fault); unlit, it is an empty ring.
+        """
+        parent, place = self._field(container, element)
+        widget = tk.Canvas(parent, width=LAMP_PX, height=LAMP_PX,
+                           background=_page(), highlightthickness=0)
+        place(widget, "mark")
+        self._register(element, widget=widget, lamp=None)
+
+    @staticmethod
+    def _lamp_colors(element, is_on):
+        """(fill, ring) of a lamp."""
+        if not is_on:
+            return _page(), theme.MUTED
+        lit = theme.SIGNAL if element.get("on_role") == "danger" else theme.TRACE
+        return lit, lit
+
+    def _make_log_stream(self, container, element):
+        parent, place = self._wide_slot(container, element.get("text"))
+        widget = tk.Text(parent, height=EVENT_LOG_LINES + 1, width=48,
+                         state="disabled", relief="flat", font=_font(SMALL),
+                         background=theme.BACKGROUND, foreground=theme.TEXT,
+                         highlightthickness=1, highlightbackground=_rule(),
+                         padx=GAP, pady=GAP, wrap="word")
+        place(widget)
+        self._register(element, widget=widget, last_text=None)
 
     def _make_internal(self, container, element):
         """Renders nothing. The element exists so its command is in the
@@ -1146,24 +1754,25 @@ class TkPanelView(PanelView):
         return str(int(number))
 
     def _style_readout(self, element, text):
-        """A role colours a readout that HAS a value. With nothing to show it
-        goes back to the surface colour, so an empty "info" readout is not a
-        blue bar with nothing in it."""
+        """A readout's value is the trace colour - the colour a live number
+        is drawn in - or the signal colour for a danger readout (a fault
+        reason). Nothing to show is `--` in muted ink: never a bare stripe
+        of colour, never a box."""
         entry = self._entry_for(element)
         widget = entry.get("widget")
-        role = element.get("role") or "neutral"
         if widget is None:
             return
-        if role == "neutral" or text == EMPTY_READOUT:
-            background, foreground = theme.SURFACE, (
-                theme.MUTED if text == EMPTY_READOUT else theme.TEXT)
+        if text == EMPTY_READOUT:
+            foreground = theme.MUTED
+        elif (element.get("role") or "neutral") == "danger":
+            foreground = theme.SIGNAL
         else:
-            background, foreground = self._role_colors(role)
-        if entry.get("colors") == (background, foreground):
+            foreground = theme.TRACE
+        if entry.get("colors") == foreground:
             return              # nothing to redraw ten times a second
-        entry["colors"] = (background, foreground)
+        entry["colors"] = foreground
         try:
-            widget.configure(background=background, foreground=foreground)
+            widget.configure(background=_page(), foreground=foreground)
         except Exception:
             pass
 
@@ -1180,9 +1789,15 @@ class TkPanelView(PanelView):
             options = entry.get("options") or []
             if text and text not in options:
                 self._refresh_options(element)
+            tooltip = entry.get("tooltip")
+            if tooltip is not None:
+                # A port name longer than the box is readable on hover.
+                tooltip.text = text if len(text) > DROPDOWN_WIDTH - 2 else ""
         if var.get() != text:
             var.set(text)
         entry["last_text"] = text
+        if element["type"] == "readonly":
+            self._fit_readout(element)
         if element["type"] == "entry":
             self._bounds_hint(element)
 
@@ -1191,24 +1806,34 @@ class TkPanelView(PanelView):
         widget = entry.get("widget")
         if widget is None:
             return
-        colors = theme.toggle_colors(element, is_on)
-        options = {"background": colors["background"],
-                   "foreground": colors["foreground"],
-                   "highlightbackground": colors["border"],
-                   "highlightcolor": colors["border"]}
-        if element["type"] == "toggle":
-            options["text"] = element["true_text"] if is_on else element["false_text"]
-        elif element["type"] == "indicator":
+        entry["is_on"] = is_on
+        if entry.get("mushroom") is not None:
+            entry["mushroom"].set_latched(is_on)
+            return
+        if element["type"] == "indicator":
             # Never text: the caption in front of the lamp already names it,
             # and a lamp that repeats its own label ("Fault   Fault") is the
             # one thing it must not say.
-            options["text"] = ""
-        entry["is_on"] = is_on
+            lamp = self._lamp_colors(element, is_on)
+            if entry.get("lamp") == lamp:
+                return
+            entry["lamp"] = lamp
+            try:
+                widget.delete("all")
+                widget.create_oval(2, 2, LAMP_PX - 2, LAMP_PX - 2, fill=lamp[0],
+                                   outline=lamp[1], width=1.5)
+            except Exception as exc:
+                events.debug("Lamp Draw Failed", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
+            return
+        text = _label(element["true_text"] if is_on else element["false_text"])
         try:
-            widget.configure(**options)
+            if widget.cget("text") != text:
+                widget.configure(text=text)
         except Exception as exc:
             events.debug("Toggle Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
+        self._paint_command(element)
 
     def _set_data(self, element, data):
         kind = element["type"]
@@ -1225,7 +1850,8 @@ class TkPanelView(PanelView):
         The flag is authoritative rather than the widget's `state` option: a
         `tk.Label` styled as a button has no usable `state`, so the old view's
         `cget("state") == "disabled"` guard was reading an option it had
-        failed to set (VIEW-TKINTER-14).
+        failed to set (VIEW-TKINTER-14). A stop disc is gated like any
+        command but never drawn dimmed.
         """
         entry = self._entry_for(element)
         if not entry:
@@ -1241,18 +1867,10 @@ class TkPanelView(PanelView):
                 widget.configure(state=live if is_enabled else "disabled")
             except Exception:
                 pass
-        elif element["type"] in ("button", "toggle", "region_select",
-                                 "file_save", "file_open"):
-            try:
-                widget.configure(cursor="hand2" if is_enabled else "X_cursor")
-                if not is_enabled:
-                    widget.configure(background=theme.DISABLED[0],
-                                     foreground=theme.DISABLED[1])
-                elif element["type"] != "toggle":
-                    background, foreground = self._role_colors(element.get("role"))
-                    widget.configure(background=background, foreground=foreground)
-            except Exception:
-                pass
+        elif element["type"] in self.COMMANDS and entry.get("mushroom") is None:
+            if was_enabled != bool(is_enabled) or "painted" not in entry:
+                entry["painted"] = True
+                self._paint_command(element)
         if was_enabled != bool(is_enabled):
             events.debug("Gate Changed",
                          f"{self.name}/{element.get('text') or element.get('command')}"
@@ -1292,7 +1910,7 @@ class TkPanelView(PanelView):
     def _apply_theme(self):
         for widget in (self.frame, self._body, self._canvas):
             try:
-                widget.configure(background=theme.BACKGROUND)
+                widget.configure(background=_page())
             except Exception:
                 pass
 
@@ -1307,7 +1925,7 @@ class TkPanelView(PanelView):
 
 
 class TkDashboard(Dashboard):
-    """The window: a tab per model, the Setup panel, the global FULL STOP,
+    """The window: a tab per model, the Setup panel, the global stop,
     the event log and the acknowledged popup.
 
     Everything that decides *policy* — which events pop up, what closing a
@@ -1332,20 +1950,26 @@ class TkDashboard(Dashboard):
         self.root.title("Transfer Station")
         self.root.geometry("1100x850")
         self.root.configure(background=theme.BACKGROUND)
+        try:
+            self.root.minsize(720, 520)
+        except Exception:
+            pass
+        self._configure_styles()
 
         # Pack order is allocation order, and the notebook is the one widget
         # here that expands: everything it must never push off the window is
-        # packed BEFORE it. The FULL STOP bar went off the bottom of the
-        # screen the first time a tall panel opened, which is a stop control
-        # the operator cannot reach — the worst defect this view can have.
-        # The toolbar takes its strip at the top, the stop bar and the event
-        # log take theirs at the bottom, and the notebook gets what is left.
+        # packed BEFORE it. The stop went off the bottom of the screen the
+        # first time a tall panel opened, which is a stop control the
+        # operator cannot reach — the worst defect this view can have. The
+        # toolbar takes its strip at the top, the stop bar and the event log
+        # take theirs at the bottom, and the notebook gets what is left.
         self._build_toolbar()
         self._build_stop_button()
         self._build_event_panel()
 
         self.notebook = ClosableNotebook(self.root, on_close_tab=self._on_tab_close)
-        self.notebook.pack(side="top", fill="both", expand=True)
+        self.notebook.pack(side="top", fill="both", expand=True,
+                           padx=PAD, pady=(GAP, 0))
 
         self._build_menu_bar()
 
@@ -1358,58 +1982,162 @@ class TkDashboard(Dashboard):
         self._hook_macos_quit()
 
     # -- construction ------------------------------------------------------
+    def _configure_styles(self):
+        """Fonts in the Mac's own points, and ttk drawn from the theme.
+
+        Aqua's ttk ignores colours (a blue-arrowed white combobox and a
+        centred silver tab strip on a dark panel), so ttk runs the `clam`
+        theme here, coloured from the same six tokens, on every platform:
+        tabs left-aligned on the type scale, dark fields with a hairline
+        border and a trace focus ring, quiet scrollbars.
+        """
+        global _PIXEL_FONTS
+        _PIXEL_FONTS = _windowing_system(self.root) == "aqua"
+        base, surface, text = theme.BACKGROUND, _page(), theme.TEXT
+        muted, rule = theme.MUTED, _rule()
+        control = theme.colors("neutral")[0]
+        try:
+            style = ttk.Style(self.root)
+            style.theme_use("clam")
+        except Exception as exc:
+            events.debug("ttk Theme Not Set", str(exc), source=SOURCE, exception=exc)
+            return
+        settings = [
+            (".", dict(background=base, foreground=text, font=_font(),
+                       bordercolor=rule, lightcolor=base, darkcolor=base,
+                       troughcolor=base, focuscolor=theme.TRACE,
+                       fieldbackground=base, selectbackground=control,
+                       selectforeground=text, insertcolor=text, arrowcolor=muted)),
+            ("TFrame", dict(background=surface)),
+            ("TNotebook", dict(background=base, borderwidth=0, tabmargins=(0, 0, 0, 0),
+                               tabposition="nw", lightcolor=base, darkcolor=base,
+                               bordercolor=base)),
+            ("TNotebook.Tab", dict(background=base, foreground=muted, font=_font(),
+                                   padding=(INSET + GAP, GAP + 2), borderwidth=0,
+                                   bordercolor=base, lightcolor=base, darkcolor=base,
+                                   focuscolor=base)),
+            ("TCombobox", dict(fieldbackground=base, background=control,
+                               foreground=text, arrowcolor=muted, bordercolor=rule,
+                               lightcolor=base, darkcolor=base, padding=(GAP + 2, 2),
+                               arrowsize=12)),
+            ("Vertical.TScrollbar", dict(background=control, troughcolor=surface,
+                                         bordercolor=surface, lightcolor=control,
+                                         darkcolor=control, arrowcolor=muted,
+                                         gripcount=0, arrowsize=12)),
+        ]
+        maps = [
+            ("TNotebook.Tab", dict(
+                background=[("selected", surface), ("active", _mix(base, surface, 0.5))],
+                foreground=[("selected", text), ("active", text)],
+                lightcolor=[("selected", surface)])),
+            ("TCombobox", dict(
+                fieldbackground=[("disabled", surface), ("readonly", base)],
+                foreground=[("disabled", theme.DISABLED[1]), ("readonly", text)],
+                bordercolor=[("focus", theme.TRACE), ("hover", muted)],
+                arrowcolor=[("disabled", theme.DISABLED[1]), ("hover", text)],
+                background=[("active", _mix(control, text, 0.08))],
+                selectbackground=[("readonly", base)],
+                selectforeground=[("readonly", text)])),
+            ("Vertical.TScrollbar", dict(
+                background=[("active", _mix(control, text, 0.12))])),
+        ]
+        for name, options in settings:
+            try:
+                style.configure(name, **options)
+            except Exception as exc:
+                events.debug("ttk Style Refused", f"{name}: {exc}", source=SOURCE,
+                             exception=exc)
+        for name, options in maps:
+            try:
+                style.map(name, **options)
+            except Exception as exc:
+                events.debug("ttk Style Map Refused", f"{name}: {exc}",
+                             source=SOURCE, exception=exc)
+        # A combobox's open list is a plain Tk listbox, styled by option.
+        for option, value in (("*TCombobox*Listbox.background", base),
+                              ("*TCombobox*Listbox.foreground", text),
+                              ("*TCombobox*Listbox.selectBackground", control),
+                              ("*TCombobox*Listbox.selectForeground", text),
+                              ("*TCombobox*Listbox.font", _font())):
+            try:
+                self.root.option_add(option, value)
+            except Exception:
+                pass
+
     def _build_toolbar(self):
         """The strip above the tabs. Empty while Setup has a tab of its own;
         it carries the way back once Setup minimises.
 
         The frame is packed now and stays packed even while empty, because a
-        frame packed after the notebook lands *below* it.
+        frame packed after the notebook lands *below* it. The button is
+        chrome, not an instrument control: a ghost, as the Web rail's Setup.
         """
         self._toolbar = tk.Frame(self.root, background=theme.BACKGROUND)
         self._toolbar.pack(side="top", fill="x")
-        background, foreground = theme.colors("info")
         self._setup_button = tk.Label(
-            self._toolbar, text="Setup", font=theme.font(0.9, bold=True),
-            background=background, foreground=foreground, relief="raised",
-            padx=PAD, pady=GAP, cursor="hand2")
+            self._toolbar, text="Setup", font=_font(),
+            background=theme.BACKGROUND, foreground=theme.MUTED, relief="flat",
+            highlightthickness=1, highlightbackground=_rule(theme.BACKGROUND),
+            highlightcolor=theme.TRACE, takefocus=1,
+            padx=PAD + GAP, pady=GAP, cursor="hand2")
         self._setup_button.bind("<Button-1>", self._on_setup_clicked)
+        self._setup_button.bind("<Return>", self._on_setup_clicked)
+        self._setup_button.bind("<space>", self._on_setup_clicked)
+        self._setup_button.bind("<Enter>", lambda _e: self._setup_button.configure(
+            foreground=theme.TEXT, highlightbackground=theme.MUTED))
+        self._setup_button.bind("<Leave>", lambda _e: self._setup_button.configure(
+            foreground=theme.MUTED, highlightbackground=_rule(theme.BACKGROUND)))
 
     def _build_stop_button(self):
-        """Bottom-docked on purpose: directly above the tab bar it was an easy
-        accidental-click target when reaching for a tab.
+        """The stop object, docked at the bottom of the window.
 
-        It is the largest control in the window, because it is the one the
-        operator has to find without looking for it.
+        The same object as the Web view's: a round signal-red disc reading
+        `Stop`, `Clear` once latched, that breathes once when the latch
+        closes. Bottom-docked on purpose — directly above the tab bar it was
+        an easy accidental-click target when reaching for a tab — and packed
+        before the notebook, so no panel can push it off the window. The
+        line beside it says what a press will do, to every model.
         """
-        background, foreground = theme.colors("danger")
-        self._stop_button = tk.Label(
-            self.root, text="FULL STOP", font=theme.font(1.5, bold=True),
-            background=background, foreground=foreground, relief="raised",
-            borderwidth=3, pady=PAD + GAP, cursor="hand2")
-        self._stop_button.bind("<Button-1>", self._on_stop_clicked)
-        self._stop_button.pack(side="bottom", fill="x", padx=PAD, pady=(GAP, PAD))
+        self._stop_bar = tk.Frame(self.root, background=theme.BACKGROUND)
+        self._stop_bar.pack(side="bottom", fill="x")
+        tk.Frame(self._stop_bar, height=1, background=_rule(theme.BACKGROUND)
+                 ).pack(side="top", fill="x")
+        self._stop = _Mushroom(self._stop_bar, STOP_DIAMETER, self._on_stop_clicked,
+                               background=theme.BACKGROUND)
+        self._stop_button = self._stop.canvas
+        self._stop_button.pack(side="right", padx=(PAD, INSET), pady=GAP)
+        self._stop_hint = tk.Label(self._stop_bar, text=STOP_HINT, font=_font(),
+                                   background=theme.BACKGROUND,
+                                   foreground=theme.MUTED)
+        self._stop_hint.pack(side="right", padx=(INSET, 0))
 
     def _build_event_panel(self):
         """A footer, sized in lines and scrolled — not an expanding panel.
 
         `height` is in text lines and `expand` is False, so the log cannot
-        take space from the controls as it fills: eight lines of log on an
-        expanding panel was the first thing the owner saw grow.
+        take space from the controls as it fills. Two steps of ink and no
+        more: the latest line in ink, the ones before it muted (never
+        fainter than the muted token), warnings in the trace colour and
+        errors in the signal colour.
         """
         frame = tk.Frame(self.root, background=theme.BACKGROUND)
-        frame.pack(side="bottom", fill="x", padx=PAD, pady=(0, INSET))
-        caption = tk.Label(frame, text="Events", font=theme.font(0.9, bold=True),
+        frame.pack(side="bottom", fill="x", padx=INSET, pady=(GAP, GAP))
+        caption = tk.Label(frame, text="Events", font=_font(SMALL),
                            anchor="w", background=theme.BACKGROUND,
                            foreground=theme.MUTED)
         caption.pack(fill="x")
         body = tk.Frame(frame, background=theme.BACKGROUND)
         body.pack(fill="x")
-        scrollbar = tk.Scrollbar(body)
+        scrollbar = ttk.Scrollbar(body, orient="vertical")
         scrollbar.pack(side="right", fill="y")
         self._event_text = tk.Text(body, height=EVENT_LOG_LINES, state="disabled",
                                    wrap="word", relief="flat",
-                                   font=theme.font(0.9),
-                                   background=theme.SURFACE, foreground=theme.TEXT,
+                                   font=_font(SMALL), padx=GAP, pady=GAP,
+                                   highlightthickness=1,
+                                   highlightbackground=_rule(theme.BACKGROUND),
+                                   highlightcolor=_rule(theme.BACKGROUND),
+                                   background=theme.BACKGROUND,
+                                   foreground=theme.MUTED,
                                    yscrollcommand=scrollbar.set)
         self._event_text.pack(side="left", fill="x", expand=True)
         try:
@@ -1417,10 +2145,13 @@ class TkDashboard(Dashboard):
         except Exception as exc:
             events.debug("Event Scrollbar Not Wired", str(exc), source=SOURCE,
                          exception=exc)
-        for severity, role in theme.SEVERITY_ROLE.items():
+        # Creation order is tag priority: `latest` outranks `info` and is
+        # outranked by `warning` and `error`, so the newest line is ink
+        # unless its severity says otherwise.
+        for tag, foreground in (("info", theme.MUTED), ("latest", theme.TEXT),
+                                ("warning", theme.TRACE), ("error", theme.SIGNAL)):
             try:
-                self._event_text.tag_configure(
-                    severity, foreground=theme.colors(role)[0])
+                self._event_text.tag_configure(tag, foreground=foreground)
             except Exception:
                 pass
 
@@ -1516,6 +2247,7 @@ class TkDashboard(Dashboard):
                 pass
             self._after_id = None
         super().close()
+        self._stop.cancel()
         for name in list(self._panels):
             self._destroy_panel(name)
         try:
@@ -1542,16 +2274,16 @@ class TkDashboard(Dashboard):
         self._schedule_refresh()
 
     def _sync_stop_button(self):
-        """Label and colour follow `Controller.is_estopped`, so the control
-        says what it will do rather than what it did."""
+        """Face and ring follow `Controller.is_estopped`, so the control says
+        what it will do rather than what it did; the disc breathes once on
+        the edge where the latch closes."""
         is_estopped = bool(self.controller.is_estopped)
-        text = "CLEAR FULL STOP" if is_estopped else "FULL STOP"
-        background, foreground = theme.colors("warning" if is_estopped else "danger")
+        if self._stop.is_latched != is_estopped:
+            events.debug("Stop Button Changed",
+                         CLEAR_FACE if is_estopped else STOP_FACE, source=SOURCE)
+        self._stop.set_latched(is_estopped)
         try:
-            if self._stop_button.cget("text") != text:
-                events.debug("Stop Button Changed", f"{text}", source=SOURCE)
-            self._stop_button.configure(text=text, background=background,
-                                        foreground=foreground)
+            self._stop_hint.configure(text=CLEAR_HINT if is_estopped else STOP_HINT)
         except Exception as exc:
             events.debug("Stop Button Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
@@ -1578,6 +2310,11 @@ class TkDashboard(Dashboard):
         self._destroy_panel(name)
         self._build_menu_bar()
         events.debug("Tab Closed", name, source=SOURCE)
+        if self._is_setup_collapsed and not any(
+                other != self.SETUP_TAB for other in self._panels):
+            # An empty notebook is a dead end. The next step from "no model
+            # is open" is Setup, so Setup comes back rather than a blank page.
+            self.restore_setup()
 
     # -- the Setup tab, minimised and brought back -------------------------
     def _collapse_setup(self):
@@ -1710,7 +2447,8 @@ class TkDashboard(Dashboard):
         severity = event.severity if event.severity in theme.SEVERITY_ROLE else "info"
         try:
             self._event_text.configure(state="normal")
-            self._event_text.insert("end", event.text + "\n", severity)
+            self._event_text.tag_remove("latest", "1.0", "end")
+            self._event_text.insert("end", event.text + "\n", (severity, "latest"))
             self._event_text.see("end")
             self._event_text.configure(state="disabled")
         except Exception as exc:
