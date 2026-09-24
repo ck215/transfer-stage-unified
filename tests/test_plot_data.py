@@ -257,3 +257,64 @@ def test_render_figure_returns_bytes_for_every_plot_type():
                                            red_percents=[1.0, 2.0],
                                            dim_data=data)
         assert isinstance(rendered, bytes), plot_type
+
+
+# -- F16: the analysis figure ----------------------------------------------
+
+def _png_size(png):
+    import struct
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    return struct.unpack(">II", png[16:24])
+
+
+def test_the_figure_is_rendered_at_the_size_asked_for():
+    """UXPM-2/3: an 800x600 figure was shown at 0.48x on Web and cropped in
+    Qt. The caller names the slot; the default is one the views can show."""
+    png = plot_data.render_figure("0D", red_percents=[1.0, 2.0],
+                                  size=(4.0, 3.0), dpi=100)
+    assert _png_size(png) == (400, 300)
+    default = _png_size(plot_data.render_figure("0D", red_percents=[1.0]))
+    w, h = plot_data.FIGURE_SIZE
+    assert default == (int(w * plot_data.FIGURE_DPI), int(h * plot_data.FIGURE_DPI))
+    assert default[0] <= 640, "the default must fit a module card"
+
+
+def test_the_line_is_drawn_in_the_accent_with_markers_only_when_few():
+    """UXPM-2: pure blue at 1.55:1 with a marker per sample (a ribbon at 1500
+    samples); `palette.ACCENT` was declared for the line and never used."""
+    import palette
+    few = plot_data._line_style(plot_data.MARKER_LIMIT)
+    many = plot_data._line_style(plot_data.MARKER_LIMIT + 1)
+    assert few["color"] == many["color"] == palette.ACCENT
+    assert few["marker"] == "o"
+    assert many["marker"] in (None, "", "None")
+
+
+def test_the_3d_colormap_is_dark_safe():
+    """UXPM-9: coolwarm's middle is light grey and its ends red/blue; on the
+    dark panel the low end vanished. Every colour in the map must stand off
+    the surface."""
+    import palette
+    from matplotlib.colors import to_rgb
+
+    def luminance(rgb):
+        lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+               for c in rgb]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+    surface = luminance(to_rgb(palette.SURFACE))
+    cmap = plot_data._colormap()
+    for i in range(0, 256, 15):
+        colour = luminance(cmap(i / 255)[:3])
+        assert (colour + 0.05) / (surface + 0.05) >= 3.0, i
+
+
+def test_the_3d_panes_are_dark():
+    from matplotlib.figure import Figure
+    figure = Figure()
+    axes = figure.add_subplot(111, projection="3d")
+    plot_data._style_axes(axes)
+    import palette
+    from matplotlib.colors import to_hex
+    for axis in (axes.xaxis, axes.yaxis, axes.zaxis):
+        assert to_hex(axis.pane.get_facecolor()) == palette.SURFACE.lower()

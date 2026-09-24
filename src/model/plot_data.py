@@ -164,17 +164,21 @@ def load_run(csv_path):
 
 
 def render_figure(plot_type, dim1=None, dim2=None, dim3=None,
-                  red_percents=(), dim_data=None, times=None):
+                  red_percents=(), dim_data=None, times=None, *, size=None,
+                  dpi=None):
     """PNG bytes of the analysis plot. One image, drawn once, shown by all
     three views — Tk hand-built its own matplotlib canvas, PySide bolted on a
     duplicate in a dialog, and the Web client could not show it at all.
 
     matplotlib is imported lazily and driven through Agg with the `Figure`
     class directly: no pyplot, no global state, no backend to pick per view.
+
+    `size` is `(width, height)` in inches and `dpi` its resolution; the
+    defaults (`FIGURE_SIZE`, `FIGURE_DPI`) fit a module card.
     """
     request = _plot_request(plot_type, dim1, dim2, dim3, red_percents,
                             dim_data or {}, times)
-    return _draw(request)
+    return _draw(request, size=size, dpi=dpi)
 
 
 # -- what to draw, decided without matplotlib ------------------------------
@@ -274,10 +278,67 @@ def _aligned(red, series_list, values):
 
 # -- drawing, the only part that touches matplotlib ------------------------
 
-def _draw(request):
+#: The default figure: inches and dots per inch. 640x400 px fits a module
+#: card in every view without scaling text below reading size; an 800x600
+#: figure was shown at 0.48x on the Web (6.7 px text) and cropped in Qt
+#: (UXPM-2/3). A caller that knows its slot passes `size`.
+FIGURE_SIZE = (6.4, 4.0)
+FIGURE_DPI = 100
+
+#: Past this many samples a marker per sample is a ribbon, not a reading.
+MARKER_LIMIT = 200
+
+#: Text sizes, in points at FIGURE_DPI: readable at 1x.
+TICK_SIZE, LABEL_SIZE, TITLE_SIZE = 10, 11, 12
+
+
+def _line_style(count):
+    """The trace line: `palette.ACCENT`, with markers only while few."""
+    few = count <= MARKER_LIMIT
+    return {"color": palette.ACCENT, "linestyle": "-", "linewidth": 1.5,
+            "marker": "o" if few else None, "markersize": 3 if few else 0}
+
+
+def _colormap():
+    """A dark-safe map for the 3D scatter: plasma from 0.52 up (3:1 on
+    SURFACE), without its near-black low end, so every value stands off the
+    dark panel (coolwarm's low end and light-grey middle did not, UXPM-9)."""
+    import numpy
+    from matplotlib import colormaps
+    from matplotlib.colors import ListedColormap
+    base = colormaps["plasma"]
+    return ListedColormap(base(numpy.linspace(0.52, 1.0, 256)),
+                          name="station_plasma")
+
+
+def _style_axes(axes):
+    """The station's dark surface, readable text, dark 3D panes."""
+    axes.set_facecolor(palette.SURFACE)
+    axes.tick_params(colors=palette.TEXT, labelcolor=palette.TEXT,
+                     labelsize=TICK_SIZE)
+    for spine in axes.spines.values():
+        spine.set_color(palette.MUTED)
+    axis_list = [axes.xaxis, axes.yaxis]
+    if hasattr(axes, "zaxis"):
+        axis_list.append(axes.zaxis)
+        for axis in axis_list:
+            axis.set_pane_color(palette.SURFACE)
+            axis.pane.set_edgecolor(palette.GRID)
+    for axis in axis_list:
+        axis.label.set_color(palette.TEXT)
+        axis.label.set_fontsize(LABEL_SIZE)
+    axes.title.set_color(palette.TEXT)
+    axes.title.set_fontsize(TITLE_SIZE)
+    axes.grid(True, color=palette.GRID, linewidth=0.5)
+    for text in axes.texts:
+        text.set_color(palette.TEXT)
+
+
+def _draw(request, size=None, dpi=None):
     from matplotlib.figure import Figure
 
-    figure = Figure(figsize=(8, 6), dpi=100, facecolor=palette.SURFACE)
+    figure = Figure(figsize=tuple(size or FIGURE_SIZE), dpi=dpi or FIGURE_DPI,
+                    facecolor=palette.SURFACE)
     try:
         # Explicit Agg: no pyplot, no global backend state, nothing that needs
         # a display. `savefig(format="png")` would pick Agg on its own, but
@@ -291,37 +352,36 @@ def _draw(request):
         axes = figure.add_subplot(111)
         axes.axis("off")
         axes.text(0.5, 0.5, request["reason"], ha="center", va="center",
-                  wrap=True, fontsize=11, transform=axes.transAxes)
+                  wrap=True, fontsize=LABEL_SIZE, transform=axes.transAxes)
     elif request["kind"] == "line":
         axes = figure.add_subplot(111)
-        axes.plot(request["x"], request["y"], marker="o", linestyle="-",
-                  color="b")
+        axes.plot(request["x"], request["y"], **_line_style(len(request["y"])))
         axes.set_xlabel(request["x_label"])
         axes.set_ylabel(request["y_label"])
         axes.set_title(request["title"])
-        axes.grid(True)
     else:
         axes = figure.add_subplot(111, projection="3d")
         drawn = axes.scatter(request["x"], request["y"], request["z"],
-                             c=request["c"], cmap="coolwarm", marker="o")
+                             c=request["c"], cmap=_colormap(), marker="o",
+                             s=12 if len(request["c"]) > MARKER_LIMIT else 20)
         axes.set_xlabel(request["x_label"])
         axes.set_ylabel(request["y_label"])
         axes.set_zlabel(request["z_label"])
-        figure.colorbar(drawn, ax=axes, label=request["c_label"])
+        bar = figure.colorbar(drawn, ax=axes, label=request["c_label"])
+        bar.ax.tick_params(colors=palette.TEXT, labelcolor=palette.TEXT,
+                           labelsize=TICK_SIZE)
+        bar.ax.yaxis.label.set_color(palette.TEXT)
+        bar.outline.set_edgecolor(palette.MUTED)
         axes.set_title(request["title"])
 
+    for each in figure.get_axes():
+        if each is axes:
+            _style_axes(each)
+    try:
+        figure.tight_layout()
+    except Exception:
+        pass     # a 3D axes may refuse; the figure still draws
     buffer = io.BytesIO()
-    for axes in figure.get_axes():          # the station's dark surface
-        axes.set_facecolor(palette.SURFACE)
-        axes.tick_params(colors=palette.TEXT, labelcolor=palette.TEXT)
-        for spine in axes.spines.values():
-            spine.set_color(palette.MUTED)
-        axes.xaxis.label.set_color(palette.TEXT)
-        axes.yaxis.label.set_color(palette.TEXT)
-        axes.title.set_color(palette.TEXT)
-        axes.grid(True, color=palette.GRID, linewidth=0.5)
-        for text in axes.texts:
-            text.set_color(palette.TEXT)
     figure.savefig(buffer, format="png", facecolor=figure.get_facecolor())
     return buffer.getvalue()
 

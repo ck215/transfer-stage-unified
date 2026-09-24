@@ -1139,3 +1139,31 @@ def test_start_run_is_greyed_out_while_latched(monitor):
     monitor.estop()
     assert monitor.state["mode"] == "latched"
     assert sch.is_enabled(_start_element(monitor), "latched") is False
+
+
+# ---------------------------------------------------------------------
+# F16: the analysis figure is cached until the data or settings change
+# ---------------------------------------------------------------------
+
+def test_the_figure_is_rendered_once_until_something_changes(logged, monkeypatch):
+    """UXPM-13 measured 214 ms per render, every second, for an unchanged
+    image."""
+    logged.load_run(logged.save())
+    calls = []
+    real = plot_data.render_figure
+
+    def counting(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(plot_data, "render_figure", counting)
+    first = logged.figure
+    assert logged.figure == first and logged.run("figure").value == first
+    assert len(calls) == 1
+    logged.set_plot_dims("1D: X")
+    changed = logged.figure
+    assert len(calls) == 2 and changed != first
+    assert logged.figure == changed and len(calls) == 2
+    logged.load_run(logged.save())
+    logged.figure
+    assert len(calls) == 3, "a new load must render afresh"

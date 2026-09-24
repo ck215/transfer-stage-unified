@@ -324,6 +324,7 @@ class RedMonitor(Model):
         self._loaded_path = None
         self._plot_type = "0D"
         self._plot_dims = (None, None, None)
+        self._figure_cache = None     # (key, loaded, png), see `figure`
 
     # -- Panel plumbing ----------------------------------------------------
     def _defaults(self):
@@ -338,6 +339,11 @@ class RedMonitor(Model):
     @property
     def devices(self):
         return [self.screen]
+
+    #: The analysis figure's size (inches) and resolution; `plot_data`'s
+    #: defaults, named here so a test or a view build can change them.
+    FIGURE_SIZE = plot_data.FIGURE_SIZE
+    FIGURE_DPI = plot_data.FIGURE_DPI
 
     @property
     def mode_name(self):
@@ -1113,13 +1119,28 @@ class RedMonitor(Model):
         """PNG bytes of the analysis plot, rendered once here and displayed by
         every view — rather than Tk, PySide and the Web client each building
         their own matplotlib canvas out of their own copy of the data."""
+        # Cached until the loaded data or the plot selection changes: views
+        # poll this every second and a render cost 214 ms (UXPM-13). The key
+        # holds the loaded dict itself, so a reload is a new key even when
+        # the path is the same.
         loaded = self._loaded
+        key = (id(loaded), self._plot_type, self._plot_dims,
+               self.FIGURE_SIZE, self.FIGURE_DPI)
+        cached = self._figure_cache
+        if cached is not None and cached[0] == key and cached[1] is loaded:
+            return cached[2]
         if loaded is None:
-            return plot_data.render_figure("0D", red_percents=[])
-        return plot_data.render_figure(
-            self._plot_type, *self._plot_dims,
-            red_percents=loaded["red_percents"], dim_data=loaded["dim_data"],
-            times=loaded["times"])
+            png = plot_data.render_figure("0D", red_percents=[],
+                                          size=self.FIGURE_SIZE,
+                                          dpi=self.FIGURE_DPI)
+        else:
+            png = plot_data.render_figure(
+                self._plot_type, *self._plot_dims,
+                red_percents=loaded["red_percents"],
+                dim_data=loaded["dim_data"], times=loaded["times"],
+                size=self.FIGURE_SIZE, dpi=self.FIGURE_DPI)
+        self._figure_cache = (key, loaded, png)
+        return png
 
     @staticmethod
     def _dim_label(plot_type, dim1, dim2, dim3):
