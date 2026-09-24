@@ -79,26 +79,150 @@ def test_the_stylesheet_names_every_role():
         assert f'QPushButton[role="{role}"]' in sheet
 
 
-def test_the_stylesheet_dresses_the_table_and_the_toolbar():
+def test_the_stylesheet_dresses_the_table_and_the_rail():
     """The polish pass is in the sheet, not sprinkled through the builders:
-    a rule here reaches every panel at once and follows --font-size."""
+    a rule here reaches every panel at once and follows --font-size. (Was
+    "...and_the_toolbar": the row of toolbar tabs that repeated the dock
+    titles is gone, and the rail replaced it.)"""
     sheet = qt.stylesheet()
-    for selector in ("QLabel#columnHeader", "QLabel#rowTitle",
-                     "QToolBar QToolButton:checked", "QDockWidget::title"):
+    for selector in ("QLabel#columnHeader", "QLabel#rowTitle", "QFrame#rail",
+                     "QFrame#rail QLabel#railValue", "QDockWidget::title"):
         assert f"{selector} {{" in sheet, selector
+    assert "QToolBar" not in sheet
 
 
 def test_a_readout_and_an_entry_do_not_look_the_same():
     """The owner's "readouts distinct from entries": an entry is a bordered
-    well sunk to the window colour, a readout is bold text on the card. Shape
-    and weight, so the distinction survives any palette."""
+    well sunk to the window colour, a readout is a number in the trace ink on
+    the card (the brief: trace is what a live readout is drawn in). Updated:
+    it asserted bold ink, the look before the one-red palette."""
     sheet = qt.stylesheet()
     entries = sheet.split("QLineEdit, QComboBox, QTextEdit {")[1].split("}")[0]
     readouts = sheet.split("QLabel#valueLabel {")[1].split("}")[0]
     assert f"background-color: {theme.BACKGROUND};" in entries
     assert "border: 1px solid" in entries
-    assert "font-weight: 600;" in readouts
+    assert f"color: {theme.TRACE};" in readouts
     assert "border" not in readouts
+
+
+def test_a_readout_at_rest_is_drawn_muted():
+    """ "off" is a readout, not a bold label; it does not compete with a
+    number that is moving."""
+    sheet = qt.stylesheet()
+    quiet = sheet.split('QLabel#valueLabel[quiet="true"] {')[1].split("}")[0]
+    assert f"color: {theme.MUTED};" in quiet
+
+
+def test_every_control_has_hover_focus_pressed_and_disabled_states():
+    sheet = qt.stylesheet()
+    for selector in ("QPushButton:hover", "QPushButton:focus",
+                     "QPushButton:pressed", "QPushButton:disabled",
+                     "QComboBox:hover", "QComboBox:focus",
+                     "QLineEdit:hover", "QLineEdit:focus"):
+        assert selector in sheet, selector
+    focus = sheet.split("QPushButton:focus {")[1].split("}")[0]
+    assert f"2px solid {theme.TRACE}" in focus
+
+
+def test_signal_red_is_spent_on_the_stop_object_alone():
+    """One red. A plain button with the `danger` role (Red Percent's "Stop"
+    run) renders as an ordinary command; the stop object dresses itself."""
+    sheet = qt.stylesheet()
+    assert theme.SIGNAL.lower() not in sheet.lower()
+    danger = sheet.split('QPushButton[role="danger"] {')[1].split("}")[0]
+    assert f"background-color: {theme.colors('neutral')[0]};" in danger
+
+
+def test_the_type_scale_is_one_family_on_a_tight_ratio():
+    """Base 12 pt, ratio 1.2: every size in the sheet is a step of it."""
+    original = theme.FONT_SIZE
+    try:
+        theme.set_font_size(12)
+        sizes = {int(n) for n in re.findall(r"font-size: (\d+)pt", qt.stylesheet())}
+        assert sizes <= {10, 12, 14, 17}, sizes
+        families = set(re.findall(r"font-family: ([^;]+);", qt.stylesheet()))
+        assert families == {theme.FONT_FAMILY}
+    finally:
+        theme.set_font_size(original)
+
+
+# ---------------------------------------------------------------------------
+# Copy: sentence case, as the Web view renders it
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, expected", [
+    ("X Position:", "X position"),
+    ("Probe Tilt Angle:", "Probe tilt angle"),
+    ("Tip / Consumable ID:", "Tip / consumable ID"),
+    ("Operator Annotation (intended)", "Operator annotation (intended)"),
+    ("FULL STOP", "Full stop"),
+    ("Sync X: OFF", "Sync X: OFF"),
+    ("Enter Autonomous Mode", "Enter autonomous mode"),
+    ("Red % over time", "Red % over time"),
+    ("", ""),
+])
+def test_a_label_is_sentence_case_without_its_colon(text, expected):
+    assert qt.sentence_case(text) == expected
+
+
+def test_sentence_keeps_interior_words_and_only_lowers_shouting():
+    assert qt.sentence("LATCHED - click to clear") == "Latched - click to clear"
+    assert qt.sentence("Stepper Probe") == "Stepper Probe"
+
+
+@pytest.mark.parametrize("text", ["off", "Off", "False", "", None, "none",
+                                  "nothing selected", "not scanned yet"])
+def test_a_value_at_rest_is_quiet(text):
+    assert qt.is_quiet_value(text) is True
+
+
+@pytest.mark.parametrize("text", ["0", "simulated", "detected: Rotator",
+                                  "not detected", "0.00", "True"])
+def test_a_live_value_is_not_quiet(text):
+    """A zero is a reading, and "not detected" is news: neither is at rest."""
+    assert qt.is_quiet_value(text) is False
+
+
+# ---------------------------------------------------------------------------
+# The rail and the action lines
+# ---------------------------------------------------------------------------
+
+def test_the_rail_carries_what_a_model_flags_for_it():
+    schema = sch.schema(
+        sch.section("Run", sch.readonly("Run ID:", "run_id")),
+        sch.section("Live", sch.readonly("Current Red:", "current_red", rail=True),
+                    sch.readonly("Frames:", "frames")))
+    assert [e["model_attr"] for e in qt.rail_elements(schema)] == ["current_red"]
+
+
+def test_the_rail_falls_back_to_the_first_section_with_a_readout():
+    schema = sch.schema(
+        sch.section("Setup", sch.button("Go", "go")),
+        sch.section("Frame", *[sch.readonly(f"{a}:", a) for a in "abcdef"]))
+    picked = [e["model_attr"] for e in qt.rail_elements(schema)]
+    assert picked == ["a", "b", "c", "d"] and len(picked) == qt.RAIL_READOUTS
+
+
+def test_a_model_with_no_readout_puts_nothing_on_the_rail():
+    assert qt.rail_elements(sch.schema(sch.section("S", sch.button("Go", "go")))) == []
+    assert qt.rail_elements(None) == []
+
+
+def test_a_row_that_runs_something_is_an_action_line():
+    devices = sch.section("Devices", sch.button("Refresh", "refresh"),
+                          sch.readonly("Scan:", "scan_status"), layout="row")
+    model = sch.section("Rotator", sch.dropdown("Port", "p", "set_p", "opts"),
+                        sch.readonly("Status:", "s"), layout="row")
+    column = sch.section("Launch", sch.button("Launch", "launch"))
+    assert qt.is_action_row(devices) is True
+    assert qt.is_action_row(model) is False
+    assert qt.is_action_row(column) is False       # not a row at all
+
+
+def test_colour_helpers_derive_from_a_theme_value():
+    assert qt.rgba("#ffffff", 0.5) == "rgba(255, 255, 255, 0.50)"
+    assert qt.mix("#ffffff", "#000000", 0.5) == "#808080"
+    assert qt.mix(theme.SIGNAL, theme.BACKGROUND, 1.0) == theme.SIGNAL.lower()
 
 
 def test_the_module_declares_no_colour_and_no_pixel_font_size():

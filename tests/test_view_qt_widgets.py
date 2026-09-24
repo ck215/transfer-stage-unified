@@ -744,35 +744,59 @@ def test_the_setup_panel_is_shown_first(dashboard, qapp):
     assert isinstance(dashboard._setup_dock.widget(), qt.QtPanelView)
 
 
-def test_the_sidebar_lists_open_and_closed_models(dashboard, controller):
-    dashboard._build_sidebar()
-    rows = {dashboard.model_list.item(i).text():
-            dashboard.model_list.item(i).checkState()
-            for i in range(dashboard.model_list.count())}
-    assert rows == {"Fake": Qt.CheckState.Checked,
-                    "Gone": Qt.CheckState.Unchecked}
+def test_the_rail_offers_a_way_back_to_every_closed_model(dashboard, controller):
+    """Replaces the sidebar's checkbox list, which repeated every open dock's
+    title a second time: a closed model is reopened from the rail, as in the
+    Web view, and an open one is already on screen under its own title."""
+    dashboard._sync_rail()
+    assert list(dashboard.reopen_buttons) == ["Gone"]
+    assert dashboard._reopen_holder.isHidden() is False
 
 
-def test_checking_a_closed_model_reopens_it(dashboard, controller):
-    dashboard._build_sidebar()
-    row = next(dashboard.model_list.item(i)
-               for i in range(dashboard.model_list.count())
-               if dashboard.model_list.item(i).text() == "Gone")
-    row.setCheckState(Qt.CheckState.Checked)
+def test_the_rail_says_nothing_about_reopening_when_nothing_is_closed(
+        dashboard, controller):
+    controller.closed = []
+    dashboard._sync_rail()
+    assert dashboard.reopen_buttons == {}
+    assert dashboard._reopen_holder.isHidden() is True
+
+
+def test_reopening_from_the_rail_reopens_the_model(dashboard, controller):
+    dashboard._sync_rail()
+    dashboard.reopen_buttons["Gone"].click()
     assert controller.reopened == ["Gone"]
 
 
-def test_a_reopen_that_fails_reverts_the_checkbox_instead_of_raising(
+def test_a_reopen_that_fails_is_logged_instead_of_raising(
         dashboard, controller, monkeypatch):
     def refuse(name):
         raise ValueError(f"{name} was never configured")
     monkeypatch.setattr(controller, "reopen", refuse)
-    dashboard._build_sidebar()
-    row = next(dashboard.model_list.item(i)
-               for i in range(dashboard.model_list.count())
-               if dashboard.model_list.item(i).text() == "Gone")
-    row.setCheckState(Qt.CheckState.Checked)
-    assert row.checkState() == Qt.CheckState.Unchecked
+    dashboard._sync_rail()
+    dashboard.reopen_buttons["Gone"].click()       # must not raise
+    assert "Gone" in dashboard.reopen_buttons
+
+
+def test_the_rail_carries_each_open_models_key_numbers(dashboard, controller,
+                                                      panel):
+    """Numbers first: the rail shows what the model's first section reads,
+    and follows the model on the tick."""
+    dashboard._sync_rail()
+    _, readouts = dashboard._rail_groups["Fake"]
+    assert [e["model_attr"] for e, _ in readouts] == ["reading"]
+    dashboard._sync_readouts()
+    assert readouts[0][1].text() == "1.234"
+    panel.reading = "9.876"
+    dashboard._on_rail_tick()
+    assert readouts[0][1].text() == "9.876"
+    assert readouts[0][1].property("quiet") == "false"
+
+
+def test_a_closed_model_leaves_the_rail(dashboard, controller):
+    dashboard._sync_rail()
+    controller.open_names = []
+    dashboard._sync_rail()
+    assert "Fake" not in dashboard._rail_groups
 
 
 # ---------------------------------------------------------------------------
@@ -780,9 +804,13 @@ def test_a_reopen_that_fails_reverts_the_checkbox_instead_of_raising(
 # ---------------------------------------------------------------------------
 
 def test_the_full_stop_button_latches_and_relabels(dashboard, controller):
+    """The Web mushroom's face: `Stop`, then `Clear` once latched. Updated:
+    it read "CLEAR FULL STOP" in capitals."""
+    assert dashboard.stop_button.text() == "Stop"
     dashboard._on_stop_clicked()
     assert controller.estop_calls == 1
-    assert dashboard.stop_button.text() == "CLEAR FULL STOP"
+    assert dashboard.stop_button.text() == "Clear"
+    assert dashboard.stop_button.is_latched is True
 
 
 def test_clearing_the_latch_asks_first(dashboard, controller, monkeypatch):
@@ -806,9 +834,10 @@ def test_clearing_the_latch_asks_first(dashboard, controller, monkeypatch):
 def test_the_stop_button_colour_comes_from_the_theme(dashboard, controller):
     controller.is_estopped = True
     dashboard._sync_stop_button()
-    latched = theme.toggle_colors({"on_role": "danger", "off_role": "danger"},
-                                  True)
-    assert latched["background"] in dashboard.stop_button.styleSheet()
+    sheet = dashboard.stop_button.styleSheet()
+    assert f"background-color: {theme.colors('danger')[0]}" in sheet
+    # Latched, the ring lights in the trace colour, as the Web mushroom's.
+    assert theme.TRACE in sheet
 
 
 # ---------------------------------------------------------------------------
@@ -1082,36 +1111,40 @@ def test_row_sections_are_one_card_and_never_split_a_panel(qapp, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# The sidebar is as wide as what it shows
+# No column is spent on chrome (was: the sidebar is as wide as what it shows)
+#
+# The sidebar is gone - it repeated the dock titles and carried the stop at
+# the foot of an empty column - so its three width tests became these: the
+# space it wasted now goes to the panels, in proportion to what they hold.
 # ---------------------------------------------------------------------------
 
-def test_the_sidebar_is_capped_to_what_it_actually_shows(dashboard):
-    """Uncapped it took a third of the window as an empty column, and the
-    model docks - the only things with anything in them - shared the rest."""
-    dashboard._build_sidebar()
-    assert dashboard.sidebar.maximumWidth() == dashboard._sidebar_width()
-    assert dashboard.sidebar.maximumWidth() < 400
+def test_the_window_spends_no_dock_on_a_model_list(dashboard, qapp):
+    dashboard.open()
+    docks = [d.windowTitle() for d in dashboard.findChildren(qt.QDockWidget)
+             if not d.isHidden()]
+    assert "Models" not in docks
 
 
-def test_the_sidebar_is_never_narrower_than_its_stop_button(dashboard,
-                                                            controller):
-    controller.open_names, controller.closed = ["X"], []
-    dashboard._build_sidebar()
-    assert dashboard.sidebar.maximumWidth() >= (
-        dashboard.stop_button.fontMetrics().horizontalAdvance(
-            "CLEAR FULL STOP"))
+def test_side_by_side_docks_are_sized_by_what_they_hold(dashboard, qapp,
+                                                        controller,
+                                                        monkeypatch):
+    calls = []
+    monkeypatch.setattr(dashboard, "resizeDocks",
+                        lambda docks, sizes, orientation: calls.append(sizes))
+    dashboard._add_panel("Fake")
+    assert calls == []                  # one dock: nothing to share
+    dashboard._add_panel("Gone")
+    assert len(calls) == 1 and len(calls[0]) == 2
+    assert all(size > 0 for size in calls[0])
 
 
-def test_the_sidebar_widens_for_a_long_model_name_and_no_further(dashboard,
-                                                                 controller):
-    """Measured in the list's own font, so it follows --font-size instead of
-    being a pixel guess."""
-    controller.open_names, controller.closed = ["Temperature Controller"], []
-    dashboard._build_sidebar()
-    wide = dashboard.sidebar.maximumWidth()
-    controller.open_names = ["X"]
-    dashboard._build_sidebar()
-    assert dashboard.sidebar.maximumWidth() < wide
+def test_a_panel_scrolls_rather_than_pushing_the_window_off_screen(dashboard):
+    """The launched window grew to 1944 x 1267 to fit two panels' minimum
+    sizes - past a laptop screen, which carried the rail's stop off it."""
+    dock = dashboard._add_panel("Fake")
+    assert isinstance(dock.widget(), qt.QScrollArea)
+    assert dock.widget().widget() is dashboard._panels["Fake"]
+    assert dashboard.minimumSizeHint().width() < 800
 
 
 # ---------------------------------------------------------------------------
@@ -1186,19 +1219,26 @@ def test_a_log_stream_stays_a_few_scrollable_lines(view):
 
 def test_a_models_own_stop_takes_the_whole_section_and_the_tall_metric(
         table_view):
-    """It rendered as a caption and a small button beside it - "FULL STOP
-    FULL STOP" - which is neither prominent nor readable as one control."""
+    """Updated: a model's own stop was a full-width slab reading "FULL STOP",
+    then a red slab reading "LATCHED - click to clear" - two reds that were
+    not the stop object. It is now that object, one size down: round,
+    reading Stop / Clear, with the schema's words as its tooltip."""
     element = next(e for e in table_view._elements
                    if e["type"] == "toggle" and e.get("on_role") == "danger")
     button = table_view._widget_for(element)
-    assert button.minimumHeight() == qt.STOP_BUTTON_PX
-    assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert isinstance(button, qt.StopButton) and button.is_mini is True
+    assert button.width() == button.height()
+    table_view._refresh()
+    assert button.text() == "Stop"
+    table_view._set_on(element, True)
+    assert button.text() == "Clear"
+    assert button.toolTip() == "Latched - click to clear"
 
 
 def test_an_ordinary_toggle_keeps_its_caption_and_its_natural_size(view):
     """Only a danger toggle is a stop; everything else stays a labelled row."""
     button = view._widget_for(element_of(view, "toggle"))
-    assert button.minimumHeight() != qt.STOP_BUTTON_PX
+    assert not isinstance(button, qt.StopButton)
 
 
 def test_a_section_card_keeps_its_natural_height(table_view):
@@ -1212,7 +1252,11 @@ def test_a_section_card_keeps_its_natural_height(table_view):
 
 
 def test_the_full_stop_button_is_tall_and_set_in_the_theme_size(dashboard):
-    assert dashboard.stop_button.minimumHeight() == qt.STOP_BUTTON_PX
+    """Updated: a round disc sized in lines of the base font (so it follows
+    --font-size), where it was a fixed-height slab."""
+    button = dashboard.stop_button
+    assert button.width() == button.height()
+    assert button.width() == round(button.line_height() * qt.STOP_DISC_LINES)
     dashboard._sync_stop_button()
     _, size, _ = theme.font(qt.STOP_FONT_SCALE, bold=True)
     assert f"font-size: {size}pt" in dashboard.stop_button.styleSheet()
@@ -1254,7 +1298,7 @@ def test_the_setup_dock_collapses_when_the_first_model_launches(fresh_dashboard,
     assert dashboard._setup_dock.isHidden() is True
 
 
-def test_the_collapsed_setup_dock_comes_back_from_the_toolbar(fresh_dashboard, qapp,
+def test_the_collapsed_setup_dock_comes_back_from_the_rail(fresh_dashboard, qapp,
                                                               controller):
     """It has to stay reopenable: Refresh and Relaunch are mid-session jobs."""
     dashboard = fresh_dashboard
@@ -1264,7 +1308,7 @@ def test_the_collapsed_setup_dock_comes_back_from_the_toolbar(fresh_dashboard, q
     action = dashboard.setup_action
     assert action.isCheckable() is True
     # Qt *disables* a dock's toggleViewAction unless the dock is closable, so
-    # this is the assertion that catches a dead toolbar entry.
+    # this is the assertion that catches a dead Setup button on the rail.
     assert action.isEnabled() is True
     assert action.isChecked() is False
     action.trigger()
@@ -1331,7 +1375,203 @@ def test_collapsing_without_a_setup_dock_is_not_an_error(dashboard):
     assert dashboard._setup_dock is None
 
 
-def test_the_toolbar_offers_an_entry_for_every_dock_it_can_hide(dashboard, qapp):
+def test_there_is_one_navigation_not_two(dashboard, qapp):
+    """Replaces the toolbar test. Three toolbar tabs repeated the three dock
+    titles under them; the docks are the working surface, and the one way
+    back to Setup is the rail's Setup, bound to the dock's own action."""
+    from PySide6.QtWidgets import QToolBar
     dashboard.open()
-    assert [a.text() for a in dashboard.toolbar.actions()] == [
-        "Setup", "Models", "Event Log"]
+    assert dashboard.findChildren(QToolBar) == []
+    assert dashboard.setup_button.defaultAction() is dashboard.setup_action
+    assert dashboard.setup_button.isHidden() is False
+    assert dashboard.menuWidget() is dashboard.rail
+
+
+def test_the_stop_object_is_on_the_rail_and_the_rail_above_every_dock(
+        dashboard, qapp):
+    dashboard.open()
+    assert dashboard.stop_button.parentWidget() is dashboard.rail
+    assert not dashboard.findChildren(qt.QDockWidget, "sidebar")
+
+
+def test_the_stop_object_is_never_dimmed(dashboard):
+    dashboard.stop_button.setEnabled(False)
+    assert dashboard.stop_button.isEnabled() is True
+
+
+def test_the_stop_pulses_once_on_the_edge_and_not_while_latched(dashboard,
+                                                                controller):
+    button = dashboard.stop_button
+    started = []
+    button._pulse.stateChanged.connect(
+        lambda new, old: started.append(new) if new == button._pulse.State.Running else None)
+    controller.is_estopped = True
+    dashboard._sync_stop_button()
+    dashboard._sync_stop_button()      # still latched: no second pulse
+    assert len(started) == 1
+    controller.is_estopped = False
+    dashboard._sync_stop_button()
+    assert button.text() == "Stop"
+
+
+# ---------------------------------------------------------------------------
+# The empty state and the event tray
+# ---------------------------------------------------------------------------
+
+def test_an_empty_window_says_what_to_do_next(fresh_dashboard, qapp,
+                                              controller):
+    dashboard = fresh_dashboard
+    dashboard.open()
+    assert dashboard.empty_state.isHidden() is False
+    texts = [w.text() for w in dashboard.empty_state.findChildren(QLabel)]
+    assert qt.EMPTY_TITLE in texts and qt.EMPTY_HINT in texts
+    controller.notify("added", "Fake")
+    qapp.processEvents()
+    assert dashboard.empty_state.isHidden() is True
+
+
+def test_the_empty_state_offers_setup_when_setup_is_away(fresh_dashboard, qapp):
+    dashboard = fresh_dashboard
+    dashboard.open()
+    assert dashboard.empty_setup_button.isHidden() is True
+    dashboard._setup_dock.close()
+    assert dashboard.empty_setup_button.isHidden() is False
+    dashboard.empty_setup_button.click()
+    assert dashboard._setup_dock.isHidden() is False
+
+
+def test_the_event_tray_opens_as_one_line(dashboard, qapp):
+    class Spoof:
+        severity, source, title, message, count = "warning", "T", "t", "m", 1
+        needs_ack = False
+        text = "[Setup] a port answered nothing"
+
+    dashboard.open()
+    assert dashboard.event_view.isHidden() is True
+    dashboard._show_event(Spoof())
+    assert dashboard.event_latest.full_text() == (
+        "Warning  [Setup] a port answered nothing")
+    assert dashboard.event_latest.toolTip() == dashboard.event_latest.full_text()
+    dashboard.tray_toggle.click()
+    assert dashboard.event_view.isHidden() is False
+    assert dashboard.tray_toggle.text() == "Hide events"
+    dashboard.tray_toggle.click()
+    assert dashboard.event_view.isHidden() is True
+
+
+def test_an_info_event_is_readable_not_panel_grey(dashboard):
+    """`info` was drawn in the info role's fill, a panel grey."""
+    assert dashboard._severity_colour("info") == theme.MUTED
+    assert dashboard._severity_colour("warning") == theme.TRACE
+
+
+# ---------------------------------------------------------------------------
+# Labels and readouts
+# ---------------------------------------------------------------------------
+
+def test_a_label_is_rendered_in_sentence_case_without_its_colon(view):
+    captions = [w.text() for w in view.findChildren(QLabel)
+                if w.objectName() == "caption"]
+    assert "Speed" in captions and "Speed:" not in captions
+
+
+def test_a_readout_at_rest_is_quiet_and_a_live_one_is_not(view, panel):
+    element = element_named(view, "reading")
+    label = view._widget_for(element)
+    view._refresh()
+    assert label.property("quiet") == "false"
+    panel.reading = "off"
+    view._refresh()
+    assert label.property("quiet") == "true"
+    panel.reading = ""
+    view._refresh()
+    assert label.text() == qt.EMPTY_READOUT
+
+
+def test_a_rescan_is_a_quiet_icon_with_a_tooltip(view):
+    from PySide6.QtWidgets import QPushButton
+    icons = [b for b in view.findChildren(QPushButton)
+             if b.objectName() == "iconButton"]
+    assert icons and all(b.text() == "" and b.toolTip() for b in icons)
+    assert not icons[0].icon().isNull()
+
+
+# ---------------------------------------------------------------------------
+# Action lines in the table (Setup's Devices and Launch rows)
+# ---------------------------------------------------------------------------
+
+class ActionTablePanel(TablePanel):
+    """Setup's real shape: an action line, model rows, an action line."""
+
+    NAME = "ActionTable"
+
+    def __init__(self):
+        super().__init__()
+        self.summary = "nothing selected"
+
+    @property
+    def schema(self):
+        sections = [sch.section(
+            "Devices", sch.button("Refresh", "refresh", role="info"),
+            sch.readonly("Scan:", "scan_status"), layout="row")]
+        for name, key, needs_port, needs_gamepad in self.ROWS:
+            elements = []
+            if needs_port:
+                elements.append(sch.dropdown("Port", f"{key}_port",
+                                             f"set_{key}_port", "port_options"))
+            if needs_gamepad:
+                elements.append(sch.dropdown("Gamepad", f"{key}_gamepad",
+                                             f"set_{key}_gamepad",
+                                             "gamepad_options"))
+            elements.append(sch.readonly("Status:", f"{key}_found"))
+            sections.append(sch.section(name, *elements, layout="row"))
+        sections.append(sch.section(
+            "Launch", sch.readonly("Selected:", "summary"),
+            sch.button("Launch", "launch", role="go"), layout="row"))
+        return sch.schema(*sections)
+
+
+@pytest.fixture
+def action_view(qapp):
+    built = qt.QtPanelView(FakeController(ActionTablePanel()), "ActionTable")
+    yield built
+    built.close()
+
+
+def test_an_action_line_invents_no_column(action_view):
+    """The scan message sat in a "Scan" column and the summary in a
+    "Selected" column that every model row left empty."""
+    table = action_view._table
+    grid = table.grid
+    headers = [grid.itemAtPosition(table.header_row, c).widget().text()
+               for c in range(1, grid.columnCount())
+               if grid.itemAtPosition(table.header_row, c) is not None]
+    assert headers == ["Port", "Gamepad", "Status"]
+
+
+def test_the_header_sits_under_the_devices_line_and_over_the_first_model(
+        action_view):
+    table = action_view._table
+    grid = table.grid
+    scan = action_view._widget_for(element_named(action_view, "scan_status"))
+    first = action_view._widget_for(element_named(action_view, "stepper_port"))
+    last = action_view._widget_for(element_named(action_view, "red_found"))
+    summary = action_view._widget_for(element_named(action_view, "summary"))
+    scan_row = cell_of(grid, scan)[0]
+    assert table.header_row == scan_row + 1
+    assert cell_of(grid, first)[0] == table.header_row + 1
+    assert cell_of(grid, summary)[0] > cell_of(grid, last)[0]
+
+
+def test_an_action_line_spans_the_table_and_wraps_its_message(action_view):
+    grid = action_view._table.grid
+    scan = action_view._widget_for(element_named(action_view, "scan_status"))
+    index = -1
+    widget = scan
+    while index < 0 and widget is not None:
+        index = grid.indexOf(widget)
+        widget = widget.parentWidget()
+    _, column, _, span = grid.getItemPosition(index)
+    assert column == 0 and span == grid.columnCount()
+    assert scan.wordWrap() is True
+

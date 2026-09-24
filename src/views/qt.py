@@ -35,7 +35,16 @@ in the panel's shared `PanelTable` — so the thirteen element builders below
 carry no layout branch at all. A row section's columns are allocated by
 *label*, which is what lines "Port" up under "Port" across models that do not
 all declare the same controls. Setup is the panel this exists for: one line
-per model type instead of six stacked forms (Addendum 2).
+per model type instead of six stacked forms (Addendum 2). A row section that
+runs something (`is_action_row`: Setup's Devices and Launch lines) spans the
+table instead of inventing columns.
+
+The window is the Web view's sibling: a rail across the top carrying each
+open model's key numbers and the stop object, the model docks under it (their
+own titles are the only navigation), Setup as a dock that gives way on
+launch, and the event log as a one-line tray in the status bar. Copy is
+sentence case (`sentence_case`, the Web view's rule); signal red is spent on
+the stop object alone.
 
 Styling
 -------
@@ -56,6 +65,7 @@ open a popup while `_closing`; that guard is load-bearing and is kept.
 import html
 import math
 import os
+import re
 import shutil
 
 import schema as sch
@@ -64,14 +74,18 @@ from views import theme
 from views.base import Dashboard, PanelView
 
 try:                                    # the module imports without PySide6
-    from PySide6.QtCore import QEvent, QLocale, QPoint, QRect, Qt, QTimer, Signal
-    from PySide6.QtGui import (QColor, QDoubleValidator, QIntValidator, QPainter,
-                               QPen, QPixmap, QTextCursor)
+    from PySide6.QtCore import (QEasingCurve, QEvent, QLocale, QPoint, QRect,
+                                QRectF, QSize, Qt, QTimer, QVariantAnimation,
+                                Signal)
+    from PySide6.QtGui import (QColor, QDoubleValidator, QFont, QFontMetrics,
+                               QIcon,
+                               QIntValidator, QPainter, QPen, QPixmap,
+                               QTextCursor)
     from PySide6.QtWidgets import (
-        QApplication, QComboBox, QDockWidget, QFileDialog, QFormLayout, QFrame,
-        QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-        QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSizePolicy,
-        QTextEdit, QToolBar, QVBoxLayout, QWidget)
+        QAbstractButton, QApplication, QComboBox, QDockWidget, QFileDialog,
+        QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+        QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
+        QStatusBar, QTextEdit, QToolButton, QVBoxLayout, QWidget)
     HAS_QT = True
 except ImportError:                     # pragma: no cover - exercised by test
     HAS_QT = False
@@ -91,7 +105,7 @@ except ImportError:                     # pragma: no cover - exercised by test
             raise RuntimeError("PySide6 is not installed: the Qt view cannot "
                                "be built. Launch with the Tk or Web view.")
 
-    QWidget = QMainWindow = QDockWidget = _NoQt
+    QWidget = QMainWindow = QDockWidget = QPushButton = QLabel = _NoQt
 
 
 #: A drag smaller than this in either axis is a stray click, not a region.
@@ -112,19 +126,13 @@ INT_LIMIT = 2 ** 31 - 1
 # -- geometry. Padding and gaps come from `theme.PAD / GAP / INSET`; what is
 # left here is the handful of sizes the theme has no opinion about, and those
 # are measured from the font wherever the thing they size holds text.
-#: The table's first column - the model's name. Wide enough for the longest.
-TABLE_LABEL_MIN_PX = 170
-#: Every other table column, so a row with no gamepad still lines up with one
-#: that has one.
+#: Every table column that holds a control, so a row with no gamepad still
+#: lines up with one that has one.
 TABLE_CONTROL_MIN_PX = 150
 #: More cards than this and a panel is laid out in two columns. Stacked in
 #: one, Red Percent's ten sections made a dock twice the screen's height and
 #: put Safety - the section that must stay reachable - below the fold.
 COLUMN_SPLIT_CARDS = 6
-#: Slack around the sidebar's widest line, in "M"s: the check indicator, the
-#: item padding and a scrollbar. Measured, not a pixel guess, so the sidebar
-#: follows --font-size.
-SIDEBAR_SLACK_CHARS = 5
 #: A dropdown sizes to this many characters rather than to its longest option,
 #: which is what makes a column of them one width instead of four.
 DROPDOWN_CHARS = 14
@@ -136,16 +144,34 @@ LAMP_PX = 16
 #: stepper's Gamepad Log took a third of the panel and pushed Safety - the
 #: section that has to be reachable - off the bottom of the dock.
 LOG_STREAM_PX = 110
-#: The event log's opening height, and the number of lines it keeps. It is a
-#: companion to the panels, not the main event; and an append-forever log is
-#: an unbounded document in a window meant to run for a whole bench session.
+#: The event tray's open height, and the number of lines it keeps. Closed, it
+#: is one line: the latest event. It is a companion to the panels, not the
+#: main event, and an append-forever log is an unbounded document in a window
+#: meant to run for a whole bench session.
 EVENT_LOG_PX, EVENT_LOG_LINES = 150, 500
-#: FULL STOP: the one control an operator must be able to hit without looking.
-#: The window's global stop and every model's own stop share the metric, and
-#: `DANGER_ROLE` is what marks a toggle as one of them (`Model._safety_section`
-#: declares the stop with `on_role`/`off_role` both "danger").
-STOP_BUTTON_PX, STOP_FONT_SCALE = 54, 1.3
+#: The stop object's disc, in lines of the base font, so it follows
+#: --font-size: the rail's stop, and one size down, a model's own stop in its
+#: Safety section. The same object at two sizes, as in the Web view.
+STOP_DISC_LINES, MINI_STOP_LINES = 4.6, 2.9
+#: The stop's face, on the 1.2 type ratio: one step up from the base.
+STOP_FONT_SCALE = 1.2
+#: The pulse when the latch closes: once, on the edge, never while it stays.
+PULSE_MS = 400
 DANGER_ROLE = "danger"
+#: How many of a model's key numbers the rail carries (the Web view's
+#: RAIL_READOUTS). More and it stops being readable at a glance.
+RAIL_READOUTS = 4
+#: The type scale: base 12 pt, ratio 1.2. Caption, body, heading, readout.
+SCALE_SMALL, SCALE_HEADING, SCALE_READOUT = 1 / 1.2, 1.2, 1.44
+#: A readout whose value is one of these is at rest, not live: it is drawn in
+#: the muted ink, so "off" never competes with a number that is moving.
+QUIET_VALUES = frozenset({"", "off", "none", "false", "no", "--",
+                          "nothing selected", "not scanned", "not scanned yet"})
+#: What an empty readout shows: a dash, not a blank that reads as broken.
+EMPTY_READOUT = "\u2014"
+#: The empty state: what to do next, not "nothing here".
+EMPTY_TITLE = "No instruments running."
+EMPTY_HINT = "Choose ports in Setup and press Launch."
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +183,89 @@ def _rule(selector, declarations):
     return f"{selector} {{\n{body}}}\n"
 
 
+def _channels(colour):
+    value = colour.lstrip("#")
+    if len(value) == 3:
+        value = "".join(c * 2 for c in value)
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def rgba(colour, alpha):
+    """A theme colour at an opacity - the brief's "derived opacities". The
+    colour is always a theme value; only the alpha is this module's."""
+    red, green, blue = _channels(colour)
+    return f"rgba({red}, {green}, {blue}, {alpha:.2f})"
+
+
+def mix(colour, other, amount):
+    """`amount` of `colour` over `other`, as CSS `color-mix` does: the stop's
+    darker ring is the signal red sunk toward the window colour."""
+    a, b = _channels(colour), _channels(other)
+    return "#" + "".join(f"{round(x * amount + y * (1 - amount)):02x}"
+                         for x, y in zip(a, b))
+
+
+def sentence(text):
+    """Sentence case for copy: a SHOUTED word of four letters or more comes
+    down ("FULL STOP" -> "Full stop") while "Sync X: OFF" keeps the capitals
+    that carry meaning. The Web view's `sentence`, word for word. The schema
+    is the model's vocabulary and is not edited; this is presentation."""
+    words = [word.lower() if re.fullmatch(r"[A-Z]{4,}[:.,]?", word) else word
+             for word in str("" if text is None else text).split(" ")]
+    joined = " ".join(words)
+    return joined[:1].upper() + joined[1:] if joined else joined
+
+
+def sentence_case(text):
+    """Sentence case for a label or a heading (the Web view's `sentenceCase`):
+    interior Capitalised words come down too - "Probe Tilt Angle:" reads
+    "Probe tilt angle" - while an initialism, an axis letter or a unit is left
+    as the model wrote it. The trailing colon goes: the value sits beside the
+    label on a panel, not after it in a form."""
+    words = re.sub(r"\s*:\s*$", "", sentence(text)).split(" ")
+    return " ".join(word.lower() if index and re.fullmatch(r"[A-Z][a-z]+", word)
+                    else word for index, word in enumerate(words))
+
+
+def is_quiet_value(text):
+    """A readout at rest ("off", "False", nothing) rather than a live one."""
+    return str("" if text is None else text).strip().lower() in QUIET_VALUES
+
+
+def rail_elements(schema):
+    """The key numbers the rail carries for a model (the Web view's
+    `railElements`): the readouts the model flags `rail=True`, else the
+    readonly elements of its first section that has any. Derived, never named,
+    so a model this file has never heard of still shows up on the rail."""
+    sections = (schema or {}).get("sections") or []
+    flagged = [e for s in sections for e in s.get("elements") or ()
+               if e.get("type") == "readonly" and e.get("model_attr")
+               and e.get("rail")]
+    if flagged:
+        return flagged[:RAIL_READOUTS]
+    for section in sections:
+        readouts = [e for e in section.get("elements") or ()
+                    if e.get("type") == "readonly" and e.get("model_attr")]
+        if readouts:
+            return readouts[:RAIL_READOUTS]
+    return []
+
+
+#: Element types that are commands a row runs, rather than values it holds.
+ACTION_TYPES = frozenset({"button", "file_save", "file_open"})
+
+
+def is_action_row(section):
+    """A `layout="row"` section that runs something is an action line, not a
+    line of the table: Setup's Devices row (Refresh, the scan status) and its
+    Launch row (the summary, Launch / Relaunch / Stop system). Given their own
+    columns, they invented a "Scan" and a "Selected" column that every model
+    row left empty, and pushed the table sideways with a scan message."""
+    return (section.get("layout") == "row"
+            and any(e.get("type") in ACTION_TYPES
+                    for e in section.get("elements") or ()))
+
+
 def stylesheet():
     """The whole Qt stylesheet, generated from `views.theme`.
 
@@ -164,14 +273,23 @@ def stylesheet():
     That is the entire reason `style.qss` is deleted rather than ported: a
     checked-in sheet is a second palette that drifts from the other two views
     and cannot follow `--font-size` at launch.
+
+    One scale (base, ratio 1.2) and one family. Every control has its hover,
+    focus, pressed and disabled state here; the focus ring is the Web view's,
+    two pixels of trace. Signal red is not in this sheet except as the
+    `danger` role's own pair - the stop object dresses itself.
     """
     base_font, base_size, _ = theme.font()
-    _, title_size, _ = theme.font(1.15, bold=True)
-    _, header_size, _ = theme.font(0.85, bold=True)
+    _, heading_size, _ = theme.font(SCALE_HEADING, bold=True)
+    _, small_size, _ = theme.font(SCALE_SMALL)
+    _, readout_size, _ = theme.font(SCALE_READOUT)
     neutral_bg, neutral_fg = theme.colors("neutral")
     info_bg, _ = theme.colors("info")
-    danger_bg, _ = theme.colors("danger")
+    go_bg, _ = theme.colors("go")
     disabled_bg, disabled_fg = theme.DISABLED
+    rule = rgba(theme.TEXT, 0.10)
+    rule_strong = rgba(theme.TEXT, 0.18)
+    ring = f"2px solid {theme.TRACE}"
 
     sheet = [
         _rule("QWidget", {"background-color": theme.BACKGROUND,
@@ -180,30 +298,36 @@ def stylesheet():
                           "font-size": f"{base_size}pt"}),
         _rule("QMainWindow, QDialog, QMessageBox",
               {"background-color": theme.BACKGROUND}),
+        _rule("QMainWindow::separator", {"background": rule, "width": "1px",
+                                         "height": "1px"}),
         # A label paints no rectangle of its own: without this every caption
         # inside a card stamped a BACKGROUND patch over the card's SURFACE.
         _rule("QLabel", {"background": "transparent"}),
+        # Holders that only place other widgets paint nothing: left to the
+        # QWidget rule they stamped a window-coloured block on a card or on
+        # the rail.
+        _rule("QWidget#bare, QWidget#tableBar", {"background": "transparent"}),
         _rule("QFrame#card", {"background-color": theme.SURFACE,
-                              "border": f"1px solid {neutral_bg}",
-                              "border-radius": "6px"}),
+                              "border": f"1px solid {rule}",
+                              "border-radius": "4px"}),
         _rule("QLabel#sectionTitle", {"color": theme.TEXT,
-                                      "font-size": f"{title_size}pt",
                                       "font-weight": "600"}),
+        _rule("QLabel#caption", {"color": theme.MUTED}),
         # The table's furniture: a column caption is quiet, a row's own name
         # is not, so a Setup row reads as "Stepper Probe: this port" rather
         # than as four equally loud words.
         _rule("QLabel#columnHeader", {"color": theme.MUTED,
-                                      "font-size": f"{header_size}pt",
-                                      "font-weight": "600",
+                                      "font-size": f"{small_size}pt",
                                       "padding-bottom": f"{theme.GAP // 2}px"}),
         _rule("QLabel#rowTitle", {"color": theme.TEXT, "font-weight": "600",
                                   "padding-right": f"{theme.INSET}px"}),
-        # A readout is bold text straight on the card; an entry is a bordered
-        # well sunk to the window colour. That is the whole distinction, and
-        # it survives any palette because it is shape, not hue.
-        _rule("QLabel#valueLabel", {"color": theme.TEXT, "font-weight": "600",
+        # A readout is a number in the trace colour straight on the card; an
+        # entry is a bordered well sunk to the window colour. Shape and hue
+        # both, so the two never read as one another.
+        _rule("QLabel#valueLabel", {"color": theme.TRACE, "font-weight": "500",
                                     "padding": f"{theme.GAP}px {theme.GAP // 2}px"}),
-        _rule("QLabel#statusLabel", {"color": danger_bg,
+        _rule('QLabel#valueLabel[quiet="true"]', {"color": theme.MUTED}),
+        _rule("QLabel#statusLabel", {"color": theme.TRACE,
                                      "padding": f"{theme.GAP // 2}px {theme.GAP}px"}),
         _rule("QLabel#staleLabel", {"color": theme.MUTED,
                                     "padding": f"{theme.GAP // 2}px {theme.GAP}px"}),
@@ -212,50 +336,116 @@ def stylesheet():
         _rule('QWidget[stale="true"] QLabel#valueLabel', {"color": theme.MUTED}),
         _rule("QLineEdit, QComboBox, QTextEdit",
               {"background-color": theme.BACKGROUND, "color": theme.TEXT,
-               "border": f"1px solid {neutral_bg}", "border-radius": "4px",
-               "padding": f"{theme.GAP}px {theme.PAD}px"}),
-        _rule("QLineEdit:focus, QComboBox:focus",
-              {"border": f"1px solid {info_bg}"}),
+               "border": f"1px solid {rule_strong}", "border-radius": "2px",
+               "padding": f"{theme.GAP}px {theme.PAD}px",
+               "selection-background-color": info_bg,
+               "selection-color": theme.TEXT}),
+        _rule("QLineEdit:hover, QComboBox:hover", {"border-color": theme.MUTED}),
+        _rule("QLineEdit:focus, QComboBox:focus, QTextEdit:focus",
+              {"border": ring}),
+        _rule("QComboBox QAbstractItemView",
+              {"background-color": theme.SURFACE, "color": theme.TEXT,
+               "border": f"1px solid {rule_strong}",
+               "selection-background-color": go_bg}),
         _rule("QPushButton", {"background-color": neutral_bg,
-                              "color": neutral_fg, "border": "none",
-                              "border-radius": "4px",
+                              "color": neutral_fg,
+                              "border": f"1px solid {rule_strong}",
+                              "border-radius": "2px",
                               "padding": f"{theme.GAP}px {theme.INSET}px",
-                              "font-weight": "600"}),
+                              "font-weight": "500"}),
         _rule("QPushButton:disabled, QLineEdit:disabled, QComboBox:disabled",
-              {"background-color": disabled_bg, "color": disabled_fg}),
-        _rule("QListWidget", {"background-color": theme.BACKGROUND,
-                              "border": "none"}),
-        _rule("QListWidget::item", {"padding": f"{theme.GAP}px"}),
-        _rule("QDockWidget", {"color": theme.TEXT, "font-weight": "600"}),
-        # A dock title is a heading, not a caption: the operator finds a panel
-        # by reading these.
-        _rule("QDockWidget::title", {"background": theme.SURFACE,
-                                     "color": theme.TEXT,
-                                     "font-size": f"{title_size}pt",
-                                     "border-bottom": f"1px solid {neutral_bg}",
-                                     "padding": f"{theme.PAD}px {theme.INSET}px"}),
-        # The toolbar is where a hidden dock comes back from, so a checked
-        # action has to read as pressed rather than as merely hovered.
-        _rule("QToolBar", {"background": theme.SURFACE, "border": "none",
-                           "padding": f"{theme.GAP}px",
-                           "spacing": f"{theme.GAP}px"}),
-        _rule("QToolBar QToolButton", {"background": "transparent",
-                                       "color": theme.MUTED,
-                                       "border": "none",
-                                       "border-bottom": "2px solid transparent",
-                                       "padding": f"{theme.GAP}px {theme.INSET}px"}),
-        _rule("QToolBar QToolButton:hover", {"background": neutral_bg,
-                                             "color": theme.TEXT}),
-        # A shown dock reads as a selected tab rather than as a filled button:
-        # all three are usually shown, and three solid blocks of colour at the
-        # top of the window is not a heading, it is noise.
-        _rule("QToolBar QToolButton:checked",
-              {"color": theme.TEXT, "border-bottom": f"2px solid {info_bg}"}),
+              {"background-color": disabled_bg, "color": disabled_fg,
+               "border-color": rule}),
     ]
     for role, (background, foreground) in theme.ROLES.items():
+        if role == DANGER_ROLE:
+            # One red. A button that merely *says* stop (Red Percent's "Stop"
+            # run) is an ordinary command; signal red is spent on the stop
+            # object alone, which dresses itself below the sheet.
+            background, foreground = neutral_bg, neutral_fg
         sheet.append(_rule(f'QPushButton[role="{role}"]',
                            {"background-color": background,
                             "color": foreground}))
+    # States after the roles, so they win at equal specificity.
+    sheet += [
+        _rule("QPushButton:hover", {"border-color": theme.MUTED}),
+        _rule("QPushButton:focus", {"border": ring}),
+        _rule("QPushButton:pressed", {"background-color": theme.BACKGROUND}),
+        _rule("QPushButton:disabled", {"background-color": disabled_bg,
+                                       "color": disabled_fg,
+                                       "border-color": rule}),
+        # Chrome, not instrument controls: the rail's Setup and Events, the
+        # tray's toggle, a closed model waiting to be reopened, a rescan.
+        _rule("QPushButton#ghost, QToolButton#ghost",
+              {"background": "transparent", "color": theme.MUTED,
+               "border": f"1px solid {rule_strong}", "border-radius": "2px",
+               "padding": f"{theme.GAP}px {theme.PAD}px",
+               "font-weight": "400"}),
+        _rule("QPushButton#ghost:hover, QToolButton#ghost:hover",
+              {"color": theme.TEXT, "border-color": theme.MUTED}),
+        _rule("QPushButton#ghost:checked, QToolButton#ghost:checked",
+              {"color": theme.TEXT, "background": theme.SURFACE,
+               "border-color": theme.MUTED}),
+        _rule("QPushButton#ghost:focus, QToolButton#ghost:focus",
+              {"border": ring}),
+        _rule("QPushButton#iconButton",
+              {"background": "transparent", "border": "1px solid transparent",
+               "border-radius": "2px", "padding": f"{theme.GAP // 2}px"}),
+        _rule("QPushButton#iconButton:hover",
+              {"background": theme.SURFACE, "border-color": rule_strong}),
+        _rule("QPushButton#iconButton:focus", {"border": ring}),
+        # The rail: the window's own heading, anchored above every dock.
+        _rule("QFrame#rail", {"background-color": theme.SURFACE,
+                              "border-bottom": f"1px solid {rule}"}),
+        _rule("QFrame#rail QLabel#railTitle", {"font-size": f"{heading_size}pt",
+                                               "font-weight": "600"}),
+        _rule("QFrame#rail QLabel#railValue",
+              {"color": theme.TRACE, "font-size": f"{readout_size}pt",
+               "font-weight": "500"}),
+        _rule('QFrame#rail QLabel#railValue[quiet="true"]',
+              {"color": theme.MUTED}),
+        _rule("QFrame#rail QLabel#caption, QFrame#rail QLabel#railGroup",
+              {"font-size": f"{small_size}pt"}),
+        _rule("QFrame#rail QLabel#railGroup", {"color": theme.TEXT,
+                                               "font-weight": "600"}),
+        _rule("QFrame#railRule", {"background": rule, "border": "none"}),
+        # The tray: one line until it is asked for more.
+        _rule("QStatusBar", {"background-color": theme.SURFACE,
+                             "border-top": f"1px solid {rule}"}),
+        _rule("QStatusBar::item", {"border": "none"}),
+        _rule("QFrame#tray", {"background-color": theme.SURFACE}),
+        _rule("QFrame#tray QTextEdit", {"background-color": theme.BACKGROUND,
+                                        "border": "none"}),
+        _rule("QLabel#emptyTitle", {"font-size": f"{heading_size}pt",
+                                    "font-weight": "600"}),
+        # A dock title is a heading, not a caption: the operator finds a panel
+        # by reading these. The only navigation there is.
+        _rule("QDockWidget", {"color": theme.TEXT, "font-weight": "600"}),
+        _rule("QDockWidget::title", {"background": theme.SURFACE,
+                                     "color": theme.TEXT,
+                                     "border-bottom": f"1px solid {rule}",
+                                     "padding": f"{theme.PAD}px {theme.INSET}px"}),
+        _rule("QDockWidget::close-button, QDockWidget::float-button",
+              {"background": "transparent", "border": "1px solid transparent",
+               "border-radius": "2px"}),
+        _rule("QDockWidget::close-button:hover, QDockWidget::float-button:hover",
+              {"background": neutral_bg, "border-color": rule_strong}),
+        _rule("QScrollArea#panelScroll", {"border": "none"}),
+        _rule("QScrollBar:vertical, QScrollBar:horizontal",
+              {"background": theme.BACKGROUND, "border": "none",
+               "width": f"{theme.PAD + 2}px", "height": f"{theme.PAD + 2}px"}),
+        _rule("QScrollBar::handle", {"background": rule_strong,
+                                     "border-radius": f"{theme.GAP}px",
+                                     "min-height": f"{theme.INSET * 2}px",
+                                     "min-width": f"{theme.INSET * 2}px"}),
+        _rule("QScrollBar::handle:hover", {"background": theme.MUTED}),
+        _rule("QScrollBar::add-line, QScrollBar::sub-line",
+              {"width": "0px", "height": "0px"}),
+        _rule("QToolTip", {"background-color": theme.SURFACE,
+                           "color": theme.TEXT,
+                           "border": f"1px solid {rule_strong}",
+                           "padding": f"{theme.GAP}px"}),
+    ]
     return "".join(sheet)
 
 
@@ -432,6 +622,13 @@ def with_extension(path, extensions):
 # someone else made - which is why the module still imports without PySide6.
 # ---------------------------------------------------------------------------
 
+def _caption(text):
+    """A label beside a control: sentence case, no colon, the muted ink."""
+    label = QLabel(sentence_case(text))
+    label.setObjectName("caption")
+    return label
+
+
 class ColumnSection:
     """`layout="column"`: a form, one labelled control per line."""
 
@@ -445,15 +642,33 @@ class ColumnSection:
     def add(self, label, widget):
         """One labelled control. An empty label spans the section's width."""
         if label:
-            self.form.addRow(QLabel(label), widget)
+            self.form.addRow(_caption(label), widget)
         else:
             self.form.addRow(widget)
 
     def add_wide(self, label, widget):
-        """A control too tall or too wide to sit beside its caption."""
+        """A control too tall or too wide to sit beside its caption. A button
+        keeps its natural width: stretched across the card, a row of them
+        read as a stack of bars rather than as commands."""
         if label:
-            self.form.addRow(QLabel(label))
+            self.form.addRow(_caption(label))
+        if isinstance(widget, QAbstractButton):
+            widget = _bare_row(widget, stretch=True)
         self.form.addRow(widget)
+
+
+def _bare_row(*widgets, stretch=False):
+    """Widgets side by side in a holder that paints nothing."""
+    holder = QWidget()
+    holder.setObjectName("bare")
+    layout = QHBoxLayout(holder)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(theme.GAP)
+    for widget in widgets:
+        layout.addWidget(widget)
+    if stretch:
+        layout.addStretch(1)
+    return holder
 
 
 class PanelTable:
@@ -465,31 +680,46 @@ class PanelTable:
     model, aligned — instead of as six ragged lines of different lengths,
     which is what "everything in one vertical tab is poor UI/UX" was about.
 
-    Column 0 is the row's own name; the first grid row is the header.
+    Column 0 is the row's own name. The header - one caption per column,
+    once - sits directly above the first table row; an action line
+    (`is_action_row`) spans the table instead of claiming columns, so Setup's
+    Devices line sits above the header and its Launch line under the last row.
     """
 
+    #: Where the header lands when the table opens on a table row.
     HEADER_ROW = 0
 
     def __init__(self, grid):
         self.grid = grid
         self.columns = {}        # label -> column index
-        self.rows = 0
+        self.rows = -1           # the last grid row used
+        self.header_row = None   # claimed by the first table row
         self._next_column = 1    # column 0 belongs to the row titles
 
     def add_row(self, title):
         """One line. An **untitled** section claims no name column at all.
 
-        A schema that already carries the row's name as an element (Setup's
-        `Device:` readout) can title the section `""` and get a table with no
-        duplicated name and no dead column, without a renderer change.
+        A schema that already carries the row's name as an element can title
+        the section `""` and get a table with no duplicated name and no dead
+        column, without a renderer change.
         """
+        if self.header_row is None:
+            self.rows += 1
+            self.header_row = self.rows
         self.rows += 1
         if title:
             label = QLabel(title)
             label.setObjectName("rowTitle")
             self.grid.addWidget(label, self.rows, 0)
-            self.grid.setColumnMinimumWidth(0, TABLE_LABEL_MIN_PX)
         return TableRow(self, self.rows)
+
+    def add_bar(self, title):
+        """An action line across the whole table: its name, its readouts, and
+        its commands pushed to the right edge."""
+        self.rows += 1
+        bar = TableBar(title)
+        self.grid.addWidget(bar.widget, self.rows, 0, 1, -1)
+        return bar
 
     def column_for(self, label):
         """This label's column, allocating one the first time it is seen.
@@ -508,11 +738,10 @@ class PanelTable:
         column = self._next_column
         self._next_column += 1
         self.grid.setColumnMinimumWidth(column, TABLE_CONTROL_MIN_PX)
-        self.grid.setColumnStretch(column, 1)
         if header:
-            caption = QLabel(header.rstrip(":"))
+            caption = QLabel(sentence_case(header))
             caption.setObjectName("columnHeader")
-            self.grid.addWidget(caption, self.HEADER_ROW, column)
+            self.grid.addWidget(caption, self.header_row or 0, column)
         return column
 
 
@@ -530,6 +759,46 @@ class TableRow:
                                   self.table.column_for(label))
 
     #: A row has one line; "wide" has nothing to mean here.
+    add_wide = add
+
+
+class TableBar:
+    """An action line: `title  caption value ...        [command] [command]`.
+
+    A readout's value wraps rather than clips, so a scan message as long as a
+    macOS device path gets the room it needs without pushing a column over.
+    """
+
+    control_width = 0
+    is_row = True
+
+    def __init__(self, title):
+        self.widget = QWidget()
+        self.widget.setObjectName("tableBar")
+        self.layout = QHBoxLayout(self.widget)
+        self.layout.setContentsMargins(0, theme.GAP, 0, theme.GAP)
+        self.layout.setSpacing(theme.PAD)
+        if title:
+            name = QLabel(title)
+            name.setObjectName("rowTitle")
+            self.layout.addWidget(name)
+        self._values = QHBoxLayout()
+        self._values.setSpacing(theme.PAD)
+        self.layout.addLayout(self._values, 1)
+        self._commands = QHBoxLayout()
+        self._commands.setSpacing(theme.PAD)
+        self.layout.addLayout(self._commands)
+
+    def add(self, label, widget):
+        if isinstance(widget, QAbstractButton):
+            self._commands.addWidget(widget)
+            return
+        if label:
+            self._values.addWidget(_caption(label))
+        if isinstance(widget, QLabel):
+            widget.setWordWrap(True)
+        self._values.addWidget(widget, 1)
+
     add_wide = add
 
 
@@ -572,6 +841,10 @@ class SeriesPlot(QWidget):
         scaled = polyline_points(self._points, self.width(), self.height(),
                                  self.MARGIN_PX)
         if not scaled:
+            # An empty plot says so, rather than being an empty box.
+            painter.setPen(QColor(theme.MUTED))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                             "No samples yet")
             return
         background, _ = theme.colors(self.role)
         line = theme.TEXT if self.role == "neutral" else background
@@ -584,6 +857,149 @@ class SeriesPlot(QWidget):
                 painter.drawLine(int(previous[0]), int(previous[1]),
                                  int(point[0]), int(point[1]))
             previous = point
+
+
+class StopButton(QPushButton):
+    """The stop object: round, signal red, a darker ring - the one bold thing.
+
+    The same object as the Web view's mushroom, at two sizes: the rail's, and
+    one size down in a model's Safety section. It reads `Stop`, and `Clear`
+    once the latch is set; the ring lights in the trace colour while latched
+    and swells exactly once, on the edge where the latch closes. It is never
+    disabled and never dimmed - `setEnabled(False)` is refused here, because
+    a gate on the one control that stops things is the defect, not a state.
+    """
+
+    def __init__(self, mini=False, parent=None):
+        QPushButton.__init__(self, "Stop", parent)
+        self.is_mini = bool(mini)
+        self.is_latched = False
+        self._ring = 0
+        self.setObjectName("miniStop" if mini else "stop")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Reached by Tab, not handed focus at boot: a focus ring on it before
+        # anything has happened reads as the latch.
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self._pulse = QVariantAnimation(self)
+        self._pulse.setDuration(PULSE_MS)
+        self._pulse.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._pulse.valueChanged.connect(self._on_pulse)
+        self.resize_to_font()
+        self._dress()
+
+    @staticmethod
+    def line_height():
+        """One line of the theme's base font - not this widget's font, which
+        the sheet has not reached yet when the disc is sized."""
+        family, size, _ = theme.font()
+        return QFontMetrics(QFont(family, size)).height()
+
+    def resize_to_font(self):
+        lines = MINI_STOP_LINES if self.is_mini else STOP_DISC_LINES
+        disc = int(round(self.line_height() * lines))
+        self._ring = max(3, disc // 16)
+        self.setFixedSize(disc, disc)
+        self._pulse.setStartValue(float(self._ring))
+        self._pulse.setKeyValueAt(0.45, float(self._ring) * 2.0)
+        self._pulse.setEndValue(float(self._ring))
+
+    def setEnabled(self, enabled):         # noqa: N802 - Qt's name
+        """Never dimmed: the stop answers in every mode."""
+        QPushButton.setEnabled(self, True)
+
+    def set_latched(self, is_latched):
+        """Face and ring from the state, never from the last click."""
+        is_latched = bool(is_latched)
+        was = self.is_latched
+        self.is_latched = is_latched
+        wanted = "Clear" if is_latched else "Stop"
+        if self.text() != wanted:
+            self.setText(wanted)
+        if is_latched and not was:
+            self._pulse.stop()
+            self._pulse.start()           # once, on the edge
+        elif not is_latched:
+            self._pulse.stop()
+        self._dress()
+
+    def _on_pulse(self, value):
+        self._dress(ring=int(round(value)))
+
+    def _dress(self, ring=None):
+        ring = self._ring if ring is None else ring
+        background, foreground = theme.colors(DANGER_ROLE)
+        edge = theme.TRACE if self.is_latched else mix(
+            background, theme.BACKGROUND, 0.48)
+        pressed = mix(background, theme.BACKGROUND, 0.32)
+        _, size, _ = theme.font(SCALE_SMALL if self.is_mini else STOP_FONT_SCALE,
+                                bold=True)
+        radius = self.width() // 2
+        name = self.objectName()
+        self.setStyleSheet(
+            f"QPushButton#{name} {{ background-color: {background}; "
+            f"color: {foreground}; border: {ring}px solid {edge}; "
+            f"border-radius: {radius}px; padding: 0px; "
+            f"font-size: {size}pt; font-weight: bold; }}"
+            f"QPushButton#{name}:pressed {{ border-color: {pressed}; }}"
+            # Focus is ink, not trace: a trace ring is what the latch looks
+            # like, and keyboard focus must never be mistaken for it.
+            + ("" if self.is_latched else
+               f"QPushButton#{name}:focus {{ border-color: {theme.TEXT}; }}"))
+
+
+class ElidedLabel(QLabel):
+    """One line that never clips a word: too long, it ends in an ellipsis and
+    the whole text is in the tooltip."""
+
+    def __init__(self, parent=None):
+        QLabel.__init__(self, "", parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+
+    def set_full_text(self, text):
+        self._full = text or ""
+        self.setToolTip(self._full)
+        self._elide()
+
+    def full_text(self):
+        return self._full
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self):
+        width = max(self.width(), 1)
+        self.setText(self.fontMetrics().elidedText(
+            self._full, Qt.TextElideMode.ElideRight, width))
+
+
+def reload_icon(size=14):
+    """A rescan glyph drawn from geometry in the theme's inks: an open ring
+    and its arrowhead. Muted at rest, ink when the pointer is on it."""
+    icon = QIcon()
+    for mode, ink in ((QIcon.Mode.Normal, theme.MUTED),
+                      (QIcon.Mode.Active, theme.TEXT),
+                      (QIcon.Mode.Disabled, theme.DISABLED[1])):
+        pixmap = QPixmap(size * 2, size * 2)
+        pixmap.setDevicePixelRatio(2.0)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(ink))
+        pen.setWidthF(1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        inset = 2.5
+        box = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
+        painter.drawArc(box, 90 * 16, 280 * 16)
+        tip_x, tip_y = size / 2.0, inset
+        painter.drawLine(int(tip_x), int(tip_y), int(tip_x - 3), int(tip_y - 2.5))
+        painter.drawLine(int(tip_x), int(tip_y), int(tip_x - 3), int(tip_y + 2.5))
+        painter.end()
+        icon.addPixmap(pixmap, mode)
+    return icon
 
 
 class RegionOverlay(QWidget):
@@ -681,7 +1097,8 @@ class RegionOverlay(QWidget):
         painter.fillRect(self.rect(), tint)
         if self.start_point is None or self.end_point is None:
             return
-        pen = QPen(QColor(theme.colors("danger")[0]))
+        # The trace colour: a selection is something to read, not a stop.
+        pen = QPen(QColor(theme.TRACE))
         pen.setWidth(3)
         painter.setPen(pen)
         origin = self.geometry().topLeft()
@@ -718,8 +1135,9 @@ class DeviceDock(QDockWidget):
         QDockWidget.__init__(self, title, parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+        # Movable and closable; not floatable. A floating panel is a second
+        # window the rail's stop does not sit on, and its glyph was clutter.
         self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable
-                         | QDockWidget.DockWidgetFeature.DockWidgetFloatable
                          | QDockWidget.DockWidgetFeature.DockWidgetClosable)
 
     def closeEvent(self, event):
@@ -754,10 +1172,16 @@ class QtPanelView(PanelView, QWidget):
         self._layout.setSpacing(theme.PAD)
         self._columns, self._split = self._plan_columns()
         self._cards_placed = 0
+        # One flag per section, in schema order: `_make_section` is handed a
+        # title and a layout, and an action line is decided by what the
+        # section holds.
+        self._action_rows = [is_action_row(s)
+                             for s in self._schema()["sections"]]
+        self._sections_made = 0
         self.status_label = QLabel("")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setWordWrap(True)
-        self.stale_label = QLabel("readings are stale")
+        self.stale_label = QLabel("Readings are stale")
         self.stale_label.setObjectName("staleLabel")
         self.stale_label.setVisible(False)
 
@@ -838,10 +1262,14 @@ class QtPanelView(PanelView, QWidget):
         self._layout.addLayout(holder)
         return columns, (cards + 1) // 2
 
-    def _place_card(self, card):
+    def _place_card(self, card, alignment=None):
         """Put one section card in the column it belongs to."""
         second = bool(self._split) and self._cards_placed >= self._split
-        self._columns[-1 if second else 0].addWidget(card)
+        column = self._columns[-1 if second else 0]
+        if alignment is None:
+            column.addWidget(card)
+        else:
+            column.addWidget(card, 0, alignment)
         self._cards_placed += 1
 
     # -- sections ----------------------------------------------------------
@@ -855,8 +1283,13 @@ class QtPanelView(PanelView, QWidget):
         operator sees is a table with one line per model rather than six
         stacked forms.
         """
+        index = self._sections_made
+        self._sections_made += 1
         if layout == "row":
-            return self._panel_table().add_row(title)
+            table = self._panel_table()
+            if index < len(self._action_rows) and self._action_rows[index]:
+                return table.add_bar(title)
+            return table.add_row(title)
         return self._column_section(title)
 
     def _column_section(self, title):
@@ -875,15 +1308,19 @@ class QtPanelView(PanelView, QWidget):
         outer = QVBoxLayout(card)
         outer.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
         outer.setSpacing(theme.GAP)
-        label = QLabel(title)
+        label = QLabel(sentence_case(title))
         label.setObjectName("sectionTitle")
         outer.addWidget(label)
         form = QFormLayout()
         form.setContentsMargins(theme.INSET, 0, 0, 0)
         form.setHorizontalSpacing(theme.INSET)
         form.setVerticalSpacing(theme.GAP)
+        # Fields at their natural size: grown to the card's width, an entry
+        # for a three-digit speed was 800 px of empty well.
         form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+            QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft
+                              | Qt.AlignmentFlag.AlignTop)
         outer.addLayout(form)
         self._place_card(card)
         return ColumnSection(form)
@@ -897,7 +1334,9 @@ class QtPanelView(PanelView, QWidget):
         if self._table is None:
             card = QFrame()
             card.setObjectName("card")
-            card.setSizePolicy(QSizePolicy.Policy.Preferred,
+            # As wide as its columns and no wider: stretched across a 1400 px
+            # window, the Status column ended half a screen from its port.
+            card.setSizePolicy(QSizePolicy.Policy.Maximum,
                                QSizePolicy.Policy.Maximum)
             grid = QGridLayout(card)
             grid.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
@@ -906,14 +1345,17 @@ class QtPanelView(PanelView, QWidget):
             # Column 0's width is claimed by the first *titled* row, so a
             # table of untitled rows costs nothing.
             grid.setColumnStretch(0, 0)
-            self._place_card(card)
+            self._place_card(card, Qt.AlignmentFlag.AlignLeft)
             self._table = PanelTable(grid)
         return self._table
 
     # -- element builders --------------------------------------------------
     def _make_readonly(self, container, element):
-        value = QLabel("")
+        value = QLabel(EMPTY_READOUT)
         value.setObjectName("valueLabel")
+        value.setProperty("quiet", "true")
+        value.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
         self._remember(element, value)
         container.add(element.get("text", ""), value)
 
@@ -950,7 +1392,7 @@ class QtPanelView(PanelView, QWidget):
         entry.setValidator(validator)
 
     def _make_button(self, container, element):
-        button = QPushButton(element.get("text", ""))
+        button = QPushButton(sentence_case(element.get("text", "")))
         button.setProperty("role", element.get("role", "neutral"))
         # Values travel with the command (`_gather_inputs` reads the widgets),
         # so PYSIDE-5's "the click read the previous value" cannot recur and
@@ -960,19 +1402,19 @@ class QtPanelView(PanelView, QWidget):
         container.add_wide("", button)
 
     def _make_toggle(self, container, element):
-        button = QPushButton(element.get("false_text", "Off"))
+        if DANGER_ROLE in (element.get("on_role"), element.get("off_role")):
+            # A model's own stop is the stop object one size down - the same
+            # round red thing as the rail's, reading Stop / Clear - so the
+            # operator never has to work out which control stops this model.
+            # It rendered as a full-width "FULL STOP" slab, then as a red slab
+            # reading "LATCHED - click to clear": two reds that were not the
+            # stop object. The schema's own words are its tooltip.
+            button = StopButton(mini=True)
+            button.setToolTip(sentence(element.get("false_text", "")))
+        else:
+            button = QPushButton(sentence_case(element.get("false_text", "Off")))
         button.clicked.connect(lambda: self._run_toggle(element))
         self._remember(element, button)
-        if DANGER_ROLE in (element.get("on_role"), element.get("off_role")):
-            # A model's FULL STOP takes the section's whole width and the same
-            # tall metric as the window's global one. It rendered as a caption
-            # and a small button beside it - "FULL STOP    FULL STOP" - which
-            # is neither prominent nor even readable as one control.
-            button.setMinimumHeight(STOP_BUTTON_PX)
-            button.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                 QSizePolicy.Policy.Fixed)
-            container.add_wide("", button)
-            return
         container.add(element.get("text", ""), button)
 
     def _make_dropdown(self, container, element):
@@ -988,9 +1430,15 @@ class QtPanelView(PanelView, QWidget):
         self._reload_options(element, combo)
         combo.currentTextChanged.connect(
             lambda text: self._on_dropdown_changed(element, text))
-        refresh = QPushButton("↺")
-        refresh.setToolTip("Rescan the available choices")
-        refresh.setFixedWidth(32)
+        # A quiet icon, not a dark block beside every dropdown: it is the
+        # rarely-needed way to pick up a port plugged in after the panel was
+        # built, and it says so on hover.
+        refresh = QPushButton()
+        refresh.setObjectName("iconButton")
+        refresh.setIcon(reload_icon())
+        refresh.setIconSize(QSize(14, 14))
+        refresh.setToolTip("Rescan the choices")
+        refresh.setAccessibleName("Rescan the choices")
         refresh.clicked.connect(lambda: self._reload_options(element, combo))
         cell = self._row(combo, refresh)
         if container.control_width:
@@ -998,23 +1446,23 @@ class QtPanelView(PanelView, QWidget):
         container.add(element.get("text", ""), cell)
 
     def _make_region_select(self, container, element):
-        button = QPushButton(element.get("text", "Select region"))
+        button = QPushButton(sentence_case(element.get("text", "Select region")))
         button.setProperty("role", element.get("role", "neutral"))
         button.clicked.connect(lambda: self._pick_region(element))
         value = QLabel(sch.format_region(None))
         value.setObjectName("valueLabel")
         self._remember(element, value)
-        container.add("", self._row(button, value))
+        container.add("", _bare_row(button, value, stretch=True))
 
     def _make_file_save(self, container, element):
-        button = QPushButton(element.get("text", "Save"))
+        button = QPushButton(sentence_case(element.get("text", "Save")))
         button.setProperty("role", element.get("role", "neutral"))
         button.clicked.connect(lambda: self._save_to_file(element))
         self._remember(element, button)
         container.add_wide("", button)
 
     def _make_file_open(self, container, element):
-        button = QPushButton(element.get("text", "Open"))
+        button = QPushButton(sentence_case(element.get("text", "Open")))
         button.setProperty("role", element.get("role", "neutral"))
         button.clicked.connect(lambda: self._open_from_file(element))
         self._remember(element, button)
@@ -1100,21 +1548,48 @@ class QtPanelView(PanelView, QWidget):
         if isinstance(widget, QComboBox):
             self._set_combo_text(widget, text)
             return
+        if element["type"] in ("readonly", "region_select"):
+            self._set_readout(widget, text)
+            self._clean_text[id(element)] = text
+            return
         if widget.text() != text:
             widget.setText(text)
         self._clean_text[id(element)] = text
+
+    @staticmethod
+    def _set_readout(widget, text):
+        """A readout: its value in the trace ink, or muted when it is at rest
+        ("off", "False", nothing yet). Empty is a dash, never a blank."""
+        shown = text if str(text).strip() else EMPTY_READOUT
+        if widget.text() != shown:
+            widget.setText(shown)
+        quiet = "true" if is_quiet_value(text) else "false"
+        if widget.property("quiet") != quiet:
+            widget.setProperty("quiet", quiet)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
     def _set_on(self, element, is_on):
         widget = self._widget_for(element)
         if widget is None:
             return
+        if isinstance(widget, StopButton):
+            widget.set_latched(is_on)
+            wanted = element.get("true_text" if is_on else "false_text", "")
+            widget.setToolTip(sentence(wanted))
+            return
         colours = theme.toggle_colors(element, is_on)
         if element["type"] == "toggle":
+            # A selector, not bare declarations, so the sheet's hover and
+            # focus states still reach a toggle.
             widget.setStyleSheet(
-                f"background-color: {colours['background']}; "
+                f"QPushButton {{ background-color: {colours['background']}; "
                 f"color: {colours['foreground']}; "
-                f"border: 2px solid {colours['border']}; border-radius: 4px;")
-            wanted = element.get("true_text" if is_on else "false_text", "")
+                f"border: 1px solid {colours['border']}; border-radius: 2px; }}"
+                f"QPushButton:hover {{ border-color: {theme.MUTED}; }}"
+                f"QPushButton:focus {{ border: 2px solid {theme.TRACE}; }}")
+            wanted = sentence_case(element.get("true_text" if is_on
+                                               else "false_text", ""))
             if widget.text() != wanted:
                 widget.setText(wanted)
             return
@@ -1302,12 +1777,7 @@ class QtPanelView(PanelView, QWidget):
 
     @staticmethod
     def _row(*widgets):
-        holder = QWidget()
-        layout = QHBoxLayout(holder)
-        layout.setContentsMargins(0, 0, 0, 0)
-        for widget in widgets:
-            layout.addWidget(widget)
-        return holder
+        return _bare_row(*widgets)
 
 
 # ---------------------------------------------------------------------------
@@ -1315,9 +1785,21 @@ class QtPanelView(PanelView, QWidget):
 # ---------------------------------------------------------------------------
 
 class QtDashboard(Dashboard, QMainWindow):
-    """The dashboard window: Setup first, then one dock per open model.
+    """The dashboard window: a rail, Setup, one dock per open model, a tray.
 
     Absorbs `DashboardWindow`, `QtEventLogPanel` and `QtErrorPopupManager`.
+
+    Layout, as the Web view's sibling (docks where it has a drawer):
+
+        +- rail (the menu widget: above every dock, never covered) -----------+
+        | Transfer stage   Stepper Probe  x 0  y 0  z 0   ...  [Setup] (Stop) |
+        +---------------------------------------------------------------------+
+        | Setup (top dock; put away on launch, back from the rail's Setup)     |
+        | model docks, side by side - or, with none open, what to do next     |
+        +- tray: the latest event on one line ---------------- [Show events] -+
+
+    One navigation. The model docks' own titles name the panels; there is no
+    second row of tabs repeating them, and no sidebar repeating them again.
     """
 
     #: Every cross-thread hop goes through this, queued. See the module
@@ -1330,23 +1812,29 @@ class QtDashboard(Dashboard, QMainWindow):
         QMainWindow.__init__(self)
         Dashboard.__init__(self, controller, setup)
         self._docks = {}
+        self._panels = {}           # name -> QtPanelView inside its dock
         self._last_dock = None
         self._is_focused = True
         self._setup_dock = None
         self.setup_action = None
+        self._rail_groups = {}      # name -> (widget, [(element, value label)])
+        self._closed_shown = None
 
         self.setWindowTitle("Transfer Stage")
-        self.resize(1200, 800)
+        self.resize(1400, 900)
         self.setDockOptions(QMainWindow.DockOption.AllowNestedDocks
                             | QMainWindow.DockOption.AllowTabbedDocks)
+        # Setup spans the window's width above the models.
+        self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.TopDockWidgetArea)
+        self.setCorner(Qt.Corner.TopRightCorner, Qt.DockWidgetArea.TopDockWidgetArea)
         self._marshalled.connect(self._on_marshalled, Qt.QueuedConnection)
 
-        self._build_toolbar()
-        self._build_sidebar_dock()
-        self._build_event_panel()
+        self._build_rail()
+        self._build_empty_state()
+        self._build_event_tray()
 
         self._stop_timer = QTimer(self)
-        self._stop_timer.timeout.connect(self._sync_stop_button)
+        self._stop_timer.timeout.connect(self._on_rail_tick)
         self._stop_timer.start(self.STOP_REFRESH_MS)
 
     # -- lifecycle ---------------------------------------------------------
@@ -1380,12 +1868,11 @@ class QtDashboard(Dashboard, QMainWindow):
         # it does not close a model, and it must NOT be deleted on close the
         # way a model's dock is - the panel behind it keeps the scan results.
         # Closable is also load-bearing: Qt *disables* `toggleViewAction` on a
-        # dock that cannot be closed, so without it the toolbar entry is dead.
+        # dock that cannot be closed, so without it the rail's Setup is dead.
         self._setup_dock = QDockWidget("Setup", self)
+        self._setup_dock.setObjectName("setupDock")
         self._setup_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-            | QDockWidget.DockWidgetFeature.DockWidgetClosable)
+            QDockWidget.DockWidgetFeature.DockWidgetClosable)
         setup_panel = QtPanelView(self.controller, "Setup", panel=self.setup)
         self._setup_dock.setWidget(setup_panel)
         self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea,
@@ -1397,9 +1884,9 @@ class QtDashboard(Dashboard, QMainWindow):
         self.setup_action.setText("Setup")
         self.setup_action.setToolTip("Show the Setup panel to refresh the scan "
                                      "or relaunch")
-        existing = self.toolbar.actions()
-        self.toolbar.insertAction(existing[0] if existing else None,
-                                  self.setup_action)
+        self.setup_action.toggled.connect(lambda _: self._sync_empty_state())
+        self.setup_button.setDefaultAction(self.setup_action)
+        self.setup_button.setVisible(True)
 
         application = QApplication.instance()
         if application is not None:
@@ -1413,13 +1900,16 @@ class QtDashboard(Dashboard, QMainWindow):
             # too. `base.Dashboard` only sees the *first add after* this call.
             self._launched = True
             self._collapse_setup()
-        self._build_sidebar()
+        self._sync_rail()
         self._sync_stop_button()
-        self.resizeDocks([self.event_dock], [EVENT_LOG_PX],
-                         Qt.Orientation.Vertical)
-        self.resizeDocks([self.sidebar], [self._sidebar_width()],
-                         Qt.Orientation.Horizontal)
+        self._sync_empty_state()
+        self._set_tray_open(False)
         self.show()
+        # Nothing is handed focus at boot: a ring on the first control in the
+        # tab order (the rail's Setup, the stop) before anything has happened
+        # is noise. Tab still reaches every control.
+        self.rail.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.rail.setFocus()
         events.debug("View Opened", "Qt dashboard shown with the Setup panel",
                      source="QtView")
 
@@ -1435,10 +1925,9 @@ class QtDashboard(Dashboard, QMainWindow):
         if not self._closing:
             Dashboard.close(self)
             events.debug("View Closed", "closeEvent", source="QtView")
-        for dock in list(self._docks.values()):
-            widget = dock.widget()
-            if isinstance(widget, QtPanelView):
-                widget.close()
+        for panel in list(self._panels.values()):
+            panel.close()
+        self._panels.clear()
         self._docks.clear()
         if self._stop_timer is not None:
             self._stop_timer.stop()
@@ -1455,35 +1944,205 @@ class QtDashboard(Dashboard, QMainWindow):
             events.debug("Marshalled Call Failed", str(exc), source="QtView",
                          exception=exc, every=1.0)
 
-    # -- the toolbar: where a hidden dock comes back from -------------------
-    def _build_toolbar(self):
-        """One toolbar, holding a checkable entry per hideable dock.
+    # -- the rail: identity, key numbers, the way back, the stop -----------
+    def _build_rail(self):
+        """The window's heading, set as the *menu widget* so it sits above
+        every dock and nothing can cover it or push it off-screen: the stop
+        object lives here, at the right-hand end, as the Web view's does.
 
-        Setup's entry is added by `QtDashboard.open`, where the dock exists,
-        and is put
-        first: it is the one an operator reaches for again mid-session.
+        It replaced a row of three toolbar tabs that repeated the three dock
+        titles under them - two navigations for one set of panels - and a
+        sidebar whose only job was to carry the stop at the foot of an empty
+        grey column.
         """
-        self.toolbar = QToolBar("View", self)
-        self.toolbar.setObjectName("viewToolBar")
-        self.toolbar.setMovable(False)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
+        self.rail = QFrame()
+        self.rail.setObjectName("rail")
+        layout = QHBoxLayout(self.rail)
+        layout.setContentsMargins(theme.INSET * 2, theme.PAD,
+                                  theme.INSET, theme.PAD)
+        layout.setSpacing(theme.INSET * 2)
 
+        identity = QVBoxLayout()
+        identity.setSpacing(0)
+        title = QLabel("Transfer stage")
+        title.setObjectName("railTitle")
+        self.rail_status = QLabel("")
+        self.rail_status.setObjectName("caption")
+        identity.addStretch(1)
+        identity.addWidget(title)
+        identity.addWidget(self.rail_status)
+        identity.addStretch(1)
+        layout.addLayout(identity)
+
+        self._readouts = QHBoxLayout()
+        self._readouts.setSpacing(theme.INSET * 2)
+        layout.addLayout(self._readouts)
+
+        self._reopen_holder = QWidget()
+        self._reopen_holder.setObjectName("bare")
+        self._reopen_layout = QHBoxLayout(self._reopen_holder)
+        self._reopen_layout.setContentsMargins(0, 0, 0, 0)
+        self._reopen_layout.setSpacing(theme.GAP)
+        self._reopen_holder.setVisible(False)
+        layout.addWidget(self._reopen_holder)
+        layout.addStretch(1)
+
+        # The one reopen control for Setup. Its action arrives with the dock
+        # when the window opens; until then there is nothing to reopen.
+        self.setup_button = QToolButton()
+        self.setup_button.setObjectName("ghost")
+        self.setup_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setup_button.setVisible(False)
+        layout.addWidget(self.setup_button)
+
+        self.stop_button = StopButton()
+        self.stop_button.clicked.connect(self._on_stop_clicked)
+        layout.addWidget(self.stop_button)
+        self.setMenuWidget(self.rail)
+
+    def _on_rail_tick(self):
+        """The rail's render tick, isolated like a panel's (PYSIDE-10)."""
+        try:
+            self._sync_stop_button()
+            self._sync_rail()
+            self._sync_readouts()
+        except Exception as exc:
+            events.debug("Rail Refresh Failed", str(exc), source="QtView",
+                         exception=exc, every=1.0)
+
+    def _sync_rail(self):
+        """One readout group per open model, a Reopen group for closed ones,
+        and the status line. Rebuilt only when the set of models changes."""
+        names = list(self.controller.model_names)
+        for name in [n for n in self._rail_groups if n not in names]:
+            widget, _ = self._rail_groups.pop(name)
+            self._readouts.removeWidget(widget)
+            widget.deleteLater()
+        for name in names:
+            if name not in self._rail_groups:
+                self._rail_groups[name] = self._rail_group(name)
+                self._readouts.addWidget(self._rail_groups[name][0])
+        closed = [n for n in self.controller.closed_names if n not in names]
+        if closed != self._closed_shown:
+            self._closed_shown = closed
+            self._build_reopen(closed)
+        self.rail_status.setText(self._rail_status_text(names))
+
+    def _rail_status_text(self, names):
+        if self.controller.is_estopped:
+            return "Stopped"
+        if names:
+            return f"{len(names)} running"
+        try:
+            scanning = bool(self.setup.state.get("is_scanning"))
+        except Exception:
+            scanning = False
+        return "Scanning ports" if scanning else "Nothing running"
+
+    def _rail_group(self, name):
+        """A model's name over its key numbers: caption, value, caption..."""
+        group = QWidget()
+        group.setObjectName("bare")
+        outer = QHBoxLayout(group)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(theme.INSET * 2)
+        rule = QFrame()
+        rule.setObjectName("railRule")
+        rule.setFixedWidth(1)
+        outer.addWidget(rule)
+        column = QVBoxLayout()
+        column.setSpacing(0)
+        heading = QLabel(name)
+        heading.setObjectName("railGroup")
+        column.addWidget(heading)
+        numbers = QHBoxLayout()
+        numbers.setSpacing(theme.PAD)
+        readouts = []
+        try:
+            elements = rail_elements(self.controller.schema(name))
+        except Exception:
+            elements = []
+        for element in elements:
+            numbers.addWidget(_caption(element.get("text") or
+                                       element.get("model_attr", "")),
+                              0, Qt.AlignmentFlag.AlignBaseline)
+            value = QLabel(EMPTY_READOUT)
+            value.setObjectName("railValue")
+            value.setProperty("quiet", "true")
+            font = value.font()
+            try:                          # tabular figures, where Qt has them
+                font.setFeature(QFont.Tag("tnum"), 1)
+                value.setFont(font)
+            except (AttributeError, TypeError):
+                pass
+            numbers.addWidget(value, 0, Qt.AlignmentFlag.AlignBaseline)
+            numbers.addSpacing(theme.PAD)
+            readouts.append((element, value))
+        column.addLayout(numbers)
+        outer.addLayout(column)
+        return group, readouts
+
+    def _sync_readouts(self):
+        for name, (_, readouts) in list(self._rail_groups.items()):
+            if not readouts:
+                continue
+            try:
+                values = self.controller.state(name)["values"]
+            except Exception:
+                continue
+            for element, label in readouts:
+                QtPanelView._set_readout(
+                    label, display_text(element,
+                                        values.get(element["model_attr"], "")))
+
+    def _build_reopen(self, closed):
+        """A model the operator closed is put away, not gone: the way back is
+        on the rail, beside Setup - the other thing that reopens."""
+        while self._reopen_layout.count():
+            item = self._reopen_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self.reopen_buttons = {}
+        if closed:
+            self._reopen_layout.addWidget(_caption("Reopen"))
+        for name in closed:
+            button = QPushButton(name)
+            button.setObjectName("ghost")
+            button.setToolTip(f"Reopen {name}")
+            button.clicked.connect(lambda _=False, n=name: self._reopen(n))
+            self._reopen_layout.addWidget(button)
+            self.reopen_buttons[name] = button
+        self._reopen_holder.setVisible(bool(closed))
+
+    def _reopen(self, name):
+        """Construct the model again from its remembered config. A refusal is
+        logged and the button stays; it never raises out of a click."""
+        if name in self._docks:
+            return
+        try:
+            self.open_model(name)
+        except Exception as exc:
+            events.warn("Reopen Failed", f"{name}: {exc}", source="QtView",
+                        exception=exc)
+        self._sync_rail()
+
+    # -- Setup: put away on launch, back from the rail ----------------------
     def _collapse_setup(self):
         """First model launched: the wizard gives way, one click from coming
         back. Called by `base.Dashboard._on_models_changed`.
 
         Hidden, never destroyed — the panel behind it keeps its scan results
         and its selections, so Refresh and Relaunch do what they did before it
-        was put away. `toggleViewAction` is what brings it back.
+        was put away. The rail's Setup (`toggleViewAction`) brings it back.
         """
         if self._setup_dock is None or self._setup_dock.isHidden():
             return
         self._setup_dock.hide()
         events.debug("Setup Collapsed", "the Setup dock is hidden; the "
-                     "toolbar's Setup entry brings it back", source="QtView")
+                     "rail's Setup brings it back", source="QtView")
 
     def show_setup(self):
-        """Bring Setup back for a re-scan or a relaunch (so does the toolbar)."""
+        """Bring Setup back for a re-scan or a relaunch (so does the rail)."""
         if self._setup_dock is None:
             return
         self._setup_dock.show()
@@ -1491,39 +2150,113 @@ class QtDashboard(Dashboard, QMainWindow):
         events.debug("Setup Reopened", "the Setup dock is visible again",
                      source="QtView")
 
-    # -- events ------------------------------------------------------------
-    def _build_event_panel(self):
-        """A companion strip along the bottom, not the main event.
+    # -- the empty state ---------------------------------------------------
+    def _build_empty_state(self):
+        """What the window says when nothing is running: what to do next.
+        It was an empty grey field with a stop button floating in it."""
+        self.empty_state = QWidget()
+        layout = QVBoxLayout(self.empty_state)
+        layout.setContentsMargins(theme.INSET * 3, theme.INSET * 3,
+                                  theme.INSET * 3, theme.INSET * 3)
+        layout.setSpacing(theme.GAP)
+        title = QLabel(EMPTY_TITLE)
+        title.setObjectName("emptyTitle")
+        hint = QLabel(EMPTY_HINT)
+        hint.setObjectName("caption")
+        hint.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(hint)
+        self.empty_setup_button = QPushButton("Open setup")
+        self.empty_setup_button.setObjectName("ghost")
+        self.empty_setup_button.clicked.connect(self.show_setup)
+        self.empty_setup_button.setVisible(False)
+        layout.addSpacing(theme.PAD)
+        layout.addWidget(self.empty_setup_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch(1)
+        self.setCentralWidget(self.empty_state)
+
+    def _sync_empty_state(self):
+        """Shown while no model is open; the way to Setup when it is away.
+        Hidden once one is, so the model docks take the whole window."""
+        self.empty_state.setVisible(not self._docks)
+        setup_away = self._setup_dock is not None and self._setup_dock.isHidden()
+        self.empty_setup_button.setVisible(setup_away)
+
+    # -- events: the tray --------------------------------------------------
+    def _build_event_tray(self):
+        """A bottom tray, not a panel: the latest event on one line, the
+        rest a click away. It was a dock as tall as the models, mostly empty.
 
         The document is capped: an append-forever log in a window that runs a
         whole bench session is an unbounded document, and the operator only
         ever reads the tail of it.
         """
-        self.event_dock = QDockWidget("Event Log", self)
-        self.event_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+        # The window's status bar, not a dock: it is anchored to the bottom
+        # edge by QMainWindow itself, spans the full width, and takes exactly
+        # its own height. As a dock with a fixed height it left a blank band
+        # under it that the model docks never reclaimed.
+        self.event_dock = QStatusBar(self)
+        self.event_dock.setObjectName("eventTray")
+        self.event_dock.setSizeGripEnabled(False)
+        self.tray = QFrame()
+        self.tray.setObjectName("tray")
+        layout = QVBoxLayout(self.tray)
+        layout.setContentsMargins(theme.INSET * 2, theme.GAP,
+                                  theme.INSET, theme.GAP)
+        layout.setSpacing(theme.GAP)
+        head = QHBoxLayout()
+        head.setSpacing(theme.PAD)
+        self.event_latest = ElidedLabel()
+        self.event_latest.setObjectName("caption")
+        self.event_latest.set_full_text("No events yet.")
+        head.addWidget(self.event_latest, 1)
+        self.tray_toggle = QPushButton("Show events")
+        self.tray_toggle.setObjectName("ghost")
+        self.tray_toggle.setCheckable(True)
+        self.tray_toggle.toggled.connect(self._set_tray_open)
+        head.addWidget(self.tray_toggle)
+        layout.addLayout(head)
         self.event_view = QTextEdit()
         self.event_view.setReadOnly(True)
         self.event_view.document().setMaximumBlockCount(EVENT_LOG_LINES)
-        self.event_view.setMinimumHeight(EVENT_LOG_PX // 2)
-        self.event_dock.setWidget(self.event_view)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea,
-                           self.event_dock)
-        log_action = self.event_dock.toggleViewAction()
-        log_action.setText("Event Log")
-        self.toolbar.addAction(log_action)
+        self.event_view.setFixedHeight(EVENT_LOG_PX)
+        layout.addWidget(self.event_view)
+        self.event_dock.addWidget(self.tray, 1)
+        self.setStatusBar(self.event_dock)
+
+    def _set_tray_open(self, is_open):
+        is_open = bool(is_open)
+        self.event_view.setVisible(is_open)
+        self.tray_toggle.setText("Hide events" if is_open else "Show events")
+        if self.tray_toggle.isChecked() != is_open:
+            self.tray_toggle.blockSignals(True)
+            self.tray_toggle.setChecked(is_open)
+            self.tray_toggle.blockSignals(False)
+        self.event_latest.setVisible(not is_open)
+        if is_open:
+            self.event_view.moveCursor(QTextCursor.MoveOperation.End)
+
+    @staticmethod
+    def _severity_colour(severity):
+        """Error is a fault (the signal), warning is to be read (the trace),
+        and information is quiet. `info` was drawn in the info role's fill -
+        a panel grey - and could not be read at all."""
+        role = theme.SEVERITY_ROLE.get(severity, "neutral")
+        if role in (DANGER_ROLE, "warning"):
+            return theme.colors(role)[0]
+        return theme.MUTED
 
     def _show_event(self, event):
-        """Everything the log reports, in a panel nobody has to dismiss."""
-        role = theme.SEVERITY_ROLE.get(event.severity, "neutral")
-        colour = theme.colors(role)[0]
+        """Everything the log reports, in a tray nobody has to dismiss."""
+        colour = self._severity_colour(event.severity)
+        label = sentence(str(event.severity).upper())
         # Escaped: an event's text can carry a device's reply verbatim, and
         # this widget renders HTML.
         self.event_view.append(
-            f'<span style="color:{colour}">[{html.escape(event.severity.upper())}]'
-            f"</span> {html.escape(event.text)}")
+            f'<span style="color:{colour}">{html.escape(label)}</span>'
+            f"&nbsp;&nbsp;{html.escape(event.text)}")
         self.event_view.moveCursor(QTextCursor.MoveOperation.End)
+        self.event_latest.set_full_text(f"{label}  {event.text}")
 
     def _show_popup(self, event):
         """The one acknowledged modal, parented to this window.
@@ -1561,7 +2294,16 @@ class QtDashboard(Dashboard, QMainWindow):
         if name in self._docks:
             return self._docks[name]
         dock = DeviceDock(name, self)
-        dock.setWidget(QtPanelView(self.controller, name))
+        panel = QtPanelView(self.controller, name)
+        # A scroll area, so a panel's minimum size never forces the window
+        # past the screen - which would carry the rail's stop off it. Safety
+        # stays reachable: the stop itself is on the rail.
+        scroll = QScrollArea()
+        scroll.setObjectName("panelScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(panel)
+        dock.setWidget(scroll)
         dock.closed.connect(lambda: self._on_dock_closed(name))
         if self._last_dock is not None:
             self.splitDockWidget(self._last_dock, dock, Qt.Orientation.Horizontal)
@@ -1569,25 +2311,41 @@ class QtDashboard(Dashboard, QMainWindow):
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self._last_dock = dock
         self._docks[name] = dock
-        self._build_sidebar()
+        self._panels[name] = panel
+        self._sync_empty_state()
+        self._balance_docks()
+        self._sync_rail()
         events.debug("Dock Opened", name, source="QtView")
         return dock
 
+    def _balance_docks(self):
+        """Side-by-side docks in proportion to what each panel needs: Red
+        Percent's two columns are twice a probe's one, and an even split
+        squeezed it into a scroll while the probe had half a screen of air."""
+        names = [n for n in self._docks if n in self._panels]
+        if len(names) < 2:
+            return
+        widths = [max(self._panels[n].sizeHint().width(), 1) for n in names]
+        self.resizeDocks([self._docks[n] for n in names], widths,
+                         Qt.Orientation.Horizontal)
+
     def _remove_panel(self, name):
         dock = self._docks.pop(name, None)   # popped first: the dock's own
-        if dock is None:                     # closeEvent must not re-enter
-            self._build_sidebar()
+        panel = self._panels.pop(name, None)  # closeEvent must not re-enter
+        if dock is None:
+            self._sync_rail()
             return
         if self._last_dock is dock:
             remaining = list(self._docks.values())
             # Not None: that made the next dock take the addDockWidget branch
             # and land somewhere else entirely (PYSIDE-16).
             self._last_dock = remaining[-1] if remaining else None
-        widget = dock.widget()
-        if isinstance(widget, QtPanelView):
-            widget.close()
+        if panel is not None:
+            panel.close()
         dock.close()
-        self._build_sidebar()
+        self._sync_empty_state()
+        self._balance_docks()
+        self._sync_rail()
         events.debug("Dock Closed", name, source="QtView")
 
     def _on_dock_closed(self, name):
@@ -1596,132 +2354,23 @@ class QtDashboard(Dashboard, QMainWindow):
             return
         self.close_model(name)
 
-    # -- sidebar -----------------------------------------------------------
-    def _build_sidebar_dock(self):
-        self.sidebar = QDockWidget("Models", self)
-        self.sidebar.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
-
-        holder = QWidget()
-        layout = QVBoxLayout(holder)
-        layout.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
-        layout.setSpacing(theme.PAD)
-        self.model_list = QListWidget()
-        self.model_list.itemChanged.connect(self._on_item_changed)
-        layout.addWidget(self.model_list)
-
-        # Bottom, not top: directly above the checkboxes that close models it
-        # was an easy accidental-click target when reaching for something else
-        # (PYSIDE-16; the Tk view puts it at the bottom for the same reason).
-        # Tall and full width, because it is the one control that has to be
-        # hittable without looking for it.
-        self.stop_button = QPushButton("FULL STOP")
-        self.stop_button.setMinimumHeight(STOP_BUTTON_PX)
-        self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                       QSizePolicy.Policy.Fixed)
-        self.stop_button.clicked.connect(self._on_stop_clicked)
-        layout.addWidget(self.stop_button)
-
-        self.sidebar.setWidget(holder)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.sidebar)
-        models_action = self.sidebar.toggleViewAction()
-        models_action.setText("Models")
-        self.toolbar.addAction(models_action)
-
-    def _sidebar_width(self):
-        """A few characters wider than the longest thing the sidebar shows.
-
-        Measured in the widgets' own fonts, so it follows `--font-size`
-        instead of being a pixel guess. The floor is the stop button's own
-        widest label: the sidebar is never narrower than the one control it
-        exists to keep reachable.
-        """
-        metrics = self.model_list.fontMetrics()
-        names = list(self.controller.model_names) + list(
-            self.controller.closed_names)
-        widest = max((metrics.horizontalAdvance(str(n)) for n in names),
-                     default=0)
-        floor = self.stop_button.fontMetrics().horizontalAdvance(
-            "CLEAR FULL STOP")
-        slack = metrics.horizontalAdvance("M" * SIDEBAR_SLACK_CHARS)
-        return max(widest, floor) + slack
-
-    def _build_sidebar(self):
-        """Open models, checked; closed ones, unchecked. Checking reopens.
-
-        The list is the Controller's, not a fourth hardcoded copy of the
-        device names - the sidebar could offer a model the builder had never
-        heard of.
-
-        Its width is capped to what it actually shows. Left uncapped it took a
-        third of the window as an empty column, and the model docks - the only
-        things with anything in them - shared what was left.
-        """
-        open_names = list(self.controller.model_names)
-        closed_names = [n for n in self.controller.closed_names
-                        if n not in open_names]
-        self.model_list.blockSignals(True)
-        try:
-            self.model_list.clear()
-            for name in open_names + closed_names:
-                item = QListWidgetItem(name)
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(Qt.CheckState.Checked if name in open_names
-                                   else Qt.CheckState.Unchecked)
-                self.model_list.addItem(item)
-        finally:
-            self.model_list.blockSignals(False)
-        self.sidebar.setMaximumWidth(self._sidebar_width())
-
-    def _on_item_changed(self, item):
-        name = item.text()
-        wants_open = item.checkState() == Qt.CheckState.Checked
-        if wants_open and name not in self._docks:
-            try:
-                self.open_model(name)
-            except Exception as exc:
-                events.warn("Reopen Failed", f"{name}: {exc}", source="QtView",
-                            exception=exc)
-                self._set_sidebar_checked(name, False)
-        elif not wants_open and name in self._docks:
-            self.close_model(name)
-
-    def _set_sidebar_checked(self, name, is_checked):
-        """Set a checkbox without re-entering `_on_item_changed`."""
-        self.model_list.blockSignals(True)
-        try:
-            for index in range(self.model_list.count()):
-                item = self.model_list.item(index)
-                if item.text() == name:
-                    item.setCheckState(Qt.CheckState.Checked if is_checked
-                                       else Qt.CheckState.Unchecked)
-                    break
-        finally:
-            self.model_list.blockSignals(False)
-
     # -- the global stop ---------------------------------------------------
     def _on_stop_clicked(self):
         self.toggle_estop_all()
         self._sync_stop_button()
 
     def _sync_stop_button(self):
-        """Label and colour from the Controller, never from the last click."""
-        is_estopped = self.controller.is_estopped
-        colours = theme.toggle_colors({"on_role": "danger",
-                                       "off_role": "danger"}, is_estopped)
-        wanted = "CLEAR FULL STOP" if is_estopped else "FULL STOP"
-        if self.stop_button.text() != wanted:
-            self.stop_button.setText(wanted)
+        """Face and ring from the Controller, never from the last click."""
+        is_estopped = bool(self.controller.is_estopped)
+        if self.stop_button.is_latched != is_estopped:
             events.debug("Stop Button", f"latched={is_estopped}",
                          source="QtView")
-        _, size, _ = theme.font(STOP_FONT_SCALE, bold=True)
-        self.stop_button.setStyleSheet(
-            f"background-color: {colours['background']}; "
-            f"color: {colours['foreground']}; "
-            f"border: 3px solid {colours['border']}; "
-            f"border-radius: 6px; padding: 12px; "
-            f"font-size: {size}pt; font-weight: bold;")
+        self.stop_button.set_latched(is_estopped)
+        label = ("Clear the stop on every model" if is_estopped
+                 else "Stop every model")
+        if self.stop_button.toolTip() != label:
+            self.stop_button.setToolTip(label)
+            self.stop_button.setAccessibleName(label)
 
     # -- focus (D-4) -------------------------------------------------------
     def changeEvent(self, event):
