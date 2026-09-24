@@ -10,6 +10,7 @@ dropdown per row carrying Off / SIM / a real port, no Mode dropdown, and a
 Refresh button instead of a Scan button.
 """
 import threading
+import time
 
 import pytest
 
@@ -199,12 +200,17 @@ def test_a_model_that_needs_no_port_still_has_one_dropdown(panel):
     assert panel.options("device_options") == [OFF, ON, SIM]
 
 
-def test_the_header_row_offers_refresh_and_the_scan_status(panel):
+def test_the_header_row_offers_refresh_the_scan_status_and_cancel(panel):
+    # F18 added "Cancel scan" (enabled only while scanning): a hung scan
+    # could not be given up before.
     header = panel.schema["sections"][0]
     assert header["title"] == "Devices"
     assert [(e["type"], e.get("command") or e.get("model_attr"))
             for e in header["elements"]] == [("button", "refresh"),
-                                             ("readonly", "scan_status")]
+                                             ("readonly", "scan_status"),
+                                             ("button", "cancel_scan")]
+    cancel = header["elements"][2]
+    assert cancel["enabled_when"] == ["scanning"]
     assert "scan" not in {e.get("command") for e in _elements(panel)}
 
 
@@ -628,6 +634,7 @@ def test_state_carries_the_scan_phase_ports_rows_and_launch_flag(panel):
                      "needs_port": True, "needs_gamepad": True,
                      "is_chosen": False, "options_command": "port_options"}
     assert state["values"]["scan_status"] == "not scanned yet"
+    assert state["scan"]["elapsed"] is None and state["scan"]["port"] is None
 
 
 # -- refresh and gating ----------------------------------------------------
@@ -643,7 +650,8 @@ def test_launching_is_gated_while_a_scan_runs_but_choosing_is_not(
         panel, monkeypatch):
     """The operator may point a row at a port while the scan is still walking
     the rest of them; that choice then wins over auto-assign."""
-    monkeypatch.setattr(station_setup, "REFRESH_JOIN_SECONDS", 0.05)
+    started = []
+    monkeypatch.setattr(Setup, "scan", lambda self: started.append(True) or True)
     release = threading.Event()
     thread = threading.Thread(target=release.wait, daemon=True)
     thread.start()
@@ -652,13 +660,20 @@ def test_launching_is_gated_while_a_scan_runs_but_choosing_is_not(
         assert panel.mode_name == "scanning"
         assert panel.run("launch").is_refused
         assert panel.run("set_alpha_port", args=(SIM,)).is_ok
-        # Refresh cancels the running scan first; this one will not stop, so
-        # it is refused rather than blocking the view thread any longer.
-        assert panel.run("refresh").is_refused
+        # Refresh cancels the running scan first. This one will not stop;
+        # F18: Refresh returns at once anyway (it used to join for up to 1 s
+        # on the view thread and then refuse), and the next scan starts when
+        # the old one finally ends.
+        began = time.monotonic()
+        assert panel.run("refresh").is_ok
+        assert time.monotonic() - began < 0.2
         assert panel._abort.is_set()
+        assert panel.state["scan"]["restart_pending"] is True
+        assert started == []
     finally:
         release.set()
         thread.join(timeout=1)
+    assert _wait(lambda: started == [True])
     assert panel.mode_name == "ready"
 
 
@@ -678,8 +693,9 @@ def test_refresh_cancels_a_running_scan_before_starting_the_next(
     monkeypatch.setattr(Setup, "cancel_scan",
                         lambda self: stopping.set() or True)
     assert panel.run("refresh").is_ok
-    assert started == [True]
     thread.join(timeout=1)
+    # The next scan starts on Refresh's helper thread once the old one ends.
+    assert _wait(lambda: started == [True])
 
 
 def test_start_kicks_the_scan_off_by_itself(panel, monkeypatch):
@@ -706,3 +722,81 @@ def test_start_never_raises_when_a_scan_is_already_running(panel):
     finally:
         release.set()
         thread.join(timeout=1)
+
+
+
+def _wait(predicate, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+# -- F18: a hung scan -------------------------------------------------------
+
+@pytest.fixture
+def hung_port(panel, monkeypatch):
+    """A port whose handshake never answers (and ignores the abort) until
+    released: the worst case, a driver call that does not come back."""
+    release = threading.Event()
+    reached = threading.Event()
+    monkeypatch.setattr(serial_port_module, "list_ports",
+                        lambda: ["/dev/ttyHUNG"], raising=False)
+
+    def identify(self, port, should_abort=None):
+        reached.set()
+        release.wait(10)
+        return None
+
+    monkeypatch.setattr(Setup, "identify", identify)
+    yield panel, reached
+    release.set()
+    thread = panel._scan_thread
+    if thread is not None:
+        thread.join(timeout=5)
+    restart = panel._restart_thread
+    if restart is not None:
+        restart.join(timeout=5)
+
+
+def test_a_hung_scan_names_the_port_and_how_long_it_has_waited(
+        hung_port, monkeypatch):
+    panel, reached = hung_port
+    clock = [1000.0]
+    panel.scan()
+    assert reached.wait(2)
+    monkeypatch.setattr(station_setup.time, "monotonic", lambda: clock[0])
+    panel._port_started = panel._scan_started = 1000.0
+    clock[0] = 1007.4
+    state = panel.state
+    assert "/dev/ttyHUNG" in state["values"]["scan_status"]
+    assert "7 s" in state["values"]["scan_status"]
+    assert state["scan"]["port"] == "/dev/ttyHUNG"
+    assert state["scan"]["elapsed"] == 7.4
+
+
+def test_a_hung_scan_says_why_launch_is_greyed_out_and_can_be_cancelled(
+        hung_port):
+    panel, reached = hung_port
+    panel.scan()
+    assert reached.wait(2)
+    summary = panel.state["values"]["summary"]
+    assert "Launch waits for the scan" in summary and "Cancel scan" in summary
+    assert panel.run("cancel_scan").is_ok
+    assert panel._abort.is_set()
+
+
+def test_refresh_during_a_hung_scan_does_not_block_the_caller(hung_port):
+    panel, reached = hung_port
+    panel.scan()
+    assert reached.wait(2)
+    began = time.monotonic()
+    assert panel.run("refresh").is_ok
+    assert panel.run("refresh").is_ok, "a second press while restarting"
+    assert time.monotonic() - began < 0.2
+
+
+def test_the_summary_is_a_sentence_when_nothing_is_selected(panel):
+    assert panel.summary.startswith("Nothing selected.")

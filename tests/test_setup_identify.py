@@ -341,8 +341,10 @@ def test_the_scan_status_names_the_port_and_the_progress(panel, monkeypatch):
                         seen.append(self.scan_status))
     panel.scan()
     _join(panel)
-    assert seen == ["scanning /dev/ttyUSB0 (1 of 2)...",
-                    "scanning /dev/ttyUSB1 (2 of 2)..."]
+    # F18: the line now carries how long this port has taken, so a hung
+    # port reads as hung; "0 s" here because identify returns at once.
+    assert seen == ["scanning /dev/ttyUSB0 (1 of 2), 0 s on this port",
+                    "scanning /dev/ttyUSB1 (2 of 2), 0 s on this port"]
     assert panel.state["values"]["scan_status"] == "ready"
 
 

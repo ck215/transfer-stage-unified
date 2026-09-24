@@ -79,9 +79,9 @@ LOST = ConnectionState.LOST.value
 #: The check that matters is the one *inside* the wait; between ports is not
 #: enough, because that is not where the time goes (MANAGER-20).
 PROBE_SLICE = 0.1
-#: How long Refresh waits for a cancelled scan to notice, before refusing
-#: rather than blocking the view thread any longer.
-REFRESH_JOIN_SECONDS = 1.0
+#: Refresh never waits on the calling (view) thread for a cancelled scan to
+#: notice: a helper thread waits and starts the next scan (F18; the Qt audit
+#: measured a 1 s freeze when Refresh joined here).
 
 
 class _Stub:
@@ -187,10 +187,14 @@ class Setup(Panel):
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
         self._is_launched = False
+        self._restart_thread = None     # Refresh's "then scan again" helper
+        self._scan_started = None       # monotonic, for the elapsed seconds
+        self._scan_port = None          # the port being probed right now
+        self._port_started = None
         self.scan_phase = self.IDLE
         self.scan_status = "not scanned yet"
         self.scan_progress = 0
-        self.summary = "nothing selected"
+        self._selected = "nothing selected"
         for key, row in self._rows.items():
             setattr(self, f"{key}_name", row["name"])
             setattr(self, f"{key}_port", OFF)
@@ -226,6 +230,46 @@ class Setup(Panel):
         return bool(thread is not None and thread.is_alive())
 
     @property
+    def scan_status(self):
+        """The one status line. While a port is being probed it names the port
+        and how long it has been answering nothing, so a hung scan reads as
+        hung rather than as a frozen line (F18)."""
+        port, since = self._scan_port, self._port_started
+        if port is None or since is None or not self.is_scanning:
+            return self._scan_note
+        waited = int(time.monotonic() - since)
+        return f"{self._scan_note} {waited} s on this port"
+
+    @scan_status.setter
+    def scan_status(self, text):
+        self._scan_note = text
+
+    @property
+    def scan_elapsed(self):
+        """Seconds since the running scan began, or None when none runs."""
+        started = self._scan_started
+        if started is None or not self.is_scanning:
+            return None
+        return round(time.monotonic() - started, 1)
+
+    @property
+    def summary(self):
+        """What will launch, and - when Launch is greyed out or would refuse -
+        why, as a sentence the operator can act on (F18)."""
+        selected = self._selected
+        if self.is_scanning:
+            return (f"{selected}. Launch waits for the scan to finish; "
+                    "press Cancel scan to launch now.")
+        if selected == "nothing selected":
+            return ("Nothing selected. Set a row's Port to a port or to SIM "
+                    "to launch.")
+        return selected
+
+    @summary.setter
+    def summary(self, text):
+        self._selected = text
+
+    @property
     def is_launched(self):
         """True once `build()` has put models into the Controller. The views
         collapse the Setup panel on it; `stop_system()` clears it."""
@@ -259,7 +303,10 @@ class Setup(Panel):
             "is_launched": self._is_launched,
             "scan": {"phase": self.scan_phase, "status": self.scan_status,
                      "progress": self.scan_progress, "is_scanning": is_scanning,
-                     "ports": ports, "found": found},
+                     "ports": ports, "found": found,
+                     "elapsed": self.scan_elapsed, "port": (
+                         self._scan_port if is_scanning else None),
+                     "restart_pending": self._is_restart_pending},
             "ports": ports,
             "gamepads": gamepads,
             "rows": rows,
@@ -413,16 +460,46 @@ class Setup(Panel):
         "start again from what is attached now" and never has to be pressed
         twice. Single-flight: there is never a second scan over the same
         ports, which is what made the web wizard's progress jump backwards.
+
+        **Never blocks the caller** (F18): with a scan still running, a helper
+        thread waits for it to notice the cancel and then starts the next
+        one. Refresh returns at once either way.
         """
-        if self.is_scanning:
-            self.cancel_scan()
-            thread = self._scan_thread
-            if thread is not None:
-                thread.join(REFRESH_JOIN_SECONDS)
+        with self._lock:
+            if self._is_restart_pending:
+                return True             # already restarting; pressing again is fine
             if self.is_scanning:
-                self._refuse("The running scan has not stopped yet; "
-                             "try again in a moment.")
+                try:
+                    self.cancel_scan()
+                except Refused:
+                    pass                # it finished between the two checks
+                old = self._scan_thread
+                self._restart_thread = threading.Thread(
+                    target=self._scan_after, args=(old,), daemon=True,
+                    name="setup-rescan")
+                self._restart_thread.start()
+                events.debug("Scan", "refresh: cancel requested; the next scan "
+                             "starts when this one stops", source=self.NAME)
+                return True
         return self.scan()
+
+    @property
+    def _is_restart_pending(self):
+        thread = self._restart_thread
+        return bool(thread is not None and thread.is_alive())
+
+    def _scan_after(self, old):
+        """Refresh's helper: wait for the cancelled scan, then scan again."""
+        if old is not None:
+            old.join()
+        try:
+            self.scan()
+        except Refused as refusal:
+            events.debug("Scan", f"refresh restart: {refusal.reason}",
+                         source=self.NAME)
+        except Exception as exc:        # never let a worker die silently
+            events.warn("Scan Failed", "The scan could not restart. Press "
+                        "Refresh to try again.", source=self.NAME, exception=exc)
 
     def scan(self):
         """Start a scan on a worker thread. Never blocks a view.
@@ -441,6 +518,8 @@ class Setup(Panel):
             self.scan_phase = self.LISTING
             self.scan_status = "scanning for ports..."
             self.scan_progress = 0
+            self._scan_started = time.monotonic()
+            self._scan_port = self._port_started = None
             thread = threading.Thread(target=self._scan_loop, daemon=True,
                                       name="setup-scan")
             self._scan_thread = thread
@@ -472,8 +551,13 @@ class Setup(Panel):
             if self._abort.is_set():
                 break
             self.scan_status = (f"scanning {port} "
-                                f"({index + 1} of {len(targets)})...")
-            found = self.identify(port, should_abort=self._abort.is_set)
+                                f"({index + 1} of {len(targets)}),")
+            self._port_started = time.monotonic()
+            self._scan_port = port
+            try:
+                found = self.identify(port, should_abort=self._abort.is_set)
+            finally:
+                self._scan_port = self._port_started = None
             with self._lock:
                 self._found[port] = found
             if found:
@@ -907,6 +991,9 @@ class Setup(Panel):
             "Devices",
             sch.button("Refresh", "refresh", role="info"),
             sch.readonly("Scan:", "scan_status"),
+            # F18: a hung scan can be given up without restarting it.
+            sch.button("Cancel scan", "cancel_scan", role="neutral",
+                       enabled_when=[self.SCANNING]),
             layout="row",
         )]
         for key, row in self._rows.items():
@@ -988,7 +1075,7 @@ class Setup(Panel):
             where = ("simulated" if config["sim"]
                      else (config["port"] or "on"))
             parts.append(f"{config['model']} ({where})")
-        self.summary = ", ".join(parts) or "nothing selected"
+        self._selected = ", ".join(parts) or "nothing selected"
 
 
 class _Selector:
