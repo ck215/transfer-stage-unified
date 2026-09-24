@@ -28,7 +28,7 @@ cd ../mvc-refactor
 ./run_macos.sh --web | --qt | --tk        # uses the already-active venv (main/.venv)
 python3 src/app.py --web --no-browser --port 8080
 
-python3 -m pytest tests -q -p no:cacheprovider -m "not qt"             # 1527 pass, ~46 s
+python3 -m pytest tests -q -p no:cacheprovider -m "not qt"             # 1675 pass, ~80 s
 QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt   # 127 pass
 python3 -m pytest tests/test_wire_golden.py -q                         # 78 scenarios byte-identical to legacy/src/
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
