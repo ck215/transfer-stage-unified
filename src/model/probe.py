@@ -469,7 +469,9 @@ class Probe(Model):
 
     def _write_stop(self, label, payload):
         if self.port is None:
-            return True
+            # A1: a stop that wrote nothing is unconfirmed, as the rotator's
+            # is (MANAGER-21). There is no board to have received it.
+            return False
         try:
             return bool(self.port.write(payload, priority=True))
         except Exception as exc:

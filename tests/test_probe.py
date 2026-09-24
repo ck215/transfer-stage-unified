@@ -856,3 +856,20 @@ def test_writing_the_held_value_while_locked_is_not_a_change(probe):
     assert probe.x_step == 5
     with pytest.raises(Refused):
         probe.x_step = 6
+
+
+# -- A1: a stop that wrote nothing is unconfirmed ---------------------------
+
+@pytest.mark.estop
+def test_a_stop_with_no_port_is_not_confirmed():
+    """A1: `_write_stop` reported True when there was no port, so a probe
+    with nothing behind it confirmed a stop it never sent. The rotator already
+    answers False here (MANAGER-21); the probe now agrees."""
+    probe, _, _ = make_probe()
+    probe.port = None
+    try:
+        assert probe._halt_hardware() is False
+        assert probe.estop() is False
+        assert probe.is_estopped is True, "the latch holds either way"
+    finally:
+        probe._stop_threads()

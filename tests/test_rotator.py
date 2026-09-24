@@ -750,3 +750,13 @@ def test_a_rotator_over_the_real_transport_polls_and_stops():
         finally:
             model.close()
     assert handle.is_open is False
+
+
+def test_a_stop_with_no_controller_is_not_confirmed():
+    """A1: a rotator with no SMC100 behind it cannot see the stage halt, so
+    its stop is unconfirmed; the latch still holds."""
+    model = Rotator(port=None)
+    assert model.smc is None
+    assert model._halt_hardware() is False
+    assert model.estop() is False
+    assert model.is_estopped is True
