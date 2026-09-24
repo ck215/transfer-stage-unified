@@ -262,7 +262,7 @@ class Heater(Model):
                 # what was just typed (TEMP-4).
                 sch.button("Enter Settings", "apply_settings",
                            inputs=self.FRAME_FIELDS, role="go"),
-                sch.button("Stop System", "halt", role="danger"),
+                sch.button("Stop heater", "halt", role="neutral"),
             ),
             self._safety_section(),
         )

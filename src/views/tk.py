@@ -1745,6 +1745,10 @@ class TkPanelView(PanelView):
             # A readout with no value says so. It never says it with an empty
             # coloured label, which is a stripe of colour with no meaning.
             return EMPTY_READOUT
+        if element["type"] == "readonly" and str(text).strip().lower() in ("true", "false"):
+            # A boolean reads as the operator would say it, as in the Web and
+            # Qt views ("Yes" / "No"), not as a programming literal.
+            return "Yes" if str(text).strip().lower() == "true" else "No"
         if element.get("value_type") != "int" or not text:
             return text
         try:

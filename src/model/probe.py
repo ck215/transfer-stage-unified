@@ -1008,12 +1008,12 @@ class Probe(Model):
                 # toggles, and the dashboard's global FULL STOP already
                 # reaches every model.
                 sch.toggle("Autonomous:", "is_auto", "set_mode",
-                           "AUTONOMOUS MODE (Click to Stop)",
+                           "Autonomous mode (press to stop)",
                            "Enter Autonomous Mode",
                            on_args=[ProbeMode.AUTO.value],
                            off_args=[ProbeMode.DISABLED.value]),
                 sch.toggle("Manual / Gamepad:", "is_manual", "set_mode",
-                           "MANUAL MODE (Click to Stop)", "Enter Manual Mode",
+                           "Manual mode (press to stop)", "Enter Manual Mode",
                            on_args=[ProbeMode.MANUAL.value],
                            off_args=[ProbeMode.DISABLED.value]),
                 # D-5: the distances and the speed travel with the command and

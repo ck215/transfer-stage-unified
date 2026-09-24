@@ -214,7 +214,7 @@ class Rotator(Model):
             sch.section(
                 "Commands",
                 sch.button("Home", "home", role="go", disabled_when=gated),
-                sch.button("STOP", "halt", role="danger", disabled_when=gated),
+                sch.button("Stop motion", "halt", role="neutral", disabled_when=gated),
                 sch.button("Reset & Configure", "configure", disabled_when=gated),
             ),
             self._safety_section(),

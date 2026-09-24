@@ -227,6 +227,17 @@ def sentence_case(text):
                     else word for index, word in enumerate(words))
 
 
+def as_operator_word(text):
+    """A boolean readout is shown as the operator would say it ("Yes" / "No"),
+    not as a programming literal - the Web view's rule (`app.js`), so the two
+    views read the same."""
+    if isinstance(text, bool):
+        return "Yes" if text else "No"
+    if isinstance(text, str) and text.strip().lower() in ("true", "false"):
+        return "Yes" if text.strip().lower() == "true" else "No"
+    return text
+
+
 def is_quiet_value(text):
     """A readout at rest ("off", "False", nothing) rather than a live one."""
     return str("" if text is None else text).strip().lower() in QUIET_VALUES
@@ -1560,6 +1571,7 @@ class QtPanelView(PanelView, QWidget):
     def _set_readout(widget, text):
         """A readout: its value in the trace ink, or muted when it is at rest
         ("off", "False", nothing yet). Empty is a dash, never a blank."""
+        text = as_operator_word(text)
         shown = text if str(text).strip() else EMPTY_READOUT
         if widget.text() != shown:
             widget.setText(shown)

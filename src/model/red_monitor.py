@@ -277,7 +277,7 @@ class RedMonitor(Model):
 
     PARAMS = {
         p.name: p for p in (
-            Param("run_name", "text", default="", label="Run / Cut ID"),
+            Param("run_name", "text", default="", label="Run / cut ID"),
             Param("probe_name", "text", default="", label="Probe Name"),
             Param("probe_tilt_angle", "float", default=0.0, decimals=2,
                   unit="deg", label="Probe Tilt Angle"),
@@ -1159,7 +1159,7 @@ class RedMonitor(Model):
             sch.section(
                 # REDPERCENT-23, D-6: declared once so all three views render
                 # it. None of them hand-builds an annotation form.
-                "Operator Annotation (intended)",
+                "Operator annotation (intended)",
                 *[sch.entry(f"{field.label}:", field.name, P[field.name],
                             disabled_when=("running",))
                   for field in self.ANNOTATION_FIELDS],
@@ -1181,14 +1181,14 @@ class RedMonitor(Model):
             ),
             sch.section(
                 "Synced Axes",
-                sch.toggle("Sync X", "is_sync_x", "set_sync", "Sync X: ON",
-                           "Sync X: OFF", on_args=("X",), off_args=("X",),
+                sch.toggle("Sync X", "is_sync_x", "set_sync", "On",
+                           "Off", on_args=("X",), off_args=("X",),
                            disabled_when=("running",)),
-                sch.toggle("Sync Y", "is_sync_y", "set_sync", "Sync Y: ON",
-                           "Sync Y: OFF", on_args=("Y",), off_args=("Y",),
+                sch.toggle("Sync Y", "is_sync_y", "set_sync", "On",
+                           "Off", on_args=("Y",), off_args=("Y",),
                            disabled_when=("running",)),
-                sch.toggle("Sync Z", "is_sync_z", "set_sync", "Sync Z: ON",
-                           "Sync Z: OFF", on_args=("Z",), off_args=("Z",),
+                sch.toggle("Sync Z", "is_sync_z", "set_sync", "On",
+                           "Off", on_args=("Z",), off_args=("Z",),
                            disabled_when=("running",)),
                 sch.readonly("Synced:", "sync_axes", param=P["sync_axes"]),
             ),
@@ -1223,9 +1223,9 @@ class RedMonitor(Model):
                 sch.region_select("Set Capture Region", "set_region",
                                   model_attr="region", role="info",
                                   data_command="screen_image"),
-                sch.button("Start", "start_run", inputs=self._entry_names,
+                sch.button("Start run", "start_run", inputs=self._entry_names,
                            role="go", disabled_when=("running",)),
-                sch.button("Stop", "end_run", role="danger",
+                sch.button("Stop run", "end_run", role="neutral",
                            enabled_when=("running",)),
                 sch.button("Reset Baseline", "reset_baseline"),
                 sch.file_save("Save", "save", extensions=("csv",), role="info"),

@@ -585,7 +585,7 @@ def test_enter_settings_carries_the_whole_frame_with_it(heater):
 
 def test_there_is_a_stop_button_and_it_reads_as_dangerous(heater):
     button = next(e for e in _elements(heater) if e.get("command") == "halt")
-    assert button["text"] == "Stop System" and button["role"] == "danger"
+    assert button["text"] == "Stop heater" and button["role"] == "neutral"  # one red: danger is the estop toggle and a fault, not a halt command (2026-09-24)
 
 
 def test_the_safety_section_is_last(heater):

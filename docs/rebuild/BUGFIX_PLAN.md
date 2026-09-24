@@ -111,6 +111,17 @@ device is switched on at launch; a dead port costs ~9.5 s of scan.
 Batch order for Tier D: D1 → D4 → D2 → D5 → D3 (safety and hardware first),
 then D6/D7 together (one write set: `setup.py`), then the rest.
 
+## Tier E — UI follow-ups from round 2 (2026-09-24), small
+
+| # | Where | Item | Route |
+|---|---|---|---|
+| E1 | `src/model/red_monitor.py` `figure()` | Return no image when no run is loaded so every view shows its "No run loaded" empty state instead of matplotlib's 6 px caption; confirm all three views render a missing image as the empty state first. | `agy` |
+| E2 | `src/schema.py` | Accept `empty=` text on `plot`, `image` and `log_stream`; the Web view already prefers it. | `router patch-plan` → direct |
+| E3 | `src/views/theme.py` | A severity → text-colour map for event logs (Tk and Qt each hard-wire one now; `ROLES["info"]` as a text colour was the unreadable-log bug in both). | direct |
+| E4 | `src/views/theme.py` `FONT_FAMILY` | The brief names IBM Plex Sans; Tk/Qt can use it only if installed on the station PC. Owner: install it there, or accept Helvetica for the desktop views. | owner |
+| E5 | `src/controller/setup.py` `stop_system` | Owner call: confirm before tearing every model down? | owner |
+| E6 | Tk after-shots | Capture the three states at 1400×900 and 900×900 when the Mac is free (`../rebuild-handoff/tk3.md`, UNVERIFIED). | direct |
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.
