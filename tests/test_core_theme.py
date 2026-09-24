@@ -114,7 +114,7 @@ def test_the_safety_toggle_is_a_danger_filled_on_not_a_green_one():
     """"A latched estop is `on_role="danger"` — not green because it happens
     to be 'on'.\""""
     toggle = FakeModel().schema["sections"][-1]["elements"][0]
-    assert toggle["text"] == "FULL STOP"
+    assert toggle["text"] == "Stop"  # F20: one word for the stop object (2026-09-24)
     on = theme.toggle_colors(toggle, True)
     off = theme.toggle_colors(toggle, False)
     assert on["background"] == theme.ROLES["danger"][0]

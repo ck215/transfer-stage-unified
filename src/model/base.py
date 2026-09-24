@@ -216,10 +216,7 @@ class Model(Panel):
             # F20: one vocabulary - the object is "Stop", its latched state
             # "Stopped", the action "Clear". The tooltip names the model, so
             # six per-model stops are not six controls called "Stop".
-            # The label stays "FULL STOP" for now: tests/test_core_theme.py
-            # and tests/test_core_views_base.py pin it (outside this write
-            # set); the lead renames it to "Stop" with them.
-            sch.toggle("FULL STOP", "is_estopped", "toggle_estop",
+            sch.toggle("Stop", "is_estopped", "toggle_estop",
                        "Stopped", "Stop",
                        on_role="danger", off_role="danger",
                        tooltip=f"Stop the {self.NAME}",

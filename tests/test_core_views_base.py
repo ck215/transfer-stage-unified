@@ -174,7 +174,7 @@ def test_a_toggle_reads_its_state_from_the_model_not_from_the_widget(view, stati
 
 def test_the_full_stop_toggle_latches_through_the_view(view, station):
     _, model = station
-    view._run_toggle(_element(view, "FULL STOP"))
+    view._run_toggle(_element(view, "Stop"))
     assert model.is_estopped
 
 

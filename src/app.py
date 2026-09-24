@@ -18,6 +18,7 @@ stopping a manager that has already been replaced (which is what
 `lifecycle.current_manager` existed to work around).
 """
 import argparse
+import os
 import atexit
 import importlib
 import sys
@@ -158,6 +159,8 @@ Examples:
                        help="launch the web dashboard")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"web dashboard port (default: {DEFAULT_PORT})")
+    parser.add_argument("--no-motion", action="store_true",
+                        help="disable the one motion the views have (the latch pulse); same as STATION_NO_MOTION=1")
     parser.add_argument("--no-browser", action="store_true",
                         help="do not open a browser for the web dashboard")
     parser.add_argument("--font-size", type=int,
@@ -169,6 +172,8 @@ Examples:
     # hardware-capable web server instead of the view the operator asked for
     # (MANAGER-14).
     args = parser.parse_args(argv)
+    if args.no_motion:
+        os.environ["STATION_NO_MOTION"] = "1"
 
     view_name = pick_view(args.view)
     if args.view is None:
