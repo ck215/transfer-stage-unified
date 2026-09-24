@@ -113,7 +113,10 @@ def test_every_command_carries_every_entry_value():
 
 def test_needs_confirm_re_runs_with_the_args_plus_true():
     run = _body(r"async run\(element, args\) \{(.*?)\n  \}")
-    assert "needs_confirm" in run and "window.confirm" in run
+    # The page's own confirmation (F17): defaults to Cancel and never blocks
+    # the page's stop the way a native dialog blocks every script on it.
+    assert "needs_confirm" in run and "this.dashboard.confirm(" in run
+    assert "window.confirm(" not in CODE, "a native confirm blocks the stop"
     assert ".concat([true])" in run, (
         "the confirmed re-run must append True to the original args, not "
         "replace them with [true]")
@@ -124,7 +127,8 @@ def test_a_refusal_is_a_status_line_on_the_card_and_never_a_popup():
     run = _body(r"async run\(element, args\) \{(.*?)\n  \}")
     assert "this.showRefused(" in run
     assert "alert(" not in run, "a refusal opened a modal"
-    assert "textContent" in _body(r"showRefused\(reason\) \{(.*?)\n  \}")
+    assert "putText(this.status, reason)" in _body(
+        r"showRefused\(reason, element\) \{(.*?)\n  \}")
 
 
 def test_only_an_event_that_asks_to_be_acknowledged_opens_a_modal():
@@ -152,7 +156,8 @@ def test_gating_covers_every_element_including_entries():
 def test_a_stale_state_is_marked_at_the_same_threshold_as_the_desktop_views():
     assert "const STALE_AFTER_S = 1.0;" in APP_JS
     refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
-    assert "this.setStale(isStale(state))" in refresh
+    # stale by age, or by a lost device (F3)
+    assert "this.setStale(isStale(state) || isLost" in refresh
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
@@ -170,7 +175,8 @@ def test_a_model_with_no_loop_to_be_stale_about_is_not_stale():
 def test_the_global_full_stop_follows_the_state_not_the_click():
     assert "this.renderEstop(Boolean(state.is_estopped))" in APP_JS
     toggle = _body(r"async toggleEstopAll\(\) \{(.*?)\n  \}")
-    assert "/api/estop_all" in toggle and "/api/clear_estop_all" in toggle
+    assert "this.stopAll()" in toggle and "/api/clear_estop_all" in toggle
+    assert "/api/estop_all" in _body(r"\n  async stopAll\(\) \{(.*?)\n  \}")
     assert "needs_confirm" in toggle, "the latch cleared without asking"
 
 
@@ -307,14 +313,17 @@ def test_the_setup_drawer_is_open_at_boot_and_reopens_from_the_rail():
         "an open drawer over live modules needs a scrim behind it")
     assert "this.dom.setupLink.addEventListener('click', () => this.setDrawerOpen(true))" \
         in APP_JS, "nothing reopens the drawer"
-    assert "event.key === 'Escape' && this.isDrawerOpen" in APP_JS, (
-        "Escape does not close the drawer")
+    assert "if (event.key !== 'Escape') return;" in APP_JS
+    assert "if (this.isDrawerOpen && this.dom.modal.hidden) this.setDrawerOpen(false)" \
+        in APP_JS, "Escape does not close the drawer"
     assert re.search(r"\.drawer\s*\{[^}]*position:\s*fixed", STYLES)
     assert re.search(r"\.drawer\s*\{[^}]*width:\s*min\(5[0-9]0px, 100%\)", STYLES)
-    # The stop may never be under the drawer or under its scrim.
-    assert re.search(r"\.rail\s*\{[^}]*z-index:\s*9", STYLES)
-    assert re.search(r"\.drawer\s*\{[^}]*z-index:\s*8", STYLES)
-    assert re.search(r"\.scrim\s*\{[^}]*z-index:\s*7", STYLES)
+    # The stop may never be under the drawer, its scrim or any overlay (F1).
+    def z(selector):
+        found = re.search(r"\n" + selector + r"\s*\{[^}]*z-index:\s*(\d+)", STYLES)
+        assert found, f"{selector} has no z-index"
+        return int(found.group(1))
+    assert z(r"\.rail") > max(z(r"\.drawer"), z(r"\.scrim"), z(r"\.overlay"), z(r"\.tray"))
     assert re.search(r"\.scrim\s*\{[^}]*inset:\s*var\(--rail-h\)", STYLES), (
         "the scrim dims the rail, and with it the one control that may "
         "never be dimmed")
@@ -563,6 +572,67 @@ def test_a_boolean_readout_reads_as_a_word_and_an_empty_one_is_muted():
         "an empty fault line read as a red '--'")
 
 
+# --------------------------------------------------------------------------
+# Tier F (UI audit, 2026-09-24). The stop-path behaviours are driven in a real
+# browser in test_view_web_server.py; these are the rules a read can check.
+# --------------------------------------------------------------------------
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_a_long_option_is_elided_from_the_middle():
+    """F15 (HC-6): the tail of a port name is what tells two ports apart."""
+    assert _node_value("elideMiddle('/dev/cu.usbmodem1234567890123', 22)") == \
+        "/dev/cu.us…34567890123"
+    assert _node_value("elideMiddle('SIM', 22)") == "SIM"
+    assert _node_value("elideMiddle('x'.repeat(40), 22).length") == 22
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_trace_is_for_numbers_and_a_quiet_word_is_muted():
+    """F24 (CRIT-6, HC-16)."""
+    assert _node_value("readoutKind('0.000')") == "number"
+    assert _node_value("readoutKind('-1.5, 0.0, 2')") == "number"
+    assert _node_value("readoutKind('off')") == "quiet"
+    assert _node_value("readoutKind('Not set')") == "quiet"
+    assert _node_value("readoutKind('run_20260924_101025')") == "word"
+    assert re.search(r"span\.value\.is-word,\s*\.row span\.value\.is-word\s*\{[^}]*"
+                     r"color:\s*var\(--text\)", STYLES)
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_a_lost_device_is_named_as_an_operator_would_say_it():
+    """F3 (HC-1): the rail sentence names the model and the device."""
+    assert _node_value("lostDevices({devices: {SerialPort: 'lost', Gamepad: 'bound'}})") == \
+        ["serial port"]
+    assert _node_value("lostDevices({devices: {}})") == []
+    assert _node_value("lostDevices(null)") == []
+
+
+def test_event_severity_is_ink_mark_and_a_word():
+    """F14 (DS-2, UXPM-10): the line's text in the severity ink, its bar in
+    the severity mark, and a word beside the colour."""
+    assert re.search(r"\.event\.severity-error\s*\{[^}]*color:\s*var\(--error-ink\)"
+                     r"[^}]*border-left-color:\s*var\(--error-mark\)", STYLES)
+    assert re.search(r"\.severity-info\s*\{[^}]*var\(--info-ink\)", STYLES)
+    assert re.search(r'\.event\.severity-error::before\s*\{[^}]*content:\s*"Error"', STYLES)
+    assert re.search(r'\.event\.severity-warning::before\s*\{[^}]*content:\s*"Warning"', STYLES)
+
+
+def test_the_stop_face_stays_legible_and_its_focus_is_not_the_latch():
+    """F24 (CRIT-7): the highlight is at most 5 % ink, so white on the disc is
+    over 4.5:1; F9 (DS-1): the stop's focus ring is --stop-focus."""
+    stop = re.search(r"\n\.mushroom\s*\{([^}]*)\}", STYLES).group(1)
+    highlight = re.search(r"var\(--signal\) (\d+)%, var\(--text\)", stop)
+    assert highlight and int(highlight.group(1)) >= 95, "the highlight washes out the word"
+    ring = re.search(r"\.mushroom:focus-visible\s*\{([^}]*)\}", STYLES)
+    assert ring and "var(--stop-focus)" in ring.group(1) and "trace" not in ring.group(1)
+    assert 'aria-keyshortcuts="Control+Period Meta+Period"' in INDEX
+    assert "Ctrl+." in INDEX and "Cmd+." in INDEX, "the rail does not say the shortcut"
+
+
+def test_every_overlay_starts_below_the_rail():
+    """F1 (WDG-1): nothing this page opens covers the stop."""
+    assert re.search(r"\n\.overlay\s*\{[^}]*inset:\s*var\(--rail-h\) 0 0 0", STYLES)
+
+
 def test_consecutive_commands_are_one_action_group():
     build = _body(r"\n  build\(\) \{(.*?)\n  \}")
     assert "groupCommands(cells, isRow && !spans)" in build
@@ -628,7 +698,7 @@ def test_closing_a_module_is_quiet_says_what_it_does_and_asks_first():
     head = _body(r"constructor\(dashboard, name, schema, options\) \{(.*?)\n  \}")
     assert "'ghost card-close'" in head and "close.title" in head
     close = _body(r"async closeModel\(name\) \{(.*?)\n  \}")
-    assert "window.confirm(" in close
+    assert "this.confirm(" in close
 
 
 def test_every_font_size_is_on_the_scale():
@@ -717,13 +787,14 @@ def test_every_variable_the_stylesheet_uses_is_defined_somewhere():
     A shade between two tokens - a hairline, a ring, a scrim - is mixed FROM
     them with color-mix and named on `:root` here; what the strictness is
     actually for is caught by the test above, which forbids a literal."""
-    defined = set(re.findall(r"(--[a-z-]+):", theme.css_variables()))
-    defined |= set(re.findall(r"^\s*(--[a-z-]+):", STYLES, re.M))
+    # Digits too: the theme's spacing steps are --space-0 .. --space-6.
+    defined = set(re.findall(r"(--[a-z0-9-]+):", theme.css_variables()))
+    defined |= set(re.findall(r"^\s*(--[a-z0-9-]+):", STYLES, re.M))
     # and by the client, for the one value only it knows: a group's place in
     # the launch stagger.
-    defined |= set(re.findall(r"setProperty\('(--[a-z-]+)'", APP_JS))
-    used = set(re.findall(r"var\((--[a-z-]+)", STYLES + APP_JS))
-    used |= set(re.findall(r"getPropertyValue\('(--[a-z-]+)'\)", APP_JS))
+    defined |= set(re.findall(r"setProperty\('(--[a-z0-9-]+)'", APP_JS))
+    used = set(re.findall(r"var\((--[a-z0-9-]+)", STYLES + APP_JS))
+    used |= set(re.findall(r"getPropertyValue\('(--[a-z0-9-]+)'\)", APP_JS))
     assert used <= defined, f"undefined variables: {sorted(used - defined)}"
 
 
@@ -745,7 +816,9 @@ def test_the_page_loads_the_theme_and_the_client():
                        "region-picker", "closed-models", "connection",
                        "log-panel", "log-toggle", "rail-readouts",
                        "setup-drawer", "drawer-body", "drawer-close",
-                       "scrim", "setup-link", "tray-latest"):
+                       "scrim", "setup-link", "tray-latest", "rail-alert",
+                       "ack-count", "ack-text", "ack-ok", "confirm-modal",
+                       "confirm-text", "confirm-yes", "confirm-no"):
         assert f'id="{element_id}"' in INDEX, f"index.html has no #{element_id}"
         assert f"'{element_id}'" in APP_JS
 

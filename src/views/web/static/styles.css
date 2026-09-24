@@ -66,11 +66,10 @@
      side; a panel control at least 36. */
   --hit: 2.75rem;
   --hit-panel: 2.25rem;
-  /* Derived from the six tokens, never beside them. */
-  --rule: color-mix(in srgb, var(--muted) 30%, transparent);
-  --rule-strong: color-mix(in srgb, var(--muted) 52%, transparent);
-  --well: color-mix(in srgb, var(--bg) 70%, var(--surface));
-  --lift: color-mix(in srgb, var(--neutral-bg) 86%, var(--text));
+  /* --rule, --rule-strong, --well, --lift, --disabled-*, --stop-focus, the
+     severity inks and marks and the --space-* steps are the theme's
+     (theme.py, served as /api/theme.css): the hairline used to be derived
+     here a different way from the desktop views (F23, DS-3). */
   --page-gutter: 1.25rem;
 }
 
@@ -110,9 +109,11 @@ button, select, .mushroom {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* One focus ring, everywhere, in the colour nothing else claims for chrome. */
+/* One focus ring, everywhere, in ink - the ring the desktop views draw.
+   Trace is a live number or a lit lamp, and the latched stop's ring: a
+   focus ring in it read as state (F9, F24, DS-1). */
 :focus-visible {
-  outline: 2px solid var(--trace);
+  outline: 2px solid var(--text);
   outline-offset: 2px;
 }
 
@@ -125,7 +126,7 @@ button, select, .mushroom {
   position: absolute;
   left: var(--page-gutter);
   top: 0;
-  z-index: 11;
+  z-index: 21;
   padding: 0.6rem 0.9rem;
   background: var(--surface);
   color: var(--text);
@@ -138,14 +139,17 @@ button, select, .mushroom {
 /* -- the status rail ----------------------------------------------------- */
 /* Sticky, and the stop rides with it: the one control that is never in doubt
    is reachable from anywhere on the page without scrolling to find it. */
-/* Above the drawer and above the scrim, deliberately: the stop is the one
-   control that may never be dimmed, covered or unreachable, so nothing this
-   page opens is allowed over it. */
+/* Above the drawer, the scrim and every overlay, deliberately: the stop is
+   the one control that may never be dimmed, covered or unreachable, so
+   nothing this page opens is allowed over it - and every layer that opens
+   starts below it (F1, WDG-1). The rail wraps only to take its alert lines
+   (#rail-alert) on a line of their own. */
 .rail {
   position: sticky;
   top: 0;
-  z-index: 9;
+  z-index: 20;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 1.5rem;
   padding: 0.7rem var(--page-gutter);
@@ -198,6 +202,36 @@ button, select, .mushroom {
   border: 2px solid var(--signal);
 }
 
+/* -- the rail's alert lines ---------------------------------------------- */
+/* A stop that did not land, a device that was lost: a full-width band at the
+   foot of the rail, ink on a signal-tinted panel with a signal mark, so the
+   sentence reads at 10:1 and the red still says "fault". */
+.rail-alert {
+  order: 10;
+  flex: 1 0 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.rail-alert[hidden] { display: none; }
+
+.rail-alert-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  background: color-mix(in srgb, var(--signal) 14%, var(--surface));
+  border-left: 0.4rem solid var(--error-mark);
+  color: var(--error-ink);
+  font-size: var(--t-sm);
+  font-weight: 500;
+}
+
+.rail-alert-text { flex: 1 1 auto; min-width: 0; }
+
+.rail-alert-dismiss { flex: 0 0 auto; }
+
 /* -- the readout groups: one per open model ------------------------------ */
 /* They wrap rather than clip: on a narrow window a group moves to a second
    line of the rail, and the rail grows to hold it. */
@@ -206,7 +240,9 @@ button, select, .mushroom {
   flex-wrap: wrap;
   align-items: stretch;
   gap: 0.6rem 1.75rem;
-  flex: 1 1 auto;
+  /* A zero basis: the readouts take what the rail has left and never push
+     the stop onto a line of its own. */
+  flex: 1 1 0;
   min-width: 0;
 }
 
@@ -236,11 +272,31 @@ button, select, .mushroom {
   to { opacity: 1; transform: none; }
 }
 
+.readout-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
 .readout-model {
   font-size: var(--t-xs);
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
+}
+
+/* The word beside a model's name when its numbers are not live. */
+.readout-flag {
+  font-size: var(--t-xs);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.readout-flag:empty { display: none; }
+
+.readout-group.is-lost .readout-flag {
+  padding-left: var(--space-2);
+  border-left: 0.2rem solid var(--error-mark);
 }
 
 .readouts {
@@ -278,6 +334,14 @@ button, select, .mushroom {
   max-width: 13ch;
 }
 
+/* Trace is a live number. A word on the rail ("Simulated") is ink, an
+   absence muted, and a number that is not live - stale, lost, or the
+   station not answering - is muted too (F3, F4, F24). */
+.readout-value.is-word { color: var(--text); font-size: var(--t-lg); }
+.readout-value.is-empty,
+.readout-group.is-stale .readout-value,
+.is-offline .readout-value { color: var(--muted); }
+
 .rail-side {
   display: flex;
   align-items: center;
@@ -288,6 +352,15 @@ button, select, .mushroom {
 .closed { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 
 .closed-label { font-size: var(--t-sm); color: var(--muted); }
+
+/* The stop's keyboard path, a caption beside it. */
+.stop-hint {
+  font-size: var(--t-xs);
+  line-height: 1.3;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
 
 /* -- the mushroom -------------------------------------------------------- */
 /* The one bold element on the page. Round, signal red, a darker ring around
@@ -301,10 +374,12 @@ button, select, .mushroom {
   padding: 0;
   border-radius: 50%;
   border: 0.32rem solid color-mix(in srgb, var(--signal) 48%, var(--bg));
+  /* The highlight is small and sits above the face's words, so white on
+     the disc stays over 4.5:1 wherever the word lands (F24, CRIT-7). */
   background:
-    radial-gradient(circle at 50% 30%,
-      color-mix(in srgb, var(--signal) 82%, var(--text)) 0%,
-      var(--signal) 52%,
+    radial-gradient(circle at 50% 18%,
+      color-mix(in srgb, var(--signal) 95%, var(--text)) 0%,
+      var(--signal) 40%,
       color-mix(in srgb, var(--signal) 76%, var(--bg)) 100%);
   box-shadow:
     inset 0 0.14rem 0.35rem color-mix(in srgb, var(--text) 30%, transparent),
@@ -323,6 +398,13 @@ button, select, .mushroom {
 }
 
 .mushroom:hover { border-color: color-mix(in srgb, var(--signal) 62%, var(--bg)); }
+
+/* The stop's keyboard focus: an ink ring well clear of the disc, never the
+   trace ring that means "latched" (F9, DS-1, UXPM-5, WDG-10). */
+.mushroom:focus-visible {
+  outline: 3px solid var(--stop-focus);
+  outline-offset: 3px;
+}
 
 .mushroom:active { border-color: color-mix(in srgb, var(--signal) 32%, var(--bg)); }
 
@@ -384,7 +466,14 @@ button, select, .mushroom {
 
 .card.is-live { border-left-color: var(--trace); }
 .card.is-latched { border-left-color: var(--signal); }
-.card.stale { opacity: 0.72; }
+/* A card that has lost a device: the bar is signal and twice as wide, so it
+   does not depend on hue alone (F3). */
+.card.is-lost { border-left: 0.4rem solid var(--signal); }
+/* Stale: the numbers go muted and the badge says so. The labels keep their
+   contrast - the card used to fade to 0.72 opacity and its labels fell to
+   3.15:1 (F24, UXPM-11). */
+.card.stale .row span.value:not(.is-word),
+.is-offline .card .row span.value:not(.is-word) { color: var(--muted); }
 
 /* A card of row sections is a table - one line per model - and a table is
    read across, so it takes the full width. */
@@ -429,11 +518,26 @@ button, select, .mushroom {
 
 .stale-badge {
   font-size: var(--t-xs);
-  color: var(--trace);
-  border: 1px solid color-mix(in srgb, var(--trace) 45%, transparent);
+  color: var(--text);
+  border: 1px solid var(--rule-strong);
   border-radius: 2px;
   padding: 0 0.35em;
 }
+
+.card.is-lost .stale-badge { border-color: var(--error-mark); }
+
+/* A standing condition under the header - a lost device - in the same band
+   as the rail's alert line. */
+.card-alert {
+  margin: 0;
+  padding: var(--space-3) 0.9rem;
+  background: color-mix(in srgb, var(--signal) 14%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--signal) 55%, var(--surface));
+  color: var(--error-ink);
+  font-size: var(--t-sm);
+}
+
+.card-alert[hidden] { display: none; }
 
 .card-body { padding: 0.2rem 0.9rem 0.7rem; }
 
@@ -545,7 +649,10 @@ button, select, .mushroom {
 
 .row.wide { flex-direction: column; align-items: stretch; }
 
-.row.disabled { opacity: 0.45; }
+/* Disabled is a colour from the theme, not a fade: a faded row dropped its
+   text under 3:1 (F23, DS-8). */
+.row.disabled .label, .row.disabled .value, .row.disabled .lamp { color: var(--disabled-fg); }
+.row.disabled .plot, .row.disabled .picture, .row.disabled .feed { opacity: 0.6; }
 
 .label { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: var(--t-sm); }
 
@@ -563,6 +670,21 @@ button, select, .mushroom {
   text-align: right;
   white-space: nowrap;
 }
+
+/* A word is not a number: an identifier or a state name is ink at label
+   size, and it wraps inside its row instead of running across the next
+   column (F15, F24, HC-8, CRIT-6). */
+span.value.is-word,
+.row span.value.is-word {
+  color: var(--text);
+  font-size: var(--t-sm);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.card.stale .row span.value.is-word,
+.is-offline .card .row span.value.is-word { color: var(--muted); }
 
 .group { display: flex; align-items: center; gap: 0.35rem; }
 
@@ -597,7 +719,9 @@ button, select, .mushroom {
 .select { width: 10rem; min-width: 10rem; }
 
 .input:disabled, .select:disabled, .button:disabled {
-  opacity: 0.4;
+  background: var(--disabled-bg);
+  color: var(--disabled-fg);
+  border-color: var(--rule);
   cursor: not-allowed;
 }
 
@@ -610,7 +734,7 @@ button, select, .mushroom {
   min-height: var(--hit-panel);
   background: var(--neutral-bg);
   color: var(--neutral-fg);
-  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  border: 1px solid var(--rule-strong);
   border-radius: 2px;
   padding: 0.3em 0.9em;
   font-family: inherit;
@@ -622,7 +746,7 @@ button, select, .mushroom {
 
 .button:hover:not(:disabled) {
   background: var(--lift);
-  border-color: color-mix(in srgb, var(--text) 32%, transparent);
+  border-color: var(--muted);
 }
 
 .button:active:not(:disabled) {
@@ -637,7 +761,7 @@ button, select, .mushroom {
 .actions {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
-  gap: 0.5rem;
+  gap: var(--space-3);
   padding: 0.3rem 0;
 }
 
@@ -650,7 +774,7 @@ button, select, .mushroom {
 .section-span .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-3);
   padding: 0;
 }
 
@@ -703,7 +827,7 @@ button, select, .mushroom {
 
 button.button.role-warning {
   background: none;
-  color: var(--trace);
+  color: var(--text);
   border-color: var(--trace);
 }
 .role-info    { background: var(--info-bg);    color: var(--info-fg); }
@@ -715,7 +839,7 @@ button.button.role-warning {
 button.button.role-danger {
   background: var(--neutral-bg);
   color: var(--neutral-fg);
-  border-color: color-mix(in srgb, var(--text) 16%, transparent);
+  border-color: var(--rule-strong);
 }
 
 button.button.role-danger:hover:not(:disabled) { background: var(--lift); }
@@ -729,7 +853,7 @@ button.button.toggle {
   gap: 0.55rem;
   background: var(--neutral-bg);
   color: var(--text);
-  border-color: color-mix(in srgb, var(--text) 16%, transparent);
+  border-color: var(--rule-strong);
   text-align: left;
 }
 
@@ -754,12 +878,20 @@ span.value.role-warning, span.value.role-info {
   background: none;
 }
 
-span.value.role-danger { color: var(--signal); }
+/* A danger-role readout (a fault reason) is ink beside a signal mark:
+   signal text on the panel is 2.73:1 (F14, UXPM-4). */
+span.value.role-danger {
+  color: var(--error-ink);
+  padding-left: var(--space-3);
+  border-left: 0.2rem solid var(--error-mark);
+}
 span.value.role-warning { color: var(--trace); }
 span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(--trace); }
+span.value.role-danger.is-word { color: var(--error-ink); }
 
-/* "--" is the absence of a reading, not a reading: muted, whatever the role. */
-span.value.is-empty { color: var(--muted); }
+/* "--" is the absence of a reading, not a reading: muted, whatever the role.
+   So is a quiet word - "off", "Not set", "not detected" (F24). */
+span.value.is-empty { color: var(--muted); border-left: 0; padding-left: 0; }
 
 /* A lamp is lit or it is not: a dot and a word, not a box that looks like
    a button. ON is the trace colour; a lit danger lamp is a fault, so it is
@@ -861,7 +993,13 @@ span.lamp { background: none; }
 /* A refusal is a sentence on the panel, never a popup - and it shakes once
    when it arrives, because a line that simply appears above the fold of a
    long panel is a line nobody sees. */
+/* The line sits under the control that caused it, spans a table row's
+   columns when it lands in one, and scrolls into view clear of the sticky
+   rail (F10). */
 .status {
+  grid-column: 1 / -1;
+  scroll-margin-top: calc(var(--rail-h) + var(--space-3));
+  scroll-margin-bottom: calc(var(--tray-h) + var(--space-3));
   margin: 0;
   padding: 0.45rem 0.9rem;
   background: color-mix(in srgb, var(--signal) 14%, var(--surface));
@@ -871,7 +1009,20 @@ span.lamp { background: none; }
   font-size: var(--t-sm);
 }
 
+/* Inside a section the band runs flush with the controls it is about. */
+.card-body .status { margin: var(--space-1) 0 var(--space-3); padding: var(--space-3) var(--space-4); }
+
 .status.shake { animation: refused-shake 200ms ease-in-out 1; }
+
+/* -- file_open: a path on the station, typed or chosen ------------------- */
+.row.file-open {
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.row.file-open .path-input { flex: 1 1 12rem; width: auto; }
+
+.file-picker { display: none; }
 
 @keyframes refused-shake {
   0%, 100% { transform: translateX(0); }
@@ -1006,8 +1157,35 @@ span.lamp { background: none; }
   text-overflow: ellipsis;
 }
 
-.tray-latest.severity-warning { color: var(--trace); }
-.tray-latest.severity-error { color: var(--text); }
+/* Severity is a word and a mark as well as a colour (F14, UXPM-10). */
+.tray-latest.severity-warning { color: var(--warning-ink); }
+.tray-latest.severity-error { color: var(--error-ink); }
+
+.tray-latest.severity-warning::before,
+.tray-latest.severity-error::before,
+.event.severity-warning::before,
+.event.severity-error::before {
+  display: inline-block;
+  margin-right: var(--space-3);
+  padding: 0 var(--space-1);
+  border-radius: 2px;
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+
+.tray-latest.severity-warning::before,
+.event.severity-warning::before {
+  content: "Warning";
+  color: var(--warning-mark);
+  border: 1px solid var(--warning-mark);
+}
+
+.tray-latest.severity-error::before,
+.event.severity-error::before {
+  content: "Error";
+  color: var(--danger-fg);
+  background: var(--error-mark);
+}
 
 .tray-log {
   height: 8.6em;
@@ -1021,18 +1199,21 @@ span.lamp { background: none; }
 .tray:not(.open) .tray-log { display: none; }
 
 .event {
-  padding: 0 0 0 0.5rem;
+  padding: 0 0 0 var(--space-3);
   border-left: 2px solid transparent;
 }
 
-.severity-info { color: var(--muted); }
-.severity-warning { color: var(--trace); }
-.event.severity-error { color: var(--text); border-left-color: var(--signal); }
+.severity-info { color: var(--info-ink); }
+.severity-warning { color: var(--warning-ink); }
+.event.severity-warning { border-left-color: var(--warning-mark); }
+.event.severity-error { color: var(--error-ink); border-left-color: var(--error-mark); }
 
 /* -- overlays ------------------------------------------------------------ */
+/* Every overlay starts under the rail, so the rail and its stop are never
+   dimmed or covered by one (F1, WDG-1). */
 .overlay {
   position: fixed;
-  inset: 0;
+  inset: var(--rail-h) 0 0 0;
   background: color-mix(in srgb, var(--bg) 72%, transparent);
   display: flex;
   align-items: center;
@@ -1054,6 +1235,25 @@ span.lamp { background: none; }
 }
 
 .dialog .button { align-self: flex-end; min-width: 7.5rem; }
+
+.dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-3); }
+
+.dialog-count { margin: 0; font-size: var(--t-sm); font-weight: 600; }
+
+.dialog-count[hidden] { display: none; }
+
+/* Queued acknowledgements, oldest first, each on its own line. */
+.ack-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.ack-line { margin: 0; }
+
+.ack-line + .ack-line { padding-top: var(--space-3); border-top: 1px solid var(--rule); }
 
 .wide-dialog { max-width: 90vw; }
 
