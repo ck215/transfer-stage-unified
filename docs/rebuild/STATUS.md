@@ -8,12 +8,13 @@ ranked defect list with a delegation route per item).
 
 | What | Where |
 |---|---|
-| The new app | `station/` on branch `mvc-refactor`, worktree `../mvc-refactor` (this checkout). The `rebuild` branch was the refactor redone from scratch; fast-forwarded here and retired 2026-09-23. |
-| The old app | `src/` in the same tree, untouched; still the reference for the golden wire tests. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
+| The new app | `src/` on branch `mvc-refactor`, worktree `../mvc-refactor` (this checkout). Built as the `station/` package on the `rebuild` branch (the refactor redone from scratch), fast-forwarded here and retired 2026-09-23, then moved to `src/` the same day. Layout: `src/app.py` (run as a script), `events.py panel.py param.py schema.py result.py palette.py`, `controller/{controller,setup}.py`, `model/base.py` + `model/{probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/`. |
+| The old app | `legacy/src/` (was `src/`), its suite in `legacy/tests/` (was `tests/` minus `tests/station/`); code untouched, still the reference for the golden wire tests. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
 | Agent worktrees | Removed 2026-09-23: the 12 `rb-*` worktrees and branches were all merged and clean; `../rebuild` retired the same day. Worktrees now: `main`, `mvc-refactor`. |
 | Agent handoffs | `../rebuild-handoff/*.md` (outside every repo). `serial, gamepad, probe, heater, rotator, redmonitor, setup, tk, qt, web, coretests, golden`, then `setup2, tk2, qt2, web2` (polish pass), `web3` (console redesign). Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
 | Screenshots | `../rebuild-handoff/shots/`: `tk_*`, `qt_*` (polish pass), `web4_*` (console: drawer, launched, stopped), `web3_*` (agent's own rounds). Capture scripts: `/tmp/shoot_tk.py`, `/tmp/shoot_qt.py`, `/tmp/shoot_web.cjs` (temp; recreate from the procedure below if gone). |
-| Design data | `docs/rebuild/design.json` (every new class/member with origins), `design.rules` (one line per old method: kept/renamed/merged/purged/implied), `carry.json` (all 229 old ledger findings classified against the design), `narrative.json`. Interactive pages (temp, may be gone): `/private/tmp/claude-501/.../412595fe.../scratchpad/{control_system_uml,ideal_system_uml}.html`. |
+| Tests | `tests/` (was `tests/station/`, flattened); wire captures in `tests/golden/`. |
+| Design data | `docs/rebuild/design.json` (every new class/member with origins), `design.rules` (one line per old method: kept/renamed/merged/purged/implied; its paths are pre-move: `station/` = `src/`, old `src/` = `legacy/src/`), `carry.json` (all 229 old ledger findings classified against the design), `narrative.json`. Interactive pages (temp, may be gone): `/private/tmp/claude-501/.../412595fe.../scratchpad/{control_system_uml,ideal_system_uml}.html`. |
 | Logs at runtime | `~/transfer-stage-runs/logs/station-<timestamp>.log`, one per launch; every event with thread and traceback; `events.debug` is file-only. |
 | Run output | `~/transfer-stage-runs/<run_id>/` (CSV + `<run_id>_station_meta.json`). |
 
@@ -22,11 +23,12 @@ ranked defect list with a delegation route per item).
 ```
 cd ../mvc-refactor
 ./run_macos.sh --web | --qt | --tk        # uses the already-active venv (main/.venv)
-python3 -m station.app --web --no-browser --port 8080
+python3 src/app.py --web --no-browser --port 8080
 
-python3 -m pytest tests/station -q -p no:cacheprovider -m "not qt"      # 1498 pass, ~46 s
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests/station -q -p no:cacheprovider -m qt   # 85 pass
-python3 -m pytest tests/station/test_wire_golden.py -q                 # 71 scenarios byte-identical to src/
+python3 -m pytest tests -q -p no:cacheprovider -m "not qt"             # 1498 pass, ~46 s
+QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt   # 85 pass
+python3 -m pytest tests/test_wire_golden.py -q                         # 78 scenarios byte-identical to legacy/src/
+cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
 ```
 
 macOS: pip re-hides PySide6's Qt plugin dylibs (UF_HIDDEN) — `run_macos.sh --qt`
@@ -50,8 +52,8 @@ Controller and nothing else: `schema(name)`, `state(name)`, `run(name, cmd,
 inputs, args)`; a view that cannot render every schema element type cannot be
 constructed. Commands return a value or raise `Refused`/`NeedsConfirm`. One
 `EventLog`; only `error()` may pop up. Import rules are a test
-(`tests/station/test_architecture.py`). Firmware untouched; every byte on the
-wire is pinned by `tests/station/golden/`.
+(`tests/test_architecture.py`). Firmware untouched; every byte on the
+wire is pinned by `tests/golden/`.
 
 ## Owner rulings (all applied)
 
@@ -83,11 +85,14 @@ the bench questions below are its Tier B.
    handshake, `SMC100.READ_TIMEOUT_SEC` now bounds a whole line.
 2. **Scan time**: two junk macOS ports get the full handshake (~18 s). A
    name filter is one line in `Setup.scan_ports` if the station PC is slow.
-3. **Second test wave**: `tests/station/TEST_PORTING.md` lists 135 old test
+3. **Second test wave**: `tests/TEST_PORTING.md` lists 135 old test
    files (PORT 22 / PORT-ADAPTED 103 / VOID 10) and 26 safety tests that must
-   have ported equivalents before `src/` is deleted.
-4. **Cutover**: delete `src/`, `tests/` (old), re-point `tests/pytest.ini`,
-   regenerate `docs/`. Then merge `mvc-refactor` → `main` and push.
+   have ported equivalents before `legacy/` is deleted.
+4. **Cutover** — partly done. Done 2026-09-23: the move (`station/` → `src/`,
+   old `src/` and `tests/` → `legacy/`, `tests/station/` → `tests/`) and the
+   docs prune (stale pages to `docs/archive/`). Not done: deleting `legacy/`,
+   which waits until every one of TEST_PORTING's 135 files has a ported
+   equivalent (item 3); then merge `mvc-refactor` → `main` and push.
 5. `Rotator.home()` target-commit ordering is tested now (rb-rotator); the
    `COLUMN_SPLIT_CARDS = 6` Qt rule is a judgement, not a measurement.
 6. Heater refusals new vs old: 300 °C ceiling, PID/ramp bounds, 31-char

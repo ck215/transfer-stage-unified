@@ -56,11 +56,11 @@ card, no fade-up on every section.
   unchanged; gating incl. entries; stale marker; region picker on /api/screen.
 - styles.css uses only var() from /api/theme.css plus layout values; the
   theme's palette is what /api/theme.css serves, so CHANGE THE PALETTE IN
-  station/palette.py (the six tokens above map: BACKGROUND=base,
+  src/palette.py (the six tokens above map: BACKGROUND=base,
   SURFACE=panel, TEXT=ink, MUTED=muted, plus add SIGNAL and TRACE and serve
   them as --signal/--trace; ROLES: danger=signal, go/info/neutral become
   quiet variants of panel/ink; warning=trace) — that keeps Tk/Qt coherent.
-- All existing tests in tests/station/test_view_web_*.py keep passing or are
+- All existing tests in tests/test_view_web_*.py keep passing or are
   updated with the reason; the "no colour literal outside the theme" test
   stays strict.
 ---

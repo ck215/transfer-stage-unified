@@ -1,5 +1,7 @@
 # Root-Cause Synthesis
 
+> **Input (banner added 2026-09-23).** Root-cause analysis of the old tree (now `legacy/src/`); current until the rebuild replaced it on 2026-09-23. Kept for the invariants the ported safety tests must still prove. Pages it links outside `audit/` are in `docs/archive/architecture/`.
+
 **Status: COMPLETE (first pass, 2026-09-19).** Verified against the
 working tree at commit `9f88b54` (source unchanged since `046533f`).
 Documentation-only pass; no source was modified.

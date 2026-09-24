@@ -36,7 +36,7 @@ Prior to opening the software, the Xbox controller must be connected to the PC.
 
 ### Software Initialization
 
-1. Double-click the **Transfer Stage Launcher** icon on the desktop.
+1. Double-click the **Transfer Stage Launcher** icon on the desktop. (To start it from a terminal instead, run `./run.sh` in the repository folder — `./run_macos.sh` on a Mac, `run.bat` on Windows — or `python3 src/app.py`; add `--web`, `--qt` or `--tk` to choose the window style.)
 2. A configuration GUI will open and automatically populate the available *COM ports*.
 3. Use the drop-down menus on the right to assign the Xbox controller to each device.
 
@@ -98,7 +98,7 @@ The Temperature Controller module provides a dedicated interface for *PID* therm
   - **Temperature Offset**: A calibration value used to correct any known discrepancies between the measured temperature and the actual physical temperature.
   Click **Enter** to send these parameters to the microcontroller and begin thermal regulation.
 - **Data Display**: The interface continuously reads the *serial connection* data to update the 'Current Temperature' display. It also records a rolling history of the most recent 200 data points for time, temperature, and setpoint.
-- **Closing the Module**: Click **Quit** to safely stop data polling and close the *serial connection* before the window exits.
+- **Closing the Module**: Close the module's tab to safely stop data polling and close the *serial connection*. Reopening it starts the module fresh.
 
 ## Troubleshooting Steps
 
