@@ -854,6 +854,9 @@ def test_a_stop_that_never_reaches_the_station_says_so_on_the_rail(station, tmp_
       page.on('request', (r) => (r.url().includes('/api/estop_all') ? r.abort() : r.continue()));
       await page.click('#full-stop');
       await until(() => !document.getElementById('rail-alert').hidden);
+      // The link state flips on the poll after the failed stop; wait for it
+      // rather than sampling it (this read "Connected" once under load).
+      await until(() => document.getElementById('connection').textContent.startsWith('Not answering'));
       return page.evaluate(() => ({
         alert: document.getElementById('rail-alert').textContent,
         link: document.getElementById('connection').textContent,
