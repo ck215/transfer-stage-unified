@@ -832,8 +832,15 @@ def test_an_acknowledgement_never_covers_the_stop_and_two_both_show(station, tmp
       return { lines, onTop, latched: state.is_estopped };
     """ % _STOP_HIT, tmp_path)
     assert out["onTop"], "the ack overlay covers the stop"
-    assert len(out["lines"]) == 2 and out["lines"][0] != out["lines"][1], out["lines"]
-    assert all("the port did not answer" in line for line in out["lines"])
+    # Two identical failures collapse into one line with a count (the ack
+    # queue dedupes); two different ones are two lines. Either way nothing
+    # was overwritten. Since F19 (operator sentences) both jams read the same.
+    lines = out["lines"]
+    assert (len(lines) == 2 and lines[0] != lines[1]) or \
+           (len(lines) == 1 and lines[0].endswith("(x2)")), lines
+    # F19: the ack carries the operator sentence; the raw detail ("the port
+    # did not answer") now goes to the log file only.
+    assert all("did not complete" in line for line in out["lines"])
     assert out["latched"] is True, "a click on the stop under an open ack did not stop"
 
 

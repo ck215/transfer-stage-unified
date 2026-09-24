@@ -59,6 +59,9 @@ RULE = mix(SURFACE, TEXT, 0.12)
 RULE_STRONG = mix(SURFACE, TEXT, 0.24)
 WELL = BACKGROUND
 LIFT = mix(SURFACE, TEXT, 0.09)
+#: A control's border must be identifiable at 3:1 against the panel;
+#: RULE_STRONG (1.98:1) is a separator, not an edge (Tk fix-round request).
+INPUT_BORDER = mix(SURFACE, TEXT, 0.40)
 
 #: Spacing steps in pixels (DS-7). PAD/GAP/INSET below stay as the three
 #: names the views already use; anything else is one of these, never a sum.
@@ -115,7 +118,8 @@ def css_variables():
         lines += [f"--{role}-bg: {bg};", f"--{role}-fg: {fg};"]
     lines += [f"--disabled-bg: {DISABLED[0]};", f"--disabled-fg: {DISABLED[1]};",
               f"--stop-focus: {STOP_FOCUS};", f"--rule: {RULE};",
-              f"--rule-strong: {RULE_STRONG};", f"--well: {WELL};", f"--lift: {LIFT};"]
+              f"--rule-strong: {RULE_STRONG};", f"--well: {WELL};", f"--lift: {LIFT};",
+              f"--input-border: {INPUT_BORDER};"]
     for severity in ("error", "warning", "info"):
         lines += [f"--{severity}-ink: {SEVERITY_INK[severity]};",
                   f"--{severity}-mark: {SEVERITY_MARK[severity]};"]
