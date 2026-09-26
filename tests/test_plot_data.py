@@ -293,7 +293,8 @@ def test_the_line_is_drawn_in_the_accent_with_markers_only_when_few():
 def test_the_3d_colormap_is_dark_safe():
     """UXPM-9: coolwarm's middle is light grey and its ends red/blue; on the
     dark panel the low end vanished. Every colour in the map must stand off
-    the surface."""
+    the surface, whichever of the two is the lighter (the sheet is light
+    since 2026-09-25)."""
     import palette
     from matplotlib.colors import to_rgb
 
@@ -306,7 +307,8 @@ def test_the_3d_colormap_is_dark_safe():
     cmap = plot_data._colormap()
     for i in range(0, 256, 15):
         colour = luminance(cmap(i / 255)[:3])
-        assert (colour + 0.05) / (surface + 0.05) >= 3.0, i
+        lighter, darker = max(colour, surface), min(colour, surface)
+        assert (lighter + 0.05) / (darker + 0.05) >= 3.0, i
 
 
 def test_the_3d_panes_are_dark():
