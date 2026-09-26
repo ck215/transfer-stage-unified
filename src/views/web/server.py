@@ -33,6 +33,7 @@ import http.server
 import json
 import mimetypes
 import os
+import sys
 import threading
 import time
 import webbrowser
@@ -73,6 +74,13 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
     server_version = "station"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    #: Seconds an idle keep-alive connection may park a thread in `readline`
+    #: (G1). `handle_one_request` turns the socket timeout into
+    #: close-connection, so the thread retires quietly instead of living
+    #: until the browser drops the socket. The tab polls every 250 ms and
+    #: beats every 2 s, so a connection it is using never idles this long; a
+    #: connection closed under an idle browser is simply reopened.
+    timeout = 120
 
     # -- what the handler holds -------------------------------------------
     @property
@@ -229,6 +237,19 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
 
         if route == "/api/upload":
             return self._receive_upload(body)
+
+        if route == "/api/quit":
+            # The answer goes out FIRST, then the launcher is released: its
+            # `wait()` returns on the main thread and runs `close()`, which
+            # stops the server and closes the Controller (every model is
+            # stopped before anything is closed). Never close() from here -
+            # a handler thread would be shutting down the server it runs in.
+            # A second Quit is the same answer, never an error (G2).
+            self._send_json(200, {"status": "ok"})
+            self.wfile.flush()
+            self.close_connection = True
+            self.view.request_quit()
+            return None
 
         return self._send_json(404, {"status": "error",
                                      "reason": f"no route {route}"})
@@ -607,6 +628,10 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             return default
 
 
+#: What a browser that closed its tab looks like from a handler thread.
+_CLIENT_GONE = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)
+
+
 class _StationServer(http.server.ThreadingHTTPServer):
     """Carries the view, so the handler holds no class-level state."""
     allow_reuse_address = True
@@ -614,6 +639,29 @@ class _StationServer(http.server.ThreadingHTTPServer):
     def __init__(self, address, handler, view):
         self.view = view
         super().__init__(address, handler)
+
+    def handle_error(self, request, client_address):
+        """An exception that escaped a handler thread (G1).
+
+        The stdlib's `BaseServer.handle_error` prints a traceback to stderr.
+        The handler speaks HTTP/1.1, so every keep-alive connection parks a
+        thread in `readline`; closing the tab resets them all at once, and
+        each one printed `ConnectionResetError: [Errno 54]` on the terminal -
+        noise that hides anything real. A client going away is a debug line
+        in the log file. Anything else is a real fault: an error event (the
+        log file, with its traceback, and the tray), without an
+        acknowledgement - a connection thread is not an operator's command,
+        and a modal per dropped socket would bury the page.
+        """
+        exc = sys.exception()
+        client = client_address[0] if client_address else "?"
+        if isinstance(exc, _CLIENT_GONE):
+            events.debug("Client Went Away", f"{client}: {type(exc).__name__}: {exc}",
+                         source=SOURCE, every=1.0)
+            return
+        events.error("Web Request Crashed",
+                     f"a request from {client} failed: {type(exc).__name__}: {exc}",
+                     source=SOURCE, exception=exc, ack=False)
 
 
 class WebView:
@@ -727,6 +775,19 @@ class WebView:
         except KeyboardInterrupt:
             pass
         self.close()
+
+    def request_quit(self):
+        """The console's Quit (G2): release `wait()`, which then runs
+        `close()` on the launching thread. Idempotent; returns True the first
+        time. Closing the tab never calls this - only the Quit control does."""
+        if self._halt.is_set():
+            events.debug("Quit Requested Again", "already shutting down",
+                         source=SOURCE)
+            return False
+        events.info("Quit", "Quit from the Web console: stopping every model, "
+                    "closing every port and exiting.", source=SOURCE)
+        self._halt.set()
+        return True
 
     def close(self):
         """Watchdog, server, then the Controller. Runs at most once."""

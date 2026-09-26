@@ -689,7 +689,7 @@ def test_rail_and_tray_controls_are_real_touch_targets():
     assert re.search(r"--hit:\s*2\.75rem", STYLES), "44 px is the floor"
     assert re.search(r"\.rail-control, \.closed \.ghost\s*\{[^}]*min-height:\s*var\(--hit\)",
                      STYLES)
-    for control in ("setup-link", "drawer-close", "log-toggle"):
+    for control in ("setup-link", "quit-link", "drawer-close", "log-toggle"):
         tag = re.search(r'<button id="' + control + r'"[^>]*>', INDEX)
         assert tag and "rail-control" in tag.group(0), control
 

@@ -8,13 +8,18 @@ tested three private copies of this gate - one in `BaseProbe`, one mixed into
 the heater and one into the rotator. There is one now, and it belongs to the
 view that has the browser, not to any model.
 """
+import json
 import socket
+import struct
 import threading
+import time
+import urllib.error
+import urllib.request
 
 import pytest
 
 from events import events
-from views.web.server import WebView
+from views.web.server import ApiHandler, WebView
 
 
 class FakeController:
@@ -31,6 +36,9 @@ class FakeController:
 
     def close(self):
         self.closed += 1
+
+    def state(self):
+        return {"models": {}, "is_estopped": False}
 
 
 class Clock:
@@ -235,3 +243,182 @@ def test_a_busy_port_walks_up_to_the_next_one(captured):
     finally:
         view.close()
         holder.close()
+
+
+# --------------------------------------------------------------------------
+# G1: a browser that goes away is not a traceback on the terminal
+# --------------------------------------------------------------------------
+@pytest.fixture
+def debug_titles(monkeypatch):
+    """`events.debug` goes to the log file only; record the titles here."""
+    seen = []
+    real = events.debug
+
+    def record(title, message, **kwargs):
+        seen.append(title)
+        return real(title, message, **kwargs)
+
+    monkeypatch.setattr(events, "debug", record)
+    return seen
+
+
+def _until(predicate, seconds=2.0):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_a_reset_connection_is_not_a_traceback(capfd, debug_titles):
+    """Closing the tab resets every keep-alive connection the browser held.
+    Each one parked a handler thread in readline, and the stdlib's
+    `BaseServer.handle_error` printed a ConnectionResetError traceback per
+    thread to stderr (G1). It is a debug line in the log file now."""
+    view = WebView(FakeController(), object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        client = socket.create_connection(("127.0.0.1", view.port), timeout=5)
+        client.sendall(b"GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        reply = b""
+        while b"\r\n\r\n" not in reply:
+            reply += client.recv(4096)
+        assert reply.startswith(b"HTTP/1.1 200"), reply[:80]
+        time.sleep(0.1)     # the handler is back in readline, keep-alive
+        # SO_LINGER 0: close() sends an RST - what a closing browser sends.
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        client.close()
+        assert _until(lambda: "Client Went Away" in debug_titles), debug_titles
+        time.sleep(0.1)
+    finally:
+        view.close()
+    err = capfd.readouterr().err
+    assert "Traceback" not in err and "ConnectionResetError" not in err, err
+    assert err == "", err
+
+
+def test_a_handler_crash_is_an_error_event(capfd, captured, monkeypatch):
+    """Anything else that escapes a handler is a real fault: an error event
+    (the log file with its traceback, and the tray) - never a traceback on
+    the terminal, and never an acknowledgement modal from a connection
+    thread."""
+    def explode(self):
+        raise RuntimeError("the handler blew up")
+
+    monkeypatch.setattr(ApiHandler, "do_GET", explode)
+    view = WebView(FakeController(), object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        url = f"http://127.0.0.1:{view.port}/api/state"
+        with pytest.raises((urllib.error.URLError, ConnectionError, OSError)):
+            urllib.request.urlopen(url, timeout=5).read()
+        assert _until(lambda: any(e.severity == "error" for e in captured))
+    finally:
+        view.close()
+    errors = [e for e in captured if e.severity == "error"]
+    assert len(errors) == 1, errors
+    assert isinstance(errors[0].exception, RuntimeError)
+    assert "the handler blew up" in errors[0].message
+    assert errors[0].needs_ack is False, "a pop-up from a connection thread"
+    err = capfd.readouterr().err
+    assert "Traceback" not in err, err
+
+
+def test_an_idle_keep_alive_connection_retires_quietly(capfd, monkeypatch):
+    """G1, second half: without a timeout an idle keep-alive thread lived
+    until the browser dropped the socket. `handle_one_request` already turns
+    a socket timeout into close-connection; the handler just never had one.
+    The station's own tab polls every 250 ms, so a connection it is using
+    never idles this long."""
+    assert ApiHandler.timeout == 120
+    monkeypatch.setattr(ApiHandler, "timeout", 0.3)
+    view = WebView(FakeController(), object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        client = socket.create_connection(("127.0.0.1", view.port), timeout=5)
+        client.sendall(b"GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        reply = b""
+        while b"\r\n\r\n" not in reply:
+            reply += client.recv(4096)
+        body = reply.split(b"\r\n\r\n", 1)[1]
+        length = int(next(line.split(b":")[1] for line in reply.split(b"\r\n")
+                          if line.lower().startswith(b"content-length")))
+        while len(body) < length:
+            body += client.recv(4096)
+        client.settimeout(3)
+        assert client.recv(4096) == b"", "the idle connection was not closed"
+        client.close()
+    finally:
+        view.close()
+    assert capfd.readouterr().err == ""
+
+
+# --------------------------------------------------------------------------
+# G2: Quit from the console
+# --------------------------------------------------------------------------
+def _post_quit(view, method="POST"):
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{view.port}/api/quit",
+        data=b"{}" if method == "POST" else None, method=method,
+        headers={"Content-Type": "application/json"} if method == "POST" else {})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read().decode("utf-8"))
+
+
+def test_quit_answers_then_releases_wait():
+    """POST /api/quit answers ok first, then releases the launcher's
+    `wait()`, which closes the server and the Controller on ITS thread - the
+    handler never calls close() itself (G2)."""
+    controller = FakeController()
+    view = WebView(controller, object(), port=0, open_browser=False)
+    assert view.open()
+    waiter = threading.Thread(target=view.wait, name="launcher", daemon=True)
+    waiter.start()
+    try:
+        time.sleep(0.2)
+        assert waiter.is_alive(), "wait() returned before anyone asked to quit"
+        assert _post_quit(view) == (200, {"status": "ok"})
+        waiter.join(timeout=1.0)
+        assert not waiter.is_alive(), "wait() was not released within 1 s"
+        assert controller.closed == 1, "the Controller was not closed"
+        assert not view.is_serving
+    finally:
+        view.close()
+
+
+def test_a_second_quit_is_ok_not_an_error():
+    controller = FakeController()
+    view = WebView(controller, object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        assert _post_quit(view) == (200, {"status": "ok"})
+        assert _post_quit(view) == (200, {"status": "ok"})
+        assert controller.closed == 0, "a handler thread closed the Controller"
+        waiter = threading.Thread(target=view.wait, daemon=True)
+        waiter.start()
+        waiter.join(timeout=1.0)
+        assert not waiter.is_alive() and controller.closed == 1
+    finally:
+        view.close()
+
+
+def test_quit_is_a_post_not_a_get():
+    """Like every other command route: a GET is a 404, and quits nothing."""
+    controller = FakeController()
+    view = WebView(controller, object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        status, data = _post_quit(view, method="GET")
+        assert status == 404 and data["status"] == "error"
+        waiter = threading.Thread(target=view.wait, daemon=True)
+        waiter.start()
+        waiter.join(timeout=0.8)
+        assert waiter.is_alive(), "a GET released wait()"
+        assert controller.closed == 0
+    finally:
+        view.close()
+        waiter.join(timeout=2.0)

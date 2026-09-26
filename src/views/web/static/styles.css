@@ -202,6 +202,27 @@ button, select, .mushroom {
   border: 2px solid var(--signal);
 }
 
+/* Quit is deliberate, not a fault: the lamp goes out, muted, not red (G2). */
+.link-state.is-shut-down { white-space: normal; max-width: 14rem; color: var(--muted); }
+
+.link-state.is-shut-down::before {
+  background: none;
+  border: 2px solid var(--muted);
+}
+
+/* After Quit there is no station behind the rail's controls: the stop and
+   the rail buttons are disabled and look it, so a red disc never promises a
+   stop that nothing is left to deliver. */
+.mushroom:disabled, .rail-control:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ...and the page under the rail is inert and reads as such: the rack and
+   the tray recede, so nothing on them looks like a control that still
+   reaches the station. */
+.is-shut-down .rack, .is-shut-down .tray { opacity: 0.5; }
+
 /* -- the rail's alert lines ---------------------------------------------- */
 /* A stop that did not land, a device that was lost: a full-width band at the
    foot of the rail, ink on a signal-tinted panel with a signal mark, so the

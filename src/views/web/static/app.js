@@ -1372,6 +1372,7 @@ class Dashboard {
     this.closedKey = null;
     this.ackQueue = [];
     this.confirmPending = null;
+    this.isShutDown = false;
     this.dom = {
       stop: document.getElementById('full-stop'),
       stopFace: document.querySelector('.mushroom-face'),
@@ -1400,6 +1401,7 @@ class Dashboard {
       drawerClose: document.getElementById('drawer-close'),
       scrim: document.getElementById('scrim'),
       setupLink: document.getElementById('setup-link'),
+      quitLink: document.getElementById('quit-link'),
     };
     this.isLogCollapsed = true;
     this.dom.stop.addEventListener('click', () => this.toggleEstopAll());
@@ -1410,6 +1412,7 @@ class Dashboard {
     this.dom.logToggle.addEventListener('click',
       () => this.setLogCollapsed(!this.isLogCollapsed));
     this.dom.setupLink.addEventListener('click', () => this.setDrawerOpen(true));
+    this.dom.quitLink.addEventListener('click', () => this.quitStation());
     this.dom.drawerClose.addEventListener('click', () => this.setDrawerOpen(false));
     this.dom.scrim.addEventListener('click', () => this.setDrawerOpen(false));
     // One keyboard handler, in the capture phase so nothing on the page can
@@ -1418,6 +1421,7 @@ class Dashboard {
     // confirmation is cancelled, the region picker closes, the drawer
     // withdraws. It never dismisses an acknowledgement - that wants one.
     window.addEventListener('keydown', (event) => {
+      if (this.isShutDown) return;      // nothing left to stop or answer
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === STOP_KEY) {
         event.preventDefault();
         this.stopAll();
@@ -1432,7 +1436,7 @@ class Dashboard {
     // stops the station: while anything is moving, heating or recording,
     // the browser asks first (F24, WDG-12).
     window.addEventListener('beforeunload', (event) => {
-      if (!this.isActive) return;
+      if (!this.isActive || this.isShutDown) return;
       event.preventDefault();
       event.returnValue = '';
     });
@@ -1502,9 +1506,11 @@ class Dashboard {
     const top = open[open.length - 1] || null;
     const covered = Boolean(top);
     const setInert = (node, flag) => { if (node && node.inert !== flag) node.inert = flag; };
-    setInert(this.dom.cards, covered || this.isDrawerOpen);
-    setInert(this.dom.logPanel, covered);
-    setInert(this.dom.drawer, covered || !this.isDrawerOpen);
+    const gone = this.isShutDown;
+    setInert(this.dom.cards, covered || this.isDrawerOpen || gone);
+    setInert(this.dom.logPanel, covered || gone);
+    setInert(this.dom.drawer, covered || !this.isDrawerOpen || gone);
+    setInert(this.dom.closed, gone);
     for (const layer of overlays) setInert(layer, layer !== top);
   }
 
@@ -1576,6 +1582,7 @@ class Dashboard {
   // tab is hidden and resumes the moment it is visible.
   startHeartbeat() {
     this.stopHeartbeat();
+    if (this.isShutDown) return;
     this.sendHeartbeat();
     this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), HEARTBEAT_MS);
   }
@@ -1605,10 +1612,11 @@ class Dashboard {
 
   // -- polling ------------------------------------------------------------
   async poll() {
-    if (this.isPolling) return;
+    if (this.isPolling || this.isShutDown) return;
     this.isPolling = true;
     try {
       const state = await apiGet('/api/state');
+      if (this.isShutDown) return;      // an answer that crossed the Quit
       this.setConnected(true);
       await this.applyState(state);
       await this.pollEvents(state.latest_event);
@@ -1629,7 +1637,7 @@ class Dashboard {
    *  every number on the page goes muted with the stale mark: a frozen
    *  number must never look like a live one (F4, CRIT-1). */
   setConnected(isConnected) {
-    if (this.isConnected === isConnected) return;
+    if (this.isShutDown || this.isConnected === isConnected) return;
     this.isConnected = isConnected;
     const link = this.dom.connection;
     if (isConnected) {
@@ -1640,15 +1648,69 @@ class Dashboard {
       link.textContent = 'Not answering since ' + since;
       link.title = 'The station has not answered since ' + since
         + '. Every number on this page is frozen. Is the station still running?';
-      for (const card of this.cards.values()) card.setOffline();
-      if (this.setupCard) this.setupCard.setOffline();
-      for (const group of this.railGroups.values()) {
-        group.node.classList.add('is-stale');
-        putText(group.flag, 'Stale');
-      }
+      this.muteReadouts('Stale');
     }
     link.className = 'link-state' + (isConnected ? '' : ' is-down');
     document.body.classList.toggle('is-offline', !isConnected);
+  }
+
+  /** Every number on the page stops looking live: muted, with `label` as
+   *  its stale mark. */
+  muteReadouts(label) {
+    for (const card of this.cards.values()) { card.setOffline(); card.setStale(true, label); }
+    if (this.setupCard) { this.setupCard.setOffline(); this.setupCard.setStale(true, label); }
+    for (const group of this.railGroups.values()) {
+      group.node.classList.add('is-stale');
+      putText(group.flag, label);
+    }
+  }
+
+  // -- Quit (G2) -----------------------------------------------------------
+  //
+  // The only way the console ends the program: closing the tab leaves the
+  // station running for the next tab, with the watchdog as its guard. Quit
+  // is allowed while active - the server's close path stops every model
+  // before it closes anything. The server answers first and then exits, so
+  // after the answer nothing here polls, beats or reconnects: there is no
+  // station left to reach.
+  async quitStation() {
+    if (this.isShutDown) return;
+    const isSure = await this.confirm('Quit the station? This stops every model, '
+      + 'closes every port and exits the program.', 'Quit');
+    if (!isSure) return;
+    let answer = null;
+    try {
+      answer = await apiPostChecked('/api/quit', {});
+    } catch (err) {
+      this.setRailLine('quit', 'Quit did not reach the station — ' + failureReason(err)
+        + '. It is still running.', true);
+      return;
+    }
+    if (!answer || answer.status !== 'ok') {
+      this.setRailLine('quit', 'The station did not agree to quit. It is still running.', true);
+      return;
+    }
+    this.showShutDown();
+  }
+
+  showShutDown() {
+    this.isShutDown = true;
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    this.stopHeartbeat();
+    this.answerConfirm(false);
+    this.closeRegionPicker();
+    this.setDrawerOpen(false);
+    this.setRailLine('quit', '');
+    const link = this.dom.connection;
+    link.textContent = 'The station has shut down. You can close this tab.';
+    link.title = 'The station program has exited. Start it again to reconnect.';
+    link.className = 'link-state is-shut-down';
+    document.body.classList.add('is-offline', 'is-shut-down');
+    this.muteReadouts('Shut down');
+    for (const control of [this.dom.stop, this.dom.setupLink, this.dom.quitLink]) {
+      control.disabled = true;
+    }
+    this.updateInert();
   }
 
   // -- the rail's alert lines --------------------------------------------

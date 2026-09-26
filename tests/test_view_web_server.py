@@ -1147,3 +1147,82 @@ def test_an_idle_poll_changes_nothing_and_a_word_is_not_a_number(station, tmp_pa
     assert out["option"]["title"] == "/dev/cu.usbmodem1234567890123"
     assert "…" in out["option"]["text"] and out["option"]["text"].endswith("7890123")
     assert out["leaveAsks"] is True
+
+
+@needs_browser
+def test_quit_asks_first_then_the_page_says_the_station_is_down(station, tmp_path):
+    """G2: Quit asks on the page's own confirmation (Cancel focused); Cancel
+    leaves everything running. Quit confirmed: the server is asked once, the
+    page says the station has shut down, and it polls nothing any more - no
+    state, no heartbeat, no reconnect attempts."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      const seen = { state: 0, heartbeat: 0, quit: 0 };
+      page.on('request', (r) => {
+        const u = r.url();
+        if (u.includes('/api/state')) seen.state += 1;
+        if (u.includes('/api/heartbeat')) seen.heartbeat += 1;
+        if (u.includes('/api/quit')) seen.quit += 1;
+      });
+      const quit = await page.evaluate(() => {
+        const b = document.getElementById('quit-link');
+        return b && { text: b.textContent.trim(), name: b.getAttribute('aria-label'),
+                      cls: b.className, beside: b.parentElement.contains(document.getElementById('setup-link')) };
+      });
+      await page.click('#quit-link');
+      await until(() => !document.getElementById('confirm-modal').hidden);
+      const asked = await page.evaluate(() => ({
+        text: document.getElementById('confirm-text').textContent,
+        yes: document.getElementById('confirm-yes').textContent,
+        focused: document.activeElement && document.activeElement.id,
+      }));
+      await page.click('#confirm-no');
+      const before = seen.state;
+      await sleep(800);
+      const afterCancel = { polled: seen.state - before, quit: seen.quit,
+        link: await page.evaluate(() => document.getElementById('connection').textContent) };
+      await page.click('#quit-link');
+      await until(() => !document.getElementById('confirm-modal').hidden);
+      await page.click('#confirm-yes');
+      await until(() => document.getElementById('connection').textContent.startsWith('The station has shut down'));
+      const quiet = { state: seen.state, heartbeat: seen.heartbeat };
+      await sleep(2500);
+      return page.evaluate((quit, asked, afterCancel, quiet, seen) => {
+        const card = Array.from(document.querySelectorAll('.card'))
+          .find((c) => !c.classList.contains('setup-card'));
+        return {
+          quit, asked, afterCancel,
+          link: document.getElementById('connection').textContent,
+          statesAfter: seen.state - quiet.state,
+          beatsAfter: seen.heartbeat - quiet.heartbeat,
+          quitRequests: seen.quit,
+          offline: document.body.classList.contains('is-offline'),
+          cardsInert: document.getElementById('cards').inert,
+          badge: !card.querySelector('.stale-badge').hidden,
+          stopDisabled: document.getElementById('full-stop').disabled,
+          muted: (() => {
+            const v = Array.from(card.querySelectorAll('.value')).find((n) => n.textContent === '0.000');
+            const probe = document.createElement('span');
+            probe.style.color = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim();
+            document.body.appendChild(probe);
+            return getComputedStyle(v).color === getComputedStyle(probe).color;
+          })(),
+          rackDimmed: Number(getComputedStyle(document.getElementById('cards')).opacity) < 1,
+          quitDisabled: document.getElementById('quit-link').disabled,
+        };
+      }, quit, asked, afterCancel, quiet, seen);
+    """, tmp_path)
+    assert out["quit"] == {"text": "Quit", "name": "Quit the station program",
+                           "cls": "ghost rail-control", "beside": True}, out["quit"]
+    assert out["asked"]["text"] == ("Quit the station? This stops every model, closes "
+                                    "every port and exits the program."), out["asked"]
+    assert out["asked"]["yes"] == "Quit" and out["asked"]["focused"] == "confirm-no"
+    assert out["afterCancel"]["polled"] > 0 and out["afterCancel"]["quit"] == 0, out
+    assert out["afterCancel"]["link"] == "Connected", out
+    assert out["quitRequests"] == 1, out
+    assert view._halt.is_set(), "the server was never asked to quit"
+    assert out["link"] == "The station has shut down. You can close this tab.", out
+    assert out["statesAfter"] == 0 and out["beatsAfter"] == 0, out
+    assert out["offline"] and out["cardsInert"] and out["badge"], out
+    assert out["stopDisabled"] and out["quitDisabled"], out
+    assert out["muted"] and out["rackDimmed"], out

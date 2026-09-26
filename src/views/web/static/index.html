@@ -31,6 +31,11 @@
       <span class="stop-hint" aria-hidden="true">Stop: Ctrl+.<br>Cmd+. on a Mac</span>
       <button id="setup-link" type="button" class="ghost rail-control"
               title="Open Setup: ports, devices and launch">Setup</button>
+      <!-- Closing the tab never quits: the station keeps running for the
+           next tab, and the watchdog guards it. This is the only exit. -->
+      <button id="quit-link" type="button" class="ghost rail-control"
+              aria-label="Quit the station program"
+              title="Quit the station program: stops every model, closes every port and exits (asks first)">Quit</button>
     </div>
     <button id="full-stop" type="button" class="mushroom" aria-label="Stop every model"
             aria-keyshortcuts="Control+Period Meta+Period"
