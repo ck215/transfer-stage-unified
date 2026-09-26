@@ -2720,27 +2720,27 @@ class TkPanelView(PanelView):
         return number == number and number not in (float("inf"), float("-inf"))
 
     def _bounds_hint(self, element):
-        """Colour an entry whose current text is outside min/max."""
+        """Flag an entry whose current text is outside min/max: its underline
+        turns ink (E: a warning is ink, never the trace colour). Typing is
+        never blocked; the model refuses the set when a command runs."""
         entry = self._entry_for(element)
-        widget, var = entry.get("widget"), entry.get("var")
+        widget, var, ring = entry.get("widget"), entry.get("var"), entry.get("ring")
         if widget is None or var is None:
             return
         low, high = element.get("min"), element.get("max")
-        foreground = theme.TEXT
         try:
             number = float(var.get())
         except (TypeError, ValueError):
             number = None
-        if number is not None and ((low is not None and number < low)
-                                   or (high is not None and number > high)):
-            foreground = theme.colors("warning")[0]
-        try:
-            widget.configure(foreground=foreground)
-        except Exception:
-            pass
+        is_out = number is not None and ((low is not None and number < low)
+                                         or (high is not None and number > high))
+        entry["is_out_of_range"] = is_out
+        if ring is not None:
+            ring.paint(border=theme.TEXT if is_out else INPUT_BORDER)
 
     def _on_entry_commit(self, element):
-        """Return / focus-out commits the typed value through the Controller.
+        """Return / focus-out / a slider's release commits the typed value
+        through the Controller.
 
         The old view did `setattr(self.model, attr, text)` from the widget
         callback, which wrote unvalidated text straight onto the model. A
@@ -3452,27 +3452,32 @@ class TkPanelView(PanelView):
         return str(int(number))
 
     def _style_readout(self, element, text):
-        """A readout's value is the trace colour - the colour a live number
-        is drawn in. A danger readout (a fault reason) is ink with a signal
-        mark beside it (F14). Nothing to show is `--` in muted ink; a panel
-        whose readings are stale or whose link is lost mutes every value,
-        because a frozen number drawn in trace reads as live (F3)."""
+        """A readout is ink at rest and the trace colour only while its value
+        is changing (E: trace is for changing numbers). A danger readout (a
+        fault reason) is ink with a signal mark beside it (F14). Nothing to
+        show is `--` in muted ink; an entry whose readings are stale or whose
+        link is lost mutes every value, because a frozen number in trace or
+        ink reads as live (F3). A table's words are text, never trace."""
         entry = self._entry_for(element)
         widget = entry.get("widget")
         if widget is None:
             return
         is_danger = (element.get("role") or "neutral") == "danger"
+        changed_at = entry.get("changed_at")
+        is_changing = (changed_at is not None and not entry.get("is_text")
+                       and _is_number(text)
+                       and time.monotonic() - changed_at < CHANGING_S)
         if text == EMPTY_READOUT or self._is_quiet():
             foreground = theme.MUTED
-        elif is_danger:
-            foreground = theme.TEXT
-        else:
+        elif is_changing and not is_danger:
             foreground = theme.TRACE
+        else:
+            foreground = theme.TEXT
         marked = is_danger and text not in ("", EMPTY_READOUT)
         if entry.get("colors") != foreground:
             entry["colors"] = foreground
             try:
-                widget.configure(background=_page(), foreground=foreground)
+                widget.configure(foreground=foreground)
             except Exception:
                 pass
         mark = entry.get("mark")
@@ -3482,13 +3487,13 @@ class TkPanelView(PanelView):
                 mark.delete("all")
                 if marked:
                     size = int(mark.cget("width") or LAMP_PX)
-                    mark.create_oval(2, 2, size - 2, size - 2, fill=theme.SIGNAL,
-                                     outline=theme.SIGNAL)
+                    mark.create_rectangle(2, 2, size - 2, size - 2, fill=theme.SIGNAL,
+                                          outline=theme.SIGNAL)
             except Exception:
                 pass
 
     def _is_quiet(self):
-        """True while the panel's values cannot be trusted as live."""
+        """True while the entry's values cannot be trusted as live."""
         return bool(self._is_stale) or bool(self.lost_devices)
 
     def _set_text(self, element, text):
@@ -4650,7 +4655,7 @@ class TkDashboard(Dashboard):
                              + (["..."] if more else []) + shown)
         try:
             self._band_text.configure(text=text)
-            self._band.pack(side="bottom", fill="x", after=self._stop_bar)
+            self._band.pack(side="bottom", fill="x", after=self._tray)
         except Exception as exc:
             events.debug("Alert Band Failed", str(exc), source=SOURCE,
                          exception=exc)
@@ -4671,45 +4676,43 @@ class TkDashboard(Dashboard):
                 pass
 
     def _build_event_panel(self):
-        """A footer, sized in lines and scrolled — not an expanding panel.
-
-        `height` is in text lines and `expand` is False, so the log cannot
-        take space from the controls as it fills. Two steps of ink and no
-        more: the latest line in ink, the ones before it muted (never
-        fainter than the muted token), warnings in the trace colour; an
-        error is ink behind a signal mark and the word "Error".
-        """
-        frame = tk.Frame(self.root, background=theme.BACKGROUND)
-        frame.pack(side="bottom", fill="x", padx=INSET, pady=(GAP, GAP))
+        """The tray: status by exception (E). Warnings and errors only - a
+        hollow ink square before a warning, a solid signal square before an
+        error, and the severity's word - folded to the latest one line;
+        "Show events" unfolds `EVENT_LOG_LINES` of them. Info goes to the
+        log file, not here: normal is silence."""
+        frame = tk.Frame(self._main, background=theme.BACKGROUND)
+        frame.pack(side="bottom", fill="x")
         self._tray = frame
-        caption = tk.Label(frame, text="Events", font=_font(SMALL),
-                           anchor="w", background=theme.BACKGROUND,
-                           foreground=theme.MUTED)
-        caption.pack(fill="x")
-        body = tk.Frame(frame, background=theme.BACKGROUND)
-        body.pack(fill="x")
-        scrollbar = ttk.Scrollbar(body, orient="vertical")
-        scrollbar.pack(side="right", fill="y")
+        tk.Frame(frame, height=1, background=theme.RULE).pack(side="top", fill="x")
+        body = tk.Frame(frame, background=theme.BACKGROUND, padx=SPACE[10],
+                        pady=SPACE[3])
+        body.pack(side="top", fill="x")
+        self._events_press = _Press(body, "Show events", self._toggle_tray,
+                                    theme.BACKGROUND)
+        self._events_press.frame.pack(side="right", anchor="s")
+        # Folded: the latest warning or error, whole (it wraps), its mark
+        # beside it. Unfolded: the history, scrolled to its end.
+        self._latest = tk.Frame(body, background=theme.BACKGROUND)
+        self._latest.pack(side="left", fill="x", expand=True, padx=(0, SPACE[5]))
+        self._latest_mark = tk.Label(self._latest, text="", font=_font(),
+                                     background=theme.BACKGROUND,
+                                     foreground=theme.TEXT)
+        self._latest_mark.pack(side="left", anchor="n")
+        self._latest_text = tk.Label(self._latest, text="", font=_font(), anchor="w",
+                                     justify="left", wraplength=720,
+                                     background=theme.BACKGROUND,
+                                     foreground=theme.TEXT)
+        self._latest_text.pack(side="left", fill="x", expand=True)
+        self._latest.bind("<Configure>", self._on_tray_resized, add="+")
         self._event_text = tk.Text(body, height=EVENT_LOG_LINES, state="disabled",
-                                   wrap="word", relief="flat",
-                                   font=_font(SMALL), padx=GAP, pady=GAP,
-                                   highlightthickness=1,
-                                   highlightbackground=theme.RULE,
-                                   highlightcolor=theme.RULE,
-                                   background=theme.BACKGROUND,
-                                   foreground=theme.MUTED,
-                                   yscrollcommand=scrollbar.set)
-        self._event_text.pack(side="left", fill="x", expand=True)
-        try:
-            scrollbar.configure(command=self._event_text.yview)
-        except Exception as exc:
-            events.debug("Event Scrollbar Not Wired", str(exc), source=SOURCE,
-                         exception=exc)
+                                   wrap="word", relief="flat", font=_font(),
+                                   padx=SPACE[3], pady=SPACE[2], highlightthickness=0,
+                                   background=theme.SURFACE, foreground=theme.TEXT,
+                                   cursor="arrow")
         # Creation order is tag priority: `latest` outranks `info` and is
-        # outranked by `warning` and `error`, so the newest line is ink
-        # unless its severity says otherwise. A line's text is its
-        # severity's INK (an error is ink: signal text is 3.21:1 here); its
-        # colour is the MARK before it, beside a severity word (F14).
+        # outranked by `warning` and `error`. A line's text is its
+        # severity's INK; its colour is the MARK before it (F14).
         tags = [(severity, theme.SEVERITY_INK[severity]) for severity in ("info",)]
         tags += [("latest", theme.TEXT)]
         tags += [(severity, theme.SEVERITY_INK[severity])
@@ -4719,6 +4722,33 @@ class TkDashboard(Dashboard):
         for tag, foreground in tags:
             try:
                 self._event_text.tag_configure(tag, foreground=foreground)
+            except Exception:
+                pass
+
+    def _toggle_tray(self):
+        """Unfold the tray to its history of warnings and errors, or fold it
+        back to the latest one. It grows upward; the rail is untouched."""
+        self._is_tray_open = not self._is_tray_open
+        try:
+            if self._is_tray_open:
+                self._latest.pack_forget()
+                self._event_text.pack(side="left", fill="x", expand=True,
+                                      padx=(0, SPACE[5]))
+                self._event_text.see("end")
+            else:
+                self._event_text.pack_forget()
+                self._latest.pack(side="left", fill="x", expand=True,
+                                  padx=(0, SPACE[5]))
+        except Exception as exc:
+            events.debug("Tray Not Toggled", str(exc), source=SOURCE, exception=exc)
+        self._events_press.set_text("Hide events" if self._is_tray_open
+                                    else "Show events")
+
+    def _on_tray_resized(self, event=None):
+        width = getattr(event, "width", 0)
+        if isinstance(width, int) and width > SPACE[6] * 10:
+            try:
+                self._latest_text.configure(wraplength=width - SPACE[6] * 2)
             except Exception:
                 pass
 
@@ -5136,14 +5166,29 @@ class TkDashboard(Dashboard):
             events.debug("Marshal Failed", str(exc), source=SOURCE, exception=exc)
 
     def _show_event(self, event):
-        """One line per event: a mark in the severity's colour, the severity
-        word, then the text in the severity's ink (F14, UXPM-10)."""
+        """Status by exception (E): a warning or an error is one line in the
+        tray - a mark in the severity's colour and shape (a hollow ink
+        square, a solid signal one), the severity word, then the text in the
+        severity's ink (F14, UXPM-10). Info is silence here."""
         severity = event.severity if event.severity in theme.SEVERITY_ROLE else "info"
+        if severity not in TRAY_SEVERITIES:
+            return
+        mark = MARK_HOLLOW if severity in theme.SEVERITY_MARK_HOLLOW else MARK_SOLID
+        try:
+            self._latest_mark.configure(text=f"{mark} ",
+                                        foreground=theme.SEVERITY_MARK[severity])
+            self._latest_text.configure(text=f"{SEVERITY_WORD[severity]}  {event.text}",
+                                        foreground=theme.SEVERITY_INK[severity])
+        except Exception:
+            pass
         try:
             self._event_text.configure(state="normal")
             self._event_text.tag_remove("latest", "1.0", "end")
-            self._event_text.insert("end", "\u25cf ", (f"mark-{severity}",))
-            self._event_text.insert("end", f"{SEVERITY_WORD[severity]}  {event.text}\n",
+            if self._tray_count:
+                self._event_text.insert("end", "\n")
+            self._tray_count += 1
+            self._event_text.insert("end", f"{mark} ", (f"mark-{severity}",))
+            self._event_text.insert("end", f"{SEVERITY_WORD[severity]}  {event.text}",
                                     (severity, "latest"))
             self._event_text.see("end")
             self._event_text.configure(state="disabled")
