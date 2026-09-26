@@ -81,6 +81,15 @@ wire is pinned by `tests/golden/`.
 - Web = candidate primary frontend ("instrument console"); Tk/Qt persist as
   backups. Making Web the default is `VIEW_MODE` in the launchers.
 
+## Next programme: packaging (2026-09-25)
+
+`docs/rebuild/PACKAGING_PLAN.md`: one PyInstaller bundle per platform with
+three entry points (`station-web`, `station-qt`, `station-tk`), steps P1–P8
+with routes. P1 is the D-9 amendment (default view Web on every OS), owner
+pending. A design-language proposal (four boards rendered in HTML, one
+component strip each) was published for the owner the same day; the choice
+lands as `palette.py` / `theme.py` tokens.
+
 ## Open items
 
 Code defects found by the 2026-09-23 sweep are in `BUGFIX_PLAN.md` (Tier A);
