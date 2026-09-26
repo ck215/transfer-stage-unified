@@ -474,3 +474,71 @@ def test_the_base_panel_view_refuses_to_guess_at_a_toolkit(name):
 def test_the_base_dashboard_refuses_to_guess_at_a_toolkit(name):
     with pytest.raises(NotImplementedError):
         getattr(Dashboard, name)(object(), None)
+
+
+# -- G3: checkboxes and enabled_by -------------------------------------------
+
+def test_a_checkbox_sends_the_new_value_read_from_the_model(view, station):
+    _, model = station
+    box = _element(view, "Wanted")
+    view._run_checkbox(box)
+    assert model.is_wanted is True
+    view._run_checkbox(box)
+    assert model.is_wanted is False
+
+
+def test_refresh_lights_a_checkbox_from_state(view, station):
+    _, model = station
+    model.is_wanted = True
+    view._refresh()
+    assert view.on_states["is_wanted"] is True
+    model.is_wanted = False
+    view._refresh()
+    assert view.on_states["is_wanted"] is False
+
+
+def test_an_enabled_by_control_follows_its_checkbox(view, station):
+    _, model = station
+    view._refresh()
+    assert view.enabled["gated_port"] is False
+    assert view.enabled["port_name"] is True        # no enabled_by: untouched
+    model.is_wanted = True
+    view._refresh()
+    assert view.enabled["gated_port"] is True
+
+
+def test_the_panel_refuses_a_gated_command_the_view_would_have_greyed_out(view, station):
+    _, model = station
+    result = view._run(_element(view, "Gated port"), ("COM1",))
+    assert result.is_refused and "Launch box" in result.reason
+    assert model.gated_port is None
+    model.is_wanted = True
+    assert view._run(_element(view, "Gated port"), ("COM1",)).is_ok
+    assert model.gated_port == "COM1"
+
+
+# -- G4: a detached log stream is polled only while its window is open ------
+
+def test_a_detached_log_stream_is_polled_only_when_the_toolkit_wants_it(station):
+    controller, model = station
+
+    class Windowed(FakePanelView):
+        open_windows = set()
+
+        def _wants_data(self, element):
+            if element["type"] == "log_stream" and element.get("detached"):
+                return element["text"] in self.open_windows
+            return True
+
+    view = Windowed(controller, "probe")
+    view._build()
+    assert "Side log" not in view.data and model.detached_reads == 0
+    assert view.data["Log"] == ["one line"]          # the attached one is live
+    view.open_windows.add("Side log")
+    view._refresh()
+    assert view.data["Side log"] == ["aside"] and model.detached_reads == 1
+
+
+def test_the_base_view_wants_every_data_element_by_default(view):
+    assert all(view._wants_data(e) for e in view._elements)
+    assert view.data["Side log"] == ["aside"]

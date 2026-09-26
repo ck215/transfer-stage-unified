@@ -160,6 +160,9 @@ class FakeModel(Model):
                  halt_error=None, halt_blocks=False):
         self.mode = "idle"
         self.port_name = None
+        self.is_wanted = False          # a checkbox (G3)
+        self.gated_port = None          # a dropdown live only while wanted
+        self.detached_reads = 0         # a detached log stream's polls (G4)
         self._device_list = list(devices or [])
         self.halt_result = halt_result
         self.halt_delay = halt_delay
@@ -256,8 +259,12 @@ class FakeModel(Model):
                 sch.button("Ask", "ask"),
                 sch.button("Nope", "nope"),
                 sch.dropdown("Port", "port_name", "set_port", "port_options"),
+                sch.checkbox("Wanted", "is_wanted", "set_wanted"),
+                sch.dropdown("Gated port", "gated_port", "set_gated_port",
+                             "port_options", enabled_by="is_wanted"),
                 sch.plot("Trace", "trace_data"),
                 sch.log_stream("Log", "log_lines"),
+                sch.log_stream("Side log", "side_lines", detached=True),
             ),
             sch.section(
                 "Modes",
@@ -308,6 +315,18 @@ class FakeModel(Model):
 
     def port_options(self):
         return ["COM1", "COM2"]
+
+    def set_wanted(self, flag):
+        self.is_wanted = bool(flag)
+        return self.is_wanted
+
+    def set_gated_port(self, name):
+        self.gated_port = name
+        return name
+
+    def side_lines(self):
+        self.detached_reads += 1
+        return ["aside"]
 
     def trace_data(self):
         self.data_reads += 1

@@ -1071,7 +1071,8 @@ class Probe(Model):
                 sch.button("Step", "step",
                            inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
                            role="go", disabled_when=("manual", "latched")),
-                sch.log_stream("Gamepad Log:", "gamepad_log"),
+                # G4: behind a button, in its own window, not on the card.
+                sch.log_stream("Gamepad Log:", "gamepad_log", detached=True),
             ),
             self._safety_section(),
         )

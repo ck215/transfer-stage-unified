@@ -19,6 +19,7 @@ BUILT = {
     "entry": sch.entry("Speed", "speed", Param("speed", "float")),
     "button": sch.button("Go", "go"),
     "toggle": sch.toggle("Auto", "is_auto", "set_mode", "ON", "OFF"),
+    "checkbox": sch.checkbox("Launch", "is_wanted", "set_wanted"),
     "dropdown": sch.dropdown("Port", "port", "set_port", "port_options"),
     "region_select": sch.region_select("Region", "pick_region"),
     "file_save": sch.file_save("Save", "save_csv"),
@@ -242,3 +243,37 @@ def test_every_models_stop_uses_one_vocabulary_and_names_its_model():
     assert (stop["true_text"], stop["false_text"]) == ("Stopped", "Stop")
     assert model.NAME in stop["tooltip"] and model.NAME in stop["tooltip_on"]
     assert "LATCHED" not in stop["true_text"]
+
+
+# -- G3 / G4 additions ------------------------------------------------------
+
+def test_a_checkbox_is_a_boolean_the_operator_sets_directly():
+    box = sch.checkbox("Launch", "is_wanted", "set_wanted", tooltip="Launch Alpha")
+    assert box["type"] == "checkbox" and box["command"] == "set_wanted"
+    assert box["model_attr"] == "is_wanted" and box["writable"] is False
+    assert box["tooltip"] == "Launch Alpha"
+    assert "tooltip" not in sch.checkbox("Launch", "is_wanted", "set_wanted")
+
+
+def test_enabled_by_gates_on_a_boolean_value_and_is_skipped_without_values():
+    port = sch.dropdown("Port", "port", "set_port", "port_options",
+                        enabled_by="is_wanted")
+    assert port["enabled_by"] == "is_wanted"
+    assert sch.is_enabled(port, "ready", {"is_wanted": False}) is False
+    assert sch.is_enabled(port, "ready", {"is_wanted": True}) is True
+    assert sch.is_enabled(port, "ready", {}) is False
+    assert sch.is_enabled(port, "ready") is True          # no values: no rule
+    plain = sch.dropdown("Port", "port", "set_port", "port_options")
+    assert "enabled_by" not in plain
+    assert sch.is_enabled(plain, "ready", {"is_wanted": False}) is True
+
+
+def test_enabled_by_never_loosens_a_mode_gate():
+    port = sch.dropdown("Port", "port", "set_port", "port_options",
+                        enabled_when=["ready"], enabled_by="is_wanted")
+    assert sch.is_enabled(port, "scanning", {"is_wanted": True}) is False
+
+
+def test_a_log_stream_is_attached_unless_it_says_detached():
+    assert sch.log_stream("Log", "lines")["detached"] is False
+    assert sch.log_stream("Log", "lines", detached=True)["detached"] is True

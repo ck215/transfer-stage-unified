@@ -47,9 +47,12 @@ class Panel:
 
     def _is_enabled(self, element):
         """Enabled under the gate token AND the underlying mode, so a token
-        that outranks the mode never loosens what the mode alone refused."""
-        return (sch.is_enabled(element, self.gate_mode)
-                and sch.is_enabled(element, self.mode_name))
+        that outranks the mode never loosens what the mode alone refused.
+        An `enabled_by` element also needs its boolean true (G3)."""
+        by = element.get("enabled_by")
+        values = {by: getattr(self, by, None)} if by else None
+        return (sch.is_enabled(element, self.gate_mode, values)
+                and sch.is_enabled(element, self.mode_name, values))
 
     def _gate_reason(self):
         token = self.gate_mode
@@ -171,6 +174,10 @@ class Panel:
         if not any(self._is_enabled(e) for e in candidates):
             element = candidates[0]
             label = str(element.get("text", command)).rstrip(":")
+            by = element.get("enabled_by")
+            if by and not getattr(self, by, None):
+                raise Refused(f"{label} is not available until the row's "
+                              "Launch box is ticked.")
             raise Refused(f"{label} is not available: {self._gate_reason()}")
 
     def _apply_inputs(self, inputs):

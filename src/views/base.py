@@ -80,6 +80,13 @@ class PanelView:
         is_on = bool(self._state()["values"].get(element["model_attr"]))
         return self._run(element, element["off_args"] if is_on else element["on_args"])
 
+    def _run_checkbox(self, element):
+        """A tick sends the NEW value, read from the model rather than the
+        widget, so a box that was drawn one refresh behind still flips the
+        right way."""
+        is_on = bool(self._state()["values"].get(element["model_attr"]))
+        return self._run(element, (not is_on,))
+
     # -- refresh -----------------------------------------------------------
     def _refresh(self):
         state = self._state()
@@ -91,15 +98,15 @@ class PanelView:
                     self._set_text(element, values.get(attr, ""))
             elif kind in ("readonly", "region_select", "dropdown") and attr:
                 self._set_text(element, values.get(attr, ""))
-            elif kind in ("toggle", "indicator"):
+            elif kind in ("toggle", "indicator", "checkbox"):
                 self._set_on(element, bool(values.get(attr)))
             elif kind in ("plot", "image", "log_stream"):
-                if self._data_is_due(element, kind):
+                if self._wants_data(element) and self._data_is_due(element, kind):
                     key = "source_command" if kind == "log_stream" else "data_command"
                     data = self._call(element[key])
                     if data.is_ok:
                         self._set_data(element, data.value)
-            self._set_enabled(element, sch.is_enabled(element, mode))
+            self._set_enabled(element, sch.is_enabled(element, mode, values))
         age = state.get("age")
         self._set_stale(age is not None and age > 1.0)
 
@@ -112,6 +119,12 @@ class PanelView:
         return True
 
     _sync_gates = _refresh   # gating is part of every refresh, entries included
+
+    def _wants_data(self, element):
+        """Whether a data element should be polled now. A detached log
+        stream (G4) is polled only while its window is open; a toolkit
+        overrides this to say so. Everything else is always wanted."""
+        return True
 
     def close(self):
         self._elements.clear()

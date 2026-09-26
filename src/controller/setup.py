@@ -50,12 +50,14 @@ from model.rotator import Rotator
 from panel import Panel
 from result import Refused
 
-#: The Port dropdown's three fixed entries. Everything else in the list is a
-#: real port name. `OFF` is the row's disabled state - the Mode dropdown it
-#: replaces could disagree with the port beside it, and did.
-OFF, SIM = "Off", "SIM"
+#: The Port dropdown's one fixed entry. Everything else in the list is a
+#: real port name. A row is switched off by its Launch checkbox (G3), never
+#: by a dropdown entry: the "Off" entry that used to live here could sit
+#: beside a chosen port and disagree with it, the way the Mode dropdown
+#: before it did.
+SIM = "SIM"
 #: What a model that needs no port (the screen-capture monitor) offers instead
-#: of a port name: it is either on, simulated, or off.
+#: of a port name: it is either on (real) or simulated.
 ON = "On"
 
 #: What `discover_ports` fell back to when pyserial was missing. Kept
@@ -197,7 +199,11 @@ class Setup(Panel):
         self._selected = "nothing selected"
         for key, row in self._rows.items():
             setattr(self, f"{key}_name", row["name"])
-            setattr(self, f"{key}_port", OFF)
+            # Unticked until a board answers or the operator ticks it. The
+            # dropdown always holds a launchable choice, so ticking a row
+            # needs no second step: SIM for a port row, On for the screen.
+            setattr(self, f"{key}_enabled", False)
+            setattr(self, f"{key}_port", SIM if row["needs_port"] else ON)
             setattr(self, f"{key}_gamepad", "None")
             setattr(self, f"{key}_status", "off")
         # The selection commands are per row, because a view sends a dropdown
@@ -207,6 +213,7 @@ class Setup(Panel):
             for field in ("port", "gamepad"):
                 setattr(self, f"set_{key}_{field}",
                         _Selector(self, key, field))
+            setattr(self, f"set_{key}_enabled", _Enabler(self, key))
         self._refresh_rows()
 
     # -- what a view reads -------------------------------------------------
@@ -258,11 +265,10 @@ class Setup(Panel):
         why, as a sentence the operator can act on (F18)."""
         selected = self._selected
         if self.is_scanning:
-            return (f"{selected}. Launch waits for the scan to finish; "
+            return ("Scanning. Launch waits for the scan to finish; "
                     "press Cancel scan to launch now.")
         if selected == "nothing selected":
-            return ("Nothing selected. Set a row's Port to a port or to SIM "
-                    "to launch.")
+            return "Nothing selected. Tick a device to launch."
         return selected
 
     @summary.setter
@@ -289,10 +295,11 @@ class Setup(Panel):
             rows.append({
                 "key": key,
                 "name": row["name"],
+                "enabled": getattr(self, f"{key}_enabled"),
                 "port": choice,
                 "gamepad": getattr(self, f"{key}_gamepad"),
                 "status": getattr(self, f"{key}_status"),
-                "detected": found.get(choice) if choice not in (OFF, SIM, ON) else None,
+                "detected": found.get(choice) if choice not in (SIM, ON) else None,
                 "needs_port": row["needs_port"],
                 "needs_gamepad": row["needs_gamepad"],
                 "is_chosen": key in chosen,
@@ -321,14 +328,14 @@ class Setup(Panel):
 
     @property
     def configs(self):
-        """The operator's current choices as build configs. Rows set to "Off"
+        """The operator's current choices as build configs. Unticked rows
         are dropped here and nowhere else: Web used to carry them through with
         a stripped `enabled` flag and build every one of them (WEB-4)."""
         configs = []
         for key, row in self._rows.items():
-            choice = getattr(self, f"{key}_port")
-            if choice == OFF:
+            if not getattr(self, f"{key}_enabled"):
                 continue
+            choice = getattr(self, f"{key}_port")
             is_sim = choice == SIM
             if not row["needs_port"]:
                 port = None         # the screen monitor: on, or simulated
@@ -351,15 +358,15 @@ class Setup(Panel):
 
     # -- options (one list per row shape) ----------------------------------
     def port_options(self):
-        """What a row that needs a port offers: off, the simulator, or a port."""
+        """What a row that needs a port offers: the simulator, or a port."""
         with self._lock:
-            return [OFF, SIM, *self._ports]
+            return [SIM, *self._ports]
 
     def device_options(self):
         """What a row that needs no port offers. The screen-capture monitor
         has nothing to plug in, so its dropdown is the same control with the
         port names left out rather than a second kind of widget."""
-        return [OFF, ON, SIM]
+        return [ON, SIM]
 
     def gamepad_options(self):
         with self._lock:
@@ -548,7 +555,7 @@ class Setup(Panel):
         with self._lock:
             self._ports, self._gamepads = ports, gamepads
         self._drop_stale_selections()
-        targets = [p for p in ports if p not in (OFF, SIM, ON)]
+        targets = [p for p in ports if p not in (SIM, ON)]
         self.scan_phase = self.IDENTIFYING
         self.scan_status = (f"scanning {len(targets)} port(s)..." if targets
                             else "no ports found")
@@ -819,9 +826,12 @@ class Setup(Panel):
                             "choose the port by hand.", source=self.NAME)
                 continue
             taken[key] = port
-            if getattr(self, f"{key}_port") == port:
+            if getattr(self, f"{key}_port") == port and getattr(self, f"{key}_enabled"):
                 continue
             setattr(self, f"{key}_port", port)
+            # A board that answered is a row worth launching: the machine
+            # ticks it, and the operator unticks what they do not want.
+            setattr(self, f"{key}_enabled", True)
             assigned.append(f"{name} on {port}")
         self._refresh_rows()
         if assigned:
@@ -853,6 +863,26 @@ class Setup(Panel):
         self._refresh_rows()
         return choice
 
+    def _enable(self, key, flag):
+        """Tick or untick one row (G3). Reached through `set_<row>_enabled`.
+        The row's dropdowns keep their choices either way, so unticking a
+        row and ticking it again costs nothing."""
+        if key not in self._rows:
+            self._refuse(f"{key} is not a configurable model")
+        if isinstance(flag, str):
+            lowered = flag.strip().lower()
+            if lowered not in ("true", "false"):
+                self._refuse(f"{flag!r} is not a tick state")
+            flag = lowered == "true"
+        elif not isinstance(flag, (bool, int)):
+            self._refuse(f"{flag!r} is not a tick state")
+        flag = bool(flag)
+        setattr(self, f"{key}_enabled", flag)
+        events.debug("Ticked" if flag else "Unticked", self._rows[key]["name"],
+                     source=self.NAME)
+        self._refresh_rows()
+        return flag
+
     def _port_choices(self, key):
         return (self.port_options() if self._rows[key]["needs_port"]
                 else self.device_options())
@@ -873,7 +903,7 @@ class Setup(Panel):
                 self._refuse(f"{name!r} is not a known model")
             port, gamepad = config.get("port"), config.get("gamepad")
             if _declared(model_class, "NEEDS_PORT") and not config.get("sim"):
-                if not port or port in ("None", OFF):
+                if not port or port in ("None", "Off"):
                     self._refuse(f"{name} port: choose a port, or set the "
                                  "row to SIM")
                 if port in ports:
@@ -895,8 +925,7 @@ class Setup(Panel):
         Controller first, so relaunching is the same call)."""
         configs = self.configs
         if not configs:
-            self._refuse("Select at least one device: set a row's Port to a "
-                         "port or to SIM.")
+            self._refuse("Select at least one device: tick its Launch box.")
         self.validate(configs)
         return self.build(configs)
 
@@ -1028,19 +1057,27 @@ class Setup(Panel):
         )]
         for key, row in self._rows.items():
             # The row's caption is the model's name; no second copy in a cell.
+            # G3: the Launch box first, as on `main`; the dropdowns are live
+            # only while it is ticked.
             elements = [
+                sch.checkbox("Launch", f"{key}_enabled", f"set_{key}_enabled",
+                             tooltip=f"Launch {row['name']}"),
                 sch.dropdown("Port", f"{key}_port", f"set_{key}_port",
-                             row["options_command"]),
+                             row["options_command"],
+                             enabled_by=f"{key}_enabled"),
             ]
             if row["needs_gamepad"]:
                 elements.append(sch.dropdown("Gamepad", f"{key}_gamepad",
                                              f"set_{key}_gamepad",
-                                             "gamepad_options"))
+                                             "gamepad_options",
+                                             enabled_by=f"{key}_enabled"))
             elements.append(sch.readonly("Status:", f"{key}_status"))
             sections.append(sch.section(row["name"], *elements, layout="row"))
         sections.append(sch.section(
             "Launch",
-            sch.readonly("Selected:", "summary"),
+            # One short sentence: how many rows are ticked, or why Launch
+            # is greyed out (F18). The rows themselves say which and where.
+            sch.readonly("Selection:", "summary"),
             sch.button("Launch", "launch", role="go",
                        enabled_when=[self.READY]),
             sch.button("Relaunch", "launch", role="go",
@@ -1073,9 +1110,9 @@ class Setup(Panel):
         """What the row's Status cell says: off / simulated / detected: X /
         not detected. The one sentence the operator reads to know whether the
         handshake agreed with the dropdown."""
-        choice = getattr(self, f"{key}_port")
-        if choice == OFF:
+        if not getattr(self, f"{key}_enabled"):
             return "off"
+        choice = getattr(self, f"{key}_port")
         if choice == SIM:
             return "simulated"
         if not row["needs_port"]:
@@ -1093,19 +1130,24 @@ class Setup(Panel):
         gamepads = self.gamepad_options()
         for key, row in self._rows.items():
             if getattr(self, f"{key}_port") not in self._port_choices(key):
-                setattr(self, f"{key}_port", OFF)
+                # The board is gone: the row goes back to unticked and to
+                # SIM, so a Launch cannot silently open some other port.
+                setattr(self, f"{key}_port", SIM)
+                setattr(self, f"{key}_enabled", False)
                 with self._lock:
                     self._chosen.discard(key)
             if row["needs_gamepad"] and getattr(self, f"{key}_gamepad") not in gamepads:
                 setattr(self, f"{key}_gamepad", "None")
 
     def _refresh_summary(self):
-        parts = []
-        for config in self.configs:
-            where = ("simulated" if config["sim"]
-                     else (config["port"] or "on"))
-            parts.append(f"{config['model']} ({where})")
-        self._selected = ", ".join(parts) or "nothing selected"
+        """A count, not a list (G3): the rows already say which model is on
+        which port, and the joined list widened every table it sat in."""
+        count = len(self.configs)
+        if count == 0:
+            self._selected = "nothing selected"
+        else:
+            self._selected = (f"{count} device{'s' if count != 1 else ''} "
+                              "ticked to launch.")
 
 
 class _Selector:
@@ -1127,3 +1169,18 @@ class _Selector:
 
     def __repr__(self):
         return f"<set_{self.key}_{self.field}>"
+
+
+class _Enabler:
+    """One row's Launch checkbox handler: `set_<row>_enabled(flag)`."""
+
+    __slots__ = ("setup", "key")
+
+    def __init__(self, setup, key):
+        self.setup, self.key = setup, key
+
+    def __call__(self, flag):
+        return self.setup._enable(self.key, flag)
+
+    def __repr__(self):
+        return f"<set_{self.key}_enabled>"

@@ -18,7 +18,7 @@ from controller.controller import Controller
 from devices import serial_port as serial_port_module
 from events import events
 from result import Refused
-from controller.setup import OFF, SIM, Setup
+from controller.setup import SIM, Setup
 
 from tests.test_setup import RecordingController, make_model_class
 
@@ -355,7 +355,7 @@ def test_a_scan_that_finds_no_port_says_so_instead_of_inventing_one(
     panel.scan()
     _join(panel)
     assert panel.state["scan"]["ports"] == []
-    assert panel.port_options() == [OFF, SIM]
+    assert panel.port_options() == [SIM]
     assert panel.state["scan"]["status"] == "ready"
 
 
@@ -370,8 +370,8 @@ def test_only_a_real_port_is_ever_probed(panel, monkeypatch):
     panel.scan()
     _join(panel)
     assert probed == ["/dev/ttyUSB0"]
-    assert OFF not in probed and SIM not in probed
-    assert panel.port_options() == [OFF, SIM, "/dev/ttyUSB0"]
+    assert SIM not in probed
+    assert panel.port_options() == [SIM, "/dev/ttyUSB0"]
 
 
 def test_a_running_scan_can_be_cancelled(panel, monkeypatch):
@@ -428,7 +428,7 @@ def test_a_scan_drops_a_selection_whose_port_is_gone(panel, monkeypatch):
                         lambda self, port, should_abort=None: None)
     panel.scan()
     _join(panel)
-    assert panel.stepper_probe_port == OFF
+    assert panel.stepper_probe_enabled is False and panel.stepper_probe_port == SIM
     assert "stepper_probe" not in panel._chosen
 
 
@@ -449,7 +449,7 @@ def test_a_completed_scan_assigns_what_it_identified_without_being_asked(
     assert panel.stepper_probe_port == "/dev/ttyUSB0"
     assert panel.temperature_controller_port == "/dev/ttyUSB1"
     assert panel.stepper_probe_status == "detected: Stepper Probe"
-    assert panel.smc100_rotator_port == OFF
+    assert panel.smc100_rotator_enabled is False
     assert panel.smc100_rotator_status == "off"
 
 
@@ -474,7 +474,7 @@ def test_a_cancelled_scan_assigns_nothing(panel, monkeypatch):
     assert reached.wait(2)
     panel.cancel_scan()
     _join(panel)
-    assert panel.stepper_probe_port == OFF
+    assert panel.stepper_probe_enabled is False
 
 
 def test_a_scan_leaves_a_row_the_operator_set_by_hand_alone(panel, monkeypatch):
@@ -484,6 +484,7 @@ def test_a_scan_leaves_a_row_the_operator_set_by_hand_alone(panel, monkeypatch):
     monkeypatch.setattr(Setup, "identify",
                         lambda self, port, should_abort=None: answers[port])
     panel._ports = ["/dev/ttyUSB0"]
+    assert panel.run("set_stepper_probe_enabled", args=(True,)).is_ok
     assert panel.run("set_stepper_probe_port", args=(SIM,)).is_ok
     panel.scan()
     _join(panel)

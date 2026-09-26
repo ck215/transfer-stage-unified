@@ -37,7 +37,7 @@ render from.
 #: schema bug, caught by the conformance test rather than by a silent
 #: fall-through in one view and a crash in another.
 ELEMENT_TYPES = frozenset({
-    "readonly", "entry", "button", "toggle", "dropdown",
+    "readonly", "entry", "button", "toggle", "checkbox", "dropdown",
     "region_select", "file_save", "file_open", "plot", "image", "indicator",
     "log_stream", "internal",
 })
@@ -132,9 +132,33 @@ def toggle(text, model_attr, command, true_text, false_text, *,
     return _gate(element, enabled_when, disabled_when)
 
 
-def dropdown(text, model_attr, command, options_command, *,
+def checkbox(text, model_attr, command, *, tooltip=None,
              enabled_when=None, disabled_when=None):
+    """A tick box: one boolean the operator sets directly (G3).
+
+    Unlike `toggle`, which is a command button whose face names a mode, a
+    checkbox IS the value: ticked or not. `command` receives one argument,
+    the new boolean, and `model_attr` is the boolean it reads back. Setup's
+    per-row "Launch" box is the first one; its dropdowns are gated on it
+    through `enabled_by`, so an unticked row is greyed out the way `main`'s
+    device checkboxes greyed out their dropdowns.
+    """
+    element = {
+        "type": "checkbox", "text": text, "model_attr": model_attr,
+        "command": command, "writable": False, "role": "neutral",
+    }
+    if tooltip:
+        element["tooltip"] = tooltip
+    return _gate(element, enabled_when, disabled_when)
+
+
+def dropdown(text, model_attr, command, options_command, *,
+             enabled_when=None, disabled_when=None, enabled_by=None):
     """A selection. `command` is **required**.
+
+    `enabled_by` names a boolean `model_attr` (a checkbox's) that must be
+    true for the control to be live; the one gating rule in `is_enabled`
+    reads it, so the three views and the Panel agree.
 
     A dropdown with `model_attr` and no `command` reached
     `getattr(self.model, None)` in PySide and raised `TypeError` (PYSIDE-7).
@@ -148,7 +172,7 @@ def dropdown(text, model_attr, command, options_command, *,
         "command": command, "options_command": options_command,
         "writable": False, "role": "neutral",
     }
-    return _gate(element, enabled_when, disabled_when)
+    return _gate(element, enabled_when, disabled_when, enabled_by)
 
 
 # -- composites: one contract, three renderers (S10 item 2) ----------------
@@ -208,30 +232,44 @@ def plot(text, data_command, *, x_label="", y_label="", role="neutral"):
     }
 
 
-def log_stream(text, source_command, *, role="neutral"):
-    """A scrolling text feed."""
+def log_stream(text, source_command, *, role="neutral", detached=False):
+    """A scrolling text feed.
+
+    `detached` (G4): the feed is not drawn in the panel. The renderer draws
+    a button in its place that opens ONE non-modal window holding the feed;
+    the window never covers the stop, Escape closes it, reopening raises it,
+    and the feed's source command is polled only while it is open
+    (`PanelView._wants_data`).
+    """
     return {
         "type": "log_stream", "text": text, "source_command": source_command,
-        "writable": False, "role": role,
+        "writable": False, "role": role, "detached": bool(detached),
     }
 
 
-def _gate(element, enabled_when, disabled_when):
+def _gate(element, enabled_when, disabled_when, enabled_by=None):
     if enabled_when:
         element["enabled_when"] = list(enabled_when)
     if disabled_when:
         element["disabled_when"] = list(disabled_when)
+    if enabled_by:
+        element["enabled_by"] = enabled_by
     return element
 
 
 # -- what renderers ask, instead of deciding for themselves ---------------
 
-def is_enabled(element, mode_name):
+def is_enabled(element, mode_name, values=None):
     """Should this control accept interaction in the model's current mode?
 
     One implementation, consulted by all three views, so "greyed out during a
-    run" cannot mean three different things.
+    run" cannot mean three different things. `values` is the panel's current
+    `state["values"]`; an element with `enabled_by` is live only while the
+    named value is true. A caller without values skips that rule.
     """
+    by = element.get("enabled_by")
+    if by and values is not None and not values.get(by):
+        return False
     disabled = element.get("disabled_when")
     if disabled and mode_name in disabled:
         return False

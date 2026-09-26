@@ -20,7 +20,7 @@ from devices import gamepad as gamepad_module
 from devices import serial_port as serial_port_module
 from events import events
 from result import Refused
-from controller.setup import MODEL_TYPES, OFF, ON, SIM, Setup
+from controller.setup import MODEL_TYPES, ON, SIM, Setup
 
 
 # -- fakes -----------------------------------------------------------------
@@ -119,8 +119,17 @@ def panel(fake_types):
     return Setup(RecordingController())
 
 
+def tick(panel, key, flag=True):
+    """What a view does: send the row's Launch checkbox command (G3)."""
+    result = panel.run(f"set_{key}_enabled", args=(flag,))
+    assert result.is_ok, result.reason
+    return result
+
+
 def select(panel, key, field, choice):
-    """What a view does: send the dropdown's command with the choice."""
+    """What a view does: tick the row (its dropdowns are greyed out until
+    then), then send the dropdown's command with the choice."""
+    tick(panel, key)
     result = panel.run(f"set_{key}_{field}", args=(choice,))
     assert result.is_ok, result.reason
     return result
@@ -164,13 +173,19 @@ def test_every_section_is_a_row_so_setup_is_a_table_not_a_column(panel):
         ["row"] * len(panel.schema["sections"])
 
 
-def test_a_row_is_name_then_one_port_dropdown_then_status(panel):
+def test_a_row_is_name_then_launch_box_then_dropdowns_then_status(panel):
+    """G3: the Launch checkbox leads the row, as on `main`; the dropdowns
+    are gated on it."""
     row = next(s for s in panel.schema["sections"] if s["title"] == "Alpha")
     assert [(e["type"], e.get("model_attr")) for e in row["elements"]] == [
+        ("checkbox", "alpha_enabled"),
         ("dropdown", "alpha_port"),
         ("dropdown", "alpha_gamepad"),
         ("readonly", "alpha_status"),
     ]
+    box, port, pad, _ = row["elements"]
+    assert box["command"] == "set_alpha_enabled"
+    assert port["enabled_by"] == "alpha_enabled" == pad["enabled_by"]
     assert panel.alpha_name == "Alpha"
 
 
@@ -184,9 +199,11 @@ def test_there_is_no_mode_dropdown_and_no_set_mode_command(panel):
     assert "mode_options" not in {e.get("options_command") for e in _elements(panel)}
 
 
-def test_the_port_dropdown_offers_off_sim_and_every_scanned_port(panel):
+def test_the_port_dropdown_offers_sim_and_every_scanned_port_never_off(panel):
+    """G3: "Off" is the checkbox, not a dropdown entry that could sit beside
+    a chosen port and disagree with it."""
     panel._ports = ["/dev/ttyUSB0", "/dev/ttyUSB1"]
-    assert panel.port_options() == [OFF, SIM, "/dev/ttyUSB0", "/dev/ttyUSB1"]
+    assert panel.port_options() == [SIM, "/dev/ttyUSB0", "/dev/ttyUSB1"]
     assert panel.options("port_options") == panel.port_options()
 
 
@@ -197,7 +214,7 @@ def test_a_model_that_needs_no_port_still_has_one_dropdown(panel):
     dropdowns = [e for e in row["elements"] if e["type"] == "dropdown"]
     assert len(dropdowns) == 1
     assert dropdowns[0]["options_command"] == "device_options"
-    assert panel.options("device_options") == [OFF, ON, SIM]
+    assert panel.options("device_options") == [ON, SIM]
 
 
 def test_the_header_row_offers_refresh_the_scan_status_and_cancel(panel):
@@ -218,7 +235,7 @@ def test_the_launch_row_is_launch_relaunch_and_stop(panel):
     row = panel.schema["sections"][-1]
     assert row["title"] == "Launch"
     assert [e.get("text") for e in row["elements"]] == [
-        "Selected:", "Launch", "Relaunch", "Stop system"]
+        "Selection:", "Launch", "Relaunch", "Stop system"]
 
 
 def _elements(panel):
@@ -274,7 +291,7 @@ def test_a_listing_that_found_nothing_invents_no_placeholder_port(
                         raising=False)
     assert panel.scan_ports() == []
     panel._ports = panel.scan_ports()
-    assert panel.port_options() == [OFF, SIM]
+    assert panel.port_options() == [SIM]
 
 
 def test_a_listing_that_raises_is_reported_not_swallowed(
@@ -350,7 +367,7 @@ def test_validate_allows_shared_sim_ports_and_any_number_of_no_gamepads(panel):
 
 def test_validate_refuses_a_hardware_row_with_no_port(panel):
     with pytest.raises(Refused) as refusal:
-        panel.validate([{"model": "Alpha", "port": OFF, "gamepad": None,
+        panel.validate([{"model": "Alpha", "port": "Off", "gamepad": None,
                          "sim": False}])
     assert "Alpha port" in refusal.value.reason
 
@@ -501,12 +518,14 @@ def test_a_dropdown_choice_travels_as_the_command_argument(panel):
 
 
 def test_a_choice_that_is_not_on_offer_is_refused(panel):
+    tick(panel, "alpha")
     result = panel.run("set_alpha_port", args=("/dev/nope",))
     assert result.is_refused and "options" in result.reason
 
 
 def test_a_port_name_is_refused_for_a_model_that_has_no_port(panel):
     offer(panel, "/dev/ttyUSB0")
+    tick(panel, "screen")
     result = panel.run("set_screen_port", args=("/dev/ttyUSB0",))
     assert result.is_refused and "options" in result.reason
 
@@ -529,8 +548,8 @@ def test_the_row_commands_are_named_after_the_model(panel, fake_types):
 def test_auto_assign_points_each_row_at_the_port_that_answered(panel):
     panel._found = {"/dev/ttyUSB0": "Beta", "/dev/ttyUSB1": None}
     assert panel.auto_assign() == ["Beta on /dev/ttyUSB0"]
-    assert panel.beta_port == "/dev/ttyUSB0"
-    assert panel.alpha_port == OFF
+    assert panel.beta_port == "/dev/ttyUSB0" and panel.beta_enabled is True
+    assert panel.alpha_port == SIM and panel.alpha_enabled is False
     assert panel.beta_status == "detected: Beta"
     assert panel.alpha_status == "off"
 
@@ -607,9 +626,9 @@ def test_every_declared_command_and_options_source_exists(panel):
 def test_options_come_from_the_scan(panel):
     panel._ports = ["/dev/ttyUSB0"]
     panel._gamepads = ["None", "ID 0: Pad"]
-    assert panel.options("port_options") == [OFF, SIM, "/dev/ttyUSB0"]
+    assert panel.options("port_options") == [SIM, "/dev/ttyUSB0"]
     assert panel.options("gamepad_options") == ["None", "ID 0: Pad"]
-    assert panel.options("device_options") == [OFF, ON, SIM]
+    assert panel.options("device_options") == [ON, SIM]
 
 
 def test_a_command_the_schema_does_not_declare_is_refused(panel):
@@ -629,7 +648,8 @@ def test_state_carries_the_scan_phase_ports_rows_and_launch_flag(panel):
     assert state["scan"]["found"] == {"/dev/ttyUSB0": "Alpha"}
     assert state["is_scanning"] is False and state["is_launched"] is False
     alpha = next(r for r in state["rows"] if r["key"] == "alpha")
-    assert alpha == {"key": "alpha", "name": "Alpha", "port": OFF,
+    assert alpha == {"key": "alpha", "name": "Alpha", "enabled": False,
+                     "port": SIM,
                      "gamepad": "None", "status": "off", "detected": None,
                      "needs_port": True, "needs_gamepad": True,
                      "is_chosen": False, "options_command": "port_options"}
@@ -659,6 +679,7 @@ def test_launching_is_gated_while_a_scan_runs_but_choosing_is_not(
     try:
         assert panel.mode_name == "scanning"
         assert panel.run("launch").is_refused
+        assert panel.run("set_alpha_enabled", args=(True,)).is_ok
         assert panel.run("set_alpha_port", args=(SIM,)).is_ok
         # Refresh cancels the running scan first. This one will not stop;
         # F18: Refresh returns at once anyway (it used to join for up to 1 s
@@ -800,3 +821,88 @@ def test_refresh_during_a_hung_scan_does_not_block_the_caller(hung_port):
 
 def test_the_summary_is_a_sentence_when_nothing_is_selected(panel):
     assert panel.summary.startswith("Nothing selected.")
+
+
+# -- G3: the Launch checkbox ------------------------------------------------
+
+def test_every_row_starts_unticked_with_a_launchable_default_choice(panel):
+    assert (panel.alpha_enabled, panel.beta_enabled, panel.screen_enabled) == \
+        (False, False, False)
+    assert panel.alpha_port == SIM and panel.screen_port == ON
+    assert panel.configs == []
+
+
+def test_ticking_a_row_puts_it_in_the_configs_and_unticking_takes_it_out(panel):
+    tick(panel, "alpha")
+    assert [c["model"] for c in panel.configs] == ["Alpha"]
+    assert panel.alpha_status == "simulated"
+    tick(panel, "alpha", False)
+    assert panel.configs == [] and panel.alpha_status == "off"
+
+
+def test_unticking_keeps_the_rows_choices_for_the_next_tick(panel):
+    offer(panel, "/dev/ttyUSB0")
+    select(panel, "alpha", "port", "/dev/ttyUSB0")
+    tick(panel, "alpha", False)
+    assert panel.alpha_port == "/dev/ttyUSB0"
+    tick(panel, "alpha")
+    assert [c["port"] for c in panel.configs] == ["/dev/ttyUSB0"]
+
+
+def test_a_dropdown_is_refused_until_its_row_is_ticked(panel):
+    """The one gating rule (`enabled_by`) is enforced by the Panel, not
+    only greyed out by a view, so the API and the widgets agree."""
+    result = panel.run("set_alpha_port", args=(SIM,))
+    assert result.is_refused and "Launch box" in result.reason
+    tick(panel, "alpha")
+    assert panel.run("set_alpha_port", args=(SIM,)).is_ok
+
+
+def test_the_tick_command_takes_a_boolean_or_its_json_spelling(panel):
+    assert panel.run("set_alpha_enabled", args=("true",)).is_ok
+    assert panel.alpha_enabled is True
+    assert panel.run("set_alpha_enabled", args=("false",)).is_ok
+    assert panel.alpha_enabled is False
+    result = panel.run("set_alpha_enabled", args=("maybe",))
+    assert result.is_refused and "tick state" in result.reason
+    assert panel.run("set_nobody_enabled", args=(True,)).is_refused
+
+
+def test_a_board_that_answered_ticks_its_row_and_the_operator_may_untick_it(panel):
+    panel._found = {"/dev/ttyUSB0": "Beta"}
+    panel.auto_assign()
+    assert panel.beta_enabled is True
+    tick(panel, "beta", False)
+    assert panel.configs == [] and panel.beta_port == "/dev/ttyUSB0"
+
+
+def test_a_port_that_vanished_unticks_its_row_and_falls_back_to_sim(panel):
+    offer(panel, "/dev/ttyUSB0")
+    select(panel, "alpha", "port", "/dev/ttyUSB0")
+    panel._ports.remove("/dev/ttyUSB0")
+    panel._drop_stale_selections()
+    assert panel.alpha_enabled is False and panel.alpha_port == SIM
+    assert "alpha" not in panel._chosen
+
+
+def test_the_summary_is_a_count_not_a_list_of_names_and_ports(panel):
+    """G3: the joined "Alpha (/dev/x), Beta (simulated), ..." line widened
+    every table it sat in; the rows already say which and where."""
+    tick(panel, "alpha")
+    assert panel.summary == "1 device ticked to launch."
+    tick(panel, "beta")
+    tick(panel, "screen")
+    assert panel.summary == "3 devices ticked to launch."
+    assert len(panel.summary) < 40
+    assert "Alpha" not in panel.summary and SIM not in panel.summary
+
+
+def test_state_rows_carry_the_tick(panel):
+    tick(panel, "beta")
+    rows = {r["key"]: r["enabled"] for r in panel.state["rows"]}
+    assert rows == {"alpha": False, "beta": True, "screen": False}
+
+
+def test_launch_refusal_names_the_launch_box(panel):
+    result = panel.run("launch")
+    assert result.is_refused and "Launch box" in result.reason
