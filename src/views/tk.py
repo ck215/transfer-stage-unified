@@ -193,6 +193,13 @@ CHEVRON = {False: "\u25b8", True: "\u25be"}
 OPEN_WORD = "Open"
 #: The rail's first item: the page of every launched model (K4).
 OVERVIEW_PAGE = "Overview"
+#: The quiet press at the foot of a model's well that closes it (L13, as
+#: Web): it stops and disconnects the model, so it asks first.
+CLOSE_MODEL_TEXT = "Close this model\u2026"
+#: A detached log window's foot (L12).
+CLOSE_WORD = "Close"
+#: An image pane before the model has drawn one: one caption line (L15).
+NO_FIGURE = "No figure yet."
 
 #: The event tray's marks (status by exception): a solid signal square for
 #: an error, a hollow ink one for a warning. Info is not drawn in the tray.
@@ -1536,6 +1543,10 @@ class TkPanelView(PanelView):
             self._build_entry_body()
 
         self._build()
+        self.on_close = None            # the dashboard's "close this model"
+        self._close_press = None
+        if sheet is not None:
+            self._build_well_foot()
         for tier in (2, 3):
             if tier in self._tiers:
                 self._set_tier_open(tier, _DISCLOSED.get((self.name, tier), False),
@@ -1888,6 +1899,27 @@ class TkPanelView(PanelView):
             self._tiers[3].pack(side="left", fill="x", expand=True)
         return self._tiers[min(tier, 3)]
 
+    def _build_well_foot(self):
+        """"Close this model…" at the foot of the model's well (L13, as
+        Web): the quietest control the entry has - text only - because it
+        destructs the model. It says what it does when pointed at and the
+        dashboard asks before it does it. A model with no tier-2 sections
+        still gets the well, for this."""
+        self._tier_frame(2)
+        foot = tk.Frame(self._well, background=theme.SURFACE)
+        foot.pack(side="bottom", fill="x", pady=(SPACE[4], 0))
+        press = self._close_press = _Press(foot, CLOSE_MODEL_TEXT,
+                                           self._on_close_pressed, theme.SURFACE,
+                                           ghost=True)
+        press.frame.pack(side="left")
+        tip = _Tooltip(press.widget)
+        tip.text = (f"Close {self.name}: it stops and disconnects. Reopen it "
+                    "from the Models menu.")
+
+    def _on_close_pressed(self):
+        if callable(self.on_close):
+            self.on_close(self.name)
+
     def _show_opener(self):
         """The tier-2 disclosure at the foot of the tier-1 body (K3)."""
         opener = self._disclosures.get(2)
@@ -2034,11 +2066,10 @@ class TkPanelView(PanelView):
             if widget is None:
                 continue
             font = _reading_font(self._reading_kind(kind))
-            self._entry_for(element)["font"] = font
-            try:
-                widget.configure(font=font)
-            except Exception:
-                pass
+            entry = self._entry_for(element)
+            entry["font"] = font
+            entry["drawn_font"] = None
+            self._paint_empty(entry, entry.get("shown_text") == EMPTY_READOUT)
 
     def _reading_kind(self, kind):
         if kind == "axes":
@@ -2093,7 +2124,10 @@ class TkPanelView(PanelView):
             heading = tk.Label(container, text=caption, font=_caption_font(),
                                anchor="w", background=background,
                                foreground=theme.MUTED)
-        elif tier > 1 and self._tier_count.get(tier, 0) > 1:
+        elif (tier > 1 and self._tier_count.get(tier, 0) > 1
+              and _label(title).lower() != _label(self._tier_text.get(tier, "")).lower()):
+            # A heading that says what its disclosure just said is noise
+            # ("Diagnostics" under "Diagnostics", L18).
             heading = tk.Label(container, text=_label(title), font=_font(bold=True),
                                anchor="w", background=background,
                                foreground=theme.TEXT)
@@ -3047,12 +3081,20 @@ class TkPanelView(PanelView):
             return
         values = [v for v in list((series or {}).get("y") or [])
                   if isinstance(v, (int, float))]
-        width, height = 360, 160
+        is_empty = len(values) < 2
+        want = self._empty_plot_px() if is_empty else _design_px(self.PLOT_PX)
+        if entry.get("plot_px") != want:
+            entry["plot_px"] = want
+            try:
+                canvas.configure(height=want)
+            except Exception:
+                pass
+        width, height = 360, want
         try:
             # The canvas fills its section; draw to the size it was given.
             measured = canvas.winfo_width(), canvas.winfo_height()
             if all(isinstance(v, int) and v > 1 for v in measured):
-                width, height = measured
+                width = measured[0]
         except Exception:
             pass
         is_frozen = (self._last_state or {}).get("mode") == "latched"
@@ -3066,13 +3108,13 @@ class TkPanelView(PanelView):
             canvas.delete("all")
         except Exception:
             return
-        if len(values) < 2:
-            # An empty plot that says why, rather than a blank rectangle
-            # (REDPERCENT-17).
-            text = "no data yet" if not values else "one sample so far"
+        if is_empty:
+            # An empty plot says why, in the model's words, on one line at
+            # the left like any caption (REDPERCENT-17, L15).
             try:
-                canvas.create_text(width / 2, height / 2, text=text,
-                                   fill=theme.MUTED, font=_caption_font())
+                canvas.create_text(0, height / 2, text=self._empty_text(element),
+                                   anchor="w", fill=theme.MUTED,
+                                   font=_caption_font())
             except Exception:
                 pass
             return
@@ -3089,6 +3131,15 @@ class TkPanelView(PanelView):
         except Exception as exc:
             events.debug("Plot Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
+
+    @staticmethod
+    def _empty_plot_px():
+        """One caption line: what an empty plot takes (L15)."""
+        return int(_design_px(theme.CAPTION_SIZE) * 1.6) + 2
+
+    @staticmethod
+    def _empty_text(element):
+        return str(element.get("empty") or "No data yet.")
 
     def _show_image(self, element, data):
         """PNG bytes (or base64 text) -> PhotoImage. Tk reads PNG natively."""
@@ -3114,11 +3165,15 @@ class TkPanelView(PanelView):
         if widget is None:
             return
         text = "\n".join(str(line) for line in list(lines or [])[-40:])
+        is_empty = not text.strip()
+        if is_empty and element.get("detached"):
+            text = self._log_empty_text(element)
         if entry.get("last_text") == text:
             return
         entry["last_text"] = text
         try:
-            widget.configure(state="normal")
+            widget.configure(state="normal",
+                             foreground=theme.MUTED if is_empty else theme.TEXT)
             widget.delete("1.0", "end")
             widget.insert("1.0", text)
             widget.configure(state="disabled")
@@ -3291,20 +3346,26 @@ class TkPanelView(PanelView):
         parent, place = self._command_slot(container, element)
         place(self._button_label(parent, element, self._on_open_clicked))
 
+    #: A plot's height once it has a series to draw.
+    PLOT_PX = 160
+
     def _make_plot(self, container, element):
         """A Canvas polyline in the trace colour. No matplotlib: the model
-        publishes the series and each renderer draws it (D-6)."""
+        publishes the series and each renderer draws it (D-6). Until it has
+        two points it is one caption line tall and says the schema's own
+        sentence (`element["empty"]`, L15/L22): two 600 px panes of "no
+        data" stacked Diagnostics out of reach."""
         parent, place = self._wide_slot(container, element.get("text"))
-        canvas = tk.Canvas(parent, height=160, width=360,
+        canvas = tk.Canvas(parent, height=self._empty_plot_px(), width=360,
                            background=_bg(parent), highlightthickness=0)
         place(canvas)
-        self._register(element, widget=canvas)
+        self._register(element, widget=canvas, plot_px=None)
 
     def _make_image(self, container, element):
         parent, place = self._wide_slot(container, element.get("text"))
         widget = tk.Label(parent, background=_bg(parent),
-                          foreground=theme.MUTED, text="No figure yet",
-                          font=_caption_font(), padx=PAD, pady=PAD)
+                          foreground=theme.MUTED, text=NO_FIGURE,
+                          font=_caption_font(), padx=0, pady=0)
         place(widget, "w")
         self._slow_commands.add(element.get("data_command"))
         self._register(element, widget=widget, photo=None, data=None)
@@ -3414,11 +3475,18 @@ class TkPanelView(PanelView):
         label = _label(element.get("text", ""))
         window = tk.Toplevel(self.frame)
         try:
-            window.title(f"{self.name} \u2014 {label}")
+            window.title(self._log_title(element))
         except Exception:
             pass
         window.configure(background=_page())
         self._wear_menubar(window)
+        close = lambda _event=None, el=element: self._close_log_window(el)
+        # The foot first: packed at the bottom before the feed takes the
+        # rest, so a short window never pushes Close off it (L12).
+        foot = tk.Frame(window, background=_page())
+        foot.pack(side="bottom", fill="x", padx=SPACE[4], pady=(0, SPACE[4]))
+        closer = _Press(foot, CLOSE_WORD, close, _page())
+        closer.frame.pack(side="right")
         body = tk.Frame(window, background=_page())
         body.pack(fill="both", expand=True, padx=SPACE[4], pady=SPACE[4])
         scrollbar = ttk.Scrollbar(body, orient="vertical")
@@ -3431,14 +3499,14 @@ class TkPanelView(PanelView):
         except Exception as exc:
             events.debug("Log Scrollbar Not Wired", str(exc), source=SOURCE,
                          exception=exc)
-        close = lambda _event=None, el=element: self._close_log_window(el)
         window.bind("<Escape>", close)
         try:
             window.protocol("WM_DELETE_WINDOW", close)
         except Exception:
             pass
         self._place_log_window(window, element)
-        entry.update(window=window, feed=feed, last_text=None)
+        entry.update(window=window, feed=feed, last_text=None, closer=closer)
+        self._refresh_log(element, [])
         events.debug("Log Window Opened", f"{self.name}/{label}", source=SOURCE)
         # Filled now rather than on the next tick.
         data = self._call(element["source_command"])
@@ -3449,6 +3517,21 @@ class TkPanelView(PanelView):
         except Exception:
             pass
         return window
+
+    def _log_title(self, element):
+        """"Stepper Probe gamepad log" (L12): the model, then the feed's
+        own name in sentence case - no dash."""
+        label = _label(element.get("text", ""))
+        return f"{self.name} {label[:1].lower()}{label[1:]}"
+
+    @staticmethod
+    def _log_empty_text(element):
+        """What an empty feed says: "No gamepad input yet." for the
+        gamepad log; "Nothing logged yet." for any other."""
+        label = _label(element.get("text", "")).strip()
+        if label.lower().endswith(" log") and len(label) > 4:
+            return f"No {label[:-4].lower()} input yet."
+        return "Nothing logged yet."
 
     def _log_key(self, element):
         return (self.name, _label((element or {}).get("text", "")))
@@ -3636,6 +3719,7 @@ class TkPanelView(PanelView):
         is_changing = (changed_at is not None and not entry.get("is_text")
                        and _is_number(text)
                        and time.monotonic() - changed_at < CHANGING_S)
+        self._paint_empty(entry, text == EMPTY_READOUT)
         if text == EMPTY_READOUT or self._is_quiet():
             foreground = theme.MUTED
         elif is_changing and not is_danger:
@@ -3658,6 +3742,33 @@ class TkPanelView(PanelView):
                     size = int(mark.cget("width") or LAMP_PX)
                     mark.create_rectangle(2, 2, size - 2, size - 2, fill=theme.SIGNAL,
                                           outline=theme.SIGNAL)
+            except Exception:
+                pass
+
+    def _paint_empty(self, entry, is_empty):
+        """"--" is no value (TK7-14, L22): muted, at the reading's own size
+        so a tier-1 position never shrinks away, but in the text face at
+        regular weight - in the bold numeral face it drew two heavy bars
+        that read as a redaction. The unit goes while there is no number."""
+        font = entry.get("font")
+        widget = entry.get("widget")
+        if font is None or widget is None:
+            return
+        want = (_TEXT_FAMILY, font[1], "normal") if is_empty else font
+        if entry.get("drawn_font") != want:
+            entry["drawn_font"] = want
+            try:
+                widget.configure(font=want)
+            except Exception:
+                pass
+        unit = entry.get("unit_label")
+        if unit is not None and entry.get("unit_hidden") != is_empty:
+            entry["unit_hidden"] = is_empty
+            try:
+                if is_empty:
+                    unit.pack_forget()
+                else:
+                    unit.pack(side="left", anchor="s", padx=(SPACE[1], 0))
             except Exception:
                 pass
 
@@ -4643,6 +4754,16 @@ class TkDashboard(Dashboard):
         self.close_model(name)
         return "break"
 
+    def _confirm_close_model(self, name):
+        """"Close this model…" (L13): it stops and disconnects the model, so
+        it asks first, in words that say so; the Models menu reopens it."""
+        prompt = (f"Close {name}?\n\nIt stops and disconnects. You can reopen "
+                  "it from the Models menu.")
+        if _confirm(self.root, prompt, title=f"Close {name}",
+                    yes_text=f"Close {name}", no_text="Keep it open"):
+            events.debug("Close Model Confirmed", name, source=SOURCE)
+            self.close_model(name)
+
     def _on_quit_clicked(self):
         """Quit asks first (it stops every model and exits); the window's
         close button and the OS's Quit take the same close path."""
@@ -5337,6 +5458,7 @@ class TkDashboard(Dashboard):
         view = TkPanelView(self._sheet.body, self.controller, name, sheet=self._sheet)
         view.log_window_bounds = self._log_window_bounds
         view.on_open = self.show_model
+        view.on_close = self._confirm_close_model
         self._panels[name] = view
         self._frames[name] = view.frame
         self._build_menu_bar()

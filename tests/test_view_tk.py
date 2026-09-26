@@ -3026,8 +3026,8 @@ def test_the_log_button_opens_one_window_showing_the_source_lines(view, panel):
     window, feed = entry["window"], entry["feed"]
     assert isinstance(window, FakeRoot) and not window.is_destroyed
     assert isinstance(feed, FakeText) and feed.master is not None
-    assert window.titles and "Demo" in window.titles[-1] \
-        and "Side log" in window.titles[-1]
+    # Updated for L12: "<model> <feed>", sentence case, no dash.
+    assert window.titles == ["Demo side log"]
     assert feed.body == "gamepad on\nX+ 1.0"
     assert view._wants_data(element) is True
     panel.side.append("Y- 2.0")
@@ -4324,3 +4324,118 @@ def test_l2_the_acknowledgement_stays_required_while_latched(tk_harness,
     assert [event.title for event in built._alerts] == ["Stop Not Confirmed"]
     assert built._band.is_packed
     built.close()
+
+
+def test_l12_the_log_window_says_when_it_is_empty_and_has_a_close(view, panel):
+    """TK7-15: a blank box with no way out but Escape."""
+    panel.side = []
+    element = side_log(view)
+    click(view, element)
+    entry = view._widgets[id(element)]
+    assert entry["feed"].body == "No side input yet."
+    assert entry["feed"].cget("foreground") == theme.MUTED
+    panel.side = ["gamepad on"]
+    view._refresh()
+    assert entry["feed"].body == "gamepad on"
+    assert entry["feed"].cget("foreground") == theme.TEXT
+    closer = entry["closer"]
+    assert closer.widget.cget("text") == "Close"
+    window = entry["window"]
+    closer.widget.fire("<Button-1>")
+    assert window.is_destroyed and entry["window"] is None
+
+
+def test_l12_the_gamepad_log_is_titled_and_empty_as_the_brief_says(view):
+    element = {"type": "log_stream", "text": "Gamepad Log:", "detached": True}
+    view.name = "Stepper Probe"
+    assert view._log_title(element) == "Stepper Probe gamepad log"
+    assert view._log_empty_text(element) == "No gamepad input yet."
+
+
+def test_l13_close_this_model_is_at_the_foot_of_the_well_and_asks(tk_harness,
+                                                                  setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    view = built._panels["Rotator"]
+    press = view._close_press
+    assert press.widget.cget("text") == "Close this model\u2026"
+    assert press.ghost, "the quietest control the entry has"
+    assert press.frame.master.master is view._well, "in the well's foot"
+    tk_harness.confirm_answer = False
+    press.widget.fire("<Button-1>")
+    assert tk_harness.words[-1]["title"] == "Close Rotator"
+    assert tk_harness.words[-1]["no_text"] == "Keep it open"
+    assert controller.removed == []
+    tk_harness.confirm_answer = True
+    press.widget.fire("<Button-1>")
+    assert controller.removed == ["Rotator"]
+    built.close()
+
+
+def test_l15_an_empty_plot_is_one_caption_line_with_the_schemas_words(view, panel):
+    element = element_of(view, "plot")
+    canvas = widget_of(view, element)
+    panel.samples = []
+    view._refresh()
+    assert canvas.cget("height") == view._empty_plot_px()
+    assert canvas.cget("height") < 30
+    texts = [item[2]["text"] for item in canvas.items if item[0] == "text"]
+    assert texts == [element["empty"]] == ["No data yet."]
+    panel.samples = [1.0, 2.0, 3.0]
+    view._refresh()
+    assert canvas.cget("height") == tkmod._design_px(view.PLOT_PX)
+    assert [item for item in canvas.items if item[0] == "line"]
+
+
+def test_l15_an_image_before_its_figure_is_one_caption_line(panel):
+    panel.png = b""
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Demo=panel), "Demo")
+    widget = widget_of(built, element_of(built, "image"))
+    assert widget.cget("pady") == 0 and widget.cget("text") == "No figure yet."
+    built.close()
+
+
+class DeepPanel(TieredPanel):
+    """Tier 3 with two sections, one of them titled as its disclosure."""
+
+    @property
+    def schema(self):
+        base = super().schema
+        base["sections"].append(sch.section(
+            "Safety", sch.readonly("Link:", "link"), tier=3, disclosure="Diagnostics"))
+        return base
+
+
+def test_l18_a_section_title_equal_to_its_disclosure_is_not_repeated():
+    tkmod._DISCLOSED.clear()
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(D=DeepPanel()), "D")
+    titles = [label.cget("text") for label in built._section_titles]
+    assert "Diagnostics" not in titles, "TK7-17"
+    assert "Safety" in titles, "a title that says something new stays"
+    built.close()
+
+
+def test_l22_an_empty_reading_is_muted_regular_at_reading_size_with_no_unit(
+        tiered):
+    view, panel = tiered
+    element = element_of(view, "readonly", "X:")
+    entry = view._widgets[id(element)]
+    widget = entry["widget"]
+    reading = entry["font"]
+    panel.x = None
+    view._refresh()
+    assert widget.cget("text") == "--"
+    assert widget.cget("foreground") == theme.MUTED
+    font = widget.cget("font")
+    assert font[1] == reading[1], "reading size: a position never shrinks away"
+    assert font[2] == "normal" and font[0] == tkmod._TEXT_FAMILY, "not two bars"
+    panel.x = 12
+    view._refresh()
+    assert widget.cget("font") == reading
+    temp = view._widgets[id(element_of(view, "readonly", "Temperature:"))]
+    assert temp["unit_label"].is_packed
+    panel.age = None
+    view._refresh()
+    assert not temp["unit_label"].is_packed, "no unit without a number"
+    panel.age = 0.2
+    view._refresh()
+    assert temp["unit_label"].is_packed
