@@ -920,7 +920,9 @@ def test_a_stop_a_model_did_not_confirm_names_that_model(station, tmp_path):
         const mark = card.querySelector('.unconfirmed-mark');
         return { title: card.querySelector('.card-title').textContent, mark: mark.hidden ? '' : mark.textContent,
                  rule: getComputedStyle(card).borderTopColor, signal: getComputedStyle(s).color,
-                 dismiss: card.querySelectorAll('.card-head button').length };
+                 // Updated (K4): the head's one button is the Overview's
+                 // "Open" press target, which is not a Dismiss.
+                 dismiss: card.querySelectorAll('.card-head button:not(.card-open)').length };
       });
     """, tmp_path)
     assert out["title"] == "Fake Probe" and out["mark"] == "Stop not confirmed. Treat as live.", out
@@ -1580,7 +1582,9 @@ _LOG_LAYOUT = r"""
     const card = Array.from(document.querySelectorAll('#cards .card'))
       .find((c) => (c.querySelector('.card-title') || {}).textContent === owner);
     // Updated (E): the Gamepad log is a tier-3 resource - Configure, then
-    // Diagnostics, then the log.
+    // Diagnostics, then the log. Updated (K4): tiers live on the device
+    // page, so the model is pressed in the rail first.
+    document.querySelector('#model-nav [data-model="' + owner + '"]').click();
     for (const tier of ['2', '3']) {
       const d = card.querySelector('.disclosure[data-tier="' + tier + '"]');
       if (d && d.getAttribute('aria-expanded') !== 'true') d.click();
@@ -1808,7 +1812,10 @@ def test_the_unconfirmed_stop_line_has_no_dismiss_and_leaves_only_with_the_latch
         if (!node || node.hidden) return { present: false, hidden: true };
         const b = node.getBoundingClientRect();
         return { present: true, hidden: node.hidden,
-                 dismiss: node.closest('.card-head').querySelectorAll('button, .rail-alert-dismiss').length,
+                 // Updated (K4): the Overview's "Open" is the head's press
+                 // target, not a Dismiss; a click on the mark opens the
+                 // device page, where the mark still stands.
+                 dismiss: node.closest('.card-head').querySelectorAll('button:not(.card-open), .rail-alert-dismiss').length,
                  at: [b.right - 10, b.top + b.height / 2] };
       });
       await page.keyboard.down('Control');
@@ -1991,6 +1998,12 @@ _TIERED = r"""
     await page.click('#drawer-close');
     await sleep(300);
   }
+  // Updated (K4): tiers 2 and 3 live on the device page; the rail opens it.
+  const openDevice = async () => {
+    await page.click('#model-nav [data-model="Tiered Probe"]');
+    await sleep(300);
+  };
+  await openDevice();
   const card = () => page.evaluateHandle(() => Array.from(document.querySelectorAll('#cards .card'))
     .find((c) => c.querySelector('.card-title').textContent === 'Tiered Probe'));
   const read = () => page.evaluate(() => {
@@ -2032,6 +2045,8 @@ def test_tier_two_opens_on_demand_holds_tier_three_and_is_remembered(tiered_stat
       await api('/api/open_model', { name: 'Tiered Probe' });
       await until(() => document.querySelector('#cards .card .disclosure'));
       await sleep(400);
+      // Updated (K4): closing the shown model went back to the Overview.
+      await openDevice();
       r.reopened = await read();
       r.storage = await page.evaluate(() => localStorage.length + sessionStorage.length);
       await page.click('.card .disclosure[data-tier="2"]');
@@ -2054,8 +2069,8 @@ def test_tier_two_opens_on_demand_holds_tier_three_and_is_remembered(tiered_stat
 @needs_browser
 def test_a_disclosure_leads_focus_straight_into_what_it_opens(tiered_station, tmp_path):
     """E: aria-expanded tracks the state and focus order runs body, then
-    the disclosure, then the well it opened (the disclosure is drawn at the
-    head but sits after the body in the page's order)."""
+    the disclosure, then the well it opened. Updated (K3): the disclosure is
+    drawn where it sits in the page's order, at the foot of the body."""
     view, controller, probe = tiered_station
     out = _browse(view, _TIERED + r"""
       const r = {};
@@ -2224,3 +2239,168 @@ def test_the_stop_is_reachable_with_red_percents_details_open_at_900(sim_station
     assert out["scrolled"], "the details did not make the page scroll; the test proves nothing"
     assert out["onTop"] and out["inView"], out
     assert out["latched"] is True, "a click on the disc did not stop"
+
+
+# --------------------------------------------------------------------------
+# Tier K (2026-09-26): the disclosure sits where it opens (K3); two pages on
+# the sheet, Overview and the device page (K4)
+# --------------------------------------------------------------------------
+#: Press a page in the rail by its words ("Overview" or a model's name).
+_PAGES = r"""
+  const press = async (words) => {
+    await page.evaluate((w) => Array.from(document.querySelectorAll('#model-nav button'))
+      .find((b) => b.textContent === w).click(), words);
+    await sleep(300);
+  };
+  const pages = () => page.evaluate(() => {
+    const nav = Array.from(document.querySelectorAll('#model-nav button'));
+    const shown = (n) => Boolean(n && n.getClientRects().length);
+    const cards = Array.from(document.querySelectorAll('#cards .card'));
+    const sheet = document.getElementById('cards').getBoundingClientRect();
+    return {
+      nav: nav.map((b) => b.textContent),
+      current: nav.filter((b) => b.getAttribute('aria-current')).map((b) => b.textContent),
+      shown: cards.filter(shown).map((c) => c.querySelector('.card-title').textContent),
+      wells: cards.filter((c) => shown(c.querySelector('.tier-well'))).length,
+      disclosures: cards.filter((c) => shown(c.querySelector('.disclosure'))).length,
+      opens: cards.filter(shown).map((c) => {
+        const o = c.querySelector('.card-head .card-open');
+        return o && shown(o) ? { text: o.textContent, name: o.getAttribute('aria-label') } : null;
+      }),
+      fullWidth: cards.filter(shown).every((c) => c.getBoundingClientRect().width >= sheet.width - 1),
+    };
+  });
+"""
+
+
+@needs_browser
+def test_the_tier_two_disclosure_sits_at_the_foot_of_the_body_above_its_well(tiered_station, tmp_path):
+    """K3: the disclosure is not in the entry's head; it is the last thing
+    after the tier-1 body, left-aligned with it, it says the schema's
+    phrase, and the well it opens follows it with no gap."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + _PAGES + r"""
+      await press('Tiered Probe');
+      const geo = () => page.evaluate(() => {
+        const c = Array.from(document.querySelectorAll('#cards .card'))
+          .find((n) => n.querySelector('.card-title').textContent === 'Tiered Probe');
+        const d = c.querySelector('.disclosure[data-tier="2"]');
+        const well = document.getElementById(d.getAttribute('aria-controls'));
+        const body = c.querySelector('.card-body').getBoundingClientRect();
+        const head = c.querySelector('.card-head').getBoundingClientRect();
+        const b = d.getBoundingClientRect();
+        const w = well.getBoundingClientRect();
+        return { inHead: Boolean(d.closest('.card-head')), text: d.textContent,
+                 before: d.previousElementSibling && d.previousElementSibling.className,
+                 after: d.nextElementSibling === well,
+                 belowBody: b.top >= body.bottom - 0.5, belowHead: b.top > head.bottom,
+                 leftGap: b.left - body.left, gap: well.hidden ? null : w.top - b.bottom };
+      });
+      const r = { closed: await geo() };
+      await page.click('.card .disclosure[data-tier="2"]');
+      await sleep(250);
+      r.open = await geo();
+      return r;
+    """, tmp_path)
+    closed, opened = out["closed"], out["open"]
+    assert not closed["inHead"] and closed["belowHead"], closed
+    assert closed["text"] == "Configure", closed
+    assert "card-body" in closed["before"] and closed["after"], closed
+    assert closed["belowBody"] and abs(closed["leftGap"]) <= 4, closed
+    assert opened["gap"] is not None and abs(opened["gap"]) <= 1, opened
+
+
+@needs_browser
+def test_the_rail_leads_with_an_overview_of_every_model_with_no_wells(sim_station, tmp_path):
+    """K4: the rail's first item is Overview and it is the page at launch;
+    the overview shows every launched model with its head a press target
+    ("Open", named "Open <model>") and no well or disclosure anywhere."""
+    view, controller = sim_station
+    out = _browse(view, _PAGES + r"""
+      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(400);
+      }
+      return pages();
+    """, tmp_path)
+    names = controller.model_names
+    assert out["nav"][0] == "Overview" and out["nav"][1:] == names, out
+    assert out["current"] == ["Overview"], out
+    assert sorted(out["shown"]) == sorted(names), out
+    assert out["wells"] == 0 and out["disclosures"] == 0, out
+    assert out["opens"] == [{"text": "Open", "name": "Open " + n} for n in out["shown"]], out
+
+
+@needs_browser
+def test_a_device_page_shows_one_model_and_overview_brings_them_all_back(sim_station, tmp_path):
+    """K4: a press on a model (the rail, or an overview head - anywhere on
+    it, or Return on its Open) shows only that model, full width, with its
+    disclosure (the schema's phrase, K2); Overview returns; a tier opened on
+    the device page is open again on the next visit."""
+    view, controller = sim_station
+    out = _browse(view, _PAGES + r"""
+      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(400);
+      }
+      const r = {};
+      await page.evaluate(() => { window.cardOf = (t) => Array.from(document.querySelectorAll('#cards .card'))
+        .find((c) => c.querySelector('.card-title').textContent === t); });
+      await press('Stepper Probe');
+      r.byRail = await pages();
+      r.text = await page.evaluate(() => cardOf('Stepper Probe').querySelector('.disclosure[data-tier="2"]').textContent);
+      await page.evaluate(() => cardOf('Stepper Probe').querySelector('.disclosure[data-tier="2"]').click());
+      await sleep(250);
+      await press('Overview');
+      r.back = await pages();
+      // Anywhere on the head: its title, not the Open word.
+      const title = await page.evaluateHandle(() => Array.from(document.querySelectorAll('#cards .card-title'))
+        .find((t) => t.textContent === 'Stepper Probe'));
+      await title.click();
+      await sleep(300);
+      r.byHead = await pages();
+      r.remembered = await page.evaluate(() => cardOf('Stepper Probe')
+        .querySelector('.disclosure[data-tier="2"]').getAttribute('aria-expanded'));
+      await press('Overview');
+      await page.evaluate(() => cardOf('DC Probe').querySelector('.card-open').focus());
+      await page.keyboard.press('Enter');
+      await sleep(300);
+      r.byKey = await pages();
+      return r;
+    """, tmp_path)
+    names = controller.model_names
+    for key in ("byRail", "byHead"):
+        page = out[key]
+        assert page["shown"] == ["Stepper Probe"] and page["current"] == ["Stepper Probe"], page
+        assert page["fullWidth"] and page["disclosures"] == 1 and page["opens"] == [None], page
+    assert out["text"] == "Configure Stepper Probe", out
+    assert sorted(out["back"]["shown"]) == sorted(names) and out["back"]["wells"] == 0, out["back"]
+    assert out["back"]["current"] == ["Overview"], out["back"]
+    assert out["remembered"] == "true", "the tier's open state did not survive the trip"
+    assert out["byHead"]["wells"] == 1, out["byHead"]
+    assert out["byKey"]["shown"] == ["DC Probe"] and out["byKey"]["current"] == ["DC Probe"], out
+
+
+@needs_browser
+def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path):
+    """K4: the device page's model is closed; the sheet goes back to the
+    overview of the models that remain, and the rail says so."""
+    view, controller = sim_station
+    out = _browse(view, _PAGES + r"""
+      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(400);
+      }
+      await press('Rotator');
+      const r = { device: await pages() };
+      await api('/api/close_model', { name: 'Rotator' });
+      await until(() => !Array.from(document.querySelectorAll('#cards .card-title'))
+        .some((t) => t.textContent === 'Rotator'));
+      await sleep(300);
+      r.after = await pages();
+      return r;
+    """, tmp_path)
+    assert out["device"]["shown"] == ["Rotator"], out
+    after = out["after"]
+    assert after["current"] == ["Overview"] and "Rotator" not in after["nav"], after
+    assert len(after["shown"]) == 5 and after["wells"] == 0, after

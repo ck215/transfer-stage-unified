@@ -450,17 +450,31 @@ def test_an_int_entry_refuses_the_characters_that_make_it_a_float():
 # --------------------------------------------------------------------------
 # polish: the theme's variables, and no numbers of its own
 # --------------------------------------------------------------------------
-def test_entries_sit_on_a_six_column_sheet_with_the_opened_one_on_top():
-    """Replaces the wide-card rule (E, 2026-09-25): entries, not cards. The
-    opened model is the full-width entry at the top, then three across, then
-    two; two across under 1000 px, one under 760; order by CSS, not DOM."""
+def test_entries_sit_on_a_six_column_sheet_overview_and_device_page():
+    """Replaces the wide-card rule (E, 2026-09-25): entries, not cards.
+    Updated (K4, 2026-09-26): two pages. The Overview puts every model on
+    the six-column sheet in rows of three (two across under 1000 px, one
+    under 760); the device page shows its model alone, full width. Shown
+    and hidden by CSS on the sheet's class, never moved in the DOM."""
     assert re.search(r"\.sheet\s*\{[^}]*grid-template-columns:\s*repeat\(6", STYLES)
-    assert re.search(r"\.card\.is-opened\s*\{[^}]*grid-column:\s*1 / -1;[^}]*order:\s*-1", STYLES)
+    assert re.search(r"\.card\.is-opened\s*\{\s*grid-column:\s*1 / -1;", STYLES)
+    assert re.search(r"\.sheet\.is-device > \.card:not\(\.is-opened\)\s*\{\s*display:\s*none", STYLES)
+    assert re.search(r"\.sheet\.is-overview \.card > \.tier-well\s*\{\s*display:\s*none", STYLES)
     assert re.search(r"\.card\.span-2\s*\{\s*grid-column:\s*span 2", STYLES)
     assert "@media (max-width: 62.5rem)" in STYLES
     layout = _body(r"\n  layoutSheet\(\) \{(.*?)\n  \}")
-    assert "rest.length <= 3" in layout and "index < 3 ? 3 : 2" in layout
+    assert "sheetAcross(names.length, index)" in layout
+    assert "appendChild" not in layout and "insertBefore" not in layout
     assert "isWideCard" not in APP_JS
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_the_overview_grid_is_rows_of_three_and_never_leaves_one_alone():
+    """K4: the Overview's rows, as entries per row, for one to eight models."""
+    rows = _node_value(
+        "[1,2,3,4,5,6,7,8].map((n) => Array.from({length: n}, (_, i) => sheetAcross(n, i)))")
+    assert rows == [[1], [2, 2], [3, 3, 3], [2, 2, 2, 2], [3, 3, 3, 2, 2],
+                    [3] * 6, [3, 3, 3, 2, 2, 2, 2], [3] * 6 + [2, 2]]
 
 
 def test_a_rendered_figure_sits_on_the_surface_colour_and_is_bounded():

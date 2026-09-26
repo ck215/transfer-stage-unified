@@ -403,7 +403,7 @@ button, select, input[type="range"] {
 
 .model-link:hover { background: color-mix(in srgb, var(--bg) 55%, var(--surface)); }
 
-.model-link[aria-current="true"] { background: var(--bg); font-weight: 600; }
+.model-link[aria-current="page"] { background: var(--bg); font-weight: 600; }
 
 /* Models the operator closed: the way back, under the list. */
 .closed {
@@ -477,9 +477,11 @@ button, select, input[type="range"] {
 
 .headline-note { font-size: var(--t-sm); color: var(--muted); }
 
-/* Entries, not cards: the opened model full width at the top, then three
-   across, then two (layoutSheet writes span-2 / span-3). Entries are
-   separated by whitespace; the 44 px gutter is the only column divider. */
+/* Entries, not cards, on two pages (K4). The Overview: every model, rows
+   of three, a lone last one never (layoutSheet / sheetAcross write span-2 /
+   span-3), tier-1 bodies only. The device page: one model, full width.
+   Entries are separated by whitespace; the 44 px gutter is the only column
+   divider. */
 .sheet {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -495,16 +497,15 @@ button, select, input[type="range"] {
   font-size: var(--t-md);
 }
 
-/* An entry: a 2 px ink rule, the name, then its tier-1 body. The head row
-   has the name on the left and the disclosure on the right; the disclosure
-   comes AFTER the body in the page's order, so Tab reads the body first and
-   the disclosure leads straight into what it opens. */
+/* An entry: a 2 px ink rule, the name, then its tier-1 body, and at the
+   foot of the body the disclosure, left-aligned, with the well it opens
+   straight under it (K3): the press and what it reveals are never a
+   screen apart, and Tab reads the body, the disclosure, then the well. */
 .card {
   grid-column: span 6;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr);
   row-gap: var(--space-4);
   align-content: start;
   padding-top: var(--space-4);
@@ -514,14 +515,22 @@ button, select, input[type="range"] {
 
 .card > * { grid-column: 1 / -1; min-width: 0; }
 
-.card > .card-head { grid-column: 1; grid-row: 1; }
+.card > .disclosure[data-tier="2"] { justify-self: start; }
 
-.card > .disclosure[data-tier="2"] { grid-column: 2; grid-row: 1; align-self: center; }
+/* The well follows its disclosure with no gap (the entry's row gap is
+   taken back). */
+.card > .disclosure[data-tier="2"] + .tier-well { margin-top: calc(-1 * var(--space-4)); }
 
 .card.span-2 { grid-column: span 2; }
 .card.span-3 { grid-column: span 3; }
 .card.span-6 { grid-column: span 6; }
-.card.is-opened { grid-column: 1 / -1; order: -1; }
+.card.is-opened { grid-column: 1 / -1; }
+
+/* The device page shows its model alone; the Overview draws no tiers at
+   all - not the disclosures, not the wells, whatever they remember. */
+.sheet.is-device > .card:not(.is-opened) { display: none; }
+.sheet.is-overview .card > .disclosure,
+.sheet.is-overview .card > .tier-well { display: none; }
 
 /* The one launch moment: entries arrive one after another, 60 ms apart. */
 .card.is-entering {
@@ -534,12 +543,16 @@ button, select, input[type="range"] {
   to { opacity: 1; transform: none; }
 }
 
+/* The head: the name, then what is not normal (right-aligned, wrapping
+   inside its own column), then - on the Overview - "Open" at the far
+   right. Three columns, so a long state never pushes "Open" onto a line
+   of its own in a narrow entry. */
 .card-head {
-  display: flex;
-  flex-wrap: wrap;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2) var(--space-4);
+  column-gap: var(--space-4);
   min-height: var(--hit-panel);
 }
 
@@ -552,13 +565,54 @@ button, select, input[type="range"] {
 
 .card.is-opened .card-title { font-size: var(--t-xl); }
 
+/* The Overview's press target (K4): "Open" and the disclosure chevron at
+   the head's right. It is one button whose hit area is stretched over the
+   whole head, so a press anywhere on the head opens the device, and its
+   focus ring is drawn around the head. Only the Overview draws it. */
+.card-open {
+  display: none;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--hit-panel);
+  padding: 0 var(--space-0);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.card-open::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.sheet.is-overview .card-open { display: inline-flex; }
+
+.sheet.is-overview .card-head:hover .card-open-text {
+  text-decoration: underline;
+  text-decoration-color: var(--muted);
+  text-underline-offset: 3px;
+}
+
+.card-open:focus-visible { outline: none; }
+
+.card-head:has(.card-open:focus-visible) {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
 .card-side {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2) var(--space-5);
-  margin-left: auto;
+  min-width: 0;
 }
 
 /* What is not normal about the model, in words: muted, never a lamp. */
@@ -1780,7 +1834,7 @@ span.lamp { background: none; }
 
 /* -- narrower windows ---------------------------------------------------- */
 /* Under 1000 px the rail narrows to 200 and the disc to its narrow size;
-   the entries after the opened one go two across (the Narrow artboard). */
+   the Overview's entries go two across (the Narrow artboard). */
 @media (max-width: 62.5rem) {
   :root { --rail-w: 200px; --stop-d: var(--stop-diameter-narrow); --sheet-x: 24px; }
   .page { padding-top: calc(var(--rail-top) + var(--space-6)); }
