@@ -495,16 +495,15 @@ button, select, input[type="range"] {
   font-size: var(--t-md);
 }
 
-/* An entry: a 2 px ink rule, the name, then its tier-1 body. The head row
-   has the name on the left and the disclosure on the right; the disclosure
-   comes AFTER the body in the page's order, so Tab reads the body first and
-   the disclosure leads straight into what it opens. */
+/* An entry: a 2 px ink rule, the name, then its tier-1 body, and at the
+   foot of the body the disclosure, left-aligned, with the well it opens
+   straight under it (K3): the press and what it reveals are never a
+   screen apart, and Tab reads the body, the disclosure, then the well. */
 .card {
   grid-column: span 6;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr);
   row-gap: var(--space-4);
   align-content: start;
   padding-top: var(--space-4);
@@ -514,9 +513,11 @@ button, select, input[type="range"] {
 
 .card > * { grid-column: 1 / -1; min-width: 0; }
 
-.card > .card-head { grid-column: 1; grid-row: 1; }
+.card > .disclosure[data-tier="2"] { justify-self: start; }
 
-.card > .disclosure[data-tier="2"] { grid-column: 2; grid-row: 1; align-self: center; }
+/* The well follows its disclosure with no gap (the entry's row gap is
+   taken back). */
+.card > .disclosure[data-tier="2"] + .tier-well { margin-top: calc(-1 * var(--space-4)); }
 
 .card.span-2 { grid-column: span 2; }
 .card.span-3 { grid-column: span 3; }

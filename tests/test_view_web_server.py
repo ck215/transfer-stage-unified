@@ -2054,8 +2054,8 @@ def test_tier_two_opens_on_demand_holds_tier_three_and_is_remembered(tiered_stat
 @needs_browser
 def test_a_disclosure_leads_focus_straight_into_what_it_opens(tiered_station, tmp_path):
     """E: aria-expanded tracks the state and focus order runs body, then
-    the disclosure, then the well it opened (the disclosure is drawn at the
-    head but sits after the body in the page's order)."""
+    the disclosure, then the well it opened. Updated (K3): the disclosure is
+    drawn where it sits in the page's order, at the foot of the body."""
     view, controller, probe = tiered_station
     out = _browse(view, _TIERED + r"""
       const r = {};
@@ -2224,3 +2224,71 @@ def test_the_stop_is_reachable_with_red_percents_details_open_at_900(sim_station
     assert out["scrolled"], "the details did not make the page scroll; the test proves nothing"
     assert out["onTop"] and out["inView"], out
     assert out["latched"] is True, "a click on the disc did not stop"
+
+
+# --------------------------------------------------------------------------
+# Tier K (2026-09-26): the disclosure sits where it opens (K3)
+# --------------------------------------------------------------------------
+#: Press a page in the rail by its words ("Overview" or a model's name).
+_PAGES = r"""
+  const press = async (words) => {
+    await page.evaluate((w) => Array.from(document.querySelectorAll('#model-nav button'))
+      .find((b) => b.textContent === w).click(), words);
+    await sleep(300);
+  };
+  const pages = () => page.evaluate(() => {
+    const nav = Array.from(document.querySelectorAll('#model-nav button'));
+    const shown = (n) => Boolean(n && n.getClientRects().length);
+    const cards = Array.from(document.querySelectorAll('#cards .card'));
+    const sheet = document.getElementById('cards').getBoundingClientRect();
+    return {
+      nav: nav.map((b) => b.textContent),
+      current: nav.filter((b) => b.getAttribute('aria-current')).map((b) => b.textContent),
+      shown: cards.filter(shown).map((c) => c.querySelector('.card-title').textContent),
+      wells: cards.filter((c) => shown(c.querySelector('.tier-well'))).length,
+      disclosures: cards.filter((c) => shown(c.querySelector('.disclosure'))).length,
+      opens: cards.filter(shown).map((c) => {
+        const o = c.querySelector('.card-head .card-open');
+        return o && shown(o) ? { text: o.textContent, name: o.getAttribute('aria-label') } : null;
+      }),
+      fullWidth: cards.filter(shown).every((c) => c.getBoundingClientRect().width >= sheet.width - 1),
+    };
+  });
+"""
+
+
+@needs_browser
+def test_the_tier_two_disclosure_sits_at_the_foot_of_the_body_above_its_well(tiered_station, tmp_path):
+    """K3: the disclosure is not in the entry's head; it is the last thing
+    after the tier-1 body, left-aligned with it, it says the schema's
+    phrase, and the well it opens follows it with no gap."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + _PAGES + r"""
+      await press('Tiered Probe');
+      const geo = () => page.evaluate(() => {
+        const c = Array.from(document.querySelectorAll('#cards .card'))
+          .find((n) => n.querySelector('.card-title').textContent === 'Tiered Probe');
+        const d = c.querySelector('.disclosure[data-tier="2"]');
+        const well = document.getElementById(d.getAttribute('aria-controls'));
+        const body = c.querySelector('.card-body').getBoundingClientRect();
+        const head = c.querySelector('.card-head').getBoundingClientRect();
+        const b = d.getBoundingClientRect();
+        const w = well.getBoundingClientRect();
+        return { inHead: Boolean(d.closest('.card-head')), text: d.textContent,
+                 before: d.previousElementSibling && d.previousElementSibling.className,
+                 after: d.nextElementSibling === well,
+                 belowBody: b.top >= body.bottom - 0.5, belowHead: b.top > head.bottom,
+                 leftGap: b.left - body.left, gap: well.hidden ? null : w.top - b.bottom };
+      });
+      const r = { closed: await geo() };
+      await page.click('.card .disclosure[data-tier="2"]');
+      await sleep(250);
+      r.open = await geo();
+      return r;
+    """, tmp_path)
+    closed, opened = out["closed"], out["open"]
+    assert not closed["inHead"] and closed["belowHead"], closed
+    assert closed["text"] == "Configure", closed
+    assert "card-body" in closed["before"] and closed["after"], closed
+    assert closed["belowBody"] and abs(closed["leftGap"]) <= 4, closed
+    assert opened["gap"] is not None and abs(opened["gap"]) <= 1, opened
