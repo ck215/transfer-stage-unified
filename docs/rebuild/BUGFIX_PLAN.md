@@ -386,7 +386,7 @@ every model is latched; a single model clears at its own switch).
 
 | # | Sev | Views | Item | Fix | Route |
 |---|---|---|---|---|---|
-| M1 | S3 | all | The 11 `window` tests and the Tk/Qt Tier L captures were not run on a display (owner working). | `python3 -m pytest tests -m window` and the capture ritual when the Mac is free. | lead, display free |
+| M1 | S3 | all | The 11 `window` tests and the Tk/Qt Tier L captures were not run on a display (owner working). | Window tests: **11 passed** on the display (owner's go, 2026-09-26 evening). The `l_{tk,qt}_*` capture ritual is still pending. | lead, display free |
 | M2 | S3 | core | `red_monitor.run_id` is a fresh timestamp every second while idle, so the readout ticks (QT7-8). | One slug per idle period: mint it when a run ends / at open, keep it until a run starts or the name changes. | direct (model) |
 | M3 | S3 | core + views | The L3 gate words (mode → sentence) live in each view; Qt added "In manual mode", "No run in progress", "Nothing launched yet". | `views.base.gate_reason(mode)` as the one table; Web serves it. | direct → `router` per view |
 | M4 | S4 | qt, tk | Rail hover tone needs a theme colour (QT7-18). | `theme.RAIL_LIFT = mix(SURFACE, TEXT, 0.08)`, consumed by Tk and Qt. | direct (theme) |
