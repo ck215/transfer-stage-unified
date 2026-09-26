@@ -1,0 +1,6 @@
+# The station plus the test and packaging tools (pytest, pytest-qt,
+# pyinstaller), all pinned in pyproject.toml.
+-e .[qt,dev]
+# legacy/ only: the old suite (`cd legacy && pytest tests`) still imports the
+# G-code parser that src/ purged. Not a runtime dependency of the station.
+gcodeparser==0.3.0
