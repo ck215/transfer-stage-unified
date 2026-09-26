@@ -4439,3 +4439,269 @@ def test_l22_an_empty_reading_is_muted_regular_at_reading_size_with_no_unit(
     panel.age = 0.2
     view._refresh()
     assert temp["unit_label"].is_packed
+
+
+class GatedPanel(Panel):
+    """Commands behind gates: a `go` Start run that needs a region, a Home
+    that needs manual mode, and a speed slider."""
+    NAME = "Gated"
+    PARAMS = {"speed": Param("speed", "int", default=400, minimum=1, maximum=1000,
+                             label="Speed")}
+
+    def __init__(self):
+        super().__init__()
+        self.mode = "no_region"
+        self.committed = []
+
+    @property
+    def mode_name(self):
+        return self.mode
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "Run",
+            sch.entry("Speed:", "speed", self.PARAMS["speed"], slider=(1, 1000)),
+            sch.button("Start run", "start", role="go",
+                       disabled_when=["no_region", "latched", "running"]),
+            sch.button("Home", "home", enabled_when=["manual"])))
+
+    def start(self):
+        return "started"
+
+    def home(self):
+        return "homed"
+
+
+@pytest.fixture
+def gated():
+    panel = GatedPanel()
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Gated=panel), "Gated")
+    yield built, panel
+    built.close()
+
+
+def test_l3_a_disabled_command_says_why_and_a_go_command_says_it_under_its_row(
+        gated):
+    """TK7-4: Start run greyed from launch with no reason anywhere."""
+    view, panel = gated
+    start = view._widgets[id(element_of(view, "button", "Start run"))]
+    home = view._widgets[id(element_of(view, "button", "Home"))]
+    assert start["gate_tip"].text == "Set a capture region first"
+    assert home["gate_tip"].text == "Not in manual mode"
+    why = list(view._why_labels.values())
+    assert len(why) == 1 and why[0].cget("text") == "Set a capture region first"
+    assert why[0].cget("foreground") == theme.MUTED
+    assert why[0].grid_info["row"] == view.WHY_ROW
+    panel.mode = "latched"
+    view._refresh()
+    assert start["gate_tip"].text == "Stopped: clear the stop first"
+    assert why[0].cget("text") == "Stopped: clear the stop first"
+    panel.mode = "manual"
+    view._refresh()
+    assert start["gate_tip"].text == "" and home["gate_tip"].text == ""
+    assert why[0].grid_info is None, "an enabled command says nothing"
+
+
+def test_l3_the_reason_shows_on_hover_through_the_commands_own_handlers(gated):
+    view, _panel = gated
+    start = view._widgets[id(element_of(view, "button", "Start run"))]
+    start["widget"].fire("<Enter>")
+    assert start["gate_tip"]._after_id is not None, "the hover text is due"
+    assert start["is_hovered"], "the command's own hover still runs"
+    start["widget"].fire("<Leave>")
+    assert start["gate_tip"]._after_id is None
+
+
+class _Key:
+    def __init__(self, keysym):
+        self.keysym = keysym
+
+
+def test_l6_slider_keys_step_one_percent_and_home_end_do_nothing(gated):
+    """TK7-5: End committed the maximum speed in one key; every arrow moved
+    one unit of a 1..1000 travel."""
+    view, panel = gated
+    element = element_of(view, "entry", "Speed:")
+    entry = view._widgets[id(element)]
+    scale = entry["scale"]
+    scale.set(400)
+    assert scale.fire("<Right>") == "break"
+    assert scale.value == 410
+    assert entry["var"].get() == "410", "the slider writes the entry"
+    scale.fire("<Left>")
+    scale.fire("<Down>")
+    assert scale.value == 390
+    scale.fire("<Prior>")
+    assert scale.value == 490, "Page Up: 10 %"
+    scale.fire("<Next>")
+    assert scale.value == 390
+    assert scale.fire("<End>") == "break" and scale.fire("<Home>") == "break"
+    assert scale.value == 390, "Home and End are inert"
+    scale.set(995)
+    scale.fire("<Right>")
+    assert scale.value == 1000, "never past the end"
+
+
+def test_l6_a_slider_commits_on_a_moving_keys_release_only(gated):
+    view, panel = gated
+    element = element_of(view, "entry", "Speed:")
+    scale = view._widgets[id(element)]["scale"]
+    calls = view.controller.calls
+    scale.set(400)
+    scale.fire("<Right>")
+    before = len([c for c in calls if c[1] == "_commit"])
+    scale.fire("<KeyRelease>", _Key("Tab"))
+    assert len([c for c in calls if c[1] == "_commit"]) == before, "Tab commits nothing"
+    scale.fire("<KeyRelease>", _Key("Right"))
+    commits = [c for c in calls if c[1] == "_commit"]
+    assert len(commits) == before + 1 and commits[-1][2] == {"speed": "410"}
+    assert panel.speed == 410
+
+
+def test_l6_a_disabled_slider_does_not_move(gated):
+    view, panel = gated
+    element = element_of(view, "entry", "Speed:")
+    entry = view._widgets[id(element)]
+    entry["scale"].set(400)
+    entry["is_enabled"] = False
+    entry["scale"].fire("<Right>")
+    assert entry["scale"].value == 400
+
+
+def test_l4_commands_are_36_px_and_fields_24_px_with_their_rings(gated):
+    """TK7-6 floors: a command at least 36 px tall with its ring, an entry
+    or a dropdown at least 24 (44 is an owner call)."""
+    view, _panel = gated
+    line = tkmod._line_px()
+    command = view._widgets[id(element_of(view, "button", "Start run"))]["widget"]
+    ring = 2 * tkmod.FOCUS_PX
+    assert line + 2 * command.cget("pady") + ring >= tkmod.COMMAND_PX
+    field = tkmod._line_px() + 2 * tkmod._field_pady() + ring + tkmod.UNDERLINE_PX
+    assert field >= tkmod.MIN_TARGET_PX
+    press = tkmod._Press(FakeWidget(), "Quit", lambda: None, theme.SURFACE)
+    assert line + 2 * press.widget.cget("pady") + ring >= tkmod.COMMAND_PX
+
+
+def test_l4_a_press_anywhere_in_an_entrys_well_focuses_it(gated):
+    view, _panel = gated
+    entry = view._widgets[id(element_of(view, "entry", "Speed:"))]
+    ring, widget = entry["ring"], entry["widget"]
+    for part in (ring.outer, ring.inner, ring.line):
+        Focus.current = None
+        part.fire("<Button-1>")
+        assert Focus.current is widget
+
+
+class TickPanel(Panel):
+    """Setup's shape: table rows named by model, a Launch tick per row."""
+    NAME = "Ticks"
+
+    def __init__(self):
+        super().__init__()
+        self.a_on = False
+        self.b_on = False
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Stepper Probe", sch.checkbox("Launch", "a_on", "set_a"),
+                        layout="row"),
+            sch.section("Rotator", sch.checkbox("Launch", "b_on", "set_b"),
+                        layout="row"))
+
+    def set_a(self, flag):
+        self.a_on = bool(flag)
+
+    def set_b(self, flag):
+        self.b_on = bool(flag)
+
+
+def test_l4_a_table_rows_name_and_its_tick_are_one_target():
+    panel = TickPanel()
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Ticks=panel), "Ticks")
+    names = {label.cget("text"): label for label in built._section_titles}
+    names["Rotator"].fire("<Button-1>")
+    assert panel.b_on is True and panel.a_on is False
+    assert names["Rotator"].cget("cursor") == "hand2"
+    names["Rotator"].fire("<Button-1>")
+    assert panel.b_on is False
+    built.close()
+
+
+def test_l4_the_slider_trough_is_a_full_target_tall(tk_harness, setup_panel):
+    """The trough image is as tall as a target; the thumb stays 18 px."""
+    heights = []
+
+    class Image(FakePhotoImage):
+        def __init__(self, width=0, height=0, **kwargs):
+            super().__init__(**kwargs)
+            heights.append(height)
+
+        def put(self, *_args, **_kwargs):
+            pass
+
+    class Style(FakeStyle):
+        def element_create(self, *args, **kwargs):
+            pass
+
+        def layout(self, *args, **kwargs):
+            pass
+
+    tkmod.tk.PhotoImage = Image
+    tkmod.ttk.Style = Style
+    try:
+        built = tkmod.TkDashboard(FakeController(), setup_panel)
+    finally:
+        tkmod.tk.PhotoImage = FakePhotoImage
+        tkmod.ttk.Style = FakeStyle
+    assert max(heights) >= tkmod.MIN_TARGET_PX
+    built.close()
+
+
+def test_l20_tab_order_models_before_setup_and_the_sheet_before_the_tray(
+        tk_harness, setup_panel, monkeypatch):
+    """TK7-7: Tk traverses siblings in stacking order."""
+    lifted, configured = [], {}
+    monkeypatch.setattr(FakeWidget, "lift", lambda self, *a: lifted.append(self),
+                        raising=False)
+    monkeypatch.setattr(tkmod.ClosableNotebook, "configure",
+                        lambda self, **kw: configured.update(kw), raising=False)
+    built = tkmod.TkDashboard(FakeController(), setup_panel)
+    rail = built._rail.children
+    foot = built._setup_press.frame.master
+    assert rail.index(built._model_list) < rail.index(foot)
+    assert configured.get("takefocus") == 0, "the hidden tab strip takes no focus"
+    assert lifted.index(built._band) < lifted.index(built._tray), \
+        "sheet, then the band, then the tray"
+    built.close()
+
+
+def test_l20_a_short_row_keeps_the_pages_columns(tk_harness, setup_panel):
+    """TK7-8: five models in rows of three: the second row's two entries are
+    as wide as the first row's three."""
+    names = ["A", "B", "C", "D", "E"]
+    controller = FakeController(**{name: DemoPanel() for name in names})
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    built.root.winfo_width = lambda: 1400
+    built._lay_out_sheet(force=True)
+    first, second = built._sheet_rows
+    for row in (first, second):
+        entries = {c: o for c, o in row.column_weights.items() if o.get("uniform")}
+        assert sorted(entries) == [0, 2, 4]
+        assert row.column_weights[1]["minsize"] == row.column_weights[3]["minsize"]
+    built.close()
+
+
+def test_l20_captions_in_a_line_share_its_top_and_commands_its_foot(gated):
+    """TK7-9: the cells sat on their bottoms, so a taller control pushed its
+    neighbours' captions down."""
+    view, _panel = gated
+    speed = view._widgets[id(element_of(view, "entry", "Speed:"))]["box"]
+    start = view._widgets[id(element_of(view, "button", "Start run"))]["ring"].outer
+    anchors = {}
+    for widget, kwargs in PACK_ORDER:
+        if widget in (speed, start) and kwargs.get("in_") is not None:
+            anchors[widget] = kwargs.get("anchor")
+    assert anchors[speed] == "nw" and anchors[start] == "sw"

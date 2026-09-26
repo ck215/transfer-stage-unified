@@ -183,8 +183,27 @@ WELL_SCALE_STYLE = "StationWell.Horizontal.TScale"
 WELL_COMBO_STYLE = "Well.TCombobox"
 
 #: Every control a pointer presses is at least this tall, ring included
-#: (WCAG 2.5.8), at every font size.
+#: (WCAG 2.5.8), at every font size; a command at least `COMMAND_PX` (L4:
+#: 44 px everywhere is an owner call, so not here).
 MIN_TARGET_PX = 24
+COMMAND_PX = 36
+
+#: Why a command is greyed out (L3): the gate word a schema names in
+#: `disabled_when` / `enabled_when`, said as what the operator can do about
+#: it. Any other word is said as itself, in sentence case.
+GATE_WORDS = {"latched": "Stopped: clear the stop first",
+              "manual": "Not in manual mode",
+              "running": "A run is in progress",
+              "no_region": "Set a capture region first",
+              "disconnected": "Not connected",
+              "moving": "Moving"}
+
+#: A slider's keyboard (L6): an arrow moves 1 % of the travel (at least
+#: one unit), Page Up / Page Down 10 %; Home and End do nothing - one stray
+#: key used to commit the maximum speed.
+SLIDER_ARROW_FRACTION, SLIDER_PAGE_FRACTION = 0.01, 0.10
+SLIDER_KEYS = {"Left": -1, "Down": -1, "Right": 1, "Up": 1}
+SLIDER_PAGE_KEYS = {"Prior": 1, "Next": -1}
 
 #: The chevron a disclosure wears, closed and open.
 CHEVRON = {False: "\u25b8", True: "\u25be"}
@@ -428,6 +447,24 @@ def _target_pady(step=BASE):
     """Vertical padding that makes a pressable `MIN_TARGET_PX` tall with its
     two-pixel ring, at this font size - never less than GAP."""
     return max(GAP, math.ceil((MIN_TARGET_PX - _line_px(step) - 2 * FOCUS_PX) / 2))
+
+
+def _command_pady(step=BASE):
+    """Vertical padding that makes a command `COMMAND_PX` tall with its ring
+    (L4), at this font size."""
+    return max(GAP, math.ceil((COMMAND_PX - _line_px(step) - 2 * FOCUS_PX) / 2))
+
+
+def _field_pady():
+    """An entry's or a dropdown's inner vertical padding: the field, its
+    ring and its underline at least `MIN_TARGET_PX` tall (L4, TK7-6)."""
+    chrome = 2 * FOCUS_PX + UNDERLINE_PX
+    return max(1, math.ceil((MIN_TARGET_PX - _line_px() - chrome) / 2))
+
+
+def _gate_word(word):
+    word = str(word or "")
+    return GATE_WORDS.get(word) or _label(word.replace("_", " "))
 
 
 def _lamp_px():
@@ -975,8 +1012,9 @@ class _Press:
         self.fill, self.ink = background, theme.TEXT
         self.widget = tk.Label(self.ring.inner, text=text, font=_font(),
                                background=self.fill, foreground=self.ink,
-                               relief="flat", padx=SPACE[4], pady=_target_pady(),
-                               cursor="hand2", takefocus=1, highlightthickness=0)
+                               relief="flat", padx=SPACE[4], pady=_command_pady(),
+                               borderwidth=0, cursor="hand2", takefocus=1,
+                               highlightthickness=0)
         self.widget.pack(fill="both", expand=True)
         self.is_hovered = False
         for sequence in ("<Button-1>", "<Return>", "<space>"):
@@ -1479,6 +1517,7 @@ class TkPanelView(PanelView):
         self._well = self._diagnostics = None
         self._building_tier = 1
         self._readings = []             # (element, base kind) - re-sized by prominence
+        self._why_labels = {}           # id(section container) -> its reason caption
         self._inset = 0 if sheet is not None else INSET
 
         self.frame = tk.Frame(master, background=_page())
@@ -2224,6 +2263,7 @@ class TkPanelView(PanelView):
         caption.grid(row=state["row"], column=0, sticky="w",
                      padx=(0, SPACE[5]), pady=SPACE[2])
         self._section_titles.append(caption)
+        state["caption"] = caption
         state["bar"] = None
         if kind == "bar":
             bar = tk.Frame(self._table, background=_page())
@@ -2320,12 +2360,18 @@ class TkPanelView(PanelView):
                             padx=(0, SPACE[2]) if fill == "mark" else 0)
                 if not placed:
                     placed.append(widget)
+                    if label is not None and not state.get("inline"):
+                        # A captioned cell hangs from the line's top, so
+                        # the captions in a line share one (TK7-9).
+                        self._flows[id(strip)].setdefault("captioned", set()).add(
+                            id(cell))
                     self._add_to_flow(strip, cell)
                 if unit and fill in ("value", "field"):
-                    label = tk.Label(line, text=unit, font=_caption_font(), anchor="w",
-                                     background=background, foreground=theme.MUTED)
-                    label.pack(side="left", anchor="s", padx=(SPACE[1], 0))
-                    self._register(element, unit_label=label)
+                    unit_label = tk.Label(line, text=unit, font=_caption_font(),
+                                          anchor="w", background=background,
+                                          foreground=theme.MUTED)
+                    unit_label.pack(side="left", anchor="s", padx=(SPACE[1], 0))
+                    self._register(element, unit_label=unit_label)
                 return widget
             return line, place
         bar = state.get("bar")
@@ -2453,10 +2499,12 @@ class TkPanelView(PanelView):
                     widget.pack_forget()
                 except Exception:
                     pass
+        captioned = flow.get("captioned") or set()
         for widget, index in zip(shown, layout):
             try:
                 widget.pack_forget()
-                widget.pack(in_=lines[index], side="left", anchor="sw",
+                widget.pack(in_=lines[index], side="left",
+                            anchor="nw" if id(widget) in captioned else "sw",
                             padx=(0, SPACE[5]))
                 widget.lift()
             except Exception as exc:
@@ -2536,8 +2584,10 @@ class TkPanelView(PanelView):
         parent, place = self._command_slot(container)
         return parent, lambda widget, sticky=None: place(widget)
 
-    #: The grid row of a section's notice: under everything in it.
+    #: The grid row of a section's notice: under everything in it; the
+    #: muted reason a `go` command is greyed out sits just above it (L3).
     NOTICE_ROW = 999
+    WHY_ROW = 998
 
     def _notice_slot(self, container):
         """(container, row, column, span): the grid cell where a refusal of
@@ -2575,11 +2625,14 @@ class TkPanelView(PanelView):
         widget = tk.Label(ring.inner, text=_label(element.get("text", "") if text is None
                                                  else text),
                           font=_font(), relief="flat", padx=SPACE[4],
-                          pady=_target_pady(), cursor="hand2", takefocus=1,
-                          highlightthickness=0)
+                          pady=_command_pady(), borderwidth=0, cursor="hand2",
+                          takefocus=1, highlightthickness=0)
         widget.pack(fill="both", expand=True)
+        # Why it is greyed out, when it is (L3): its own hover text, shown
+        # by the command's own Enter/Leave so no handler is replaced.
+        gate_tip = _Tooltip(widget, bind=False)
         self._register(element, widget=widget, outline=ring.inner, ring=ring,
-                       ground=background)
+                       ground=background, gate_tip=gate_tip)
 
         def _on_widget_click(_event=None, element=element):
             if not self._entry_for(element).get("is_enabled", True):
@@ -2589,6 +2642,8 @@ class TkPanelView(PanelView):
 
         def _on_flag(name, value, element=element):
             self._entry_for(element)[name] = value
+            if name == "is_hovered":
+                (gate_tip.enter if value else gate_tip.leave)()
             self._paint_command(element)
 
         widget.bind("<Button-1>", _on_widget_click)
@@ -2816,8 +2871,16 @@ class TkPanelView(PanelView):
             scale.bind("<FocusOut>", lambda _e, r=track: r.paint(False), add="+")
             scale.bind("<ButtonRelease-1>",
                        lambda _e, el=element: self._on_entry_commit(el), add="+")
-            scale.bind("<KeyRelease>",
-                       lambda _e, el=element: self._on_entry_commit(el), add="+")
+            for key, direction in SLIDER_KEYS.items():
+                scale.bind(f"<{key}>", lambda _e, el=element, d=direction:
+                           self._on_slider_key(el, d))
+            for key, direction in SLIDER_PAGE_KEYS.items():
+                scale.bind(f"<{key}>", lambda _e, el=element, d=direction:
+                           self._on_slider_key(el, d, page=True))
+            for key in ("<Home>", "<End>"):
+                scale.bind(key, lambda _e: "break")
+            scale.bind("<KeyRelease>", lambda event, el=element:
+                       self._on_slider_key_released(el, event), add="+")
         ring = _Ring(parent, background, underline=True)
         widget = tk.Entry(ring.inner, textvariable=var, font=_font(),
                           width=FIELD_WIDTH, justify="right", relief="flat",
@@ -2826,11 +2889,15 @@ class TkPanelView(PanelView):
                           insertbackground=theme.TEXT,
                           disabledbackground=theme.DISABLED[0],
                           disabledforeground=theme.DISABLED[1])
-        widget.pack(fill="both", expand=True, ipady=max(0, _target_pady() - GAP),
-                    ipadx=SPACE[1])
+        widget.pack(fill="both", expand=True, ipady=_field_pady(), ipadx=SPACE[1])
         if element.get("value_type") in ("int", "float"):
             self._attach_validator(widget, element)
         place(ring.outer, "field")
+        # The well is the target (L4): a press on its ring or its underline
+        # puts the cursor in the field, as a press on the field does.
+        for part in (ring.outer, ring.inner, ring.line):
+            if part is not None:
+                part.bind("<Button-1>", lambda _e, w=widget: self._focus_field(w))
         widget.bind("<Return>", lambda _e, el=element: self._on_entry_commit(el))
         widget.bind("<FocusIn>", lambda _e, r=ring: r.paint(True))
         widget.bind("<FocusOut>", lambda _e, el=element, r=ring:
@@ -2843,6 +2910,41 @@ class TkPanelView(PanelView):
         strip = self._entry_for(element).get("strip")
         if scale is not None and id(strip) in self._flows:
             self._flows[id(strip)].setdefault("sliders", []).append(element)
+
+    @staticmethod
+    def _focus_field(widget):
+        try:
+            if str(widget.cget("state")) != "disabled":
+                widget.focus_set()
+                widget.icursor("end")
+        except Exception:
+            pass
+        return "break"
+
+    def _on_slider_key(self, element, direction, page=False):
+        """An arrow or Page key on a slider (L6): 1 % (10 %) of the travel,
+        at least one unit, never past either end."""
+        entry = self._entry_for(element)
+        scale, travel = entry.get("scale"), element.get("slider")
+        if scale is None or not travel or not entry.get("is_enabled", True):
+            return "break"
+        low, high = travel
+        fraction = SLIDER_PAGE_FRACTION if page else SLIDER_ARROW_FRACTION
+        step = max(1, round((high - low) * fraction))
+        try:
+            now = float(scale.get())
+        except (TypeError, ValueError):
+            return "break"
+        scale.set(max(low, min(high, now + direction * step)))
+        return "break"
+
+    def _on_slider_key_released(self, element, event=None):
+        """Commit as a pointer release does - but only for the keys that
+        move the slider (a Tab into it used to commit)."""
+        keysym = getattr(event, "keysym", "")
+        if keysym in SLIDER_KEYS or keysym in SLIDER_PAGE_KEYS:
+            return self._on_entry_commit(element)
+        return None
 
     def _on_slider_moved(self, element, value):
         """The slider writes the entry: an int field gets a whole number."""
@@ -3248,6 +3350,16 @@ class TkPanelView(PanelView):
         tooltip.text = str(element.get("tooltip") or "")
         self._register(element, widget=widget, var=var, cell=ring.outer,
                        ring=ring, tooltip=tooltip)
+        caption = self._cursor(container).get("caption")
+        if self._cursor(container)["layout"] == "row" and caption is not None:
+            # The row's name and its tick are one target (L4): Setup's
+            # "Stepper Probe" ticks the Stepper Probe's Launch box.
+            try:
+                caption.configure(cursor="hand2")
+            except Exception:
+                pass
+            caption.bind("<Button-1>",
+                         lambda _e, el=element: self._on_row_name_pressed(el))
 
     def _on_checkbox_clicked(self, element):
         """Tk has already flipped the variable. A greyed box runs nothing and
@@ -3258,6 +3370,18 @@ class TkPanelView(PanelView):
             self._set_on(element, bool(values.get(element.get("model_attr"))))
             return None
         return self._run_checkbox(element)
+
+    def _on_row_name_pressed(self, element):
+        """A press on a table row's name ticks its box, as a press on the
+        box does: the model's value is read and the new one sent."""
+        if not self._entry_for(element).get("is_enabled", True):
+            return "break"
+        self._run_checkbox(element)
+        try:
+            self._entry_for(element)["widget"].focus_set()
+        except Exception:
+            pass
+        return "break"
 
     def _on_switch_pressed(self, element):
         if not self._entry_for(element).get("is_enabled", True):
@@ -3912,6 +4036,7 @@ class TkPanelView(PanelView):
             if was_enabled != bool(is_enabled) or "painted" not in entry:
                 entry["painted"] = True
                 self._paint_command(element)
+            self._say_why(element, entry, is_enabled)
         scale = entry.get("scale")
         if scale is not None and was_enabled != bool(is_enabled):
             # A disabled slider is muted and does not move (its style maps
@@ -3925,6 +4050,67 @@ class TkPanelView(PanelView):
                          f"{self.name}/{element.get('text') or element.get('command')}"
                          f" -> {'enabled' if is_enabled else 'disabled'}",
                          source=SOURCE)
+
+    def _gate_reason(self, element):
+        """Why `element` is greyed out now (L3), from the gate it failed:
+        the stop latch first, then an `enabled_by` value that is off, then
+        the mode word the schema names. "" when nothing says."""
+        state = self._last_state or {}
+        mode = state.get("mode") or ""
+        values = state.get("values") or {}
+        if mode == "latched":
+            return GATE_WORDS["latched"]
+        by = element.get("enabled_by")
+        if by and not values.get(by):
+            names = [e.get("text") for e in self._elements
+                     if e.get("model_attr") == by and e is not element]
+            return f"{_label(names[0])} is off" if names else _gate_word(by)
+        if mode in (element.get("disabled_when") or ()):
+            return _gate_word(mode)
+        enabled = element.get("enabled_when") or ()
+        if enabled and mode not in enabled:
+            if "manual" in enabled:
+                return GATE_WORDS["manual"]
+            return _gate_word(mode) if mode else ""
+        return ""
+
+    def _say_why(self, element, entry, is_enabled):
+        """A disabled command carries its reason as hover text; a `go`
+        command also says it in one muted caption under its row (L3)."""
+        reason = "" if is_enabled else self._gate_reason(element)
+        tip = entry.get("gate_tip")
+        if tip is not None:
+            tip.text = reason
+        if element.get("role") != "go" or entry.get("why_reason") == reason:
+            return
+        entry["why_reason"] = reason
+        slot = entry.get("slot")
+        if slot is None:
+            return
+        container = slot[0]
+        why = self._why_labels.get(id(container))
+        if why is None:
+            if not reason:
+                return
+            why = tk.Label(container, text="", font=_caption_font(), anchor="w",
+                           justify="left", background=_bg(container),
+                           foreground=theme.MUTED)
+            self._why_labels[id(container)] = why
+        # One caption per row: the first greyed go command in it speaks.
+        reasons = [self._entry_for(e).get("why_reason") for e in self._elements
+                   if e.get("role") == "go"
+                   and (self._entry_for(e).get("slot") or (None,))[0] is container]
+        text = next((r for r in reasons if r), "")
+        try:
+            why.configure(text=text)
+            if text:
+                why.grid(row=self.WHY_ROW, column=0, columnspan=max(1, slot[3]),
+                         sticky="w", pady=(0, GAP))
+            else:
+                why.grid_forget()
+        except Exception as exc:
+            events.debug("Reason Not Shown", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
 
     def _set_stale(self, is_stale):
         """Grey the panel title when the model's state has stopped updating."""
@@ -4365,6 +4551,18 @@ class TkDashboard(Dashboard):
 
         self.notebook = ClosableNotebook(self._main, on_close_tab=self._on_tab_close)
         self.notebook.pack(side="top", fill="both", expand=True)
+        # Tab order (TK7-7): the hidden tab strip takes no focus, and the
+        # band and the tray come AFTER the sheet - Tk traverses siblings in
+        # stacking order, and they were created (and packed) before it.
+        try:
+            self.notebook.configure(takefocus=0)
+        except Exception:
+            pass
+        for strip in (self._band, self._tray):
+            try:
+                strip.lift()
+            except Exception:
+                pass
         self._sheet_page = ttk.Frame(self.notebook)
         self._sheet = _Sheet(self._sheet_page)
         self._sheet.frame.pack(fill="both", expand=True)
@@ -4405,7 +4603,7 @@ class TkDashboard(Dashboard):
             return
         combo = dict(background=panel, foreground=text, arrowcolor=muted,
                      lightcolor=panel, darkcolor=panel,
-                     padding=(SPACE[2], _target_pady() - SPACE[0]),
+                     padding=(SPACE[2], _field_pady() + 1),
                      arrowsize=arrow, focuscolor=FOCUS_INK)
         settings = [
             (".", dict(background=base, foreground=text, font=_font(),
@@ -4551,9 +4749,13 @@ class TkDashboard(Dashboard):
                     image.put(colour, to=(x0, y, x1, y + 1))
             return image
 
+        # The trough is as tall as a target (L4): a press anywhere in the
+        # 24 px band moves the slider, not only on the 18 px thumb.
+        band = max(thumb, MIN_TARGET_PX)
+
         def rail(colour):
-            image = tk.PhotoImage(width=3 * track, height=thumb)
-            top = (thumb - track) // 2
+            image = tk.PhotoImage(width=3 * track, height=band)
+            top = (band - track) // 2
             image.put(colour, to=(0, top, 3 * track, top + track))
             return image
 
@@ -4637,6 +4839,10 @@ class TkDashboard(Dashboard):
                                       wraplength=RAIL_PX - 3 * SPACE[5],
                                       background=theme.SURFACE, foreground=theme.TEXT)
         self._station_line.pack(side="left", fill="x")
+        # The model list is CREATED before the foot, so Tab reaches the
+        # models before Setup and Quit, as the eye does (TK7-7); the foot is
+        # PACKED first, so a long list at 28 pt gives way before it does.
+        self._model_list = tk.Frame(rail, background=theme.SURFACE)
         # Setup and Quit, at the foot: packed before the list takes the rest.
         foot = tk.Frame(rail, background=theme.SURFACE)
         foot.pack(side="bottom", fill="x")
@@ -4647,7 +4853,6 @@ class TkDashboard(Dashboard):
         self._quit_press = _Press(foot, "Quit", self._on_quit_clicked,
                                   theme.SURFACE, ghost=True)
         self._quit_press.frame.pack(side="left", padx=(SPACE[4], 0))
-        self._model_list = tk.Frame(rail, background=theme.SURFACE)
         self._model_list.pack(side="top", fill="x", pady=(SPACE[4], 0))
         self._set_rail_width(False)
 
@@ -4855,6 +5060,17 @@ class TkDashboard(Dashboard):
         for group in groups:
             row = tk.Frame(self._sheet.body, background=_page())
             row.pack(side="top", fill="x", pady=(0, SPACE[9]))
+            # Every row has the page's columns, filled or not, so a short
+            # last row's entries are as wide as the full rows' (TK7-8).
+            width = 1 if self._opened is not None else columns
+            for index in range(width):
+                try:
+                    if index:
+                        row.grid_columnconfigure(2 * index - 1, weight=0,
+                                                 minsize=SPACE[10])
+                    row.grid_columnconfigure(2 * index, weight=1, uniform="entries")
+                except Exception:
+                    pass
             for index, name in enumerate(group):
                 # The gutter is a column of its own, not the entry's padding:
                 # with the padding on every entry but the first, the uniform
