@@ -116,11 +116,10 @@ STOP_HINT, CLEAR_HINT = "Stop every model", "Clear the stop on every model"
 
 #: The stop's keyboard shortcut, from anywhere in the window (F9). It only
 #: ever STOPS: clearing the latch stays a deliberate press on the disc and a
-#: confirmation. Command-period is the Mac's own "stop"; Control-period is
-#: the same chord elsewhere, and is bound on the Mac too.
+#: confirmation. ONE chord on every platform (G5, owner ruling 2026-09-25:
+#: no shortcut exists on one OS only), so the Mac gets Control-period too.
 STOP_KEYS = ("<Control-period>",)
-STOP_KEYS_AQUA = ("<Command-period>",)
-STOP_KEY_NAME, STOP_KEY_NAME_AQUA = "Ctrl+.", "\u2318."
+STOP_KEY_NAME = "Ctrl+."
 
 #: Keyboard focus is a 2 px ring in ink on every focusable control (F25,
 #: WCAG 2.4.13); the stop's ring is `theme.STOP_FOCUS`, never the trace ring
@@ -133,6 +132,11 @@ FOCUS_INK = theme.TEXT
 #: is derived here with the theme's one `mix()` until the theme carries an
 #: input-border token (CORE CHANGE REQUEST in the handoff).
 INPUT_BORDER = theme.mix(theme.SURFACE, theme.TEXT, 0.40)
+
+#: The ttk style every tick box is drawn with (G3): a field-dark box with a
+#: 3:1 border and an ink tick - never the signal colour, which is the stop's
+#: alone. Its focus mark is the `_Ring` around it, so ttk's own is off.
+CHECK_STYLE = "Station.TCheckbutton"
 
 #: Every control a pointer presses is at least this tall, ring included
 #: (WCAG 2.5.8), at every font size.
@@ -325,18 +329,27 @@ def _windowing_system(widget):
         return "x11"
 
 
-def _close_tab_button(widget):
-    """The event sequence that closes a tab, per platform (VIEW-TKINTER-18).
+def _tk_version():
+    try:
+        return float(getattr(tk, "TkVersion", 9.0))
+    except (TypeError, ValueError):
+        return 9.0
 
-    The old view hardcoded `<ButtonPress-2>`, which is the *middle* button on
-    X11 and Win32 and the *right* button on Aqua — so on a Mac a right-click
-    aimed at the tab menu closed the tab instead. The button number is
-    resolved from the windowing system now rather than assumed. Which
-    physical button that is on a Mac is listed under UNVERIFIED: it needs a
-    Mac to confirm.
+
+def _close_tab_button(widget):
+    """The event that closes a tab: the MIDDLE button, on every platform
+    (VIEW-TKINTER-18, G5).
+
+    The gesture is one gesture; only Tk's numbering of it differs, which is
+    the branch the toolkit forces. Button 2 is the middle button on X11 and
+    Win32, and on Aqua from Tk 8.7 on; Tk 8.6 on Aqua numbered the right
+    button 2 and the middle 3. The previous branch bound 3 - the RIGHT
+    button - on X11 and Win32, so a right-click closed a tab there and not
+    on a Mac.
     """
-    return ("<ButtonPress-2>" if _windowing_system(widget) == "aqua"
-            else "<ButtonPress-3>")
+    if _windowing_system(widget) == "aqua" and _tk_version() < 8.7:
+        return "<ButtonPress-3>"
+    return "<ButtonPress-2>"
 
 
 class ClosableNotebook(ttk.Notebook):
@@ -1246,6 +1259,10 @@ class TkPanelView(PanelView):
         # The wheel binding is application-wide while the pointer is here; a
         # closed panel must not be left holding it.
         self._on_pointer_leave()
+        # A log window outlives nothing it belongs to (G4).
+        for element in list(self._elements):
+            if self._entry_for(element).get("window") is not None:
+                self._close_log_window(element, restore_focus=False)
         super().close()
         self._widgets.clear()
         try:
@@ -1258,7 +1275,7 @@ class TkPanelView(PanelView):
     # -- layout: planning a table --------------------------------------------
     #: Element types drawn with a caption in front of them. A button names
     #: itself; these name the value beside them.
-    CAPTIONED = ("readonly", "entry", "dropdown", "indicator")
+    CAPTIONED = ("readonly", "entry", "dropdown", "indicator", "checkbox")
     #: Element types that are commands, and share one line of buttons.
     COMMANDS = ("button", "toggle", "file_save", "file_open", "region_select")
 
@@ -2031,7 +2048,7 @@ class TkPanelView(PanelView):
 
     def _refresh_log(self, element, lines):
         entry = self._entry_for(element)
-        widget = entry.get("widget")
+        widget = entry.get("feed") if element.get("detached") else entry.get("widget")
         if widget is None:
             return
         text = "\n".join(str(line) for line in list(lines or [])[-40:])
@@ -2067,6 +2084,42 @@ class TkPanelView(PanelView):
         parent, place = self._command_slot(container, element)
         place(self._button_label(parent, element, lambda el: self._run_toggle(el),
                                  text=element.get("false_text", "")))
+
+    def _make_checkbox(self, container, element):
+        """A tick box (G3): a `ttk.Checkbutton` on a BooleanVar.
+
+        The variable is the model's value, written by `_set_on` on every
+        refresh and never read back: a click sends the NEW value through
+        `_run_checkbox`, which reads the model, so a box drawn one refresh
+        behind still flips the right way. In a table it is a narrow column
+        under its caption ("Launch", said once in the header); elsewhere its
+        caption sits in front of it, like a lamp's. It wears the same focus
+        ring as a dropdown, and its hover text is the schema's `tooltip`.
+        """
+        parent, place = self._field(container, element)
+        var = tk.BooleanVar(value=False)
+        ring = _Ring(parent, _page(), border=_page())
+        widget = ttk.Checkbutton(ring.inner, variable=var, takefocus=1,
+                                 style=CHECK_STYLE,
+                                 command=lambda el=element: self._on_checkbox_clicked(el))
+        widget.pack(fill="both", expand=True)
+        place(ring.outer, "mark")
+        widget.bind("<FocusIn>", lambda _e, r=ring: r.paint(True))
+        widget.bind("<FocusOut>", lambda _e, r=ring: r.paint(False))
+        tooltip = _Tooltip(widget)
+        tooltip.text = str(element.get("tooltip") or "")
+        self._register(element, widget=widget, var=var, cell=ring.outer,
+                       ring=ring, tooltip=tooltip)
+
+    def _on_checkbox_clicked(self, element):
+        """Tk has already flipped the variable. A greyed box runs nothing and
+        is put back to what the model holds."""
+        entry = self._entry_for(element)
+        if not entry.get("is_enabled", True):
+            values = (self._last_state or {}).get("values") or {}
+            self._set_on(element, bool(values.get(element.get("model_attr"))))
+            return None
+        return self._run_checkbox(element)
 
     def _on_mushroom_pressed(self, element):
         if not self._entry_for(element).get("is_enabled", True):
@@ -2170,14 +2223,127 @@ class TkPanelView(PanelView):
         return lit, lit
 
     def _make_log_stream(self, container, element):
+        """A scrolling feed on the card, or - `detached` (G4) - a command in
+        its place that opens the feed in a window of its own."""
+        if element.get("detached"):
+            parent, place = self._command_slot(container, element)
+            place(self._button_label(parent, element, self._open_log_window,
+                                     text=_label(element.get("text", "")) + ELLIPSIS))
+            self._register(element, window=None, feed=None, last_text=None)
+            return
         parent, place = self._wide_slot(container, element.get("text"))
-        widget = tk.Text(parent, height=EVENT_LOG_LINES + 1, width=48,
-                         state="disabled", relief="flat", font=_font(SMALL),
-                         background=theme.BACKGROUND, foreground=theme.TEXT,
-                         highlightthickness=1, highlightbackground=theme.RULE,
-                         padx=GAP, pady=GAP, wrap="word")
+        widget = self._log_text(parent)
         place(widget)
         self._register(element, widget=widget, last_text=None)
+
+    @staticmethod
+    def _log_text(parent, lines=EVENT_LOG_LINES + 1):
+        """The feed itself: read-only text in the small step, on the field
+        colour, one hairline around it."""
+        return tk.Text(parent, height=lines, width=48,
+                       state="disabled", relief="flat", font=_font(SMALL),
+                       background=theme.BACKGROUND, foreground=theme.TEXT,
+                       highlightthickness=1, highlightbackground=theme.RULE,
+                       padx=GAP, pady=GAP, wrap="word")
+
+    # -- a detached log stream's window (G4) ------------------------------
+    #: The window's size. It opens at the top right of the station window,
+    #: well clear of the stop docked at the bottom, and is never topmost, so
+    #: a click on the station window brings the stop in front of it.
+    LOG_WINDOW_SIZE = (520, 300)
+
+    def _open_log_window(self, element):
+        """ONE non-modal window per stream: pressing again raises it. No
+        grab and no `wait_window`, so the stop disc and Ctrl+. work while
+        it is open; Escape and the close button close it."""
+        entry = self._entry_for(element)
+        window = entry.get("window")
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.deiconify()
+                    window.lift()
+                    window.focus_set()
+                    return window
+            except Exception:
+                pass
+            entry["window"] = entry["feed"] = None
+        label = _label(element.get("text", ""))
+        window = tk.Toplevel(self.frame)
+        try:
+            window.title(f"{self.name} \u2014 {label}")
+        except Exception:
+            pass
+        window.configure(background=_page())
+        body = tk.Frame(window, background=_page())
+        body.pack(fill="both", expand=True, padx=SPACE[4], pady=SPACE[4])
+        scrollbar = ttk.Scrollbar(body, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+        feed = self._log_text(body, lines=12)
+        feed.pack(side="left", fill="both", expand=True)
+        try:
+            feed.configure(yscrollcommand=scrollbar.set)
+            scrollbar.configure(command=feed.yview)
+        except Exception as exc:
+            events.debug("Log Scrollbar Not Wired", str(exc), source=SOURCE,
+                         exception=exc)
+        close = lambda _event=None, el=element: self._close_log_window(el)
+        window.bind("<Escape>", close)
+        try:
+            window.protocol("WM_DELETE_WINDOW", close)
+        except Exception:
+            pass
+        self._place_log_window(window)
+        entry.update(window=window, feed=feed, last_text=None)
+        events.debug("Log Window Opened", f"{self.name}/{label}", source=SOURCE)
+        # Filled now rather than on the next tick.
+        data = self._call(element["source_command"])
+        if data.is_ok:
+            self._refresh_log(element, data.value)
+        try:
+            window.focus_set()
+        except Exception:
+            pass
+        return window
+
+    def _place_log_window(self, window):
+        width, height = self.LOG_WINDOW_SIZE
+        try:
+            owner = self.frame.winfo_toplevel()
+            x = owner.winfo_rootx() + owner.winfo_width() - width - SPACE[6]
+            y = owner.winfo_rooty() + SPACE[6]
+            window.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            try:
+                window.geometry(f"{width}x{height}")
+            except Exception:
+                pass
+
+    def _close_log_window(self, element, restore_focus=True):
+        entry = self._entry_for(element)
+        window = entry.get("window")
+        entry.update(window=None, feed=None, last_text=None)
+        if window is not None:
+            try:
+                window.destroy()
+            except Exception:
+                pass
+            events.debug("Log Window Closed",
+                         f"{self.name}/{_label(element.get('text', ''))}",
+                         source=SOURCE)
+        button = entry.get("widget")
+        if restore_focus and button is not None:
+            try:
+                button.focus_set()      # F12: focus goes back where it came from
+            except Exception:
+                pass
+        return "break"
+
+    def _wants_data(self, element):
+        """A detached stream is polled only while its window is open."""
+        if element.get("type") == "log_stream" and element.get("detached"):
+            return self._entry_for(element).get("window") is not None
+        return True
 
     def _make_internal(self, container, element):
         """Renders nothing. The element exists so its command is in the
@@ -2316,6 +2482,13 @@ class TkPanelView(PanelView):
         if entry.get("mushroom") is not None:
             entry["mushroom"].set_latched(is_on)
             return
+        if element["type"] == "checkbox":
+            # Every refresh, not only on a change: the widget flips its own
+            # variable on a click, and the model has the last word.
+            var = entry.get("var")
+            if var is not None and var.get() != bool(is_on):
+                var.set(bool(is_on))
+            return
         if element["type"] == "indicator":
             # Never text: the caption in front of the lamp already names it,
             # and a lamp that repeats its own label ("Fault   Fault") is the
@@ -2369,8 +2542,11 @@ class TkPanelView(PanelView):
         widget = entry.get("widget")
         if widget is None:
             return
-        if element["type"] in ("entry", "dropdown"):
-            live = "normal" if element["type"] == "entry" else "readonly"
+        if element["type"] in ("entry", "dropdown", "checkbox"):
+            # A disabled Combobox cannot be opened and a disabled
+            # Checkbutton cannot be ticked: the ttk state is the gate the
+            # operator meets, the flag is the one the handlers check.
+            live = "readonly" if element["type"] == "dropdown" else "normal"
             try:
                 widget.configure(state=live if is_enabled else "disabled")
             except Exception:
@@ -2642,7 +2818,7 @@ class TkDashboard(Dashboard):
         self.root.bind("<FocusIn>", self._on_window_focus)
         self.root.bind("<FocusOut>", self._on_window_focus)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
-        self._hook_macos_quit()
+        self._hook_os_quit()
 
     # -- construction ------------------------------------------------------
     def _configure_styles(self):
@@ -2688,6 +2864,13 @@ class TkDashboard(Dashboard):
                                bordercolor=INPUT_BORDER, lightcolor=base,
                                darkcolor=base, padding=(SPACE[2], _target_pady() - SPACE[0]),
                                arrowsize=arrow, focuscolor=FOCUS_INK)),
+            (CHECK_STYLE, dict(background=surface, foreground=text,
+                               indicatorbackground=base, indicatorforeground=text,
+                               upperbordercolor=INPUT_BORDER,
+                               lowerbordercolor=INPUT_BORDER,
+                               indicatorsize=_lamp_px(), indicatormargin=0,
+                               padding=SPACE[1], focusthickness=0,
+                               focuscolor=surface)),
             ("Vertical.TScrollbar", dict(background=control, troughcolor=surface,
                                          bordercolor=surface, lightcolor=control,
                                          darkcolor=control, arrowcolor=muted,
@@ -2706,6 +2889,13 @@ class TkDashboard(Dashboard):
                 background=[("active", theme.mix(control, text, 0.08))],
                 selectbackground=[("readonly", base)],
                 selectforeground=[("readonly", text)])),
+            (CHECK_STYLE, dict(
+                background=[("active", surface)],
+                indicatorbackground=[("disabled", surface),
+                                     ("pressed", theme.mix(base, text, 0.08))],
+                indicatorforeground=[("disabled", theme.DISABLED[1])],
+                upperbordercolor=[("disabled", rule), ("hover", text)],
+                lowerbordercolor=[("disabled", rule), ("hover", text)])),
             ("Vertical.TScrollbar", dict(
                 background=[("active", theme.mix(control, text, 0.12))])),
         ]
@@ -2765,8 +2955,7 @@ class TkDashboard(Dashboard):
                                floor=STOP_DIAMETER)
         self._stop_button = self._stop.canvas
         self._stop_button.pack(side="right", padx=(PAD, INSET), pady=GAP)
-        self._stop_key = (STOP_KEY_NAME_AQUA if _windowing_system(self.root) == "aqua"
-                          else STOP_KEY_NAME)
+        self._stop_key = STOP_KEY_NAME
         self._stop_hint = tk.Label(self._stop_bar, text=self._hint(False), font=_font(),
                                    background=theme.BACKGROUND,
                                    foreground=theme.MUTED)
@@ -2793,9 +2982,7 @@ class TkDashboard(Dashboard):
     def _bind_stop_keys(self):
         """The stop from anywhere, focus wherever it is: an entry, a tab, a
         confirmation, the region picker. It only ever stops."""
-        sequences = STOP_KEYS + (STOP_KEYS_AQUA if self._stop_key == STOP_KEY_NAME_AQUA
-                                 else ())
-        for sequence in sequences:
+        for sequence in STOP_KEYS:
             try:
                 self.root.bind_all(sequence, self._on_stop_key)
             except Exception as exc:
@@ -2971,13 +3158,22 @@ class TkDashboard(Dashboard):
             events.debug("Menubar Not Attached", str(exc), source=SOURCE,
                          exception=exc)
 
-    def _hook_macos_quit(self):
-        """Cmd-Q. Without it the app exits past every teardown path
-        (VIEW-TKINTER-8)."""
+    def _hook_os_quit(self):
+        """Route the OS's own Quit through `close()` (VIEW-TKINTER-8).
+
+        Not a command this view adds (G5): Tk on Aqua gives EVERY app an
+        application menu with Quit in it, and its OS-owned shortcut. Left
+        unhooked, Tk answers it with `Tcl_Exit`, which ends the process past
+        `close()` and past Python's atexit, so nothing is stopped and no port
+        is closed (reproduced on Tk 9.0.4 with a Quit Apple event). The hook
+        only makes that forced command take the same path as the window's
+        close button. It is platform-neutral code: X11 and Win32 never call
+        it.
+        """
         try:
             self.root.createcommand("::tk::mac::Quit", self.close)
         except Exception as exc:
-            events.debug("macOS Quit Not Hooked", str(exc), source=SOURCE,
+            events.debug("OS Quit Not Hooked", str(exc), source=SOURCE,
                          exception=exc)
 
     # -- lifecycle ---------------------------------------------------------

@@ -326,8 +326,17 @@ class FakeRoot(FakeWidget):
         self.commands = {}
         self.did_mainloop = 0
         self.did_quit = 0
+        self.titles = []
+        self.attrs = []
+        self.lifted = 0
 
-    def title(self, *_args):
+    def title(self, *args):
+        self.titles.extend(args)
+
+    def lift(self, *_args):
+        self.lifted += 1
+
+    def deiconify(self):
         pass
 
     def geometry(self, *_args):
@@ -348,8 +357,8 @@ class FakeRoot(FakeWidget):
     def overrideredirect(self, _flag):
         pass
 
-    def attributes(self, *_args):
-        pass
+    def attributes(self, *args):
+        self.attrs.append(args)
 
 
 class FakePhotoImage:
@@ -422,6 +431,7 @@ class FakeStyle:
 class FakeTtkModule:
     Frame = FakeWidget
     Combobox = FakeWidget
+    Checkbutton = FakeWidget
     Scrollbar = FakeWidget
     Style = FakeStyle
 
@@ -479,6 +489,10 @@ class DemoPanel(Panel):
         self.samples = []
         self.png = b"\x89PNG\r\n\x1a\n-demo"
         self.lines = ["first", "second"]
+        self.side = ["gamepad on", "X+ 1.0"]
+        self.side_reads = 0         # the detached stream's polls (G4)
+        self.is_armed = False       # a checkbox (G3)
+        self.target = None          # a dropdown live only while armed
 
     @property
     def mode_name(self):
@@ -510,6 +524,11 @@ class DemoPanel(Panel):
                            "STOPPED", on_args=[True], off_args=[False],
                            on_role="danger", off_role="neutral"),
                 sch.dropdown("Source", "source", "set_source", "source_options"),
+                sch.checkbox("Armed", "is_armed", "set_armed",
+                             tooltip="Arm the demo"),
+                sch.dropdown("Target", "target", "set_target", "source_options",
+                             enabled_by="is_armed"),
+                sch.log_stream("Side Log:", "side_lines", detached=True),
                 sch.region_select("Pick area", "set_region", model_attr="region"),
                 sch.file_save("Save", "save_run"),
                 sch.file_open("Load", "load_run"),
@@ -542,6 +561,18 @@ class DemoPanel(Panel):
 
     def source_options(self):
         return ["alpha", "beta"]
+
+    def side_lines(self):
+        self.side_reads += 1
+        return list(self.side)
+
+    def set_armed(self, flag):
+        self.is_armed = bool(flag)
+        return self.is_armed
+
+    def set_target(self, name):
+        self.target = name
+        return name
 
     def set_region(self, x, y, width, height):
         self.region = {"left": x, "top": y, "width": width, "height": height}
@@ -2040,7 +2071,16 @@ def test_the_window_close_button_closes_the_app(dashboard, controller):
     assert controller.is_closed is True
 
 
-def test_macos_quit_closes_the_app(dashboard, controller):
+def test_the_os_quit_command_goes_through_the_close_path(dashboard, controller):
+    """G5 keeps this one hook, because the toolkit forces it: Tk on Aqua puts
+    a Quit item (and its OS-owned shortcut) in the application menu of every
+    Tk app, and with no `::tk::mac::Quit` it calls `Tcl_Exit`, which ends the
+    process past `close()` AND past Python's atexit - no stop, no port
+    closed (proved on this Mac, Tk 9.0.4: a Quit Apple event to a Tk app
+    without the hook exited 0 with neither `mainloop` returning nor atexit
+    running; with it, the hook ran and atexit ran). The view adds no
+    shortcut or menu item of its own for it; on X11 and Win32 the command
+    is never called."""
     dashboard.open()
     dashboard.root.commands["::tk::mac::Quit"]()
     assert controller.is_closed is True
@@ -2259,12 +2299,60 @@ def test_a_global_key_stops_every_model_and_never_clears(dashboard, controller):
     assert dashboard._stop.face == tkmod.CLEAR_FACE
 
 
-def test_the_stop_shortcut_is_written_where_the_operator_looks(dashboard,
-                                                              controller):
+@pytest.fixture(params=["x11", "win32", "aqua"])
+def any_platform(request, monkeypatch):
+    """The dashboard as each windowing system would build it (G5)."""
+    monkeypatch.setattr(tkmod, "_PIXEL_FONTS", False)    # restored after
+    monkeypatch.setattr(tkmod, "_windowing_system", lambda _w: request.param)
+    return request.param
+
+
+def test_the_stop_shortcut_is_written_where_the_operator_looks(any_platform,
+                                                              controller,
+                                                              setup_panel):
+    """G5: one chord on every platform, and the copy names it and only it."""
+    dashboard = tkmod.TkDashboard(controller, setup_panel)
     dashboard.open()
     hint = dashboard._stop_hint.cget("text")
-    assert tkmod.STOP_KEY_NAME in hint
-    assert tkmod.STOP_KEY_NAME in dashboard._stop.tooltip.text
+    assert tkmod.STOP_KEY_NAME == "Ctrl+."
+    assert "Ctrl+." in hint and "Ctrl+." in dashboard._stop.tooltip.text
+    for text in (hint, dashboard._stop.tooltip.text):
+        assert "\u2318" not in text and "Cmd" not in text, any_platform
+    dashboard.close()
+
+
+def test_ctrl_period_presses_the_stop_on_every_platform(any_platform, controller,
+                                                       setup_panel):
+    dashboard = tkmod.TkDashboard(controller, setup_panel)
+    dashboard.open()
+    ALL_BINDINGS["<Control-period>"](FakeEvent())
+    assert controller.estop_calls == 1 and controller.is_estopped
+    dashboard.close()
+
+
+def test_no_view_binding_uses_a_mac_only_modifier(any_platform, controller,
+                                                  setup_panel):
+    """G5 (owner ruling 2026-09-25): no Command / Meta / \u2318 chord, on a
+    Mac or anywhere, and no mac-only command beyond the forced Quit hook."""
+    dashboard = tkmod.TkDashboard(controller, setup_panel)
+    dashboard.open()
+    sequences = list(ALL_BINDINGS)
+    widgets = [dashboard.root]
+    while widgets:
+        widget = widgets.pop()
+        sequences += list(widget.bindings)
+        widgets += widget.children
+    assert "<Control-period>" in sequences
+    for sequence in sequences:
+        assert not re.search(r"Command|Meta|Mod1|Option", sequence), sequence
+    assert set(dashboard.root.commands) <= {"::tk::mac::Quit"}
+    dashboard.close()
+
+
+def test_no_mac_only_chord_or_glyph_in_the_module():
+    code = _executable_source(tkmod.__file__)
+    for needle in ("Command-", "Meta-", "\u2318", "\\u2318", "Cmd"):
+        assert needle not in code, needle
 
 
 def test_space_and_return_both_press_the_stop(dashboard, controller):
@@ -2620,3 +2708,262 @@ def test_no_private_mixer_and_no_spacing_sums():
     sums = re.findall(r"\b(?:PAD|GAP|INSET)\s*[-+*/]\s*\w|\w\s*[-+*/]\s*(?:PAD|GAP|INSET)\b",
                       code)
     assert not sums, sums
+
+
+# ---------------------------------------------------------------------------
+# G3: the Launch checkbox, and the dropdowns it gates
+# ---------------------------------------------------------------------------
+
+def tick(view, element):
+    """What a click on a ttk.Checkbutton does: Tk flips the variable, then
+    calls the command."""
+    entry = view._widgets[id(element)]
+    entry["var"].set(not entry["var"].get())
+    return entry["widget"].cget("command")()
+
+
+def test_a_checkbox_renders_a_ttk_checkbutton_on_a_boolean(view):
+    box = element_of(view, "checkbox", "Armed")
+    entry = view._widgets[id(box)]
+    widget = entry["widget"]
+    assert isinstance(widget, FakeWidget)
+    assert widget.cget("variable") is entry["var"]
+    assert callable(widget.cget("command"))
+    assert entry["tooltip"].text == "Arm the demo"
+
+
+def test_clicking_a_checkbox_sends_the_new_value(view, panel, controller):
+    box = element_of(view, "checkbox", "Armed")
+    tick(view, box)
+    assert last_call(controller, "set_armed")[3] == (True,)
+    assert panel.is_armed is True
+    tick(view, box)
+    assert last_call(controller, "set_armed")[3] == (False,)
+    assert panel.is_armed is False
+
+
+def test_a_checkbox_sends_the_model_s_opposite_even_when_drawn_behind(view, panel,
+                                                                    controller):
+    """The box is one refresh behind the model: the command still flips
+    what the MODEL holds, and the refresh puts the box right."""
+    box = element_of(view, "checkbox", "Armed")
+    panel.is_armed = True                 # the model moved; no refresh yet
+    tick(view, box)                       # the widget thinks it went on
+    assert last_call(controller, "set_armed")[3] == (False,)
+    assert view._widgets[id(box)]["var"].get() is False
+
+
+def test_refresh_sets_a_checkbox_from_state_never_from_the_widget(view, panel):
+    box = element_of(view, "checkbox", "Armed")
+    var = view._widgets[id(box)]["var"]
+    panel.is_armed = True
+    view._refresh()
+    assert var.get() is True
+    var.set(False)                        # the widget alone says otherwise
+    view._refresh()
+    assert var.get() is True
+    panel.is_armed = False
+    view._refresh()
+    assert var.get() is False
+
+
+def test_a_greyed_checkbox_is_disabled_and_does_not_run(view, panel, controller):
+    box = element_of(view, "checkbox", "Armed")
+    widget = widget_of(view, box)
+    view._set_enabled(box, False)
+    assert widget.cget("state") == "disabled"
+    calls = len(controller.calls)
+    tick(view, box)
+    assert not any(call[1] == "set_armed" for call in controller.calls[calls:])
+    assert view._widgets[id(box)]["var"].get() is False, "put back from the model"
+    view._set_enabled(box, True)
+    assert widget.cget("state") == "normal"
+
+
+def test_a_gated_dropdown_is_disabled_until_its_box_is_ticked(view, panel):
+    target = element_of(view, "dropdown", "Target")
+    source = element_of(view, "dropdown", "Source")
+    combo = widget_of(view, target)
+    assert combo.cget("state") == "disabled", "a disabled combobox cannot open"
+    assert widget_of(view, source).cget("state") == "readonly"
+    tick(view, element_of(view, "checkbox", "Armed"))
+    assert combo.cget("state") == "readonly"
+    tick(view, element_of(view, "checkbox", "Armed"))
+    assert combo.cget("state") == "disabled"
+
+
+def test_a_greyed_dropdown_selection_runs_nothing(view, panel, controller):
+    target = element_of(view, "dropdown", "Target")
+    view._widgets[id(target)]["var"].set("alpha")
+    widget_of(view, target).fire("<<ComboboxSelected>>")
+    assert not any(call[1] == "set_target" for call in controller.calls)
+    assert panel.target is None
+
+
+def test_the_checkbox_ring_shows_keyboard_focus(view):
+    box = element_of(view, "checkbox", "Armed")
+    ring = view._widgets[id(box)]["ring"]
+    widget_of(view, box).fire("<FocusIn>")
+    assert ring.outer.cget("background") == theme.TEXT
+    widget_of(view, box).fire("<FocusOut>")
+    assert ring.outer.cget("background") == tkmod._page()
+
+
+@pytest.fixture
+def setup_view():
+    """The real Setup panel (G3's rows), never scanned: no `start()`."""
+    from controller.controller import Controller
+    from controller.setup import Setup
+    setup = Setup(Controller())
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(), "Setup", panel=setup)
+    yield built, setup
+    built.close()
+
+
+def test_the_setup_table_puts_the_launch_box_first_in_every_model_row(setup_view):
+    view, setup = setup_view
+    boxes = [e for e in view._elements if e["type"] == "checkbox"]
+    ports = [e for e in view._elements
+             if e["type"] == "dropdown" and e["text"] == "Port"]
+    assert boxes and len(boxes) == len(ports) == len(setup._rows)
+    assert view._table_columns["Launch"] == 1, "the first column after the name"
+    for box, port in zip(boxes, ports):
+        box_cell, port_cell = _cell(view, box), _cell(view, port)
+        assert box_cell["row"] == port_cell["row"]
+        assert box_cell["column"] == 1 and port_cell["column"] > 1
+        assert box_cell["sticky"] == "w", "narrow: it never stretches"
+    table = cell_widget(view, boxes[0]).master
+    # One "Launch" caption over the boxes (the Launch bar's own row name is
+    # the other "Launch", in column 0 at the bottom of the table).
+    header = [c for c in table.children if c.cget("text") == "Launch"
+              and (c.grid_info or {}).get("column") == 1]
+    assert len(header) == 1, "the caption is said once, in the header"
+    assert header[0].grid_info["row"] < _cell(view, boxes[0])["row"]
+    assert table.column_weights.get(1, {}).get("weight") in (None, 0)
+
+
+def test_the_setup_row_dropdowns_follow_the_launch_box(setup_view):
+    view, setup = setup_view
+    key = next(iter(setup._rows))
+    box = next(e for e in view._elements if e.get("model_attr") == f"{key}_enabled")
+    port = next(e for e in view._elements if e.get("model_attr") == f"{key}_port")
+    assert widget_of(view, port).cget("state") == "disabled"
+    tick(view, box)
+    assert getattr(setup, f"{key}_enabled") is True
+    assert widget_of(view, port).cget("state") == "readonly"
+
+
+# ---------------------------------------------------------------------------
+# G4: a detached log stream is a button that opens its own window
+# ---------------------------------------------------------------------------
+
+def side_log(view):
+    return element_of(view, "log_stream", "Side Log:")
+
+
+def test_a_detached_log_stream_renders_a_button_and_no_feed(view):
+    element = side_log(view)
+    entry = view._widgets[id(element)]
+    button = entry["widget"]
+    assert not isinstance(button, FakeText)
+    assert button.cget("text") == "Side log\u2026"
+    assert entry.get("window") is None and entry.get("feed") is None
+    # the attached stream is still a feed on the card
+    assert isinstance(widget_of(view, element_of(view, "log_stream", "Log")), FakeText)
+
+
+def test_a_closed_log_window_is_never_polled(view, panel):
+    assert view._wants_data(side_log(view)) is False
+    assert view._wants_data(element_of(view, "log_stream", "Log")) is True
+    before = panel.side_reads
+    for _ in range(3):
+        view._refresh()
+    assert panel.side_reads == before == 0
+
+
+def test_the_log_button_opens_one_window_showing_the_source_lines(view, panel):
+    element = side_log(view)
+    click(view, element)
+    entry = view._widgets[id(element)]
+    window, feed = entry["window"], entry["feed"]
+    assert isinstance(window, FakeRoot) and not window.is_destroyed
+    assert isinstance(feed, FakeText) and feed.master is not None
+    assert window.titles and "Demo" in window.titles[-1] \
+        and "Side log" in window.titles[-1]
+    assert feed.body == "gamepad on\nX+ 1.0"
+    assert view._wants_data(element) is True
+    panel.side.append("Y- 2.0")
+    view._refresh()
+    assert feed.body.endswith("Y- 2.0")
+
+
+def test_the_log_window_is_not_modal_and_never_over_the_stop(view):
+    click(view, side_log(view))
+    window = view._widgets[id(side_log(view))]["window"]
+    assert GRABS == [], "no grab: the stop takes a click while it is open"
+    assert not any("-topmost" in args for args in window.attrs)
+
+
+def test_a_second_press_raises_the_same_window(view):
+    element = side_log(view)
+    click(view, element)
+    first = view._widgets[id(element)]["window"]
+    click(view, element)
+    assert view._widgets[id(element)]["window"] is first
+    assert first.lifted >= 1
+
+
+def test_escape_and_the_close_button_close_the_log_window(view, panel):
+    element = side_log(view)
+    for gesture in ("<Escape>", "close"):
+        click(view, element)
+        window = view._widgets[id(element)]["window"]
+        if gesture == "close":
+            window.protocols["WM_DELETE_WINDOW"]()
+        else:
+            window.fire(gesture)
+        assert window.is_destroyed, gesture
+        assert view._widgets[id(element)]["window"] is None
+        assert view._wants_data(element) is False
+        assert Focus.current is widget_of(view, element), "focus back to the button"
+    reads = panel.side_reads
+    view._refresh()
+    assert panel.side_reads == reads, "closed again: not polled"
+
+
+def test_closing_the_panel_destroys_the_log_window(controller):
+    built = tkmod.TkPanelView(FakeWidget(), controller, "Demo")
+    click(built, side_log(built))
+    window = built._widgets[id(side_log(built))]["window"]
+    built.close()
+    assert window.is_destroyed
+
+
+def test_the_stop_stays_live_while_the_log_window_is_open(dashboard, controller):
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    click(view, side_log(view))
+    ALL_BINDINGS["<Control-period>"](FakeEvent())
+    assert controller.estop_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# G5: the tab-close button is the same physical button everywhere
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("system, version, expected", [
+    ("x11", 9.0, "<ButtonPress-2>"),
+    ("win32", 9.0, "<ButtonPress-2>"),
+    ("aqua", 9.0, "<ButtonPress-2>"),       # Tk 8.7+ numbers Aqua like X11
+    ("x11", 8.6, "<ButtonPress-2>"),
+    ("win32", 8.6, "<ButtonPress-2>"),
+    ("aqua", 8.6, "<ButtonPress-3>"),       # Tk 8.6 on Aqua: 3 is the middle
+])
+def test_the_middle_button_closes_a_tab_on_every_platform(monkeypatch, system,
+                                                          version, expected):
+    """The operator's gesture is the middle button on every OS. The branch
+    is the toolkit's button numbering, not a platform-specific gesture: the
+    old one bound button 3 - the RIGHT button - on X11 and Win32."""
+    monkeypatch.setattr(tkmod, "_windowing_system", lambda _w: system)
+    monkeypatch.setattr(tkmod, "_tk_version", lambda: version)
+    assert tkmod._close_tab_button(FakeWidget()) == expected
