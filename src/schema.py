@@ -76,10 +76,11 @@ def schema(*sections):
 
 
 def readonly(text, model_attr, *, param=None, format=None, role="neutral",
-             rail=False):
+             rail=False, unit=None):
     """A value the operator reads and cannot write. `rail=True` marks one of
-    the few numbers the operator watches constantly; a dashboard shows those
-    in its always-visible status rail."""
+    the few numbers the operator watches constantly: the opened model's
+    focal readings. `unit` is drawn small beside the number (a `param`
+    carries its own unit; this is for readouts without one)."""
     element = {
         "type": "readonly", "text": text, "model_attr": model_attr,
         "writable": False, "role": role,
@@ -90,6 +91,8 @@ def readonly(text, model_attr, *, param=None, format=None, role="neutral",
         element.update(param.to_schema())
     if format is not None:
         element["format"] = format
+    if unit is not None:
+        element["unit"] = unit
     return element
 
 

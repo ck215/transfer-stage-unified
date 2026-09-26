@@ -99,9 +99,9 @@ class Probe(Model):
         Param("y_dist", "int", default=0, label="Target Y Dist"),
         Param("z_dist", "int", default=0, label="Target Z Dist"),
         Param("full_speed", "int", default=400, minimum=1,
-              label="Autonomous Speed"),
+              label="Autonomous Speed", unit="steps/s"),
         Param("man_full_speed", "int", default=400, minimum=1,
-              label="Manual Speed"),
+              label="Manual Speed", unit="steps/s"),
         Param("slow_speed", "int", default=0, label="Brake Speed (Slow)"),
         Param("brake_distance", "int", default=0,
               label="Brake Distance (steps)"),
@@ -1084,9 +1084,9 @@ class Probe(Model):
         return sch.schema(
             sch.section(
                 "Position",
-                sch.readonly("X:", "position_x", rail=True),
-                sch.readonly("Y:", "position_y", rail=True),
-                sch.readonly("Z:", "position_z", rail=True),
+                sch.readonly("X:", "position_x", rail=True, unit="steps"),
+                sch.readonly("Y:", "position_y", rail=True, unit="steps"),
+                sch.readonly("Z:", "position_z", rail=True, unit="steps"),
             ),
             sch.section(
                 "Speeds",
@@ -1220,9 +1220,9 @@ class DCProbe(Probe):
         Param("y_step", "int", default=1, minimum=1, label="Y Step Size"),
         Param("z_step", "int", default=1, minimum=1, label="Z Step Size"),
         Param("full_speed", "int", default=120, minimum=1,
-              label="Autonomous Speed"),
+              label="Autonomous Speed", unit="steps/s"),
         Param("man_full_speed", "int", default=120, minimum=1,
-              label="Manual Speed"),
+              label="Manual Speed", unit="steps/s"),
     )}}
 
     ENTRY_PARAMS = Probe.ENTRY_PARAMS + ("slow_speed", "brake_distance")

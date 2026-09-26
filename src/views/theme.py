@@ -144,10 +144,10 @@ def toggle_colors(element, is_on):
     background, foreground = colors(role)
     if is_on:
         return {"background": background, "foreground": foreground, "border": background}
-    # OFF: outlined on the sheet. A danger toggle keeps its red outline (the
-    # stop must read as the stop when off); every other role is outlined in
-    # ink, because a panel-toned outline on the sheet would be invisible.
-    border = SIGNAL if role == "danger" else TEXT
+    # OFF: outlined on the sheet in MUTED (5.9:1 on the sheet, an identifiable
+    # edge; the artboards draw it so). A danger toggle keeps its red outline:
+    # the stop must read as the stop when off.
+    border = SIGNAL if role == "danger" else MUTED
     return {"background": BACKGROUND, "foreground": TEXT, "border": border}
 
 

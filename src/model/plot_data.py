@@ -308,7 +308,7 @@ def _colormap():
     from matplotlib import colormaps
     from matplotlib.colors import ListedColormap
     base = colormaps["viridis"]
-    return ListedColormap(base(numpy.linspace(0.0, 0.55, 256)),
+    return ListedColormap(base(numpy.linspace(0.0, 0.48, 256)),
                           name="station-sheet")
 
 

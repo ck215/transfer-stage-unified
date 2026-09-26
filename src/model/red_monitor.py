@@ -1198,9 +1198,9 @@ class RedMonitor(Model):
                 # REDPERCENT-19: a declared display precision, rather than each
                 # renderer re-deriving one from the box.
                 sch.readonly("Current Red:", "current_red", rail=True,
-                             param=P["current_red"], format=".2f"),
+                             param=P["current_red"], format=".2f", unit="%"),
                 sch.readonly("Red Change:", "red_change", rail=True, param=P["red_change"],
-                             format=".2f"),
+                             format=".2f", unit="%"),
                 # REDPERCENT-13: published so every client can gate its plotter
                 # on "is a run actually active" instead of sampling regardless.
                 sch.readonly("Running:", "is_running", role="info"),

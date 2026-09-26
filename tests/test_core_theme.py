@@ -94,15 +94,15 @@ def test_an_on_toggle_is_filled_with_its_on_role():
     assert style["border"] == theme.ROLES["go"][0]
 
 
-def test_an_off_toggle_is_outlined_in_ink_on_the_sheet():
-    """Bench sheet (2026-09-25): OFF is the sheet with an ink outline. A
-    panel-toned outline on the sheet would be invisible, so the role's own
-    colour is kept only for danger (the stop must read as the stop)."""
+def test_an_off_toggle_is_outlined_in_muted_on_the_sheet():
+    """Bench sheet (2026-09-25): OFF is the sheet with a muted outline, as
+    the row-E artboards draw it; the role's own colour is kept only for
+    danger (the stop must read as the stop)."""
     element = sch.toggle("Auto", "is_auto", "set_mode", "ON", "OFF",
                          on_role="go", off_role="neutral")
     style = theme.toggle_colors(element, False)
     assert style["background"] == theme.BACKGROUND
-    assert style["border"] == theme.TEXT
+    assert style["border"] == theme.MUTED
 
 
 @pytest.mark.parametrize("role", sorted(sch.ROLES))
