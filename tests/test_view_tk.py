@@ -3144,3 +3144,33 @@ def test_the_log_window_returns_where_the_operator_dragged_it(view):
     window = LogWindow()
     view._place_log_window(window, element)
     assert window.geometries[-1].endswith("+1700+900")
+
+
+# ---------------------------------------------------------------------------
+# I7: the menu bar survives the log window taking focus
+# ---------------------------------------------------------------------------
+
+def test_the_log_window_carries_the_station_menubar(dashboard):
+    """UXPM5-6: on Aqua a Toplevel with no menu shows the system defaults,
+    so Models and Setup left the menu bar while the log had focus. The log
+    window wears the SAME menubar object as the station window."""
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    click(view, side_log(view))
+    window = view._widgets[id(side_log(view))]["window"]
+    menubar = dashboard.root.cget("menu")
+    assert menubar is not None
+    assert window.cget("menu") is menubar
+
+
+def test_a_rebuilt_menubar_reaches_an_open_log_window(dashboard):
+    """The Models menu is rebuilt when a model opens or closes; an open log
+    window must not keep the stale one."""
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    click(view, side_log(view))
+    window = view._widgets[id(side_log(view))]["window"]
+    before = dashboard.root.cget("menu")
+    dashboard._build_menu_bar()
+    assert dashboard.root.cget("menu") is not before
+    assert window.cget("menu") is dashboard.root.cget("menu")

@@ -2351,6 +2351,29 @@ class TkPanelView(PanelView):
     #: frame is the page and there is no free region.
     log_window_bounds = None
 
+    #: The station window's menubar, set by the dashboard. A log window
+    #: wears the same object (I7): on Aqua a Toplevel with no menu shows the
+    #: system's defaults, and Models and Setup left the menu bar while the
+    #: log had focus. Elsewhere it is the same menu inside the log window.
+    menubar = None
+
+    def share_menubar(self, menubar):
+        """Hand every open log window the station's (new) menubar."""
+        self.menubar = menubar
+        for entry in list(self._widgets.values()):
+            window = entry.get("window")
+            if window is not None:
+                self._wear_menubar(window)
+
+    def _wear_menubar(self, window):
+        if self.menubar is None:
+            return
+        try:
+            window.configure(menu=self.menubar)
+        except Exception as exc:
+            events.debug("Log Window Menu Refused", str(exc), source=SOURCE,
+                         exception=exc)
+
     def _open_log_window(self, element):
         """ONE non-modal window per stream: pressing again raises it. No
         grab and no `wait_window`, so the stop disc and Ctrl+. work while
@@ -2374,6 +2397,7 @@ class TkPanelView(PanelView):
         except Exception:
             pass
         window.configure(background=_page())
+        self._wear_menubar(window)
         body = tk.Frame(window, background=_page())
         body.pack(fill="both", expand=True, padx=SPACE[4], pady=SPACE[4])
         scrollbar = ttk.Scrollbar(body, orient="vertical")
@@ -2945,6 +2969,7 @@ class TkDashboard(Dashboard):
         self._is_focused = None
         self._is_setup_collapsed = False
         self._setup_menu = None      # the "Show Setup" menu, once built
+        self._menubar = None         # the menubar every log window wears too (I7)
         self._alerts = []            # unacknowledged needs_ack events
         self._station_text = None
 
@@ -3326,11 +3351,14 @@ class TkDashboard(Dashboard):
         setup_menu.add_command(label="Show Setup", command=self.restore_setup)
         menubar.add_cascade(label=self.SETUP_TAB, menu=setup_menu)
         self._setup_menu = setup_menu
+        self._menubar = menubar
         try:
             self.root.configure(menu=menubar)
         except Exception as exc:
             events.debug("Menubar Not Attached", str(exc), source=SOURCE,
                          exception=exc)
+        for view in list(self._panels.values()):
+            view.share_menubar(menubar)
 
     def _hook_os_quit(self):
         """Route the OS's own Quit through `close()` (VIEW-TKINTER-8).
@@ -3385,6 +3413,7 @@ class TkDashboard(Dashboard):
         frame = ttk.Frame(self.notebook)
         view = TkPanelView(frame, self.controller, self.SETUP_TAB, panel=self.setup)
         view.log_window_bounds = self._log_window_bounds
+        view.share_menubar(self._menubar)
         view.frame.pack(fill="both", expand=True)
         self.notebook.add(frame, text=self.SETUP_TAB)
         self._panels[self.SETUP_TAB] = view
