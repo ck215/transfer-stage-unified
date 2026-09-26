@@ -362,6 +362,15 @@ one worktree per view after Tier K merges (the same files).
 | L21 | S3 | web | After Quit the tray goes translucent and paints over the sheet (IMP7-9); the warning mark reads as an empty checkbox and a port no model uses holds the tray from boot (IMP7-11). | Per finding. | worktree web |
 | L22 | S4 | all (+core) | The heater plot's empty state talks about red % (IMP7-14); heater unit "C" vs "°C" (IMP7-15, J2 family); copy nits (QT7-17); rail hover 1.1:1 (QT7-18); wrapped tray line under its mark (QT7-19); focus nits (IMP7-16). | Core: neutral empty-state default for `plot`; heater unit. Views: per finding. | core + worktree per view |
 
+**Status (2026-09-26, merged 1eafb59):** L1–L22 landed in all three views
+(`handoff/fix-l-{web,tk,qt}.md`); core follow-ups from the agents landed
+too (`events.forget` on clear, `stop_state["since"]`, `Dashboard.toggle_estop_all`
+via `stop_words`, `views.base.event_line`, `schema.image(empty=)`, the scan's
+unanswered ports as info). Deferred until the display is free (owner: strictly
+background while working): the 11 `window`-marked real-Tk tests and the
+`l_{tk,qt}_*` captures; Web's `l_web_*` captures exist (headless). Not done,
+carried to Tier M: see below.
+
 Not defects (checked by the lead): the Rotator's own "Stop motion" is gated
 on a lost link only (`rotator.py:194-211`), not on staleness; a halt cannot
 reach a device that is not connected, and the disc still latches it.
@@ -372,6 +381,18 @@ track and entry well at 1.11:1 against the sheet (WCAG 1.4.11 wants 3:1 on
 a control's boundary; the brief draws them so); (3) whether a partial latch
 should ever be clearable from the disc (L1 ships: the disc clears only when
 every model is latched; a single model clears at its own switch).
+
+## Tier M — carried from Tier L (2026-09-26)
+
+| # | Sev | Views | Item | Fix | Route |
+|---|---|---|---|---|---|
+| M1 | S3 | all | The 11 `window` tests and the Tk/Qt Tier L captures were not run on a display (owner working). | `python3 -m pytest tests -m window` and the capture ritual when the Mac is free. | lead, display free |
+| M2 | S3 | core | `red_monitor.run_id` is a fresh timestamp every second while idle, so the readout ticks (QT7-8). | One slug per idle period: mint it when a run ends / at open, keep it until a run starts or the name changes. | direct (model) |
+| M3 | S3 | core + views | The L3 gate words (mode → sentence) live in each view; Qt added "In manual mode", "No run in progress", "Nothing launched yet". | `views.base.gate_reason(mode)` as the one table; Web serves it. | direct → `router` per view |
+| M4 | S4 | qt, tk | Rail hover tone needs a theme colour (QT7-18). | `theme.RAIL_LIFT = mix(SURFACE, TEXT, 0.08)`, consumed by Tk and Qt. | direct (theme) |
+| M5 | S4 | qt | Red Percent's "Next step" line is cut at 28 characters (full text in the tooltip). | Wrap the readonly's text in the compact entry. | worktree qt |
+| M6 | S4 | web | Red Percent tier-1 caption misalignment and the "Shut down" wrap (IMP7-15 parts). | Per finding. | worktree web |
+| M7 | S4 | all | Qt lists Setup status words with a capital; Tk/Web sentence-case them client-side; the model could publish them capitalised once. | `setup.py` status words in sentence case. | direct (core) |
 
 ## Out of scope here
 
