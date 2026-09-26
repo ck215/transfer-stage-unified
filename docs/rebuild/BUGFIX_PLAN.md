@@ -261,6 +261,23 @@ shutdown path first. (b) **P8**: **resolved 2026-09-25**: D-9 amended, Tk is the
 every OS ("simple and lightweight and local"); `pick_view` has no platform
 branch.
 
+## Tier I — UI audit round 5 (2026-09-25, UI UX Pro Max lens, real display): regressions from the Tier G renderers
+
+Report `handoff/audit-ui-round5.md`, 45 captures `handoff/shots/round5_*`.
+Everything here is on the tree after Tier G landed (`79d04f5`).
+
+| # | Sev | Views | Finding | Fix | Route |
+|---|---|---|---|---|---|
+| I1 | S1 | tk | **The Gamepad log window opens over the probe's own Safety column**: a fixed 520×300 Toplevel at the station window's top right covers the probe's Stop disc, Fault lamp, Step, its own opener and every Configuration value at 1400; the live X/Y/Z at 900. (UXPM5-1) | Place the window beside the station window, clamped to the screen, never over the panel that owns it; remember the last position. | `agy` (Tk) |
+| I2 | S2 | tk | The "Gamepad log…" opener shows 47 of 109 px at 12 pt and is off the panel at 28 pt; Setup Status words cut to "…" and the Launch row scrolled out of view at 28 pt. (UXPM5-2, UXPM5-5; H2's family) | Wrap the action group; never clip a button's caption; Setup rows wrap or the panel scrolls with Launch pinned. | with I1 |
+| I3 | S2 | web | The Gamepad log panel is pinned top right, so one probe's log covers the next card's inputs (35 % of the rack at 1400, 54 % at 900) and the other probe's opener. (UXPM5-3) | Anchor the panel to its opener's card (below or beside it), clamp inside the rack, never over another card's controls; one open panel at a time. | `agy` (Web) |
+| I4 | S2 | all (core) | The "N devices ticked to launch." sentence is always shown, in trace, contrary to G3's design (a sentence only while scanning or when nothing is ticked). (UXPM5 Tier G) **Done 2026-09-25 (lead):** the readout leaves the Launch row; the scan line carries the F18 reason while scanning; a Launch with nothing ticked is refused with the reason. | | done |
+| I5 | S2 | web | After Quit the page still looks like a latched live station: red Clear disc, the "Treat it as live" line with a working Dismiss, the raw error in the tray; the only sign is 14 px muted text; focus falls to body. (UXPM5-4) | A quit end-state: rail sentence "The station has shut down. You can close this tab." at readout size, stop disc drawn inert (no red), alert lines cleared, focus on the sentence. | with I3 |
+| I6 | S3 | all | The tick mark differs per view (amber ✓ Web, ink × Tk, filled square Qt). Owner: one mark, ink or trace. Stop chord written three ways; Qt's hint 1,750 px from the disc; Web's `aria-keyshortcuts` stays on a button named "Clear". (UXPM5 Tier G) | One glyph (an ink ✓) and one caption in `theme.py`; hint beside the disc in Qt; keyshortcuts follow the face. | `router` per view; mark: owner |
+| I7 | S2 | tk (platform) | On a Mac, Tk's Models and Setup menus vanish from the menu bar while the log window has focus (the Toplevel has no menu, so Aqua shows the defaults). (UXPM5-6) | Give the Toplevel the same menubar, or make the log a child frame of the station window. | with I1 |
+
+Rail height on Web grew with the Quit control: 130 → 188 px at 1400, 363 px at 900 (H4 worsened). H1–H10 all confirmed open on screen.
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.

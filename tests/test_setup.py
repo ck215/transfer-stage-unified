@@ -235,7 +235,9 @@ def test_the_launch_row_is_launch_relaunch_and_stop(panel):
     row = panel.schema["sections"][-1]
     assert row["title"] == "Launch"
     assert [e.get("text") for e in row["elements"]] == [
-        "Selection:", "Launch", "Relaunch", "Stop system"]
+        "Launch", "Relaunch", "Stop system"]
+    # I4: no sentence in the Launch row; `summary` is state only.
+    assert "summary" not in {e.get("model_attr") for e in row["elements"]}
 
 
 def _elements(panel):
@@ -803,8 +805,10 @@ def test_a_hung_scan_says_why_launch_is_greyed_out_and_can_be_cancelled(
     panel, reached = hung_port
     panel.scan()
     assert reached.wait(2)
-    summary = panel.state["values"]["summary"]
-    assert "Launch waits for the scan" in summary and "Cancel scan" in summary
+    assert "Launch waits for the scan" in panel.summary      # state for the API
+    # I4: the reason is on the scan line the operator is reading.
+    line = panel.state["values"]["scan_status"]
+    assert "Launch waits for the scan" in line and "Cancel scan" in line
     assert panel.run("cancel_scan").is_ok
     assert panel._abort.is_set()
 

@@ -245,7 +245,11 @@ class Setup(Panel):
         if port is None or since is None or not self.is_scanning:
             return self._scan_note
         waited = int(time.monotonic() - since)
-        return f"{self._scan_note} {waited} s on this port"
+        # The Launch row no longer carries a sentence (I4): while the scan
+        # runs, the reason Launch is greyed out lives here, on the one line
+        # the operator is already reading.
+        return (f"{self._scan_note} {waited} s on this port. Launch waits "
+                "for the scan; press Cancel scan to launch now.")
 
     @scan_status.setter
     def scan_status(self, text):
@@ -1075,9 +1079,10 @@ class Setup(Panel):
             sections.append(sch.section(row["name"], *elements, layout="row"))
         sections.append(sch.section(
             "Launch",
-            # One short sentence: how many rows are ticked, or why Launch
-            # is greyed out (F18). The rows themselves say which and where.
-            sch.readonly("Selection:", "summary"),
+            # No sentence here (I4, audit round 5): the rows say what is
+            # ticked, the scan line says why Launch waits, and a Launch with
+            # nothing ticked is refused with the reason. `summary` stays a
+            # state value for the API and the tests.
             sch.button("Launch", "launch", role="go",
                        enabled_when=[self.READY]),
             sch.button("Relaunch", "launch", role="go",
