@@ -956,7 +956,8 @@ def test_offline_every_readout_is_muted_and_marked_stale(station, tmp_path):
 
 @needs_browser
 def test_the_stop_has_a_keyboard_path_and_an_ink_focus_ring(station, tmp_path):
-    """F9 + F17: Ctrl+. and Cmd+. stop from inside a text box; Enter on the focused
+    """F9 + F17 + G5: Ctrl+. stops from inside a text box and Meta+. does
+    nothing (one chord on every platform, and no copy names Cmd); Enter on the focused
     mushroom stops; its focus ring is --stop-focus, not the latched trace;
     the clear confirmation opens on Cancel and Enter there does not clear."""
     view, controller, probe = station
@@ -972,9 +973,8 @@ def test_the_stop_has_a_keyboard_path_and_an_ink_focus_ring(station, tmp_path):
       await page.focus('input[name="label"]');
       await page.keyboard.down('Meta'); await page.keyboard.press('Period'); await page.keyboard.up('Meta');
       await sleep(500);
-      r.byCmd = (await api('/api/state')).is_estopped;
-      await api('/api/clear_estop_all', { confirmed: true });
-      await sleep(500);
+      r.byMeta = (await api('/api/state')).is_estopped;
+      r.visible = await page.evaluate(() => document.body.innerText);
       for (let i = 0; i < 40; i++) {
         await page.keyboard.press('Tab');
         if (await page.evaluate(() => document.activeElement.id === 'full-stop')) break;
@@ -1001,9 +1001,12 @@ def test_the_stop_has_a_keyboard_path_and_an_ink_focus_ring(station, tmp_path):
       return r;
     """, tmp_path)
     assert out["byShortcut"] is True, "Ctrl+. did not stop from a text box"
-    assert out["byCmd"] is True, "Cmd+. did not stop"
+    assert out["byMeta"] is False, "Meta+. stopped: a chord that exists on one platform"
     assert out["typed"] == "", "the shortcut typed into the entry"
-    assert "Ctrl+." in out["title"] and "Cmd+." in out["title"]
+    assert "Ctrl+." in out["title"] and "Cmd" not in out["title"], out["title"]
+    assert "Ctrl+." in out["visible"], "the rail does not say the shortcut"
+    for word in ("Cmd", "\u2318", "Mac"):
+        assert word not in out["visible"], f"the page names {word!r}"
     assert out["ring"] == out["focusToken"], out
     assert out["byEnter"] is True, "Enter on the focused stop did not stop"
     assert out["defaultFocus"] == "confirm-no", "the clear confirmation defaults to clearing"

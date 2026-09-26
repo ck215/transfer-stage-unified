@@ -687,8 +687,22 @@ def test_the_stop_face_stays_legible_and_its_focus_is_not_the_latch():
     assert highlight and int(highlight.group(1)) >= 95, "the highlight washes out the word"
     ring = re.search(r"\.mushroom:focus-visible\s*\{([^}]*)\}", STYLES)
     assert ring and "var(--stop-focus)" in ring.group(1) and "trace" not in ring.group(1)
-    assert 'aria-keyshortcuts="Control+Period Meta+Period"' in INDEX
-    assert "Ctrl+." in INDEX and "Cmd+." in INDEX, "the rail does not say the shortcut"
+    # G5 (owner ruling 2026-09-25): one chord on every platform.
+    assert 'aria-keyshortcuts="Control+Period"' in INDEX
+    assert "Ctrl+." in INDEX, "the rail does not say the shortcut"
+
+
+def test_no_shortcut_or_copy_exists_on_one_platform_only():
+    """G5 (owner ruling 2026-09-25: no platform-specific UI). Ctrl+. is the
+    stop chord everywhere; nothing listens for the Meta key, and no copy the
+    operator can read or hear names Cmd or the Command key or a Mac."""
+    assert "metaKey" not in CODE, "a Meta/Cmd chord is bound"
+    stop = _body(r"window\.addEventListener\('keydown', \(event\) => \{(.*?)\n    \}, true\);")
+    assert "event.ctrlKey" in stop and "STOP_KEY" in stop
+    for text, where in ((CODE, "app.js"), (INDEX, "index.html")):
+        for word in ("Cmd", "\u2318", "Meta", "on a Mac", "navigator.platform", "userAgent"):
+            assert word not in text, f"{where} names {word!r}"
+    assert "const STOP_KEY_HINT = 'Ctrl+.';" in APP_JS
 
 
 def test_every_overlay_starts_below_the_rail():
