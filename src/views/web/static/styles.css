@@ -1,85 +1,77 @@
-/* The instrument console (Web design brief, owner ruling 2026-09-22).
- *
- * Every colour in this file is a var() defined by /api/theme.css, which is
- * src/views/theme.py. There is no colour literal here on purpose: the
- * old stylesheet carried its own palette, so the Web client looked like a
- * different application from the two desktop views and a theme change had
- * to be made in three places (RC-7). Where a shade between two tokens is
- * wanted - a hairline, a ring, a scrim - it is mixed FROM the tokens with
- * color-mix, so it still moves when the palette does.
- *
- * Font sizes are relative (em / rem / %), so `--font-size` still scales the
- * whole page. Lengths that are not type - a drawer width, a disc diameter -
- * are pixels or rem as suits them.
- *
- * The vernacular is bench instrumentation: a machined face carrying the
- * numbers and one physical stop, rack panels below it held by a grouping
- * bar and separated by rules, and no drop shadow anywhere.
- */
+/* The station's Web view: the Bench sheet, tiered (owner ruling 2026-09-25,
+   docs/rebuild/DESIGN_BRIEF.md; canvas row E).
 
-/* -- the typeface ------------------------------------------------------- */
-/* IBM Plex Sans, self-hosted from static/fonts (latin subset, 400/500/600).
-   IBM drew Plex for engineering documentation: it has the flat terminals and
-   the open apertures a number needs at a glance, and real tabular figures. */
+   Every colour is a var() from /api/theme.css (src/views/theme.py): six
+   tokens and white on the stop's face. Signal red is the stop, the latch, a
+   fault and the unconfirmed mark; trace blue is a number that is CHANGING
+   and a plot line, nothing else. Depth is tone steps and rules: no
+   gradients, shadows, blur or textures. A tone between two tokens is mixed
+   from them with color-mix; this file names no colour of its own. */
+
+/* -- faces -------------------------------------------------------------- */
+/* Public Sans for text (one variable file, weights 400 to 600) and Archivo
+   at 118 % width, 600, for numerals and the two headlines. Self-hosted from
+   static/fonts (Google Fonts' latin subsets), swapped in when loaded, with
+   the theme's fallback stack underneath (--font-family, --numeral-family). */
 @font-face {
-  font-family: "IBM Plex Sans";
+  font-family: "Public Sans";
   font-style: normal;
-  font-weight: 400;
+  font-weight: 400 600;
   font-display: swap;
-  src: url("/fonts/ibm-plex-sans-400.woff2") format("woff2");
+  src: url("/fonts/public-sans-latin.woff2") format("woff2");
 }
 
 @font-face {
-  font-family: "IBM Plex Sans";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/ibm-plex-sans-500.woff2") format("woff2");
-}
-
-@font-face {
-  font-family: "IBM Plex Sans";
+  font-family: "Archivo";
   font-style: normal;
   font-weight: 600;
+  font-stretch: 118%;
   font-display: swap;
-  src: url("/fonts/ibm-plex-sans-600.woff2") format("woff2");
+  src: url("/fonts/archivo-semiexpanded-600-latin.woff2") format("woff2");
 }
 
-/* One type scale, fixed rem, ratio ~1.14 (Operate mode): a caption, a label,
-   body, a heading, and the one display size the rail's numbers use. Every
-   font-size in this file is one of these five. */
+/* -- the page's own measures -------------------------------------------- */
+/* One type scale, fixed rem (Operate mode), from the sheet's px scale at a
+   16 px base: 12 field label, 13 caption, 14 control, 15 body and input,
+   17 a model's name, 18 the station's name, 20 the opened model's name,
+   22 a statistic, 30 the stop's face, 36 a headline. The readings' own sizes
+   are the theme's (--reading-*, --caption-size). */
 :root {
-  color-scheme: dark;
-  /* The rail's floor height. What the drawer and the scrim measure against
-     is --rail-h, which the client overwrites with the rail's MEASURED height:
-     the rail wraps on a narrow window and grows with it. */
-  --rail-min: 6.25rem;
-  --rail-h: 6.25rem;
-  /* The event tray's measured height, likewise written by the client. */
-  --tray-h: 3.5rem;
+  color-scheme: light;
   --t-xs: 0.75rem;
+  --t-cap: 0.8125rem;
   --t-sm: 0.875rem;
-  --t-md: 1rem;
-  --t-lg: 1.125rem;
-  --t-readout: 1.5rem;
+  --t-md: 0.9375rem;
+  --t-lg: 1.0625rem;
+  --t-rail: 1.125rem;
+  --t-xl: 1.25rem;
+  --t-readout: 1.375rem;
+  --t-face: 1.875rem;
+  --t-headline: 2.25rem;
+  /* The rail is a column 248 px wide (200 under 1000 px); on a phone it is
+     a bar across the top. What the fixed layers keep clear of is
+     --rail-left / --rail-top, which the client MEASURES and overwrites
+     (Dashboard.reserveLogSpace); these are only the values before it has. */
+  --rail-w: 248px;
+  --rail-left: var(--rail-w);
+  --rail-top: 0px;
+  --stop-d: var(--stop-diameter);
+  --tray-h: 3.5rem;
   /* Touch targets: a rail or tray control is at least 44 px on its short
-     side; a panel control at least 36. */
+     side, a control on the sheet at least 36. */
   --hit: 2.75rem;
   --hit-panel: 2.25rem;
-  /* --rule, --rule-strong, --well, --lift, --disabled-*, --stop-focus, the
-     severity inks and marks and the --space-* steps are the theme's
-     (theme.py, served as /api/theme.css): the hairline used to be derived
-     here a different way from the desktop views (F23, DS-3). */
-  --page-gutter: 1.25rem;
+  --sheet-x: 40px;
+  --edge: 1.5px;
 }
 
 * { box-sizing: border-box; }
 
 html {
-  /* The sticky rail and the fixed tray must never cover what has focus. */
-  scroll-padding-top: calc(var(--rail-h) + 0.5rem);
-  scroll-padding-bottom: calc(var(--tray-h) + 0.5rem);
-  scrollbar-color: var(--rule-strong) transparent;
+  /* The rail and the tray must never cover what has focus. */
+  scroll-padding-top: calc(var(--rail-top) + var(--space-4));
+  scroll-padding-bottom: calc(var(--tray-h) + var(--space-4));
+  scrollbar-color: var(--muted) transparent;
 }
 
 html, body {
@@ -87,7 +79,7 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: "IBM Plex Sans", var(--font-family), system-ui, sans-serif;
+  font-family: var(--font-family);
   font-size: var(--font-size);
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
@@ -99,530 +91,1310 @@ body { padding-bottom: 3.5rem; }
 
 h1, h2, h3 { font-weight: 600; margin: 0; text-wrap: balance; }
 
-/* The parts of the page the browser draws still belong to the instrument. */
-::selection { background: color-mix(in srgb, var(--trace) 35%, transparent); color: var(--text); }
+p { margin: 0; }
 
-input, select, textarea { caret-color: var(--trace); }
+/* The parts of the page the browser draws still belong to the sheet. */
+::selection { background: color-mix(in srgb, var(--trace) 22%, var(--bg)); color: var(--text); }
 
-button, select, .mushroom {
+input, select, textarea { caret-color: var(--text); }
+
+button, select, input[type="range"] {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
 
-/* One focus ring, everywhere, in ink - the ring the desktop views draw.
-   Trace is a live number or a lit lamp, and the latched stop's ring: a
-   focus ring in it read as state (F9, F24, DS-1). */
+/* One focus ring, everywhere, in ink (F9, DS-1). */
 :focus-visible {
   outline: 2px solid var(--text);
   outline-offset: 2px;
 }
 
 /* A container that takes focus only so focus has somewhere to land (the
-   drawer when it opens, the rack from the skip link) draws no ring: it is
-   not a control. */
-.drawer:focus, .rack:focus { outline: none; }
+   drawer when it opens, the sheet from the skip link, an entry from the
+   rail's list) draws no ring: it is not a control. */
+.drawer:focus, .sheet:focus, .card:focus { outline: none; }
+
+/* Read by a screen reader, not drawn. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 .skip-link {
-  position: absolute;
-  left: var(--page-gutter);
-  top: 0;
+  position: fixed;
+  left: calc(var(--rail-left) + var(--space-5));
+  top: var(--space-3);
   z-index: 21;
-  padding: 0.6rem 0.9rem;
-  background: var(--surface);
-  color: var(--text);
+  padding: var(--space-3) var(--space-4);
+  background: var(--text);
+  color: var(--bg);
+  border-radius: var(--radius-control);
   font-size: var(--t-sm);
-  transform: translateY(-120%);
+  transform: translateY(-200%);
 }
 
 .skip-link:focus { transform: none; }
 
-/* -- the status rail ----------------------------------------------------- */
-/* Sticky, and the stop rides with it: the one control that is never in doubt
-   is reachable from anywhere on the page without scrolling to find it. */
-/* Above the drawer, the scrim and every overlay, deliberately: the stop is
-   the one control that may never be dimmed, covered or unreachable, so
-   nothing this page opens is allowed over it - and every layer that opens
-   starts below it (F1, WDG-1). The rail wraps only to take its alert lines
-   (#rail-alert) on a line of their own. */
+/* The numeral face: every reading, the stop's face, the two headlines. */
+.value, .mushroom, .headline, .drawer-title {
+  font-family: var(--numeral-family);
+  font-stretch: var(--numeral-stretch);
+  font-weight: var(--numeral-weight);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* -- the rail ------------------------------------------------------------ */
+/* Fixed down the left, full height, and above everything this page opens:
+   the stop is the one control that may never be dimmed, covered or
+   scrolled away, so every layer that opens starts beside it (F1, WDG-1). */
 .rail {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  bottom: 0;
   z-index: 20;
+  width: var(--rail-w);
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 1.5rem;
-  padding: 0.7rem var(--page-gutter);
-  min-height: var(--rail-min);
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-7) var(--space-6) var(--space-6);
   background: var(--surface);
-  border-bottom: 1px solid var(--rule-strong);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .rail-head {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
-  flex: 0 0 auto;
-  padding-right: 0.25rem;
-  align-self: stretch;
-  justify-content: center;
+  gap: var(--space-1);
 }
 
 .station-name {
-  font-size: var(--t-md);
+  font-size: var(--t-rail);
   font-weight: 600;
-  white-space: nowrap;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
 }
 
-/* The link state is a lamp and a word: lit in the trace colour while the
-   station answers. When it stops answering the lamp goes out and turns to
-   the signal colour, because a station that does not answer is a fault. */
+.rail-note {
+  font-size: var(--t-cap);
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.rail-note[hidden] { display: none; }
+
+/* The link line is silent while the station answers (status by exception).
+   When it stops answering it says since when, in ink beside a hollow
+   signal mark, because a station that does not answer is a fault. */
 .link-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  font-size: var(--t-sm);
+  font-size: var(--t-cap);
+  line-height: 1.3;
   color: var(--text);
-  white-space: nowrap;
 }
 
-.link-state::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 50%;
-  background: var(--trace);
-}
+.link-state:empty { display: none; }
 
-.link-state.is-down { white-space: normal; max-width: 14rem; }
+.link-state.is-down {
+  display: flex;
+  gap: var(--space-3);
+  font-weight: 600;
+}
 
 .link-state.is-down::before {
-  background: none;
+  content: "";
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-top: 0.2rem;
   border: 2px solid var(--signal);
 }
 
-/* Quit is deliberate, not a fault: the lamp goes out, not red (G2). The
-   sentence is the one thing left to read on the page, so it is ink at
-   readout size (I5, UXPM5-4); it takes focus only so focus has somewhere to
-   land, and draws no ring. */
+/* Quit is deliberate, not a fault: the sentence is the one thing left to
+   read on the page, ink at readout size (I5, UXPM5-4); it takes focus only
+   so focus has somewhere to land, and draws no ring and no mark. */
 .link-state.is-shut-down {
-  white-space: normal;
-  max-width: 22rem;
+  display: block;
   font-size: var(--t-readout);
+  font-weight: 500;
   line-height: 1.25;
   color: var(--text);
 }
 
+.link-state.is-shut-down::before { content: none; }
+
 .link-state.is-shut-down:focus { outline: none; }
 
-.link-state.is-shut-down::before {
-  background: none;
-  border: 2px solid var(--muted);
+/* -- the stop: A's disc, set in the rail --------------------------------- */
+.stop-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
 }
 
-/* After Quit there is no station behind the rail's controls: the rail
-   buttons are disabled and look it. */
-.rail-control:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+/* The ring is a signal band with a sheet-toned gap inside it; latched, the
+   band thickens and the gap closes up by the same amount, so the disc does
+   not move under the pointer. */
+.stop-ring {
+  flex: 0 0 auto;
+  width: calc(var(--stop-d) + 2 * (var(--stop-ring) + var(--stop-gap)));
+  height: calc(var(--stop-d) + 2 * (var(--stop-ring) + var(--stop-gap)));
+  padding: var(--stop-gap);
+  border: var(--stop-ring) solid var(--signal);
+  border-radius: 50%;
+  background: var(--bg);
+  transition: border-width 150ms ease-out, padding 150ms ease-out;
 }
 
-/* The stop disc after Quit, whatever face it had: inert, neutral, no signal
-   red and no ring, so it promises neither a stop nor a latch that nothing is
-   left to deliver. The per-model discs go the same way. */
+.stop-ring.is-latched {
+  border-width: var(--stop-ring-latched);
+  padding: calc(var(--stop-ring) + var(--stop-gap) - var(--stop-ring-latched));
+}
+
+/* Always red, in every state: the standing rule that the stop looks the
+   same everywhere is kept (the "quiet while nothing moves" idea is not
+   applied; the owner has not ruled on it). White on it is 5.99:1. */
+.mushroom {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: var(--t-face);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mushroom:hover { background: color-mix(in srgb, var(--signal) 88%, var(--text)); }
+
+.mushroom:active { background: color-mix(in srgb, var(--signal) 78%, var(--text)); }
+
+/* The stop's keyboard focus: an ink ring in the gap between the disc and
+   its band, never the band itself, which is what "latched" looks like. */
+.mushroom:focus-visible {
+  outline: 3px solid var(--stop-focus);
+  outline-offset: 1px;
+}
+
+/* Latched: it pulses exactly once, when the latch is set. */
+.mushroom.pulse { animation: latch-pulse 400ms ease-out 1; }
+
+@keyframes latch-pulse {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+/* The stop's keyboard path, under it. */
+.stop-hint {
+  font-size: var(--t-cap);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Hidden while the face reads "Clear" (I6): it keeps its room, so nothing
+   under it shifts when the latch sets. */
+.stop-hint[hidden] { display: inline; visibility: hidden; }
+
+/* "Stopped: every model latched", beside a solid signal square. */
+.rail-latched {
+  align-self: stretch;
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.rail-latched::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-top: 0.2rem;
+  background: var(--signal);
+}
+
+.rail-latched[hidden] { display: none; }
+
+/* After Quit there is nothing left to stop: the disc and its band go to the
+   sheet's disabled tones, no red and no ring, whatever face it had. */
+.stop-ring.is-off,
+.is-shut-down .stop-ring { border-color: var(--muted); border-width: var(--stop-ring); }
+
 .mushroom.is-off,
 .is-shut-down .mushroom,
-.is-shut-down .mushroom:hover,
-.is-shut-down .mushroom.is-latched {
+.is-shut-down .mushroom:hover {
   background: var(--disabled-bg);
-  border-color: var(--rule-strong);
-  box-shadow: none;
   color: var(--disabled-fg);
   cursor: not-allowed;
   animation: none;
 }
 
-/* ...and the page under the rail is inert and reads as such: the rack and
-   the tray recede, and nothing on them keeps a signal mark it can no longer
-   observe. */
-.is-shut-down .rack, .is-shut-down .tray { opacity: 0.5; }
-
-.is-shut-down .card.is-latched,
-.is-shut-down .card.is-lost { border-left-color: var(--rule-strong); }
-
 /* -- the rail's alert lines ---------------------------------------------- */
-/* A stop that did not land, a device that was lost: a full-width band at the
-   foot of the rail, ink on a signal-tinted panel with a signal mark, so the
-   sentence reads at 10:1 and the red still says "fault". */
+/* A stop that did not reach the station, a lost device, a Quit that did not
+   land: ink sentences beside a solid signal square, under the disc. */
 .rail-alert {
-  order: 10;
-  flex: 1 0 100%;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
 }
 
 .rail-alert[hidden] { display: none; }
 
 .rail-alert-line {
   display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-2) var(--space-4);
-  background: color-mix(in srgb, var(--signal) 14%, var(--surface));
-  border-left: 0.4rem solid var(--error-mark);
-  color: var(--error-ink);
-  font-size: var(--t-sm);
-  font-weight: 500;
-}
-
-.rail-alert-text { flex: 1 1 auto; min-width: 0; }
-
-.rail-alert-dismiss { flex: 0 0 auto; }
-
-/* -- the readout groups: one per open model ------------------------------ */
-/* They wrap rather than clip: on a narrow window a group moves to a second
-   line of the rail, and the rail grows to hold it. */
-.rail-readouts {
-  display: flex;
   flex-wrap: wrap;
-  align-items: stretch;
-  gap: 0.6rem 1.75rem;
-  /* A zero basis: the readouts take what the rail has left and never push
-     the stop onto a line of its own. */
-  flex: 1 1 0;
-  min-width: 0;
+  align-items: flex-start;
+  gap: var(--space-2) var(--space-3);
+  font-size: var(--t-cap);
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--error-ink);
 }
 
-/* Every group carries its own rule on the left - the first one separates
-   the numbers from the station's name - so a group that wraps to a second
-   line of the rail starts exactly where the first line's groups do. */
-.readout-group {
+.rail-alert-line::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-top: 0.2rem;
+  background: var(--error-mark);
+}
+
+.rail-alert-text { flex: 1 1 0; min-width: 0; }
+
+.rail-alert-dismiss { margin-left: calc(0.625rem + var(--space-3)); }
+
+/* -- the model list ------------------------------------------------------ */
+.model-nav {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 0.3rem;
-  min-width: 0;
-  padding-left: 1.5rem;
-  border-left: 1px solid var(--rule-strong);
+  gap: var(--space-0);
 }
 
-/* The one orchestrated moment: on launch the drawer withdraws and the
-   groups arrive behind it, one after another. Applied once, by the client,
-   and never again. */
-.readout-group.is-entering {
-  animation: readout-in 240ms ease-out both;
-  animation-delay: calc(var(--stagger, 0) * 60ms);
+.model-nav:empty { display: none; }
+
+.model-link {
+  display: block;
+  width: 100%;
+  min-height: var(--hit-panel);
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
 }
 
-@keyframes readout-in {
-  from { opacity: 0; transform: translateY(0.4rem); }
-  to { opacity: 1; transform: none; }
-}
+.model-link:hover { background: color-mix(in srgb, var(--bg) 55%, var(--surface)); }
 
-.readout-head {
+.model-link[aria-current="true"] { background: var(--bg); font-weight: 600; }
+
+/* Models the operator closed: the way back, under the list. */
+.closed {
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.closed:empty { display: none; }
+
+.closed-label { flex: 1 0 100%; font-size: var(--t-cap); color: var(--muted); }
+
+.rail-foot {
+  margin-top: auto;
+  display: flex;
   gap: var(--space-3);
 }
 
-.readout-model {
-  font-size: var(--t-xs);
-  font-weight: 600;
+/* -- ghost controls: chrome, not instrument controls ---------------------- */
+.ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--space-5);
+  border: var(--edge) solid var(--muted);
+  border-radius: var(--radius-control);
+  background: var(--bg);
   color: var(--text);
+  font-family: inherit;
+  font-size: var(--t-sm);
+  font-weight: 500;
   white-space: nowrap;
+  cursor: pointer;
 }
 
-/* The word beside a model's name when its numbers are not live. */
-.readout-flag {
-  font-size: var(--t-xs);
-  color: var(--text);
-  white-space: nowrap;
+.ghost:hover:not(:disabled) { border-color: var(--text); }
+
+/* The rail's and the tray's controls: a real target, 44 px on the short
+   side, quiet enough that the stop is still the only thing that shouts. */
+.rail-control, .closed .ghost { min-height: var(--hit); padding: 0 var(--space-5); }
+
+/* Quit is a word, not a box: leaving is not a thing to reach for. */
+#quit-link { border-color: transparent; background: transparent; }
+
+#quit-link:hover:not(:disabled) { border-color: var(--muted); }
+
+.rail-control:disabled, .ghost:disabled {
+  color: var(--disabled-fg);
+  border-style: dashed;
+  cursor: not-allowed;
 }
 
-.readout-flag:empty { display: none; }
-
-.readout-group.is-lost .readout-flag {
-  padding-left: var(--space-2);
-  border-left: 0.2rem solid var(--error-mark);
+/* -- the sheet ----------------------------------------------------------- */
+.page {
+  margin-left: var(--rail-left);
+  padding: calc(var(--rail-top) + var(--space-8)) var(--sheet-x) var(--space-5);
 }
 
-.readouts {
+.sheet-headline {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.2rem 1.1rem;
+  gap: var(--space-2) var(--space-5);
+  margin-bottom: var(--space-7);
 }
 
-.readout {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  min-width: 0;
-}
+.sheet-headline[hidden] { display: none; }
 
-.readout-label {
-  font-size: var(--t-xs);
-  color: var(--muted);
-  white-space: nowrap;
-}
+.headline { font-size: var(--t-headline); line-height: 1.1; }
 
-.readout-value {
-  font-size: var(--t-readout);
-  font-weight: 500;
-  line-height: 1.1;
-  font-variant-numeric: tabular-nums;
-  color: var(--trace);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* A readout that is an identifier rather than a number must not be
-     allowed to eat the rail the other models are on. Its whole text is its
-     title (app.js), so the ellipsis never hides anything for good. */
-  max-width: 13ch;
-}
+.headline-note { font-size: var(--t-sm); color: var(--muted); }
 
-/* Trace is a live number. A word on the rail ("Simulated") is ink, an
-   absence muted, and a number that is not live - stale, lost, or the
-   station not answering - is muted too (F3, F4, F24). */
-.readout-value.is-word { color: var(--text); font-size: var(--t-lg); }
-.readout-value.is-empty,
-.readout-group.is-stale .readout-value,
-.is-offline .readout-value { color: var(--muted); }
-
-.rail-side {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex: 0 0 auto;
-}
-
-.closed { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
-
-.closed-label { font-size: var(--t-sm); color: var(--muted); }
-
-/* The stop's keyboard path, a caption beside it. */
-.stop-hint {
-  font-size: var(--t-xs);
-  line-height: 1.3;
-  color: var(--muted);
-  text-align: right;
-  white-space: nowrap;
-}
-
-/* Hidden while the face reads "Clear" (I6): it keeps its room, so the rail's
-   controls do not shift under the pointer when the latch sets. */
-.stop-hint[hidden] { display: inline; visibility: hidden; }
-
-/* -- the mushroom -------------------------------------------------------- */
-/* The one bold element on the page. Round, signal red, a darker ring around
-   it and a highlight sunk into the top of the disc, so it reads as a thing
-   that is pressed rather than a rectangle that is clicked. */
-.mushroom {
-  --disc: 5.25rem;
-  flex: 0 0 auto;
-  width: var(--disc);
-  height: var(--disc);
-  padding: 0;
-  border-radius: 50%;
-  border: 0.32rem solid color-mix(in srgb, var(--signal) 48%, var(--bg));
-  /* The highlight is small and sits above the face's words, so white on
-     the disc stays over 4.5:1 wherever the word lands (F24, CRIT-7). */
-  background:
-    radial-gradient(circle at 50% 18%,
-      color-mix(in srgb, var(--signal) 95%, var(--text)) 0%,
-      var(--signal) 40%,
-      color-mix(in srgb, var(--signal) 76%, var(--bg)) 100%);
-  box-shadow:
-    inset 0 0.14rem 0.35rem color-mix(in srgb, var(--text) 30%, transparent),
-    inset 0 -0.22rem 0.45rem color-mix(in srgb, var(--bg) 45%, transparent);
-  color: var(--danger-fg);
-  font-family: inherit;
-  cursor: pointer;
+/* Entries, not cards: the opened model full width at the top, then three
+   across, then two (layoutSheet writes span-2 / span-3). Entries are
+   separated by whitespace; the 44 px gutter is the only column divider. */
+.sheet {
   display: grid;
-  place-items: center;
-}
-
-.mushroom-face {
-  font-size: var(--t-md);
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-.mushroom:hover { border-color: color-mix(in srgb, var(--signal) 62%, var(--bg)); }
-
-/* The stop's keyboard focus: an ink ring well clear of the disc, never the
-   trace ring that means "latched" (F9, DS-1, UXPM-5, WDG-10). */
-.mushroom:focus-visible {
-  outline: 3px solid var(--stop-focus);
-  outline-offset: 3px;
-}
-
-.mushroom:active { border-color: color-mix(in srgb, var(--signal) 32%, var(--bg)); }
-
-/* Latched: the ring lights up and the disc pulses exactly once, when the
-   latch is set - not while it stays set. */
-.mushroom.is-latched {
-  border-color: var(--trace);
-}
-
-.mushroom.pulse { animation: latch-pulse 400ms ease-out 1; }
-
-@keyframes latch-pulse {
-  0% { transform: scale(1); }
-  45% { transform: scale(1.07); }
-  100% { transform: scale(1); }
-}
-
-/* The per-model stop in a Safety section: the same object, bench-sized, so
-   it is recognisably the same control and unmistakably the smaller one. */
-.mushroom.mini { --disc: 2.9rem; border-width: 0.22rem; }
-
-.mushroom.mini .mushroom-face { font-size: var(--t-xs); }
-
-/* -- the rack ------------------------------------------------------------ */
-/* An empty rack is an invitation, not a void: it says what to do next and
-   where the control for it is. */
-.rack-empty {
-  grid-column: 1 / -1;
-  max-width: 34rem;
-  padding: 2.5rem 0 0;
-  color: var(--muted);
-  font-size: var(--t-md);
-}
-
-/* Three columns on a wide window, two below about 1220 px, one below about
-   820: `auto-fill` does the collapsing, and `min()` keeps a lone column
-   from ever being wider than the window. */
-.rack {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(24rem, 100%), 1fr));
-  /* Dense: a short panel fills the hole a wide one leaves, instead of the
-     page keeping a column-shaped gap next to it. */
-  grid-auto-flow: dense;
-  gap: 1rem;
-  padding: 1rem var(--page-gutter) 1.25rem;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-9) var(--space-10);
   align-items: start;
 }
 
-/* A rack panel: held on the left by a grouping bar, ruled off at the top,
-   and flat. No radius theatre, no shadow. The bar is information - it takes
-   the trace colour while the model is live and the signal colour when the
-   model is latched. */
-.card {
-  min-width: 0;
-  background: var(--surface);
-  border-left: 0.2rem solid var(--rule-strong);
-  border-top: 1px solid var(--rule);
+.rack-empty {
+  grid-column: 1 / -1;
+  max-width: 34rem;
+  padding-top: var(--space-10);
+  color: var(--muted);
+  font-size: var(--t-md);
 }
 
-.card.is-live { border-left-color: var(--trace); }
-.card.is-latched { border-left-color: var(--signal); }
-/* A card that has lost a device: the bar is signal and twice as wide, so it
-   does not depend on hue alone (F3). */
-.card.is-lost { border-left: 0.4rem solid var(--signal); }
-/* Stale: the numbers go muted and the badge says so. The labels keep their
-   contrast - the card used to fade to 0.72 opacity and its labels fell to
-   3.15:1 (F24, UXPM-11). */
-.card.stale .row span.value:not(.is-word),
-.is-offline .card .row span.value:not(.is-word) { color: var(--muted); }
+/* An entry: a 2 px ink rule, the name, then its tier-1 body. The head row
+   has the name on the left and the disclosure on the right; the disclosure
+   comes AFTER the body in the page's order, so Tab reads the body first and
+   the disclosure leads straight into what it opens. */
+.card {
+  grid-column: span 6;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-4);
+  row-gap: var(--space-4);
+  align-content: start;
+  padding-top: var(--space-4);
+  border-top: var(--rule-strong-px) solid var(--rule-strong);
+  scroll-margin-top: calc(var(--rail-top) + var(--space-5));
+}
 
-/* A card of row sections is a table - one line per model - and a table is
-   read across, so it takes the full width. */
-.card.table-card { grid-column: 1 / -1; }
+.card > * { grid-column: 1 / -1; min-width: 0; }
 
-/* A card with a lot to say (Red Percent: ten sections) is twice as wide and
-   flows its sections in two columns, so it is not one very tall stripe
-   beside a mostly empty one. Only where the rack has THREE columns: with
-   two, a double-width panel would sit alone on its row and leave the other
-   module a half-empty row of its own; with one, it would open a column the
-   window does not have. 76.5rem is three 24rem columns, two gaps and the
-   gutters. */
-@media (min-width: 76.5rem) {
-  .card.wide { grid-column: span 2; }
+.card > .card-head { grid-column: 1; grid-row: 1; }
 
-  .card.wide > .card-body {
-    column-count: 2;
-    column-gap: 2rem;
-    column-rule: 1px solid var(--rule);
-  }
+.card > .disclosure[data-tier="2"] { grid-column: 2; grid-row: 1; align-self: center; }
 
-  .card.wide > .card-body > .section {
-    break-inside: avoid;
-    -webkit-column-break-inside: avoid;
-  }
+.card.span-2 { grid-column: span 2; }
+.card.span-3 { grid-column: span 3; }
+.card.span-6 { grid-column: span 6; }
+.card.is-opened { grid-column: 1 / -1; order: -1; }
+
+/* The one launch moment: entries arrive one after another, 60 ms apart. */
+.card.is-entering {
+  animation: entry-in 240ms ease-out both;
+  animation-delay: calc(var(--stagger, 0) * 60ms);
+}
+
+@keyframes entry-in {
+  from { opacity: 0; transform: translateY(0.35rem); }
+  to { opacity: 1; transform: none; }
 }
 
 .card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.35rem 0.5rem 0.35rem 0.9rem;
-  min-height: var(--hit);
-  border-bottom: 1px solid var(--rule);
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  min-height: var(--hit-panel);
 }
 
 .card-title {
-  font-size: var(--t-md);
+  font-size: var(--t-lg);
   font-weight: 600;
-  margin-right: auto;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
 }
 
-.stale-badge {
-  font-size: var(--t-xs);
+.card.is-opened .card-title { font-size: var(--t-xl); }
+
+.card-side {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2) var(--space-5);
+  margin-left: auto;
+}
+
+/* What is not normal about the model, in words: muted, never a lamp. */
+.stale-badge, .card-state {
+  font-size: var(--t-cap);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.stale-badge[hidden], .card-state[hidden] { display: none; }
+
+/* A lost device: a word in ink, and the entry's head rule in signal. */
+.card.is-lost .stale-badge { color: var(--text); font-weight: 600; }
+
+.card.is-lost,
+.card.is-unconfirmed { border-top-color: var(--signal); }
+
+/* G6 at the model's own entry: "Stop not confirmed. Treat as live." beside a
+   solid signal square. No Dismiss: it stands for as long as the latch. */
+.unconfirmed-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--t-cap);
+  font-weight: 600;
   color: var(--text);
-  border: 1px solid var(--rule-strong);
-  border-radius: 2px;
-  padding: 0 0.35em;
 }
 
-.card.is-lost .stale-badge { border-color: var(--error-mark); }
+.unconfirmed-mark::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  background: var(--signal);
+}
 
-/* A standing condition under the header - a lost device - in the same band
-   as the rail's alert line. */
+.unconfirmed-mark[hidden] { display: none; }
+
+/* A standing condition under the head (a lost device), ink beside a signal
+   square. */
 .card-alert {
-  margin: 0;
-  padding: var(--space-3) 0.9rem;
-  background: color-mix(in srgb, var(--signal) 14%, var(--surface));
-  border-bottom: 1px solid color-mix(in srgb, var(--signal) 55%, var(--surface));
-  color: var(--error-ink);
+  display: flex;
+  gap: var(--space-3);
   font-size: var(--t-sm);
+  line-height: 1.4;
+  color: var(--error-ink);
+}
+
+.card-alert::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-top: 0.3rem;
+  background: var(--error-mark);
 }
 
 .card-alert[hidden] { display: none; }
 
-.card-body { padding: 0.2rem 0.9rem 0.7rem; }
-
-/* A collapsed card hides its body. Specific enough to beat
-   `.card-body.table { display: grid }`, which is a class-on-class rule and
-   silently won this when the hide was a bare `.card-body[hidden]`. */
-.card > .card-body[hidden],
-.card.collapsed > .card-body { display: none; }
-
-.section { padding: 0.4rem 0 0.5rem; }
-
-.section + .section { border-top: 1px solid var(--rule); }
-
-/* Sentence case, as the schema writes it. No tracked-out capitals: a label
-   that shouts is a label the eye has to decode before it can skip it. */
-.section-title {
+/* -- a disclosure (tiers 2 and 3) ---------------------------------------- */
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--hit-panel);
+  padding: 0 var(--space-0);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
   font-size: var(--t-sm);
   font-weight: 600;
-  color: var(--muted);
-  margin: 0.4rem 0 0.3rem;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-/* -- row sections: sch.section(..., layout="row") ------------------------ */
-/* One grid for the card body; each row section is `display: contents`, so
-   every row's cells land in the same columns. That is what makes the Setup
-   panel one table with one line per model. */
+.disclosure:hover .disclosure-text {
+  text-decoration: underline;
+  text-decoration-color: var(--muted);
+  text-underline-offset: 3px;
+}
+
+.chevron {
+  width: 0.625rem;
+  height: 0.625rem;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 150ms ease-out;
+}
+
+.disclosure[aria-expanded="true"] .chevron { transform: rotate(90deg); }
+
+/* Tier 2: one panel-toned well under the entry. */
+.tier-well {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  border-radius: var(--radius-well);
+  background: var(--surface);
+}
+
+.tier-well[hidden], .tier-deep[hidden] { display: none; }
+
+.tier-well > .disclosure { align-self: flex-start; font-weight: 500; }
+
+/* Tier 3, inside it: a strip marked by a 2 px muted rule. */
+.tier-deep {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-left: 2px solid var(--muted);
+}
+
+.well-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--space-1);
+}
+
+/* Closing a model destructs it (owner ruling): the quietest control the
+   entry has, at the foot of its details, and it asks first. */
+.card-close {
+  min-height: var(--hit-panel);
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.card-close:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+
+/* -- sections ------------------------------------------------------------ */
+/* Tier 1: the sections of the body flow across and wrap (a probe's
+   position, then its speeds, then its mode toggles). Alignment and
+   whitespace group them; there are no boxes. */
+.card-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-6) var(--space-10);
+}
+
+.card-body > .section { min-width: 0; max-width: 100%; }
+
+.section {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4) var(--space-6);
+  min-width: 0;
+}
+
+/* A section on its own line when it holds the axis readings, so the speeds
+   and the modes line up under them. */
+.card-body > .section.has-axes { flex: 1 0 100%; }
+
+/* Tier 1 says no section titles: the readings' captions do that work. They
+   stay in the page for a screen reader. */
+.card-body > .section > .section-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* In a well, a section title is a small ink caption on its own line. */
+.tier-well .section-title, .tier-deep .section-title {
+  flex: 1 0 100%;
+  margin-bottom: calc(-1 * var(--space-2));
+  font-size: var(--t-cap);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tier-deep .section { gap: var(--space-2) var(--space-8); align-items: center; }
+
+/* -- rows: a caption over its control ------------------------------------ */
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* Hidden beats every layout rule below (a quiet stat is a grid). */
+.row[hidden] { display: none !important; }
+
+.label {
+  font-size: var(--t-xs);
+  line-height: 1.3;
+  color: var(--muted);
+}
+
+.row.has-slider > .label, .row.stat > .label, .reading > .label { font-size: var(--caption-size); }
+
+.group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.unit { font-size: var(--caption-size); color: var(--muted); }
+
+/* -- readings and values ------------------------------------------------- */
+/* A value is ink. A number is drawn in trace only while it is CHANGING
+   (app.js: CHANGING_MS after its last change it settles to ink); nothing to
+   report is muted. Values never wear a border: an entry is the only thing
+   on the sheet with an underline. */
+.value {
+  font-size: var(--t-readout);
+  line-height: 1.1;
+  color: var(--text);
+  background: none;
+  border: 0;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.value.is-changing { color: var(--trace); }
+
+span.value.is-empty { color: var(--muted); border-left: 0; padding-left: 0; }
+
+/* Nothing to report is a word too ("--", "simulated"): the text face. */
+span.value.is-empty {
+  font-family: var(--font-family);
+  font-stretch: normal;
+  font-weight: 500;
+  font-size: var(--t-md);
+  letter-spacing: 0;
+}
+
+/* A word is not a number: an identifier or a state is ink in the text face
+   and wraps inside its row (F15, F24, HC-8, CRIT-6). */
+span.value.is-word,
+.row span.value.is-word {
+  color: var(--text);
+  font-family: var(--font-family);
+  font-stretch: normal;
+  font-weight: 500;
+  font-size: var(--t-md);
+  letter-spacing: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A stat: caption over a value (tiers 1 and 2). The row puts its unit
+   after the value on the same line. */
+.row.stat { display: grid; grid-template-columns: auto auto; justify-content: start;
+            column-gap: var(--space-2); row-gap: var(--space-0); align-items: baseline; }
+
+.row.stat > .label { grid-column: 1 / -1; }
+
+/* A reading: the model's key number, in the numeral face at the theme's
+   reading sizes - focal for the opened model's axes, compact for a closed
+   probe's, primary for a single-value model, secondary for a change. */
+.reading > .value { line-height: 1; }
+
+.reading-primary > .value { font-size: var(--reading-primary); }
+.reading-secondary > .value { font-size: var(--reading-secondary); }
+.reading-axis > .value { font-size: var(--reading-compact); }
+.card.is-opened .reading-axis > .value { font-size: var(--reading-focal); }
+
+.reading-primary > span.value.is-word,
+.reading-axis > span.value.is-word,
+.reading-primary > span.value.is-empty,
+.reading-secondary > span.value.is-empty,
+.reading-axis > span.value.is-empty { font-size: var(--t-xl); }
+
+/* "Position" once, then X Y Z inline beside their numbers. */
+.axis-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.axis-caption { font-size: var(--caption-size); color: var(--muted); }
+
+.axis-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-7);
+}
+
+.card.is-opened .axis-line { gap: var(--space-2) var(--space-9); }
+
+.row.reading-axis {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.row.reading-axis > .label { order: 0; }
+
+/* Frozen: latched, stale, lost, or the station not answering. A frozen
+   number must never look like a live one (F3, F4, CRIT-1). */
+.card.is-latched .value,
+.card.stale .value,
+.is-offline .card .value,
+.card.stale .row span.value.is-word,
+.is-offline .card .row span.value.is-word { color: var(--muted); }
+
+/* A danger-role value (a fault reason) is ink beside a signal mark: signal
+   text on the sheet is a mark, not a sentence (F14, UXPM-4). */
+span.value.role-danger:not(.is-empty) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+span.value.role-danger:not(.is-empty)::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--error-mark);
+}
+
+/* In Diagnostics a value sits beside its caption, at body size. */
+.tier-deep .row,
+.tier-deep .row.stat {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.tier-deep .label { font-size: var(--caption-size); }
+
+.tier-deep .value,
+.tier-deep span.value.is-word {
+  font-family: var(--font-family);
+  font-stretch: normal;
+  font-weight: 400;
+  font-size: var(--t-md);
+  letter-spacing: 0;
+}
+
+/* -- inputs: a panel-toned well with a muted underline, no box ----------- */
+.input, .select {
+  min-height: 2rem;
+  padding: 0.3125rem var(--space-3);
+  border: 0;
+  border-bottom: var(--edge) solid var(--input-border);
+  border-radius: var(--radius-input) var(--radius-input) 0 0;
+  background: var(--well);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--t-md);
+  width: 9rem;
+  min-width: 0;
+}
+
+/* Inside a panel-toned well the input's own well is the sheet's tone. */
+.tier-well .input, .tier-well .select { background: var(--bg); }
+
+.input:hover:not(:disabled), .select:hover:not(:disabled) { border-bottom-color: var(--text); }
+
+.input:focus-visible, .select:focus-visible { outline-offset: 0; }
+
+/* A number is as wide as a number, right-aligned, tabular. */
+.input[type="number"] {
+  width: 5.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+
+.input[type="number"]::-webkit-inner-spin-button,
+.input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+.row.has-slider .input[type="number"] { width: 4.75rem; }
+
+/* Every dropdown is the same width, whatever is chosen. */
+.select { width: 10rem; min-width: 10rem; }
+
+.input:disabled, .select:disabled {
+  background: var(--disabled-bg);
+  color: var(--disabled-fg);
+  border-bottom-style: dashed;
+  border-bottom-color: var(--muted);
+  cursor: not-allowed;
+}
+
+/* -- the slider: beside its entry, never instead of it ------------------- */
+.slider {
+  position: relative;
+  flex: 1 1 8.75rem;
+  width: 15rem;
+  min-width: 6rem;
+  max-width: 15rem;
+  height: 1.5rem;
+  --fill: 0%;
+}
+
+.slider-track, .slider-fill {
+  position: absolute;
+  left: 0;
+  top: calc(50% - 2px);
+  height: 4px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.slider-track { right: 0; background: var(--surface); }
+
+.slider-fill { width: var(--fill); background: var(--text); }
+
+.tier-well .slider-track { background: var(--bg); }
+
+.slider-range {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.slider-range::-webkit-slider-runnable-track { height: 100%; background: transparent; }
+.slider-range::-moz-range-track { height: 100%; background: transparent; }
+
+.slider-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 3px;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  background: var(--text);
+}
+
+.slider-range::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  background: var(--text);
+}
+
+.slider-range:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 12px; }
+
+/* Disabled: muted fill and thumb. */
+.slider.disabled .slider-fill { background: var(--muted); }
+.slider.disabled .slider-range { cursor: not-allowed; }
+.slider.disabled .slider-range::-webkit-slider-thumb { background: var(--muted); }
+.slider.disabled .slider-range::-moz-range-thumb { background: var(--muted); }
+
+.card.is-latched .slider-fill { background: var(--muted); }
+.card.is-latched .slider-range::-webkit-slider-thumb { background: var(--muted); }
+.card.is-latched .slider-range::-moz-range-thumb { background: var(--muted); }
+
+/* -- commands ------------------------------------------------------------ */
+/* One command vocabulary on every entry: `go` is ink-filled, every other
+   command is outlined on the sheet, disabled is the sheet with dashed
+   muted edges. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--hit-panel);
+  padding: 0 var(--space-4);
+  border: var(--edge) solid var(--muted);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--t-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) { border-color: var(--text); }
+
+.button:active:not(:disabled) { background: var(--surface); }
+
+.button.role-go {
+  background: var(--go-bg);
+  color: var(--go-fg);
+  border-color: var(--go-bg);
+  font-weight: 600;
+}
+
+.button.role-go:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--go-bg) 84%, var(--bg));
+}
+
+.button.role-go:active:not(:disabled) {
+  background: color-mix(in srgb, var(--go-bg) 72%, var(--bg));
+}
+
+/* One red: a danger-role COMMAND (ending a recording, a halt) is a quiet
+   command like any other; the stop is the disc on the rail. */
+button.button.role-danger {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.button:disabled {
+  background: var(--disabled-bg);
+  color: var(--disabled-fg);
+  border: var(--edge) dashed var(--muted);
+  cursor: not-allowed;
+}
+
+/* Consecutive commands are one group on one line, wrapping when it must. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.actions > .row { min-height: 0; }
+
+/* -- toggles ------------------------------------------------------------- */
+/* A toggle looks like a toggle: a dot at its leading edge and the action in
+   words. Off, it is outlined with a hollow dot; on, it is ink-filled with a
+   sheet-toned dot (aria-pressed says the same without the dot). */
+button.button.toggle {
+  gap: var(--space-4);
+  justify-content: flex-start;
+  padding: 0 var(--space-5);
+}
+
+.toggle-lamp {
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  border: var(--edge) solid var(--text);
+}
+
+button.button.toggle.on {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+
+button.button.toggle.on .toggle-lamp { background: var(--bg); border-color: var(--bg); }
+
+button.button.toggle:disabled .toggle-lamp { border-color: var(--disabled-fg); }
+
+.toggle-face { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* The caption beside a toggle is drawn only when the face is a bare
+   On/Off; a face that says the action is its own caption. */
+.row.toggle-row { flex-direction: row; align-items: center; gap: var(--space-3); }
+
+.row.toggle-row:not(.bare-face) > .label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.row.toggle-row > .label { font-size: var(--t-sm); color: var(--text); }
+
+/* -- the per-model stop: a small switch ----------------------------------- */
+.row.switch-row { flex-direction: row; align-items: center; gap: var(--space-4); }
+
+.row.switch-row > .label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--switch-track-w);
+  height: var(--switch-track-h);
+  padding: 0;
+  border: var(--edge) solid var(--muted);
+  border-radius: var(--radius-switch);
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.switch-knob {
+  position: absolute;
+  top: calc((var(--switch-track-h) - 2 * var(--edge) - var(--switch-knob)) / 2);
+  left: 2px;
+  width: var(--switch-knob);
+  height: var(--switch-knob);
+  border-radius: 50%;
+  background: var(--muted);
+  transition: left 150ms ease-out;
+}
+
+.switch.is-latched { background: var(--signal); border-color: var(--signal); }
+
+.switch.is-latched .switch-knob {
+  left: calc(var(--switch-track-w) - 2 * var(--edge) - var(--switch-knob) - 2px);
+  background: var(--danger-fg);
+}
+
+.switch:disabled { border-style: dashed; cursor: not-allowed; }
+
+.switch-words { font-size: var(--t-sm); }
+
+/* -- lamps --------------------------------------------------------------- */
+.row.lamp-row { flex-direction: row; align-items: center; gap: var(--space-3); }
+
+.row.lamp-row > .label { font-size: var(--caption-size); }
+
+.lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--t-md);
+  color: var(--text);
+}
+
+.lamp::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  border: var(--edge) solid var(--text);
+}
+
+.lamp.on::before { background: var(--text); }
+
+/* A lamp whose active role is danger is a fault: the signal colour. */
+.lamp.role-danger::before { background: var(--signal); border-color: var(--signal); }
+
+span.lamp { background: none; }
+
+/* -- the tick box (Setup's Launch column) -------------------------------- */
+.checkbox {
+  flex: 0 0 auto;
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  border: var(--edge) solid var(--text);
+  border-radius: var(--radius-input);
+  background: var(--bg);
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+/* The tick is an ink check drawn from two borders. */
+.checkbox::after {
+  content: "";
+  width: 0.35rem;
+  height: 0.65rem;
+  margin-top: -0.15rem;
+  border: solid var(--text);
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+  opacity: 0;
+}
+
+.checkbox:checked::after { opacity: 1; }
+
+.checkbox:disabled { border-color: var(--muted); border-style: dashed; cursor: not-allowed; }
+
+.checkbox:disabled::after { border-color: var(--disabled-fg); }
+
+/* -- data: plots, figures, logs ------------------------------------------ */
+.row.wide { flex: 1 0 100%; }
+
+.plot-frame { position: relative; }
+
+.plot {
+  display: block;
+  width: 100%;
+  height: 12.5rem;
+  background: transparent;
+}
+
+.empty-note {
+  min-height: 7rem;
+  padding: var(--space-6) var(--space-5);
+  display: grid;
+  place-items: center;
+  text-align: center;
+  text-wrap: balance;
+  font-size: var(--t-sm);
+  color: var(--muted);
+  border: var(--edge) dashed var(--muted);
+  border-radius: var(--radius-control);
+}
+
+.empty-note[hidden] { display: none; }
+
+/* Over a canvas the note sits inside the plot's own room. */
+.plot + .empty-note { position: absolute; inset: 0; }
+
+/* A rendered figure is a picture the model draws; what this side controls
+   is the surface it sits on and how much of the entry it may take. */
+.picture {
+  display: block;
+  width: 100%;
+  background: var(--surface);
+  max-height: 18rem;
+  height: auto;
+  object-fit: contain;
+  border-radius: var(--radius-control);
+}
+
+.picture[hidden] { display: none; }
+
+.row.disabled .plot, .row.disabled .picture, .row.disabled .feed { opacity: 0.6; }
+
+.row.disabled > .label { color: var(--disabled-fg); }
+
+/* A log is data, set in the page's face with tabular figures; empty, it
+   says what would fill it. */
+.feed {
+  height: 6.5rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg);
+  border-radius: var(--radius-control);
+  font-family: inherit;
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: pre-wrap;
+}
+
+.feed:empty {
+  display: grid;
+  place-items: center;
+  border: var(--edge) dashed var(--muted);
+}
+
+.feed:empty::before {
+  content: attr(data-empty);
+  font-size: var(--t-sm);
+  color: var(--muted);
+  text-align: center;
+  white-space: normal;
+  text-wrap: balance;
+}
+
+/* -- region, file ------------------------------------------------------- */
+.row.region { flex-direction: row-reverse; align-items: center; gap: var(--space-4); }
+
+.row.region > .label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.row.region > .value { font-size: var(--t-sm); }
+
+.row.file-open {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.row.file-open .path-input { flex: 1 1 12rem; width: auto; }
+
+.file-picker { display: none; }
+
+/* -- a refusal: a sentence under the control that caused it -------------- */
+/* Never a popup. Ink on the panel tone beside a hollow ink square, spans
+   its row, scrolls into view clear of the rail and the tray, and shakes
+   once as it arrives (F10). */
+.status {
+  flex: 1 0 100%;
+  grid-column: 1 / -1;
+  display: flex;
+  gap: var(--space-3);
+  scroll-margin-top: calc(var(--rail-top) + var(--space-3));
+  scroll-margin-bottom: calc(var(--tray-h) + var(--space-3));
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--t-sm);
+}
+
+.status::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-top: 0.3rem;
+  border: var(--edge) solid var(--text);
+}
+
+.status[hidden] { display: none; }
+
+.tier-well .status { background: var(--bg); }
+
+.status.shake { animation: refused-shake 200ms ease-in-out 1; }
+
+@keyframes refused-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-0.3rem); }
+  75% { transform: translateX(0.3rem); }
+}
+
+/* -- row sections: the Setup table --------------------------------------- */
+/* One grid for the table; each row section is `display: contents`, so every
+   row's cells land in the same columns. */
 .card-body.table {
   display: grid;
   align-items: center;
-  column-gap: 0.75rem;
-  row-gap: 0.1rem;
-  padding-top: 0.4rem;
+  column-gap: var(--space-4);
+  row-gap: 0;
 }
 
 .card-body.table > .section { display: contents; }
@@ -633,47 +1405,44 @@ button, select, .mushroom {
 }
 
 /* A row that holds a command (Setup's Devices and Launch rows) spans the
-   table rather than lining up with it: its buttons and its sentence would
-   otherwise set the widths of the model rows' columns. Its last cell still
-   lands hard right, where the status column ends. */
+   table rather than lining up with it. Its last cell lands hard right. */
 .card-body.table > .section.section-span {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.75rem;
+  gap: var(--space-3) var(--space-4);
   grid-column: 1 / -1;
-  padding: 0.5rem 0;
+  padding: var(--space-4) 0;
 }
 
 .section-span > :last-child { margin-left: auto; }
 
 .section-row > .row-title {
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
-  padding: 0.4rem 0;
+  padding: var(--space-4) 0;
 }
 
 .section-row > .cell {
   display: flex;
+  flex-direction: row;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0;
-  min-height: 2rem;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  min-height: 2.75rem;
 }
 
-/* The label of a pair inside a row is a caption, not a column of its own. */
-.section-row > .cell > .label {
-  flex: 0 0 auto;
-  font-size: var(--t-xs);
-}
+/* The label of a pair inside a row is a caption, not a column. */
+.section-row > .cell > .label { flex: 0 0 auto; }
 
 /* A table says its column captions once, in its header row; the caption
-   beside each cell stays in the page as that control's label, for a screen
-   reader, and is hidden from sight. */
-.table-head > .head-cell {
+   beside each cell stays as that control's label, for a screen reader. */
+.table-head > .head-cell,
+.table-head > .row-title {
   min-height: 0;
-  padding: 0.2rem 0 0.1rem;
+  padding: var(--space-1) 0;
   font-size: var(--t-xs);
+  font-weight: 400;
   color: var(--muted);
 }
 
@@ -691,483 +1460,93 @@ button, select, .mushroom {
 
 .section-row > .filler { min-height: 0; }
 
-/* -- rows and controls --------------------------------------------------- */
-.row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.15rem 0;
-  min-height: var(--hit-panel);
-}
-
-.row.wide { flex-direction: column; align-items: stretch; }
-
-/* Disabled is a colour from the theme, not a fade: a faded row dropped its
-   text under 3:1 (F23, DS-8). */
-.row.disabled .label, .row.disabled .value, .row.disabled .lamp { color: var(--disabled-fg); }
-.row.disabled .plot, .row.disabled .picture, .row.disabled .feed { opacity: 0.6; }
-
-.label { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: var(--t-sm); }
-
-/* A readout is the point of the page: sunk into the panel like a window in
-   a machined face, set in the trace colour at display size with tabular
-   figures, and never bordered like a box the operator could type in. */
-.value {
-  font-variant-numeric: tabular-nums;
-  background: none;
-  border: 0;
-  padding: 0;
-  font-size: var(--t-lg);
-  font-weight: 500;
-  color: var(--trace);
-  text-align: right;
-  white-space: nowrap;
-}
-
-/* A word is not a number: an identifier or a state name is ink at label
-   size, and it wraps inside its row instead of running across the next
-   column (F15, F24, HC-8, CRIT-6). */
-span.value.is-word,
-.row span.value.is-word {
-  color: var(--text);
-  font-size: var(--t-sm);
-  white-space: normal;
-  overflow-wrap: anywhere;
-  min-width: 0;
-}
-
-.card.stale .row span.value.is-word,
-.is-offline .card .row span.value.is-word { color: var(--muted); }
-
-.group { display: flex; align-items: center; gap: 0.35rem; }
-
-.unit { color: var(--muted); font-size: var(--t-xs); }
-
-/* Controls are compact and recessed: they sit below the surface of the
-   panel, which is where a control belongs on an instrument. */
-.input, .select {
-  background: var(--well);
-  color: var(--text);
-  border: 1px solid var(--muted);
-  border-radius: 2px;
-  padding: 0.3em 0.5em;
-  min-height: 2rem;
-  font-family: inherit;
-  font-size: var(--t-sm);
-  width: 9rem;
-  min-width: 0;
-}
-
-.input:hover:not(:disabled), .select:hover:not(:disabled) { border-color: var(--text); }
-
-/* A number is as wide as a number needs to be, not as wide as a text box:
-   a bench panel of identical wide wells is a form, not an instrument. */
-.input[type="number"] {
-  width: 5.5rem;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-/* A tick box (G3) is a control on the panel like the others: square, the
-   size of the text beside it, ticked in trace because a ticked box is a lit
-   lamp, and greyed out with the theme's disabled ink, not a fade. */
-.checkbox {
-  flex: 0 0 auto;
-  width: 1.25rem;
-  height: 1.25rem;
-  margin: 0;
-  accent-color: var(--trace);
-  cursor: pointer;
-}
-
-.checkbox:disabled { cursor: not-allowed; }
-
-/* Every dropdown is the same width, whatever is currently chosen. */
-.select { width: 10rem; min-width: 10rem; }
-
-.input:disabled, .select:disabled, .button:disabled {
-  background: var(--disabled-bg);
-  color: var(--disabled-fg);
-  border-color: var(--rule);
-  cursor: not-allowed;
-}
-
-/* One command vocabulary, in every panel: the same height, the same face,
-   the same hover and press. */
-.button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: var(--hit-panel);
-  background: var(--neutral-bg);
-  color: var(--neutral-fg);
-  border: 1px solid var(--rule-strong);
-  border-radius: 2px;
-  padding: 0.3em 0.9em;
-  font-family: inherit;
-  font-size: var(--t-sm);
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.button:hover:not(:disabled) {
-  background: var(--lift);
-  border-color: var(--muted);
-}
-
-.button:active:not(:disabled) {
-  background: var(--well);
-}
-
-.button.small { padding: 0.12em 0.45em; font-size: var(--t-xs); }
-
-/* Consecutive commands are one action group: equal cells, two or three to
-   a line, so Start and Stop are a pair on one line and every command in a
-   column is the same width (app.js groupCommands). */
-.actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
-  gap: var(--space-3);
-  padding: 0.3rem 0;
-}
-
-.actions > .row { padding: 0; min-height: 0; }
-
-.actions .button { width: 100%; }
-
-/* Inside a spanning table row the group sits on the row's line and keeps
-   its buttons at their own, shared, minimum width. */
-.section-span .actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  padding: 0;
-}
-
-.section-span .actions .button { width: auto; min-width: 7.5rem; }
-
-/* A ghost is chrome, not an instrument control: the rail's Setup, the
-   tray's toggle, a closed model waiting to be reopened. */
-.ghost {
-  background: none;
-  color: var(--text);
-  border: 1px solid var(--rule-strong);
-  border-radius: 2px;
-  padding: 0.3em 0.8em;
-  font-family: inherit;
-  font-size: var(--t-sm);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.ghost:hover { border-color: var(--text); background: var(--well); }
-
-/* The rail's and the tray's secondary controls: a real target (44 px on the
-   short side), quiet enough that the stop is still the only thing that
-   shouts. */
-.rail-control, .closed .ghost { min-height: var(--hit); padding: 0 1rem; }
-
-/* Closing a module destructs its model (owner ruling), so it is the
-   quietest control on the panel: no frame until it is pointed at, a title
-   that says what it does, and a confirmation before it does it. */
-.card-close {
-  border-color: transparent;
-  color: var(--muted);
-  min-height: var(--hit-panel);
-  padding: 0 0.7rem;
-}
-
-.card-close:hover { color: var(--text); border-color: var(--rule-strong); }
-
-/* Roles: the meaning, not the colour. theme.py maps them, and only `danger`
-   carries the signal red - the brief's "one red". */
-.role-neutral { background: var(--neutral-bg); color: var(--neutral-fg); }
-.role-go      { background: var(--go-bg);      color: var(--go-fg); }
-.role-danger  { background: var(--danger-bg);  color: var(--danger-fg);
-                border-color: color-mix(in srgb, var(--signal) 55%, var(--bg)); }
-/* A warning-role COMMAND is outlined rather than filled. Filled, it is the
-   loudest thing on a panel and out-shouts the action the operator actually
-   came for; the trace colour still marks it. A warning-role readout or lamp
-   keeps the fill - it is reporting, not asking. */
-.role-warning { background: var(--warning-bg); color: var(--warning-fg); }
-
-button.button.role-warning {
-  background: none;
-  color: var(--text);
-  border-color: var(--trace);
-}
-.role-info    { background: var(--info-bg);    color: var(--info-fg); }
-
-/* One red: signal is the stop object, the latch and a fault - never a
-   command. A danger-role COMMAND (ending a recording, a halt) is a quiet
-   command like any other; the mushroom in every Safety section is what
-   stops a model. */
-button.button.role-danger {
-  background: var(--neutral-bg);
-  color: var(--neutral-fg);
-  border-color: var(--rule-strong);
-}
-
-button.button.role-danger:hover:not(:disabled) { background: var(--lift); }
-
-/* A toggle looks like a toggle, whatever its role: one width in every
-   panel, a lamp at its leading edge that is lit (trace) when ON and an
-   empty ring when OFF, and the state in words beside it. */
-button.button.toggle {
-  width: 14rem;
-  justify-content: flex-start;
-  gap: 0.55rem;
-  background: var(--neutral-bg);
-  color: var(--text);
-  border-color: var(--rule-strong);
-  text-align: left;
-}
-
-button.button.toggle:hover:not(:disabled) { background: var(--lift); }
-
-button.button.toggle.on { border-color: color-mix(in srgb, var(--trace) 60%, transparent); }
-
-.toggle-face { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-
-.toggle-lamp, .lamp::before {
-  flex: 0 0 auto;
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 50%;
-  border: 1.5px solid var(--muted);
-}
-
-.toggle.on .toggle-lamp { background: var(--trace); border-color: var(--trace); }
-
-span.value.role-neutral, span.value.role-go, span.value.role-danger,
-span.value.role-warning, span.value.role-info {
-  background: none;
-}
-
-/* A danger-role readout (a fault reason) is ink beside a signal mark:
-   signal text on the panel is 2.73:1 (F14, UXPM-4). */
-span.value.role-danger {
-  color: var(--error-ink);
-  padding-left: var(--space-3);
-  border-left: 0.2rem solid var(--error-mark);
-}
-span.value.role-warning { color: var(--trace); }
-span.value.role-go, span.value.role-info, span.value.role-neutral { color: var(--trace); }
-span.value.role-danger.is-word { color: var(--error-ink); }
-
-/* "--" is the absence of a reading, not a reading: muted, whatever the role.
-   So is a quiet word - "off", "Not set", "not detected" (F24). */
-span.value.is-empty { color: var(--muted); border-left: 0; padding-left: 0; }
-
-/* A lamp is lit or it is not: a dot and a word, not a box that looks like
-   a button. ON is the trace colour; a lit danger lamp is a fault, so it is
-   the signal colour; OFF is an empty ring. */
-span.lamp { background: none; }
-
-.lamp {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  font-size: var(--t-sm);
-  color: var(--muted);
-}
-
-.lamp::before { content: ""; }
-
-.lamp.on { color: var(--text); }
-
-.lamp.on::before { background: var(--trace); border-color: var(--trace); }
-
-.lamp.on.role-danger::before { background: var(--signal); border-color: var(--signal); }
-
-.plot, .picture, .feed, .region-canvas {
-  width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-}
-
-.plot { display: block; height: auto; }
-
-/* A plot or a figure in its frame, with the empty state that stands in for
-   it until there is something to draw. */
-.plot-frame { position: relative; }
-
-.empty-note {
-  margin: 0;
-  padding: 1.25rem 1rem;
-  min-height: 7rem;
-  display: grid;
-  place-items: center;
-  text-align: center;
-  text-wrap: balance;
-  font-size: var(--t-sm);
-  color: var(--muted);
-  border: 1px dashed var(--rule-strong);
-  border-radius: 2px;
-}
-
-.empty-note[hidden] { display: none; }
-
-/* Over a canvas the note sits inside the plot's own frame. */
-.plot + .empty-note { position: absolute; inset: 0; border: 0; }
-
-/* A rendered figure is a picture the model draws, so its own background is
-   whatever the model chose. What this side controls is the surface it sits
-   on and how much of the panel it may take. */
-.picture {
-  display: block;
-  background: var(--surface);
-  max-height: 18rem;
-  height: auto;
-  object-fit: contain;
-}
-
-.picture[hidden] { display: none; }
-
-/* A log is data, set in the page's face with tabular figures, compact, and
-   when it is empty it says what would fill it. */
-.feed {
-  height: 6.5rem;
-  overflow: auto;
-  overscroll-behavior: contain;
-  margin: 0;
-  padding: 0.45rem 0.6rem;
-  font-family: inherit;
-  font-size: var(--t-xs);
-  font-variant-numeric: tabular-nums;
-  white-space: pre-wrap;
-}
-
-.feed:empty {
-  display: grid;
-  place-items: center;
-  background: none;
-  border-style: dashed;
-  border-color: var(--rule-strong);
-}
-
-.feed:empty::before {
-  content: attr(data-empty);
-  font-size: var(--t-sm);
-  color: var(--muted);
-  text-align: center;
-  white-space: normal;
-  text-wrap: balance;
-}
-
-/* A refusal is a sentence on the panel, never a popup - and it shakes once
-   when it arrives, because a line that simply appears above the fold of a
-   long panel is a line nobody sees. */
-/* The line sits under the control that caused it, spans a table row's
-   columns when it lands in one, and scrolls into view clear of the sticky
-   rail (F10). */
-.status {
-  grid-column: 1 / -1;
-  scroll-margin-top: calc(var(--rail-h) + var(--space-3));
-  scroll-margin-bottom: calc(var(--tray-h) + var(--space-3));
-  margin: 0;
-  padding: 0.45rem 0.9rem;
-  background: color-mix(in srgb, var(--signal) 14%, var(--surface));
-  border-top: 1px solid color-mix(in srgb, var(--signal) 55%, var(--surface));
-  border-bottom: 1px solid color-mix(in srgb, var(--signal) 55%, var(--surface));
-  color: var(--text);
-  font-size: var(--t-sm);
-}
-
-/* Inside a section the band runs flush with the controls it is about. */
-.card-body .status { margin: var(--space-1) 0 var(--space-3); padding: var(--space-3) var(--space-4); }
-
-.status.shake { animation: refused-shake 200ms ease-in-out 1; }
-
-/* -- file_open: a path on the station, typed or chosen ------------------- */
-.row.file-open {
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-
-.row.file-open .path-input { flex: 1 1 12rem; width: auto; }
-
-.file-picker { display: none; }
-
-@keyframes refused-shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-0.3rem); }
-  75% { transform: translateX(0.3rem); }
-}
+/* A hidden body stays hidden, whatever makes it a table. */
+.card > .card-body[hidden],
+.card.collapsed > .card-body { display: none; }
 
 /* -- the Setup drawer ---------------------------------------------------- */
-/* Setup is where a run begins, so it is open at boot and it takes the left
-   edge rather than a slot in the rack. It withdraws on launch - the one
-   orchestrated moment - and the rail's Setup button brings it back. It
-   stops at the tray, so the latest event is never hidden behind it. */
+/* Open at boot, because Setup is where a run begins; beside the rail, never
+   over it; stopping at the tray. It withdraws on launch and the rail's
+   Setup button brings it back. */
 .drawer {
   position: fixed;
-  top: var(--rail-h);
-  left: 0;
+  top: var(--rail-top);
+  left: var(--rail-left);
   bottom: var(--tray-h);
   z-index: 8;
   width: min(560px, 100%);
+  max-width: calc(100vw - var(--rail-left));
   display: flex;
   flex-direction: column;
-  background: var(--surface);
-  border-right: 1px solid var(--rule-strong);
-  transform: translateX(-101%);
-  transition: transform 240ms ease-out;
+  background: var(--bg);
+  border-right: 1px solid var(--surface);
+  transform: translateX(calc(-100% - var(--rail-left) - 2px));
+  visibility: hidden;
+  transition: transform 240ms ease-out, visibility 0s linear 240ms;
 }
 
-.drawer.open { transform: none; }
+.drawer.open {
+  transform: none;
+  visibility: visible;
+  transition: transform 240ms ease-out, visibility 0s;
+}
 
 .drawer-head {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 0.75rem 0.5rem 1rem;
-  border-bottom: 1px solid var(--rule-strong);
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-8) var(--space-4);
 }
 
-.drawer-title { font-size: var(--t-lg); margin-right: auto; }
+.drawer-title { font-size: var(--t-headline); line-height: 1.1; margin-right: auto; }
 
 .drawer-body {
   flex: 1 1 auto;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 0.25rem 0.5rem 1rem;
+  padding: 0 var(--space-8) var(--space-7);
 }
 
-/* Inside 520px the table's columns have to give. The dropdowns stay equal
-   to each other - which is what "every dropdown is the same width" is for -
-   but they stop insisting on 10rem apiece, and the two that carry a port
-   name share the slack instead of each demanding its longest option's
-   width. `build()` writes the track list as an inline style, so overriding
-   it here is the only way to reach it; the shape is Setup's and is fixed by
-   src/controller/setup.py: name, Launch box, port, gamepad, status. The
-   Launch column is as narrow as its box (G3). */
+/* Inside 560 px the table's columns give: name, Launch box (as narrow as
+   the box, G3), port, gamepad, status. `build()` writes the track list
+   inline, so this is the only way to reach it. */
 .drawer .card-body.table {
   grid-template-columns:
     minmax(0, max-content) max-content minmax(4.5rem, 1fr) minmax(4.5rem, 1fr)
     minmax(0, max-content)
     !important;
-  column-gap: 0.4rem;
+  column-gap: var(--space-3);
 }
 
-.drawer .select { width: 100%; min-width: 0; }
+.drawer .select { width: 100%; min-width: 0; background: var(--surface); }
 
-/* The device name and the status read at panel scale, not at heading scale:
-   what the row is for is the two dropdowns between them. */
-.drawer .section-row > .row-title { font-size: var(--t-sm); padding-right: 0.5rem; }
+.drawer .section-row > .row-title { font-size: var(--t-md); padding-right: var(--space-3); }
 
-.drawer .value { min-width: 0; font-size: var(--t-sm); }
+.drawer .section-row:not(.table-head):not(.section-span) > * {
+  border-bottom: 1px solid var(--surface);
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+}
+
+.drawer .value,
+.drawer span.value.is-word,
+.drawer span.value.is-empty { min-width: 0; font-size: var(--t-sm); }
+
+.drawer .value:not(.is-word):not(.is-empty) { font-family: var(--font-family); font-stretch: normal; font-weight: 500; }
 
 .drawer .section-row > .cell { min-width: 0; }
 
-/* Setup's Launch row is two lines: how many devices are ticked, then the commands,
-   right-aligned as one group, so four things of four widths do not fight
-   for one line of the drawer. */
+/* Setup's Launch row: the count of ticked models, then the commands
+   right-aligned as one group, over a 2 px ink rule. */
 .drawer .section-span > .actions:last-child {
   flex: 1 0 100%;
   justify-content: flex-end;
+}
+
+.drawer .section-span:last-child {
+  margin-top: var(--space-5);
+  border-top: var(--rule-strong-px) solid var(--rule-strong);
 }
 
 .section-span > .value,
@@ -1177,81 +1556,83 @@ span.lamp { background: none; }
   text-overflow: ellipsis;
 }
 
+/* In the drawer Setup is the drawer's own content, not an entry. */
 .drawer .card {
-  border-left: 0;
+  display: block;
   border-top: 0;
-  background: none;
+  padding-top: 0;
 }
 
 .drawer .card-head { display: none; }
 
 .scrim {
   position: fixed;
-  inset: var(--rail-h) 0 var(--tray-h) 0;
+  inset: var(--rail-top) 0 var(--tray-h) var(--rail-left);
   z-index: 7;
-  background: color-mix(in srgb, var(--bg) 66%, transparent);
+  background: color-mix(in srgb, var(--text) 22%, transparent);
 }
 
 .scrim[hidden] { display: none; }
 
 /* -- the event tray ------------------------------------------------------ */
-/* One line at the foot of the page: the latest event, and nothing else,
-   until it is asked for. Because it is fixed, the page reserves its measured
-   height - without that it covers the bottom of the rack. */
+/* One line at the foot of the sheet: the latest warning or error, and
+   nothing while all is well. Fixed, so the page reserves its measured
+   height (Dashboard.reserveLogSpace). */
 .tray {
   position: fixed;
-  left: 0;
+  left: var(--rail-left);
   right: 0;
   bottom: 0;
   z-index: 4;
   background: var(--bg);
-  border-top: 1px solid var(--rule-strong);
+  border-top: 1px solid var(--surface);
 }
 
 .tray-head {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.25rem var(--page-gutter);
+  gap: var(--space-5);
+  padding: var(--space-2) var(--sheet-x);
 }
 
 .tray-latest {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   font-size: var(--t-sm);
-  color: var(--muted);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Severity is a word and a mark as well as a colour (F14, UXPM-10). */
-.tray-latest.severity-warning { color: var(--warning-ink); }
-.tray-latest.severity-error { color: var(--error-ink); }
-
+/* Severity is a mark's shape as well as its colour (F14, UXPM-10): a
+   warning is a hollow ink square, an error a solid signal one. The theme
+   says which is hollow (--warning-mark-hollow). */
 .tray-latest.severity-warning::before,
 .tray-latest.severity-error::before,
 .event.severity-warning::before,
 .event.severity-error::before {
+  content: "";
+  flex: 0 0 auto;
   display: inline-block;
+  width: 0.5625rem;
+  height: 0.5625rem;
   margin-right: var(--space-3);
-  padding: 0 var(--space-1);
-  border-radius: 2px;
-  font-size: var(--t-xs);
-  font-weight: 600;
+  border: var(--edge) solid;
 }
 
 .tray-latest.severity-warning::before,
 .event.severity-warning::before {
-  content: "Warning";
-  color: var(--warning-mark);
-  border: 1px solid var(--warning-mark);
+  border-color: var(--warning-mark);
+  background: color-mix(in srgb, var(--warning-mark) calc((1 - var(--warning-mark-hollow)) * 100%), transparent);
 }
 
 .tray-latest.severity-error::before,
 .event.severity-error::before {
-  content: "Error";
-  color: var(--danger-fg);
+  border-color: var(--error-mark);
   background: var(--error-mark);
 }
 
@@ -1259,33 +1640,25 @@ span.lamp { background: none; }
   height: 8.6em;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0.25rem var(--page-gutter) 0.6rem;
+  padding: 0 var(--sheet-x) var(--space-4);
   font-size: var(--t-sm);
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .tray:not(.open) .tray-log { display: none; }
 
-.event {
-  padding: 0 0 0 var(--space-3);
-  border-left: 2px solid transparent;
-}
+.event { display: block; }
 
 .severity-info { color: var(--info-ink); }
-.severity-warning { color: var(--warning-ink); }
-.event.severity-warning { border-left-color: var(--warning-mark); }
-.event.severity-error { color: var(--error-ink); border-left-color: var(--error-mark); }
+.event.severity-warning { color: var(--warning-ink); }
+.event.severity-error { color: var(--error-ink); }
 
 /* -- in-page panels (G4) --------------------------------------------------- */
-/* A detached log opens in its own card, directly under its button, and
-   pushes the rest of the card down (I3, UXPM5-3). Pinned to the rack's top
-   right it covered the next card's inputs; in the card's flow it covers
-   nothing and stays beside what opened it. Not an overlay - no scrim,
-   nothing behind it goes inert. In z-order it is part of its card: below
-   the rail, so the stop is never covered (F1); below the overlays, so a
-   confirmation still covers it; below the tray, so a tall panel runs under
-   the event line rather than over it; and under the drawer's scrim with the
-   rest of the rack. Scrolled into view clear of the rail and the tray. */
+/* A detached log opens inside its own entry, directly under its button, and
+   pushes the rest of the entry down (I3). Not an overlay - no scrim,
+   nothing behind it goes inert. In z-order it is part of its entry: under
+   the tray, the scrim, the overlays and the rail, so the stop is never
+   covered (F1). Scrolled into view clear of the rail and the tray. */
 .log-window {
   position: relative;
   z-index: 1;
@@ -1293,78 +1666,73 @@ span.lamp { background: none; }
   width: 100%;
   min-width: 0;
   margin-top: var(--space-3);
-  scroll-margin-top: calc(var(--rail-h) + var(--space-3));
+  scroll-margin-top: calc(var(--rail-top) + var(--space-3));
   scroll-margin-bottom: calc(var(--tray-h) + var(--space-3));
   display: flex;
   flex-direction: column;
-  background: var(--surface);
-  border: 1px solid var(--rule-strong);
-  border-left: 0.2rem solid var(--rule-strong);
+  background: var(--bg);
+  border-top: var(--rule-strong-px) solid var(--rule-strong);
+  border-radius: 0 0 var(--radius-control) var(--radius-control);
 }
 
 /* The opener's row wraps, so the open panel takes the line under the
-   button at the card's full width. */
-.row.opener { flex-wrap: wrap; }
+   button at the entry's full width. */
+.row.opener { flex-direction: row; flex-wrap: wrap; flex: 1 0 100%; }
 
 .log-window[hidden] { display: none; }
 
-/* Focus lands on the panel only so it has somewhere to land, as with the
-   drawer: it is not a control, so it draws no ring. */
 .log-window:focus, .log-window:focus-visible { outline: none; }
 
 .log-window-head {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.35rem 0.5rem 0.35rem 0.9rem;
-  border-bottom: 1px solid var(--rule);
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
 }
 
-.log-window-title { font-size: var(--t-md); font-weight: 500; margin-right: auto; }
+.log-window-title { font-size: var(--t-md); font-weight: 600; margin-right: auto; }
 
-.log-window-close { min-height: var(--hit-panel); padding: 0 0.9rem; }
+.log-window-close { min-height: var(--hit-panel); }
 
-/* The feed takes what the panel has, rather than the card's compact six
-   lines: reading the log is why the panel was opened. */
+/* The feed takes what the panel has: reading the log is why it opened. */
 .log-window-feed {
   flex: 1 1 auto;
   height: 16rem;
   min-height: 6.5rem;
-  border: 0;
-  border-radius: 0;
 }
 
 /* -- overlays ------------------------------------------------------------ */
-/* Every overlay starts under the rail, so the rail and its stop are never
-   dimmed or covered by one (F1, WDG-1). */
+/* Every overlay starts beside the rail (or under it, on a phone), so the
+   rail and its stop are never dimmed or covered by one (F1, WDG-1). */
 .overlay {
   position: fixed;
-  inset: var(--rail-h) 0 0 0;
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  inset: var(--rail-top) 0 0 var(--rail-left);
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10;
+  padding: var(--space-5);
+  background: color-mix(in srgb, var(--text) 28%, transparent);
 }
 
 .overlay[hidden] { display: none; }
 
 .dialog {
-  background: var(--surface);
-  border-left: 0.2rem solid var(--rule-strong);
-  border-top: 1px solid var(--rule);
-  padding: 1.1rem;
   max-width: 34rem;
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
+  gap: var(--space-5);
+  padding: var(--space-6) var(--space-7) var(--space-7);
+  border-top: var(--rule-strong-px) solid var(--rule-strong);
+  border-radius: 0 0 var(--radius-well) var(--radius-well);
+  background: var(--bg);
 }
 
 .dialog .button { align-self: flex-end; min-width: 7.5rem; }
 
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-3); }
 
-.dialog-count { margin: 0; font-size: var(--t-sm); font-weight: 600; }
+.dialog-count { font-size: var(--t-sm); font-weight: 600; }
 
 .dialog-count[hidden] { display: none; }
 
@@ -1377,46 +1745,94 @@ span.lamp { background: none; }
   overflow-y: auto;
 }
 
-.ack-line { margin: 0; }
-
-.ack-line + .ack-line { padding-top: var(--space-3); border-top: 1px solid var(--rule); }
+.ack-line + .ack-line { padding-top: var(--space-3); border-top: 1px solid var(--surface); }
 
 .wide-dialog { max-width: 90vw; }
 
-.dialog-text { margin: 0; white-space: pre-wrap; }
+.dialog-text { white-space: pre-wrap; font-size: var(--t-md); }
 
 .region-canvas {
-  max-width: 86vw;
+  max-width: 80vw;
   max-height: 70vh;
   cursor: crosshair;
   touch-action: none;
   user-select: none;
+  background: var(--surface);
 }
 
-/* -- narrow screens ------------------------------------------------------ */
-/* Below the drawer's own width the rail stacks: the name and the stop on
-   the first line, the readouts on a line of their own under them. The stop
-   never leaves the viewport and is never smaller than a thumb. */
+/* -- after Quit ---------------------------------------------------------- */
+/* The page under the rail is inert and reads as such, and nothing keeps a
+   signal mark it can no longer observe. */
+.is-shut-down .sheet, .is-shut-down .sheet-headline, .is-shut-down .tray { opacity: 0.5; }
+
+.is-shut-down .card.is-lost,
+.is-shut-down .card.is-unconfirmed { border-top-color: var(--rule-strong); }
+
+.is-shut-down .switch,
+.is-shut-down .switch.is-latched { background: var(--disabled-bg); border-color: var(--muted); }
+
+.is-shut-down .switch .switch-knob { background: var(--muted); }
+
+.is-shut-down .lamp.role-danger::before { background: var(--muted); border-color: var(--muted); }
+
+.is-shut-down .card-alert::before,
+.is-shut-down span.value.role-danger::before { background: var(--muted); }
+
+/* -- narrower windows ---------------------------------------------------- */
+/* Under 1000 px the rail narrows to 200 and the disc to its narrow size;
+   the entries after the opened one go two across (the Narrow artboard). */
+@media (max-width: 62.5rem) {
+  :root { --rail-w: 200px; --stop-d: var(--stop-diameter-narrow); --sheet-x: 24px; }
+  .page { padding-top: calc(var(--rail-top) + var(--space-6)); }
+  .rail { padding: var(--space-7) var(--space-6) var(--space-6); }
+  .card.span-2 { grid-column: span 3; }
+  .sheet { column-gap: var(--space-9); }
+}
+
+/* Under 760 px the entries stack in one column. */
+@media (max-width: 47.5rem) {
+  .card.span-2, .card.span-3 { grid-column: span 6; }
+}
+
+/* A phone: the rail becomes a bar across the top - the name, the disc at a
+   thumb's size, Setup and Quit - and the model list scrolls sideways
+   inside it. The stop never leaves the viewport. */
 @media (max-width: 40rem) {
-  .rail { flex-wrap: wrap; gap: 0.75rem; }
-  .rail-head { border-right: 0; padding-right: 0; }
-  /* A basis, not a width: under `flex: 1 1 0` a width never applies, and
-     with Setup hidden the readouts shrank to nothing (I9, WDG6-2). */
-  .rail-readouts { order: 3; flex: 1 0 100%; }
-  /* Setup's table at phone width: two lines per model - the name on its
-     own line, the Launch box, the two dropdowns and the status under it -
-     so a long name never runs under the box beside it (I9, WDG6-2). */
+  :root { --rail-w: 100%; --stop-d: 4rem; --sheet-x: 16px; }
+  .rail {
+    right: 0;
+    bottom: auto;
+    width: auto;
+    max-height: 60vh;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3) var(--space-4);
+    padding: var(--space-4) var(--space-5);
+  }
+  .rail-head { flex: 1 1 8rem; min-width: 0; }
+  .stop-block { order: 2; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; }
+  .stop-hint { display: none; }
+  .stop-hint[hidden] { display: none; }
+  .mushroom { font-size: var(--t-sm); }
+  .rail-foot { order: 3; margin-top: 0; flex: 1 0 100%; justify-content: flex-end; }
+  .model-nav { order: 4; flex: 1 0 100%; flex-direction: row; overflow-x: auto; }
+  .model-link { width: auto; white-space: nowrap; }
+  .closed { order: 5; flex: 1 0 100%; }
+  .rail-alert, .rail-latched { flex: 1 0 100%; }
+  .page { margin-left: 0; }
+  .drawer-head { padding: var(--space-5) var(--space-5) var(--space-3); }
+  .drawer-body { padding: 0 var(--space-5) var(--space-5); }
+  /* Setup's table at phone width: the name on its own line, the Launch
+     box, the two dropdowns and the status under it (I9, WDG6-2). */
   .drawer .card-body.table {
     grid-template-columns:
       max-content minmax(0, 1fr) minmax(0, 1fr) minmax(0, max-content)
       !important;
   }
-  .drawer .section-row > .row-title { grid-column: 1 / -1; padding-bottom: 0; }
+  .drawer .section-row > .row-title { grid-column: 1 / -1; padding-bottom: 0; border-bottom: 0 !important; }
   .drawer .table-head > .row-title { display: none; }
-  .mushroom { --disc: 4rem; margin-left: auto; }
-  .readout-value { font-size: var(--t-lg); }
-  .actions { grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); }
-  :root { --page-gutter: 0.85rem; }
+  .tray-head, .tray-log { padding-left: var(--space-5); padding-right: var(--space-5); }
 }
 
 /* -- motion, when it is wanted ------------------------------------------- */

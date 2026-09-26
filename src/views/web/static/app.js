@@ -21,9 +21,20 @@ const DATA_POLL_MS = 1000;
 const HEARTBEAT_MS = 2000;
 const STALE_AFTER_S = 1.0;
 const SETUP_NAME = '__setup__';
-//: How many of a model's key numbers the status rail carries. More than this
-//: and the rail stops being readable at a glance, which is its whole job.
+//: How many of a model's key numbers are set as readings (large numerals) on
+//: its sheet entry. The rest of its readonly values are captions and values.
 const RAIL_READOUTS = 4;
+//: A number is drawn in the trace colour only while it is CHANGING: once it
+//: has held still this long it reads in ink (Bench sheet, 2026-09-25: trace
+//: is for changing numbers and plot lines only).
+const CHANGING_MS = 1000;
+//: Status by exception: a readonly whose value is one of these is a normal
+//: state and is not drawn in tier 1. Loaded from theme.QUIET_VALUES
+//: (/api/theme.json) at start, so the three views read one list.
+let QUIET_VALUES = new Set();
+//: The default disclosure texts, likewise from the theme (TIER_LABELS). A
+//: section that names its own `disclosure` wins.
+let TIER_LABELS = { 2: 'Details', 3: 'Diagnostics' };
 //: The keyboard path to the stop (F9): Ctrl+., the one chord on every
 //: platform and in every view (G5, owner ruling 2026-09-25: no shortcut
 //: exists on one OS only). It works with focus in a text box. It only ever
@@ -190,15 +201,36 @@ function toggleFace(text, caption) {
   return { text: sentenceCase(face), hint };
 }
 
-/** The one bold object on the page, in the two sizes it comes in: the
- *  dashboard's stop on the rail and the per-model stop in a Safety section.
- *  One control, one shape, wherever it appears. */
-function mushroom(label) {
-  const button = make('button', 'mushroom');
-  button.type = 'button';
-  const face = make('span', 'mushroom-face', label);
-  button.appendChild(face);
-  return { button, face };
+/** A disclosure's chevron: a drawn stroke in the text's own colour, turned
+ *  a quarter when open (styles.css). Built node by node, no markup. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function chevron() {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'chevron');
+  svg.setAttribute('viewBox', '0 0 10 10');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', 'M3.5 1.5 L7 5 L3.5 8.5');
+  svg.appendChild(path);
+  return svg;
+}
+
+/** Status by exception: is this value a normal state, not worth drawing in
+ *  tier 1? `raw` is what the state served, `shown` how it reads. */
+function isQuiet(raw, shown) {
+  if (raw === null || raw === undefined) return true;
+  return QUIET_VALUES.has(String(raw)) || QUIET_VALUES.has(String(shown));
+}
+
+/** An axis readout: "X:", "Y position:". Its letter is set inline beside the
+ *  number, and the section's title is said once above the line. */
+function axisLetter(element) {
+  const text = String((element && element.text) || '').trim();
+  const bare = text.match(/^([XYZ])\s*:?$/);
+  if (bare) return bare[1];
+  const named = text.match(/^([XYZ]) position\s*:?$/i);
+  return named ? named[1].toUpperCase() : '';
 }
 
 // ==========================================================================
@@ -240,6 +272,14 @@ function isRowSection(section) {
   return section && section.layout === 'row';
 }
 
+/** A section's tier of prominence (schema.section's `tier`, E 2026-09-25):
+ *  1 always drawn, 2 behind the model's disclosure, 3 behind Diagnostics
+ *  inside it. A schema from before tiers is all tier 1. */
+function sectionTier(section) {
+  const tier = Number(section && section.tier);
+  return tier === 2 || tier === 3 ? tier : 1;
+}
+
 //: Element types that DO something rather than say something.
 const COMMAND_TYPES = ['button', 'file_save', 'file_open'];
 
@@ -272,23 +312,12 @@ function rowGridColumns(columns) {
   return 'max-content ' + middle + 'minmax(0, 1fr)';
 }
 
-/** A card with a lot to say takes two columns of the page and lays its own
- *  sections out in two columns, rather than becoming one very tall stripe
- *  beside a mostly empty one (the bench look, 2026-09-22). A row-layout card
- *  is a table and is never split into columns. */
-function isWideCard(sections) {
-  const list = sections || [];
-  if (list.some(isRowSection)) return false;
-  const drawn = list.reduce((total, s) => total + (s.elements || []).length, 0);
-  return list.length >= 6 || drawn >= 24;
-}
-
-/** The key numbers the status rail carries for a model, derived rather than
- *  named: the readonly elements of its FIRST schema section, which is where
- *  every model in this station puts what the operator watches (the probe's
- *  coordinate frame, the heater's temperature, the rotator's stage). A first
- *  section that happens to hold no readout falls through to the next one
- *  that does, so a model is never silently absent from the rail. */
+/** The key numbers of a model - set as READINGS (large numerals) on its
+ *  sheet entry - derived rather than named: the readonly elements flagged
+ *  `rail: true`, or else those of its FIRST schema section, which is where
+ *  every model in this station puts what the operator watches. (The name is
+ *  the schema's: `rail` once meant the top rail; the readings left it for
+ *  the sheet, so a value is never said twice.) */
 function railElements(schema) {
   // A model that SAYS what it watches (`rail: true` on a readonly) wins;
   // the first-section rule below is the fallback for one that does not.
@@ -305,12 +334,6 @@ function railElements(schema) {
     if (readouts.length) return readouts.slice(0, RAIL_READOUTS);
   }
   return [];
-}
-
-/** "X Position:" is a form label; on the rail it is a caption beside a
- *  number, so it drops the colon that pointed at the box. */
-function railLabel(element) {
-  return sentenceCase(element.text || element.model_attr || '');
 }
 
 /** `PanelView._refresh`: `age is not None and age > 1.0`. A model with no
@@ -420,16 +443,39 @@ function clockTime(date) {
 // readValue?, isDirty? }. This is the seam a toolkit subclass fills in
 // base.py - here the toolkit is the DOM.
 // ==========================================================================
+/** A readonly value: a caption over a value. Numbers are set in the numeral
+ *  face with tabular figures; a word in the text face; nothing-to-report
+ *  muted. A number is in the trace colour only while it is changing, and
+ *  settles to ink once it has held still for CHANGING_MS (the per-readout
+ *  last-change time is `changedAt`). In tier 1 a normal state
+ *  (theme.QUIET_VALUES) is not drawn at all: status by exception. */
 function renderReadonly(panel, element) {
-  const node = row(element);
+  const node = row(element, 'stat');
   const value = make('span', 'value is-empty ' + roleClass(element.role), '--');
   value.setAttribute('translate', 'no');
   node.appendChild(value);
-  return {
+  if (element.unit) node.appendChild(make('span', 'unit', element.unit));
+  let changedAt = 0;
+  let isChanging = false;
+  const widget = {
     node,
+    value,
+    /** Settle a number that has stopped changing. Written only on the edge,
+     *  so an idle page mutates nothing (F21). */
+    tick: (now) => {
+      const next = changedAt > 0 && now - changedAt < CHANGING_MS;
+      if (next === isChanging) return;
+      isChanging = next;
+      value.classList.toggle('is-changing', isChanging);
+    },
     setText: (text) => {
       const shown = readoutText(text);
+      // Status by exception, tier 1 only: tiers 2 and 3 are where a normal
+      // state is still read on purpose.
+      const hide = widget.tier === 1 && isQuiet(text, shown);
+      if (node.hidden !== hide) node.hidden = hide;
       if (value.textContent === shown) return;
+      const was = value.textContent;
       value.textContent = shown;
       // Nothing to report is not a reading: it is muted, whatever the
       // element's role, so an empty fault line is never a red "--". A word
@@ -440,9 +486,18 @@ function renderReadonly(panel, element) {
       // A long identifier wraps inside its row; its whole text is also one
       // hover away (F15, HC-8).
       value.title = kind === 'word' ? shown : '';
+      // The first value is not a change; a number that moves is.
+      if (kind === 'number' && was !== '--' && was !== '') {
+        changedAt = Date.now();
+        widget.tick(changedAt);
+      } else if (kind !== 'number') {
+        changedAt = 0;
+        widget.tick(Date.now());
+      }
     },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
+  return widget;
 }
 
 function renderEntry(panel, element) {
@@ -475,6 +530,16 @@ function renderEntry(panel, element) {
   }
   if (element.min !== undefined && element.min !== null) input.min = String(element.min);
   if (element.max !== undefined && element.max !== null) input.max = String(element.max);
+  // `slider: [low, high]` (E, 2026-09-25): a range BESIDE the entry, never
+  // instead of it. The range writes the entry and the entry writes the
+  // range; a command still reads the ENTRY (gatherInputs), so what travels
+  // is exactly what the box says and the wire is unchanged.
+  const slider = numeric && Array.isArray(element.slider)
+    ? renderSlider(input, element, isInt) : null;
+  if (slider) {
+    node.classList.add('has-slider');
+    group.appendChild(slider.node);
+  }
   group.appendChild(input);
   if (element.unit) group.appendChild(make('span', 'unit', element.unit));
   node.appendChild(group);
@@ -484,7 +549,7 @@ function renderEntry(panel, element) {
   return {
     node,
     // Never overwrite what the operator is typing: focused, or edited away
-    // from the last value the server sent.
+    // from the last value the server sent - by the box or by its slider.
     isDirty: () => document.activeElement === input || input.value !== served,
     readValue: () => input.value,
     setText: (text) => {
@@ -495,10 +560,70 @@ function renderEntry(panel, element) {
       served = next;
       input.value = served;
       if (!numeric) input.title = served;
+      if (slider) slider.follow();
     },
     setEnabled: (flag) => {
       if (input.disabled === !flag) return;
       input.disabled = !flag;
+      if (slider) slider.setEnabled(flag);
+      node.classList.toggle('disabled', !flag);
+    },
+  };
+}
+
+/** The slider half of a slider entry: a 4 px panel track, an ink fill to
+ *  the value and an 18 px ink thumb (styles.css). Its travel is the
+ *  schema's display range; the entry's Param still validates what is typed,
+ *  so the range clamps only what it can show, never what the box holds. */
+function renderSlider(input, element, isInt) {
+  const low = Number(element.slider[0]);
+  const high = Number(element.slider[1]);
+  const node = make('span', 'slider');
+  node.appendChild(make('span', 'slider-track'));
+  node.appendChild(make('span', 'slider-fill'));
+  const range = make('input', 'slider-range');
+  range.type = 'range';
+  range.min = String(low);
+  range.max = String(high);
+  const decimals = element.decimals === undefined ? 3 : element.decimals;
+  range.step = isInt ? '1' : String(Math.pow(10, -decimals));
+  range.tabIndex = 0;
+  range.setAttribute('aria-label',
+    sentenceCase(element.text || element.model_attr || '') + ', slider');
+  node.appendChild(range);
+  let filled = null;
+  const paint = () => {
+    const at = Math.max(low, Math.min(high, Number(range.value)));
+    const share = high > low ? ((at - low) / (high - low)) * 100 : 0;
+    const next = share.toFixed(2) + '%';
+    if (next === filled) return;
+    filled = next;
+    node.style.setProperty('--fill', next);
+  };
+  /** The entry's number, shown on the range (clamped to its travel). */
+  const follow = () => {
+    const number = Number(input.value);
+    if (input.value.trim() === '' || !isFinite(number)) return;
+    const at = String(Math.max(low, Math.min(high, number)));
+    if (range.value !== at) range.value = at;
+    paint();
+  };
+  range.addEventListener('input', () => {
+    const number = Number(range.value);
+    input.value = isInt ? String(Math.round(number)) : number.toFixed(decimals);
+    paint();
+  });
+  input.addEventListener('input', follow);
+  input.addEventListener('change', follow);
+  follow();
+  paint();
+  return {
+    node,
+    range,
+    follow,
+    setEnabled: (flag) => {
+      if (range.disabled === !flag) return;
+      range.disabled = !flag;
       node.classList.toggle('disabled', !flag);
     },
   };
@@ -529,7 +654,7 @@ function renderToggle(panel, element) {
   if (element.model_attr === 'is_estopped') return renderStopToggle(panel, element);
   // A toggle looks like a toggle: a lamp that is lit or not, the state's
   // words beside it, and aria-pressed for anything that cannot see the lamp.
-  const node = row(element);
+  const node = row(element, 'toggle-row');
   const button = make('button', 'button toggle off');
   button.type = 'button';
   const lamp = make('span', 'toggle-lamp');
@@ -546,6 +671,10 @@ function renderToggle(panel, element) {
     last = Boolean(on);
     const shown = toggleFace(on ? (element.true_text || 'On')
                                 : (element.false_text || 'Off'), element.text);
+    // A face that says the action ("Enter manual mode") needs no caption
+    // beside it; a bare "On"/"Off" does ("Sync X  On"). The caption stays
+    // in the page either way as the control's label.
+    node.classList.toggle('bare-face', /^(On|Off)$/.test(shown.text));
     face.textContent = shown.text;
     // The aside, if the schema wrote one; otherwise the words themselves,
     // so a face cut short by the fixed width is still readable in full.
@@ -562,28 +691,35 @@ function renderToggle(panel, element) {
   };
 }
 
-/** A model's own FULL STOP, drawn as the mushroom. The copy is the rail's
- *  copy - "Stop" then "Clear" - because an action keeps its name through
- *  the whole flow; the schema's own wording is the button's title. */
+/** A model's own stop, in Diagnostics (tier 3): a small switch, not a second
+ *  red disc - the rail's disc is the stop an operator reaches for (E,
+ *  2026-09-25). Off it is an outlined track; latched the track is signal red
+ *  with a white knob, the one place besides the disc that red may sit. The
+ *  schema's own wording is its title. */
 function renderStopToggle(panel, element) {
-  const node = row(element);
-  const { button, face } = mushroom('Stop');
-  button.classList.add('mini');
+  const node = row(element, 'switch-row');
+  const button = make('button', 'switch');
+  button.type = 'button';
+  button.setAttribute('role', 'switch');
+  button.appendChild(make('span', 'switch-knob'));
+  const words = make('span', 'switch-words', 'Stop this model only');
+  words.setAttribute('aria-hidden', 'true');
   button.addEventListener('click', () => panel.runToggle(element));
   node.appendChild(button);
+  node.appendChild(words);
   let last = null;
   const model = sentence(panel.title || panel.name);
   const show = (on) => {
     if (last === Boolean(on)) return;
     last = Boolean(on);
-    face.textContent = on ? 'Clear' : 'Stop';
+    putText(words, on ? 'Stopped. Press to clear' : 'Stop this model only');
     button.classList.toggle('is-latched', last);
     button.title = sentence(on ? (element.true_text || '')
                                : (element.false_text || ''));
-    // Named for its model, so a list of buttons does not read "Stop, Stop"
+    // Named for its model, so a list of switches does not read "Stop, Stop"
     // (WDG-4).
     button.setAttribute('aria-label', on ? 'Clear the stop on ' + model : 'Stop ' + model);
-    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    button.setAttribute('aria-checked', on ? 'true' : 'false');
   };
   show(false);
   return {
@@ -661,9 +797,12 @@ function renderDropdown(panel, element) {
 }
 
 function renderRegionSelect(panel, element) {
-  const node = row(element);
+  const node = row(element, 'region');
   const value = make('span', 'value is-empty', 'Not set');
-  const button = make('button', 'button ' + roleClass(element.role), 'Pick region');
+  // The schema's words, with the ellipsis a control that opens a picker
+  // carries ("Set capture region…").
+  const button = make('button', 'button ' + roleClass(element.role),
+                      sentenceCase(element.text || 'Pick region') + '…');
   button.type = 'button';
   button.addEventListener('click', () => panel.pickRegion(element));
   node.appendChild(value);
@@ -775,11 +914,14 @@ function renderPlot(panel, element) {
     node,
     dataCommand: element.data_command,
     setData: (data) => {
-      // Redrawn only when the series changed (F21).
-      const key = JSON.stringify(data);
+      // Redrawn only when the series, the room it has, or whether it is
+      // live changed (F21). A plot behind a closed disclosure has no room:
+      // it is drawn when it is opened, on the next data cycle.
+      const frozen = Boolean(panel.isFrozen && panel.isFrozen());
+      const key = JSON.stringify(data) + '|' + canvas.clientWidth + '|' + frozen;
       if (key === drawn) return;
       drawn = key;
-      empty.hidden = drawSeries(canvas, data, element);
+      empty.hidden = drawSeries(canvas, data, element, frozen);
     },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
@@ -815,8 +957,11 @@ function renderImage(panel, element) {
   };
 }
 
+/** A lamp is lit or it is not: a dot and a word. Lit is ink, off is a
+ *  hollow ring, and a lamp whose ACTIVE role is danger (a fault, a lost
+ *  stage) is the signal colour - never the trace, which is for numbers. */
 function renderIndicator(panel, element) {
-  const node = row(element);
+  const node = row(element, 'lamp-row');
   const lamp = make('span', 'lamp');
   node.appendChild(lamp);
   let last = null;
@@ -1020,17 +1165,35 @@ function normalisePoints(data) {
   }).filter((p) => isFinite(p[0]) && isFinite(p[1]));
 }
 
-function drawSeries(canvas, data, element) {
+/** A tick label: as few digits as the span needs. */
+function tickText(value, span) {
+  const digits = span >= 100 ? 0 : span >= 10 ? 1 : 2;
+  return Number(value).toFixed(digits);
+}
+
+/** The Bench sheet's plot (design-Sheet.md): no frame; the sheet's own
+ *  tone for three horizontal gridlines; one muted x-axis; the series in the
+ *  trace colour at 1.75 px - or in muted when the model is frozen (latched,
+ *  stale, not answering), because a frozen line is not a live one. Sized to
+ *  the room it has, at the screen's pixel density, and the canvas's own
+ *  size is written only when it changes (F21). */
+function drawSeries(canvas, data, element, frozen) {
   const context = canvas.getContext('2d');
   const style = getComputedStyle(document.documentElement);
-  // The series is drawn in the trace colour, which is the same colour every
-  // live number on the page is set in: one hue means "this is the data".
-  const trace = style.getPropertyValue('--trace');
-  const muted = style.getPropertyValue('--muted');
-  context.clearRect(0, 0, canvas.width, canvas.height);
+  const trace = style.getPropertyValue('--trace').trim();
+  const muted = style.getPropertyValue('--muted').trim();
+  const grid = style.getPropertyValue('--bg').trim();
+  const face = style.getPropertyValue('--font-family').trim() || 'sans-serif';
+  const ratio = window.devicePixelRatio || 1;
+  const cssWidth = canvas.clientWidth || 420;
+  const cssHeight = canvas.clientHeight || 180;
+  const width = Math.round(cssWidth * ratio);
+  const height = Math.round(cssHeight * ratio);
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, cssWidth, cssHeight);
   const points = normalisePoints(data);
-  context.strokeStyle = muted;
-  context.strokeRect(0.5, 0.5, canvas.width - 1, canvas.height - 1);
   // Fewer than two points is not a line: the frame's empty state says so,
   // in page text, rather than a caption painted small into the canvas.
   if (points.length < 2) return false;
@@ -1042,19 +1205,50 @@ function drawSeries(canvas, data, element) {
   const y1 = Math.max.apply(null, ys);
   const spanX = (x1 - x0) || 1;
   const spanY = (y1 - y0) || 1;
-  const pad = 24;
+  const left = 48;
+  const right = 12;
+  const top = 10;
+  const bottom = 26;
+  const plotW = Math.max(10, cssWidth - left - right);
+  const plotH = Math.max(10, cssHeight - top - bottom);
+  const at = (x, y) => [left + ((x - x0) / spanX) * plotW,
+                        top + plotH - ((y - y0) / spanY) * plotH];
+  context.font = '12px ' + face;
+  context.textBaseline = 'middle';
+  context.lineWidth = 1;
+  for (let i = 0; i < 3; i += 1) {
+    const value = y0 + (spanY * i) / 2;
+    const y = Math.round(at(x0, value)[1]) + 0.5;
+    context.strokeStyle = grid;
+    context.beginPath();
+    context.moveTo(left, y);
+    context.lineTo(left + plotW, y);
+    context.stroke();
+    context.fillStyle = muted;
+    context.textAlign = 'right';
+    context.fillText(tickText(value, spanY), left - 8, y);
+  }
+  const axisY = top + plotH + 6.5;
+  context.strokeStyle = muted;
   context.beginPath();
-  points.forEach((point, index) => {
-    const x = pad + ((point[0] - x0) / spanX) * (canvas.width - pad * 2);
-    const y = canvas.height - pad - ((point[1] - y0) / spanY) * (canvas.height - pad * 2);
-    if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
-  });
-  context.strokeStyle = trace;
-  context.lineWidth = 1.5;
+  context.moveTo(left, axisY);
+  context.lineTo(left + plotW, axisY);
   context.stroke();
   context.fillStyle = muted;
-  context.fillText(String(element.y_label || ''), 4, 12);
-  context.fillText(String(element.x_label || ''), canvas.width - pad, canvas.height - 6);
+  context.textBaseline = 'alphabetic';
+  context.textAlign = 'left';
+  context.fillText(tickText(x0, spanX), left, cssHeight - 4);
+  context.textAlign = 'right';
+  context.fillText(String(element.x_label || tickText(x1, spanX)), left + plotW, cssHeight - 4);
+  context.beginPath();
+  points.forEach((point, index) => {
+    const [x, y] = at(point[0], point[1]);
+    if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+  });
+  context.strokeStyle = frozen ? muted : trace;
+  context.lineWidth = 1.75;
+  context.lineJoin = 'round';
+  context.stroke();
   return true;
 }
 
@@ -1106,43 +1300,55 @@ class PanelCard {
     this.dashboard = dashboard;
     this.name = name;
     this.schema = schema;
+    this.options = options || {};
     this.widgets = [];
     this.values = {};
     this.lastData = 0;
-    this.isCollapsed = false;
     this.isOffline = false;
     this.lost = [];
     this.title = (options && options.title) || name;
+    // An ENTRY on the sheet (Bench sheet, 2026-09-25): a 2 px ink rule, the
+    // model's name, its tier-1 body; tiers 2 and 3 behind one disclosure.
+    // The DOM hook keeps its old name, `card`, which is what the tests and
+    // the other layers find a model's node by.
     this.node = make('section', 'card');
+    this.node.tabIndex = -1;
     const head = make('header', 'card-head');
     const title = make('h2', 'card-title', sentence(this.title));
     title.setAttribute('translate', 'no');
+    controlSerial += 1;
+    title.id = 'model-title-' + controlSerial;
+    this.node.setAttribute('aria-labelledby', title.id);
     head.appendChild(title);
+    // The head's right side says only what is NOT normal: stale, lost,
+    // stopped, a stop that did not confirm. Normal is silence.
+    const side = make('span', 'card-side');
     this.staleBadge = make('span', 'stale-badge', 'Stale');
     this.staleBadge.hidden = true;
-    head.appendChild(this.staleBadge);
-    if (options && options.collapsible) {
-      // The collapsed card keeps its header bar, so the panel is always one
-      // click from being back.
-      this.collapseButton = make('button', 'ghost collapse', 'Collapse');
-      this.collapseButton.type = 'button';
-      this.collapseButton.addEventListener('click',
-        () => this.setCollapsed(!this.isCollapsed));
-      head.appendChild(this.collapseButton);
-    }
+    side.appendChild(this.staleBadge);
+    this.stateWord = make('span', 'card-state');
+    this.stateWord.hidden = true;
+    side.appendChild(this.stateWord);
+    // A stop this model did not confirm (G6, I8): marked at its own entry,
+    // with no Dismiss - it stands for as long as the latch it describes.
+    this.unconfirmedMark = make('span', 'unconfirmed-mark', 'Stop not confirmed. Treat as live.');
+    this.unconfirmedMark.hidden = true;
+    side.appendChild(this.unconfirmedMark);
+    head.appendChild(side);
     if (options && options.closable) {
-      // Closing a module is housekeeping, not a stop: it is chrome, and the
-      // signal red is spent on the mushroom alone (design brief, "one red").
-      // But it destructs the model (owner ruling: close = destruct), so it
-      // is the quietest control on the panel, it says what it does when
-      // pointed at, and it asks first (Dashboard.closeModel).
-      const close = make('button', 'ghost card-close', 'Close');
+      // Closing a model is housekeeping, not a stop: it is chrome, and the
+      // signal red is spent on the stop alone ("one red"). But it destructs
+      // the model (owner ruling: close = destruct), so it is the quietest
+      // control the entry has, it sits at the foot of the model's details,
+      // it says what it does when pointed at, and it asks first
+      // (Dashboard.closeModel).
+      const close = make('button', 'ghost card-close', 'Close this model…');
       close.type = 'button';
       close.title = 'Close ' + name + ': it stops and disconnects. '
         + 'Reopen it from the rail.';
       close.setAttribute('aria-label', 'Close ' + name);
       close.addEventListener('click', () => dashboard.closeModel(name));
-      head.appendChild(close);
+      this.closeButton = close;
     }
     this.node.appendChild(head);
     // A lost device is a standing condition, not a refusal: it has its own
@@ -1159,12 +1365,26 @@ class PanelCard {
     this.node.appendChild(this.status);
     this.body = make('div', 'card-body');
     this.node.appendChild(this.body);
+    this.well = null;
+    this.deep = null;
     this.build();
+  }
+
+  /** Where a section of `tier` is drawn: tier 1 in the entry's body, tier 2
+   *  in the well behind the model's disclosure, tier 3 in the Diagnostics
+   *  strip inside that well. */
+  containerFor(tier) {
+    if (tier === 2 || tier === 3) {
+      if (!this.well) this.well = make('div', 'tier-well');
+      if (tier === 2) return this.well;
+      if (!this.deep) this.deep = make('div', 'tier-deep');
+      return this.deep;
+    }
+    return this.body;
   }
 
   build() {
     const sections = this.schema.sections || [];
-    if (isWideCard(sections)) this.node.classList.add('wide');
     const columns = rowColumnCount(sections);
     if (columns) {
       // One grid for the whole card body; every row section is a
@@ -1176,8 +1396,13 @@ class PanelCard {
       this.node.classList.add('table-card');
       this.body.style.gridTemplateColumns = rowGridColumns(columns);
     }
+    // The model's key numbers are set as readings; the first non-axis one
+    // is its primary reading and any after it secondary (a change).
+    const readings = new Set(railElements(this.schema));
+    let hasPrimary = false;
     let hasHead = false;
     for (const section of sections) {
+      const tier = sectionTier(section);
       const isRow = isRowSection(section);
       const spans = isRow && isCommandRow(section);
       // A table has one header row: the column captions are said once,
@@ -1198,6 +1423,7 @@ class PanelCard {
           : make('h3', 'section-title', sentenceCase(section.title || '')));
       }
       const cells = [];
+      const axes = [];
       for (const element of (section.elements || [])) {
         const render = ELEMENT_RENDERERS[element.type];
         if (!render) {
@@ -1206,11 +1432,41 @@ class PanelCard {
         }
         const widget = render(this, element);
         widget.element = element;
+        widget.tier = tier;
         this.widgets.push(widget);
         if (widget.node) {
           if (isRow) widget.node.classList.add('cell');
+          if (tier === 1 && element.type === 'readonly' && readings.has(element)) {
+            const letter = axisLetter(element);
+            widget.node.classList.add('reading');
+            if (letter) {
+              // "Position" once, then X Y Z inline beside their numbers.
+              widget.node.classList.add('reading-axis');
+              putText(widget.node.querySelector('.label'), letter);
+              axes.push(widget.node);
+            } else {
+              widget.node.classList.add(hasPrimary ? 'reading-secondary' : 'reading-primary');
+              hasPrimary = true;
+            }
+          }
           cells.push(widget.node);
         }
+      }
+      if (axes.length > 1) {
+        const group = make('div', 'axis-group');
+        group.setAttribute('role', 'group');
+        const caption = make('span', 'axis-caption', sentenceCase(section.title || 'Position'));
+        controlSerial += 1;
+        caption.id = 'axis-caption-' + controlSerial;
+        group.setAttribute('aria-labelledby', caption.id);
+        const line = make('div', 'axis-line');
+        for (const node of axes) line.appendChild(node);
+        group.appendChild(caption);
+        group.appendChild(line);
+        const at = cells.indexOf(axes[0]);
+        for (const node of axes) cells.splice(cells.indexOf(node), 1);
+        cells.splice(at, 0, group);
+        block.classList.add('has-axes');
       }
       // A row with fewer controls than the widest one is padded just before
       // its last cell, so the status column stays the status column. A row
@@ -1222,22 +1478,98 @@ class PanelCard {
         }
       }
       for (const cell of groupCommands(cells, isRow && !spans)) block.appendChild(cell);
-      this.body.appendChild(block);
+      this.containerFor(tier).appendChild(block);
+    }
+    this.buildTiers(sections);
+  }
+
+  /** The model's one disclosure (tier 2), a panel-toned well under the
+   *  entry, and inside it a second one (tier 3, "Diagnostics") over a strip
+   *  marked by a muted rule. Their open state is the page's, per model,
+   *  for the session (Dashboard.tierState) - not the browser's storage. */
+  buildTiers(sections) {
+    if (!this.well && !this.deep && !this.closeButton) return;
+    this.containerFor(2);
+    const label = (tier) => {
+      const own = (sections || []).find((s) => sectionTier(s) === tier && s.disclosure);
+      return (own && own.disclosure) || TIER_LABELS[tier] || (tier === 2 ? 'Details' : 'Diagnostics');
+    };
+    this.disclose2 = this.makeDisclosure(2, label(2), this.well);
+    this.node.appendChild(this.disclose2);
+    this.node.appendChild(this.well);
+    if (this.deep) {
+      this.disclose3 = this.makeDisclosure(3, label(3), this.deep);
+      this.well.appendChild(this.disclose3);
+      this.well.appendChild(this.deep);
+    }
+    if (this.closeButton) {
+      const foot = make('div', 'well-foot');
+      foot.appendChild(this.closeButton);
+      this.well.appendChild(foot);
+    }
+    const remembered = (this.dashboard && this.dashboard.tierState)
+      ? this.dashboard.tierState(this.name) : {};
+    this.setTierOpen(2, Boolean(remembered[2]), true);
+    if (this.deep) this.setTierOpen(3, Boolean(remembered[3]), true);
+  }
+
+  makeDisclosure(tier, text, controls) {
+    const button = make('button', 'disclosure');
+    button.type = 'button';
+    button.dataset.tier = String(tier);
+    button.appendChild(chevron());
+    button.appendChild(make('span', 'disclosure-text', text));
+    controlSerial += 1;
+    controls.id = 'tier-' + tier + '-' + controlSerial;
+    button.setAttribute('aria-controls', controls.id);
+    button.setAttribute('aria-expanded', 'false');
+    button.addEventListener('click',
+      () => this.setTierOpen(tier, button.getAttribute('aria-expanded') !== 'true'));
+    return button;
+  }
+
+  /** Open or close tier 2 or 3. `restoring` is the build putting back what
+   *  the page remembered, which is not a new choice to remember. */
+  setTierOpen(tier, isOpen, restoring) {
+    const target = tier === 2 ? this.well : this.deep;
+    const button = tier === 2 ? this.disclose2 : this.disclose3;
+    if (!target || !button) return;
+    const open = Boolean(isOpen);
+    if (target.hidden !== !open) target.hidden = !open;
+    putAttr(button, 'aria-expanded', open ? 'true' : 'false');
+    this.node.classList.toggle('tier-' + tier + '-open', open);
+    if (!restoring && this.dashboard && this.dashboard.rememberTier) {
+      this.dashboard.rememberTier(this.name, tier, open);
+    }
+    // What was just revealed is fetched now, not a data cycle later.
+    if (open && !restoring) {
+      for (const widget of this.widgets) {
+        if (widget.dataCommand && !widget.isOpen && widget.node && target.contains(widget.node)) {
+          this.loadData(widget);
+        }
+      }
     }
   }
 
-  /** Minimise to the header bar, or open again. The card stays in the page
-   *  either way: collapsed is a state, not a removal (Addendum 2). */
-  setCollapsed(isCollapsed) {
-    this.isCollapsed = Boolean(isCollapsed);
-    this.body.hidden = this.isCollapsed;
-    this.node.classList.toggle('collapsed', this.isCollapsed);
-    // The status line lives above the body, so a refusal raised by a
-    // collapsed card is still a sentence the operator can read.
-    if (this.collapseButton) {
-      // The label says what the click will do: collapsed -> "Expand".
-      this.collapseButton.textContent = this.isCollapsed ? 'Expand' : 'Collapse';
-    }
+  /** Whether `widget` sits behind a disclosure that is shut. */
+  isBehindClosedTier(widget) {
+    const node = widget && widget.node;
+    if (!node) return false;
+    return Boolean((this.well && this.well.hidden && this.well.contains(node))
+      || (this.deep && this.deep.hidden && this.deep.contains(node)));
+  }
+
+  /** The opened model is the full-width entry at the top of the sheet, its
+   *  axis readings at the focal size (theme.READING_SIZES). */
+  setOpened(isOpened) {
+    this.node.classList.toggle('is-opened', Boolean(isOpened));
+  }
+
+  /** A model whose numbers are not live: latched, stale, lost, or the
+   *  station not answering. Its readings and plot lines go muted. */
+  isFrozen() {
+    return this.node.classList.contains('is-latched') || this.node.classList.contains('stale')
+      || document.body.classList.contains('is-offline');
   }
 
   // -- the three calls a view makes ------------------------------------
@@ -1412,6 +1744,8 @@ class PanelCard {
         if (wantsData && this.wantsData(widget)) this.loadData(widget);
       }
       widget.setEnabled(isEnabled(element, mode, this.values));
+      // A number that has held still for CHANGING_MS settles to ink.
+      if (widget.tick) widget.tick(now);
     }
     // A lost device freezes the numbers even while the model's own loop
     // keeps ticking, so `age` alone would call them fresh (F3, HC-1).
@@ -1421,15 +1755,30 @@ class PanelCard {
     this.setAlert(isLost ? sentence(this.title) + ' lost its ' + this.lost.join(' and ')
       + '. Its readings are frozen. Press Stop, check the cable, then relaunch from Setup.'
       : '');
-    // The grouping bar down the left of a rack panel is information, not
-    // trim: it lights in the trace colour while this model's loop is
-    // reporting fresh numbers, and turns signal red while it is latched or
-    // has lost a device.
+    // State classes, not colour: a live model is silent; a lost one's head
+    // rule turns signal red; a latched one's readings freeze to muted and
+    // its head says "Stopped".
     const age = state ? state.age : null;
+    const isLatched = Boolean(this.values.is_estopped);
     this.node.classList.toggle('is-live', !isLost
       && age !== null && age !== undefined && age <= STALE_AFTER_S);
     this.node.classList.toggle('is-lost', isLost);
-    this.node.classList.toggle('is-latched', Boolean(this.values.is_estopped));
+    this.node.classList.toggle('is-latched', isLatched);
+    this.setStateWord(isLatched ? 'Stopped' : '');
+  }
+
+  /** The head's one word about the model's state, when it is not normal. */
+  setStateWord(text) {
+    putText(this.stateWord, text);
+    if (this.stateWord.hidden !== !text) this.stateWord.hidden = !text;
+  }
+
+  /** G6: this model did not confirm the stop. A signal head rule and the
+   *  sentence at its own entry; no Dismiss (I8). */
+  setUnconfirmed(isUnconfirmed) {
+    const flag = Boolean(isUnconfirmed);
+    if (this.unconfirmedMark.hidden !== !flag) this.unconfirmedMark.hidden = !flag;
+    this.node.classList.toggle('is-unconfirmed', flag);
   }
 
   /** The station stopped answering: nothing on this card is a live number
@@ -1448,10 +1797,12 @@ class PanelCard {
   }
 
   /** `PanelView._wants_data`: whether a data element is polled now. A
-   *  detached log (G4) only while its panel is open; everything else,
-   *  always. */
+   *  detached log (G4) only while its panel is open; a plot or figure
+   *  behind a shut disclosure not until it is opened (tiers 2 and 3 are on
+   *  demand, so is their traffic); everything else, always. */
   wantsData(widget) {
-    return widget.isOpen ? widget.isOpen() : true;
+    if (widget.isOpen) return widget.isOpen();
+    return !this.isBehindClosedTier(widget);
   }
 
   loadData(widget) {
@@ -1555,8 +1906,15 @@ class Dashboard {
     this.isDrawerOpen = false;
     this.isConnected = null;
     this.isActive = false;
-    this.railGroups = new Map();
     this.railLines = new Map();
+    //: The model whose entry is the full-width one at the top of the sheet.
+    this.opened = null;
+    this.navKey = null;
+    //: Which models' tier-2 and tier-3 disclosures are open: the page's
+    //: memory for the session, per model, surviving a close and reopen.
+    this.tierMemory = new Map();
+    //: The models that did not confirm the current latch (G6).
+    this.unconfirmed = new Set();
     this.closedKey = null;
     this.ackQueue = [];
     this.confirmPending = null;
@@ -1567,7 +1925,12 @@ class Dashboard {
     this.dom = {
       stop: document.getElementById('full-stop'),
       stopFace: document.querySelector('.mushroom-face'),
+      stopRing: document.getElementById('stop-ring'),
       railAlert: document.getElementById('rail-alert'),
+      railLatched: document.getElementById('rail-latched'),
+      headline: document.getElementById('sheet-headline'),
+      nav: document.getElementById('model-nav'),
+      simLine: document.getElementById('sim-line'),
       cards: document.getElementById('cards'),
       closed: document.getElementById('closed-models'),
       log: document.getElementById('event-log'),
@@ -1586,7 +1949,6 @@ class Dashboard {
       logPanel: document.getElementById('log-panel'),
       logToggle: document.getElementById('log-toggle'),
       trayLatest: document.getElementById('tray-latest'),
-      rail: document.getElementById('rail-readouts'),
       drawer: document.getElementById('setup-drawer'),
       drawerBody: document.getElementById('drawer-body'),
       drawerClose: document.getElementById('drawer-close'),
@@ -1636,9 +1998,9 @@ class Dashboard {
       event.returnValue = '';
     });
     window.addEventListener('resize', () => this.reserveLogSpace());
-    // The rail wraps on a narrow window and the tray grows when it opens;
-    // the drawer and the scrim are fixed against both, so both heights are
-    // measured, not assumed.
+    // The rail is a column on the left, or a bar across the top on a phone,
+    // and the tray grows when it opens; the drawer, the scrim and every
+    // overlay are fixed against both, so both are measured, not assumed.
     if (typeof ResizeObserver !== 'undefined') {
       const watch = new ResizeObserver(() => this.reserveLogSpace());
       watch.observe(document.querySelector('.rail'));
@@ -1759,8 +2121,17 @@ class Dashboard {
     document.body.style.paddingBottom = panel.offsetHeight + 'px';
     const root = document.documentElement.style;
     root.setProperty('--tray-h', panel.offsetHeight + 'px');
+    // Where the rail is: a column down the left (its width is the room every
+    // layer leaves beside it) or, on a phone, a bar across the top (its
+    // height is the room they leave above it). Nothing may cover the stop.
     const rail = document.querySelector('.rail');
-    if (rail) root.setProperty('--rail-h', rail.offsetHeight + 'px');
+    if (!rail) return;
+    const box = rail.getBoundingClientRect();
+    const isColumn = box.height > box.width;
+    const left = (isColumn ? Math.round(box.width) : 0) + 'px';
+    const top = (isColumn ? 0 : Math.round(box.height)) + 'px';
+    if (root.getPropertyValue('--rail-left') !== left) root.setProperty('--rail-left', left);
+    if (root.getPropertyValue('--rail-top') !== top) root.setProperty('--rail-top', top);
   }
 
   /** Collapsed - which is how it starts - the tray is one line carrying the
@@ -1775,6 +2146,13 @@ class Dashboard {
   }
 
   async start() {
+    // The theme's word rules first: which values are quiet, and what the
+    // disclosures are called when a section does not say.
+    try {
+      const rules = await apiGet('/api/theme.json');
+      QUIET_VALUES = new Set((rules && rules.quiet_values) || []);
+      if (rules && rules.tier_labels) TIER_LABELS = Object.assign({}, TIER_LABELS, rules.tier_labels);
+    } catch (err) { /* nothing is quiet: every value is drawn */ }
     // Start from the newest event id so a fresh tab does not replay the
     // whole session's log as if it had just happened (ERRORS-3). What has
     // happened is still history: the last few lines go into the log, and
@@ -1785,7 +2163,6 @@ class Dashboard {
       this.lastEventId = seen.latest_id || 0;
       const history = (seen.events || []).slice(-20);
       for (const event of history) this.showEvent(event);
-      if (!history.length) putText(this.dom.trayLatest, 'No events yet.');
     } catch (err) { /* the first poll will retry */ }
     this.setLogCollapsed(true);      // one line: the latest event
     await this.loadSetup();
@@ -1867,7 +2244,8 @@ class Dashboard {
     this.isConnected = isConnected;
     const link = this.dom.connection;
     if (isConnected) {
-      link.textContent = 'Connected';
+      // Status by exception: a station that answers says nothing.
+      link.textContent = '';
       link.title = '';
     } else {
       const since = clockTime(new Date());
@@ -1885,10 +2263,6 @@ class Dashboard {
   muteReadouts(label) {
     for (const card of this.cards.values()) { card.setOffline(); card.setStale(true, label); }
     if (this.setupCard) { this.setupCard.setOffline(); this.setupCard.setStale(true, label); }
-    for (const group of this.railGroups.values()) {
-      group.node.classList.add('is-stale');
-      putText(group.flag, label);
-    }
   }
 
   // -- Quit (G2) -----------------------------------------------------------
@@ -1937,14 +2311,21 @@ class Dashboard {
     // Nothing is left to be latched, unconfirmed or acknowledged.
     for (const key of Array.from(this.railLines.keys())) this.setRailLine(key, '');
     this.dom.railAlert.hidden = true;
+    this.setUnconfirmed([]);
+    this.dom.railLatched.hidden = true;
+    this.dom.headline.hidden = true;
+    this.dom.stopRing.classList.remove('is-latched');
+    this.dom.stopRing.classList.add('is-off');
     this.ackQueue = [];
     clear(this.dom.modalText);
     this.dom.modal.hidden = true;
     const stop = this.dom.stop;
     stop.classList.remove('is-latched', 'pulse');
     stop.classList.add('is-off');
-    // Every disc, the per-model ones included, says the same: off.
+    // The disc says the same as the page: off. So does every model's
+    // switch, whatever it last showed.
     for (const face of document.querySelectorAll('.mushroom-face')) putText(face, 'Off');
+    for (const word of document.querySelectorAll('.switch-words')) putText(word, 'Off');
     stop.removeAttribute('aria-keyshortcuts');
     stop.setAttribute('aria-disabled', 'true');
     stop.setAttribute('aria-label', 'Stop: the station has shut down');
@@ -2033,7 +2414,9 @@ class Dashboard {
     for (const name of Array.from(this.cards.keys())) {
       if (!(name in models)) this.removeCard(name);
     }
-    this.renderRail(models);
+    this.renderNav(models);
+    this.renderSimLine(models);
+    this.layoutSheet();
     this.renderLostLines(models);
     this.renderEmptyRack();
     this.renderClosed(state.closed || []);
@@ -2050,56 +2433,6 @@ class Dashboard {
     this.collapseSetupOnLaunch(models, setupState);
   }
 
-  // -- the status rail -----------------------------------------------------
-  //
-  // One readout group per open model, carrying its key numbers - derived
-  // from the schema by `railElements`, never named here, so a model this
-  // file has never heard of still appears on the rail with the right
-  // numbers. The groups are built once per model and only their values are
-  // written after that, so the entrance animation plays exactly once.
-  renderRail(models) {
-    for (const name of Array.from(this.railGroups.keys())) {
-      if (name in models) continue;
-      const gone = this.railGroups.get(name);
-      if (gone.node.parentNode) gone.node.parentNode.removeChild(gone.node);
-      this.railGroups.delete(name);
-    }
-    let index = 0;
-    for (const name of Object.keys(models)) {
-      let group = this.railGroups.get(name);
-      if (!group) {
-        group = this.buildRailGroup(name, index);
-        if (!group) continue;
-        this.railGroups.set(name, group);
-        this.dom.rail.appendChild(group.node);
-      }
-      const values = (models[name] || {}).values || {};
-      for (const [attr, node] of group.values) {
-        const value = values[attr];
-        const text = (value === undefined || value === null || value === '')
-          ? '--' : String(value);
-        if (node.textContent !== text) {
-          node.textContent = text;
-          // A long value is cut with an ellipsis on the rail; the whole of
-          // it is one hover away, never silently lost.
-          node.title = text;
-          const kind = readoutKind(text);
-          node.classList.toggle('is-empty', kind === 'quiet');
-          node.classList.toggle('is-word', kind === 'word');
-        }
-      }
-      // A model whose numbers are not live says so on the rail, in words,
-      // and its numbers go muted (F3, F4).
-      const state = models[name] || {};
-      const isLost = lostDevices(state).length > 0;
-      const flag = isLost ? 'Connection lost' : (isStale(state) ? 'Stale' : '');
-      putText(group.flag, flag);
-      group.node.classList.toggle('is-stale', Boolean(flag));
-      group.node.classList.toggle('is-lost', isLost);
-      index += 1;
-    }
-  }
-
   /** An empty rack says what to do next, and the drawer that does it is
    *  already open behind this. An empty screen is an invitation to act. */
   renderEmptyRack() {
@@ -2108,8 +2441,8 @@ class Dashboard {
     const isEmpty = this.cards.size === 0 && !this.isDrawerOpen;
     if (isEmpty && !this.emptyNote) {
       this.emptyNote = make('p', 'rack-empty',
-        'No modules yet. In Setup, tick each device you are using, choose its '
-        + 'port - SIM to run against the simulator - and launch.');
+        'No models yet. In Setup, tick each device you are using, choose its '
+        + 'port (SIM runs a model without hardware) and launch.');
       this.dom.cards.appendChild(this.emptyNote);
     } else if (!isEmpty && this.emptyNote) {
       if (this.emptyNote.parentNode) {
@@ -2117,34 +2450,6 @@ class Dashboard {
       }
       this.emptyNote = null;
     }
-  }
-
-  buildRailGroup(name, index) {
-    const card = this.cards.get(name);
-    const elements = railElements(card && card.schema);
-    if (!elements.length) return null;
-    const node = make('div', 'readout-group is-entering');
-    node.style.setProperty('--stagger', String(index));
-    node.setAttribute('role', 'group');
-    node.setAttribute('aria-label', sentence(name));
-    const head = make('div', 'readout-head');
-    head.appendChild(make('span', 'readout-model', sentence(name)));
-    const flag = make('span', 'readout-flag');
-    head.appendChild(flag);
-    node.appendChild(head);
-    const line = make('div', 'readouts');
-    const values = new Map();
-    for (const element of elements) {
-      const readout = make('div', 'readout');
-      readout.appendChild(make('span', 'readout-label', railLabel(element)));
-      const value = make('span', 'readout-value', '--');
-      value.setAttribute('translate', 'no');
-      readout.appendChild(value);
-      line.appendChild(readout);
-      values.set(element.model_attr, value);
-    }
-    node.appendChild(line);
-    return { node, values, flag };
   }
 
   /** `Dashboard._collapse_setup` in src/views/base.py, mirrored: the
@@ -2178,14 +2483,119 @@ class Dashboard {
     }
     if (!schema || !schema.sections) return;
     const card = new PanelCard(this, name, schema, { closable: true });
+    // The one launch moment: entries arrive one after another, 60 ms apart,
+    // once, as the drawer withdraws.
+    card.node.classList.add('is-entering');
+    card.node.style.setProperty('--stagger', String(this.cards.size));
     this.cards.set(name, card);
     this.dom.cards.appendChild(card.node);
+    card.setUnconfirmed(this.unconfirmed.has(name));
   }
 
   removeCard(name) {
     const card = this.cards.get(name);
     if (card) card.close();
     this.cards.delete(name);
+  }
+
+  // -- the sheet's layout ----------------------------------------------------
+  //
+  // The opened model is the full-width entry at the top (its axis readings
+  // focal); the others follow in the station's order, three to a row, then
+  // two (E, canvas row E). The order is CSS `order`, not a DOM move, so a
+  // model's focus and its open disclosures never jump.
+  layoutSheet() {
+    const names = Array.from(this.cards.keys());
+    if (!names.length) return;
+    if (!this.opened || !this.cards.has(this.opened)) this.opened = names[0];
+    const rest = names.filter((name) => name !== this.opened);
+    rest.forEach((name, index) => {
+      // 3 across when three or fewer follow; else a row of three, then twos.
+      const across = rest.length <= 3 ? Math.max(rest.length, 1) : (index < 3 ? 3 : 2);
+      const span = 'span-' + (6 / across);
+      const card = this.cards.get(name);
+      card.setOpened(false);
+      for (const other of ['span-2', 'span-3', 'span-6']) {
+        card.node.classList.toggle(other, other === span);
+      }
+    });
+    const top = this.cards.get(this.opened);
+    top.setOpened(true);
+    // toggle(…, false), not remove(): remove() rewrites the class attribute
+    // even when the token is absent, which is a mutation every poll (F21).
+    for (const other of ['span-2', 'span-3', 'span-6']) top.node.classList.toggle(other, false);
+  }
+
+  /** The rail's model list: names only (no value is said twice), the opened
+   *  one highlighted. Rebuilt only when the set of models changes. */
+  renderNav(models) {
+    const names = Object.keys(models);
+    const key = names.join('\n');
+    if (key !== this.navKey) {
+      this.navKey = key;
+      clear(this.dom.nav);
+      for (const name of names) {
+        const link = make('button', 'model-link', sentence(name));
+        link.type = 'button';
+        link.dataset.model = name;
+        link.setAttribute('translate', 'no');
+        link.addEventListener('click', () => this.focusModel(name));
+        this.dom.nav.appendChild(link);
+      }
+    }
+    for (const link of this.dom.nav.querySelectorAll('.model-link')) {
+      const current = link.dataset.model === this.opened;
+      if (current) putAttr(link, 'aria-current', 'true');
+      else if (link.hasAttribute('aria-current')) link.removeAttribute('aria-current');
+    }
+  }
+
+  /** A press on a model's name opens it: it becomes the entry at the top of
+   *  the sheet, the sheet scrolls to it, and focus goes to it. */
+  focusModel(name) {
+    if (!this.cards.has(name)) return;
+    this.opened = name;
+    this.layoutSheet();
+    this.renderNav(Object.fromEntries(Array.from(this.cards.keys()).map((n) => [n, {}])));
+    const card = this.cards.get(name);
+    window.scrollTo({ top: 0 });
+    card.node.focus({ preventScroll: true });
+  }
+
+  /** The page remembers each model's disclosures for the session. */
+  tierState(name) {
+    return this.tierMemory.get(name) || {};
+  }
+
+  rememberTier(name, tier, isOpen) {
+    const memory = Object.assign({}, this.tierState(name));
+    memory[tier] = Boolean(isOpen);
+    this.tierMemory.set(name, memory);
+  }
+
+  /** Said only when there is no hardware: "Simulation, no hardware
+   *  attached"; a mix names the simulated models; real hardware, nothing. */
+  renderSimLine(models) {
+    const simulated = [];
+    let hardware = 0;
+    for (const name of Object.keys(models)) {
+      const devices = (models[name] && models[name].devices) || {};
+      const kinds = Object.keys(devices);
+      if (kinds.some((k) => devices[k] === 'simulated')) simulated.push(sentence(name));
+      else if (kinds.some((k) => k === 'SerialPort' || k === 'SMC100')) hardware += 1;
+    }
+    let text = '';
+    if (simulated.length && !hardware) text = 'Simulation, no hardware attached';
+    else if (simulated.length) text = 'Simulated: ' + simulated.join(', ');
+    putText(this.dom.simLine, text);
+    if (this.dom.simLine.hidden !== !text) this.dom.simLine.hidden = !text;
+  }
+
+  /** G6: which models did not confirm the latch, marked at their own
+   *  entries (E: this replaces the rail line; there is still no Dismiss). */
+  setUnconfirmed(names) {
+    this.unconfirmed = new Set(names || []);
+    for (const [name, card] of this.cards) card.setUnconfirmed(this.unconfirmed.has(name));
   }
 
   async loadSetup() {
@@ -2293,6 +2703,11 @@ class Dashboard {
     this.isEstopped = isEstopped;
     putText(this.dom.stopFace, isEstopped ? 'Clear' : 'Stop');
     this.dom.stop.classList.toggle('is-latched', isEstopped);
+    // Latched: the ring thickens, the rail says so under the disc, and the
+    // sheet's headline says what happened (E, the Stopped artboard).
+    this.dom.stopRing.classList.toggle('is-latched', isEstopped);
+    if (this.dom.railLatched.hidden !== !isEstopped) this.dom.railLatched.hidden = !isEstopped;
+    if (this.dom.headline.hidden !== !isEstopped) this.dom.headline.hidden = !isEstopped;
     putAttr(this.dom.stop, 'aria-label',
             isEstopped ? 'Clear the stop on every model' : 'Stop every model');
     // The chord stops and never clears (F9): while the face is "Clear" the
@@ -2311,7 +2726,7 @@ class Dashboard {
       void this.dom.stop.offsetWidth;      // restart the animation
       this.dom.stop.classList.add('pulse');
     } else if (!isEstopped) {
-      this.dom.stop.classList.remove('pulse');
+      this.dom.stop.classList.toggle('pulse', false);
     }
   }
 
@@ -2355,11 +2770,7 @@ class Dashboard {
     // Dismiss: it describes hardware this page cannot see, and it stands
     // for as long as the latch it describes (I8, WDG6-1).
     this.unconfirmedAt = Date.now();
-    this.setRailLine('unconfirmed', unconfirmed.length
-      ? 'Stop latched, but ' + unconfirmed.map(sentence).join(', ')
-        + (unconfirmed.length > 1 ? ' have' : ' has') + ' not confirmed it. Treat '
-        + (unconfirmed.length > 1 ? 'them' : 'it') + ' as live.'
-      : '', false);
+    this.setUnconfirmed(unconfirmed);
     await this.refreshNow();
   }
 
@@ -2369,9 +2780,9 @@ class Dashboard {
    *  line. A state asked for before the stop that wrote the line is not
    *  evidence either way. */
   forgetUnconfirmed(isEstopped, askedAt) {
-    if (isEstopped || !this.railLines.has('unconfirmed')) return;
+    if (isEstopped || !this.unconfirmed.size) return;
     if (askedAt !== undefined && askedAt < (this.unconfirmedAt || 0)) return;
-    this.setRailLine('unconfirmed', '');
+    this.setUnconfirmed([]);
   }
 
   stopFailed(action, err) {
@@ -2393,13 +2804,23 @@ class Dashboard {
   }
 
   showEvent(event) {
-    const line = make('div', 'event severity-' + event.severity, event.text);
+    // Each line keeps its severity as a word for a screen reader; the eye
+    // gets the mark (a hollow ink square for a warning, a solid signal one
+    // for an error - shape as well as colour).
+    const line = make('div', 'event severity-' + event.severity);
+    if (event.severity === 'warning' || event.severity === 'error') {
+      line.appendChild(make('span', 'sr-only',
+        event.severity === 'error' ? 'Error: ' : 'Warning: '));
+    }
+    line.appendChild(document.createTextNode(String(event.text || '')));
     this.dom.log.appendChild(line);
     while (this.dom.log.childNodes.length > 200) {
       this.dom.log.removeChild(this.dom.log.firstChild);
     }
     this.dom.log.scrollTop = this.dom.log.scrollHeight;
-    // The collapsed tray is one line, and that line is the newest event.
+    // The collapsed tray is one line, and it carries warnings and errors
+    // only (status by exception): an info event is history, in the log.
+    if (event.severity !== 'warning' && event.severity !== 'error') return;
     this.dom.trayLatest.textContent = event.text;
     this.dom.trayLatest.className = 'tray-latest severity-' + event.severity;
   }

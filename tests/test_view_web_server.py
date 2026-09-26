@@ -904,15 +904,27 @@ def test_a_stop_that_never_reaches_the_station_says_so_on_the_rail(station, tmp_
 
 @needs_browser
 def test_a_stop_a_model_did_not_confirm_names_that_model(station, tmp_path):
-    """F2: `unconfirmed` is surfaced by model name, on the rail."""
+    """F2: `unconfirmed` is surfaced by model. Updated (E, 2026-09-25): at
+    the model's OWN entry - a signal head rule and "Stop not confirmed.
+    Treat as live." - instead of a line on the rail."""
     view, controller, probe = station
     probe.stop_confirms = False
     out = _browse(view, r"""
       await page.click('#full-stop');
-      await until(() => !document.getElementById('rail-alert').hidden);
-      return page.evaluate(() => document.getElementById('rail-alert').textContent);
+      await until(() => document.querySelector('.card.is-unconfirmed'));
+      return page.evaluate(() => {
+        const card = document.querySelector('.card.is-unconfirmed');
+        const s = document.createElement('span');
+        s.style.color = getComputedStyle(document.documentElement).getPropertyValue('--signal').trim();
+        document.body.appendChild(s);
+        const mark = card.querySelector('.unconfirmed-mark');
+        return { title: card.querySelector('.card-title').textContent, mark: mark.hidden ? '' : mark.textContent,
+                 rule: getComputedStyle(card).borderTopColor, signal: getComputedStyle(s).color,
+                 dismiss: card.querySelectorAll('.card-head button').length };
+      });
     """, tmp_path)
-    assert "Fake Probe has not confirmed it" in out, out
+    assert out["title"] == "Fake Probe" and out["mark"] == "Stop not confirmed. Treat as live.", out
+    assert out["rule"] == out["signal"] and out["dismiss"] == 0, out
 
 
 @needs_browser
@@ -933,24 +945,25 @@ def test_offline_every_readout_is_muted_and_marked_stale(station, tmp_path):
         const card = Array.from(document.querySelectorAll('.card'))
           .find((c) => !c.classList.contains('setup-card'));
         const v = Array.from(card.querySelectorAll('.value')).find((n) => n.textContent === '0.000');
-        const rail = document.querySelector('.readout-value');
         const muted = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim();
         const probe = document.createElement('span');
         probe.style.color = muted;
         document.body.appendChild(probe);
         const mutedRgb = getComputedStyle(probe).color;
         return {
-          live, mutedRgb, card: getComputedStyle(v).color, rail: getComputedStyle(rail).color,
+          live, mutedRgb, card: getComputedStyle(v).color,
           badge: !card.querySelector('.stale-badge').hidden,
+          badgeText: card.querySelector('.stale-badge').textContent,
           isLive: card.classList.contains('is-live'),
-          railFlag: document.querySelector('.readout-flag').textContent,
           link: document.getElementById('connection').textContent,
         };
       }, live);
     """, tmp_path)
     assert out["live"] != out["mutedRgb"]
-    assert out["card"] == out["mutedRgb"] and out["rail"] == out["mutedRgb"], out
-    assert out["badge"] and not out["isLive"] and out["railFlag"] == "Stale", out
+    # Updated (E): the rail carries no readouts any more (no value said
+    # twice), so the entry's own badge is the word.
+    assert out["card"] == out["mutedRgb"], out
+    assert out["badge"] and not out["isLive"] and out["badgeText"] == "Stale", out
     assert re.fullmatch(r"Not answering since \d\d:\d\d:\d\d", out["link"]), out
 
 
@@ -1032,18 +1045,19 @@ def test_a_lost_device_turns_the_card_signal_and_the_rail_names_it(station, tmp_
         document.body.appendChild(muted);
         const v = Array.from(card.querySelectorAll('.value')).find((n) => n.textContent === '0.000');
         return {
-          cls: card.className, bar: getComputedStyle(card).borderLeftColor,
+          cls: card.className, bar: getComputedStyle(card).borderTopColor,
           signal: getComputedStyle(s).color, value: getComputedStyle(v).color,
           muted: getComputedStyle(muted).color,
           badge: card.querySelector('.stale-badge').hidden ? '' : card.querySelector('.stale-badge').textContent,
           rail: document.getElementById('rail-alert').textContent,
-          flag: document.querySelector('.readout-flag').textContent,
         };
       });
     """, tmp_path)
     assert "is-lost" in out["cls"] and "is-live" not in out["cls"], out
     assert out["bar"] == out["signal"] and out["value"] == out["muted"], out
-    assert out["badge"] == "Connection lost" and out["flag"] == "Connection lost", out
+    # Updated (E): the signal mark is the entry's head rule (no card bars);
+    # the rail's readout flag is gone with the readouts.
+    assert out["badge"] == "Connection lost", out
     assert "Fake Probe lost its serial port" in out["rail"], out
 
 
@@ -1084,9 +1098,11 @@ def test_a_refusal_sits_under_its_control_in_view_and_clears_on_success(station,
         const park = Array.from(document.querySelectorAll('.card button')).find((b) => b.textContent === 'Park');
         const group = park.closest('.actions') || park.closest('.row');
         const box = status.getBoundingClientRect();
+        // Updated (E): the rail is a column on the left - clear of it means
+        // right of it.
         const rail = document.querySelector('.rail').getBoundingClientRect();
         return { next: group.nextElementSibling === status, text: status.textContent,
-                 inView: box.top >= rail.bottom && box.bottom <= innerHeight };
+                 inView: box.top >= 0 && box.left >= rail.right && box.bottom <= innerHeight };
       });
       await click('Home');
       await sleep(600);
@@ -1178,7 +1194,10 @@ def test_an_idle_poll_changes_nothing_and_a_word_is_not_a_number(station, tmp_pa
       return r;
     """, tmp_path)
     assert out["mutations"] == [], out["mutations"][:10]
-    assert out["colors"]["number"] == out["colors"]["trace"]
+    # Updated (E): trace is for a CHANGING number; one that holds still
+    # reads in ink.
+    assert out["colors"]["number"] != out["colors"]["trace"]
+    assert out["colors"]["number"] != out["colors"]["muted"]
     assert out["colors"]["notSet"] == out["colors"]["muted"]
     assert out["option"]["title"] == "/dev/cu.usbmodem1234567890123"
     assert "…" in out["option"]["text"] and out["option"]["text"].endswith("7890123")
@@ -1254,7 +1273,8 @@ def test_quit_asks_first_then_the_page_says_the_station_is_down(station, tmp_pat
                                     "every port and exits the program."), out["asked"]
     assert out["asked"]["yes"] == "Quit" and out["asked"]["focused"] == "confirm-no"
     assert out["afterCancel"]["polled"] > 0 and out["afterCancel"]["quit"] == 0, out
-    assert out["afterCancel"]["link"] == "Connected", out
+    # Updated (E): status by exception - a station that answers says nothing.
+    assert out["afterCancel"]["link"] == "", out
     assert out["quitRequests"] == 1, out
     assert view._halt.is_set(), "the server was never asked to quit"
     assert out["link"] == "The station has shut down. You can close this tab.", out
@@ -1387,7 +1407,7 @@ def test_the_gamepad_log_opens_in_one_panel_that_never_covers_the_stop(station, 
         return { role: w.getAttribute('role'), modal: w.getAttribute('aria-modal'),
                  title: document.getElementById(w.getAttribute('aria-labelledby')).textContent,
                  lines: w.querySelector('.feed').textContent,
-                 below: b.top >= rail.getBoundingClientRect().bottom - 0.5,
+                 below: b.left >= rail.getBoundingClientRect().right - 0.5,
                  z: Number(getComputedStyle(w).zIndex), railZ: Number(getComputedStyle(rail).zIndex),
                  overlay: w.classList.contains('overlay') || Boolean(w.closest('.overlay')),
                  focusIn: w.contains(document.activeElement),
@@ -1472,12 +1492,14 @@ def test_the_unconfirmed_stop_line_goes_when_the_latch_clears(station, tmp_path)
     probe.stop_confirms = False
     out = _browse(view, r"""
       const r = {};
-      const rail = () => page.evaluate(() => ({
-        hidden: document.getElementById('rail-alert').hidden,
-        text: document.getElementById('rail-alert').textContent,
-        face: document.querySelector('#full-stop .mushroom-face').textContent }));
+      // Updated (E): the line is the mark at the model's own entry.
+      const rail = () => page.evaluate(() => {
+        const mark = document.querySelector('.card .unconfirmed-mark');
+        return { hidden: mark.hidden, text: mark.hidden ? '' : mark.textContent,
+                 face: document.querySelector('#full-stop .mushroom-face').textContent };
+      });
       await page.click('#full-stop');
-      await until(() => !document.getElementById('rail-alert').hidden);
+      await until(() => !document.querySelector('.card .unconfirmed-mark').hidden);
       await sleep(400);
       r.stopped = await rail();
       await api('/api/clear_estop_all', { confirmed: true });
@@ -1485,7 +1507,7 @@ def test_the_unconfirmed_stop_line_goes_when_the_latch_clears(station, tmp_path)
       await sleep(700);
       r.clearedElsewhere = await rail();
       await page.click('#full-stop');
-      await until(() => !document.getElementById('rail-alert').hidden);
+      await until(() => !document.querySelector('.card .unconfirmed-mark').hidden);
       await sleep(400);
       r.again = await rail();
       await page.click('#full-stop');
@@ -1496,7 +1518,7 @@ def test_the_unconfirmed_stop_line_goes_when_the_latch_clears(station, tmp_path)
       r.clearedHere = await rail();
       return r;
     """, tmp_path)
-    line = "Stop latched, but Fake Probe has not confirmed it. Treat it as live."
+    line = "Stop not confirmed. Treat as live."
     assert out["stopped"]["face"] == "Clear" and line in out["stopped"]["text"], out
     assert out["clearedElsewhere"] == {"hidden": True, "text": "", "face": "Stop"}, out
     assert out["again"]["face"] == "Clear" and line in out["again"]["text"], out
@@ -1557,6 +1579,12 @@ _LOG_LAYOUT = r"""
   const openLog = (owner) => page.evaluate((owner) => {
     const card = Array.from(document.querySelectorAll('#cards .card'))
       .find((c) => (c.querySelector('.card-title') || {}).textContent === owner);
+    // Updated (E): the Gamepad log is a tier-3 resource - Configure, then
+    // Diagnostics, then the log.
+    for (const tier of ['2', '3']) {
+      const d = card.querySelector('.disclosure[data-tier="' + tier + '"]');
+      if (d && d.getAttribute('aria-expanded') !== 'true') d.click();
+    }
     Array.from(card.querySelectorAll('button')).find((b) => b.textContent === 'Gamepad log…').click();
   }, owner);
   const r = {};
@@ -1715,7 +1743,7 @@ def test_after_quit_while_latched_the_page_reads_as_shut_down(station, tmp_path)
     probe.stop_confirms = False
     out = _browse(view, r"""
       await page.click('#full-stop');
-      await until(() => !document.getElementById('rail-alert').hidden);
+      await until(() => document.querySelector('.card.is-unconfirmed'));
       await sleep(600);
     """ + _QUIT_AND_READ, tmp_path)
     _assert_shut_down(out)
@@ -1774,20 +1802,19 @@ def test_the_unconfirmed_stop_line_has_no_dismiss_and_leaves_only_with_the_latch
     probe.stop_confirms = False
     out = _browse(view, r"""
       const r = {};
+      // Updated (E): the line is the mark at the model's own entry.
       const line = () => page.evaluate(() => {
-        const alert = document.getElementById('rail-alert');
-        const node = Array.from(alert.querySelectorAll('.rail-alert-line'))
-          .find((n) => n.textContent.includes('has not confirmed it'));
-        if (!node) return { present: false, hidden: alert.hidden };
+        const node = document.querySelector('.card .unconfirmed-mark');
+        if (!node || node.hidden) return { present: false, hidden: true };
         const b = node.getBoundingClientRect();
-        return { present: true, hidden: alert.hidden,
-                 dismiss: node.querySelectorAll('button, .rail-alert-dismiss').length,
-                 at: [b.right - 40, b.top + b.height / 2] };
+        return { present: true, hidden: node.hidden,
+                 dismiss: node.closest('.card-head').querySelectorAll('button, .rail-alert-dismiss').length,
+                 at: [b.right - 10, b.top + b.height / 2] };
       });
       await page.keyboard.down('Control');
       await page.keyboard.press('.');
       await page.keyboard.up('Control');
-      await until(() => !document.getElementById('rail-alert').hidden);
+      await until(() => !document.querySelector('.card .unconfirmed-mark').hidden);
       await sleep(400);
       r.latched = await line();
       await page.mouse.click(r.latched.at[0], r.latched.at[1]);
@@ -1826,8 +1853,11 @@ def test_at_phone_width_with_setup_open_nothing_scrolls_sideways(sim_station, tm
       }
       await sleep(800);
       return page.evaluate(() => {
-        const values = Array.from(document.querySelectorAll('#rail-readouts .readout-value'));
-        const zero = values.filter((v) => v.getBoundingClientRect().width < 1).length;
+        // Updated (E): the rail has no readouts; what must keep a real size
+        // at phone width is the stop.
+        const disc = document.getElementById('full-stop').getBoundingClientRect();
+        const values = [document.getElementById('full-stop')];
+        const zero = (disc.width < 40 || disc.right > innerWidth || disc.bottom > innerHeight) ? 1 : 0;
         const overlaps = [];
         const table = document.querySelector('#drawer-body .card-body.table');
         if (table) {
@@ -1868,5 +1898,329 @@ def test_at_phone_width_with_setup_open_nothing_scrolls_sideways(sim_station, tm
     assert out["drawerOpen"] and out["table"], out
     assert out["values"] > 0, out
     assert out["scrollWidth"] <= 390, f"the page scrolls sideways: {out}"
-    assert out["zero"] == 0, f"{out['zero']} rail numbers have no width"
+    assert out["zero"] == 0, "the stop is not a real target inside the viewport"
     assert out["overlaps"] == [], out["overlaps"]
+
+
+# --------------------------------------------------------------------------
+# E (Bench sheet, tiered, 2026-09-25): tiers, the slider, status by
+# exception, the disc. A model with all three tiers and a slider entry.
+# --------------------------------------------------------------------------
+class TieredProbe(Panel):
+    NAME = "Tiered Probe"
+    PARAMS = {"speed": Param("speed", "int", default=400, minimum=1, maximum=5000,
+                             label="Manual speed"),
+              "x_step": Param("x_step", "int", default=16, label="X step size")}
+
+    def __init__(self):
+        super().__init__()
+        self.position_x = "12"
+        self.link = "Connected"
+        self.is_estopped = False
+        self.is_active = False
+        self.mode = "idle"
+        self.sent = []
+
+    def open(self):
+        pass
+
+    def close(self):
+        pass
+
+    def estop(self):
+        self.is_estopped = True
+        return True
+
+    def clear_estop(self, confirmed=False):
+        self.is_estopped = False
+
+    def on_model_added(self, name, model):
+        pass
+
+    def on_model_removed(self, name, model):
+        pass
+
+    @property
+    def mode_name(self):
+        return self.mode
+
+    @property
+    def schema(self):
+        P = self.PARAMS
+        return sch.schema(
+            sch.section("Position", sch.readonly("X:", "position_x", rail=True),
+                        sch.readonly("Link:", "link")),
+            sch.section("Speeds",
+                        sch.entry("Manual speed:", "speed", P["speed"], slider=(1, 1000)),
+                        sch.button("Go", "go", inputs=("speed",), role="go")),
+            sch.section("Configuration", sch.entry("X step size:", "x_step", P["x_step"]),
+                        tier=2, disclosure="Configure"),
+            sch.section("Diagnostics", sch.readonly("Link:", "link"),
+                        tier=3, disclosure="Diagnostics"),
+        )
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot.update({"age": 0.0, "is_estopped": self.is_estopped,
+                         "is_active": False, "devices": {}})
+        return snapshot
+
+    def go(self):
+        self.sent.append(self.speed)
+        return "went"
+
+
+@pytest.fixture
+def tiered_station():
+    controller = Controller()
+    probe = TieredProbe()
+    controller.factory = lambda config: TieredProbe()
+    controller.add("Tiered Probe", probe, {})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, probe
+    finally:
+        view.close()
+
+
+#: Open the page with the drawer shut, and helpers over the one entry.
+_TIERED = r"""
+  if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+    await page.click('#drawer-close');
+    await sleep(300);
+  }
+  const card = () => page.evaluateHandle(() => Array.from(document.querySelectorAll('#cards .card'))
+    .find((c) => c.querySelector('.card-title').textContent === 'Tiered Probe'));
+  const read = () => page.evaluate(() => {
+    const c = Array.from(document.querySelectorAll('#cards .card'))
+      .find((n) => n.querySelector('.card-title').textContent === 'Tiered Probe');
+    const d2 = c.querySelector('.disclosure[data-tier="2"]');
+    const d3 = c.querySelector('.disclosure[data-tier="3"]');
+    const well = document.getElementById(d2.getAttribute('aria-controls'));
+    const deep = document.getElementById(d3.getAttribute('aria-controls'));
+    const step = c.querySelector('input[name="x_step"]');
+    return { d2: d2.getAttribute('aria-expanded'), d3: d3.getAttribute('aria-expanded'),
+             d2text: d2.textContent, d3text: d3.textContent,
+             wellShown: Boolean(well.getClientRects().length),
+             deepShown: Boolean(deep.getClientRects().length),
+             stepShown: Boolean(step.getClientRects().length),
+             deepInWell: well.contains(deep) && well.contains(d3) };
+  });
+"""
+
+
+@needs_browser
+def test_tier_two_opens_on_demand_holds_tier_three_and_is_remembered(tiered_station, tmp_path):
+    """E: tier-2 content is hidden until its disclosure is pressed; tier 3
+    sits inside the tier-2 well behind its own disclosure; the open state is
+    the page's, per model - a model closed and reopened comes back as it
+    was left, and nothing is written to the browser's storage."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + r"""
+      const r = {};
+      r.start = await read();
+      await page.click('.card .disclosure[data-tier="2"]');
+      await sleep(200);
+      r.open2 = await read();
+      await page.click('.card .disclosure[data-tier="3"]');
+      await sleep(200);
+      r.open3 = await read();
+      await api('/api/close_model', { name: 'Tiered Probe' });
+      await until(() => !document.querySelector('#cards .card'));
+      await api('/api/open_model', { name: 'Tiered Probe' });
+      await until(() => document.querySelector('#cards .card .disclosure'));
+      await sleep(400);
+      r.reopened = await read();
+      r.storage = await page.evaluate(() => localStorage.length + sessionStorage.length);
+      await page.click('.card .disclosure[data-tier="2"]');
+      await sleep(200);
+      r.closed = await read();
+      return r;
+    """, tmp_path)
+    start = out["start"]
+    assert start["d2"] == "false" and not start["wellShown"] and not start["stepShown"], start
+    assert start["d2text"] == "Configure" and start["d3text"] == "Diagnostics", start
+    assert start["deepInWell"], "tier 3 is not inside the tier-2 well"
+    assert out["open2"]["d2"] == "true" and out["open2"]["stepShown"], out["open2"]
+    assert out["open2"]["d3"] == "false" and not out["open2"]["deepShown"], out["open2"]
+    assert out["open3"]["d3"] == "true" and out["open3"]["deepShown"], out["open3"]
+    assert out["reopened"]["d2"] == "true" and out["reopened"]["d3"] == "true", out["reopened"]
+    assert out["storage"] == 0, "the open state went to the browser's storage"
+    assert out["closed"]["d2"] == "false" and not out["closed"]["wellShown"], out["closed"]
+
+
+@needs_browser
+def test_a_disclosure_leads_focus_straight_into_what_it_opens(tiered_station, tmp_path):
+    """E: aria-expanded tracks the state and focus order runs body, then
+    the disclosure, then the well it opened (the disclosure is drawn at the
+    head but sits after the body in the page's order)."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + r"""
+      const r = {};
+      await page.focus('.card input[name="speed"]');
+      const seen = [];
+      for (let i = 0; i < 4; i++) {
+        await page.keyboard.press('Tab');
+        seen.push(await page.evaluate(() => {
+          const a = document.activeElement;
+          return a.classList.contains('disclosure') ? 'disclosure-' + a.dataset.tier : (a.name || a.textContent.trim());
+        }));
+      }
+      r.closedOrder = seen;
+      await page.focus('.card .disclosure[data-tier="2"]');
+      await page.keyboard.press('Enter');
+      await sleep(200);
+      r.expanded = await page.evaluate(() => document.querySelector('.card .disclosure[data-tier="2"]').getAttribute('aria-expanded'));
+      await page.keyboard.press('Tab');
+      r.next = await page.evaluate(() => document.activeElement.name);
+      return r;
+    """, tmp_path)
+    assert out["closedOrder"][:2] == ["Go", "disclosure-2"], out
+    assert out["expanded"] == "true", out
+    assert out["next"] == "x_step", "Tab from the open disclosure did not enter its well"
+
+
+@needs_browser
+def test_the_slider_and_its_entry_follow_each_other_and_the_command_reads_the_entry(tiered_station, tmp_path):
+    """E: the slider sits BESIDE the entry. Moving it writes the entry;
+    typing in the entry moves it; the command still carries the entry's
+    value (no new route)."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + r"""
+      const r = {};
+      r.shape = await page.evaluate(() => {
+        const input = document.querySelector('.card input[name="speed"]');
+        const range = input.closest('.row').querySelector('input[type="range"]');
+        return { both: Boolean(range), min: range.min, max: range.max, value: range.value,
+                 fill: range.parentElement.style.getPropertyValue('--fill') };
+      });
+      await page.evaluate(() => {
+        const range = document.querySelector('.card input[type="range"]');
+        range.value = '750';
+        range.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await sleep(600);
+      r.entryAfterSlide = await page.evaluate(() => document.querySelector('.card input[name="speed"]').value);
+      await page.$eval('.card input[name="speed"]', (el) => { el.value = ''; });
+      await page.click('.card input[name="speed"]');
+      await page.keyboard.type('250');
+      r.rangeAfterType = await page.evaluate(() => document.querySelector('.card input[type="range"]').value);
+      await page.evaluate(() => Array.from(document.querySelectorAll('.card button')).find((b) => b.textContent === 'Go').click());
+      await sleep(700);
+      return r;
+    """, tmp_path)
+    assert out["shape"]["both"] and out["shape"]["min"] == "1" and out["shape"]["max"] == "1000", out
+    assert out["shape"]["value"] == "400" and out["shape"]["fill"].startswith("39.9"), out
+    assert out["entryAfterSlide"] == "750", "the slider did not write the entry"
+    assert out["rangeAfterType"] == "250", "the entry did not move the slider"
+    assert probe.sent == [250], f"the command did not carry the entry's value: {probe.sent}"
+
+
+@needs_browser
+def test_a_quiet_value_is_not_drawn_in_tier_one_but_is_in_diagnostics(tiered_station, tmp_path):
+    """E, status by exception: "Connected" is a normal state (theme
+    QUIET_VALUES) - absent from tier 1, still read in tier 3; a value that
+    stops being quiet appears in tier 1."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + r"""
+      const r = {};
+      const links = () => page.evaluate(() => Array.from(document.querySelectorAll('.card .row'))
+        .filter((n) => n.querySelector('.label') && n.querySelector('.label').textContent === 'Link')
+        .map((n) => ({ tier1: Boolean(n.closest('.card-body')), hidden: n.hidden })));
+      r.quiet = await links();
+      r.link = await page.evaluate(() => document.getElementById('connection').textContent);
+      return r;
+    """, tmp_path)
+    tier1 = [row for row in out["quiet"] if row["tier1"]]
+    tier3 = [row for row in out["quiet"] if not row["tier1"]]
+    assert tier1 == [{"tier1": True, "hidden": True}], out
+    assert tier3 == [{"tier1": False, "hidden": False}], out
+    assert out["link"] == "", "the link line speaks while all is well"
+    probe.link = "Lost"
+    out = _browse(view, _TIERED + r"""
+      return page.evaluate(() => Array.from(document.querySelectorAll('.card .card-body .row'))
+        .filter((n) => !n.hidden).map((n) => n.textContent));
+    """, tmp_path)
+    assert any("Lost" in text for text in out), out
+
+
+@needs_browser
+def test_the_disc_reads_stop_and_clear_with_its_ring(tiered_station, tmp_path):
+    """E: A's disc in the rail, always signal red; "Stop" with a 3 px band,
+    "Clear" with a 6 px band once latched, with the rail's sentence and the
+    sheet's headline; back to "Stop" and 3 px when cleared."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + r"""
+      const readDisc = () => page.evaluate(() => {
+        const ring = getComputedStyle(document.getElementById('stop-ring'));
+        const disc = getComputedStyle(document.getElementById('full-stop'));
+        const s = document.createElement('span');
+        s.style.color = getComputedStyle(document.documentElement).getPropertyValue('--signal').trim();
+        document.body.appendChild(s);
+        return { face: document.querySelector('#full-stop .mushroom-face').textContent,
+                 ring: ring.borderTopWidth, ringRed: ring.borderTopColor === getComputedStyle(s).color,
+                 discRed: disc.backgroundColor === getComputedStyle(s).color,
+                 latched: !document.getElementById('rail-latched').hidden,
+                 headline: !document.getElementById('sheet-headline').hidden };
+      });
+      const r = {};
+      r.live = await readDisc();
+      await page.click('#full-stop');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Clear');
+      await page.mouse.move(5, 5);           // off the disc: its hover tone is not its colour
+      await sleep(300);
+      r.latched = await readDisc();
+      await api('/api/clear_estop_all', { confirmed: true });
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      await sleep(300);
+      r.cleared = await readDisc();
+      return r;
+    """, tmp_path)
+    assert out["live"] == {"face": "Stop", "ring": "3px", "ringRed": True, "discRed": True,
+                           "latched": False, "headline": False}, out
+    assert out["latched"] == {"face": "Clear", "ring": "6px", "ringRed": True, "discRed": True,
+                              "latched": True, "headline": True}, out
+    assert out["cleared"] == out["live"], out
+
+
+@needs_browser
+def test_the_stop_is_reachable_with_red_percents_details_open_at_900(sim_station, tmp_path):
+    """E: with Red Percent's Details (its whole tier 2) open and scrolled to
+    the bottom at 900x900, the disc is in the viewport and what a click at
+    its centre lands on, and the click stops."""
+    view, controller = sim_station
+    out = _browse(view, r"""
+      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(400);
+      }
+      await page.setViewport({ width: 900, height: 900 });
+      await page.evaluate(() => {
+        const red = Array.from(document.querySelectorAll('#cards .card'))
+          .find((c) => c.querySelector('.card-title').textContent === 'Red Percent');
+        red.querySelector('.disclosure[data-tier="2"]').click();
+        Array.from(document.querySelectorAll('.model-link')).find((b) => b.textContent === 'Red Percent').click();
+      });
+      await sleep(800);
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await sleep(400);
+      const r = { onTop: await page.evaluate(%s) };
+      r.inView = await page.evaluate(() => {
+        const b = document.getElementById('full-stop').getBoundingClientRect();
+        return b.top >= 0 && b.bottom <= innerHeight && b.left >= 0 && b.width >= 100;
+      });
+      r.scrolled = await page.evaluate(() => window.scrollY > 0);
+      const box = await page.evaluate(() => {
+        const b = document.getElementById('full-stop').getBoundingClientRect();
+        return [b.left + b.width / 2, b.top + b.height / 2];
+      });
+      await page.mouse.click(box[0], box[1]);
+      await sleep(1500);
+      r.latched = (await api('/api/state')).is_estopped;
+      return r;
+    """ % _STOP_HIT, tmp_path)
+    assert out["scrolled"], "the details did not make the page scroll; the test proves nothing"
+    assert out["onTop"] and out["inView"], out
+    assert out["latched"] is True, "a click on the disc did not stop"
