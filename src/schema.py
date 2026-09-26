@@ -46,11 +46,29 @@ ELEMENT_TYPES = frozenset({
 ROLES = frozenset({"neutral", "go", "danger", "warning", "info"})
 
 
-def section(title, *elements, layout="column"):
+TIERS = (1, 2, 3)
+
+
+def section(title, *elements, layout="column", tier=1, disclosure=None):
     """`layout="row"` asks the renderer to place the elements side by side
-    on one line (a table row: label, dropdown, dropdown, status)."""
-    return {"title": title, "layout": layout,
-            "elements": [e for e in elements if e is not None]}
+    on one line (a table row: label, dropdown, dropdown, status).
+
+    `tier` is the section's prominence (owner ruling 2026-09-25): 1 is
+    always drawn; 2 sits behind one disclosure per model (its text is
+    `disclosure`, default "Configure"/"Details" from `theme.TIER_LABELS`);
+    3 sits behind a second disclosure ("Diagnostics") inside tier 2. Every
+    renderer honours tiers the same way; the Panel ignores them (a tier is
+    where a control is drawn, never whether it may run).
+    """
+    if tier not in TIERS:
+        raise ValueError(f"section {title!r}: tier must be one of {TIERS}, not {tier!r}")
+    if disclosure is not None and tier == 1:
+        raise ValueError(f"section {title!r}: a tier-1 section has no disclosure")
+    built = {"title": title, "layout": layout, "tier": tier,
+             "elements": [e for e in elements if e is not None]}
+    if disclosure:
+        built["disclosure"] = disclosure
+    return built
 
 
 def schema(*sections):
@@ -75,13 +93,26 @@ def readonly(text, model_attr, *, param=None, format=None, role="neutral",
     return element
 
 
-def entry(text, model_attr, param, *, enabled_when=None, disabled_when=None):
-    """An editable field, typed and bounded by its `param` declaration."""
+def entry(text, model_attr, param, *, enabled_when=None, disabled_when=None,
+          slider=None):
+    """An editable field, typed and bounded by its `param` declaration.
+
+    `slider=(low, high)` asks every renderer to draw a range control BESIDE
+    the entry (never instead of it: the entry keeps the precision, the
+    slider is the common adjustment - owner ruling 2026-09-25). The range is
+    the slider's travel only; the Param's own bounds still validate what is
+    typed, so the wire is unchanged.
+    """
     element = {
         "type": "entry", "text": text, "model_attr": model_attr,
         "writable": True, "role": "neutral",
     }
     element.update(param.to_schema())
+    if slider is not None:
+        low, high = slider
+        if not (high > low):
+            raise ValueError(f"entry {model_attr!r}: slider range {slider!r} is empty")
+        element["slider"] = [low, high]
     return _gate(element, enabled_when, disabled_when)
 
 

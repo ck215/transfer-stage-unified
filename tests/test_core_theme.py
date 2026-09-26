@@ -47,9 +47,12 @@ def test_every_severity_maps_to_a_role_a_renderer_can_draw():
 
 
 def test_the_disabled_pair_is_dimmer_than_any_live_role():
+    """Bench sheet (2026-09-25): a disabled control sits on the sheet itself
+    with ink at 45 %, so it recedes from every panel-toned live control."""
     background, foreground = theme.DISABLED
     assert (background, foreground) != theme.ROLES["neutral"]
-    assert background == theme.SURFACE
+    assert background == theme.BACKGROUND
+    assert foreground not in (theme.TEXT, theme.MUTED)
 
 
 # -- fonts -------------------------------------------------------------------
@@ -91,12 +94,15 @@ def test_an_on_toggle_is_filled_with_its_on_role():
     assert style["border"] == theme.ROLES["go"][0]
 
 
-def test_an_off_toggle_is_the_same_role_outlined_on_the_surface():
+def test_an_off_toggle_is_outlined_in_ink_on_the_sheet():
+    """Bench sheet (2026-09-25): OFF is the sheet with an ink outline. A
+    panel-toned outline on the sheet would be invisible, so the role's own
+    colour is kept only for danger (the stop must read as the stop)."""
     element = sch.toggle("Auto", "is_auto", "set_mode", "ON", "OFF",
                          on_role="go", off_role="neutral")
     style = theme.toggle_colors(element, False)
-    assert style["background"] == theme.SURFACE
-    assert style["border"] == theme.ROLES["neutral"][0]
+    assert style["background"] == theme.BACKGROUND
+    assert style["border"] == theme.TEXT
 
 
 @pytest.mark.parametrize("role", sorted(sch.ROLES))
@@ -127,7 +133,7 @@ def test_the_safety_toggle_is_a_danger_filled_on_not_a_green_one():
 def test_an_indicator_uses_the_same_two_role_shape():
     element = sch.indicator("Fault", "is_faulted")
     assert theme.toggle_colors(element, True)["background"] == theme.ROLES["danger"][0]
-    assert theme.toggle_colors(element, False)["background"] == theme.SURFACE
+    assert theme.toggle_colors(element, False)["background"] == theme.BACKGROUND
 
 
 def test_a_toggle_with_no_declared_roles_still_renders():

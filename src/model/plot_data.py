@@ -300,15 +300,16 @@ def _line_style(count):
 
 
 def _colormap():
-    """A dark-safe map for the 3D scatter: plasma from 0.52 up (3:1 on
-    SURFACE), without its near-black low end, so every value stands off the
-    dark panel (coolwarm's low end and light-grey middle did not, UXPM-9)."""
+    """The 3D scatter's map: viridis from its dark end to teal, so every
+    value stands off the light sheet (`palette.SURFACE`) at 3:1 or better
+    and no colour approaches the stop's red. (On the earlier dark panel this
+    was plasma's bright half; the test that pins the contrast is the same.)"""
     import numpy
     from matplotlib import colormaps
     from matplotlib.colors import ListedColormap
-    base = colormaps["plasma"]
-    return ListedColormap(base(numpy.linspace(0.52, 1.0, 256)),
-                          name="station_plasma")
+    base = colormaps["viridis"]
+    return ListedColormap(base(numpy.linspace(0.0, 0.55, 256)),
+                          name="station-sheet")
 
 
 def _style_axes(axes):

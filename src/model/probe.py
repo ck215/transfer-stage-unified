@@ -1076,22 +1076,28 @@ class Probe(Model):
     @property
     def schema(self):
         P = self.PARAMS
+        # Tiers (owner ruling 2026-09-25, canvas row E): position and speed
+        # are what an operator adjusts every session, so they are always
+        # drawn; step sizes, targets, brakes and the gamepad choice sit one
+        # disclosure away; velocity, position age, the gamepad log and the
+        # per-model stop are diagnostics.
         return sch.schema(
             sch.section(
-                "Coordinate Frame",
-                sch.readonly("X Position:", "position_x", rail=True),
-                sch.readonly("Y Position:", "position_y", rail=True),
-                sch.readonly("Z Position:", "position_z", rail=True),
-                sch.readonly("Velocity (x, y, z):", "velocity_text"),
-                sch.readonly("Position age (s):", "position_age", role="info"),
+                "Position",
+                sch.readonly("X:", "position_x", rail=True),
+                sch.readonly("Y:", "position_y", rail=True),
+                sch.readonly("Z:", "position_z", rail=True),
             ),
             sch.section(
-                "Configuration",
-                sch.dropdown("Gamepad:", "gamepad_name", "set_gamepad",
-                             "gamepad_options"),
-                *[sch.entry(P[name].label + ":", name, P[name],
-                            disabled_when=_MOTION_GATE)
-                  for name in self.ENTRY_PARAMS],
+                "Speeds",
+                # A slider beside the entry, never instead of it: the entry
+                # keeps the precision. The slider's travel is a display range;
+                # the Param still validates what is typed.
+                sch.entry(P["full_speed"].label + ":", "full_speed", P["full_speed"],
+                          disabled_when=_MOTION_GATE, slider=self.SPEED_SLIDER),
+                sch.entry(P["man_full_speed"].label + ":", "man_full_speed",
+                          P["man_full_speed"], disabled_when=_MOTION_GATE,
+                          slider=self.SPEED_SLIDER),
             ),
             sch.section(
                 "System Control",
@@ -1120,15 +1126,39 @@ class Probe(Model):
                 sch.button("Step", "step",
                            inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
                            role="go", disabled_when=("manual", "latched")),
+            ),
+            sch.section(
+                "Configuration",
+                sch.dropdown("Gamepad:", "gamepad_name", "set_gamepad",
+                             "gamepad_options"),
+                *[sch.entry(P[name].label + ":", name, P[name],
+                            disabled_when=_MOTION_GATE)
+                  for name in self.CONFIG_PARAMS],
+                tier=2, disclosure="Configure",
+            ),
+            sch.section(
+                "Diagnostics",
+                sch.readonly("Velocity (x, y, z):", "velocity_text"),
+                sch.readonly("Position age (s):", "position_age", role="info"),
                 # G4: behind a button, in its own window, not on the card.
                 sch.log_stream("Gamepad Log:", "gamepad_log", detached=True),
+                tier=3, disclosure="Diagnostics",
             ),
             self._safety_section(),
         )
 
-    #: Entry order in the Configuration section. DCProbe adds two.
+    #: Every editable field, in the order the D-5 command set travels.
+    #: DCProbe adds two. The two speeds are tier 1 (with a slider); the rest
+    #: are the tier-2 Configuration.
     ENTRY_PARAMS = ("x_step", "y_step", "z_step", "x_dist", "y_dist", "z_dist",
                     "full_speed", "man_full_speed")
+    SPEED_PARAMS = ("full_speed", "man_full_speed")
+    #: The slider's travel in steps/s (a display range; the Param validates).
+    SPEED_SLIDER = (1, 1000)
+
+    @property
+    def CONFIG_PARAMS(self):
+        return tuple(n for n in self.ENTRY_PARAMS if n not in self.SPEED_PARAMS)
 
     @property
     def state(self):
@@ -1196,6 +1226,8 @@ class DCProbe(Probe):
     )}}
 
     ENTRY_PARAMS = Probe.ENTRY_PARAMS + ("slow_speed", "brake_distance")
+    #: The DC board runs slower; its slider travels to 400 steps/s.
+    SPEED_SLIDER = (1, 400)
 
     def _frame(self):
         fields = super()._frame()

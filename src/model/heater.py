@@ -241,21 +241,14 @@ class Heater(Model):
     @property
     def schema(self):
         params = self.PARAMS
+        # Tiers (E, 2026-09-25): the temperature and its setpoint are the
+        # session's work; PID, ramp and offset are configuration; the plot and
+        # the connection word are on demand.
         return sch.schema(
             sch.section(
-                "Temperature Readings",
+                "Temperature",
                 sch.readonly("Current Temperature:", "temperature", rail=True),
-                sch.readonly("Connection:", "connection", role="info"),
-                sch.plot("Temperature over time", "series",
-                         x_label="time (s)", y_label="temperature (°C)"),
-            ),
-            sch.section(
-                "Control Parameters",
-                *[sch.entry(params[name].label + ":", name, params[name])
-                  for name in self.FRAME_FIELDS],
-            ),
-            sch.section(
-                "System Control",
+                sch.entry(params["setpoint"].label + ":", "setpoint", params["setpoint"]),
                 # Every field of the frame travels with the command and is
                 # validated as a set before it runs (D-5). Without this the
                 # model reads whatever it happens to hold, one edit behind
@@ -264,6 +257,19 @@ class Heater(Model):
                            inputs=self.FRAME_FIELDS, role="go",
                            disabled_when=("latched",)),
                 sch.button("Stop heater", "halt", role="neutral"),
+            ),
+            sch.section(
+                "Control Parameters",
+                *[sch.entry(params[name].label + ":", name, params[name])
+                  for name in self.FRAME_FIELDS if name != "setpoint"],
+                sch.plot("Temperature over time", "series",
+                         x_label="time (s)", y_label="temperature (°C)"),
+                tier=2, disclosure="Details",
+            ),
+            sch.section(
+                "Diagnostics",
+                sch.readonly("Connection:", "connection", role="info"),
+                tier=3, disclosure="Diagnostics",
             ),
             self._safety_section(),
         )

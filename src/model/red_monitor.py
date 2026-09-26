@@ -1188,12 +1188,34 @@ class RedMonitor(Model):
     @property
     def schema(self):
         P = self.PARAMS
+        # Tiers (owner ruling 2026-09-25): Red Percent as most operators see
+        # it is two numbers and two buttons. Every statistic, the live plot,
+        # the annotations, the region, save/load and the analysis figure are
+        # on demand, behind Details - never implied.
         return sch.schema(
+            sch.section(
+                "Live",
+                # REDPERCENT-19: a declared display precision, rather than each
+                # renderer re-deriving one from the box.
+                sch.readonly("Current Red:", "current_red", rail=True,
+                             param=P["current_red"], format=".2f"),
+                sch.readonly("Red Change:", "red_change", rail=True, param=P["red_change"],
+                             format=".2f"),
+                # REDPERCENT-13: published so every client can gate its plotter
+                # on "is a run actually active" instead of sampling regardless.
+                sch.readonly("Running:", "is_running", role="info"),
+                sch.button("Start run", "start_run", inputs=self._entry_names,
+                           role="go",
+                           disabled_when=("running", "latched", "no_region")),
+                sch.button("Stop run", "end_run", role="neutral",
+                           enabled_when=("running",)),
+            ),
             sch.section(
                 "Run",
                 sch.entry("Run / Cut ID:", "run_name", P["run_name"],
                           disabled_when=("running",)),
                 sch.readonly("Run ID:", "run_id", param=P["run_id"]),
+                tier=2, disclosure="Details",
             ),
             sch.section(
                 # REDPERCENT-23, D-6: declared once so all three views render
@@ -1202,6 +1224,7 @@ class RedMonitor(Model):
                 *[sch.entry(f"{field.label}:", field.name, P[field.name],
                             disabled_when=("running",))
                   for field in self.ANNOTATION_FIELDS],
+                tier=2, disclosure="Details",
             ),
             sch.section(
                 "Probe Metadata",
@@ -1215,8 +1238,7 @@ class RedMonitor(Model):
                 # shape is not expressible.
                 sch.dropdown("Position Source:", "source_name", "set_source",
                              "source_options", disabled_when=("running",)),
-                sch.readonly("Position Age:", "position_age",
-                             param=P["position_age"]),
+                tier=2, disclosure="Details",
             ),
             sch.section(
                 "Synced Axes",
@@ -1230,11 +1252,13 @@ class RedMonitor(Model):
                            "Off", on_args=("Z",), off_args=("Z",),
                            disabled_when=("running",)),
                 sch.readonly("Synced:", "sync_axes", param=P["sync_axes"]),
+                tier=2, disclosure="Details",
             ),
             sch.section(
                 "Red Detection",
                 sch.entry("Red at least:", "red_min", P["red_min"],
                           disabled_when=("running",)),
+                tier=2, disclosure="Details",
             ),
             sch.section(
                 "Sampling",
@@ -1242,33 +1266,18 @@ class RedMonitor(Model):
                 sch.readonly("Frames:", "frames_captured",
                              param=P["frames_captured"]),
                 sch.readonly("Rows:", "rows_written", param=P["rows_written"]),
-            ),
-            sch.section(
-                "Live",
-                # REDPERCENT-19: a declared display precision, rather than each
-                # renderer re-deriving one from the box.
-                sch.readonly("Current Red:", "current_red", rail=True,
-                             param=P["current_red"], format=".2f"),
-                sch.readonly("Red Change:", "red_change", rail=True, param=P["red_change"],
-                             format=".2f"),
-                # REDPERCENT-13: published so every client can gate its plotter
-                # on "is a run actually active" instead of sampling regardless.
-                sch.readonly("Running:", "is_running", role="info"),
                 sch.plot("Red % over time", "series", x_label="time (s)",
                          y_label="red (%)"),
+                tier=2, disclosure="Details",
             ),
             sch.section(
                 "Control",
                 sch.region_select("Set Capture Region", "set_region",
                                   model_attr="region", role="info",
                                   data_command="screen_image"),
-                sch.button("Start run", "start_run", inputs=self._entry_names,
-                           role="go",
-                           disabled_when=("running", "latched", "no_region")),
-                sch.button("Stop run", "end_run", role="neutral",
-                           enabled_when=("running",)),
                 sch.button("Reset Baseline", "reset_baseline"),
                 sch.file_save("Save", "save", extensions=("csv",), role="info"),
+                tier=2, disclosure="Details",
             ),
             sch.section(
                 "Analysis",
@@ -1277,6 +1286,13 @@ class RedMonitor(Model):
                 sch.dropdown("Plot:", "plot_dims", "set_plot_dims",
                              "plot_dim_options"),
                 sch.image("Analysis Plot", "figure"),
+                tier=2, disclosure="Details",
+            ),
+            sch.section(
+                "Diagnostics",
+                sch.readonly("Position Age:", "position_age",
+                             param=P["position_age"]),
+                tier=3, disclosure="Diagnostics",
             ),
             self._safety_section(),
         )

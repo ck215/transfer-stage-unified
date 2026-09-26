@@ -655,7 +655,8 @@ def test_the_step_buttons_carry_their_sign():
     model = _rotator()
     signs = [e.get("args") for e in sch.elements(model.schema)
              if e.get("command") == "move_by"]
-    assert signs == [[1], [-1]], (
+    # E (2026-09-25): the buttons read "Move -" then "Move +", a number line.
+    assert signs == [[-1], [1]], (
         "a view cannot tell Move + from Move - without the sign in the schema")
 
 

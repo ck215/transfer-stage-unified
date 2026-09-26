@@ -216,6 +216,11 @@ class Model(Panel):
             # F20: one vocabulary - the object is "Stop", its latched state
             # "Stopped", the action "Clear". The tooltip names the model, so
             # six per-model stops are not six controls called "Stop".
+            # Tier 3 (E, 2026-09-25): the per-model stop is a small switch
+            # under Diagnostics; the rail's disc is the stop an operator
+            # reaches for. Fault and its reason live beside it. (A latched
+            # model still announces itself: the readouts freeze and the rail
+            # says so; this is where the control sits, not the only sign.)
             sch.toggle("Stop", "is_estopped", "toggle_estop",
                        "Stopped", "Stop",
                        on_role="danger", off_role="danger",
@@ -228,4 +233,5 @@ class Model(Panel):
             # allow-list; it renders nothing (the toggle is the control).
             {"type": "internal", "command": "clear_estop", "writable": False,
              "role": "neutral"},
+            tier=3, disclosure="Diagnostics",
         )

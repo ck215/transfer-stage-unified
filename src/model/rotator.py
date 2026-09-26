@@ -196,13 +196,19 @@ class Rotator(Model):
         # "Stop motion" and the entries are not: a stop is never gated by
         # the stop, and editing a number moves nothing.
         moves = gated + ("latched",)
+        # Tiers (E, 2026-09-25): the angle, a step and the moves are the
+        # session's work; the absolute target and the reset are details; the
+        # motion word and the connection lamp are diagnostics.
         return sch.schema(
             sch.section(
                 "Stage",
                 sch.readonly("Position (deg):", "position", rail=True),
-                sch.readonly("Motion state:", "motion_state"),
-                sch.indicator("Stage connected", "is_connected",
-                              on_role="go", off_role="danger"),
+                sch.entry("Step (deg):", "step_deg", parameters["step_deg"],
+                          disabled_when=gated),
+                self._step_button("Move -", -1, moves),
+                self._step_button("Move +", 1, moves),
+                sch.button("Home", "home", role="go", disabled_when=moves),
+                sch.button("Stop motion", "halt", role="neutral", disabled_when=gated),
             ),
             sch.section(
                 "Motion",
@@ -210,16 +216,15 @@ class Rotator(Model):
                           disabled_when=gated),
                 sch.button("Move To", "move_to", inputs=("target_deg",),
                            role="go", disabled_when=moves),
-                sch.entry("Step (deg):", "step_deg", parameters["step_deg"],
-                          disabled_when=gated),
-                self._step_button("Move +", 1, moves),
-                self._step_button("Move -", -1, moves),
+                sch.button("Reset & Configure", "configure", disabled_when=moves),
+                tier=2, disclosure="Details",
             ),
             sch.section(
-                "Commands",
-                sch.button("Home", "home", role="go", disabled_when=moves),
-                sch.button("Stop motion", "halt", role="neutral", disabled_when=gated),
-                sch.button("Reset & Configure", "configure", disabled_when=moves),
+                "Diagnostics",
+                sch.readonly("Motion state:", "motion_state"),
+                sch.indicator("Stage connected", "is_connected",
+                              on_role="go", off_role="danger"),
+                tier=3, disclosure="Diagnostics",
             ),
             self._safety_section(),
         )
