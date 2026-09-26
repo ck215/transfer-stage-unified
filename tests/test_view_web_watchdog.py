@@ -9,12 +9,16 @@ the heater and one into the rotator. There is one now, and it belongs to the
 view that has the browser, not to any model.
 """
 import socket
+import struct
 import threading
+import time
+import urllib.error
+import urllib.request
 
 import pytest
 
 from events import events
-from views.web.server import WebView
+from views.web.server import ApiHandler, WebView
 
 
 class FakeController:
@@ -31,6 +35,9 @@ class FakeController:
 
     def close(self):
         self.closed += 1
+
+    def state(self):
+        return {"models": {}, "is_estopped": False}
 
 
 class Clock:
@@ -235,3 +242,83 @@ def test_a_busy_port_walks_up_to_the_next_one(captured):
     finally:
         view.close()
         holder.close()
+
+
+# --------------------------------------------------------------------------
+# G1: a browser that goes away is not a traceback on the terminal
+# --------------------------------------------------------------------------
+@pytest.fixture
+def debug_titles(monkeypatch):
+    """`events.debug` goes to the log file only; record the titles here."""
+    seen = []
+    real = events.debug
+
+    def record(title, message, **kwargs):
+        seen.append(title)
+        return real(title, message, **kwargs)
+
+    monkeypatch.setattr(events, "debug", record)
+    return seen
+
+
+def _until(predicate, seconds=2.0):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_a_reset_connection_is_not_a_traceback(capfd, debug_titles):
+    """Closing the tab resets every keep-alive connection the browser held.
+    Each one parked a handler thread in readline, and the stdlib's
+    `BaseServer.handle_error` printed a ConnectionResetError traceback per
+    thread to stderr (G1). It is a debug line in the log file now."""
+    view = WebView(FakeController(), object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        client = socket.create_connection(("127.0.0.1", view.port), timeout=5)
+        client.sendall(b"GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        reply = b""
+        while b"\r\n\r\n" not in reply:
+            reply += client.recv(4096)
+        assert reply.startswith(b"HTTP/1.1 200"), reply[:80]
+        time.sleep(0.1)     # the handler is back in readline, keep-alive
+        # SO_LINGER 0: close() sends an RST - what a closing browser sends.
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        client.close()
+        assert _until(lambda: "Client Went Away" in debug_titles), debug_titles
+        time.sleep(0.1)
+    finally:
+        view.close()
+    err = capfd.readouterr().err
+    assert "Traceback" not in err and "ConnectionResetError" not in err, err
+    assert err == "", err
+
+
+def test_a_handler_crash_is_an_error_event(capfd, captured, monkeypatch):
+    """Anything else that escapes a handler is a real fault: an error event
+    (the log file with its traceback, and the tray) - never a traceback on
+    the terminal, and never an acknowledgement modal from a connection
+    thread."""
+    def explode(self):
+        raise RuntimeError("the handler blew up")
+
+    monkeypatch.setattr(ApiHandler, "do_GET", explode)
+    view = WebView(FakeController(), object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        url = f"http://127.0.0.1:{view.port}/api/state"
+        with pytest.raises((urllib.error.URLError, ConnectionError, OSError)):
+            urllib.request.urlopen(url, timeout=5).read()
+        assert _until(lambda: any(e.severity == "error" for e in captured))
+    finally:
+        view.close()
+    errors = [e for e in captured if e.severity == "error"]
+    assert len(errors) == 1, errors
+    assert isinstance(errors[0].exception, RuntimeError)
+    assert "the handler blew up" in errors[0].message
+    assert errors[0].needs_ack is False, "a pop-up from a connection thread"
+    err = capfd.readouterr().err
+    assert "Traceback" not in err, err
