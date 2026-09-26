@@ -2071,7 +2071,16 @@ def test_the_window_close_button_closes_the_app(dashboard, controller):
     assert controller.is_closed is True
 
 
-def test_macos_quit_closes_the_app(dashboard, controller):
+def test_the_os_quit_command_goes_through_the_close_path(dashboard, controller):
+    """G5 keeps this one hook, because the toolkit forces it: Tk on Aqua puts
+    a Quit item (and its OS-owned shortcut) in the application menu of every
+    Tk app, and with no `::tk::mac::Quit` it calls `Tcl_Exit`, which ends the
+    process past `close()` AND past Python's atexit - no stop, no port
+    closed (proved on this Mac, Tk 9.0.4: a Quit Apple event to a Tk app
+    without the hook exited 0 with neither `mainloop` returning nor atexit
+    running; with it, the hook ran and atexit ran). The view adds no
+    shortcut or menu item of its own for it; on X11 and Win32 the command
+    is never called."""
     dashboard.open()
     dashboard.root.commands["::tk::mac::Quit"]()
     assert controller.is_closed is True
@@ -2290,12 +2299,60 @@ def test_a_global_key_stops_every_model_and_never_clears(dashboard, controller):
     assert dashboard._stop.face == tkmod.CLEAR_FACE
 
 
-def test_the_stop_shortcut_is_written_where_the_operator_looks(dashboard,
-                                                              controller):
+@pytest.fixture(params=["x11", "win32", "aqua"])
+def any_platform(request, monkeypatch):
+    """The dashboard as each windowing system would build it (G5)."""
+    monkeypatch.setattr(tkmod, "_PIXEL_FONTS", False)    # restored after
+    monkeypatch.setattr(tkmod, "_windowing_system", lambda _w: request.param)
+    return request.param
+
+
+def test_the_stop_shortcut_is_written_where_the_operator_looks(any_platform,
+                                                              controller,
+                                                              setup_panel):
+    """G5: one chord on every platform, and the copy names it and only it."""
+    dashboard = tkmod.TkDashboard(controller, setup_panel)
     dashboard.open()
     hint = dashboard._stop_hint.cget("text")
-    assert tkmod.STOP_KEY_NAME in hint
-    assert tkmod.STOP_KEY_NAME in dashboard._stop.tooltip.text
+    assert tkmod.STOP_KEY_NAME == "Ctrl+."
+    assert "Ctrl+." in hint and "Ctrl+." in dashboard._stop.tooltip.text
+    for text in (hint, dashboard._stop.tooltip.text):
+        assert "\u2318" not in text and "Cmd" not in text, any_platform
+    dashboard.close()
+
+
+def test_ctrl_period_presses_the_stop_on_every_platform(any_platform, controller,
+                                                       setup_panel):
+    dashboard = tkmod.TkDashboard(controller, setup_panel)
+    dashboard.open()
+    ALL_BINDINGS["<Control-period>"](FakeEvent())
+    assert controller.estop_calls == 1 and controller.is_estopped
+    dashboard.close()
+
+
+def test_no_view_binding_uses_a_mac_only_modifier(any_platform, controller,
+                                                  setup_panel):
+    """G5 (owner ruling 2026-09-25): no Command / Meta / \u2318 chord, on a
+    Mac or anywhere, and no mac-only command beyond the forced Quit hook."""
+    dashboard = tkmod.TkDashboard(controller, setup_panel)
+    dashboard.open()
+    sequences = list(ALL_BINDINGS)
+    widgets = [dashboard.root]
+    while widgets:
+        widget = widgets.pop()
+        sequences += list(widget.bindings)
+        widgets += widget.children
+    assert "<Control-period>" in sequences
+    for sequence in sequences:
+        assert not re.search(r"Command|Meta|Mod1|Option", sequence), sequence
+    assert set(dashboard.root.commands) <= {"::tk::mac::Quit"}
+    dashboard.close()
+
+
+def test_no_mac_only_chord_or_glyph_in_the_module():
+    code = _executable_source(tkmod.__file__)
+    for needle in ("Command-", "Meta-", "\u2318", "\\u2318", "Cmd"):
+        assert needle not in code, needle
 
 
 def test_space_and_return_both_press_the_stop(dashboard, controller):
@@ -2888,3 +2945,25 @@ def test_the_stop_stays_live_while_the_log_window_is_open(dashboard, controller)
     click(view, side_log(view))
     ALL_BINDINGS["<Control-period>"](FakeEvent())
     assert controller.estop_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# G5: the tab-close button is the same physical button everywhere
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("system, version, expected", [
+    ("x11", 9.0, "<ButtonPress-2>"),
+    ("win32", 9.0, "<ButtonPress-2>"),
+    ("aqua", 9.0, "<ButtonPress-2>"),       # Tk 8.7+ numbers Aqua like X11
+    ("x11", 8.6, "<ButtonPress-2>"),
+    ("win32", 8.6, "<ButtonPress-2>"),
+    ("aqua", 8.6, "<ButtonPress-3>"),       # Tk 8.6 on Aqua: 3 is the middle
+])
+def test_the_middle_button_closes_a_tab_on_every_platform(monkeypatch, system,
+                                                          version, expected):
+    """The operator's gesture is the middle button on every OS. The branch
+    is the toolkit's button numbering, not a platform-specific gesture: the
+    old one bound button 3 - the RIGHT button - on X11 and Win32."""
+    monkeypatch.setattr(tkmod, "_windowing_system", lambda _w: system)
+    monkeypatch.setattr(tkmod, "_tk_version", lambda: version)
+    assert tkmod._close_tab_button(FakeWidget()) == expected

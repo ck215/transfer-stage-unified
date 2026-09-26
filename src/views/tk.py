@@ -116,11 +116,10 @@ STOP_HINT, CLEAR_HINT = "Stop every model", "Clear the stop on every model"
 
 #: The stop's keyboard shortcut, from anywhere in the window (F9). It only
 #: ever STOPS: clearing the latch stays a deliberate press on the disc and a
-#: confirmation. Command-period is the Mac's own "stop"; Control-period is
-#: the same chord elsewhere, and is bound on the Mac too.
+#: confirmation. ONE chord on every platform (G5, owner ruling 2026-09-25:
+#: no shortcut exists on one OS only), so the Mac gets Control-period too.
 STOP_KEYS = ("<Control-period>",)
-STOP_KEYS_AQUA = ("<Command-period>",)
-STOP_KEY_NAME, STOP_KEY_NAME_AQUA = "Ctrl+.", "\u2318."
+STOP_KEY_NAME = "Ctrl+."
 
 #: Keyboard focus is a 2 px ring in ink on every focusable control (F25,
 #: WCAG 2.4.13); the stop's ring is `theme.STOP_FOCUS`, never the trace ring
@@ -330,18 +329,27 @@ def _windowing_system(widget):
         return "x11"
 
 
-def _close_tab_button(widget):
-    """The event sequence that closes a tab, per platform (VIEW-TKINTER-18).
+def _tk_version():
+    try:
+        return float(getattr(tk, "TkVersion", 9.0))
+    except (TypeError, ValueError):
+        return 9.0
 
-    The old view hardcoded `<ButtonPress-2>`, which is the *middle* button on
-    X11 and Win32 and the *right* button on Aqua — so on a Mac a right-click
-    aimed at the tab menu closed the tab instead. The button number is
-    resolved from the windowing system now rather than assumed. Which
-    physical button that is on a Mac is listed under UNVERIFIED: it needs a
-    Mac to confirm.
+
+def _close_tab_button(widget):
+    """The event that closes a tab: the MIDDLE button, on every platform
+    (VIEW-TKINTER-18, G5).
+
+    The gesture is one gesture; only Tk's numbering of it differs, which is
+    the branch the toolkit forces. Button 2 is the middle button on X11 and
+    Win32, and on Aqua from Tk 8.7 on; Tk 8.6 on Aqua numbered the right
+    button 2 and the middle 3. The previous branch bound 3 - the RIGHT
+    button - on X11 and Win32, so a right-click closed a tab there and not
+    on a Mac.
     """
-    return ("<ButtonPress-2>" if _windowing_system(widget) == "aqua"
-            else "<ButtonPress-3>")
+    if _windowing_system(widget) == "aqua" and _tk_version() < 8.7:
+        return "<ButtonPress-3>"
+    return "<ButtonPress-2>"
 
 
 class ClosableNotebook(ttk.Notebook):
@@ -2810,7 +2818,7 @@ class TkDashboard(Dashboard):
         self.root.bind("<FocusIn>", self._on_window_focus)
         self.root.bind("<FocusOut>", self._on_window_focus)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
-        self._hook_macos_quit()
+        self._hook_os_quit()
 
     # -- construction ------------------------------------------------------
     def _configure_styles(self):
@@ -2947,8 +2955,7 @@ class TkDashboard(Dashboard):
                                floor=STOP_DIAMETER)
         self._stop_button = self._stop.canvas
         self._stop_button.pack(side="right", padx=(PAD, INSET), pady=GAP)
-        self._stop_key = (STOP_KEY_NAME_AQUA if _windowing_system(self.root) == "aqua"
-                          else STOP_KEY_NAME)
+        self._stop_key = STOP_KEY_NAME
         self._stop_hint = tk.Label(self._stop_bar, text=self._hint(False), font=_font(),
                                    background=theme.BACKGROUND,
                                    foreground=theme.MUTED)
@@ -2975,9 +2982,7 @@ class TkDashboard(Dashboard):
     def _bind_stop_keys(self):
         """The stop from anywhere, focus wherever it is: an entry, a tab, a
         confirmation, the region picker. It only ever stops."""
-        sequences = STOP_KEYS + (STOP_KEYS_AQUA if self._stop_key == STOP_KEY_NAME_AQUA
-                                 else ())
-        for sequence in sequences:
+        for sequence in STOP_KEYS:
             try:
                 self.root.bind_all(sequence, self._on_stop_key)
             except Exception as exc:
@@ -3153,13 +3158,22 @@ class TkDashboard(Dashboard):
             events.debug("Menubar Not Attached", str(exc), source=SOURCE,
                          exception=exc)
 
-    def _hook_macos_quit(self):
-        """Cmd-Q. Without it the app exits past every teardown path
-        (VIEW-TKINTER-8)."""
+    def _hook_os_quit(self):
+        """Route the OS's own Quit through `close()` (VIEW-TKINTER-8).
+
+        Not a command this view adds (G5): Tk on Aqua gives EVERY app an
+        application menu with Quit in it, and its OS-owned shortcut. Left
+        unhooked, Tk answers it with `Tcl_Exit`, which ends the process past
+        `close()` and past Python's atexit, so nothing is stopped and no port
+        is closed (reproduced on Tk 9.0.4 with a Quit Apple event). The hook
+        only makes that forced command take the same path as the window's
+        close button. It is platform-neutral code: X11 and Win32 never call
+        it.
+        """
         try:
             self.root.createcommand("::tk::mac::Quit", self.close)
         except Exception as exc:
-            events.debug("macOS Quit Not Hooked", str(exc), source=SOURCE,
+            events.debug("OS Quit Not Hooked", str(exc), source=SOURCE,
                          exception=exc)
 
     # -- lifecycle ---------------------------------------------------------
