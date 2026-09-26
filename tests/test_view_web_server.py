@@ -1805,3 +1805,68 @@ def test_the_unconfirmed_stop_line_has_no_dismiss_and_leaves_only_with_the_latch
     assert out["stillLatched"] is True
     assert out["afterClick"]["present"] and not out["afterClick"]["hidden"], out
     assert out["cleared"] == {"present": False, "hidden": True}, out
+
+
+# --------------------------------------------------------------------------
+# I9 (audit round 6, WDG6-2): phone width with Setup open
+# --------------------------------------------------------------------------
+@needs_browser
+def test_at_phone_width_with_setup_open_nothing_scrolls_sideways(sim_station, tmp_path):
+    """I9 (WDG6-2): at 390x844, Setup reopened after launch, the page does not
+    scroll sideways, every rail number keeps a real width, and in the Setup
+    table no cell paints over its neighbour (the tick box over the row name,
+    the Gamepad select over Status)."""
+    view, controller = sim_station
+    out = _browse(view, r"""
+      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      await page.setViewport({ width: 390, height: 844 });
+      await sleep(400);
+      if (!await page.evaluate(() => document.getElementById('scrim').hidden === false)) {
+        await page.click('#setup-link');
+      }
+      await sleep(800);
+      return page.evaluate(() => {
+        const values = Array.from(document.querySelectorAll('#rail-readouts .readout-value'));
+        const zero = values.filter((v) => v.getBoundingClientRect().width < 1).length;
+        const overlaps = [];
+        const table = document.querySelector('#drawer-body .card-body.table');
+        if (table) {
+          for (const rowNode of table.querySelectorAll('.section-row:not(.table-head)')) {
+            const cells = Array.from(rowNode.children).filter((c) => c.getClientRects().length);
+            const parts = [];
+            for (const c of cells) {
+              const inner = c.querySelectorAll('input, select, button, .row-title, .value');
+              for (const n of (inner.length ? inner : [c])) {
+                // A word that overflows its track paints where its text is,
+                // not where its box is: measure the text itself.
+                let b = n.getBoundingClientRect();
+                if (n.matches('.row-title, .value') && n.textContent.trim()) {
+                  const range = document.createRange();
+                  range.selectNodeContents(n);
+                  b = range.getBoundingClientRect();
+                }
+                if (b.width && b.height) parts.push([n, b]);
+              }
+            }
+            for (let i = 0; i < parts.length; i++) {
+              for (let j = i + 1; j < parts.length; j++) {
+                const [na, a] = parts[i]; const [nb, b] = parts[j];
+                if (na.contains(nb) || nb.contains(na)) continue;
+                const ix = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+                const iy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+                if (ix > 0.5 && iy > 0.5) overlaps.push((na.className || na.tagName) + ' x ' + (nb.className || nb.tagName)
+                  + ' in ' + (rowNode.querySelector('.row-title') || {}).textContent);
+              }
+            }
+          }
+        }
+        return { scrollWidth: document.documentElement.scrollWidth, values: values.length, zero,
+                 drawerOpen: document.getElementById('scrim').hidden === false,
+                 table: Boolean(table), overlaps };
+      });
+    """, tmp_path)
+    assert out["drawerOpen"] and out["table"], out
+    assert out["values"] > 0, out
+    assert out["scrollWidth"] <= 390, f"the page scrolls sideways: {out}"
+    assert out["zero"] == 0, f"{out['zero']} rail numbers have no width"
+    assert out["overlaps"] == [], out["overlaps"]

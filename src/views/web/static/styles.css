@@ -1400,7 +1400,19 @@ span.lamp { background: none; }
 @media (max-width: 40rem) {
   .rail { flex-wrap: wrap; gap: 0.75rem; }
   .rail-head { border-right: 0; padding-right: 0; }
-  .rail-readouts { order: 3; width: 100%; }
+  /* A basis, not a width: under `flex: 1 1 0` a width never applies, and
+     with Setup hidden the readouts shrank to nothing (I9, WDG6-2). */
+  .rail-readouts { order: 3; flex: 1 0 100%; }
+  /* Setup's table at phone width: two lines per model - the name on its
+     own line, the Launch box, the two dropdowns and the status under it -
+     so a long name never runs under the box beside it (I9, WDG6-2). */
+  .drawer .card-body.table {
+    grid-template-columns:
+      max-content minmax(0, 1fr) minmax(0, 1fr) minmax(0, max-content)
+      !important;
+  }
+  .drawer .section-row > .row-title { grid-column: 1 / -1; padding-bottom: 0; }
+  .drawer .table-head > .row-title { display: none; }
   .mushroom { --disc: 4rem; margin-left: auto; }
   .readout-value { font-size: var(--t-lg); }
   .actions { grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); }
