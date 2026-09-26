@@ -216,6 +216,16 @@ function chevron() {
   return svg;
 }
 
+/** The Overview's grid (K4): how many entries share the row that entry
+ *  `index` of `count` sits on. Rows of three; a lone entry is never left on
+ *  the last row - the last four go two and two instead - and three or fewer
+ *  share one row. The sheet has six columns, so an entry spans 6 / this. */
+function sheetAcross(count, index) {
+  if (count <= 3) return Math.max(count, 1);
+  const twos = count % 3 === 1 ? 4 : (count % 3 === 2 ? 2 : 0);
+  return index >= count - twos ? 2 : 3;
+}
+
 /** Status by exception: is this value a normal state, not worth drawing in
  *  tier 1? `raw` is what the state served, `shown` how it reads. */
 function isQuiet(raw, shown) {
@@ -1335,6 +1345,23 @@ class PanelCard {
     this.unconfirmedMark.hidden = true;
     side.appendChild(this.unconfirmedMark);
     head.appendChild(side);
+    if (options && options.openable) {
+      // The Overview's press target (K4): the whole head opens the device
+      // page. It is one real button, "Open" and the disclosure chevron at
+      // the head's right, whose hit area is stretched over the head
+      // (styles.css) - so the name stays a heading, Return and Space work,
+      // and the focus ring is drawn on the head. The body is not a target:
+      // it holds controls. On the device page it is not drawn at all.
+      const open = make('button', 'card-open');
+      open.type = 'button';
+      open.appendChild(make('span', 'card-open-text', 'Open'));
+      open.appendChild(chevron());
+      open.setAttribute('aria-label', 'Open ' + name);
+      open.title = 'Open ' + name;
+      open.addEventListener('click', () => dashboard.showPage(name));
+      head.appendChild(open);
+      this.openButton = open;
+    }
     if (options && options.closable) {
       // Closing a model is housekeeping, not a stop: it is chrome, and the
       // signal red is spent on the stop alone ("one red"). But it destructs
@@ -1555,14 +1582,28 @@ class PanelCard {
   isBehindClosedTier(widget) {
     const node = widget && widget.node;
     if (!node) return false;
+    // Tiers 2 and 3 exist only on the device page (K4): on the Overview the
+    // well is not drawn, whatever its remembered state.
+    if (this.well && this.well.contains(node) && !this.isOpened()) return true;
     return Boolean((this.well && this.well.hidden && this.well.contains(node))
       || (this.deep && this.deep.hidden && this.deep.contains(node)));
   }
 
-  /** The opened model is the full-width entry at the top of the sheet, its
-   *  axis readings at the focal size (theme.READING_SIZES). */
+  /** The device page's model (K4): alone, full width, its axis readings at
+   *  the focal size (theme.READING_SIZES), its disclosures drawn. */
   setOpened(isOpened) {
     this.node.classList.toggle('is-opened', Boolean(isOpened));
+  }
+
+  isOpened() {
+    return this.node.classList.contains('is-opened');
+  }
+
+  /** Whether this entry is on the page being shown: every entry on the
+   *  Overview, only the opened one on a device page. */
+  isShown() {
+    const shownPage = this.dashboard && this.dashboard.opened;
+    return !shownPage || shownPage === this.name;
   }
 
   /** A model whose numbers are not live: latched, stale, lost, or the
@@ -1802,6 +1843,8 @@ class PanelCard {
    *  demand, so is their traffic); everything else, always. */
   wantsData(widget) {
     if (widget.isOpen) return widget.isOpen();
+    // An entry that is not on the shown page (K4) is not drawn either.
+    if (!this.isShown()) return false;
     return !this.isBehindClosedTier(widget);
   }
 
@@ -1907,7 +1950,8 @@ class Dashboard {
     this.isConnected = null;
     this.isActive = false;
     this.railLines = new Map();
-    //: The model whose entry is the full-width one at the top of the sheet.
+    //: Which page the sheet shows (K4): null is the Overview, else the name
+    //: of the model whose device page it is.
     this.opened = null;
     this.navKey = null;
     //: Which models' tier-2 and tier-3 disclosures are open: the page's
@@ -2471,6 +2515,12 @@ class Dashboard {
     const isLaunched = hasModels || Boolean(setupState.is_launched);
     if (isLaunched === this.isLaunched) return;
     this.isLaunched = isLaunched;
+    // A launch lands on the Overview (K4), whatever page was shown before.
+    if (isLaunched && this.opened) {
+      this.opened = null;
+      this.layoutSheet();
+      this.renderNav(Object.fromEntries(Array.from(this.cards.keys()).map((n) => [n, {}])));
+    }
     this.setDrawerOpen(!isLaunched);
   }
 
@@ -2482,7 +2532,7 @@ class Dashboard {
       return;
     }
     if (!schema || !schema.sections) return;
-    const card = new PanelCard(this, name, schema, { closable: true });
+    const card = new PanelCard(this, name, schema, { closable: true, openable: true });
     // The one launch moment: entries arrive one after another, 60 ms apart,
     // once, as the drawer withdraws.
     card.node.classList.add('is-entering');
@@ -2498,68 +2548,88 @@ class Dashboard {
     this.cards.delete(name);
   }
 
-  // -- the sheet's layout ----------------------------------------------------
+  // -- the sheet's two pages (K4) ------------------------------------------
   //
-  // The opened model is the full-width entry at the top (its axis readings
-  // focal); the others follow in the station's order, three to a row, then
-  // two (E, canvas row E). The order is CSS `order`, not a DOM move, so a
-  // model's focus and its open disclosures never jump.
+  // The Overview: every launched model as a compact entry, rows of three
+  // (sheetAcross), its tier-1 body only - no wells, no disclosures. The
+  // device page: one model alone, full width, readings focal, its tiers.
+  // Which page is `this.opened`; the entries are shown and hidden by CSS on
+  // the sheet's class, never moved or rebuilt, so a model's controls, focus
+  // and remembered tiers survive every trip between the two.
   layoutSheet() {
     const names = Array.from(this.cards.keys());
-    if (!names.length) return;
-    if (!this.opened || !this.cards.has(this.opened)) this.opened = names[0];
-    const rest = names.filter((name) => name !== this.opened);
-    rest.forEach((name, index) => {
-      // 3 across when three or fewer follow; else a row of three, then twos.
-      const across = rest.length <= 3 ? Math.max(rest.length, 1) : (index < 3 ? 3 : 2);
-      const span = 'span-' + (6 / across);
+    // The shown device was closed, or is gone: back to the Overview.
+    if (this.opened && !this.cards.has(this.opened)) this.opened = null;
+    const isDevice = Boolean(this.opened);
+    // toggle(…, force), never remove()/add() blindly: an unconditional
+    // write rewrites the class attribute, which is a mutation every poll (F21).
+    this.dom.cards.classList.toggle('is-device', isDevice);
+    this.dom.cards.classList.toggle('is-overview', !isDevice && names.length > 0);
+    names.forEach((name, index) => {
       const card = this.cards.get(name);
-      card.setOpened(false);
+      card.setOpened(isDevice && name === this.opened);
+      const span = isDevice ? null : 'span-' + (6 / sheetAcross(names.length, index));
       for (const other of ['span-2', 'span-3', 'span-6']) {
         card.node.classList.toggle(other, other === span);
       }
     });
-    const top = this.cards.get(this.opened);
-    top.setOpened(true);
-    // toggle(…, false), not remove(): remove() rewrites the class attribute
-    // even when the token is absent, which is a mutation every poll (F21).
-    for (const other of ['span-2', 'span-3', 'span-6']) top.node.classList.toggle(other, false);
   }
 
-  /** The rail's model list: names only (no value is said twice), the opened
-   *  one highlighted. Rebuilt only when the set of models changes. */
+  /** The rail's page list: "Overview" first, then the models by name only
+   *  (no value is said twice); the shown page is the current one. Rebuilt
+   *  only when the set of models changes. */
   renderNav(models) {
     const names = Object.keys(models);
     const key = names.join('\n');
     if (key !== this.navKey) {
       this.navKey = key;
       clear(this.dom.nav);
+      if (names.length) {
+        const overview = make('button', 'model-link overview-link', 'Overview');
+        overview.type = 'button';
+        overview.dataset.page = 'overview';
+        overview.addEventListener('click', () => this.showPage(null));
+        this.dom.nav.appendChild(overview);
+      }
       for (const name of names) {
         const link = make('button', 'model-link', sentence(name));
         link.type = 'button';
         link.dataset.model = name;
         link.setAttribute('translate', 'no');
-        link.addEventListener('click', () => this.focusModel(name));
+        link.addEventListener('click', () => this.showPage(name));
         this.dom.nav.appendChild(link);
       }
     }
     for (const link of this.dom.nav.querySelectorAll('.model-link')) {
-      const current = link.dataset.model === this.opened;
-      if (current) putAttr(link, 'aria-current', 'true');
+      const current = link.dataset.page === 'overview' ? !this.opened
+        : link.dataset.model === this.opened;
+      if (current) putAttr(link, 'aria-current', 'page');
       else if (link.hasAttribute('aria-current')) link.removeAttribute('aria-current');
     }
   }
 
-  /** A press on a model's name opens it: it becomes the entry at the top of
-   *  the sheet, the sheet scrolls to it, and focus goes to it. */
-  focusModel(name) {
-    if (!this.cards.has(name)) return;
-    this.opened = name;
+  /** Show a page: a model's name for its device page, null for the
+   *  Overview. The sheet goes to the top; a device page takes focus (its
+   *  entry), the Overview leaves focus where the press was. */
+  showPage(name) {
+    const page = name && this.cards.has(name) ? name : null;
+    this.opened = page;
     this.layoutSheet();
     this.renderNav(Object.fromEntries(Array.from(this.cards.keys()).map((n) => [n, {}])));
-    const card = this.cards.get(name);
     window.scrollTo({ top: 0 });
-    card.node.focus({ preventScroll: true });
+    if (page) this.cards.get(page).node.focus({ preventScroll: true });
+    // What the new page reveals is fetched now, not a data cycle later.
+    const shown = page ? [this.cards.get(page)] : Array.from(this.cards.values());
+    for (const card of shown) {
+      for (const widget of card.widgets) {
+        if (widget.dataCommand && !widget.isOpen && card.wantsData(widget)) card.loadData(widget);
+      }
+    }
+  }
+
+  /** A press on a model's name in the rail: its device page. */
+  focusModel(name) {
+    this.showPage(name);
   }
 
   /** The page remembers each model's disclosures for the session. */
