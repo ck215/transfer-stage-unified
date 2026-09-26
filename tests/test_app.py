@@ -42,6 +42,8 @@ def isolated_launch(monkeypatch, tmp_path):
     hooks = []
     monkeypatch.setattr(Controller, "_hook_exit",
                         lambda self: hooks.append(("exit", self)))
+    monkeypatch.setattr(Controller, "hook_signals",
+                        lambda self: hooks.append(("signals", self)))
     monkeypatch.setattr(events, "hook_exceptions", lambda: hooks.append(("exc",)))
     monkeypatch.setattr(app.Setup, "start",
                         lambda self: hooks.append(("scan", self)))
@@ -121,8 +123,20 @@ def test_launch_builds_one_controller_hooks_the_exit_and_opens_the_view(
     assert isinstance(view, FakeView) and view.is_open
     assert isinstance(view.controller, Controller)
     assert view.setup.controller is view.controller
-    assert [kind for kind, *_ in isolated_launch] == ["exit", "exc", "scan"]
+    assert [kind for kind, *_ in isolated_launch] == ["exit", "exc", "signals", "scan"]
     assert len(FakeView.built) == 1
+
+
+def test_launch_re_arms_the_signal_handlers_after_the_view_is_built(
+        fake_views, isolated_launch):
+    """The toolkit may replace the process's handlers when its first window is
+    created (Tk 9 on Aqua, SIGTERM). The re-arm must come AFTER the view is
+    built and BEFORE anything can move (the scan)."""
+    app.launch("tk")
+    kinds = [kind for kind, *_ in isolated_launch]
+    assert kinds.index("signals") > kinds.index("exit")
+    assert kinds.index("signals") < kinds.index("scan")
+    assert FakeView.built, "the view was built before the re-arm"
 
 
 def test_launch_starts_the_hardware_scan_before_the_view_opens(
@@ -219,3 +233,46 @@ def test_font_size_travels_to_launch(fake_views, monkeypatch):
                         lambda name, **kwargs: picked.append(kwargs["font_size"]))
     app.main(["--tk", "--font-size", "14"])
     assert picked == [14]
+
+
+# -- the signal handlers survive the toolkit (packaging smoke, 2026-09-25) ----
+
+import os as _os
+SRC = _os.path.dirname(_os.path.abspath(app.__file__))
+
+_TK_SIGTERM_CHILD = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import app
+from controller.setup import Setup
+Setup.start = lambda self: None          # never scan real ports from a test
+app.launch("tk")
+"""
+
+
+@pytest.mark.skipif(sys.platform != "darwin" and not _os.environ.get("DISPLAY"),
+                    reason="needs a display for a real Tk window")
+def test_a_sigterm_under_tk_still_runs_the_close_path(tmp_path):
+    """Tk 9 on Aqua installs its own C-level SIGTERM handler when the first
+    window is created, replacing the Controller's. A SIGTERM then ended the
+    process with exit 1, past `close()` and past atexit: every model live,
+    every port open (found by the packaging smoke test). `launch()` now puts
+    the Controller's handlers back after the view is built, so the process
+    dies BY the signal (-15) after `close()` ran."""
+    import signal
+    import subprocess
+    import time
+    env = dict(_os.environ, TRANSFER_STAGE_DATA_ROOT=str(tmp_path))
+    child = subprocess.Popen(
+        [sys.executable, "-c", _TK_SIGTERM_CHILD, str(SRC),
+         "-ApplePersistenceIgnoreState", "YES"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        time.sleep(6.0)                       # the window and its mainloop are up
+        child.send_signal(signal.SIGTERM)
+        out, _ = child.communicate(timeout=20)
+    finally:
+        if child.poll() is None:
+            child.kill()
+    assert child.returncode == -signal.SIGTERM, \
+        f"exit {child.returncode}: the toolkit's handler won\\n{out[-2000:]}"

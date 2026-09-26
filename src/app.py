@@ -8,7 +8,8 @@ the three launchers used to duplicate now lives in exactly one place:
 
     the wizard        -> `Setup`, a Panel every view renders from its schema
     the model list    -> `setup.MODEL_TYPES`, derived from the classes
-    exit handling     -> `Controller._hook_exit()`
+    exit handling     -> `Controller._hook_exit()`, re-armed after the view
+                         is built by `Controller.hook_signals()`
     exception hooks   -> `events.hook_exceptions()`
     cross-model wiring-> `Controller.add()` announces each model to the others
 
@@ -110,6 +111,10 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
         ensure_application()
     view = (view_class(controller, setup, port=port, open_browser=open_browser)
             if view_name == "web" else view_class(controller, setup))
+    # A toolkit may have replaced the process's signal handlers while the
+    # view was built (Tk 9 on Aqua does, for SIGTERM): put the Controller's
+    # back, so a SIGTERM still runs close() before the process ends.
+    controller.hook_signals()
     # The hardware scan starts BEFORE the window does (Addendum 2): the
     # operator finds it already running instead of being shown a Scan button
     # and asked to press it. It runs on its own thread and the view polls

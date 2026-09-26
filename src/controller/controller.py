@@ -275,7 +275,19 @@ class Controller:
             return
         self._hooked = True
         atexit.register(self.close)
+        self.hook_signals()
 
+    def hook_signals(self):
+        """(Re)install SIGINT/SIGTERM/SIGHUP -> close(). Safe to call again.
+
+        A GUI toolkit may install its own C-level handler when its first
+        window is created: Tk 9 on Aqua does for SIGTERM, and then a SIGTERM
+        ended the process with exit 1, past `close()` and past atexit, with
+        every model live and every port open (found by the packaging smoke
+        test, 2026-09-25). Python's `getsignal()` still reported our handler,
+        so nothing in-process could see it. `app.launch()` calls this again
+        after the view is built.
+        """
         def _handler(signum, _frame):
             self.close()
             signal.signal(signum, signal.SIG_DFL)
