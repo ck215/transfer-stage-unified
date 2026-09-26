@@ -91,12 +91,12 @@ from views.base import Dashboard, PanelView
 try:                                    # the module imports without PySide6
     from PySide6.QtCore import (QEasingCurve, QEvent, QEventLoop, QLocale,
                                 QPoint, QPointF, QRect, QRectF, QSize, Qt,
-                                QTimer, QVariantAnimation, Signal)
+                                QTimer, QUrl, QVariantAnimation, Signal)
     from PySide6.QtGui import (QColor, QDoubleValidator, QFont,
-                               QFontDatabase, QFontMetrics, QIcon,
+                               QFontDatabase, QFontMetrics, QIcon, QImage,
                                QIntValidator, QKeySequence, QPainter,
                                QPainterPath, QPen, QPixmap, QShortcut,
-                               QTextCursor)
+                               QTextCursor, QTextDocument)
     from PySide6.QtWidgets import (
         QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog,
         QDockWidget, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
@@ -247,6 +247,16 @@ UNIT_WORDS = {"C": "°C", "s/C": "s/°C"}
 def _rule(selector, declarations):
     body = "".join(f"    {name}: {value};\n" for name, value in declarations.items())
     return f"{selector} {{\n{body}}}\n"
+
+
+def qt_alive(obj):
+    """False once the C++ side of a Qt object has been deleted (its parent
+    went first). Python still holds the wrapper; touching it would raise."""
+    try:
+        import shiboken6
+        return bool(shiboken6.isValid(obj))
+    except ImportError:                 # pragma: no cover - no PySide6
+        return obj is not None
 
 
 def motion_reduced():
@@ -2629,7 +2639,8 @@ class QtPanelView(PanelView, QWidget):
         no model and stops no device loop: what a *view* owns is its tick.
         """
         self._closed = True
-        if self._timer is not None:
+        alive = qt_alive(self)
+        if self._timer is not None and qt_alive(self._timer):
             self._timer.stop()
         if self._overlay is not None:
             self._overlay.close()
@@ -2642,7 +2653,10 @@ class QtPanelView(PanelView, QWidget):
         self._detached.clear()
         PanelView.close(self)
         events.debug("Panel Closed", self.name, source="QtView")
-        return QWidget.close(self)
+        # The entry that held this panel may already have taken it down with
+        # it (a parent deletes its children, the timer included): then there
+        # is no widget left to close.
+        return QWidget.close(self) if alive else True
 
     def _on_timer_tick(self):
         """The render tick, isolated.
@@ -3348,9 +3362,14 @@ class QtPanelView(PanelView, QWidget):
     def _refresh(self):
         PanelView._refresh(self)
         state = self._last_state or {}
-        frozen = bool(state.get("is_estopped"))
+        # The latch freezes the numbers: a model's state says so at the top
+        # level (`Model.state`), a panel whose stop is a schema toggle in its
+        # values; either one is enough.
+        values = state.get("values") or {}
+        frozen = bool(state.get("is_estopped")) or values.get("is_estopped") in (True, "True")
         if frozen != self._frozen:
             self._frozen = frozen
+            self._set_prop(self, "frozen", "true" if frozen else "false")
             self._sync_dim()
         self._set_lost(lost_devices(state))
 
@@ -4161,6 +4180,13 @@ class QtDashboard(Dashboard, QMainWindow):
                 self._arrange_entries()
         QTimer.singleShot(0, run)
 
+    def showEvent(self, event):
+        """A resize made while the window was hidden is delivered only when it
+        shows; the rail and the disc follow it then too."""
+        super().showEvent(event)
+        self._sync_rail_width()
+        self._schedule_arrange()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "sheet_scroll"):
@@ -4256,6 +4282,27 @@ class QtDashboard(Dashboard, QMainWindow):
     def _severity_mark(severity):
         return theme.SEVERITY_MARK.get(severity, theme.MUTED)
 
+    def _mark_resource(self, severity, colour):
+        """The hollow square for `severity`, registered once in the log's
+        document as `mark:<severity>`: a 2 px `colour` edge, clear inside."""
+        name = f"mark:{severity}"
+        document = self.event_view.document()
+        if document.resource(QTextDocument.ResourceType.ImageResource.value,
+                             QUrl(name)) is None:
+            side = self.event_view.fontMetrics().ascent()
+            image = QImage(side, side, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            pen = QPen(QColor(colour))
+            pen.setWidth(2)
+            pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+            painter.setPen(pen)
+            painter.drawRect(QRect(1, 1, side - 2, side - 2))
+            painter.end()
+            document.addResource(QTextDocument.ResourceType.ImageResource.value,
+                                 QUrl(name), image)
+        return name
+
     #: What the tray reports: warnings and errors only (status by exception).
     TRAY_SEVERITIES = ("warning", "error")
 
@@ -4274,12 +4321,16 @@ class QtDashboard(Dashboard, QMainWindow):
         label = sentence(severity.upper())
         hollow = severity in theme.SEVERITY_MARK_HOLLOW
         colour = self._severity_mark(severity)
-        cell = (f"border:1px solid {colour}" if hollow
-                else f"background-color:{colour}")
+        # A warning's mark is a hollow ink square, an error's a solid signal
+        # one (the brief). Rich text drops a span's border, so the hollow
+        # square is a small image drawn from the theme and kept as a document
+        # resource; the solid one is a filled cell.
+        cell = (f'<img src="{self._mark_resource(severity, colour)}">' if hollow
+                else f'<span style="background-color:{colour}">&nbsp;&nbsp;</span>')
         # Escaped: an event's text can carry a device's reply verbatim, and
-        # this widget renders HTML. The mark is a cell, not a glyph.
+        # this widget renders HTML.
         self.event_view.append(
-            f'<span style="{cell}">&nbsp;&nbsp;</span>&nbsp;&nbsp;'
+            f'{cell}&nbsp;&nbsp;'
             f'<span style="color:{ink}"><b>{html.escape(label)}</b>&nbsp;&nbsp;'
             f"{html.escape(event.text)}</span>")
         self.event_view.moveCursor(QTextCursor.MoveOperation.End)

@@ -1320,8 +1320,10 @@ def test_the_stop_disc_is_the_themes_diameter_and_narrows_under_1000_px(
         dashboard, qapp):
     """Updated (E): A's disc at `theme.STOP["diameter"]` in the 248 px rail,
     `diameter_narrow` in the 200 px rail under 1000 px wide (was: a disc sized
-    in lines of the base font, capped at 96 px)."""
+    in lines of the base font, capped at 96 px). The window is shown first:
+    Qt holds a hidden widget's resize until it shows."""
     button = dashboard.stop_button
+    dashboard.open()
     dashboard.resize(1400, 900)
     qapp.processEvents()
     assert button.width() == button.height()
@@ -2513,12 +2515,15 @@ def test_e_open_tiers_are_remembered_per_model_for_the_session(qapp):
 def test_e_an_entry_lifts_the_disclosure_into_its_head(tiered):
     view, _ = tiered
     entry = qt.SheetEntry("Tiered", view)
-    try:
-        assert entry.disclosure is view.tier_button
-        assert not view._disclosure_row.isVisibleTo(view)
-        assert entry.isAncestorOf(view.tier_button)
-    finally:
-        entry.setParent(None)
+    assert entry.disclosure is view.tier_button
+    assert not view._disclosure_row.isVisibleTo(view)
+    assert entry.isAncestorOf(view.tier_button)
+    # The entry owns the panel now; deleting it takes the panel and its timer
+    # with it, and the fixture's later close() must survive that.
+    import shiboken6
+    shiboken6.delete(entry)
+    assert not qt.qt_alive(view._timer)
+    assert view.close() is True
 
 
 def test_e_the_slider_and_the_entry_follow_each_other_and_the_command_gets_the_value(
@@ -2608,9 +2613,11 @@ def test_e_a_number_is_the_trace_only_while_it_changes(tiered, monkeypatch):
 def test_e_a_latched_model_freezes_its_numbers(tiered):
     view, panel = tiered
     view._refresh()
+    assert view.property("frozen") in (None, "false")
     panel.is_estopped = True
     view._refresh()
-    assert view.property("stale") == "true"
+    assert view.property("frozen") == "true"
+    assert view.property("stale") == "true"          # the one dimming rule
     x = view._widget_for(element_named(view, "position_x"))
     assert x.palette().color(x.foregroundRole()).name().lower() == theme.MUTED.lower()
 
@@ -2658,8 +2665,23 @@ def test_e_the_tray_reports_warnings_and_errors_only_and_each_once(dashboard):
     dashboard._show_event(warning)
     dashboard._show_event(warning)
     assert dashboard.event_view.toPlainText().count("a port answered nothing") == 1
-    assert "border:1px solid" in dashboard.event_view.toHtml().replace(" ", "") or \
-        "border:1pxsolid" in dashboard.event_view.toHtml().replace(" ", "")
+    # The warning's mark is a hollow square in the warning ink: an image in
+    # the log (rich text drops a span's border), ink at its edge, clear inside.
+    # (Was an HTML `border:1px solid` span, which Qt never rendered.)
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QTextDocument
+    page = dashboard.event_view.toHtml()
+    assert 'src="mark:warning"' in page
+    image = dashboard.event_view.document().resource(
+        QTextDocument.ResourceType.ImageResource.value, QUrl("mark:warning"))
+    side = image.width()
+    edge, inside = QColor(image.pixel(1, side // 2)), image.pixelColor(side // 2, side // 2)
+    assert _near(edge, theme.SEVERITY_MARK["warning"]) and inside.alpha() == 0
+    error = Spoof()
+    error.severity, error.text = "error", "the heater did not answer"
+    dashboard._show_event(error)
+    assert (f"background-color:{theme.SEVERITY_MARK['error']}".lower()
+            in dashboard.event_view.toHtml().lower().replace(" ", ""))
 
 
 def _six_tiered_window(qapp, width, height):
