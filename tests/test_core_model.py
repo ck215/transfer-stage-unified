@@ -488,3 +488,21 @@ def test_a_fault_with_no_reason_still_says_something():
     assert model.fault.startswith("Fake reported a fault without a reason.")
     errors = [e for e in log.seen if e.severity == "error"]
     assert errors and errors[0].message == model.fault
+
+
+def test_a_model_remembers_whether_its_last_stop_confirmed():
+    """Round 7: the views mark an unconfirmed stop from state, not from the
+    event log. None while clear; True/False after a stop; None again once
+    cleared."""
+    model = FakeModel()
+    assert model.stop_confirmed is None
+    assert model.estop() is True
+    assert model.stop_confirmed is True and model.state["stop_confirmed"] is True
+    model.clear_estop(confirmed=True)
+    assert model.stop_confirmed is None
+    stalled = FakeModel(halt_blocks=True)
+    try:
+        assert stalled.estop() is False
+        assert stalled.stop_confirmed is False
+    finally:
+        stalled.release()

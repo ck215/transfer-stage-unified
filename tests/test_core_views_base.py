@@ -542,3 +542,49 @@ def test_a_detached_log_stream_is_polled_only_when_the_toolkit_wants_it(station)
 def test_the_base_view_wants_every_data_element_by_default(view):
     assert all(view._wants_data(e) for e in view._elements)
     assert view.data["Side log"] == ["aside"]
+
+
+# -- the words every view says about the stop (round 7) ----------------------
+
+def test_stop_words_while_nothing_is_latched():
+    from views.base import stop_words
+    words = stop_words({"latched": [], "unconfirmed": [], "every": False})
+    assert words == {"face": "Stop", "headline": "", "subline": "", "rail": "",
+                     "action": "stop"}
+
+
+def test_stop_words_for_one_models_own_stop_never_say_every():
+    from views.base import stop_words
+    words = stop_words({"latched": ["Stepper Probe"], "unconfirmed": [], "every": False})
+    assert words["face"] == "Stop" and words["action"] == "stop"
+    assert words["headline"] == ""
+    assert words["rail"] == "Stopped: Stepper Probe"
+
+
+def test_stop_words_when_every_model_confirmed():
+    from views.base import stop_words
+    words = stop_words({"latched": ["A", "B"], "unconfirmed": [], "every": True})
+    assert words["face"] == "Clear" and words["action"] == "clear"
+    assert words["headline"] == "Every model is stopped."
+    assert words["rail"] == "Stopped: every model latched"
+    assert words["subline"] == ""
+
+
+def test_stop_words_name_the_models_that_did_not_confirm():
+    from views.base import stop_words
+    words = stop_words({"latched": ["A", "B", "C"], "unconfirmed": ["B", "C"], "every": True})
+    assert words["face"] == "Clear"
+    assert words["headline"] == "Stopped. B and C did not confirm."
+    assert words["subline"] == "Treat them as live until you have checked them by hand."
+    assert words["rail"] == "Stopped: B and C did not confirm"
+    one = stop_words({"latched": ["A", "B"], "unconfirmed": ["B"], "every": True})
+    assert one["headline"] == "Stopped. B did not confirm."
+    assert one["subline"] == "Treat it as live until you have checked it by hand."
+
+
+def test_stop_words_for_a_partial_stop_with_an_unconfirmed_model():
+    from views.base import stop_words
+    words = stop_words({"latched": ["B"], "unconfirmed": ["B"], "every": False})
+    assert words["face"] == "Stop" and words["action"] == "stop"
+    assert words["rail"] == "Stopped: B did not confirm"
+    assert words["headline"] == ""

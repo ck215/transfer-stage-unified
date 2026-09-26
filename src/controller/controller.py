@@ -14,6 +14,14 @@ from events import events
 from result import Result
 
 
+def _and(names):
+    """'A', 'A and B', 'A, B and C' - station order, never sorted."""
+    names = list(names)
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
 class Controller:
     ESTOP_ALL_BUDGET = 1.0   # s, total, however many models
 
@@ -140,6 +148,7 @@ class Controller:
             models = dict(self._models)
         return {"models": {n: m.state for n, m in models.items()},
                 "is_estopped": self.is_estopped, "is_active": self.is_active,
+                "stop": self._stop_state(models),
                 "closed": self.closed_names, "latest_event": events.latest_id}
 
     def run(self, name, command, inputs=None, args=()):
@@ -173,8 +182,29 @@ class Controller:
     # -- stop --------------------------------------------------------------
     @property
     def is_estopped(self):
+        """Any model latched. The watchdog and the close path key on this;
+        what a view SAYS comes from `stop_state` (round 7, IMP7-1)."""
         with self._lock:
             return any(m.is_estopped for m in self._models.values())
+
+    @property
+    def stop_state(self):
+        """The three facts a view needs before it says anything about the
+        stop: `latched` (names, station order), `unconfirmed` (latched
+        models whose hardware did not confirm), and `every` (every open
+        model is latched; False for an empty station). One model's own
+        switch is a partial stop, never \"every model is stopped\"."""
+        with self._lock:
+            models = dict(self._models)
+        return self._stop_state(models)
+
+    @staticmethod
+    def _stop_state(models):
+        latched = [n for n, m in models.items() if m.is_estopped]
+        unconfirmed = [n for n in latched
+                       if getattr(models[n], "stop_confirmed", True) is False]
+        return {"latched": latched, "unconfirmed": unconfirmed,
+                "every": bool(latched) and len(latched) == len(models)}
 
     @property
     def is_active(self):
@@ -192,9 +222,13 @@ class Controller:
             events.info("FULL STOP", f"latched and confirmed on: {', '.join(confirmed)}",
                         source="Controller")
         if unconfirmed:
-            events.error("Stop Not Confirmed", "FULL STOP latched on every model, "
-                         f"but these did not confirm within {self.ESTOP_ALL_BUDGET}s: "
-                         f"{', '.join(unconfirmed)}", source="Controller")
+            # The title is what the views key on; the words are the operator's
+            # (round 7, IMP7-4): sentence case, the model first, the action.
+            events.error("Stop Not Confirmed",
+                         f"{_and(unconfirmed)} did not confirm the stop within "
+                         f"{self.ESTOP_ALL_BUDGET:g} s. Every model is latched; treat "
+                         f"{'them' if len(unconfirmed) > 1 else 'it'} as live until you "
+                         "have checked by hand.", source="Controller")
         return results
 
     def clear_estop_all(self, confirmed=False):
@@ -203,10 +237,19 @@ class Controller:
         if not latched:
             return Result(Result.OK)
         if not confirmed:
-            return Result(Result.CONFIRM, command="clear_estop_all",
-                          reason="Release the FULL STOP latch on: "
-                                 f"{', '.join(sorted(latched))}?\n\nThis does not "
-                                 "restart anything.")
+            # Round 7 (IMP7-4, TK7-10): sentence case, station order, and the
+            # model that never confirmed is named before the operator answers.
+            names = list(latched)
+            unconfirmed = [n for n in names
+                           if getattr(latched[n], "stop_confirmed", True) is False]
+            reason = f"Clear the stop on {', '.join(names)}?"
+            if unconfirmed:
+                reason += (f"\n\n{_and(unconfirmed)} did not confirm "
+                           f"{'their' if len(unconfirmed) > 1 else 'its'} stop. "
+                           f"Treat {'them' if len(unconfirmed) > 1 else 'it'} as live "
+                           "until you have checked by hand.")
+            reason += "\n\nNothing restarts by itself."
+            return Result(Result.CONFIRM, command="clear_estop_all", reason=reason)
         for model in latched.values():
             model.clear_estop(confirmed=True)
         return Result(Result.OK)

@@ -14,6 +14,53 @@ import schema as sch
 from events import events
 
 
+def join_names(names):
+    """'A', 'A and B', 'A, B and C' - station order, never sorted."""
+    names = list(names)
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def stop_words(stop_state):
+    """What every view says about the stop, from `Controller.stop_state`
+    (round 7: IMP7-1/2, TK7-1, QT7-1). One function, three views, so the
+    disc, the headline, its subline and the rail line never disagree.
+
+    - `face` / `action`: the disc reads "Clear" (and a press clears) only
+      while EVERY model is latched; otherwise it reads "Stop" and a press is
+      `estop_all`, so one model's own switch never takes the stop away from
+      the five that are live.
+    - `headline`: "Every model is stopped." only when every model is latched
+      AND every one confirmed; when some did not, the headline names them.
+      A partial stop has no headline.
+    - `rail`: the line under the disc: the names of a partial stop, or the
+      models that did not confirm.
+    """
+    latched = list(stop_state.get("latched") or [])
+    unconfirmed = list(stop_state.get("unconfirmed") or [])
+    every = bool(stop_state.get("every")) and bool(latched)
+    plural = len(unconfirmed) > 1
+    words = {"face": "Stop", "action": "stop", "headline": "", "subline": "", "rail": ""}
+    if not latched:
+        return words
+    if every:
+        words["face"], words["action"] = "Clear", "clear"
+    if unconfirmed:
+        names = join_names(unconfirmed)
+        words["rail"] = f"Stopped: {names} did not confirm"
+        if every:
+            words["headline"] = f"Stopped. {names} did not confirm."
+            words["subline"] = (f"Treat {'them' if plural else 'it'} as live until you "
+                                f"have checked {'them' if plural else 'it'} by hand.")
+    elif every:
+        words["headline"] = "Every model is stopped."
+        words["rail"] = "Stopped: every model latched"
+    else:
+        words["rail"] = f"Stopped: {join_names(latched)}"
+    return words
+
+
 class PanelView:
     REFRESH_MS = 100
     #: Minimum ms between re-running a data command, by element type. A plot

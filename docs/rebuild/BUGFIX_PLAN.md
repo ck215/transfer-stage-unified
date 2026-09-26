@@ -328,6 +328,51 @@ because speed is the control the owner named as commonly adjusted; a
 readings-only overview is a one-line change to the compact entry once J6's
 `compact` flag exists.
 
+## Tier L — UI audit round 7 (2026-09-26): first full analysis per view on the real display
+
+Three read-only auditors, one per view, Impeccable critique + a11y lens,
+after E landed and while Tier K was in flight (K1–K4 excluded from scope).
+Reports: `handoff/audit-ui-round7-{web,tk,qt}.md` (16 / 18 / 19 findings);
+captures `handoff/shots/round7_*`. Merged here by theme; the source IDs are
+in the Item column. Core parts are the lead's and land first; view parts go
+one worktree per view after Tier K merges (the same files).
+
+| # | Sev | Views | Item (source) | Fix | Route |
+|---|---|---|---|---|---|
+| L1 | S1 | all | **One model's own stop reads as "every model is stopped"**, the disc turns to "Clear" and can no longer stop the five live models (IMP7-1, IMP7-2); a stop that did not confirm is contradicted by the headline "Every model is stopped." and its mark is below the fold (IMP7-3, TK7-1, QT7-1). | Core, landed: `Controller.stop_state` = {latched, unconfirmed, every} in `state()["stop"]`; `Model.stop_confirmed` in state; `views.base.stop_words()` gives the disc face/action, headline, subline and rail line for every case (Clear only when every model is latched; "Stopped. Rotator did not confirm." + "Treat it as live until you have checked it by hand." when one did not; "Stopped: Stepper Probe" for a partial stop). Views: consume `stop_words`; the disc's press is `estop_all` unless `action == "clear"`; the rail's model list marks latched (square) and unconfirmed (signal square + "did not confirm") models; "Stop: Ctrl+." stays visible in every state (the chord always stops); the Web server serves `stop_words` in `/api/state`. | core done → worktree per view |
+| L2 | S2 | all | The "Stop Not Confirmed" line outlives the latch: tray / band still say it after Clear and on reload (IMP7-5, TK7-2, QT7-12). | When the latch opens, drop that event from the tray/band; on boot show only events newer than the current latch. | worktree per view |
+| L3 | S2 | all | Disabled commands never say why; Red Percent's Start run is greyed from launch and its precondition (a capture region) is two tiers down (IMP7-7, TK7-4, QT7-6). | Core: Red Percent publishes a tier-1 quiet status line while `no_region` ("Set a capture region under Red Percent details to start a run."). Views: a disabled command carries the gate's reason as tooltip/title and, for `go` buttons, one muted caption under the row. | core (model) + worktree per view |
+| L4 | S2 | all | Targets: entries 16–32 px, sliders 18–24, commands 22–36; only the disc meets 44 (IMP7-8, TK7-6, QT7-5). | Floor now: every pressable ≥ 24 px (WCAG 2.5.8), commands ≥ 36 px, the well/ring of an entry is part of its target, Setup's tick and row name share one target. 44 px everywhere is an owner call (it conflicts with the artboards' compact commands). | worktree per view; owner for 44 |
+| L5 | S2 | tk, qt | The opened model's tier 1 scrolls away with its well open or when latched (TK7-3, QT7-15); "Tier 1 never scrolls away" is the brief. | On the device page (K4) the head and tier-1 body sit above the scroll area; only the well scrolls. | worktree per view (after K4) |
+| L6 | S2 | all | Slider keyboard: End commits the maximum speed in one key; every arrow release commits 1 step/s (TK7-5; the Web range and QSlider behave the same way). | Keyboard step = 1 % of the travel; Home/End do nothing; commit on release as today. | worktree per view |
+| L7 | S2 | qt | On macOS Tab never reaches a button: not the disc, the rail, Step, the toggles, Quit or Acknowledge (QT7-4). | Buttons take `StrongFocus` (or the style hint that lets Tab reach them); test: Tab from the sheet reaches the disc. | worktree qt |
+| L8 | S2 | qt | Setup's dock is capped at 55 % and hides Launch below its own fold; at 900 px a sideways bar covers the Launch row (QT7-3). | Let the dock take the height it needs while the sheet is empty; no sideways scroll at 900. | worktree qt |
+| L9 | S2 | qt | Quit exits without asking; Tk and Web confirm (QT7-7). | Route Quit and the window's close through the same confirmation as Tk/Web. Not P3. | worktree qt |
+| L10 | S2 | web | The Rotator's angle is not drawn when unknown, so a tier-1 position disappears (IMP7-6; fix-e-web kept it on purpose). | Ruling: a `rail: true` tier-1 reading is never hidden; unknown draws "--" muted at reading size (TK7-14's objection to the glyph is noted and kept). | worktree web (+ check tk/qt) |
+| L11 | S3 | all | Event lines are raw log text: bracketed source, Title Case, "FULL STOP" (IMP7-4, TK7-11, QT7-12). Core copy was changed with L1 (sentence case, the model named first, "Treat it as live"). | Views render title + message in sentence case without the `[source]` prefix; the acknowledgement dialog too. | worktree per view |
+| L12 | S3 | tk, qt | The gamepad log window opens blank: no empty state, no Close; Tk's title has a spaced em dash (TK7-15, QT7-10, UXPM5-13). | "No gamepad input yet." + a Close button; title "Stepper Probe gamepad log". | worktree tk, qt |
+| L13 | S3 | tk | No visible way to close a model (TK7-16). | "Close this model…" in the well foot, as Web. | worktree tk |
+| L14 | S3 | tk, qt | Confirmations answer "Yes / No" under "Confirm"; the Clear dialog does not name the unconfirmed model (TK7-10, QT7-13; the naming is L1 core, done). | Titled dialogs with verb buttons ("Clear the stop" / "Keep it stopped"; "Quit" / "Stay"). | worktree tk, qt |
+| L15 | S3 | all | Red Percent details stack two empty plot panes (600–700 px of "no data") before Diagnostics (TK7-13, QT7-14, IMP7-13 part). | An empty plot/figure pane is one caption line tall until it has data. | worktree per view |
+| L16 | S3 | all | Accessible names drop the visible words; three rescan buttons share one name (IMP7-10, QT7-11). | name = face text + model; unique names per row. | worktree per view |
+| L17 | S3 | web (+core) | Setup: "Stop system" is a third stop word; lowercase row statuses; an orphan disabled "Cancel scan"; Relaunch is the filled primary (IMP7-12). | Core: "Stop system" → "Close every model". Web: sentence-case statuses; Cancel scan only while scanning. | core + worktree web |
+| L18 | S3 | web, tk | A tier-2 well repeats its disclosure as a heading; Diagnostics opens onto a "Diagnostics" heading (IMP7-13, TK7-17). | Skip a section title that equals the disclosure's words. | worktree per view |
+| L19 | S3 | qt | Run ID drawn in trace and ticking every second (QT7-8); "Hide events" becomes a full-width bar (QT7-9); Setup's close is an 8 px glyph and the rail's Setup does not show it is open (QT7-16). | Per finding. | worktree qt |
+| L20 | S3 | tk | Tab order: disc, Setup, Quit, models, tray, a hidden tab strip, then the sheet (TK7-7); unequal sheet columns (TK7-8); captions at different heights in a row (TK7-9). | Per finding. | worktree tk |
+| L21 | S3 | web | After Quit the tray goes translucent and paints over the sheet (IMP7-9); the warning mark reads as an empty checkbox and a port no model uses holds the tray from boot (IMP7-11). | Per finding. | worktree web |
+| L22 | S4 | all (+core) | The heater plot's empty state talks about red % (IMP7-14); heater unit "C" vs "°C" (IMP7-15, J2 family); copy nits (QT7-17); rail hover 1.1:1 (QT7-18); wrapped tray line under its mark (QT7-19); focus nits (IMP7-16). | Core: neutral empty-state default for `plot`; heater unit. Views: per finding. | core + worktree per view |
+
+Not defects (checked by the lead): the Rotator's own "Stop motion" is gated
+on a lost link only (`rotator.py:194-211`), not on staleness; a halt cannot
+reach a device that is not connected, and the disc still latches it.
+
+Owner calls from this round: (1) 44 px targets everywhere vs the
+artboards' compact commands (L4 ships the 24/36 floors); (2) the slider
+track and entry well at 1.11:1 against the sheet (WCAG 1.4.11 wants 3:1 on
+a control's boundary; the brief draws them so); (3) whether a partial latch
+should ever be clearable from the disc (L1 ships: the disc clears only when
+every model is latched; a single model clears at its own switch).
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.

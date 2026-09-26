@@ -22,6 +22,10 @@ class Model(Panel):
     def __init__(self):
         super().__init__()
         self._estop = threading.Event()
+        #: None while clear; after a stop, whether the hardware confirmed it
+        #: in time (round 7: the views mark an unconfirmed stop from state,
+        #: not by parsing the event log).
+        self._stop_confirmed = None
         self._fault_reason = ""
         self._updated_at = time.monotonic()
 
@@ -112,6 +116,7 @@ class Model(Panel):
         threading.Thread(target=_stop, daemon=True, name=f"estop-{self.NAME}").start()
         in_time = done.wait(self.ESTOP_BUDGET)
         confirmed = bool(in_time and landed and landed[0])
+        self._stop_confirmed = confirmed
         events.debug("Estop", f"latched; hardware stop "
                      f"{'confirmed' if confirmed else 'still in flight' if not in_time else 'reported failure'}"
                      f" after {(time.monotonic() - started) * 1000:.1f} ms", source=self.NAME)
@@ -125,6 +130,7 @@ class Model(Panel):
                 "accept commands again; nothing restarts by itself.",
                 "clear_estop")
         self._estop.clear()
+        self._stop_confirmed = None
         events.info("Stop Cleared", f"The stop on the {self.NAME} was cleared. "
                     "Nothing restarts until you start it.", source=self.NAME)
 
@@ -139,6 +145,11 @@ class Model(Panel):
     @property
     def is_estopped(self):
         return self._estop.is_set()
+
+    @property
+    def stop_confirmed(self):
+        """None while clear; True/False for the stop that is latched."""
+        return self._stop_confirmed if self._estop.is_set() else None
 
     @property
     def gate_mode(self):
@@ -195,6 +206,7 @@ class Model(Panel):
         snapshot = super().state
         snapshot.update({
             "is_estopped": self.is_estopped, "is_faulted": self.is_faulted,
+            "stop_confirmed": self.stop_confirmed,
             "fault": self.fault, "is_active": self.is_active,
             # Seconds since this model's own loop last reported alive; None
             # when it has no loop to be stale about (an idle recorder).

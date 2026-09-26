@@ -619,3 +619,77 @@ def test_hooking_exit_is_idempotent(controller):
     controller._hook_exit()
     import atexit
     atexit.unregister(controller.close)
+
+
+# -- the station's stop state (audit round 7, IMP7-1/2, TK7-1) --------------
+#
+# `is_estopped` is "any model latched" and stays so (the watchdog and the
+# close path use it). What a view SAYS about the stop needs three facts:
+# which models are latched, which did not confirm, and whether that is every
+# model. One model's own switch must never read as "every model is stopped".
+
+def test_stop_state_is_empty_while_nothing_is_latched(controller):
+    controller.add("one", FakeModel())
+    assert controller.stop_state == {"latched": [], "unconfirmed": [], "every": False}
+
+
+def test_one_models_own_stop_is_a_partial_stop_not_every(controller):
+    first, second = FakeModel(), FakeModel()
+    controller.add("one", first)
+    controller.add("two", second)
+    controller.run("two", "toggle_estop")
+    state = controller.stop_state
+    assert state["latched"] == ["two"] and state["every"] is False
+    assert state["unconfirmed"] == []
+    assert controller.state()["stop"] == state
+
+
+def test_the_stop_state_lists_latched_models_in_station_order(controller):
+    for name in ("zeta", "alpha", "mid"):
+        controller.add(name, FakeModel())
+    controller.estop_all()
+    assert controller.stop_state["latched"] == ["zeta", "alpha", "mid"]
+    assert controller.stop_state["every"] is True
+
+
+def test_the_stop_state_names_the_model_that_did_not_confirm(controller):
+    healthy, stalled = FakeModel(), FakeModel(halt_blocks=True)
+    controller.add("healthy", healthy)
+    controller.add("stalled", stalled)
+    try:
+        controller.estop_all()
+        state = controller.stop_state
+        assert state["every"] is True
+        assert state["unconfirmed"] == ["stalled"]
+    finally:
+        stalled.release()
+
+
+def test_clearing_a_model_drops_it_from_the_stop_state(controller):
+    controller.add("one", FakeModel())
+    controller.add("two", FakeModel())
+    controller.estop_all()
+    controller.run("one", "clear_estop", args=(True,))
+    assert controller.stop_state["latched"] == ["two"]
+    assert controller.stop_state["every"] is False
+
+
+def test_an_empty_station_is_not_every_model_stopped(controller):
+    assert controller.stop_state["every"] is False
+
+
+def test_the_clear_confirmation_names_the_unconfirmed_model_in_plain_words(controller):
+    """IMP7-4 / TK7-10: the question an operator answers before releasing the
+    latch says which model never confirmed, in sentence case, station order."""
+    healthy, stalled = FakeModel(), FakeModel(halt_blocks=True)
+    controller.add("healthy", healthy)
+    controller.add("stalled", stalled)
+    try:
+        controller.estop_all()
+        result = controller.clear_estop_all()
+        assert result.status == Result.CONFIRM
+        assert "FULL STOP" not in result.reason
+        assert result.reason.startswith("Clear the stop on healthy, stalled?")
+        assert "stalled did not confirm its stop. Treat it as live" in result.reason
+    finally:
+        stalled.release()
