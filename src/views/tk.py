@@ -174,6 +174,11 @@ MIN_TARGET_PX = 24
 
 #: The chevron a disclosure wears, closed and open.
 CHEVRON = {False: "\u25b8", True: "\u25be"}
+#: The overview entry's affordance (K4) and, with the model's name, its
+#: tooltip: "Open Stepper Probe".
+OPEN_WORD = "Open"
+#: The rail's first item: the page of every launched model (K4).
+OVERVIEW_PAGE = "Overview"
 
 #: The event tray's marks (status by exception): a solid signal square for
 #: an error, a hollow ink one for a warning. Info is not drawn in the tray.
@@ -1441,14 +1446,33 @@ class TkPanelView(PanelView):
         self._rule = tk.Frame(self.frame, height=theme.RULE_STRONG_PX,
                               background=theme.RULE_STRONG)
         self._rule.pack(fill="x", padx=self._inset, pady=(self._inset, SPACE[4]))
-        self._head = tk.Frame(self.frame, background=_page())
-        self._head.pack(fill="x", padx=self._inset, pady=(0, GAP))
+        # On the overview the head is the press that opens the device page
+        # (K4): the name, and "Open" with a chevron at its right; it wears
+        # the focus ring and takes Return and Space. On the device page it
+        # is only the name - the rail is the navigation.
+        self.on_open = None             # the dashboard's "show this model"
+        self._head_ring = _Ring(self.frame, _page(), border=_page())
+        self._head_ring.outer.pack(fill="x", padx=self._inset, pady=(0, GAP))
+        self._head = tk.Frame(self._head_ring.inner, background=_page(),
+                              takefocus=0, highlightthickness=0)
+        self._head.pack(fill="both", expand=True)
         self._title = tk.Label(self._head, text=name, font=self._name_font(),
                                anchor="w", background=_page(),
                                foreground=theme.TEXT)
         self._title.pack(side="left")
         self._head_right = tk.Frame(self._head, background=_page())
         self._head_right.pack(side="right")
+        self._open_label = tk.Label(self._head_right, text=f"{CHEVRON[False]} {OPEN_WORD}",
+                                    font=_font(bold=True), background=_page(),
+                                    foreground=theme.TEXT, padx=SPACE[2],
+                                    cursor="hand2", highlightthickness=0)
+        self._open_tip = _Tooltip(self._head)
+        for widget in (self._head, self._title, self._head_right, self._open_label):
+            widget.bind("<Button-1>", self._on_head_pressed)
+        for sequence in ("<Return>", "<space>"):
+            self._head.bind(sequence, self._on_head_pressed)
+        self._head.bind("<FocusIn>", lambda _e: self._paint_head_ring(True))
+        self._head.bind("<FocusOut>", lambda _e: self._paint_head_ring(False))
         # "Stop not confirmed. Treat as live." - on its own line under the
         # head, packed only while it is so (never squeezed beside the name).
         self._mark_row = tk.Frame(self.frame, background=_page())
@@ -1481,6 +1505,7 @@ class TkPanelView(PanelView):
             if tier in self._tiers:
                 self._set_tier_open(tier, _DISCLOSED.get((self.name, tier), False),
                                     refresh=False)
+        self._apply_page()
         self._schedule_refresh()
         events.debug("Panel Built", f"{name}: {len(self._elements)} elements",
                      source=SOURCE)
@@ -1848,6 +1873,8 @@ class TkPanelView(PanelView):
         """True while `tier` is shown (tier 3 needs tier 2 open as well)."""
         if tier <= 1:
             return True
+        if not self._is_opened:
+            return False            # an overview entry shows tier 1 only (K4)
         if not _DISCLOSED.get((self.name, 2), False) or 2 not in self._tiers:
             return False
         return tier == 2 or bool(_DISCLOSED.get((self.name, 3), False))
@@ -1860,23 +1887,10 @@ class TkPanelView(PanelView):
         opener = self._disclosures.get(tier)
         if opener is not None:
             opener.set_open(is_open)
-        target = self._well if tier == 2 else self._diagnostics
-        try:
-            if is_open and tier == 2:
-                # Directly under its press, no gap (K3).
-                target.pack(side="top", fill="x", padx=self._inset,
-                            pady=(0, SPACE[3]), after=self._disclosures[2].frame)
-            elif is_open:
-                target.pack(side="top", fill="x", padx=self._inset,
-                            pady=(SPACE[2], 0))
-            else:
-                target.pack_forget()
-        except Exception as exc:
-            events.debug("Tier Not Shown", f"{self.name} tier {tier}: {exc}",
-                         source=SOURCE, exception=exc)
+        self._map_tier(tier)
         events.debug("Tier Toggled", f"{self.name} tier {tier} -> "
                      f"{'open' if is_open else 'closed'}", source=SOURCE)
-        if refresh and is_open:
+        if refresh and is_open and self._is_opened:
             # What was hidden was not polled: fill it now, not in 100 ms.
             try:
                 self._refresh()
@@ -1885,15 +1899,97 @@ class TkPanelView(PanelView):
                              exception=exc, every=1.0)
         return True
 
+    def _map_tier(self, tier):
+        """Map `tier`'s frame as the page and the memory say: the well only
+        on the device page and only while remembered open; the Diagnostics
+        strip inside it while remembered open."""
+        is_open = bool(_DISCLOSED.get((self.name, tier), False))
+        target = self._well if tier == 2 else self._diagnostics
+        if target is None:
+            return
+        try:
+            if tier == 2 and is_open and self._is_opened:
+                # Directly under its press, no gap (K3).
+                target.pack(side="top", fill="x", padx=self._inset,
+                            pady=(0, SPACE[3]), after=self._disclosures[2].frame)
+            elif tier == 3 and is_open:
+                target.pack(side="top", fill="x", padx=self._inset,
+                            pady=(SPACE[2], 0))
+            else:
+                target.pack_forget()
+        except Exception as exc:
+            events.debug("Tier Not Shown", f"{self.name} tier {tier}: {exc}",
+                         source=SOURCE, exception=exc)
+
+    # -- the two pages (K4) -----------------------------------------------------
+    def _apply_page(self):
+        """An overview entry (on the sheet, not opened) is tier 1 only: no
+        disclosure, no well, and its head is the press that opens the device.
+        The device page shows the disclosures and the remembered wells.
+        `_DISCLOSED` is not touched either way."""
+        is_press = self._sheet is not None and not self._is_opened
+        opener = self._disclosures.get(2)
+        if opener is not None:
+            if self._is_opened:
+                self._show_opener()
+            else:
+                try:
+                    opener.frame.pack_forget()
+                except Exception:
+                    pass
+        for tier in (2, 3):
+            if tier in self._tiers:
+                self._map_tier(tier)
+        self._open_tip.text = f"{OPEN_WORD} {self.name}" if is_press else ""
+        try:
+            if is_press:
+                self._open_label.pack(side="right")
+            else:
+                self._open_label.pack_forget()
+            cursor = "hand2" if is_press else ""
+            for widget in (self._head, self._title, self._head_right):
+                widget.configure(cursor=cursor)
+            self._head.configure(takefocus=1 if is_press else 0)
+        except Exception as exc:
+            events.debug("Head Not Set", f"{self.name}: {exc}", source=SOURCE,
+                         exception=exc)
+        if not is_press:
+            self._paint_head_ring(False)
+
+    def _paint_head_ring(self, is_focused):
+        self._head_ring.paint(is_focused)
+
+    def _on_head_pressed(self, _event=None):
+        """A press on an overview entry's head opens its device page."""
+        if self._sheet is None or self._is_opened or self.on_open is None:
+            return None
+        events.debug("Entry Head Pressed", self.name, source=SOURCE)
+        try:
+            self._open_tip._on_leave()
+        except Exception:
+            pass
+        self.on_open(self.name)
+        return "break"
+
     # -- prominence -----------------------------------------------------------
     def set_prominence(self, is_opened):
-        """The opened model's readings are `focal`; a closed probe's are
-        `compact`; a single value stays `primary` and a change `secondary`
-        either way (`theme.READING_SIZES`)."""
+        """The opened model - the device page - has `focal` readings, its
+        disclosures and its remembered wells; an overview entry's probe
+        readings are `compact` and it shows tier 1 only (K4). A single value
+        stays `primary` and a change `secondary` either way
+        (`theme.READING_SIZES`)."""
         is_opened = bool(is_opened)
         if is_opened == self._is_opened:
             return
         self._is_opened = is_opened
+        self._apply_page()
+        if is_opened and self.is_disclosed(2):
+            # What was hidden was not polled: fill it now, not in 100 ms.
+            try:
+                self._refresh()
+            except Exception as exc:
+                events.debug("Refresh Failed", f"{self.name}: {exc}", source=SOURCE,
+                             exception=exc, every=1.0)
         try:
             self._title.configure(font=self._name_font())
         except Exception:
@@ -2254,7 +2350,20 @@ class TkPanelView(PanelView):
         key = (layout, tuple(id(widget) for widget in shown))
         if key == flow["layout"]:
             return
+        # A dead band: the same cells at the same sizes, a pixel or two
+        # either side of the width they were laid out at, keep their lines.
+        # A flow that wraps at exactly its column's width changes the row's
+        # requests, the grid hands the column's odd pixel elsewhere, and the
+        # flow unwraps - forever (the overview at 1056 px, K4). The cells'
+        # own gap on the right absorbs the difference.
+        laid = flow.get("laid") or (None, None, None)
+        if (flow["layout"] is not None and laid[0] == key[1]
+                and laid[1] == tuple(widths) and isinstance(width, int)
+                and isinstance(laid[2], int)
+                and 0 < abs(width - laid[2]) <= self.FLOW_DEAD_BAND_PX):
+            return
         flow["layout"] = key
+        flow["laid"] = (key[1], tuple(widths), width)
         lines = flow["rows"]
         count = (max(layout) + 1) if layout else 0
         while len(lines) < count:
@@ -2284,6 +2393,10 @@ class TkPanelView(PanelView):
             except Exception as exc:
                 events.debug("Cell Not Placed", str(exc), source=SOURCE,
                              exception=exc, every=5.0)
+
+    #: How far a flow's width may move before its lines are recomputed.
+    #: Less than the gap every cell carries, so nothing is cut.
+    FLOW_DEAD_BAND_PX = 2
 
     #: The shortest a slider gets before its cell may wrap instead.
     SLIDER_MIN_PX = 80
@@ -3717,7 +3830,7 @@ class TkPanelView(PanelView):
                     "frozen. Press Stop, check the cable, then relaunch from "
                     "Setup."))
                 self._health.pack(fill="x", padx=self._inset, pady=(0, GAP),
-                                  after=self._head)
+                                  after=self._head_ring.outer)
             else:
                 self._health.configure(text="")
                 self._health.pack_forget()
@@ -3744,7 +3857,7 @@ class TkPanelView(PanelView):
                 self._mark.create_rectangle(2, 2, size - 2, size - 2,
                                             fill=theme.SIGNAL, outline=theme.SIGNAL)
                 self._mark_row.pack(fill="x", padx=self._inset, pady=(0, GAP),
-                                    after=self._head)
+                                    after=self._head_ring.outer)
             else:
                 self._mark_row.pack_forget()
         except Exception as exc:
@@ -4060,7 +4173,9 @@ class TkDashboard(Dashboard):
         self._alerts = []            # unacknowledged needs_ack events
         self._station_text = None
         self._sim_text = None
-        self._opened = None          # the model the sheet leads with
+        self._opened = None          # the device page's model; None = the overview
+        self._bring_forward = None   # a Models-menu reopen: shown on its own page
+        self._overview_item = None   # the rail's "Overview": (ring, label)
         self._shown_page = self.SETUP_TAB
         self._sheet_key = None
         self._sheet_rows = []
@@ -4399,37 +4514,56 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
 
+    def _rail_line(self, text, on_press):
+        ring = _Ring(self._model_list, theme.SURFACE, border=theme.SURFACE)
+        label = tk.Label(ring.inner, text=text, font=_font(), anchor="w",
+                         background=theme.SURFACE, foreground=theme.TEXT,
+                         padx=SPACE[3], pady=_target_pady(), cursor="hand2",
+                         takefocus=1, highlightthickness=0)
+        label.pack(fill="x")
+        for sequence in ("<Button-1>", "<Return>", "<space>"):
+            label.bind(sequence, lambda _e: on_press())
+        label.bind("<FocusIn>", lambda _e, r=ring: r.paint(True))
+        label.bind("<FocusOut>", lambda _e, r=ring: r.paint(False))
+        return ring, label
+
     def _build_rail_list(self):
-        """One line per open model: a press opens it on the sheet (it leads,
-        full width); the middle button closes it, as it closed a tab."""
-        for ring, _label in self._rail_items.values():
+        """The page list (K4): "Overview" first, then one line per open
+        model. A press shows that page; the middle button on a model's line
+        closes it, as it closed a tab. With no model open there is no
+        overview to show, and no line for it."""
+        items = list(self._rail_items.values())
+        if self._overview_item is not None:
+            items.append(self._overview_item)
+        for ring, _label in items:
             try:
                 ring.outer.destroy()
             except Exception:
                 pass
         self._rail_items = {}
-        for name in [n for n in self._panels if n != self.SETUP_TAB]:
-            ring = _Ring(self._model_list, theme.SURFACE, border=theme.SURFACE)
-            label = tk.Label(ring.inner, text=name, font=_font(), anchor="w",
-                             background=theme.SURFACE, foreground=theme.TEXT,
-                             padx=SPACE[3], pady=_target_pady(), cursor="hand2",
-                             takefocus=1, highlightthickness=0)
-            label.pack(fill="x")
+        self._overview_item = None
+        names = [n for n in self._panels if n != self.SETUP_TAB]
+        if names:
+            ring, label = self._overview_item = self._rail_line(
+                OVERVIEW_PAGE, self._on_overview_pressed)
+            ring.outer.pack(side="top", fill="x", pady=(0, SPACE[3]))
+        for name in names:
+            ring, label = self._rail_line(name, lambda n=name: self._on_rail_pressed(n))
             ring.outer.pack(side="top", fill="x")
-            for sequence in ("<Button-1>", "<Return>", "<space>"):
-                label.bind(sequence, lambda _e, n=name: self._on_rail_pressed(n))
             label.bind(_close_tab_button(self.root),
                        lambda _e, n=name: self._on_rail_close(n))
-            label.bind("<FocusIn>", lambda _e, r=ring: r.paint(True))
-            label.bind("<FocusOut>", lambda _e, r=ring: r.paint(False))
             self._rail_items[name] = (ring, label)
         self._paint_rail()
 
     def _paint_rail(self):
-        """The opened model is highlighted while the sheet is shown; Setup
-        is ink-filled while its page is."""
+        """The shown page is highlighted while the sheet is shown - the
+        overview or the device's model; Setup is ink-filled while its page
+        is."""
         on_sheet = self._shown_page != self.SETUP_TAB
-        for name, (_ring, label) in self._rail_items.items():
+        lines = [(name, label) for name, (_ring, label) in self._rail_items.items()]
+        if self._overview_item is not None:
+            lines.append((None, self._overview_item[1]))
+        for name, label in lines:
             is_current = on_sheet and name == self._opened
             try:
                 label.configure(background=theme.BACKGROUND if is_current
@@ -4441,6 +4575,10 @@ class TkDashboard(Dashboard):
 
     def _on_rail_pressed(self, name):
         self.show_model(name)
+        return "break"
+
+    def _on_overview_pressed(self):
+        self.show_overview()
         return "break"
 
     def _on_rail_close(self, name):
@@ -4507,13 +4645,15 @@ class TkDashboard(Dashboard):
         self._lay_out_sheet()
 
     def _lay_out_sheet(self, force=False):
-        """The opened model first, full width; then the others in schema
-        order, in rows of `_sheet_columns()`, each row's entries sharing it
-        equally. Laid out again only when the models, the opened one or the
+        """One of the sheet's two pages (K4). The overview: every open model
+        in schema order, in rows of `_sheet_columns()`, each row's entries
+        sharing it equally, tier 1 only. The device page: the opened model
+        alone, full width. A device that no longer exists gives way to the
+        overview. Laid out again only when the models, the page or the
         column count change."""
         names = [name for name in self._panels if name != self.SETUP_TAB]
         if self._opened not in names:
-            self._opened = names[0] if names else None
+            self._opened = None
         columns = self._sheet_columns()
         key = (tuple(names), self._opened, columns)
         if key == self._sheet_key and not force:
@@ -4531,42 +4671,64 @@ class TkDashboard(Dashboard):
                 row.destroy()
             except Exception:
                 pass
-        others = [name for name in names if name != self._opened]
-        groups = ([[self._opened]] if self._opened else []) + [
-            others[index:index + columns] for index in range(0, len(others), columns)]
+        if self._opened is not None:
+            groups = [[self._opened]]
+        else:
+            groups = [names[index:index + columns]
+                      for index in range(0, len(names), columns)]
         self._sheet_rows = []
         for group in groups:
             row = tk.Frame(self._sheet.body, background=_page())
             row.pack(side="top", fill="x", pady=(0, SPACE[9]))
-            for column, name in enumerate(group):
+            for index, name in enumerate(group):
+                # The gutter is a column of its own, not the entry's padding:
+                # with the padding on every entry but the first, the uniform
+                # columns' leftover pixel moved with the widest request, and
+                # an entry whose flow wraps at that very width (Red Percent
+                # in a third at 1400 px) swapped 309 and 310 px forever.
+                column = 2 * index
                 try:
+                    if index:
+                        row.grid_columnconfigure(column - 1, weight=0,
+                                                 minsize=SPACE[10])
                     row.grid_columnconfigure(column, weight=1, uniform="entries")
                     frame = self._panels[name].frame
-                    frame.grid(in_=row, row=0, column=column, sticky="new",
-                               padx=(SPACE[10] if column else 0, 0))
+                    frame.grid(in_=row, row=0, column=column, sticky="new")
                     frame.lift()
                 except Exception as exc:
                     events.debug("Entry Not Placed", f"{name}: {exc}", source=SOURCE,
                                  exception=exc, every=5.0)
             self._sheet_rows.append(row)
         self._paint_rail()
-        events.debug("Sheet Laid Out", f"opened={self._opened} columns={columns} "
+        events.debug("Sheet Laid Out", f"page={self._opened or OVERVIEW_PAGE} "
+                     f"columns={columns} "
                      f"rows={[len(g) for g in groups]}", source=SOURCE)
 
     def show_model(self, name):
-        """What a press on the rail does: the sheet leads with `name`, full
-        width and focal, scrolled to the top; Setup gives way. -> bool"""
+        """The device page (K4): what a press on a model's rail line or on
+        its overview head does - `name` alone, full width and focal, with its
+        disclosures, scrolled to the top; Setup gives way. -> bool"""
         if name not in self._panels or name == self.SETUP_TAB:
             return False
         self._opened = name
+        self._show_sheet_page()
+        events.debug("Model Shown", name, source=SOURCE)
+        return True
+
+    def show_overview(self):
+        """The overview (K4): every open model, tier 1 only. -> bool"""
+        self._opened = None
+        self._show_sheet_page()
+        events.debug("Overview Shown", "every open model", source=SOURCE)
+        return True
+
+    def _show_sheet_page(self):
         if not self._is_setup_collapsed and self.SETUP_TAB in self._frames:
             self._collapse_setup()
         self._select_sheet()
         self._lay_out_sheet()
         self._sheet.scroll_to_top()
         self._paint_rail()
-        events.debug("Model Shown", name, source=SOURCE)
-        return True
 
     def _select_sheet(self):
         try:
@@ -5031,16 +5193,22 @@ class TkDashboard(Dashboard):
             return
         view = TkPanelView(self._sheet.body, self.controller, name, sheet=self._sheet)
         view.log_window_bounds = self._log_window_bounds
+        view.on_open = self.show_model
         self._panels[name] = view
         self._frames[name] = view.frame
         self._build_menu_bar()
         self._build_rail_list()
         if self._is_opening:
             self._lay_out_sheet()
-        else:
-            # A model opened or reopened is brought forward: the Models menu
-            # reopen used to change nothing on screen (AUD-13).
+        elif name == self._bring_forward:
+            # A model reopened from the Models menu is brought forward, on
+            # its own page: the reopen used to change nothing on screen
+            # (AUD-13).
+            self._bring_forward = None
             self.show_model(name)
+        else:
+            # A launch lands on the overview (K4): every model it started.
+            self.show_overview()
         events.debug("Entry Opened", name, source=SOURCE)
 
     def _remove_panel(self, name):
@@ -5173,7 +5341,12 @@ class TkDashboard(Dashboard):
         events.debug("Model Menu Toggled", f"{name} -> "
                      f"{'open' if wants_open else 'closed'}", source=SOURCE)
         if wants_open:
-            self.open_model(name)
+            self._bring_forward = name
+            try:
+                self.open_model(name)
+            except Exception:
+                self._bring_forward = None
+                raise
         else:
             self.close_model(name)
 
