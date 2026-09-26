@@ -811,3 +811,40 @@ def test_e_a_lamp_is_ink_never_the_trace():
                               on_role="go", off_role="danger")
     assert qt.lamp_colours(connected, True) == (theme.TEXT, theme.TEXT)
     assert theme.TRACE not in qt.lamp_colours(connected, True)
+
+
+# ---------------------------------------------------------------------------
+# L (2026-09-26): audit round 7 in the Qt view.
+# ---------------------------------------------------------------------------
+
+class _Event:
+    def __init__(self, title, message, source="Controller", count=1):
+        self.title, self.message, self.source, self.count = title, message, source, count
+        self.text = f"[{source}] {title}: {message}"
+
+
+def test_l11_an_event_line_is_its_title_and_message_in_sentence_case():
+    """QT7-12: the band printed "Error [Controller] Stop Not Confirmed: FULL
+    STOP latched ...". No source prefix, no Title Case, no shouting; a
+    device's own words keep their case."""
+    line = qt.event_line(_Event("Stop Not Confirmed",
+                                "FULL STOP latched; Rotator did not confirm."))
+    assert line == "Stop not confirmed: full stop latched; Rotator did not confirm."
+    assert qt.event_line(_Event("Port Silent", "/dev/cu.usbmodem1 said NAK", count=3)) == (
+        "Port silent: /dev/cu.usbmodem1 said NAK (repeated 3 times)")
+
+
+def test_l9_l14_the_questions_are_the_tk_and_web_words():
+    assert qt.QUIT_PROMPT == ("Quit the station? This stops every model, closes "
+                              "every port and exits.")
+    assert qt.QUIT_WORDS == ("Quit the station?", "Quit", "Stay")
+    assert qt.CLEAR_WORDS == ("Clear the stop?", "Clear the stop", "Keep it stopped")
+
+
+def test_l22_the_window_title_is_sentence_case():
+    assert 'setWindowTitle("Transfer stage")' in _qt_source()
+
+
+def _qt_source():
+    import pathlib
+    return pathlib.Path(qt.__file__).read_text(encoding="utf-8")

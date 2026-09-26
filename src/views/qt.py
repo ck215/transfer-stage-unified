@@ -86,7 +86,7 @@ import time
 import schema as sch
 from events import events
 from views import theme
-from views.base import Dashboard, PanelView
+from views.base import Dashboard, PanelView, stop_words
 
 try:                                    # the module imports without PySide6
     from PySide6.QtCore import (QEasingCurve, QEvent, QEventLoop, QLocale,
@@ -235,10 +235,21 @@ EMPTY_HINT = "Choose ports in Setup and press Launch."
 #: The rail's simulation line, and the sheet's latched headline (the
 #: artboards' copy).
 SIM_LINE = "Simulation, no hardware attached"
-STOPPED_HEADLINE = "Every model is stopped."
-STOPPED_SUBLINE = "Clear the stop on the rail to continue."
-STOPPED_RAIL_ALL = "Stopped: every model latched"
 UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
+#: L1: a model's state on the rail, beside its name. The words go in its
+#: tooltip and accessible name (never colour alone); the square's colour is
+#: ink for a latched model, the signal for one that did not confirm.
+RAIL_STOP_WORDS = {"stopped": "stopped", "unconfirmed": "did not confirm"}
+#: L2: the Controller's event title for a stop that did not confirm. The
+#: band drops it once the latch opens; while latched it waits for its
+#: acknowledgement like any error.
+UNCONFIRMED_TITLE = "Stop Not Confirmed"
+#: L9 / L14: the questions, titled, answered by verbs - the Tk and Web words.
+QUIT_PROMPT = ("Quit the station? This stops every model, closes every port "
+               "and exits.")
+QUIT_WORDS = ("Quit the station?", "Quit", "Stay")
+CLEAR_WORDS = ("Clear the stop?", "Clear the stop", "Keep it stopped")
+CONFIRM_WORDS = ("Confirm", "Continue", "Cancel")
 #: The sheet's two pages (K4): the rail's first item, and the word at the
 #: right of an overview entry's head (a press opens the device alone).
 OVERVIEW = "Overview"
@@ -350,6 +361,30 @@ def sentence_case(text):
     words = re.sub(r"\s*:\s*$", "", sentence(text)).split(" ")
     return " ".join(word.lower() if index and re.fullmatch(r"[A-Z][a-z]+", word)
                     else word for index, word in enumerate(words))
+
+
+def quiet_shouting(text):
+    """A SHOUTED word of four letters or more comes down ("FULL STOP" ->
+    "full stop"); nothing else changes, so a device's reply keeps its case."""
+    return " ".join(word.lower() if re.fullmatch(r"[A-Z]{4,}[:.,]?", word) else word
+                    for word in str("" if text is None else text).split(" "))
+
+
+def event_line(event):
+    """An event as the operator reads it (L11): its title in sentence case,
+    then its message - no `[source]` prefix, no Title Case, no shouting.
+    Something that is not an `events.Event` (no title) keeps its text."""
+    title = str(getattr(event, "title", "") or "").strip()
+    message = " ".join(str(getattr(event, "message", "") or "").split())
+    if not title:
+        text = " ".join(str(getattr(event, "text", "") or message).split())
+    else:
+        title = sentence_case(title)
+        text = f"{title}: {quiet_shouting(message)}" if message else title
+    count = int(getattr(event, "count", 1) or 1)
+    if count > 1:
+        text += f" (repeated {count} times)"
+    return text
 
 
 def split_unit(text, unit=None):
@@ -788,6 +823,9 @@ def stylesheet():
                                    "font-weight": "600"}),
         _rule("QLabel#headline", {"font-family": numerals, "font-weight": "600",
                                   "font-size": f"{reading_pt('primary')}pt"}),
+        # What the headline asks of the operator (L1): ink, not a caption.
+        _rule("QLabel#headlineSub", {"color": ink, "font-weight": "600",
+                                     "font-size": f"{base_size}pt"}),
         _rule("QLabel#emptyTitle", {"font-size": f"{title_size}pt",
                                     "font-weight": "600"}),
         # Setup's dock: its title is the page's heading.
@@ -1548,13 +1586,14 @@ class StopButton(QPushButton):
         """Never dimmed: the stop answers in every mode."""
         QPushButton.setEnabled(self, True)
 
-    def set_latched(self, is_latched):
+    def set_latched(self, is_latched, face=None):
         """Face and ring from the state, never from the last click. Called on
-        every tick; it repaints only when something it draws has changed."""
+        every tick; it repaints only when something it draws has changed.
+        `face` is `stop_words`' word when the dashboard has it (L1)."""
         is_latched = bool(is_latched)
         was = self.is_latched
         self.is_latched = is_latched
-        wanted = "Clear" if is_latched else "Stop"
+        wanted = face or ("Clear" if is_latched else "Stop")
         if self.text() != wanted:
             self.setText(wanted)
         if is_latched and not was:
@@ -2067,6 +2106,19 @@ def dot_icon(filled, ink, size=10):
     return _glyph(size, draw, inks)
 
 
+def square_icon(ink, size=10):
+    """A small solid square in `ink`: a model's stop state on the rail (L1),
+    the severity marks' shape. The same square in every mode - a state, not
+    a hover effect."""
+    def draw(painter, side, colour):
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(colour))
+        inset = side * 0.2
+        painter.drawRect(QRectF(inset, inset, side - 2 * inset, side - 2 * inset))
+    return _glyph(size, draw, [(mode, ink) for mode in (
+        QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Selected)])
+
+
 def disclosure_icon(is_open, size=10):
     """The disclosure's small ink triangle: pointing right when closed, down
     when open; the platform arrow is a heavy chevron on macOS."""
@@ -2127,18 +2179,24 @@ def mark_sheet(colour, hollow=False):
 _PENDING_CONFIRMS = []
 
 
-def ask(parent, prompt, title="Confirm"):
-    """A yes/no question that does not block the stop (F1, F17).
+def ask(parent, prompt, title=CONFIRM_WORDS[0], yes=CONFIRM_WORDS[1],
+        no=CONFIRM_WORDS[2]):
+    """A question that does not block the stop (F1, F17), titled and
+    answered by verbs (L14): the title is the question in a few words, the
+    prompt says what happens, the buttons say what they do.
 
     `QMessageBox.question` is application-modal: while one was up, the rail's
     stop could not be pressed. This one is modeless - the rest of the window
     keeps working - and waits in a local event loop so the caller still gets
-    a bool. No is the default and Escape is No: Return never clears a latch
-    by accident.
+    a bool. The "no" verb is the default and Escape answers it: Return never
+    clears a latch by accident.
     """
-    box = QMessageBox(QMessageBox.Icon.Question, title, prompt,
+    box = QMessageBox(QMessageBox.Icon.NoIcon, title, title,
                       QMessageBox.StandardButton.Yes
                       | QMessageBox.StandardButton.No, parent)
+    box.setInformativeText(prompt)
+    box.button(QMessageBox.StandardButton.Yes).setText(yes)
+    box.button(QMessageBox.StandardButton.No).setText(no)
     box.setDefaultButton(QMessageBox.StandardButton.No)
     box.setEscapeButton(QMessageBox.StandardButton.No)
     box.setWindowModality(Qt.WindowModality.NonModal)
@@ -2506,24 +2564,50 @@ class SheetEntry(QFrame):
 
 class RailItem(QPushButton):
     """A model in the rail's list: its name, elided to the rail with the whole
-    name as its tooltip; the opened one is checked (highlighted)."""
+    name as its tooltip; the opened one is checked (highlighted). A latched
+    model carries a small ink square before its name, one whose stop did not
+    confirm a signal square (L1); the words ride in its tooltip and name."""
 
     def __init__(self, name, parent=None):
         QPushButton.__init__(self, name, parent)
         self.name = name
+        self.stop_mark = None       # None, "stopped" or "unconfirmed"
         self.setObjectName("railModel")
         self.setCheckable(True)
         self.setAccessibleName(name)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
+    def set_stop(self, mark_kind):
+        """`None`, "stopped" or "unconfirmed", from `Controller.stop_state`."""
+        if mark_kind == self.stop_mark:
+            return
+        self.stop_mark = mark_kind
+        if mark_kind is None:
+            self.setIcon(QIcon())
+        else:
+            side = theme.SPACE[4] - theme.SPACE[1]
+            ink = theme.SIGNAL if mark_kind == "unconfirmed" else theme.TEXT
+            self.setIcon(square_icon(ink, side))
+            self.setIconSize(QSize(side, side))
+        self.setAccessibleName(self._spoken())
+        self._fit()
+
+    def _spoken(self):
+        words = RAIL_STOP_WORDS.get(self.stop_mark)
+        return f"{self.name}, {words}" if words else self.name
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        room = max(1, self.width() - 2 * theme.INSET - theme.GAP)
+        self._fit()
+
+    def _fit(self):
+        icon = self.iconSize().width() + theme.GAP if self.stop_mark else 0
+        room = max(1, self.width() - 2 * theme.INSET - theme.GAP - icon)
         shown = self.fontMetrics().elidedText(self.name, Qt.TextElideMode.ElideRight, room)
         if shown != self.text():
             self.setText(shown)
-        tip = self.name if shown != self.name else ""
+        tip = self._spoken() if (shown != self.name or self.stop_mark) else ""
         if self.toolTip() != tip:
             self.setToolTip(tip)
 
@@ -3813,14 +3897,15 @@ class QtDashboard(Dashboard, QMainWindow):
         self._alerts = []           # errors waiting to be acknowledged
         self._raise_on_add = None   # a model being reopened
         self._shown = None          # the device page's model; None: the overview
-        self._unconfirmed = set()   # models whose last stop did not confirm
         self._arrangement = None    # what the sheet's grid last laid out
         self._arrange_pending = False
         self._last_event = None
-        self._latched_text = None
+        self._latest_title = None   # the title of the tray's latest line
+        self._words = None          # the stop's words last drawn (`stop_words`)
         self._narrow = None
+        self._quit_asked = False    # a Quit already answered yes
 
-        self.setWindowTitle("Transfer Stage")
+        self.setWindowTitle("Transfer stage")
         self.resize(1400, 900)
         self.setDockOptions(QMainWindow.DockOption.AllowNestedDocks)
         # The rail owns the left edge top to bottom; Setup sits beside it.
@@ -3928,7 +4013,23 @@ class QtDashboard(Dashboard, QMainWindow):
             events.debug("View Closed", "Qt dashboard closed", source="QtView")
         return QMainWindow.close(self)
 
+    def _ask_quit(self):
+        """L9: Quit and the window's close ask first, in the Tk and Web words
+        (it stops every model, closes every port and exits); "Stay" keeps
+        the station running."""
+        if self._closing or self._quit_asked:
+            return True
+        self._quit_asked = ask(self, QUIT_PROMPT, *QUIT_WORDS)
+        return self._quit_asked
+
+    def _on_quit_clicked(self):
+        if self._ask_quit():
+            self.close()
+
     def closeEvent(self, event):
+        if not self._closing and not self._ask_quit():
+            event.ignore()
+            return
         if not self._closing:
             Dashboard.close(self)
             events.debug("View Closed", "closeEvent", source="QtView")
@@ -4043,7 +4144,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self.quit_button.setObjectName("quiet")
         self.quit_button.setToolTip("Close the station (stops every model)")
         self.quit_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.quit_button.clicked.connect(self.close)
+        self.quit_button.clicked.connect(self._on_quit_clicked)
         foot.addWidget(self.quit_button)
         foot.addStretch(1)
         column.addLayout(foot)
@@ -4142,20 +4243,31 @@ class QtDashboard(Dashboard, QMainWindow):
                 continue
         for name, state in states.items():
             self._show_lost(name, lost_devices(state))
-        latched = [n for n, s in states.items() if (s or {}).get("is_estopped")]
-        every = bool(latched) and len(latched) == len(states)
-        text = (STOPPED_RAIL_ALL if every
-                else f"Stopped: {', '.join(latched)}" if latched else "")
-        if text != self._latched_text:
-            self._latched_text = text
-            self.latched_label.setText(text)
-            self.latched_row.setVisible(bool(text))
-            self.headline_row.setVisible(every)
-        if not self.controller.is_estopped:
-            self._unconfirmed.clear()
+        stop = self._stop_state()
+        words = stop_words(stop)
+        if words != self._words:
+            self._words = words
+            self.latched_label.setText(words["rail"])
+            self.latched_row.setVisible(bool(words["rail"]))
+            self.headline.setText(words["headline"])
+            self.subline.setText(words["subline"])
+            self.subline.setVisible(bool(words["subline"]))
+            self.headline_row.setVisible(bool(words["headline"]))
+        latched, unconfirmed = set(stop["latched"]), set(stop["unconfirmed"])
+        for name, item in self._rail_items.items():
+            item.set_stop("unconfirmed" if name in unconfirmed
+                          else "stopped" if name in latched else None)
         for name, entry in self._entries.items():
-            entry.set_unconfirmed(name in self._unconfirmed)
+            # The model's own word (L1): its stop did not confirm while latched.
+            entry.set_unconfirmed((states.get(name) or {}).get("stop_confirmed") is False)
+        if not latched:
+            self._drop_unconfirmed_alerts()
         self.rail_status.set_full_text(self._rail_status_text(names, states))
+
+    def _stop_state(self):
+        """`Controller.stop_state`: what is latched, what did not confirm,
+        and whether that is every model (L1)."""
+        return self.controller.stop_state
 
     def _show_lost(self, name, lost):
         """A lost device, said on the rail and in the entry's own head."""
@@ -4283,16 +4395,22 @@ class QtDashboard(Dashboard, QMainWindow):
         side = theme.SPACE[9]
         body.setContentsMargins(side, theme.SPACE[8], side, theme.SPACE[9])
         body.setSpacing(theme.SPACE[8])
-        headline = QLabel(STOPPED_HEADLINE)
-        headline.setObjectName("headline")
-        subline = QLabel(STOPPED_SUBLINE)
-        subline.setObjectName("caption")
+        # The stop's headline and, under it, its subline: `stop_words` (L1).
+        # "Every model is stopped." only when every model is latched and
+        # confirmed; a model that did not confirm is named instead.
+        self.headline = QLabel("")
+        self.headline.setObjectName("headline")
+        self.headline.setWordWrap(True)
+        self.subline = QLabel("")
+        self.subline.setObjectName("headlineSub")
+        self.subline.setWordWrap(True)
         self.headline_row = QWidget()
-        self.headline_row.setObjectName("flow")
-        line = FlowLayout(self.headline_row, spacing=theme.SPACE[5],
-                          line_spacing=theme.SPACE[1])
-        line.addWidget(headline)
-        line.addWidget(subline)
+        self.headline_row.setObjectName("bare")
+        line = QVBoxLayout(self.headline_row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(theme.SPACE[1])
+        line.addWidget(self.headline)
+        line.addWidget(self.subline)
         self.headline_row.setVisible(False)
         body.addWidget(self.headline_row)
         body.addWidget(self._build_empty_state())
@@ -4534,7 +4652,8 @@ class QtDashboard(Dashboard, QMainWindow):
         severity = str(event.severity)
         if severity not in self.TRAY_SEVERITIES:
             return
-        key = (severity, str(event.text))
+        text = event_line(event)
+        key = (severity, text)
         if key == self._last_event:
             return                      # one event, once
         self._last_event = key
@@ -4553,9 +4672,10 @@ class QtDashboard(Dashboard, QMainWindow):
         self.event_view.append(
             f'{cell}&nbsp;&nbsp;'
             f'<span style="color:{ink}"><b>{html.escape(label)}</b>&nbsp;&nbsp;'
-            f"{html.escape(event.text)}</span>")
+            f"{html.escape(text)}</span>")
         self.event_view.moveCursor(QTextCursor.MoveOperation.End)
-        self.event_latest.set_full_text(f"{label}  {event.text}")
+        self.event_latest.set_full_text(f"{label}  {text}")
+        self._latest_title = getattr(event, "title", None)
         if self.event_latest.property("severity") != severity:
             self.event_latest.setProperty("severity", severity)
             self.event_latest.style().unpolish(self.event_latest)
@@ -4608,7 +4728,7 @@ class QtDashboard(Dashboard, QMainWindow):
                      source="QtView")
         # One event, once: the band carries it, so the tray's line does not
         # say it a second time (it stays in the full log).
-        if self.event_latest.full_text().endswith(str(event.text)):
+        if self.event_latest.full_text().endswith(event_line(event)):
             self.event_latest.set_full_text("")
             self.event_mark.setVisible(False)
         self._alerts.append(event)
@@ -4641,14 +4761,25 @@ class QtDashboard(Dashboard, QMainWindow):
     def alerts(self):
         return list(self._alerts)
 
+    def _drop_unconfirmed_alerts(self):
+        """L2: once the latch opens, "did not confirm" is history, not an
+        alert: its line leaves the band (and the tray's latest line). While
+        latched it waits for its acknowledgement like any error."""
+        kept = [a for a in self._alerts
+                if getattr(a, "title", None) != UNCONFIRMED_TITLE]
+        if len(kept) != len(self._alerts):
+            self._alerts = kept
+            self._render_alerts()
+        if self._latest_title == UNCONFIRMED_TITLE:
+            self._latest_title = None
+            self.event_latest.set_full_text("")
+            self.event_mark.setVisible(False)
+
     @staticmethod
     def _popup_text(event):
-        """The whole line - source, title and message (HC-11)."""
-        text = " ".join(str(getattr(event, "text", "") or
-                            event.message or "").split())
-        if event.count > 1:
-            text += f" (repeated {event.count} times)"
-        return text[:5000]
+        """The whole line - title and message, in the operator's words
+        (HC-11, L11)."""
+        return event_line(event)[:5000]
 
     def _confirm(self, prompt):
         return ask(self, prompt)
@@ -4685,7 +4816,6 @@ class QtDashboard(Dashboard, QMainWindow):
         entry = self._entries.pop(name, None)   # popped first: the entry's own
         panel = self._panels.pop(name, None)    # closeEvent must not re-enter
         self._lost.pop(name, None)
-        self._unconfirmed.discard(name)
         if entry is None:
             self._sync_rail()
             return
@@ -4707,29 +4837,37 @@ class QtDashboard(Dashboard, QMainWindow):
         self.close_model(name)
 
     # -- the global stop ---------------------------------------------------
+    def toggle_estop_all(self):
+        """The disc's press, decided by `stop_words` (L1): a clear only while
+        EVERY model is latched; otherwise a stop of every model, so one
+        model's own switch never takes the stop away from the rest. The clear
+        asks first, titled, answered by verbs (L14)."""
+        words = stop_words(self._stop_state())
+        if words["action"] != "clear":
+            return self.controller.estop_all()
+        result = self.controller.clear_estop_all()
+        if result.needs_confirm and ask(self, result.reason, *CLEAR_WORDS):
+            result = self.controller.clear_estop_all(confirmed=True)
+        return result
+
     def _on_stop_clicked(self):
         # An open question is answered No first: it never stands between the
         # operator and the stop, and never says Yes for them afterwards.
         cancel_pending_confirms()
-        self._note_unconfirmed(self.toggle_estop_all())
+        self.toggle_estop_all()
         self._sync_stop_button()
         self._sync_states()
 
     def _on_stop_shortcut(self):
-        """The keyboard's stop: it stops, and does nothing once stopped -
-        clearing the latch is a deliberate press of the face (F9)."""
-        if self.controller.is_estopped:
+        """The keyboard's stop: it stops, and does nothing once every model
+        is stopped - clearing the latch is a deliberate press of the face
+        (F9). A partial stop is no reason to refuse: the rest still run."""
+        if stop_words(self._stop_state())["action"] == "clear":
             return
         cancel_pending_confirms()
-        self._note_unconfirmed(self.toggle_estop_all())
+        self.controller.estop_all()
         self._sync_stop_button()
         self._sync_states()
-
-    def _note_unconfirmed(self, result):
-        """`estop_all` answers {name: confirmed}; a model that did not confirm
-        is marked at its own entry until the latch is cleared."""
-        if isinstance(result, dict):
-            self._unconfirmed = {n for n, ok in result.items() if not ok}
 
     @staticmethod
     def stop_shortcut_text():
@@ -4738,14 +4876,15 @@ class QtDashboard(Dashboard, QMainWindow):
         return STOP_SHORTCUT_TEXT
 
     def _sync_stop_button(self):
-        """Face and ring from the Controller, never from the last click."""
-        is_estopped = bool(self.controller.is_estopped)
-        if self.stop_button.is_latched != is_estopped:
-            events.debug("Stop Button", f"latched={is_estopped}",
-                         source="QtView")
-        self.stop_button.set_latched(is_estopped)
-        name = CLEAR_HINT if is_estopped else STOP_HINT
-        tip = (f"{name}." if is_estopped else
+        """Face and ring from the Controller's `stop_state`, never from the
+        last click: the face is `stop_words`' (L1)."""
+        words = stop_words(self._stop_state())
+        clears = words["action"] == "clear"
+        if self.stop_button.is_latched != clears:
+            events.debug("Stop Button", f"face={words['face']}", source="QtView")
+        self.stop_button.set_latched(clears, words["face"])
+        name = CLEAR_HINT if clears else STOP_HINT
+        tip = (f"{name}." if clears else
                f"{name} ({self.stop_shortcut_text()}). Space or Return presses "
                f"it when it has focus.")
         if self.stop_button.toolTip() != tip:
