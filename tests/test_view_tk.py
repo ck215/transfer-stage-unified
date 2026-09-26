@@ -124,6 +124,9 @@ class FakeWidget:
     def grid_remove(self):
         self.grid_info = None
 
+    def grid_forget(self):
+        self.grid_info = None
+
     def pack_forget(self):
         self.is_packed = False
 
@@ -2713,12 +2716,22 @@ def test_a_reopened_model_is_brought_forward(dashboard, controller):
     controller.remove("Demo")
     SCHEDULER.pump()
     dashboard.notebook.select(dashboard._frames[dashboard.SETUP_TAB])
-    controller.reopen("Demo")
+    # Updated for K4: a model added by a launch lands on the overview, so the
+    # reopen is driven through the Models menu, which is what AUD-13 was;
+    # brought forward = the sheet is shown, on that model's own page.
+    dashboard._menu_vars["Demo"].set(True)
+    dashboard._on_model_toggled("Demo")
     SCHEDULER.pump()
-    # Updated for E: brought forward = the sheet is shown, leading with it.
     assert dashboard.notebook.select() == str(dashboard._sheet_page) or \
         dashboard.notebook._selected is dashboard._sheet_page
     assert dashboard._opened == "Demo"
+
+
+def test_k4_a_model_added_by_a_launch_lands_on_the_overview(dashboard, controller):
+    dashboard.open()
+    _launch_a_model(dashboard, controller)
+    assert dashboard._shown_page == dashboard.SHEET_TAB
+    assert dashboard._opened is None
 
 
 def test_no_motion_disables_the_pulse(dashboard, controller, monkeypatch):
@@ -3776,8 +3789,11 @@ def test_the_sheet_stacks_entries_in_one_column_under_1000_px(tk_harness,
     built.open()
     built.root.winfo_width = lambda: 1400
     built._lay_out_sheet(force=True)
-    assert len({built._panels[n].frame.grid_info["in_"] for n in names[1:4]}) == 1
-    assert len(built._sheet_rows) == 3, "the opened one, then 3, then 2"
+    # Updated for K4: the sheet opens on the overview - no model leads it;
+    # every model in rows of three.
+    assert built._opened is None
+    assert len({built._panels[n].frame.grid_info["in_"] for n in names[0:3]}) == 1
+    assert len(built._sheet_rows) == 2, "3, then 3"
     built.root.winfo_width = lambda: 900
     built._lay_out_sheet(force=True)
     assert len(built._sheet_rows) == 6, "one column"
@@ -3814,3 +3830,215 @@ def test_no_colour_is_made_in_the_view():
     assert "mix(" not in code
     for name in re.findall(r"theme\.([A-Z_]+)\b", code):
         assert hasattr(theme, name), name
+
+
+# ---------------------------------------------------------------------------
+# K (2026-09-26): the disclosure where it opens (K3); Overview and the device
+# page (K4)
+# ---------------------------------------------------------------------------
+
+def _ancestors(widget):
+    while widget is not None:
+        yield widget
+        widget = widget.master
+
+
+def test_k3_the_tier_two_disclosure_is_at_the_foot_of_the_body_not_the_head(tiered):
+    """K3: the press and what it reveals were a screen apart - the
+    disclosure sat in the head, the well under the whole body. It is the
+    last thing in the tier-1 body, left-aligned, and the well follows it
+    with no gap; it is reached after the tier-1 controls."""
+    view, _panel = tiered
+    opener = view._disclosures[2]
+    assert view._head not in list(_ancestors(opener.frame)), "not in the head"
+    assert opener.frame.master is view._body
+    order = view._body.children
+    tier_one = view._tiers[1]
+    assert order.index(tier_one) < order.index(opener.frame) < order.index(view._well), \
+        "tier 1, then the disclosure, then its well (and the focus order with it)"
+    packed = [kwargs for widget, kwargs in PACK_ORDER if widget is opener.frame]
+    assert packed and packed[-1].get("anchor") == "w", "left-aligned"
+    view.set_disclosure(2, True)
+    packed = [kwargs for widget, kwargs in PACK_ORDER if widget is view._well]
+    assert packed[-1].get("after") is opener.frame, "directly beneath its press"
+    pady = packed[-1].get("pady") or (0, 0)
+    assert pady[0] == 0, "no gap between the press and the well"
+
+
+def test_k3_the_disclosure_says_the_schemas_words(tiered):
+    view, panel = tiered
+    words = next(section["disclosure"] for section in panel.schema["sections"]
+                 if section.get("tier") == 2)
+    assert view._disclosures[2].widget.cget("text") == f"\u25b8 {words}"
+
+
+def _two_page_dashboard(setup_panel, *names):
+    tkmod._DISCLOSED.clear()
+    controller = FakeController(**{name: TieredPanel() for name in names})
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    # A launch: the models arrive on a running controller (as Setup's Launch).
+    for name in names:
+        controller.remove(name)
+    SCHEDULER.pump()
+    for name in names:
+        controller.reopen(name)
+    SCHEDULER.pump()
+    return built, controller
+
+
+def _shown(built):
+    """The models whose entries are on the sheet now."""
+    rows = set(built._sheet_rows)
+    return [name for name, view in built._panels.items()
+            if name != built.SETUP_TAB and (view.frame.grid_info or {}).get("in_") in rows]
+
+
+K_NAMES = ("Stepper Probe", "DC Probe", "Rotator", "Red Percent")
+
+
+def test_k4_the_rails_first_item_is_overview_and_it_is_current_at_launch(
+        setup_panel):
+    built, _controller = _two_page_dashboard(setup_panel, *K_NAMES)
+    ring, label = built._overview_item
+    live = [child for child in built._model_list.children if not child.is_destroyed]
+    assert live[0] is ring.outer, "Overview first, above the models"
+    assert label.cget("text") == "Overview"
+    assert built._opened is None, "the overview is the page shown"
+    assert built._is_setup_collapsed
+    assert label.cget("background") == theme.BACKGROUND, "and the rail says so"
+    for name in K_NAMES:
+        assert built._rail_items[name][1].cget("background") == theme.SURFACE
+    tkmod._DISCLOSED.clear()
+    built.close()
+
+
+def test_k4_the_overview_shows_every_model_with_no_well_and_no_disclosure(
+        setup_panel):
+    tkmod._DISCLOSED[("Rotator", 2)] = True      # opened earlier this session
+    tkmod._DISCLOSED[("Rotator", 3)] = True
+    controller = FakeController(**{name: TieredPanel() for name in K_NAMES})
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    built.show_overview()
+    assert sorted(_shown(built)) == sorted(K_NAMES)
+    for name in K_NAMES:
+        view = built._panels[name]
+        assert not view._well.is_packed, f"{name}: no well on the overview"
+        assert not view._disclosures[2].frame.is_packed, f"{name}: no disclosure"
+        assert not view.is_disclosed(2)
+        assert view._open_label.is_packed
+        assert view._open_label.cget("text") == "\u25b8 Open"
+        assert view._open_tip.text == f"Open {name}"
+        assert view._head.cget("takefocus") == 1, "the head is the press"
+    rotator = controller.panels["Rotator"]
+    before = rotator.series_reads
+    built._panels["Rotator"]._refresh()
+    assert rotator.series_reads == before, "what is not shown is not polled"
+    assert tkmod._DISCLOSED[("Rotator", 2)], "the memory is untouched"
+    tkmod._DISCLOSED.clear()
+    built.close()
+
+
+@pytest.mark.parametrize("how", ["rail", "head", "title", "open", "return", "space"])
+def test_k4_a_press_shows_that_model_alone_with_its_disclosures(setup_panel, how):
+    built, _controller = _two_page_dashboard(setup_panel, *K_NAMES)
+    view = built._panels["Rotator"]
+    press = {"rail": (built._rail_items["Rotator"][1], "<Button-1>"),
+             "head": (view._head, "<Button-1>"),
+             "title": (view._title, "<Button-1>"),
+             "open": (view._open_label, "<Button-1>"),
+             "return": (view._head, "<Return>"),
+             "space": (view._head, "<space>")}[how]
+    press[0].fire(press[1])
+    assert built._opened == "Rotator"
+    assert _shown(built) == ["Rotator"], "one model alone"
+    assert len(built._sheet_rows) == 1
+    assert view._is_opened, "focal"
+    assert view._disclosures[2].frame.is_packed
+    assert not view._open_label.is_packed, "no Open on its own page"
+    assert view._head.cget("takefocus") == 0
+    assert built._rail_items["Rotator"][1].cget("background") == theme.BACKGROUND
+    assert built._overview_item[1].cget("background") == theme.SURFACE
+    tkmod._DISCLOSED.clear()
+    built.close()
+
+
+def test_k4_the_head_wears_the_focus_ring_while_keyboard_focused(setup_panel):
+    built, _controller = _two_page_dashboard(setup_panel, *K_NAMES)
+    view = built._panels["DC Probe"]
+    view._head.fire("<FocusIn>")
+    assert view._head_ring.outer.cget("background") == tkmod.FOCUS_INK
+    view._head.fire("<FocusOut>")
+    assert view._head_ring.outer.cget("background") != tkmod.FOCUS_INK
+    tkmod._DISCLOSED.clear()
+    built.close()
+
+
+def test_k4_pressing_overview_returns(setup_panel):
+    built, _controller = _two_page_dashboard(setup_panel, *K_NAMES)
+    built.show_model("DC Probe")
+    built._overview_item[1].fire("<Button-1>")
+    assert built._opened is None
+    assert sorted(_shown(built)) == sorted(K_NAMES)
+    assert not any(built._panels[n]._is_opened for n in K_NAMES), "all compact"
+    built.show_model("DC Probe")
+    built._overview_item[1].fire("<Return>")
+    assert built._opened is None
+    tkmod._DISCLOSED.clear()
+    built.close()
+
+
+def test_k4_closing_the_shown_device_returns_to_the_overview(setup_panel):
+    built, controller = _two_page_dashboard(setup_panel, *K_NAMES)
+    built.show_model("Red Percent")
+    label = built._rail_items["Red Percent"][1]
+    label.fire(tkmod._close_tab_button(label))
+    SCHEDULER.pump()
+    assert "Red Percent" in controller.removed
+    assert built._opened is None
+    assert sorted(_shown(built)) == sorted(set(K_NAMES) - {"Red Percent"})
+    assert built._overview_item[1].cget("background") == theme.BACKGROUND
+    tkmod._DISCLOSED.clear()
+    built.close()
+
+
+def test_k4_the_open_tiers_survive_overview_device_overview_device(setup_panel):
+    built, controller = _two_page_dashboard(setup_panel, *K_NAMES)
+    built.show_model("Stepper Probe")
+    probe = built._panels["Stepper Probe"]
+    probe.set_disclosure(2, True)
+    probe.set_disclosure(3, True)
+    assert probe._well.is_packed and probe.is_disclosed(3)
+    built.show_overview()
+    assert not probe._well.is_packed and not probe.is_disclosed(2)
+    built.show_model("Stepper Probe")
+    assert probe._well.is_packed and probe._diagnostics.is_packed
+    assert probe.is_disclosed(3)
+    assert probe._disclosures[2].widget.cget("text").startswith("\u25be")
+    tkmod._DISCLOSED.clear()
+    built.close()
+
+
+def test_k4_the_stop_and_the_latched_headline_are_the_same_on_both_pages(
+        setup_panel):
+    built, controller = _two_page_dashboard(setup_panel, *K_NAMES)
+    controller.is_estopped = True
+    built._sync_stop_button()
+    assert built._headline.is_packed and built._stop_button.is_packed
+    built.show_model("Rotator")
+    assert built._headline.is_packed and built._stop_button.is_packed
+    assert built._stop_hint.cget("text") == "Stop: Ctrl+."
+    tkmod._DISCLOSED.clear()
+    built.close()
+
+
+@pytest.mark.parametrize("points, width, height", [(12, 1056, 900), (12, 1400, 900)])
+def test_k4_the_overview_settles_where_a_flow_wraps_at_its_columns_width(
+        points, width, height):
+    """K4: on the overview, Temperature Controller at 1056 px and Red Percent
+    at 1400 px wrap at exactly their column's width; the grid then moved the
+    column's odd pixel and the flow unwrapped, and the window never settled
+    (a real build hung). `_real_build` lays the overview out and returns."""
+    result = _real_build(points, width, height)
+    assert result["stop"]["whole"], result["stop"]
