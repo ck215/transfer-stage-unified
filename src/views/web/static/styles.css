@@ -1281,13 +1281,14 @@ span.lamp { background: none; }
    pushes the rest of the card down (I3, UXPM5-3). Pinned to the rack's top
    right it covered the next card's inputs; in the card's flow it covers
    nothing and stays beside what opened it. Not an overlay - no scrim,
-   nothing behind it goes inert. In z-order it sits below the rail, so the
-   stop is never covered (F1), and below the overlays, so a confirmation
-   still covers it; above the rack and the drawer's scrim. Scrolled into
-   view clear of the rail and the tray. */
+   nothing behind it goes inert. In z-order it is part of its card: below
+   the rail, so the stop is never covered (F1); below the overlays, so a
+   confirmation still covers it; below the tray, so a tall panel runs under
+   the event line rather than over it; and under the drawer's scrim with the
+   rest of the rack. Scrolled into view clear of the rail and the tray. */
 .log-window {
   position: relative;
-  z-index: 9;
+  z-index: 1;
   flex: 1 1 100%;
   width: 100%;
   min-width: 0;

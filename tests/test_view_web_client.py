@@ -756,18 +756,20 @@ def test_a_detached_log_is_a_button_and_is_polled_only_while_open():
 
 
 def test_the_log_panel_sits_under_the_rail_and_under_a_confirmation():
-    """G4 + F1: the panel is lower in z-order than both the rail (the stop
-    stays clickable) and the overlays (a confirmation still covers it), and
-    higher than the drawer's scrim. I3: it opens in its own card's flow,
-    under its button - never fixed to the rack's corner over another card -
-    and scrolls into view clear of the rail."""
+    """G4 + F1: the panel is lower in z-order than the rail (the stop stays
+    clickable) and the overlays (a confirmation still covers it). I3: it
+    opens in its own card's flow, under its button - never fixed to the
+    rack's corner over another card - so it also sits under the tray and
+    the drawer's scrim like the rest of its card, and scrolls into view
+    clear of the rail."""
     rule = re.search(r"\n\.log-window\s*\{([^}]*)\}", STYLES)
     assert rule, "no .log-window rule"
     z = int(re.search(r"z-index:\s*(\d+)", rule.group(1)).group(1))
     rail = int(re.search(r"\n\.rail\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
     overlay = int(re.search(r"\n\.overlay\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
     scrim = int(re.search(r"\n\.scrim\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
-    assert scrim < z < overlay < rail, (scrim, z, overlay, rail)
+    tray = int(re.search(r"\n\.tray\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
+    assert 0 < z < tray < scrim < overlay < rail, (z, tray, scrim, overlay, rail)
     assert "position: relative" in rule.group(1), "the log panel is not in its card's flow"
     assert "position: fixed" not in rule.group(1)
     assert re.search(r"scroll-margin-top:\s*calc\(var\(--rail-h\)", rule.group(1)), (
