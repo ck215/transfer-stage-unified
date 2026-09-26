@@ -1245,24 +1245,33 @@ span.lamp { background: none; }
 .event.severity-error { color: var(--error-ink); border-left-color: var(--error-mark); }
 
 /* -- in-page panels (G4) --------------------------------------------------- */
-/* A detached log opens here: a panel pinned under the rail at the right, not
-   an overlay - no scrim, nothing behind it goes inert. In z-order it sits
-   below the rail, so the stop is never covered (F1), and below the overlays,
-   so a confirmation still covers it; above the rack and the drawer's scrim.
-   A second one opens a step down and to the left of the first. */
+/* A detached log opens in its own card, directly under its button, and
+   pushes the rest of the card down (I3, UXPM5-3). Pinned to the rack's top
+   right it covered the next card's inputs; in the card's flow it covers
+   nothing and stays beside what opened it. Not an overlay - no scrim,
+   nothing behind it goes inert. In z-order it sits below the rail, so the
+   stop is never covered (F1), and below the overlays, so a confirmation
+   still covers it; above the rack and the drawer's scrim. Scrolled into
+   view clear of the rail and the tray. */
 .log-window {
-  position: fixed;
-  top: calc(var(--rail-h) + var(--space-3) + var(--stack, 0) * 1.5rem);
-  right: calc(var(--page-gutter) + var(--stack, 0) * 1.5rem);
+  position: relative;
   z-index: 9;
-  width: min(30rem, calc(100vw - 2 * var(--page-gutter)));
-  max-height: calc(100vh - var(--rail-h) - var(--tray-h) - 2 * var(--space-3));
+  flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
+  margin-top: var(--space-3);
+  scroll-margin-top: calc(var(--rail-h) + var(--space-3));
+  scroll-margin-bottom: calc(var(--tray-h) + var(--space-3));
   display: flex;
   flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--rule-strong);
   border-left: 0.2rem solid var(--rule-strong);
 }
+
+/* The opener's row wraps, so the open panel takes the line under the
+   button at the card's full width. */
+.row.opener { flex-wrap: wrap; }
 
 .log-window[hidden] { display: none; }
 

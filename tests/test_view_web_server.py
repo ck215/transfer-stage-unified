@@ -1501,3 +1501,108 @@ def test_the_unconfirmed_stop_line_goes_when_the_latch_clears(station, tmp_path)
     assert out["clearedElsewhere"] == {"hidden": True, "text": "", "face": "Stop"}, out
     assert out["again"]["face"] == "Clear" and line in out["again"]["text"], out
     assert out["clearedHere"] == {"hidden": True, "text": "", "face": "Stop"}, out
+
+
+# --------------------------------------------------------------------------
+# I3 (audit round 5, UXPM5-3): the log panel belongs to its own card
+# --------------------------------------------------------------------------
+@pytest.fixture
+def sim_station():
+    """The real six models, every one in SIM, behind a real Setup."""
+    from controller.setup import Setup, SIM
+    controller = Controller()
+    setup = Setup(controller)
+    for key, row in setup._rows.items():
+        getattr(setup, f"set_{key}_enabled")(True)
+        if row["needs_port"]:
+            getattr(setup, f"set_{key}_port")(SIM)
+    assert len(setup.launch()) == 6
+    view = WebView(controller, setup, port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller
+    finally:
+        view.close()
+
+
+#: Open one card's Gamepad log and measure it against every other card.
+_LOG_LAYOUT = r"""
+  const measure = (owner) => page.evaluate((owner) => {
+    const cards = Array.from(document.querySelectorAll('#cards .card'));
+    const titleOf = (c) => (c.querySelector('.card-title') || {}).textContent;
+    const mine = cards.find((c) => titleOf(c) === owner);
+    const open = Array.from(document.querySelectorAll('.log-window'))
+      .filter((w) => !w.hidden && w.getClientRects().length);
+    if (open.length !== 1) return { open: open.length };
+    const w = open[0];
+    const p = w.getBoundingClientRect();
+    const rack = document.getElementById('cards').getBoundingClientRect();
+    const hits = [];
+    for (const card of cards) {
+      if (card === mine || card.classList.contains('setup-card')) continue;
+      for (const c of card.querySelectorAll('button, input, select, textarea')) {
+        const r = c.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const ix = Math.min(p.right, r.right) - Math.max(p.left, r.left);
+        const iy = Math.min(p.bottom, r.bottom) - Math.max(p.top, r.top);
+        if (ix > 0.5 && iy > 0.5) hits.push(titleOf(card) + ': ' + (c.textContent || c.getAttribute('aria-label') || c.tagName).trim());
+      }
+    }
+    const inside = p.left >= rack.left - 0.5 && p.right <= rack.right + 0.5
+      && p.top >= rack.top - 0.5 && p.bottom <= rack.bottom + 0.5;
+    return { open: 1, owner: mine && mine.contains(w), hits, inside,
+             title: document.getElementById(w.getAttribute('aria-labelledby')).textContent,
+             rect: [p.left, p.top, p.right, p.bottom], rack: [rack.left, rack.top, rack.right, rack.bottom] };
+  }, owner);
+  const openLog = (owner) => page.evaluate((owner) => {
+    const card = Array.from(document.querySelectorAll('#cards .card'))
+      .find((c) => (c.querySelector('.card-title') || {}).textContent === owner);
+    Array.from(card.querySelectorAll('button')).find((b) => b.textContent === 'Gamepad log…').click();
+  }, owner);
+  const r = {};
+  await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+  if (await page.evaluate(() => document.body.classList.contains('drawer-open')
+      || !document.getElementById('scrim').hidden)) {
+    await page.click('#drawer-close');
+    await sleep(400);
+  }
+  for (const width of [1400, 900]) {
+    await page.setViewport({ width, height: 900 });
+    await sleep(500);
+    await openLog('Stepper Probe');
+    await until(() => Array.from(document.querySelectorAll('.log-window')).some((w) => !w.hidden));
+    await sleep(300);
+    r['stepper' + width] = await measure('Stepper Probe');
+    await openLog('DC Probe');
+    await sleep(400);
+    r['dc' + width] = await measure('DC Probe');
+    r['stepperClosed' + width] = await page.evaluate(() => Array.from(document.querySelectorAll('.log-window'))
+      .filter((w) => !w.hidden).length);
+    r['stopOnTop' + width] = await page.evaluate(%(stop_hit)s);
+    await page.keyboard.press('Escape');
+    await sleep(300);
+  }
+  return r;
+"""
+
+
+@needs_browser
+def test_the_gamepad_log_panel_opens_in_its_own_card_and_covers_no_other(sim_station, tmp_path):
+    """I3 (UXPM5-3): with all six SIM models up, the Stepper Probe's log opens
+    inside the Stepper Probe's card, within the rack, over none of another
+    card's buttons, inputs or selects - at 1400 and at 900. Opening the DC
+    Probe's log closes the Stepper's: one panel at a time. The rail's stop
+    stays what a click at its centre lands on."""
+    view, controller = sim_station
+    out = _browse(view, _LOG_LAYOUT % {"stop_hit": _STOP_HIT}, tmp_path)
+    for width in (1400, 900):
+        for who, title in (("stepper", "Stepper Probe — Gamepad log"),
+                           ("dc", "DC Probe — Gamepad log")):
+            got = out[f"{who}{width}"]
+            assert got["open"] == 1, (width, who, got)
+            assert got["title"] == title, (width, got)
+            assert got["hits"] == [], f"at {width} the {who} log covers {got['hits']}"
+            assert got["inside"], f"at {width} the {who} log leaves the rack: {got}"
+            assert got["owner"], f"at {width} the {who} log is not in its own card"
+        assert out[f"stepperClosed{width}"] == 1, "two log panels open at once"
+        assert out[f"stopOnTop{width}"], f"at {width} the log panel covers the stop"

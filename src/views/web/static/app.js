@@ -861,7 +861,14 @@ function renderLogStream(panel, element) {
  *  and gives focus back to the button (F12); pressing the button again
  *  brings the open panel forward instead of making a second one. Its source
  *  is polled only while it is open (PanelCard.wantsData), and it goes when
- *  its card goes. */
+ *  its card goes.
+ *
+ *  It opens in its own card, directly under its button, and pushes the
+ *  rest of the card down (I3, UXPM5-3): pinned to the rack's corner it
+ *  covered the next card's inputs and that card's own button. In the card's
+ *  flow it can cover nothing, it always lies inside the rack, and it is
+ *  next to what opened it. One panel is open at a time: opening another
+ *  closes this one (Dashboard.openFloating). */
 function renderDetachedLog(panel, element) {
   const node = make('div', 'row opener');
   const caption = sentenceCase(element.text || element.source_command || 'log');
@@ -912,7 +919,8 @@ function renderDetachedLog(panel, element) {
       hide();
     });
     button.setAttribute('aria-controls', win.id);
-    document.body.appendChild(win);
+    win.closeFloating = () => hide();
+    node.appendChild(win);
   };
 
   const show = () => {
@@ -927,6 +935,9 @@ function renderDetachedLog(panel, element) {
       dashboard.raiseFloating(win);
     }
     win.focus({ preventScroll: true });
+    // In the card's flow it may open below the fold: bring it into view,
+    // clear of the rail above and the tray below (scroll-margin, CSS).
+    win.scrollIntoView({ block: 'nearest' });
   };
 
   const hide = () => {
@@ -1700,12 +1711,13 @@ class Dashboard {
   // -- in-page panels (G4) --------------------------------------------------
   //
   // Non-modal: nothing behind them goes inert and nothing is dimmed. Each
-  // new one is offset from the last so two open logs do not sit exactly on
-  // top of each other; the one brought forward is the last in the page, so
-  // it paints over the others at the same z-index.
+  // opens inside its own card (I3), and only one is open at a time: opening
+  // a panel closes any other, so a second log never lands on a neighbour.
   openFloating(win) {
+    for (const other of this.floating.slice()) {
+      if (other !== win && other.closeFloating) other.closeFloating();
+    }
     if (this.floating.indexOf(win) === -1) this.floating.push(win);
-    win.style.setProperty('--stack', String(this.floating.length - 1));
     this.raiseFloating(win);
     this.updateInert();
   }
@@ -1715,9 +1727,6 @@ class Dashboard {
     if (at !== -1 && at !== this.floating.length - 1) {
       this.floating.splice(at, 1);
       this.floating.push(win);
-    }
-    if (win.parentNode && win.parentNode.lastElementChild !== win) {
-      win.parentNode.appendChild(win);
     }
   }
 
