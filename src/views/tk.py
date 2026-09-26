@@ -5090,7 +5090,7 @@ class TkDashboard(Dashboard):
             size = _lamp_px()
             mark = tk.Canvas(ring.inner, width=size, height=size,
                              background=theme.SURFACE, highlightthickness=0)
-            mark.pack(side="right", padx=(0, SPACE[3]))
+            mark.pack(side="left", padx=(SPACE[3], 0))
             self._rail_marks[mark_name] = (mark, _Tooltip(label))
         label.pack(fill="x")
         for sequence in ("<Button-1>", "<Return>", "<space>"):
@@ -5140,10 +5140,14 @@ class TkDashboard(Dashboard):
             lines.append((None, self._overview_item[1]))
         for name, label in lines:
             is_current = on_sheet and name == self._opened
+            ground = theme.BACKGROUND if is_current else theme.SURFACE
             try:
-                label.configure(background=theme.BACKGROUND if is_current
-                                else theme.SURFACE,
-                                font=_font(bold=is_current))
+                label.configure(background=ground, font=_font(bold=is_current))
+                mark = self._rail_marks.get(name) if name else None
+                if mark is not None:
+                    # The mark sits in the line's own ground, lit or not.
+                    mark[0].configure(background=ground)
+                    mark[0].master.configure(background=ground)
             except Exception:
                 pass
         self._setup_press.set_active(not on_sheet)

@@ -4214,6 +4214,11 @@ def test_l1_the_rail_marks_each_latched_and_unconfirmed_model(tk_harness,
     assert built._rail_marks["DC Probe"][1].text == "Stopped"
     assert built._rail_marks["Rotator"][1].text == "Did not confirm the stop"
     assert built._rail_marks["Stepper Probe"][1].text == ""
+    mark = built._rail_marks["Rotator"][0]
+    packed = [kw for widget, kw in PACK_ORDER if widget is mark][-1]
+    assert packed["side"] == "left", "before the name"
+    built.show_model("Rotator")
+    assert mark.cget("background") == built._rail_items["Rotator"][1].cget("background")
     controller.stop = None
     controller.is_estopped = False
     built._sync_stop_button()
