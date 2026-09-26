@@ -411,6 +411,10 @@ button, select, .mushroom {
   white-space: nowrap;
 }
 
+/* Hidden while the face reads "Clear" (I6): it keeps its room, so the rail's
+   controls do not shift under the pointer when the latch sets. */
+.stop-hint[hidden] { display: inline; visibility: hidden; }
+
 /* -- the mushroom -------------------------------------------------------- */
 /* The one bold element on the page. Round, signal red, a darker ring around
    it and a highlight sunk into the top of the disc, so it reads as a thing

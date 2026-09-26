@@ -1727,3 +1727,35 @@ def test_after_quit_while_live_the_disc_is_the_same_inert_disc(station, tmp_path
     view, controller, probe = station
     out = _browse(view, _QUIT_AND_READ, tmp_path)
     _assert_shut_down(out)
+
+
+# --------------------------------------------------------------------------
+# I6 (Web part): the chord's hint follows the stop's face
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_stop_chord_is_announced_only_while_the_face_is_stop(station, tmp_path):
+    """I6: Ctrl+. stops and never clears (F9). While the face reads "Clear",
+    the button must not advertise the chord as its shortcut, and the rail's
+    "Stop: Ctrl+." hint hides (the stop is already latched); both come back
+    once the latch clears."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      const read = () => page.evaluate(() => {
+        const stop = document.getElementById('full-stop');
+        const hint = document.querySelector('.stop-hint');
+        return { face: stop.textContent.trim(), keys: stop.getAttribute('aria-keyshortcuts'),
+                 hint: Boolean(hint && !hint.hidden && hint.getClientRects().length) };
+      });
+      const r = {};
+      r.live = await read();
+      await page.click('#full-stop');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Clear');
+      r.latched = await read();
+      await api('/api/clear_estop_all', { confirmed: true });
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      r.cleared = await read();
+      return r;
+    """, tmp_path)
+    assert out["live"] == {"face": "Stop", "keys": "Control+Period", "hint": True}, out
+    assert out["latched"] == {"face": "Clear", "keys": None, "hint": False}, out
+    assert out["cleared"] == {"face": "Stop", "keys": "Control+Period", "hint": True}, out

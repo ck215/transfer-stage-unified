@@ -2294,6 +2294,13 @@ class Dashboard {
     this.dom.stop.classList.toggle('is-latched', isEstopped);
     putAttr(this.dom.stop, 'aria-label',
             isEstopped ? 'Clear the stop on every model' : 'Stop every model');
+    // The chord stops and never clears (F9): while the face is "Clear" the
+    // button does not advertise it, and the rail's hint hides - the stop it
+    // names is already latched. Both return with the "Stop" face (I6).
+    if (isEstopped) this.dom.stop.removeAttribute('aria-keyshortcuts');
+    else putAttr(this.dom.stop, 'aria-keyshortcuts', 'Control+Period');
+    const hint = document.querySelector('.stop-hint');
+    if (hint && hint.hidden !== isEstopped) hint.hidden = isEstopped;
     // The keyboard path is written on the object itself (F9).
     putAttr(this.dom.stop, 'title', isEstopped
       ? 'Clear the stop on every model (asks first). ' + STOP_KEY_HINT + ' stops again.'
