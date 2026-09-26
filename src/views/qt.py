@@ -93,7 +93,8 @@ try:                                    # the module imports without PySide6
                                 QPoint, QPointF, QRect, QRectF, QSize, Qt,
                                 QTimer, QUrl, QVariantAnimation, Signal)
     from PySide6.QtGui import (QColor, QDoubleValidator, QFont,
-                               QFontDatabase, QFontMetrics, QIcon, QImage,
+                               QFontDatabase, QFontMetrics, QGuiApplication,
+                               QIcon, QImage,
                                QIntValidator, QKeySequence, QPainter,
                                QPainterPath, QPen, QPixmap, QShortcut,
                                QTextCursor, QTextDocument)
@@ -254,6 +255,10 @@ CONFIRM_WORDS = ("Confirm", "Continue", "Cancel")
 #: right of an overview entry's head (a press opens the device alone).
 OVERVIEW = "Overview"
 OPEN_WORD = "Open"
+#: L15: what an image pane says while the model has no picture for it, when
+#: the schema declares no `empty` of its own (the Web view's words).
+FIGURE_EMPTY = {"figure": "No run loaded. Load run opens a saved CSV and "
+                          "plots it here."}
 #: A unit as the operator reads it beside a number.
 UNIT_WORDS = {"C": "°C", "s/C": "s/°C"}
 
@@ -385,6 +390,40 @@ def event_line(event):
     if count > 1:
         text += f" (repeated {count} times)"
     return text
+
+
+#: L3: why a command is greyed out, in the operator's words: the gate token
+#: that refused it (`disabled_when`), or what an `enabled_when` command is
+#: waiting for. One map, three views (brief-l-views.md).
+GATE_WORDS = {"latched": "Stopped: clear the stop first",
+              "manual": "In manual mode",
+              "running": "A run is in progress",
+              "no_region": "Set a capture region first",
+              "disconnected": "Not connected",
+              "moving": "Moving"}
+WAITING_WORDS = {"running": "No run in progress",
+                 "manual": "Not in manual mode",
+                 "connected": "Not connected"}
+
+
+def gate_reason(element, mode, values=None, caption_of=None):
+    """Why `schema.is_enabled` refuses `element` in `mode`, or "" when it
+    does not. `caption_of(attr)` names an `enabled_by` switch."""
+    mode = str(mode or "")
+    by = element.get("enabled_by")
+    if by and values is not None and not values.get(by):
+        name = caption_of(by) if caption_of else ""
+        return f"Tick {name} first" if name else "Not selected"
+    if mode in (element.get("disabled_when") or ()):
+        return GATE_WORDS.get(mode) or sentence(mode.replace("_", " "))
+    enabled = element.get("enabled_when")
+    if enabled and mode not in enabled:
+        if mode in GATE_WORDS and mode in ("latched", "disconnected"):
+            return GATE_WORDS[mode]
+        if len(enabled) == 1 and enabled[0] in WAITING_WORDS:
+            return WAITING_WORDS[enabled[0]]
+        return "Only while " + " or ".join(str(m).replace("_", " ") for m in enabled)
+    return ""
 
 
 def split_unit(text, unit=None):
@@ -870,6 +909,17 @@ def stylesheet():
                            "padding": f"{theme.GAP}px"}),
     ]
     return "".join(sheet)
+
+
+def allow_tab_to_every_control():
+    """L7 (QT7-4): Tab reaches every control - buttons, the disc, the rail -
+    on every OS. macOS's default reaches text fields and lists only unless
+    Full Keyboard Access is on, so without this no button was ever focused
+    there; Tk and Web reach them on the same Mac. Asked for everywhere, not
+    branched on the OS: on Windows and Linux it is already the default."""
+    hints = QGuiApplication.styleHints() if QGuiApplication.instance() else None
+    if hints is not None and hints.tabFocusBehavior() != Qt.TabFocusBehavior.TabFocusAllControls:
+        hints.setTabFocusBehavior(Qt.TabFocusBehavior.TabFocusAllControls)
 
 
 def install_font_fallbacks():
@@ -1442,27 +1492,53 @@ class SeriesPlot(QWidget):
     `tk.Canvas`. Drawn on whatever it sits on (a well), a muted x-axis only,
     the line in the trace - or muted once the model is latched and the line
     has stopped being live (`design-Sheet.md`).
+
+    Empty, it is one caption line: the schema's `empty` sentence (L15), not
+    a tall box of nothing.
     """
 
     MARGIN_PX = 5
+    HEIGHT_PX = 140
 
-    def __init__(self, role="neutral", parent=None):
+    def __init__(self, role="neutral", parent=None, empty=""):
         QWidget.__init__(self, parent)
         self.role = role
         self.frozen = False
+        self.empty_text = str(empty or "No data yet.")
         self._points = []
-        self.setMinimumHeight(140)
         self.setMinimumWidth(240)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self._sync_height()
 
     @property
     def points(self):
         return list(self._points)
 
+    @property
+    def is_empty(self):
+        return len(self._points) < 2
+
+    def _empty_height(self):
+        return caption_line_px() + 2 * theme.SPACE[1]
+
+    def _sync_height(self):
+        height = self._empty_height() if self.is_empty else self.HEIGHT_PX
+        if self.minimumHeight() != height or self.maximumHeight() != height:
+            self.setFixedHeight(height)
+            self.updateGeometry()
+
+    def sizeHint(self):                     # noqa: N802 - Qt's name
+        return QSize(self.minimumWidth(), self.minimumHeight())
+
+    def minimumSizeHint(self):              # noqa: N802 - Qt's name
+        return QSize(self.minimumWidth(), self.minimumHeight())
+
     def set_series(self, data):
         points = series_points(data)
         if points != self._points:
             self._points = points
+            self._sync_height()
             self.update()
 
     def set_frozen(self, frozen):
@@ -1473,18 +1549,23 @@ class SeriesPlot(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        axis = QPen(QColor(theme.MUTED))
+        muted = QColor(theme.MUTED)
+        if self.is_empty:
+            # The empty sentence, a caption at the left: what to do next.
+            painter.setPen(muted)
+            font = QFont(self.font())
+            font.setPointSizeF(caption_pt())
+            painter.setFont(font)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignLeft
+                             | Qt.AlignmentFlag.AlignVCenter, self.empty_text)
+            return
+        axis = QPen(muted)
         axis.setWidth(1)
         painter.setPen(axis)
         bottom = self.height() - 1
         painter.drawLine(0, bottom, self.width(), bottom)
         scaled = polyline_points(self._points, self.width(), self.height(),
                                  self.MARGIN_PX)
-        if not scaled:
-            # An empty plot says so, rather than being an empty box.
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                             "No samples yet")
-            return
         pen = QPen(QColor(theme.MUTED if self.frozen else theme.TRACE))
         pen.setWidthF(1.75)
         painter.setPen(pen)
@@ -1492,6 +1573,13 @@ class SeriesPlot(QWidget):
         for point in scaled[1:]:
             path.lineTo(QPointF(*point))
         painter.drawPath(path)
+
+
+def caption_line_px():
+    """One caption line's height, in pixels, at the launch font."""
+    font = QFont(theme.FONT_FAMILY)
+    font.setPointSizeF(caption_pt())
+    return QFontMetrics(font).height()
 
 
 def numeral_font(pixels, weight=None):
@@ -1753,6 +1841,18 @@ class SwitchButton(QAbstractButton):
         painter.end()
 
 
+class KeySlider(QSlider):
+    """The speed slider (L6): an arrow is 1 % of the travel and a page key
+    10 %; Home and End do nothing - one key must never commit the maximum
+    speed."""
+
+    def keyPressEvent(self, event):         # noqa: N802 - Qt's name
+        if event.key() in (Qt.Key.Key_Home, Qt.Key.Key_End):
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class TickBox(QCheckBox):
     """G3's tick box, H10: ticked, an ink check is drawn on the square - a
     tick, not a filled block that reads as a lamp."""
@@ -1955,18 +2055,33 @@ class ReadingLabel(QLabel):
 class FigureLabel(QLabel):
     """A model-rendered figure (the `image` element), scaled down to the width
     it is given and never wider than it was drawn: a 640 px matplotlib figure
-    must not force the sheet to scroll sideways at 28 pt."""
+    must not force the sheet to scroll sideways at 28 pt.
 
-    def __init__(self, parent=None):
+    With no figure it is one caption line saying so (L15)."""
+
+    def __init__(self, parent=None, empty=""):
         QLabel.__init__(self, "", parent)
         self._figure = None
+        self.empty_text = str(empty or "Nothing to show yet.")
         self.setObjectName("figure")
-        self.setMinimumHeight(140)
+        self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.set_figure(None)
+
+    @property
+    def is_empty(self):
+        return self._figure is None or self._figure.isNull()
 
     def set_figure(self, pixmap):
         self._figure = pixmap
+        if self.is_empty:
+            self.clear()
+            self.setText(self.empty_text)
+            self.setMinimumHeight(caption_line_px())
+        else:
+            self.setText("")
+            self.setMinimumHeight(SeriesPlot.HEIGHT_PX)
         self.updateGeometry()
         self._fit()
 
@@ -1975,17 +2090,17 @@ class FigureLabel(QLabel):
         return self._figure.width() / ratio, self._figure.height() / ratio
 
     def hasHeightForWidth(self):            # noqa: N802 - Qt's name
-        return self._figure is not None
+        return not self.is_empty
 
     def heightForWidth(self, width):        # noqa: N802 - Qt's name
-        if self._figure is None:
+        if self.is_empty:
             return self.minimumHeight()
         natural_w, natural_h = self._natural()
         shown = min(width, natural_w) if natural_w else width
         return max(self.minimumHeight(), int(natural_h * shown / max(natural_w, 1)))
 
     def sizeHint(self):                     # noqa: N802 - Qt's name
-        if self._figure is None:
+        if self.is_empty:
             return QSize(0, self.minimumHeight())
         natural_w, natural_h = self._natural()
         return QSize(int(natural_w), int(natural_h))
@@ -1998,7 +2113,7 @@ class FigureLabel(QLabel):
         self._fit()
 
     def _fit(self):
-        if self._figure is None or self._figure.isNull():
+        if self.is_empty:
             return
         natural_w, _ = self._natural()
         width = int(min(max(self.width(), 1), natural_w))
@@ -2649,6 +2764,11 @@ class QtPanelView(PanelView, QWidget):
         self._tier_of = {}          # id(element) -> its section's tier
         self._changed_at = {}       # id(element) -> when its value last changed
         self._sliders = {}          # id(element) -> the slider beside the entry
+        self._toggle_captions = {}  # id(element) -> the caption shown over a toggle
+        self._base_tips = {}        # id(widget) -> its tooltip while enabled (L3)
+        self._reasons = {}          # id(element) -> why it is greyed out, or ""
+        self._reason_lines = {}     # id(section frame) -> its "why" caption (L3)
+        self._reason_frame = {}     # id(element) -> its section frame
         self._pending = set()       # entries a slider is carrying to the model
         self._overlay = None
         self._table = None          # built on the first layout="row" section
@@ -2962,9 +3082,29 @@ class QtPanelView(PanelView, QWidget):
         holder.setObjectName("flow")
         flow = FlowLayout(holder)
         column.addWidget(holder)
+        column.addWidget(self._reason_caption(frame))
         column.addWidget(self._section_refusal(frame))
         self._tier_layout(self._building_tier).addWidget(frame)
         return FlowSection(flow)
+
+    def _reason_caption(self, frame):
+        """L3: a muted caption under a section's row, hidden until one of its
+        `go` commands is greyed out; then it says why, as the tooltip does."""
+        line = QLabel("")
+        line.setObjectName("caption")
+        line.setWordWrap(True)
+        line.setVisible(False)
+        self._reason_lines[id(frame)] = line
+        return line
+
+    def reason_line(self, widget):
+        """The "why" caption of the section that holds `widget`."""
+        while widget is not None:
+            line = self._reason_lines.get(id(widget))
+            if line is not None:
+                return line
+            widget = widget.parentWidget()
+        return None
 
     def _section_refusal(self, frame):
         """Every section keeps a refusal line at its foot, hidden until a
@@ -2991,6 +3131,7 @@ class QtPanelView(PanelView, QWidget):
             grid = QGridLayout()
             grid.setContentsMargins(0, 0, 0, 0)
             outer.addLayout(grid)
+            outer.addWidget(self._reason_caption(frame))
             outer.addWidget(self._section_refusal(frame))
             grid.setHorizontalSpacing(theme.INSET)
             grid.setVerticalSpacing(theme.PAD)
@@ -3075,10 +3216,10 @@ class QtPanelView(PanelView, QWidget):
         next refresh does not snap it back. Every command still carries the
         entry's text (`_gather_inputs`)."""
         low, high = (int(math.floor(travel[0])), int(math.ceil(travel[1])))
-        slider = QSlider(Qt.Orientation.Horizontal)
+        slider = KeySlider(Qt.Orientation.Horizontal)
         slider.setRange(low, high)
-        slider.setSingleStep(1)
-        slider.setPageStep(max(1, (high - low) // 20))
+        slider.setSingleStep(max(1, int(round((high - low) / 100.0))))
+        slider.setPageStep(max(1, int(round((high - low) / 10.0))))
         slider.setFixedWidth(text_px(SLIDER_CHARS))
         slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         slider.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -3194,11 +3335,18 @@ class QtPanelView(PanelView, QWidget):
             container.add("", button)
             return
         button = QPushButton(sentence_case(element.get("false_text", "Off")))
-        button.setAccessibleName(caption or button.text())
+        shown = "" if self._names_itself(caption, element) else caption
+        # L16: the name carries the visible words (its caption when one is
+        # shown, then its face) and the model; `_set_on` keeps it current.
+        self._toggle_captions[id(element)] = shown
+        button.setAccessibleName(self._toggle_name(shown, button.text()))
         button.clicked.connect(lambda: self._run_toggle(element))
         self._remember(element, button)
-        shown = "" if self._names_itself(caption, element) else caption
         container.add(element.get("text", "") if container.is_row else shown, button)
+
+    def _toggle_name(self, caption, face):
+        words = f"{caption}: {face}" if caption else face
+        return f"{words}, {self.name}"
 
     def _make_checkbox(self, container, element):
         """A tick box (G3): the value itself, ticked or not.
@@ -3242,8 +3390,11 @@ class QtPanelView(PanelView, QWidget):
         refresh.setIcon(reload_icon(side * 7 // 12))
         refresh.setIconSize(QSize(side * 7 // 12, side * 7 // 12))
         refresh.setFixedSize(side, side)
-        refresh.setToolTip("Rescan the choices")
-        refresh.setAccessibleName("Rescan the choices")
+        # L16: one name per rescan - its field, then its row or its model.
+        owner = self._building_title if container.is_row else self.name
+        rescan = f"Rescan {sentence_case(caption) if not container.is_row else caption} choices"
+        refresh.setToolTip(f"{rescan}, {owner}" if owner else rescan)
+        refresh.setAccessibleName(f"{rescan}, {owner}" if owner else rescan)
         refresh.clicked.connect(lambda: self._reload_options(element, combo))
         # Greyed with its dropdown: an unticked row offers nothing to press.
         self._companions[id(element)] = refresh
@@ -3276,14 +3427,16 @@ class QtPanelView(PanelView, QWidget):
         container.add("", button)
 
     def _make_plot(self, container, element):
-        plot = SeriesPlot(role=element.get("role", "neutral"))
+        plot = SeriesPlot(role=element.get("role", "neutral"),
+                          empty=element.get("empty", ""))
         plot.setToolTip(f"{element.get('x_label', '')} / "
                         f"{element.get('y_label', '')}".strip(" /"))
         self._remember(element, plot)
         container.add_wide(element.get("text", ""), plot)
 
     def _make_image(self, container, element):
-        label = FigureLabel()
+        label = FigureLabel(empty=element.get("empty")
+                            or FIGURE_EMPTY.get(element.get("data_command"), ""))
         self._remember(element, label)
         container.add_wide(element.get("text", ""), label)
 
@@ -3358,12 +3511,23 @@ class QtPanelView(PanelView, QWidget):
         dialog = QDialog(self._main_window())
         dialog.setObjectName("detachedLog")
         dialog.setModal(False)
-        dialog.setWindowTitle(f"{self.name} — {caption}")
+        # "Stepper Probe gamepad log": no dash (L12, UXPM5-13).
+        dialog.setWindowTitle(f"{self.name} {caption.lower()}")
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
+        layout.setSpacing(theme.PAD)
         feed = self._log_feed()
         feed.setAccessibleName(f"{self.name} {caption.lower()}")
+        # Empty, it says so (L12): the Web view's first sentence.
+        feed.setPlaceholderText("No gamepad input yet." if "gamepad" in caption.lower()
+                                else "Nothing logged yet.")
         layout.addWidget(feed)
+        close = QPushButton("Close")
+        close.setObjectName("logClose")
+        close.setProperty("role", "neutral")
+        close.setAccessibleName(f"Close the {self.name} {caption.lower()}")
+        close.clicked.connect(dialog.reject)
+        layout.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
         metrics = QFontMetrics(feed.font())
         dialog.resize(metrics.averageCharWidth() * DETACHED_LOG_CHARS,
                       metrics.lineSpacing() * DETACHED_LOG_LINES)
@@ -3550,6 +3714,8 @@ class QtPanelView(PanelView, QWidget):
                                                else "false_text", ""))
             if widget.text() != wanted:
                 widget.setText(wanted)
+                widget.setAccessibleName(self._toggle_name(
+                    self._toggle_captions.get(id(element), ""), wanted))
             return
         # An indicator: a lamp, and no text at all.
         fill, ring = lamp_colours(element, is_on)
@@ -3584,6 +3750,49 @@ class QtPanelView(PanelView, QWidget):
                        self._companions.get(id(element))):
             if widget is not None and widget.isEnabled() != is_enabled:
                 widget.setEnabled(is_enabled)
+        self._show_reason(element, is_enabled)
+
+    def _show_reason(self, element, is_enabled):
+        """L3: a greyed-out command says why - the gate's reason as its
+        tooltip, and for a `go` command a muted caption under its row. The
+        words are `gate_reason`'s; they go when the command is live again."""
+        widget = self._widget_for(element)
+        if not isinstance(widget, QAbstractButton):
+            return
+        state = self._last_state or {}
+        reason = "" if is_enabled else gate_reason(
+            element, state.get("mode"), state.get("values") or {}, self._caption_of)
+        if self._reasons.get(id(element)) == reason:
+            return
+        self._reasons[id(element)] = reason
+        base = self._base_tips.setdefault(id(widget), widget.toolTip())
+        widget.setToolTip(reason or base)
+        if element.get("role") == "go":
+            self._sync_reason_line(widget)
+
+    def _sync_reason_line(self, widget):
+        line = self.reason_line(widget)
+        if line is None:
+            return
+        words = []
+        for other in self._elements:
+            if other.get("role") != "go":
+                continue
+            said = self._reasons.get(id(other))
+            if said and said not in words and self.reason_line(
+                    self._widget_for(other)) is line:
+                words.append(said)
+        text = "; ".join(words)
+        if line.text() != text:
+            line.setText(text)
+        if line.isHidden() == bool(text):
+            line.setVisible(bool(text))
+
+    def _caption_of(self, attr):
+        for element in self._elements:
+            if element.get("model_attr") == attr:
+                return sentence_case(element.get("text", ""))
+        return ""
 
     def _set_stale(self, is_stale):
         self._is_stale = bool(is_stale)
@@ -3738,7 +3947,12 @@ class QtPanelView(PanelView, QWidget):
 
     def _redraw_image(self, element, data):
         widget = self._widget_for(element)
-        if widget is None or not data:
+        if widget is None:
+            return
+        if not data:
+            # Nothing to draw: the pane is its one-line empty state (L15).
+            if not widget.is_empty:
+                widget.set_figure(None)
             return
         pixmap = QPixmap()
         if pixmap.loadFromData(bytes(data)):
@@ -3913,6 +4127,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self._marshalled.connect(self._on_marshalled, Qt.QueuedConnection)
         install_font_fallbacks()
+        allow_tab_to_every_control()
 
         self._build_rail()
         self._build_sheet()
@@ -3931,6 +4146,7 @@ class QtDashboard(Dashboard, QMainWindow):
         application = QApplication.instance()
         if application is None:
             application = QApplication(list(argv or [sys.argv[0]]))
+        allow_tab_to_every_control()
         return application
 
     def wait(self):

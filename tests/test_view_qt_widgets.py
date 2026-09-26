@@ -2360,7 +2360,8 @@ def test_g4_pressing_it_opens_one_non_modal_window_holding_the_lines(view, qapp)
     assert dialog.windowModality() == Qt.WindowModality.NonModal
     assert not dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     assert qapp.activeModalWidget() is None
-    assert dialog.windowTitle() == "Fake \u2014 Gamepad log"
+    # Updated (L12): "<model> gamepad log", no dash.
+    assert dialog.windowTitle() == "Fake gamepad log"
     feed = view._detached[id(element)][1]
     assert feed.toPlainText() == "pad up\npad down"
     assert feed.maximumHeight() != qt.LOG_STREAM_PX     # not the card's feed
@@ -3177,3 +3178,196 @@ def test_l14_a_question_has_a_title_and_verb_buttons(qapp):
                     "detail": "Clear the stop on Rotator?",
                     "yes": "Clear the stop", "no": "Keep it stopped",
                     "default": True, "escape": True}
+
+
+class GatePanel(Panel):
+    """The gates the station's models declare: Red Percent's Start/Stop run,
+    the probe's Step. `mode` is whatever the test sets."""
+
+    NAME = "Gate"
+
+    def __init__(self):
+        super().__init__()
+        self.mode = "idle"
+
+    @property
+    def gate_mode(self):
+        return self.mode
+
+    @property
+    def mode_name(self):
+        return self.mode
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Run",
+                        sch.button("Start run", "start", role="go",
+                                   disabled_when=("running", "latched", "no_region")),
+                        sch.button("Stop run", "end", enabled_when=("running",))),
+            sch.section("Step",
+                        sch.button("Step", "step", role="go",
+                                   disabled_when=("manual", "latched")),
+                        sch.button("Home", "home")))
+
+    def start(self):
+        return None
+
+    def end(self):
+        return None
+
+    def step(self):
+        return None
+
+    def home(self):
+        return None
+
+
+@pytest.fixture
+def gated(qapp):
+    panel = GatePanel()
+    built = qt.QtPanelView(FakeController(panel), "Gate")
+    built.resize(900, 400)
+    built.show()
+    yield built, panel
+    built.close()
+
+
+def _button(view, command):
+    return next(view._widget_for(e) for e in view._elements if e.get("command") == command)
+
+
+def test_l3_a_disabled_command_says_why_and_a_go_row_says_it_under_the_row(gated, qapp):
+    """QT7-6: Start run was greyed from launch with no tooltip. The gate's
+    reason rides in the tooltip; under a `go` command's row, a muted caption
+    says it too. Enabled again, the words go."""
+    view, panel = gated
+    start, stop, step = _button(view, "start"), _button(view, "end"), _button(view, "step")
+    for mode, start_why, stop_why, step_why in (
+            ("no_region", "Set a capture region first", "No run in progress", ""),
+            ("latched", "Stopped: clear the stop first",
+             "Stopped: clear the stop first", "Stopped: clear the stop first"),
+            ("manual", "", "No run in progress", "In manual mode"),
+            ("running", "A run is in progress", "", "")):
+        panel.mode = mode
+        view._refresh()
+        qapp.processEvents()
+        assert start.isEnabled() is (not start_why), mode
+        assert start.toolTip() == start_why, mode
+        assert stop.toolTip() == stop_why, mode
+        assert step.toolTip() == step_why, mode
+        run_line, step_line = view.reason_line(start), view.reason_line(step)
+        assert run_line.text() == start_why and run_line.isVisible() is bool(start_why)
+        # Stop run is not a `go` command: its reason is its tooltip alone.
+        assert step_line.text() == step_why and step_line.isVisible() is bool(step_why)
+        assert run_line.objectName() == "caption"
+    panel.mode = "idle"
+    view._refresh()
+    assert start.toolTip() == "" and not view.reason_line(start).isVisible()
+
+
+def test_l6_the_slider_keys_step_one_percent_and_home_end_do_nothing(tiered):
+    """TK7-5 in Qt: End committed the maximum speed in one key. An arrow is
+    1 % of the travel, a page key 10 %; Home and End are inert. Keys, not
+    bindings, and each commits as today."""
+    from PySide6.QtTest import QTest
+    view, panel = tiered
+    element = element_named(view, "speed")
+    slider = view._sliders[id(element)]
+    view._refresh()
+    assert slider.value() == 400
+    QTest.keyClick(slider, Qt.Key.Key_Right)
+    assert slider.value() == 410 and panel.speed == 410
+    for key in (Qt.Key.Key_End, Qt.Key.Key_Home):
+        QTest.keyClick(slider, key)
+        assert slider.value() == 410 and panel.speed == 410
+    QTest.keyClick(slider, Qt.Key.Key_PageUp)
+    assert slider.value() == 510 and panel.speed == 510
+    QTest.keyClick(slider, Qt.Key.Key_Left)
+    assert slider.value() == 500 and panel.speed == 500
+
+
+def test_l7_tab_from_the_sheet_reaches_the_disc_and_every_button(six, qapp):
+    """QT7-4: with macOS's default (Tab reaches text controls only) no button
+    was ever focused. The dashboard asks for every control, on every OS."""
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QPushButton
+    hints = QGuiApplication.styleHints()
+    hints.setTabFocusBehavior(Qt.TabFocusBehavior.TabFocusTextControls)
+    window = qt.QtDashboard(six.controller, six.controller.panel)
+    try:
+        assert hints.tabFocusBehavior() == Qt.TabFocusBehavior.TabFocusAllControls
+        window.open()
+        window.show()
+        window.activateWindow()
+        _pump(qapp, 10)
+        start = window._entries["Stepper Probe"].head
+        start.setFocus(Qt.FocusReason.TabFocusReason)
+        _pump(qapp)
+        reached = []
+        for _ in range(200):
+            window.focusNextChild()
+            _pump(qapp, 1)
+            focused = QApplication.focusWidget()
+            reached.append(focused)
+            if focused is window.stop_button:
+                break
+        assert window.stop_button in reached
+        assert window.quit_button in reached or any(
+            isinstance(w, QPushButton) for w in reached)
+    finally:
+        window._closing = True
+        window.close()
+        events.unsubscribe(window._on_event)
+
+
+def test_l12_the_gamepad_log_window_is_named_says_it_is_empty_and_closes(view, panel,
+                                                                          qapp):
+    element = next(e for e in view._elements if e.get("detached"))
+    panel.gamepad_lines = lambda: []
+    dialog = view.open_detached(element)
+    try:
+        assert dialog.windowTitle() == "Fake gamepad log"
+        _, feed = view._detached[id(element)]
+        assert feed.toPlainText() == ""
+        assert feed.placeholderText() == "No gamepad input yet."
+        close = dialog.findChild(qt.QPushButton, "logClose")
+        assert close is not None and close.text() == "Close"
+        close.click()
+        qapp.processEvents()
+        assert not dialog.isVisible()
+    finally:
+        dialog.close()
+
+
+def test_l15_an_empty_plot_or_figure_is_one_caption_line_tall(qapp):
+    """QT7-14: two empty panes stacked 600 px of "no data". Empty, a pane is
+    its `empty` sentence, one caption line; with data it takes its height."""
+    plot = qt.SeriesPlot(empty="No samples yet. Start a run.")
+    line = QFontMetrics(plot.font()).height()
+    assert plot.minimumSizeHint().height() <= line + 2 * theme.SPACE[1]
+    assert plot.empty_text == "No samples yet. Start a run."
+    plot.set_series({"y": [1, 3, 2]})
+    assert plot.minimumSizeHint().height() >= 140
+    plot.set_series({"y": []})
+    assert plot.minimumSizeHint().height() <= line + 2 * theme.SPACE[1]
+    figure = qt.FigureLabel(empty="No run loaded.")
+    assert figure.sizeHint().height() <= line + 2 * theme.SPACE[1]
+    assert figure.text() == "No run loaded."
+
+
+def test_l15_the_plot_says_the_schemas_empty_sentence(view):
+    element = element_of(view, "plot")
+    assert view._widget_for(element).empty_text == element["empty"]
+
+
+def test_l16_names_carry_the_visible_words_and_rescans_name_their_field(table_view,
+                                                                       view):
+    """QT7-11: "Enter autonomous mode" was named "Autonomous"; nine rescans
+    were all "Rescan the choices"."""
+    names = [w.accessibleName() for w in table_view.findChildren(qt.QPushButton)
+             if w.objectName() == "iconButton"]
+    assert len(names) == len(set(names))
+    assert "Rescan Port choices, Stepper Probe" in names
+    toggle = view._widget_for(element_of(view, "toggle"))
+    assert toggle.text() in toggle.accessibleName()

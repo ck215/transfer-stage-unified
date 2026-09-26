@@ -848,3 +848,22 @@ def test_l22_the_window_title_is_sentence_case():
 def _qt_source():
     import pathlib
     return pathlib.Path(qt.__file__).read_text(encoding="utf-8")
+
+
+def test_l3_a_gate_says_why_in_the_operators_words():
+    start = sch.button("Start run", "start", role="go",
+                       disabled_when=("running", "latched", "no_region"))
+    stop = sch.button("Stop run", "end", enabled_when=("running",))
+    step = sch.button("Step", "step", disabled_when=("manual", "latched"))
+    assert qt.gate_reason(start, "no_region") == "Set a capture region first"
+    assert qt.gate_reason(start, "latched") == "Stopped: clear the stop first"
+    assert qt.gate_reason(start, "running") == "A run is in progress"
+    assert qt.gate_reason(start, "idle") == ""
+    assert qt.gate_reason(stop, "idle") == "No run in progress"
+    assert qt.gate_reason(stop, "latched") == "Stopped: clear the stop first"
+    assert qt.gate_reason(step, "manual") == "In manual mode"
+    port = sch.dropdown("Port", "port", "set_port", "ports", enabled_by="on")
+    assert qt.gate_reason(port, "idle", {"on": False}, lambda _: "Launch") == (
+        "Tick Launch first")
+    odd = sch.button("Odd", "odd", disabled_when=("warming_up",))
+    assert qt.gate_reason(odd, "warming_up") == "Warming up"
