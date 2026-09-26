@@ -43,6 +43,7 @@ import schema as sch
 from events import events
 from result import Refused
 from views import theme
+from views.base import stop_words
 
 #: `name` that targets the Setup panel instead of a model.
 SETUP_NAME = "__setup__"
@@ -122,7 +123,12 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if route == "/api/state":
-            return self._send_json(200, self.controller.state())
+            # L1 (round 7): the words every view says about the stop, from
+            # the one function the desktop views call, so the client never
+            # re-derives the disc's face, the headline or the rail line.
+            state = self.controller.state()
+            state["stop_words"] = stop_words(state.get("stop") or {})
+            return self._send_json(200, state)
 
         if route == "/api/schema":
             name = self._one(query, "name")

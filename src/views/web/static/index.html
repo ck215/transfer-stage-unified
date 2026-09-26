@@ -35,9 +35,12 @@
           <span class="mushroom-face">Stop</span>
         </button>
       </div>
-      <!-- The stop's keyboard path, said where the stop is (F9). -->
+      <!-- The stop's keyboard path, said where the stop is (F9), in every
+           state: the chord always stops, and never clears (L1). -->
       <span class="stop-hint" aria-hidden="true">Stop: Ctrl+.</span>
-      <p id="rail-latched" class="rail-latched" hidden>Stopped: every model latched</p>
+      <!-- views.base.stop_words()["rail"]: a partial stop's names, "every
+           model latched", or the models that did not confirm (L1). -->
+      <p id="rail-latched" class="rail-latched" hidden></p>
       <!-- What must be read from across the bench and must not be lost to
            the next event: a stop that did not reach the station, a lost
            device, a Quit that did not land. -->
@@ -57,10 +60,11 @@
   </header>
 
   <div class="page">
-    <!-- Said once, at the top of the sheet, while every model is latched. -->
+    <!-- Said once, at the top of the sheet, while every model is latched:
+         views.base.stop_words()["headline"] and its subline (L1). -->
     <div id="sheet-headline" class="sheet-headline" hidden>
-      <p class="headline">Every model is stopped.</p>
-      <p class="headline-note">Clear the stop on the rail to continue.</p>
+      <p class="headline"></p>
+      <p class="headline-note"></p>
     </div>
     <main id="cards" class="sheet" tabindex="-1"></main>
   </div>
@@ -81,7 +85,7 @@
        the room to read the log when you ask for it. Normal is silence. -->
   <section id="log-panel" class="tray">
     <div class="tray-head">
-      <span id="tray-latest" class="tray-latest" role="status" aria-live="polite"></span>
+      <span id="tray-latest" class="tray-latest" role="status" aria-live="polite"><span class="tray-text"></span></span>
       <button id="log-toggle" type="button" class="ghost rail-control"
               aria-controls="event-log">Show events</button>
     </div>
