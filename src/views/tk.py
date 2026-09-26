@@ -1436,8 +1436,8 @@ class TkPanelView(PanelView):
 
         self.frame = tk.Frame(master, background=_page())
         # The entry's head: a 2 px ink rule (signal while a link is lost or
-        # a stop did not confirm), then the model's name, with the
-        # unconfirmed mark and the tier-2 disclosure at its right.
+        # a stop did not confirm), then the model's name. The tier-2
+        # disclosure is not here: it sits at the foot of the body (K3).
         self._rule = tk.Frame(self.frame, height=theme.RULE_STRONG_PX,
                               background=theme.RULE_STRONG)
         self._rule.pack(fill="x", padx=self._inset, pady=(self._inset, SPACE[4]))
@@ -1786,10 +1786,15 @@ class TkPanelView(PanelView):
     # -- tiers ----------------------------------------------------------------
     def _tier_frame(self, tier):
         """Where a section of `tier` goes. Tier 1 is the body itself; tier 2
-        is ONE panel-toned well under it, behind the head's disclosure;
-        tier 3 is a strip inside the well with a 2 px muted rule down its
-        left, behind a second disclosure. Built on the first section that
-        needs it, mapped only while open."""
+        is ONE panel-toned well under it, behind a disclosure that is the
+        last thing in the tier-1 body, left-aligned, with the well directly
+        beneath it (K3: the press and what it reveals are never a screen
+        apart); tier 3 is a strip inside the well with a 2 px muted rule
+        down its left, behind a second disclosure. Built on the first
+        section that needs it, mapped only while open.
+
+        The disclosure is created before the well, so the keyboard reaches
+        it after the tier-1 controls and before the well's."""
         frame = self._tiers.get(tier)
         if frame is not None:
             return frame
@@ -1801,15 +1806,15 @@ class TkPanelView(PanelView):
         if self._well is None:
             if 1 not in self._tiers:
                 self._tier_frame(1)
+            opener = _Disclosure(self._body, self._tier_text.get(
+                2, theme.TIER_LABELS[2]), lambda is_open: self.set_disclosure(2, is_open),
+                _page())
+            self._disclosures[2] = opener
+            self._show_opener()
             well = self._well = tk.Frame(self._body, background=theme.SURFACE,
                                          padx=SPACE[5], pady=SPACE[4])
             self._tiers[2] = tk.Frame(well, background=theme.SURFACE)
             self._tiers[2].pack(side="top", fill="x")
-            opener = _Disclosure(self._head_right, self._tier_text.get(
-                2, theme.TIER_LABELS[2]), lambda is_open: self.set_disclosure(2, is_open),
-                _page())
-            opener.frame.pack(side="right")
-            self._disclosures[2] = opener
         if tier == 3 and 3 not in self._tiers:
             opener = _Disclosure(self._well, self._tier_text.get(
                 3, theme.TIER_LABELS[3]), lambda is_open: self.set_disclosure(3, is_open),
@@ -1822,6 +1827,18 @@ class TkPanelView(PanelView):
             self._tiers[3] = tk.Frame(holder, background=theme.SURFACE)
             self._tiers[3].pack(side="left", fill="x", expand=True)
         return self._tiers[min(tier, 3)]
+
+    def _show_opener(self):
+        """The tier-2 disclosure at the foot of the tier-1 body (K3)."""
+        opener = self._disclosures.get(2)
+        if opener is None:
+            return
+        try:
+            opener.frame.pack(side="top", anchor="w", padx=self._inset,
+                              pady=(SPACE[3], 0), after=self._tiers[1])
+        except Exception as exc:
+            events.debug("Disclosure Not Shown", f"{self.name}: {exc}",
+                         source=SOURCE, exception=exc)
 
     def set_disclosure(self, tier, is_open):
         """Open or close a tier; remembered for the model for the session."""
@@ -1845,9 +1862,13 @@ class TkPanelView(PanelView):
             opener.set_open(is_open)
         target = self._well if tier == 2 else self._diagnostics
         try:
-            if is_open:
+            if is_open and tier == 2:
+                # Directly under its press, no gap (K3).
                 target.pack(side="top", fill="x", padx=self._inset,
-                            pady=(SPACE[3], SPACE[3]) if tier == 2 else (SPACE[2], 0))
+                            pady=(0, SPACE[3]), after=self._disclosures[2].frame)
+            elif is_open:
+                target.pack(side="top", fill="x", padx=self._inset,
+                            pady=(SPACE[2], 0))
             else:
                 target.pack_forget()
         except Exception as exc:

@@ -124,6 +124,9 @@ class FakeWidget:
     def grid_remove(self):
         self.grid_info = None
 
+    def grid_forget(self):
+        self.grid_info = None
+
     def pack_forget(self):
         self.is_packed = False
 
@@ -3814,3 +3817,44 @@ def test_no_colour_is_made_in_the_view():
     assert "mix(" not in code
     for name in re.findall(r"theme\.([A-Z_]+)\b", code):
         assert hasattr(theme, name), name
+
+
+# ---------------------------------------------------------------------------
+# K (2026-09-26): the disclosure where it opens (K3); Overview and the device
+# page (K4)
+# ---------------------------------------------------------------------------
+
+def _ancestors(widget):
+    while widget is not None:
+        yield widget
+        widget = widget.master
+
+
+def test_k3_the_tier_two_disclosure_is_at_the_foot_of_the_body_not_the_head(tiered):
+    """K3: the press and what it reveals were a screen apart - the
+    disclosure sat in the head, the well under the whole body. It is the
+    last thing in the tier-1 body, left-aligned, and the well follows it
+    with no gap; it is reached after the tier-1 controls."""
+    view, _panel = tiered
+    opener = view._disclosures[2]
+    assert view._head not in list(_ancestors(opener.frame)), "not in the head"
+    assert opener.frame.master is view._body
+    order = view._body.children
+    tier_one = view._tiers[1]
+    assert order.index(tier_one) < order.index(opener.frame) < order.index(view._well), \
+        "tier 1, then the disclosure, then its well (and the focus order with it)"
+    packed = [kwargs for widget, kwargs in PACK_ORDER if widget is opener.frame]
+    assert packed and packed[-1].get("anchor") == "w", "left-aligned"
+    view.set_disclosure(2, True)
+    packed = [kwargs for widget, kwargs in PACK_ORDER if widget is view._well]
+    assert packed[-1].get("after") is opener.frame, "directly beneath its press"
+    pady = packed[-1].get("pady") or (0, 0)
+    assert pady[0] == 0, "no gap between the press and the well"
+
+
+def test_k3_the_disclosure_says_the_schemas_words(tiered):
+    view, panel = tiered
+    words = next(section["disclosure"] for section in panel.schema["sections"]
+                 if section.get("tier") == 2)
+    assert view._disclosures[2].widget.cget("text") == f"\u25b8 {words}"
+
