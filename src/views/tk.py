@@ -1190,25 +1190,27 @@ def _confirm(master, prompt):
 
 
 class _Mushroom:
-    """The stop object: a round signal-red disc with a darker ring and a
-    highlight sunk into its top, reading `Stop`, or `Clear` once latched.
+    """The stop object: A's disc (E, 2026-09-25) - a signal-red face with a
+    red ring around it and a gap of the rail between, reading `Stop`, or
+    `Clear` once latched, in white.
 
-    The same object as the Web view's mushroom. It is never dimmed; latched,
-    its ring turns the trace colour and it breathes ONCE, on the edge, not
-    for as long as the latch stays closed. A Canvas, because a round control
-    is the one shape Tk's widgets do not have, and because `tk.Button`
-    ignores its colours on Aqua anyway.
+    ALWAYS red: it does not go quiet while nothing moves, and it is never
+    dimmed. Latched, the face reads `Clear` and the ring thickens (theme
+    `STOP["ring"]` -> `["ring_latched"]`); it breathes ONCE, on the edge,
+    not for as long as the latch stays closed. A Canvas, because a round
+    control is the one shape Tk's widgets do not have, and because
+    `tk.Button` ignores its colours on Aqua anyway.
 
-    Its diameter comes from its face font (F7): a fixed 64 px disc cut
-    "Clear" off at 28 pt. It is redrawn only when something it shows changes
-    (F21): the dashboard syncs it five times a second and it was rebuilding
-    every canvas item each time.
+    Its diameter comes from its face font (F7): the face is the numeral face
+    at a quarter of the design diameter, scaled with `--font-size`, and the
+    disc grows until "Clear" fits inside the ring. It is redrawn only when
+    something it shows changes (F21).
     """
 
-    def __init__(self, master, on_press, background, face_step=STEP_1,
-                 floor=STOP_DIAMETER):
-        self.face_step = face_step
-        self.diameter = self.diameter_for(face_step, floor)
+    def __init__(self, master, on_press, background, narrow=False):
+        floor = STOP_DIAMETER_NARROW if narrow else STOP_DIAMETER
+        self.face_font = _numeral_font(round(STOP_DIAMETER * STOP_FACE_RATIO))
+        self.diameter = self.diameter_for(self.face_font, floor)
         self.on_press = on_press
         self.background = background
         self.face = STOP_FACE
@@ -1223,7 +1225,7 @@ class _Mushroom:
         self.canvas = tk.Canvas(master, width=self.size, height=self.size,
                                 background=background, highlightthickness=0,
                                 takefocus=1, cursor="hand2")
-        self.tooltip = _Tooltip(self.canvas, above=True, bind=False)
+        self.tooltip = _Tooltip(self.canvas, above=False, bind=False)
         bindings = (("<Button-1>", self._on_press), ("<Return>", self._on_press),
                     ("<KP_Enter>", self._on_press), ("<space>", self._on_press),
                     ("<Enter>", lambda _e: self._set_flag("is_hovered", True)),
@@ -1236,17 +1238,17 @@ class _Mushroom:
 
     # -- size --------------------------------------------------------------
     @staticmethod
-    def ring_width(diameter):
-        return max(3, round(diameter * 0.07))
+    def ring_width(diameter=None):
+        """How far the face sits inside the disc's edge at its widest ring:
+        the latched ring and the gap, at the current font size."""
+        return _design_px(theme.STOP["ring_latched"]) + _design_px(theme.STOP["gap"])
 
     @classmethod
-    def diameter_for(cls, face_step, floor):
+    def diameter_for(cls, font, floor):
         """The smallest disc, from `floor` up, whose face - both words, with
-        their line height - sits inside the highlight arc with room to
-        spare."""
-        font = _font(face_step, bold=True)
+        their line height - sits inside the ring with room to spare."""
         half_width = max(_width_px(font, CLEAR_FACE), _width_px(font, STOP_FACE)) / 2
-        half_height = _line_px(face_step, bold=True) * 0.4
+        half_height = abs(font[1]) * 0.45
         corner = math.hypot(half_width, half_height) + SPACE[0]
         diameter = int(floor)
         while corner > diameter / 2 - cls.ring_width(diameter) - SPACE[0]:
@@ -1264,8 +1266,8 @@ class _Mushroom:
         return "break"
 
     def _set_flag(self, name, value):
-        """Hover and keyboard focus: the ring lightens under the pointer and
-        a focus ring in ink shows where Return / Space will land."""
+        """Hover and keyboard focus: the ring steps out a pixel under the
+        pointer and a focus ring in ink shows where Return / Space land."""
         if name == "is_hovered":
             (self.tooltip.enter if value else self.tooltip.leave)()
         if getattr(self, name) == value:
@@ -1289,6 +1291,12 @@ class _Mushroom:
             self.cancel()
             self.scale = 1.0
         self.draw()
+
+    @property
+    def ring(self):
+        """The ring's width now: thicker once latched."""
+        key = "ring_latched" if self.is_latched else "ring"
+        return _design_px(theme.STOP[key]) + (1 if self.is_hovered else 0)
 
     def pulse(self):
         self.cancel()
@@ -1326,30 +1334,22 @@ class _Mushroom:
         self.draws += 1
         centre = self.size / 2
         radius = self.diameter / 2 * self.scale
-        ring = self.ring_width(self.diameter)
-        if self.is_latched:
-            ring_colour = theme.TRACE
-        elif self.is_hovered:
-            ring_colour = theme.mix(theme.SIGNAL, theme.TEXT, 0.25)
-        else:
-            ring_colour = theme.mix(theme.SIGNAL, theme.BACKGROUND, 0.45)
+        ring = self.ring
+        face = radius - ring - _design_px(theme.STOP["gap"])
         try:
             if self.is_focused:
                 reach = radius + SPACE[1]
                 canvas.create_oval(centre - reach, centre - reach,
                                    centre + reach, centre + reach,
                                    outline=theme.STOP_FOCUS, width=FOCUS_PX)
-            canvas.create_oval(centre - radius + ring / 2, centre - radius + ring / 2,
-                               centre + radius - ring / 2, centre + radius - ring / 2,
-                               fill=theme.SIGNAL, outline=ring_colour, width=ring)
-            inset = ring + SPACE[0]
-            canvas.create_arc(centre - radius + inset, centre - radius + inset,
-                              centre + radius - inset, centre + radius - inset,
-                              start=35, extent=110, style="arc", width=1,
-                              outline=theme.mix(theme.SIGNAL, theme.TEXT, 0.35))
+            edge = radius - ring / 2
+            canvas.create_oval(centre - edge, centre - edge, centre + edge,
+                               centre + edge, outline=theme.SIGNAL, width=ring)
+            canvas.create_oval(centre - face, centre - face, centre + face,
+                               centre + face, fill=theme.SIGNAL,
+                               outline=theme.SIGNAL)
             canvas.create_text(centre, centre, text=self.face,
-                               fill=theme.colors("danger")[1],
-                               font=_font(self.face_step, bold=True))
+                               fill=theme.colors("danger")[1], font=self.face_font)
         except Exception as exc:
             events.debug("Stop Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
@@ -2612,19 +2612,40 @@ class TkPanelView(PanelView):
 
     def _make_toggle(self, container, element):
         """A two-state command. A model's own stop (`is_estopped`) is not a
-        button at all: it is the stop object, the same disc as the
-        dashboard's, bench-sized, reading `Stop` / `Clear`."""
+        button: it is a small switch (E, tier 3) with its state in words
+        beside it; the rail's disc is the stop an operator reaches for."""
         if element.get("model_attr") == "is_estopped":
             parent, place = self._field(container, element)
-            disc = _Mushroom(parent, lambda el=element: self._on_mushroom_pressed(el),
-                             background=_page(), face_step=SMALL,
-                             floor=MINI_STOP_DIAMETER)
-            place(disc.canvas, "mark")
-            self._register(element, widget=disc.canvas, mushroom=disc)
+            switch = _Switch(parent, lambda el=element: self._on_switch_pressed(el),
+                             background=_bg(parent))
+            place(switch.canvas, "mark")
+            words = tk.Label(parent, text=_label(element.get("false_text", "")),
+                             font=_font(), background=_bg(parent),
+                             foreground=theme.TEXT)
+            place(words, "mark")
+            tooltip = _Tooltip(switch.canvas)
+            tooltip.text = str(element.get("tooltip") or "")
+            self._register(element, widget=switch.canvas, switch=switch,
+                           words=words, tooltip=tooltip)
+            return
+        if self._needs_caption(element) and self._cursor(container)["layout"] == "cells":
+            # "Off" alone does not say what is off: the caption goes over it
+            # ("Sync X"), as over a field.
+            parent, place = self._field(container, element)
+            place(self._button_label(parent, element, lambda el: self._run_toggle(el),
+                                     text=element.get("false_text", "")), "mark")
             return
         parent, place = self._command_slot(container, element)
         place(self._button_label(parent, element, lambda el: self._run_toggle(el),
                                  text=element.get("false_text", "")))
+
+    @staticmethod
+    def _needs_caption(element):
+        """A toggle whose state words do not name it ("On" / "Off" under
+        "Sync X") needs its caption; "Enter autonomous mode" names itself."""
+        caption = _label(element.get("text", "")).split(" ")
+        words = f"{element.get('true_text', '')} {element.get('false_text', '')}".lower()
+        return bool(caption[0]) and caption[0].lower() not in words
 
     def _make_checkbox(self, container, element):
         """A tick box (G3): a `ttk.Checkbutton` on a BooleanVar.
@@ -2662,7 +2683,7 @@ class TkPanelView(PanelView):
             return None
         return self._run_checkbox(element)
 
-    def _on_mushroom_pressed(self, element):
+    def _on_switch_pressed(self, element):
         if not self._entry_for(element).get("is_enabled", True):
             return None
         return self._run_toggle(element)
@@ -3290,6 +3311,29 @@ class TkPanelView(PanelView):
                 entry["colors"] = None
                 self._style_readout(element, entry.get("shown_text", ""))
 
+    def set_unconfirmed(self, is_unconfirmed):
+        """This model's stop did not confirm (E): a signal head rule and the
+        words "Stop not confirmed. Treat as live." at its own entry, for as
+        long as the latch it describes."""
+        is_unconfirmed = bool(is_unconfirmed)
+        if is_unconfirmed == self._is_unconfirmed:
+            return
+        self._is_unconfirmed = is_unconfirmed
+        try:
+            self._mark.delete("all")
+            if is_unconfirmed:
+                size = _lamp_px()
+                self._mark.create_rectangle(2, 2, size - 2, size - 2,
+                                            fill=theme.SIGNAL, outline=theme.SIGNAL)
+                self._mark_row.pack(fill="x", padx=self._inset, pady=(0, GAP),
+                                    after=self._head)
+            else:
+                self._mark_row.pack_forget()
+        except Exception as exc:
+            events.debug("Unconfirmed Mark Failed", str(exc), source=SOURCE,
+                         exception=exc)
+        self._paint_health()
+
     def _confirm(self, prompt):
         return _confirm(self.frame, prompt)
 
@@ -3432,53 +3476,66 @@ class TkDashboard(Dashboard):
 
     REFRESH_MS = 200
     SETUP_TAB = "Setup"
+    SHEET_TAB = "Models"
+    QUIT_PROMPT = ("Quit the station? This stops every model, closes every port "
+                   "and exits.")
 
     def __init__(self, controller, setup):
         super().__init__(controller, setup)
         self._panels = {}       # name -> TkPanelView
-        self._frames = {}       # name -> the tab frame
+        self._frames = {}       # name -> its frame: Setup's page, a model's entry
         self._menu_vars = {}    # name -> BooleanVar in the Models menu
         self._after_id = None
         self._is_focused = None
         self._is_setup_collapsed = False
+        self._is_opening = False
         self._setup_menu = None      # the "Show Setup" menu, once built
         self._menubar = None         # the menubar every log window wears too (I7)
         self._alerts = []            # unacknowledged needs_ack events
         self._station_text = None
+        self._sim_text = None
+        self._opened = None          # the model the sheet leads with
+        self._shown_page = self.SETUP_TAB
+        self._sheet_key = None
+        self._sheet_rows = []
+        self._rail_items = {}        # name -> (ring, label)
+        self._unconfirmed = set()    # models whose last stop did not confirm
+        self._is_tray_open = False
+        self._tray_count = 0         # lines in the tray's history
+        self._images = []            # PhotoImages ttk draws with (kept alive)
+        self._is_narrow = None
 
         self.root = tk.Tk()
         self.root.title("Transfer Station")
-        self.root.geometry("1100x850")
+        self.root.geometry("1400x900")
         self.root.configure(background=theme.BACKGROUND)
         try:
             self.root.minsize(720, 520)
         except Exception:
             pass
+        _resolve_families(self.root)
         self._configure_styles()
 
-        # Pack order is allocation order, and the notebook is the one widget
-        # here that expands: everything it must never push off the window is
-        # packed BEFORE it. The stop went off the bottom of the screen the
-        # first time a tall panel opened, which is a stop control the
-        # operator cannot reach — the worst defect this view can have. The
-        # toolbar takes its strip at the top, the stop bar and the event log
-        # take theirs at the bottom, and the notebook gets what is left.
-        # The alert band is built with them and packed directly above the
-        # stop bar only while an error waits: an error never covers, dims or
-        # blocks the stop (F1).
-        self._build_toolbar()
-        self._build_stop_button()
-        self._build_alert_band()
+        # Pack order is allocation order. The rail is packed FIRST, on the
+        # left, and the stop is the first thing in it: nothing the sheet
+        # holds can push the stop off the window (the stop once went off the
+        # bottom of the screen the first time a tall panel opened). In the
+        # main column the tray and the alert band take their strips at the
+        # bottom before the notebook - the one widget that expands - gets
+        # what is left. An error never covers, dims or blocks the stop (F1).
+        self._build_rail()
+        self._main = tk.Frame(self.root, background=theme.BACKGROUND)
+        self._main.pack(side="left", fill="both", expand=True)
         self._build_event_panel()
+        self._build_alert_band()
 
-        self.notebook = ClosableNotebook(self.root, on_close_tab=self._on_tab_close)
-        self.notebook.pack(side="top", fill="both", expand=True,
-                           padx=PAD, pady=(GAP, 0))
-        try:
-            # Control-Tab moves between tabs, and the tab strip takes focus.
-            self.notebook.enable_traversal()
-        except Exception:
-            pass
+        self.notebook = ClosableNotebook(self._main, on_close_tab=self._on_tab_close)
+        self.notebook.pack(side="top", fill="both", expand=True)
+        self._sheet_page = ttk.Frame(self.notebook)
+        self._sheet = _Sheet(self._sheet_page)
+        self._sheet.frame.pack(fill="both", expand=True)
+        self._build_headline()
+        self.notebook.add(self._sheet_page, text=self.SHEET_TAB)
         self._bind_stop_keys()
 
         self._build_menu_bar()
@@ -3488,6 +3545,7 @@ class TkDashboard(Dashboard):
         # window focus change.
         self.root.bind("<FocusIn>", self._on_window_focus)
         self.root.bind("<FocusOut>", self._on_window_focus)
+        self.root.bind("<Configure>", self._on_window_resized, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._hook_os_quit()
 
@@ -3674,44 +3732,65 @@ class TkDashboard(Dashboard):
     def _on_stop_key(self, _event=None):
         events.debug("Stop Key", "the stop shortcut was pressed", source=SOURCE)
         if not self.controller.is_estopped:
-            self.controller.estop_all()
+            self._note_stop(self.controller.estop_all())
         self._sync_stop_button()
         return "break"
 
+    def _note_stop(self, results):
+        """Which models did not confirm THIS stop (E): each is marked at its
+        own entry until the latch clears."""
+        if isinstance(results, dict):
+            self._unconfirmed = {name for name, ok in results.items() if not ok}
+            for name, view in self._panels.items():
+                if name != self.SETUP_TAB:
+                    view.set_unconfirmed(name in self._unconfirmed)
+        return results
+
+    # -- the alert band and the tray -----------------------------------------
     def _build_alert_band(self):
-        """Errors that need acknowledging, listed by source, beside the stop
-        and never over it (F1, HC-2). It replaces `messagebox.showerror`,
-        which was application-modal: five queued errors made five dialogs,
-        and the stop could not take a click while one was up."""
-        self._band = tk.Frame(self.root, background=theme.BACKGROUND)
+        """Errors that need acknowledging, listed by source, under the sheet
+        and never over the stop (F1, HC-2). It replaces
+        `messagebox.showerror`, which was application-modal: five queued
+        errors made five dialogs, and the stop could not take a click while
+        one was up."""
+        self._band = tk.Frame(self._main, background=theme.BACKGROUND,
+                              padx=SPACE[10], pady=SPACE[3])
         size = _lamp_px()
         self._band_mark = tk.Canvas(self._band, width=size, height=size,
                                     background=theme.BACKGROUND, highlightthickness=0)
-        self._band_mark.pack(side="left", anchor="n", padx=(INSET, SPACE[2]),
-                             pady=SPACE[3])
+        self._band_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]),
+                             pady=SPACE[1])
         self._band_ack = _Press(self._band, "Acknowledge", self._acknowledge,
                                 theme.BACKGROUND)
-        self._band_ack.frame.pack(side="right", anchor="n", padx=(SPACE[3], INSET),
-                                  pady=SPACE[1])
+        self._band_ack.frame.pack(side="right", anchor="n", padx=(SPACE[3], 0))
         self._band_text = tk.Label(self._band, text="", font=_font(), anchor="w",
                                    justify="left", wraplength=720,
                                    background=theme.BACKGROUND,
                                    foreground=theme.TEXT)
-        self._band_text.pack(side="left", fill="x", expand=True, pady=SPACE[1])
+        self._band_text.pack(side="left", fill="x", expand=True)
         self._band.bind("<Configure>", self._on_band_resized)
         try:
-            self._band_mark.create_oval(2, 2, size - 2, size - 2,
-                                        fill=theme.SIGNAL, outline=theme.SIGNAL)
+            self._band_mark.create_rectangle(2, 2, size - 2, size - 2,
+                                             fill=theme.SIGNAL, outline=theme.SIGNAL)
         except Exception:
             pass
 
     def _on_band_resized(self, event=None):
+        """The band's words wrap in what the mark and Acknowledge leave."""
         width = getattr(event, "width", 0)
-        if isinstance(width, int) and width > SPACE[6] * 10:
-            try:
-                self._band_text.configure(wraplength=width - SPACE[6] * 8)
-            except Exception:
-                pass
+        if not isinstance(width, int) or width <= SPACE[6] * 10:
+            return
+        try:
+            button = self._band_ack.frame.winfo_reqwidth()
+        except Exception:
+            button = SPACE[10] * 3
+        if not isinstance(button, int):
+            button = SPACE[10] * 3
+        room = width - 2 * SPACE[10] - button - _lamp_px() - 3 * SPACE[3]
+        try:
+            self._band_text.configure(wraplength=max(SPACE[10] * 4, room))
+        except Exception:
+            pass
 
     @property
     def is_alert_shown(self):
@@ -3873,8 +3952,12 @@ class TkDashboard(Dashboard):
         events.debug("View Opening", "Tk dashboard", source=SOURCE)
         self._add_setup_panel()
         super().open()               # subscribe BEFORE anything can publish
-        for name in self.controller.model_names:
-            self._add_panel(name)
+        self._is_opening = True
+        try:
+            for name in self.controller.model_names:
+                self._add_panel(name)
+        finally:
+            self._is_opening = False
         self._schedule_refresh()
         events.info("Dashboard Open", "Tk dashboard ready", source=SOURCE)
         self.root.mainloop()
@@ -3888,20 +3971,37 @@ class TkDashboard(Dashboard):
 
     def _log_window_bounds(self):
         """What a panel's detached log window must not cover (the notebook:
-        tabs and page) and where it may go when the screen has no room
+        Setup or the sheet) and where it may go when the screen has no room
         outside the station window (the event tray). I1."""
         return {"page": _rect_of(self.notebook),
                 "free": _rect_of(getattr(self, "_tray", None))}
 
     def _add_setup_panel(self):
+        """Setup's page: its headline, then its one table (E: restyled, the
+        Launch box first, the Launch row pinned)."""
         frame = ttk.Frame(self.notebook)
         view = TkPanelView(frame, self.controller, self.SETUP_TAB, panel=self.setup)
         view.log_window_bounds = self._log_window_bounds
         view.share_menubar(self._menubar)
-        view.frame.pack(fill="both", expand=True)
-        self.notebook.add(frame, text=self.SETUP_TAB)
+        try:
+            view._rule.pack_forget()
+            view._title.configure(font=_numeral_font(44))
+        except Exception:
+            pass
+        view.frame.pack(fill="both", expand=True, padx=SPACE[8], pady=(SPACE[6], 0))
+        try:
+            # Setup's page comes first, before the sheet.
+            self.notebook.insert(0, frame, text=self.SETUP_TAB)
+        except Exception:
+            self.notebook.add(frame, text=self.SETUP_TAB)
+        try:
+            self.notebook.select(frame)
+        except Exception:
+            pass
+        self._shown_page = self.SETUP_TAB
         self._panels[self.SETUP_TAB] = view
         self._frames[self.SETUP_TAB] = frame
+        self._paint_rail()
 
     def close(self):
         """Unsubscribe first, then tear the widgets down.
@@ -3950,29 +4050,47 @@ class TkDashboard(Dashboard):
     def _sync_stop_button(self):
         """Face and ring follow `Controller.is_estopped`, so the control says
         what it will do rather than what it did; the disc breathes once on
-        the edge where the latch closes. Nothing is redrawn or reconfigured
-        while the latch holds still (F21)."""
+        the edge where the latch closes; the rail says the latch holds and
+        the sheet's head says every model is stopped. Nothing is redrawn or
+        reconfigured while the latch holds still (F21)."""
         is_estopped = bool(self.controller.is_estopped)
         if self._stop.is_latched == is_estopped:
             return
         events.debug("Stop Button Changed",
                      CLEAR_FACE if is_estopped else STOP_FACE, source=SOURCE)
         self._stop.set_latched(is_estopped)
-        hint = self._hint(is_estopped)
-        self._stop.tooltip.text = hint
+        self._stop.tooltip.text = self._hint(is_estopped)
+        if not is_estopped and self._unconfirmed:
+            # "Not confirmed" describes a latch; with the latch gone, so is it.
+            self._note_stop({name: True for name in self._unconfirmed})
         try:
-            self._stop_hint.configure(text=hint)
+            if is_estopped:
+                self._latched_row.pack(side="top", fill="x", after=self._stop_hint,
+                                       pady=(0, SPACE[4]))
+                first = self._sheet_rows[0] if self._sheet_rows else None
+                if first is not None:
+                    self._headline.pack(side="top", fill="x", pady=(0, SPACE[8]),
+                                        before=first)
+                else:
+                    self._headline.pack(side="top", fill="x", pady=(0, SPACE[8]))
+            else:
+                self._latched_row.pack_forget()
+                self._headline.pack_forget()
+            self._is_headline_shown = is_estopped
         except Exception as exc:
             events.debug("Stop Button Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
 
     def _sync_station_line(self):
-        """Name every model whose link is lost, and the device, beside the
-        stop - the one line the operator's eye passes on the way to it."""
+        """Name every model whose link is lost, and the device, in the rail
+        under the stop - the one place the operator's eye passes on the way
+        to it. And say "Simulation, no hardware attached" while every open
+        model's hardware is the simulator."""
         lost = [(name, view.lost_devices) for name, view in self._panels.items()
                 if getattr(view, "lost_devices", ())]
         text = "; ".join(f"{name}: {_device_list(devices)} connection lost"
                          for name, devices in lost)
+        self._sync_sim_line()
         if text == self._station_text:
             return
         self._station_text = text
@@ -3981,58 +4099,87 @@ class TkDashboard(Dashboard):
             self._station_line.configure(text=text)
             self._station_mark.delete("all")
             if text:
-                self._station_mark.create_oval(2, 2, size - 2, size - 2,
-                                               fill=theme.SIGNAL, outline=theme.SIGNAL)
+                self._station_mark.create_rectangle(2, 2, size - 2, size - 2,
+                                                    fill=theme.SIGNAL,
+                                                    outline=theme.SIGNAL)
+                self._station_row.pack(side="top", fill="x", before=self._model_list,
+                                       pady=(0, SPACE[4]))
+            else:
+                self._station_row.pack_forget()
         except Exception as exc:
             events.debug("Station Line Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
 
+    #: Devices that are hardware links; a gamepad or the screen is not.
+    LINK_DEVICES = ("SerialPort", "SMC100")
+
+    def _sync_sim_line(self):
+        statuses = []
+        for name, view in self._panels.items():
+            if name == self.SETUP_TAB:
+                continue
+            devices = (getattr(view, "_last_state", None) or {}).get("devices") or {}
+            statuses += [str(status) for device, status in devices.items()
+                         if device in self.LINK_DEVICES]
+        text = (SIMULATION_LINE if statuses and all(status == "simulated"
+                                                    for status in statuses) else "")
+        if text == self._sim_text:
+            return
+        self._sim_text = text
+        try:
+            self._sim_line.configure(text=text)
+            if text:
+                self._sim_line.pack(fill="x")
+            else:
+                self._sim_line.pack_forget()
+        except Exception:
+            pass
+
     def _on_stop_clicked(self, _event=None):
-        return self.toggle_estop_all()
+        return self._note_stop(self.toggle_estop_all())
 
     # -- panels ------------------------------------------------------------
     def _add_panel(self, name):
         if name in self._panels:
             return
-        frame = ttk.Frame(self.notebook)
-        view = TkPanelView(frame, self.controller, name)
+        view = TkPanelView(self._sheet.body, self.controller, name, sheet=self._sheet)
         view.log_window_bounds = self._log_window_bounds
-        view.frame.pack(fill="both", expand=True)
-        self.notebook.add(frame, text=name)
         self._panels[name] = view
-        self._frames[name] = frame
-        try:
+        self._frames[name] = view.frame
+        self._build_menu_bar()
+        self._build_rail_list()
+        if self._is_opening:
+            self._lay_out_sheet()
+        else:
             # A model opened or reopened is brought forward: the Models menu
             # reopen used to change nothing on screen (AUD-13).
-            self.notebook.select(frame)
-        except Exception as exc:
-            events.debug("Tab Not Selected", str(exc), source=SOURCE,
-                         exception=exc)
-        self._build_menu_bar()
-        events.debug("Tab Opened", name, source=SOURCE)
+            self.show_model(name)
+        events.debug("Entry Opened", name, source=SOURCE)
 
     def _remove_panel(self, name):
         if name not in self._panels:
             return
         self._destroy_panel(name)
+        self._unconfirmed.discard(name)
         self._build_menu_bar()
-        events.debug("Tab Closed", name, source=SOURCE)
+        self._build_rail_list()
+        self._lay_out_sheet()
+        events.debug("Entry Closed", name, source=SOURCE)
         if self._is_setup_collapsed and not any(
                 other != self.SETUP_TAB for other in self._panels):
-            # An empty notebook is a dead end. The next step from "no model
+            # An empty sheet is a dead end. The next step from "no model
             # is open" is Setup, so Setup comes back rather than a blank page.
             self.restore_setup()
 
-    # -- the Setup tab, minimised and brought back -------------------------
+    # -- the Setup page, minimised and brought back --------------------------
     def _collapse_setup(self):
         """`Dashboard` calls this when the first model launches: the wizard
-        has done its job and the models want the window.
+        has done its job and the models want the window. A press on a model
+        in the rail does the same.
 
-        The tab is *hidden*, never destroyed — the panel view keeps its
+        The page is *hidden*, never destroyed — the panel view keeps its
         widgets, its state and its refresh tick, so Refresh and Launch work
-        the moment it comes back. Destroying it and rebuilding on demand
-        would be a second construction path for a panel that already exists,
-        and VIEW-TKINTER-1 is what a one-way removal costs.
+        the moment it comes back.
         """
         frame = self._frames.get(self.SETUP_TAB)
         if frame is None or self._is_setup_collapsed:
@@ -4111,7 +4258,7 @@ class TkDashboard(Dashboard):
             except Exception as exc:
                 events.debug("Panel Close Failed", f"{name}: {exc}", source=SOURCE,
                              exception=exc)
-        if frame is not None:
+        if frame is not None and name == self.SETUP_TAB:
             for step in (lambda: self.notebook.forget(frame), frame.destroy):
                 try:
                     step()
@@ -4119,8 +4266,9 @@ class TkDashboard(Dashboard):
                     pass
 
     def _on_tab_close(self, index):
-        """A tab close destructs the model (`Controller.remove`): estop, close,
-        drop. The Models menu reopens it from the remembered config."""
+        """A close gesture on a page. Only models close, and a model is not a
+        page any more (its line in the rail takes the gesture): Setup and
+        the sheet cannot be closed."""
         name = self._name_at(index)
         if name is None or name == self.SETUP_TAB:
             return
