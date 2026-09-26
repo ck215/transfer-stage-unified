@@ -2566,19 +2566,50 @@ class TkPanelView(PanelView):
         return room
 
     def _make_entry(self, container, element):
+        """A field: a well in the other ground (panel-toned on the sheet,
+        sheet-toned inside a panel well), no box, a muted underline, the
+        number right-aligned; focus is the 2 px ink ring (F25).
+
+        An entry with `slider` (E) gets a `ttk.Scale` BESIDE it - never
+        instead: the entry keeps the precision, the slider is the common
+        adjustment. Moving the slider writes the entry's text; releasing it
+        commits that text through the Controller like Return does; typing
+        or a refresh moves the slider. Every command still carries the
+        entry's text (D-5)."""
         parent, place = self._field(container, element)
+        background = _bg(parent)
         var = tk.StringVar(value="")
-        # The well's border is 3:1 on the panel and focus is a 2 px ink
-        # ring around it (F25): a 1 px trace ring was the only focus mark.
-        ring = _Ring(parent, _page())
+        scale = None
+        travel = element.get("slider")
+        if travel:
+            low, high = travel
+            # The slider wears the same 2 px ink focus ring as the entry;
+            # the arrow keys move it, and their release commits.
+            track = _Ring(parent, background, border=background)
+            scale = ttk.Scale(track.inner, from_=low, to=high, orient="horizontal",
+                              style=WELL_SCALE_STYLE if background == theme.SURFACE
+                              else SCALE_STYLE, length=_design_px(VALUE_PX),
+                              takefocus=1,
+                              command=lambda value, el=element: self._on_slider_moved(
+                                  el, value))
+            scale.pack(fill="both", expand=True)
+            place(track.outer, "mark")
+            scale.bind("<FocusIn>", lambda _e, r=track: r.paint(True), add="+")
+            scale.bind("<FocusOut>", lambda _e, r=track: r.paint(False), add="+")
+            scale.bind("<ButtonRelease-1>",
+                       lambda _e, el=element: self._on_entry_commit(el), add="+")
+            scale.bind("<KeyRelease>",
+                       lambda _e, el=element: self._on_entry_commit(el), add="+")
+        ring = _Ring(parent, background, underline=True)
         widget = tk.Entry(ring.inner, textvariable=var, font=_font(),
                           width=FIELD_WIDTH, justify="right", relief="flat",
                           borderwidth=0, highlightthickness=0,
-                          background=theme.WELL, foreground=theme.TEXT,
+                          background=_counter(background), foreground=theme.TEXT,
                           insertbackground=theme.TEXT,
-                          disabledbackground=_page(),
+                          disabledbackground=theme.DISABLED[0],
                           disabledforeground=theme.DISABLED[1])
-        widget.pack(fill="both", expand=True, ipady=max(0, _target_pady() - GAP))
+        widget.pack(fill="both", expand=True, ipady=max(0, _target_pady() - GAP),
+                    ipadx=SPACE[1])
         if element.get("value_type") in ("int", "float"):
             self._attach_validator(widget, element)
         place(ring.outer, "field")
@@ -2586,17 +2617,54 @@ class TkPanelView(PanelView):
         widget.bind("<FocusIn>", lambda _e, r=ring: r.paint(True))
         widget.bind("<FocusOut>", lambda _e, el=element, r=ring:
                     (r.paint(False), self._on_entry_commit(el)))
-        unit = element.get("unit")
-        if unit and self._cursor(container)["layout"] == "column":
-            tk.Label(parent, text=unit, font=_font(SMALL), anchor="w",
-                     background=_page(), foreground=theme.MUTED
-                     ).grid(row=self._cursor(container)["last_row"], column=2,
-                            sticky="w", padx=(GAP, 0))
-        elif unit:
-            tk.Label(parent, text=unit, font=_font(SMALL), background=_page(),
-                     foreground=theme.MUTED).pack(side="left", padx=(0, PAD))
+        if scale is not None:
+            widget.bind("<KeyRelease>", lambda _e, el=element: self._sync_slider(el),
+                        add="+")
         self._register(element, widget=widget, var=var, last_text="",
-                       cell=ring.outer, ring=ring)
+                       cell=ring.outer, ring=ring, scale=scale, underline=ring.line)
+        strip = self._entry_for(element).get("strip")
+        if scale is not None and id(strip) in self._flows:
+            self._flows[id(strip)].setdefault("sliders", []).append(element)
+
+    def _on_slider_moved(self, element, value):
+        """The slider writes the entry: an int field gets a whole number."""
+        entry = self._entry_for(element)
+        var = entry.get("var")
+        if var is None or entry.get("is_syncing"):
+            return
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return
+        text = (str(int(round(number))) if element.get("value_type") == "int"
+                else f"{number:.{int(element.get('decimals') or 0)}f}"
+                if element.get("decimals") is not None else f"{number:g}")
+        if var.get() != text:
+            var.set(text)
+            self._bounds_hint(element)
+
+    def _sync_slider(self, element, text=None):
+        """The entry moves the slider, clamped to the slider's travel. A text
+        that is not a number leaves the slider where it is."""
+        entry = self._entry_for(element)
+        scale, var = entry.get("scale"), entry.get("var")
+        travel = element.get("slider")
+        if scale is None or not travel:
+            return
+        if text is None:
+            text = var.get() if var is not None else ""
+        try:
+            number = float(text)
+        except (TypeError, ValueError):
+            return
+        low, high = travel
+        entry["is_syncing"] = True
+        try:
+            scale.set(max(low, min(high, number)))
+        except Exception:
+            pass
+        finally:
+            entry["is_syncing"] = False
 
     def _attach_validator(self, widget, element):
         try:
