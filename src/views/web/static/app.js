@@ -834,6 +834,7 @@ function renderIndicator(panel, element) {
 }
 
 function renderLogStream(panel, element) {
+  if (element.detached) return renderDetachedLog(panel, element);
   const node = row(element, 'wide');
   const feed = make('pre', 'feed');
   feed.dataset.empty = emptyText(element, element.source_command);
@@ -851,6 +852,120 @@ function renderLogStream(panel, element) {
     },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
+}
+
+/** A detached log stream (G4): a button in the element's place, opening ONE
+ *  non-modal panel that holds the feed. The panel is not an overlay - there
+ *  is no scrim, the page behind it stays live - and it sits under the rail
+ *  in z-order, so the stop is never covered (F1). Escape or Close shuts it
+ *  and gives focus back to the button (F12); pressing the button again
+ *  brings the open panel forward instead of making a second one. Its source
+ *  is polled only while it is open (PanelCard.wantsData), and it goes when
+ *  its card goes. */
+function renderDetachedLog(panel, element) {
+  const node = make('div', 'row opener');
+  const caption = sentenceCase(element.text || element.source_command || 'log');
+  const button = make('button', 'button role-neutral', caption + '…');
+  button.type = 'button';
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.setAttribute('aria-expanded', 'false');
+  node.appendChild(button);
+  const dashboard = panel.dashboard;
+  let win = null;
+  let feed = null;
+  let widget = null;
+
+  const isOpen = () => Boolean(win && !win.hidden && win.isConnected);
+
+  const build = () => {
+    controlSerial += 1;
+    const titleId = 'log-window-title-' + controlSerial;
+    win = make('section', 'log-window');
+    win.id = 'log-window-' + controlSerial;
+    win.setAttribute('role', 'dialog');
+    win.setAttribute('aria-modal', 'false');
+    win.setAttribute('aria-labelledby', titleId);
+    win.tabIndex = -1;
+    win.hidden = true;
+    const head = make('header', 'log-window-head');
+    const title = make('h2', 'log-window-title',
+                       sentence(panel.title || panel.name) + ' — ' + caption);
+    title.id = titleId;
+    title.setAttribute('translate', 'no');
+    const close = make('button', 'ghost log-window-close', 'Close');
+    close.type = 'button';
+    close.title = 'Close the ' + caption.toLowerCase() + ' (Escape)';
+    close.addEventListener('click', () => hide());
+    head.appendChild(title);
+    head.appendChild(close);
+    feed = make('pre', 'feed log-window-feed');
+    feed.dataset.empty = emptyText(element, element.source_command);
+    feed.tabIndex = 0;
+    feed.setAttribute('aria-label', caption);
+    win.appendChild(head);
+    win.appendChild(feed);
+    // Escape inside the panel closes it. The page's own Escape handler
+    // leaves a key that started in here to this one (Dashboard).
+    win.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      hide();
+    });
+    button.setAttribute('aria-controls', win.id);
+    document.body.appendChild(win);
+  };
+
+  const show = () => {
+    if (!win) build();
+    if (!isOpen()) {
+      win.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      if (dashboard) dashboard.openFloating(win);
+      // Not a second wait for the data cadence: it opens with its lines.
+      panel.loadData(widget);
+    } else if (dashboard) {
+      dashboard.raiseFloating(win);
+    }
+    win.focus({ preventScroll: true });
+  };
+
+  const hide = () => {
+    if (!isOpen()) return;
+    const hadFocus = win.contains(document.activeElement);
+    win.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+    if (dashboard) dashboard.closeFloating(win);
+    if (hadFocus || document.activeElement === document.body) {
+      if (dashboard) dashboard.restoreFocus(button, dashboard.dom.cards);
+      else button.focus({ preventScroll: true });
+    }
+  };
+
+  button.addEventListener('click', show);
+  widget = {
+    node,
+    dataCommand: element.source_command,
+    isOpen,
+    setData: (data) => {
+      if (!feed) return;
+      const text = ((data && data.lines) || []).join('\n');
+      if (feed.textContent === text) return;
+      feed.textContent = text;
+      feed.scrollTop = feed.scrollHeight;
+    },
+    setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
+    /** The card is going: so is its panel. */
+    dispose: () => {
+      if (!win) return;
+      const hadFocus = win.contains(document.activeElement);
+      if (dashboard) dashboard.closeFloating(win);
+      win.remove();
+      win = null;
+      feed = null;
+      if (hadFocus && dashboard) dashboard.restoreFocus(null, dashboard.dom.cards);
+    },
+  };
+  return widget;
 }
 
 function renderInternal(panel, element) {
@@ -1281,7 +1396,7 @@ class PanelCard {
       } else if (kind === 'toggle' || kind === 'indicator' || kind === 'checkbox') {
         widget.setOn(Boolean(this.values[attr]));
       } else if (kind === 'plot' || kind === 'image' || kind === 'log_stream') {
-        if (wantsData) this.loadData(widget);
+        if (wantsData && this.wantsData(widget)) this.loadData(widget);
       }
       widget.setEnabled(isEnabled(element, mode, this.values));
     }
@@ -1317,6 +1432,13 @@ class PanelCard {
   setAlert(text) {
     putText(this.alert, text);
     if (this.alert.hidden !== !text) this.alert.hidden = !text;
+  }
+
+  /** `PanelView._wants_data`: whether a data element is polled now. A
+   *  detached log (G4) only while its panel is open; everything else,
+   *  always. */
+  wantsData(widget) {
+    return widget.isOpen ? widget.isOpen() : true;
   }
 
   loadData(widget) {
@@ -1374,6 +1496,9 @@ class PanelCard {
   }
 
   close() {
+    for (const widget of this.widgets) {
+      if (widget.dispose) widget.dispose();
+    }
     this.widgets = [];
     if (this.node.parentNode) this.node.parentNode.removeChild(this.node);
   }
@@ -1423,6 +1548,9 @@ class Dashboard {
     this.ackQueue = [];
     this.confirmPending = null;
     this.isShutDown = false;
+    //: The open in-page panels (a detached log's, G4), oldest first. They sit
+    //: under the rail and above the rack, and go inert under an overlay.
+    this.floating = [];
     this.dom = {
       stop: document.getElementById('full-stop'),
       stopFace: document.querySelector('.mushroom-face'),
@@ -1480,6 +1608,10 @@ class Dashboard {
       if (event.key !== 'Escape') return;
       if (this.confirmPending) { event.preventDefault(); this.answerConfirm(false); return; }
       if (!this.dom.picker.hidden) { this.closeRegionPicker(); return; }
+      // An in-page panel answers its own Escape (G4): the drawer behind it
+      // does not also withdraw.
+      if (document.activeElement && document.activeElement.closest
+          && document.activeElement.closest('.log-window')) return;
       if (this.isDrawerOpen && this.dom.modal.hidden) this.setDrawerOpen(false);
     }, true);
     // Closing the tab silences the heartbeat, and 15 s later the watchdog
@@ -1562,6 +1694,36 @@ class Dashboard {
     setInert(this.dom.drawer, covered || !this.isDrawerOpen || gone);
     setInert(this.dom.closed, gone);
     for (const layer of overlays) setInert(layer, layer !== top);
+    for (const win of this.floating) setInert(win, covered || gone);
+  }
+
+  // -- in-page panels (G4) --------------------------------------------------
+  //
+  // Non-modal: nothing behind them goes inert and nothing is dimmed. Each
+  // new one is offset from the last so two open logs do not sit exactly on
+  // top of each other; the one brought forward is the last in the page, so
+  // it paints over the others at the same z-index.
+  openFloating(win) {
+    if (this.floating.indexOf(win) === -1) this.floating.push(win);
+    win.style.setProperty('--stack', String(this.floating.length - 1));
+    this.raiseFloating(win);
+    this.updateInert();
+  }
+
+  raiseFloating(win) {
+    const at = this.floating.indexOf(win);
+    if (at !== -1 && at !== this.floating.length - 1) {
+      this.floating.splice(at, 1);
+      this.floating.push(win);
+    }
+    if (win.parentNode && win.parentNode.lastElementChild !== win) {
+      win.parentNode.appendChild(win);
+    }
+  }
+
+  closeFloating(win) {
+    const at = this.floating.indexOf(win);
+    if (at !== -1) this.floating.splice(at, 1);
   }
 
   /** Put focus back where it came from, or on a sensible neighbour when

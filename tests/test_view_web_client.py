@@ -709,6 +709,40 @@ def test_consecutive_commands_are_one_action_group():
         "Setup's Launch row crowds its summary and four commands onto one line")
 
 
+def test_a_detached_log_is_a_button_and_is_polled_only_while_open():
+    """G4: `sch.log_stream(..., detached=True)` is drawn as a button that
+    opens an in-page panel, and its source is polled only while the panel is
+    open - `PanelView._wants_data`, mirrored as `PanelCard.wantsData`."""
+    stream = _body(r"function renderLogStream\(panel, element\) \{(.*?)\n\}")
+    assert "if (element.detached) return renderDetachedLog(panel, element);" in stream
+    detached = _body(r"function renderDetachedLog\(panel, element\) \{(.*?)\n\}")
+    assert "'section'" in detached and "'aria-modal', 'false'" in detached
+    assert "'overlay'" not in detached, "the log panel must not be a scrim (F1)"
+    assert "isOpen" in detached and "dispose" in detached
+    refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
+    assert "if (wantsData && this.wantsData(widget)) this.loadData(widget);" in refresh
+    wants = _body(r"\n  wantsData\(widget\) \{(.*?)\n  \}")
+    assert "widget.isOpen" in wants
+    close = _body(r"\n  close\(\) \{(.*?)\n  \}")
+    assert "widget.dispose" in close, "a closed card leaves its log panel behind"
+
+
+def test_the_log_panel_sits_under_the_rail_and_under_a_confirmation():
+    """G4 + F1: the panel starts below the rail and is lower in z-order than
+    both the rail (the stop stays clickable) and the overlays (a
+    confirmation still covers it), and higher than the drawer's scrim."""
+    rule = re.search(r"\n\.log-window\s*\{([^}]*)\}", STYLES)
+    assert rule, "no .log-window rule"
+    z = int(re.search(r"z-index:\s*(\d+)", rule.group(1)).group(1))
+    rail = int(re.search(r"\n\.rail\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
+    overlay = int(re.search(r"\n\.overlay\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
+    scrim = int(re.search(r"\n\.scrim\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
+    assert scrim < z < overlay < rail, (scrim, z, overlay, rail)
+    assert "position: fixed" in rule.group(1)
+    assert re.search(r"top:\s*calc\(var\(--rail-h\)", rule.group(1)), (
+        "the panel does not start below the rail")
+
+
 def test_empty_data_elements_say_what_to_do_next():
     assert "feed.dataset.empty = emptyText(" in APP_JS
     assert re.search(r"\.feed:empty::before\s*\{[^}]*content:\s*attr\(data-empty\)",

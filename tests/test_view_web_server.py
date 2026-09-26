@@ -60,6 +60,8 @@ class FakeProbe(Panel):
         self.stop_confirms = True
         self.jams = 0
         self.loaded = None
+        # G4: how often the detached gamepad log's source was asked for.
+        self.gamepad_calls = 0
 
     # -- what the Controller needs -------------------------------------
     def open(self):
@@ -108,6 +110,8 @@ class FakeProbe(Panel):
                 sch.plot("Red", "series"),
                 sch.image("Figure", "figure"),
                 sch.log_stream("Log", "log_lines"),
+                # G4: behind a button, polled only while its panel is open.
+                sch.log_stream("Gamepad Log:", "gamepad_lines", detached=True),
                 sch.indicator("Fault", "is_faulted"),
                 sch.button("Jam", "jam"),
                 sch.file_open("Load run", "load_run", extensions=("csv",)),
@@ -177,6 +181,10 @@ class FakeProbe(Panel):
 
     def log_lines(self):
         return ["first line", "second line"]
+
+    def gamepad_lines(self):
+        self.gamepad_calls += 1
+        return ["LX +0.50", "button A down"]
 
     def screen_image(self):
         return {"image": b"\x89PNG\r\n\x1a\nscreen", "width": 2560,
@@ -1333,3 +1341,114 @@ def test_the_launch_box_follows_the_model_not_the_click(station, tmp_path):
     assert out["portAfterRefused"] is False
     assert out["fromModel"] is False and out["portFromModel"] is True, out
     assert setup.ticks == [False, False], setup.ticks
+
+
+
+# --------------------------------------------------------------------------
+# G4: the Gamepad log behind a button, in an in-page panel
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_gamepad_log_opens_in_one_panel_that_never_covers_the_stop(station, tmp_path):
+    """G4: a detached log stream is a "Gamepad log…" button, not a feed. It
+    opens ONE non-modal panel under the rail (the stop stays what a click at
+    its centre lands on, and it stops); pressing the button again raises the
+    same panel; Escape closes it and focus returns to the button; the source
+    command is asked for only while the panel is open; closing the card
+    removes the panel."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      const r = {};
+      const asked = [];
+      page.on('request', (q) => { if (q.url().includes('command=gamepad_lines')) asked.push(Date.now()); });
+      const opener = () => page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…'));
+      r.shape = await page.evaluate(() => {
+        const card = Array.from(document.querySelectorAll('.card')).find((c) => !c.classList.contains('setup-card'));
+        const button = Array.from(card.querySelectorAll('button')).find((b) => b.textContent === 'Gamepad log…');
+        return { button: Boolean(button),
+                 feeds: Array.from(card.querySelectorAll('pre.feed')).map((f) => f.getAttribute('aria-label')),
+                 popup: button && button.getAttribute('aria-haspopup'),
+                 expanded: button && button.getAttribute('aria-expanded') };
+      });
+      await sleep(2500);
+      r.askedWhileClosed = asked.length;
+      await page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…').click());
+      await until(() => { const w = document.querySelector('.log-window'); return w && !w.hidden
+        && w.querySelector('.feed').textContent.includes('button A down'); });
+      r.open = await page.evaluate(() => {
+        const w = document.querySelector('.log-window');
+        const b = w.getBoundingClientRect();
+        const rail = document.querySelector('.rail');
+        w.dataset.mark = 'first';
+        return { role: w.getAttribute('role'), modal: w.getAttribute('aria-modal'),
+                 title: document.getElementById(w.getAttribute('aria-labelledby')).textContent,
+                 lines: w.querySelector('.feed').textContent,
+                 below: b.top >= rail.getBoundingClientRect().bottom - 0.5,
+                 z: Number(getComputedStyle(w).zIndex), railZ: Number(getComputedStyle(rail).zIndex),
+                 overlay: w.classList.contains('overlay') || Boolean(w.closest('.overlay')),
+                 focusIn: w.contains(document.activeElement),
+                 expanded: Array.from(document.querySelectorAll('.card button'))
+                   .find((x) => x.textContent === 'Gamepad log…').getAttribute('aria-expanded') };
+      });
+      r.stopOnTop = await page.evaluate(%s);
+      const box = await page.evaluate(() => {
+        const b = document.getElementById('full-stop').getBoundingClientRect();
+        return [b.left + b.width / 2, b.top + b.height / 2];
+      });
+      await page.mouse.click(box[0], box[1]);
+      await sleep(600);
+      r.latched = (await api('/api/state')).is_estopped;
+      r.stillOpen = await page.evaluate(() => !document.querySelector('.log-window').hidden);
+      await page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…').click());
+      await sleep(200);
+      r.again = await page.evaluate(() => ({
+        count: document.querySelectorAll('.log-window').length,
+        mark: document.querySelector('.log-window').dataset.mark,
+        focusIn: document.querySelector('.log-window').contains(document.activeElement) }));
+      await page.keyboard.press('Escape');
+      await sleep(300);
+      r.closed = await page.evaluate(() => ({
+        hidden: !document.querySelector('.log-window') || document.querySelector('.log-window').hidden,
+        focus: document.activeElement && document.activeElement.textContent,
+        expanded: document.activeElement && document.activeElement.getAttribute('aria-expanded') }));
+      r.askedWhileOpen = asked.length - r.askedWhileClosed;
+      const before = asked.length;
+      await sleep(2500);
+      r.askedAfterClose = asked.length - before;
+      await page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…').click());
+      await until(() => document.querySelector('.log-window') && !document.querySelector('.log-window').hidden);
+      await page.click('.log-window .log-window-close');
+      await sleep(300);
+      r.byClose = await page.evaluate(() => ({
+        hidden: document.querySelector('.log-window').hidden,
+        focus: document.activeElement && document.activeElement.textContent }));
+      await page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…').click());
+      await api('/api/close_model', { name: 'Fake Probe' });
+      await until(() => !Array.from(document.querySelectorAll('.card')).some((c) => !c.classList.contains('setup-card')));
+      r.afterCardClosed = await page.evaluate(() => document.querySelectorAll('.log-window').length);
+      return r;
+    """ % _STOP_HIT, tmp_path)
+    assert out["shape"]["button"], out["shape"]
+    assert out["shape"]["feeds"] == ["Log"], "the detached log was drawn as a feed on the card"
+    assert out["shape"]["popup"] == "dialog" and out["shape"]["expanded"] == "false", out["shape"]
+    assert out["askedWhileClosed"] == 0, "the closed log's source was polled"
+    opened = out["open"]
+    assert opened["role"] == "dialog" and opened["modal"] == "false", opened
+    assert opened["title"] == "Fake Probe — Gamepad log", opened
+    assert "LX +0.50" in opened["lines"] and "button A down" in opened["lines"], opened
+    assert opened["below"] and 0 < opened["z"] < opened["railZ"], opened
+    assert not opened["overlay"], "the log panel is an overlay scrim"
+    assert opened["focusIn"] and opened["expanded"] == "true", opened
+    assert out["stopOnTop"], "the log panel covers the stop"
+    assert out["latched"] is True, "a click on the stop with the log open did not stop"
+    assert out["stillOpen"] is True
+    assert out["again"] == {"count": 1, "mark": "first", "focusIn": True}, out["again"]
+    assert out["closed"] == {"hidden": True, "focus": "Gamepad log…", "expanded": "false"}, out["closed"]
+    assert out["askedWhileOpen"] >= 1, "the open log was never polled"
+    assert out["askedAfterClose"] == 0, "the log was polled after it closed"
+    assert out["byClose"] == {"hidden": True, "focus": "Gamepad log…"}, out["byClose"]
+    assert out["afterCardClosed"] == 0, "the panel outlived its card"
