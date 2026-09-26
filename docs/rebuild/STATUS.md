@@ -85,8 +85,12 @@ wire is pinned by `tests/golden/`.
 
 `docs/rebuild/PACKAGING_PLAN.md`: one PyInstaller bundle per platform with
 three entry points (`station-web`, `station-qt`, `station-tk`), steps P1–P8
-with routes. P1 landed 2026-09-25: **D-9 amended, Tk is the default view on
-every OS**; P2–P4 dispatched to `rb-pack`. A design-language proposal (four boards rendered in HTML, one
+with routes. P1–P4 landed 2026-09-25: **D-9 amended, Tk is the default view
+on every OS**; `pyproject.toml` with `station-tk/qt/web`; `packaging/station.spec`
+(one folder, three launchers, 134 MB on this Mac); `packaging/smoke.sh` (42
+checks). The smoke found and the lead fixed a safety hole: Tk 9 on macOS
+swallowed SIGTERM past `close()` (A10). Next: P5 (CI matrix), then the lab's
+Windows PC. A design-language proposal (four boards rendered in HTML, one
 component strip each) was published for the owner the same day; the choice
 lands as `palette.py` / `theme.py` tokens.
 
