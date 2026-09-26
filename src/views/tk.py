@@ -1399,18 +1399,16 @@ class TkPanelView(PanelView):
     #: and 5 on X11.
     WHEEL_EVENTS = ("<MouseWheel>", "<Button-4>", "<Button-5>")
 
-    def __init__(self, master, controller, name, panel=None):
+    def __init__(self, master, controller, name, panel=None, sheet=None):
         super().__init__(controller, name, panel)
         self._widgets = {}          # id(element) -> {widget, var, ...}
         self._grid = {}             # id(container) -> the grid cursor
-        self._flows = {}            # id(command strip) -> its wrapping lines
+        self._flows = {}            # id(flow strip) -> its wrapping lines
         self._table = None          # the frame the current run of row sections shares
-        self._section_run = None            # the current run of column sections
-        self._runs = []             # every run: its holder, two columns, its sections
         self._row_kinds = []        # per schema section: "table" | "bar" | None
+        self._section_kinds = []    # per schema section: "axes" | None
         self._table_columns = {}    # a table's shared caption -> its grid column
         self._section_index = 0
-        self._layout_columns = None
         self._is_scrollbar_shown = True
         self._section_titles = []
         self._after_id = None
@@ -1424,22 +1422,46 @@ class TkPanelView(PanelView):
         self._last_state = {}
         self.lost_devices = ()          # device names whose link is lost
         self._is_paused = False
+        self._sheet = sheet
+        self._is_opened = sheet is None     # a page of its own is the one opened
+        self._is_unconfirmed = False
+        self._tiers = {}                # tier -> the frame its sections go in
+        self._tier_text = {}            # tier -> its disclosure's words
+        self._tier_count = {}           # tier -> how many sections it holds
+        self._disclosures = {}          # tier -> _Disclosure
+        self._well = self._diagnostics = None
+        self._building_tier = 1
+        self._readings = []             # (element, base kind) - re-sized by prominence
+        self._inset = 0 if sheet is not None else INSET
 
         self.frame = tk.Frame(master, background=_page())
-        # A titled panel: the model's name, a rule under it, then the
-        # controls. The title used to be one padded label with nothing
-        # separating it from the first section's own bold heading, so a tab
-        # opened on two headings that looked alike.
-        self._title = tk.Label(self.frame, text=name, font=_font(STEP_2, bold=True),
+        # The entry's head: a 2 px ink rule (signal while a link is lost or
+        # a stop did not confirm), then the model's name, with the
+        # unconfirmed mark and the tier-2 disclosure at its right.
+        self._rule = tk.Frame(self.frame, height=theme.RULE_STRONG_PX,
+                              background=theme.RULE_STRONG)
+        self._rule.pack(fill="x", padx=self._inset, pady=(self._inset, SPACE[4]))
+        self._head = tk.Frame(self.frame, background=_page())
+        self._head.pack(fill="x", padx=self._inset, pady=(0, GAP))
+        self._title = tk.Label(self._head, text=name, font=self._name_font(),
                                anchor="w", background=_page(),
                                foreground=theme.TEXT)
-        self._title.pack(fill="x", padx=INSET, pady=(INSET, GAP))
-        # The rule is the panel's grouping mark: a signal rule is a panel
-        # whose device link is lost (F3).
-        self._rule = tk.Frame(self.frame, height=1, background=theme.RULE)
-        self._rule.pack(fill="x", padx=INSET, pady=(0, GAP))
-        # What is wrong with the panel as a whole (a lost link), in ink under
-        # the rule; packed only while there is something to say.
+        self._title.pack(side="left")
+        self._head_right = tk.Frame(self._head, background=_page())
+        self._head_right.pack(side="right")
+        # "Stop not confirmed. Treat as live." - on its own line under the
+        # head, packed only while it is so (never squeezed beside the name).
+        self._mark_row = tk.Frame(self.frame, background=_page())
+        size = _lamp_px()
+        self._mark = tk.Canvas(self._mark_row, width=size, height=size,
+                               background=_page(), highlightthickness=0)
+        self._mark.pack(side="left", padx=(0, SPACE[2]))
+        self._mark_text = tk.Label(self._mark_row, text=UNCONFIRMED_LINE,
+                                   font=_font(bold=True), background=_page(),
+                                   foreground=theme.TEXT)
+        self._mark_text.pack(side="left")
+        # What is wrong with the entry as a whole (a lost link), in ink under
+        # the head; packed only while there is something to say.
         self._health = tk.Label(self.frame, text="", anchor="w", justify="left",
                                 font=_font(), wraplength=640,
                                 background=_page(), foreground=theme.TEXT)
@@ -1449,24 +1471,45 @@ class TkPanelView(PanelView):
         self._status = tk.Label(self.frame, text="", anchor="w", justify="left",
                                 font=_font(), wraplength=640,
                                 background=_page(), foreground=theme.TEXT)
-        self._status.pack(fill="x", side="bottom", padx=INSET, pady=(0, GAP))
-        self._build_scroll_area()
+        if sheet is None:
+            self._build_scroll_area()
+        else:
+            self._build_entry_body()
 
         self._build()
+        for tier in (2, 3):
+            if tier in self._tiers:
+                self._set_tier_open(tier, _DISCLOSED.get((self.name, tier), False),
+                                    refresh=False)
         self._schedule_refresh()
         events.debug("Panel Built", f"{name}: {len(self._elements)} elements",
                      source=SOURCE)
+
+    # -- the entry's body ----------------------------------------------------
+    def _build_entry_body(self):
+        """On the sheet the entry does not scroll by itself: the sheet does.
+        Its body is a plain frame; `_canvas` is the sheet's, so a refusal
+        below the fold is scrolled into view on the sheet."""
+        self._area = None
+        self._scrollbar = None
+        self._body_window = None
+        self._canvas = getattr(self._sheet, "canvas", None)
+        self._pinned = tk.Frame(self.frame, background=_page())
+        self._body = tk.Frame(self.frame, background=_page())
+        self._body.pack(side="top", fill="x")
+
+    def _name_font(self):
+        """The opened model's name is a step louder than a closed one's."""
+        return _font(STEP_2 if self._is_opened else STEP_1, bold=True)
 
     # -- the scroll area ---------------------------------------------------
     def _build_scroll_area(self):
         """The panel's controls live on a scrolling canvas.
 
         A panel taller than the window used to make the *window* taller, and
-        the window is not allowed to grow: the global stop lives at the
-        bottom of it, and a stop control pushed off the bottom of the
-        screen is the whole safety contract lost to a layout. A tall panel
-        scrolls; the stop bar does not move. The scrollbar shows only while
-        there is something to scroll to.
+        the window is not allowed to grow. A tall panel scrolls; the rail and
+        its stop do not move. The scrollbar shows only while there is
+        something to scroll to.
         """
         area = tk.Frame(self.frame, background=_page())
         area.pack(side="top", fill="both", expand=True)
@@ -1508,8 +1551,7 @@ class TkPanelView(PanelView):
     def _on_canvas_resized(self, event=None):
         """Keep the body as wide as the viewport: a canvas window is sized to
         its content otherwise, and a table would stop at its widest row
-        instead of reaching the window's edge. The width also decides one
-        column of sections or two."""
+        instead of reaching the window's edge."""
         width = getattr(event, "width", 0)
         if self._body_window is None or not width:
             return
@@ -1518,7 +1560,6 @@ class TkPanelView(PanelView):
         except Exception as exc:
             events.debug("Body Width Not Set", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
-        self._reflow(width)
         self._sync_scrollbar()
         self._wrap_to(width)
 
@@ -1536,6 +1577,8 @@ class TkPanelView(PanelView):
     def _sync_scrollbar(self):
         """A scrollbar only when the controls are taller than the viewport; a
         bare trough beside a panel that fits is chrome with nothing to do."""
+        if self._scrollbar is None:
+            return
         try:
             content = self._body.winfo_reqheight()
             viewport = self._canvas.winfo_height()
@@ -1566,6 +1609,8 @@ class TkPanelView(PanelView):
                              source=SOURCE, exception=exc)
 
     def _on_pointer_leave(self, _event=None):
+        if self._sheet is not None:
+            return          # the sheet owns the wheel, not its entries
         for sequence in self.WHEEL_EVENTS:
             try:
                 self.frame.unbind_all(sequence)
@@ -1679,34 +1724,43 @@ class TkPanelView(PanelView):
                          exception=exc)
         events.debug("Panel Closed", self.name, source=SOURCE)
 
-    # -- layout: planning a table --------------------------------------------
-    #: Element types drawn with a caption in front of them. A button names
-    #: itself; these name the value beside them.
+    # -- layout: planning ---------------------------------------------------
+    #: Element types drawn with a caption. A button names itself; these
+    #: name the value they show.
     CAPTIONED = ("readonly", "entry", "dropdown", "indicator", "checkbox")
-    #: Element types that are commands, and share one line of buttons.
+    #: Element types that are commands.
     COMMANDS = ("button", "toggle", "file_save", "file_open", "region_select")
 
     def _build(self):
-        self._plan_tables()
+        self._plan()
         super()._build()
-        self._reflow()
 
-    def _plan_tables(self):
+    def _plan(self):
         """Decide, before anything is drawn, which row sections are the rows
-        of a table and what its columns are.
+        of a table and what its columns are; which column sections are a
+        set of axis readings; what each tier's disclosure says.
 
         A caption that two or more row sections share ("Port", "Gamepad",
         "Status") is a column: it is said ONCE, in a header row, and every
-        row puts its control for it in that column — so a row with no
-        gamepad leaves the Gamepad cell empty and its status still lands in
-        the Status column. A row section whose captions are its own
-        ("Scan", "Selected") is not a row of that table: it is a bar across
-        the table, and keeps its caption inline. Setup is six rows of the
-        first kind between a bar of each kind.
+        row puts its control for it in that column. A row section whose
+        captions are its own ("Scan", "Selected") is a bar across the table.
+        Setup is six rows of the first kind between a bar of each kind.
         """
         sections = list(self._schema().get("sections") or [])
         captions = []
+        self._section_kinds = []
         for section in sections:
+            tier = _tier_of(section)
+            self._tier_count[tier] = self._tier_count.get(tier, 0) + 1
+            if tier > 1 and tier not in self._tier_text:
+                self._tier_text[tier] = (section.get("disclosure")
+                                         or theme.TIER_LABELS.get(tier, "Details"))
+            readouts = [element for element in section.get("elements") or []
+                        if element.get("type") == "readonly"]
+            is_axes = (len(readouts) > 1 and all(
+                element.get("rail") and _axis_of(element.get("text", ""))
+                for element in readouts))
+            self._section_kinds.append("axes" if is_axes else None)
             if section.get("layout") != "row":
                 captions.append(None)
                 continue
@@ -1729,48 +1783,175 @@ class TkPanelView(PanelView):
                 self._row_kinds.append("bar")
         self._table_columns = {name: index + 1 for index, name in enumerate(order)}
 
+    # -- tiers ----------------------------------------------------------------
+    def _tier_frame(self, tier):
+        """Where a section of `tier` goes. Tier 1 is the body itself; tier 2
+        is ONE panel-toned well under it, behind the head's disclosure;
+        tier 3 is a strip inside the well with a 2 px muted rule down its
+        left, behind a second disclosure. Built on the first section that
+        needs it, mapped only while open."""
+        frame = self._tiers.get(tier)
+        if frame is not None:
+            return frame
+        if tier <= 1:
+            frame = tk.Frame(self._body, background=_page())
+            frame.pack(side="top", fill="x", padx=self._inset)
+            self._tiers[1] = frame
+            return frame
+        if self._well is None:
+            if 1 not in self._tiers:
+                self._tier_frame(1)
+            well = self._well = tk.Frame(self._body, background=theme.SURFACE,
+                                         padx=SPACE[5], pady=SPACE[4])
+            self._tiers[2] = tk.Frame(well, background=theme.SURFACE)
+            self._tiers[2].pack(side="top", fill="x")
+            opener = _Disclosure(self._head_right, self._tier_text.get(
+                2, theme.TIER_LABELS[2]), lambda is_open: self.set_disclosure(2, is_open),
+                _page())
+            opener.frame.pack(side="right")
+            self._disclosures[2] = opener
+        if tier == 3 and 3 not in self._tiers:
+            opener = _Disclosure(self._well, self._tier_text.get(
+                3, theme.TIER_LABELS[3]), lambda is_open: self.set_disclosure(3, is_open),
+                theme.SURFACE)
+            opener.frame.pack(side="top", anchor="w", pady=(SPACE[3], 0))
+            self._disclosures[3] = opener
+            holder = self._diagnostics = tk.Frame(self._well, background=theme.SURFACE)
+            tk.Frame(holder, width=UNDERLINE_PX, background=theme.MUTED).pack(
+                side="left", fill="y", padx=(SPACE[2], SPACE[4]))
+            self._tiers[3] = tk.Frame(holder, background=theme.SURFACE)
+            self._tiers[3].pack(side="left", fill="x", expand=True)
+        return self._tiers[min(tier, 3)]
+
+    def set_disclosure(self, tier, is_open):
+        """Open or close a tier; remembered for the model for the session."""
+        return self._set_tier_open(tier, is_open)
+
+    def is_disclosed(self, tier):
+        """True while `tier` is shown (tier 3 needs tier 2 open as well)."""
+        if tier <= 1:
+            return True
+        if not _DISCLOSED.get((self.name, 2), False) or 2 not in self._tiers:
+            return False
+        return tier == 2 or bool(_DISCLOSED.get((self.name, 3), False))
+
+    def _set_tier_open(self, tier, is_open, refresh=True):
+        is_open = bool(is_open)
+        if tier not in self._tiers:
+            return False
+        _DISCLOSED[(self.name, tier)] = is_open
+        opener = self._disclosures.get(tier)
+        if opener is not None:
+            opener.set_open(is_open)
+        target = self._well if tier == 2 else self._diagnostics
+        try:
+            if is_open:
+                target.pack(side="top", fill="x", padx=self._inset,
+                            pady=(SPACE[3], SPACE[3]) if tier == 2 else (SPACE[2], 0))
+            else:
+                target.pack_forget()
+        except Exception as exc:
+            events.debug("Tier Not Shown", f"{self.name} tier {tier}: {exc}",
+                         source=SOURCE, exception=exc)
+        events.debug("Tier Toggled", f"{self.name} tier {tier} -> "
+                     f"{'open' if is_open else 'closed'}", source=SOURCE)
+        if refresh and is_open:
+            # What was hidden was not polled: fill it now, not in 100 ms.
+            try:
+                self._refresh()
+            except Exception as exc:
+                events.debug("Refresh Failed", f"{self.name}: {exc}", source=SOURCE,
+                             exception=exc, every=1.0)
+        return True
+
+    # -- prominence -----------------------------------------------------------
+    def set_prominence(self, is_opened):
+        """The opened model's readings are `focal`; a closed probe's are
+        `compact`; a single value stays `primary` and a change `secondary`
+        either way (`theme.READING_SIZES`)."""
+        is_opened = bool(is_opened)
+        if is_opened == self._is_opened:
+            return
+        self._is_opened = is_opened
+        try:
+            self._title.configure(font=self._name_font())
+        except Exception:
+            pass
+        for element, kind in self._readings:
+            widget = self._entry_for(element).get("widget")
+            if widget is None:
+                continue
+            font = _reading_font(self._reading_kind(kind))
+            self._entry_for(element)["font"] = font
+            try:
+                widget.configure(font=font)
+            except Exception:
+                pass
+
+    def _reading_kind(self, kind):
+        if kind == "axes":
+            return "focal" if self._is_opened else "compact"
+        return kind
+
     # -- layout: sections ----------------------------------------------------
     def _make_section(self, title, layout="column"):
-        """A section of the panel. `layout` is the schema's hint (Addendum 2).
+        """A section of the entry. `layout` is the schema's hint.
 
-        `column` is the stacked form: a heading, then one caption and one
-        value per line, the value column the same width for every entry,
-        dropdown and readout. `row` is the table form (`_make_row_section`).
-        Consecutive column sections are a *run*, laid out in one or two
-        columns by `_reflow` according to the panel's width.
+        `column` is the sheet's form: the section's controls are CELLS - a
+        caption over its control, a command on its own - that flow left to
+        right and wrap by measured width, so nothing is cut at any font size.
+        A set of axis readings says its caption once ("Position") with the
+        letters inline. `row` is the table form (`_make_row_section`).
         """
         index = self._section_index
         self._section_index += 1
+        sections = list(self._schema().get("sections") or [])
+        section = sections[index] if index < len(sections) else {}
+        tier = _tier_of(section)
+        self._building_tier = tier
         if layout == "row":
             kinds = self._row_kinds
             kind = kinds[index] if index < len(kinds) and kinds[index] else "bar"
             return self._make_row_section(
-                title, kind, pinned=kind == "bar" and self._is_commit_row(index))
+                title, kind, pinned=kind == "bar" and self._is_commit_row(index),
+                parent=self._tier_frame(tier))
         # A column section ends the table: the next row section starts a new
         # one, so a schema that interleaves the two still renders in order.
         self._table = None
-        if self._section_run is None:
-            holder = tk.Frame(self._body, background=_page())
-            holder.pack(fill="x", padx=INSET, pady=(0, GAP))
-            self._section_run = {"holder": holder, "sections": [],
-                         "columns": tuple(tk.Frame(holder, background=_page())
-                                         for _ in range(MAX_COLUMNS))}
-            self._runs.append(self._section_run)
-        container = tk.Frame(self._body, background=_page())
-        label = tk.Label(container, text=_label(title), font=_font(STEP_1, bold=True),
-                         anchor="w", background=_page(), foreground=theme.TEXT)
-        label.grid(row=0, column=0, columnspan=3, sticky="w", pady=(INSET, GAP))
-        self._section_titles.append(label)
+        parent = self._tier_frame(tier)
+        background = _bg(parent)
+        container = tk.Frame(parent, background=background)
+        container.pack(side="top", fill="x", anchor="w", pady=(0, SPACE[4]))
         try:
-            # The caption column takes the slack, so values end at the
-            # section's right edge; the value column is one width for all.
             container.grid_columnconfigure(0, weight=1)
-            container.grid_columnconfigure(1, minsize=VALUE_PX)
         except Exception as exc:
             events.debug("Section Columns Refused", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
-        self._grid[id(container)] = {"layout": "column", "row": 1, "strip": None}
-        self._section_run["sections"].append(container)
+        is_axes = (index < len(self._section_kinds)
+                   and self._section_kinds[index] == "axes")
+        heading = None
+        shared_unit = ""
+        if is_axes:
+            # One caption for the set, its unit said once: "Position, steps",
+            # then X Y Z inline (design-Sheet.md).
+            units = {element.get("unit") or "" for element in section.get("elements") or []
+                     if element.get("type") == "readonly"}
+            shared_unit = units.pop() if len(units) == 1 else ""
+            caption = _label(title) + (f", {shared_unit}" if shared_unit else "")
+            heading = tk.Label(container, text=caption, font=_caption_font(),
+                               anchor="w", background=background,
+                               foreground=theme.MUTED)
+        elif tier > 1 and self._tier_count.get(tier, 0) > 1:
+            heading = tk.Label(container, text=_label(title), font=_font(bold=True),
+                               anchor="w", background=background,
+                               foreground=theme.TEXT)
+        if heading is not None:
+            heading.grid(row=0, column=0, sticky="w", pady=(0, GAP))
+            self._section_titles.append(heading)
+        self._grid[id(container)] = {
+            "layout": "cells", "row": 1, "strip": None, "tier": tier,
+            "axes": is_axes, "inline": tier >= 3, "readings": 0,
+            "shared_unit": shared_unit}
         return container
 
     def _is_commit_row(self, index):
@@ -1854,69 +2035,11 @@ class TkPanelView(PanelView):
         tk.Frame(container, height=1, background=theme.RULE).grid(
             row=row, column=0, columnspan=span, sticky="ew", pady=(GAP, GAP))
 
-    def _reflow(self, width=None):
-        """One column of sections, or more once the panel is wide enough.
-
-        Columns are filled shortest-first in schema order, so a tall
-        section (Configuration) sits beside two short ones instead of leaving
-        a hole under its neighbour. Sections are packed `in_` a column frame:
-        Tk cannot re-parent a widget, but it can manage one inside any
-        descendant of its parent.
-        """
-        if width is None:
-            try:
-                width = self._canvas.winfo_width()
-            except Exception:
-                width = 0
-        columns = (max(1, min(MAX_COLUMNS, width // COLUMN_PX))
-                   if isinstance(width, int) else 1)
-        if columns == self._layout_columns:
-            return
-        self._layout_columns = columns
-        for run in self._runs:
-            self._lay_out_run(run, columns)
-
-    def _lay_out_run(self, run, columns):
-        holder, frames = run["holder"], run["columns"]
-        columns = max(1, min(columns, len(run["sections"]) or 1))
-        try:
-            for index, frame in enumerate(frames):
-                is_used = index < columns
-                holder.grid_columnconfigure(index, weight=1 if is_used else 0,
-                                            uniform="run" if is_used else "")
-                if is_used:
-                    frame.grid(row=0, column=index, sticky="new",
-                               padx=(SPACE[6] if index else 0, 0))
-                else:
-                    frame.grid_remove()
-        except Exception as exc:
-            events.debug("Run Not Laid Out", str(exc), source=SOURCE,
-                         exception=exc, every=5.0)
-        heights = [0] * columns
-        for section in run["sections"]:
-            target = heights.index(min(heights))
-            try:
-                section.pack_forget()
-                section.pack(in_=frames[target], fill="x", anchor="n")
-            except Exception as exc:
-                events.debug("Section Not Placed", str(exc), source=SOURCE,
-                             exception=exc, every=5.0)
-            heights[target] += self._height_of(section)
-
-    def _height_of(self, section):
-        try:
-            section.update_idletasks()
-            height = section.winfo_reqheight()
-        except Exception:
-            height = None
-        if isinstance(height, int) and height > 1:
-            return height
-        return self._grid.get(id(section), {}).get("row") or 1
-
     # -- layout: cells ---------------------------------------------------------
     def _cursor(self, container):
         return self._grid.setdefault(id(container), {
-            "layout": "column", "row": 1, "strip": None})
+            "layout": "cells", "row": 1, "strip": None, "tier": 1,
+            "axes": False, "inline": False, "readings": 0})
 
     def _stretch_column(self, container, column, weight=1):
         """Let one column absorb the slack (and give it back first)."""
@@ -1926,36 +2049,89 @@ class TkPanelView(PanelView):
             events.debug("Column Weight Refused", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
 
+    def _strip(self, container):
+        """The section's current flow of cells, started on first use: every
+        cell and command until the next full-width element shares it."""
+        state = self._cursor(container)
+        strip = state.get("strip")
+        if strip is not None:
+            return strip
+        strip = tk.Frame(container, background=_bg(container))
+        strip.grid(row=state["row"], column=0, sticky="ew")
+        state["row"] += 1
+        state["strip"] = strip
+        self._flows[id(strip)] = {"items": [], "rows": [], "layout": None,
+                                  "hidden": set(), "width": None}
+        strip.bind("<Configure>",
+                   lambda event, s=strip: self._flow_strip(
+                       s, getattr(event, "width", None)), add="+")
+        return strip
+
+    def _add_to_flow(self, strip, widget):
+        flow = self._flows[id(strip)]
+        flow["items"].append(widget)
+        flow["layout"] = None
+        self._flow_strip(strip, None)
+        return widget
+
     def _field(self, container, element):
         """Where one captioned control goes. -> (parent, place)
 
         `place(widget, fill)` positions the control; `fill` says what it is:
-        "value" a readout (always takes its cell's width, so it can elide),
-        "field" an entry or dropdown (the value column's width in a section,
-        its own width in a table), "mark" a lamp or a stop disc (its own size,
-        at the value column's right edge).
+        "value" a readout, "field" an entry or dropdown, "mark" a lamp, a box
+        or a slider. On the sheet a control is a CELL: its caption above it
+        (beside it in Diagnostics), its unit after it; an axis reading
+        carries its letter instead of a caption.
         """
         state = self._cursor(container)
         text = _label(element.get("text", ""))
         self._register(element, slot=self._notice_slot(container))
-        if state["layout"] == "column":
-            row = state["row"]
-            state["row"] += 2           # the row under it is its refusal line
-            state["last_row"] = row
-            state["strip"] = None
-            tk.Label(container, text=text, font=_font(), anchor="w",
-                     background=_page(), foreground=theme.MUTED
-                     ).grid(row=row, column=0, sticky="w", padx=(0, PAD), pady=GAP)
+        if state["layout"] == "cells":
+            strip = self._strip(container)
+            background = _bg(strip)
+            axis = _axis_of(element.get("text", "")) if state.get("axes") else None
+            caption, unit = text, ""
+            if element.get("type") in ("readonly", "entry"):
+                caption, unit = _split_unit(text)
+            unit = element.get("unit") or unit
+            if axis and unit and unit == state.get("shared_unit"):
+                unit = ""           # said once, in the section's caption
+            cell = tk.Frame(strip, background=background)
+            label = None
+            if caption and not axis:
+                label = tk.Label(cell, text=caption, font=_caption_font(), anchor="w",
+                                 background=background, foreground=theme.MUTED)
+                if state.get("inline"):
+                    label.pack(side="left", anchor="s", padx=(0, SPACE[3]))
+                else:
+                    label.pack(side="top", anchor="w")
+            line = tk.Frame(cell, background=background)
+            line.pack(side="left" if state.get("inline") else "top", anchor="sw")
+            if axis:
+                tk.Label(line, text=axis, font=_caption_font(), background=background,
+                         foreground=theme.MUTED).pack(side="left", anchor="s",
+                                                      padx=(0, SPACE[1]), pady=SPACE[2])
+            self._register(element, box=cell, caption=label, strip=strip)
+            placed = []
 
             def place(widget, fill):
-                widget.grid(row=row, column=1, pady=GAP,
-                            sticky="e" if fill == "mark" else "ew")
+                widget.pack(in_=line, side="left", anchor="s",
+                            padx=(0, SPACE[2]) if fill == "mark" else 0)
+                if not placed:
+                    placed.append(widget)
+                    self._add_to_flow(strip, cell)
+                if unit and fill in ("value", "field"):
+                    label = tk.Label(line, text=unit, font=_caption_font(), anchor="w",
+                                     background=background, foreground=theme.MUTED)
+                    label.pack(side="left", anchor="s", padx=(SPACE[1], 0))
+                    self._register(element, unit_label=label)
                 return widget
-            return container, place
+            return line, place
         bar = state.get("bar")
         if bar is not None:
-            tk.Label(bar, text=text, font=_font(), anchor="w", background=_page(),
-                     foreground=theme.MUTED).pack(side="left", padx=(0, SPACE[3]))
+            tk.Label(bar, text=text, font=_caption_font(), anchor="w",
+                     background=_page(), foreground=theme.MUTED
+                     ).pack(side="left", padx=(0, SPACE[3]))
 
             def place(widget, fill):
                 widget.pack(side="left", fill="x" if fill == "value" else None,
@@ -1985,39 +2161,18 @@ class TkPanelView(PanelView):
     def _command_slot(self, container, element=None):
         """Where one command goes. -> (parent, place)
 
-        In a section, consecutive commands share ONE group — "Enter autonomous
-        mode", "Enter manual mode", "Step", "Gamepad log…" — instead of a
-        stack of full-width bars; the group ends at the next control that is
-        not a command. The group WRAPS by measured width (`_flow_strip`): one
-        line while the section has room, more lines when it has not, so no
-        caption is ever cut (UXPM5-2, IMP-3). The row under the group is
-        where a refusal of any of them is shown.
+        On the sheet a command is a cell of the section's flow, beside the
+        values it acts on ("Move by 1.0  Move -  Move +  Home"), bottom-
+        aligned with them, wrapping by measured width so no caption is ever
+        cut (UXPM5-2, IMP-3). A refusal of any of them is shown on the
+        section's notice row, under its controls.
         """
         state = self._cursor(container)
-        if state["layout"] == "column":
-            strip = state.get("strip")
-            if strip is None:
-                strip = tk.Frame(container, background=_page())
-                strip.grid(row=state["row"], column=0, columnspan=3, sticky="ew",
-                           pady=GAP)
-                state["strip_slot"] = (container, state["row"] + 1, 0, 3)
-                state["row"] += 2
-                state["strip"] = strip
-                flow = self._flows[id(strip)] = {"items": [], "rows": [],
-                                                 "layout": None}
-                strip.bind("<Configure>",
-                           lambda event, s=strip: self._flow_strip(
-                               s, getattr(event, "width", None)), add="+")
+        if state["layout"] == "cells":
+            strip = self._strip(container)
             if element is not None:
-                self._register(element, slot=state["strip_slot"])
-            flow = self._flows[id(strip)]
-
-            def place(widget, strip=strip, flow=flow):
-                flow["items"].append(widget)
-                flow["layout"] = None
-                self._flow_strip(strip, None)
-                return widget
-            return strip, place
+                self._register(element, slot=self._notice_slot(container))
+            return strip, lambda widget: self._add_to_flow(strip, widget)
         if element is not None:
             self._register(element, slot=self._notice_slot(container))
         bar = state.get("bar")
@@ -2029,12 +2184,14 @@ class TkPanelView(PanelView):
             row=state["row"], column=column, sticky="w", padx=(0, PAD), pady=GAP)
 
     def _flow_strip(self, strip, width):
-        """Lay a command group out in as many lines as its width needs.
+        """Lay a flow of cells out in as many lines as its width needs.
 
-        Each line is a frame of its own, so a line's buttons are packed
-        side by side at their own widths (a grid would share column widths
-        between lines). The buttons stay children of the strip and are packed
-        `in_` a line, raised above it so the line frame does not hide them.
+        Each line is a frame of its own, so a line's cells are packed side
+        by side at their own widths (a grid would share column widths between
+        lines). The cells stay children of the strip and are packed `in_` a
+        line, raised above it so the line frame does not hide them; they sit
+        on the line's baseline, so a command lines up with the value beside
+        it. A hidden cell (a quiet status, E) takes no place.
         """
         flow = self._flows.get(id(strip))
         if flow is None or not flow["items"]:
@@ -2044,71 +2201,138 @@ class TkPanelView(PanelView):
                 width = strip.winfo_width()
             except Exception:
                 width = None
+        if isinstance(width, int) and width > 1:
+            flow["width"] = width
+            self._fit_sliders(flow, width)
+        shown = [widget for widget in flow["items"] if id(widget) not in flow["hidden"]]
         widths = []
-        for widget in flow["items"]:
+        for widget in shown:
             try:
                 wanted = widget.winfo_reqwidth()
             except Exception:
                 wanted = None
             widths.append(wanted if isinstance(wanted, int) else 0)
-        room = width if isinstance(width, int) and width > 1 else None
-        layout = tuple(_flow_lines(widths, room, PAD))
-        if layout == flow["layout"]:
+        # Every cell carries its gap on its right, the last one too.
+        room = width - SPACE[5] if isinstance(width, int) and width > 1 else None
+        layout = tuple(_flow_lines(widths, room, SPACE[5]))
+        key = (layout, tuple(id(widget) for widget in shown))
+        if key == flow["layout"]:
             return
-        flow["layout"] = layout
+        flow["layout"] = key
         lines = flow["rows"]
-        while len(lines) < max(layout) + 1:
-            line = tk.Frame(strip, background=_page())
-            lines.append(line)
+        count = (max(layout) + 1) if layout else 0
+        while len(lines) < count:
+            lines.append(tk.Frame(strip, background=_bg(strip)))
         for index, line in enumerate(lines):
             try:
-                if index <= max(layout):
-                    line.pack(side="top", anchor="w",
-                              pady=(0 if index == 0 else GAP, 0))
+                if index < count:
+                    line.pack(side="top", anchor="w", fill="x",
+                              pady=(0 if index == 0 else SPACE[3], 0))
                 else:
                     line.pack_forget()
             except Exception as exc:
-                events.debug("Command Line Not Placed", str(exc), source=SOURCE,
+                events.debug("Cell Line Not Placed", str(exc), source=SOURCE,
                              exception=exc, every=5.0)
-        for widget, index in zip(flow["items"], layout):
+        for widget in flow["items"]:
+            if id(widget) in flow["hidden"]:
+                try:
+                    widget.pack_forget()
+                except Exception:
+                    pass
+        for widget, index in zip(shown, layout):
             try:
                 widget.pack_forget()
-                widget.pack(in_=lines[index], side="left", padx=(0, PAD))
+                widget.pack(in_=lines[index], side="left", anchor="sw",
+                            padx=(0, SPACE[5]))
                 widget.lift()
             except Exception as exc:
-                events.debug("Command Not Placed", str(exc), source=SOURCE,
+                events.debug("Cell Not Placed", str(exc), source=SOURCE,
                              exception=exc, every=5.0)
+
+    #: The shortest a slider gets before its cell may wrap instead.
+    SLIDER_MIN_PX = 80
+
+    def _fit_sliders(self, flow, width):
+        """A slider gives up length before its cell overflows the column:
+        slider, entry and unit always fit, the slider between
+        `SLIDER_MIN_PX` and `VALUE_PX` (design px)."""
+        for element in flow.get("sliders", ()):
+            entry = self._entry_for(element)
+            scale, field, unit = entry.get("scale"), entry.get("cell"), entry.get("unit_label")
+            if scale is None or field is None:
+                continue
+            # What sits beside the slider does not depend on its length, so
+            # the fit converges in one pass (a cell's own request lags a
+            # length change until Tk is idle, and chasing it oscillated).
+            try:
+                others = field.winfo_reqwidth() + (unit.winfo_reqwidth() if unit else 0)
+            except Exception:
+                continue
+            if not isinstance(others, int):
+                continue
+            others += 2 * FOCUS_PX + SPACE[2] + SPACE[1]
+            length = max(_design_px(self.SLIDER_MIN_PX),
+                         min(_design_px(VALUE_PX), width - SPACE[5] - others))
+            if abs((entry.get("slider_px") or _design_px(VALUE_PX)) - length) <= SPACE[0]:
+                continue
+            entry["slider_px"] = length
+            try:
+                scale.configure(length=length)
+            except Exception:
+                pass
+
+    def _set_shown(self, element, is_shown):
+        """Status by exception (E): a tier-1 readout whose value is normal
+        (`theme.QUIET_VALUES`) takes no place; it comes back when it is not."""
+        entry = self._entry_for(element)
+        box, strip = entry.get("box"), entry.get("strip")
+        flow = self._flows.get(id(strip)) if strip is not None else None
+        if box is None or flow is None:
+            return
+        is_hidden = id(box) in flow["hidden"]
+        if is_hidden == (not is_shown):
+            return
+        (flow["hidden"].discard if is_shown else flow["hidden"].add)(id(box))
+        entry["is_quiet"] = not is_shown
+        flow["layout"] = None
+        self._flow_strip(strip, flow.get("width"))
 
     def _wide_slot(self, container, caption=None):
         """Where a plot, a picture or a log goes: the full width of its
-        section, under its caption. -> (parent, place)"""
+        section, under its caption, after the cells before it; cells after
+        it start a new flow. -> (parent, place)"""
         state = self._cursor(container)
-        if state["layout"] == "column":
+        if state["layout"] == "cells":
             state["strip"] = None
+            background = _bg(container)
             if caption:
-                tk.Label(container, text=_label(caption), font=_font(), anchor="w",
-                         background=_page(), foreground=theme.MUTED
-                         ).grid(row=state["row"], column=0, columnspan=3,
-                                sticky="w", pady=(GAP, 0))
+                tk.Label(container, text=_label(caption), font=_caption_font(),
+                         anchor="w", background=background, foreground=theme.MUTED
+                         ).grid(row=state["row"], column=0, sticky="w",
+                                pady=(SPACE[3], 0))
                 state["row"] += 1
             row = state["row"]
             state["row"] += 1
             return container, lambda widget, sticky="ew": widget.grid(
-                row=row, column=0, columnspan=3, sticky=sticky, pady=GAP)
+                row=row, column=0, sticky=sticky, pady=GAP)
         parent, place = self._command_slot(container)
         return parent, lambda widget, sticky=None: place(widget)
 
+    #: The grid row of a section's notice: under everything in it.
+    NOTICE_ROW = 999
+
     def _notice_slot(self, container):
-        """(container, row, column, span): the grid cell under a control
-        where its refusal is shown. In a column section it is the row under
-        the control's own; in a table, the row under the table row."""
+        """(container, row, column, span): the grid cell where a refusal of
+        a control is shown. On the sheet it is the section's notice row,
+        under its controls; in a table, the row under the table row."""
         state = self._cursor(container)
-        if state["layout"] == "column":
-            return (container, state["row"] + 1, 0, 3)
+        if state["layout"] == "cells":
+            return (container, self.NOTICE_ROW, 0, 1)
         return (container, state["row"] + 1, 1, max(1, state.get("width") or 1))
 
     def _register(self, element, **widgets):
         entry = self._widgets.setdefault(id(element), {})
+        entry.setdefault("tier", self._building_tier)
         entry.update(widgets)
         entry.setdefault("is_enabled", True)
         return entry
@@ -2123,19 +2347,21 @@ class TkPanelView(PanelView):
 
         It sits in a `_Ring`: Aqua does not draw a Label's highlight ring, so
         an outlined command (an OFF toggle) rendered as bare text. It has
-        every state a control needs: hover (a step lighter), keyboard focus
-        (a 2 px ink ring; Return and Space press it), disabled (the theme's
-        disabled pair, and a click does nothing). It is at least
-        `MIN_TARGET_PX` tall at every font size.
+        every state a control needs: hover (a tone step), keyboard focus (a
+        2 px ink ring; Return and Space press it), disabled (the theme's
+        disabled pair and a muted edge, and a click does nothing). It is at
+        least `MIN_TARGET_PX` tall at every font size.
         """
-        ring = _Ring(parent, _page())
+        background = _bg(parent)
+        ring = _Ring(parent, background)
         widget = tk.Label(ring.inner, text=_label(element.get("text", "") if text is None
                                                  else text),
                           font=_font(), relief="flat", padx=SPACE[4],
                           pady=_target_pady(), cursor="hand2", takefocus=1,
                           highlightthickness=0)
         widget.pack(fill="both", expand=True)
-        self._register(element, widget=widget, outline=ring.inner, ring=ring)
+        self._register(element, widget=widget, outline=ring.inner, ring=ring,
+                       ground=background)
 
         def _on_widget_click(_event=None, element=element):
             if not self._entry_for(element).get("is_enabled", True):
@@ -2158,18 +2384,19 @@ class TkPanelView(PanelView):
         return ring.outer
 
     @staticmethod
-    def _command_colors(role):
+    def _command_colors(role, ground=None):
         """(background, foreground, border) of a command, from its role.
 
-        Only the stop object carries the signal colour. A danger command (a
-        model's own "Stop run") renders neutral, as it does in Qt and on the
-        Web (DS-9): one red. A warning one is outlined in the trace colour.
-        Every border is 3:1 on the panel."""
-        if role == "warning":
-            return _page(), theme.TRACE, theme.TRACE
-        background, foreground = theme.colors(
-            "neutral" if role in (None, "danger") else role)
-        return background, foreground, INPUT_BORDER
+        Bench sheet (E): `go` is ink-filled - the one you press; every other
+        command is outlined on the ground it sits on. Only the stop
+        object carries the signal colour: a danger command (a model's own
+        "Stop run") renders like any other (DS-9), and a warning is no
+        longer the trace colour, which is reserved for changing numbers.
+        The edge is the input border (muted), as the artboards draw it."""
+        if role == "go":
+            background, foreground = theme.colors("go")
+            return background, foreground, background
+        return ground or _page(), theme.TEXT, INPUT_BORDER
 
     def _paint_command(self, element):
         """Configure only what changed: an unchanged command costs a tuple
@@ -2178,21 +2405,26 @@ class TkPanelView(PanelView):
         widget = entry.get("widget")
         if widget is None:
             return
+        ground = entry.get("ground") or _page()
         if not entry.get("is_enabled", True):
+            # Disabled: the sheet with ink at 45 %, and a muted edge (Tk has
+            # no dashed edge on a Label).
             background, foreground = theme.DISABLED
-            border = theme.RULE
+            border = INPUT_BORDER
         elif element["type"] == "toggle":
             colors = theme.toggle_colors(element, bool(entry.get("is_on")))
             background, foreground, border = (colors["background"],
                                               colors["foreground"], colors["border"])
-            if not entry.get("is_on") and border != theme.SIGNAL:
-                # An OFF toggle is its role outlined on the panel; a quiet
-                # role's own fill is too close to the panel to be an outline.
-                border = INPUT_BORDER
+            if not entry.get("is_on"):
+                background = ground
         else:
-            background, foreground, border = self._command_colors(element.get("role"))
+            background, foreground, border = self._command_colors(
+                element.get("role"), ground)
         if entry.get("is_hovered") and entry.get("is_enabled", True):
-            background = theme.mix(background, theme.TEXT, 0.08)
+            # A filled command steps to muted; an outlined one to the other
+            # ground (the panel on the sheet, the sheet in a well).
+            background = (theme.MUTED if background == theme.TEXT
+                          else _counter(ground))
         is_focused = bool(entry.get("is_focused"))
         cursor = "hand2" if entry.get("is_enabled", True) else "arrow"
         key = (background, foreground, border, is_focused, cursor)
@@ -2215,54 +2447,85 @@ class TkPanelView(PanelView):
 
     # -- element renderers -------------------------------------------------
     def _make_readonly(self, container, element):
-        """A readout: a number in the trace colour, one step larger than its
-        caption, on the panel itself - no box, so it is never mistaken for a
-        field to type into - right-aligned at the same edge as the entries.
+        """A readout: a number, no box - never mistaken for a field to type
+        into.
 
-        It takes its cell's width and never asks for more: a value longer
-        than the cell ("identifying /dev/cu.debug-console (2 of 2)...") is
-        cut at a word with an ellipsis and the whole of it is the tooltip.
-        In a table's status column and in a bar it reads left to right like
-        the text it is; in a section it is a number and aligns right.
+        On the sheet (E) a rail reading is drawn big in the numeral face at
+        `theme.READING_SIZES` - `focal` for the opened model's axes,
+        `compact` for a closed one's, `primary` for a single value,
+        `secondary` for a change - and any other readout a step louder than
+        its caption. It is ink at rest and the trace colour only while its
+        value is changing (`CHANGING_S`). In a table's status column and in
+        a bar it reads left to right like the text it is.
+
+        A value longer than its room is cut with an ellipsis and the whole
+        of it is the tooltip.
         """
         parent, place = self._field(container, element)
         state = self._cursor(container)
         is_text = state["layout"] == "row"
         var = tk.StringVar(value="")
-        font = _font(STEP_1)
-        value = tk.Label(parent, text="", font=font, width=1,
-                         anchor="w" if is_text else "e", relief="flat",
-                         background=_page(), foreground=theme.TRACE)
-        place(value, "value")
-        tooltip = _Tooltip(value)
+        kind = None
+        if is_text:
+            font = _font(STEP_1)
+        elif element.get("rail"):
+            if state.get("axes"):
+                kind = "axes"
+            else:
+                kind = "primary" if not state["readings"] else "secondary"
+            state["readings"] += 1
+            font = _reading_font(self._reading_kind(kind))
+        elif state.get("inline"):
+            font = _font()
+        else:
+            font = _value_font()
+        background = _bg(parent)
+        options = dict(text="", font=font, relief="flat", background=background,
+                       foreground=theme.TEXT, highlightthickness=0)
+        if is_text:
+            options.update(width=1, anchor="w")
+        else:
+            options.update(anchor="w")
         mark = None
         if (element.get("role") or "neutral") == "danger" and not is_text:
             # A fault reason is ink with a signal mark beside it: signal
-            # text is 2.73:1 on the panel, and this is the one readout the
-            # operator must read during a fault (F14, AUD-5).
+            # text is too faint to read on the panel, and this is the one
+            # readout the operator must read during a fault (F14, AUD-5).
             size = _lamp_px()
-            mark = tk.Canvas(parent, width=size, height=size, background=_page(),
+            mark = tk.Canvas(parent, width=size, height=size, background=background,
                              highlightthickness=0)
-            mark.grid(row=state["last_row"], column=2, sticky="w",
-                      padx=(SPACE[1], 0))
+            place(mark, "mark")
+        value = tk.Label(parent, **options)
+        place(value, "value")
+        tooltip = _Tooltip(value)
         self._register(element, widget=value, var=var, font=font, tooltip=tooltip,
-                       shown=None, mark=mark)
+                       shown=None, mark=mark, changed_at=None, is_text=is_text)
+        if kind is not None:
+            self._readings.append((element, kind))
         value.bind("<Configure>", lambda _e, el=element: self._fit_readout(el),
                    add="+")
 
     def _fit_readout(self, element):
-        """Show as much of the value as the cell holds; the rest is the
-        tooltip. With no measure of the cell, show it all."""
+        """Show as much of the value as its room holds; the rest is the
+        tooltip. A table's status has its cell; a sheet readout has the
+        width of its flow. With no measure of either, show it all."""
         entry = self._entry_for(element)
         widget, var = entry.get("widget"), entry.get("var")
         if widget is None or var is None:
             return
         text = str(var.get() or "")
-        try:
-            room = widget.winfo_width() - 2 * int(widget.cget("padx") or 0) - 2
-        except Exception:
-            room = None
-        room = self._make_room(entry, text, room)
+        room = None
+        if entry.get("is_text"):
+            try:
+                room = widget.winfo_width() - 2 * int(widget.cget("padx") or 0) - 2
+            except Exception:
+                room = None
+            room = self._make_room(entry, text, room)
+        else:
+            flow = self._flows.get(id(entry.get("strip"))) or {}
+            width = flow.get("width")
+            if isinstance(width, int) and width > 1:
+                room = max(_design_px(VALUE_PX), width - SPACE[6])
         shown = _elide(entry.get("font"), text, room if isinstance(room, int) else None,
                        middle=_is_identifier(text))
         tooltip = entry.get("tooltip")
@@ -2413,6 +2676,7 @@ class TkPanelView(PanelView):
                 self._show_refused("")
         finally:
             self._acting = previous
+        self._sync_slider(element)
         return result
 
     def _on_dropdown_selected(self, element):
@@ -2522,6 +2786,9 @@ class TkPanelView(PanelView):
         return self._run(element, args=(path,))
 
     def _redraw_plot(self, element, series):
+        """The series as a trace polyline over a muted baseline, on the
+        ground it sits on; a latched model's line is muted, because a frozen
+        line drawn in trace reads as live (design-Sheet.md)."""
         entry = self._entry_for(element)
         canvas = entry.get("widget")
         if canvas is None:
@@ -2536,9 +2803,10 @@ class TkPanelView(PanelView):
                 width, height = measured
         except Exception:
             pass
+        is_frozen = (self._last_state or {}).get("mode") == "latched"
         # The same series at the same size is the same picture: it was
         # deleted and redrawn ten times a second regardless (F21).
-        key = (tuple(values), width, height)
+        key = (tuple(values), width, height, is_frozen)
         if entry.get("plot_key") == key:
             return
         entry["plot_key"] = key
@@ -2552,7 +2820,7 @@ class TkPanelView(PanelView):
             text = "no data yet" if not values else "one sample so far"
             try:
                 canvas.create_text(width / 2, height / 2, text=text,
-                                   fill=theme.MUTED, font=_font(SMALL))
+                                   fill=theme.MUTED, font=_caption_font())
             except Exception:
                 pass
             return
@@ -2564,7 +2832,8 @@ class TkPanelView(PanelView):
             points.append(index * step)
             points.append(height - ((value - low) / span) * (height - 10) - 5)
         try:
-            canvas.create_line(*points, fill=theme.TRACE, width=2)
+            canvas.create_line(*points, fill=theme.MUTED if is_frozen else theme.TRACE,
+                               width=2)
         except Exception as exc:
             events.debug("Plot Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
@@ -2747,8 +3016,8 @@ class TkPanelView(PanelView):
         parent, place = self._command_slot(container, element)
         place(self._button_label(parent, element, self._on_region_clicked))
         var = tk.StringVar(value=sch.format_region(None))
-        shown = tk.Label(parent, textvariable=var, font=_font(SMALL), anchor="w",
-                         background=_page(), foreground=theme.MUTED)
+        shown = tk.Label(parent, textvariable=var, font=_caption_font(), anchor="w",
+                         background=_bg(parent), foreground=theme.MUTED)
         place(shown)
         # The captured region is *drawn*, not announced: PySide's confirming
         # modal over an always-on-top overlay is PYSIDE-12's deadlock.
@@ -2769,16 +3038,15 @@ class TkPanelView(PanelView):
         publishes the series and each renderer draws it (D-6)."""
         parent, place = self._wide_slot(container, element.get("text"))
         canvas = tk.Canvas(parent, height=160, width=360,
-                           background=theme.BACKGROUND, highlightthickness=1,
-                           highlightbackground=theme.RULE)
+                           background=_bg(parent), highlightthickness=0)
         place(canvas)
         self._register(element, widget=canvas)
 
     def _make_image(self, container, element):
         parent, place = self._wide_slot(container, element.get("text"))
-        widget = tk.Label(parent, background=theme.BACKGROUND,
+        widget = tk.Label(parent, background=_bg(parent),
                           foreground=theme.MUTED, text="No figure yet",
-                          font=_font(SMALL), padx=PAD, pady=PAD)
+                          font=_caption_font(), padx=PAD, pady=PAD)
         place(widget, "w")
         self._slow_commands.add(element.get("data_command"))
         self._register(element, widget=widget, photo=None, data=None)
@@ -2789,13 +3057,14 @@ class TkPanelView(PanelView):
         The label went on the lamp as well as in front of it, so a fault
         indicator read "Fault   Fault" and said nothing about the fault. The
         caption names it once; the lamp carries only the state: lit, it is
-        filled with the trace colour (the signal colour for a danger lamp -
-        a latch, a fault); unlit, it is an empty ring.
+        filled with ink (signal for a danger lamp - a latch, a fault; never
+        the trace colour, which is for changing numbers, E); unlit, it is an
+        empty muted ring.
         """
         parent, place = self._field(container, element)
         size = _lamp_px()
         widget = tk.Canvas(parent, width=size, height=size,
-                           background=_page(), highlightthickness=0)
+                           background=_bg(parent), highlightthickness=0)
         place(widget, "mark")
         self._register(element, widget=widget, lamp=None, size=size)
 
@@ -2803,8 +3072,8 @@ class TkPanelView(PanelView):
     def _lamp_colors(element, is_on):
         """(fill, ring) of a lamp."""
         if not is_on:
-            return _page(), theme.MUTED
-        lit = theme.SIGNAL if element.get("on_role") == "danger" else theme.TRACE
+            return "", theme.MUTED
+        lit = theme.SIGNAL if element.get("on_role") == "danger" else theme.TEXT
         return lit, lit
 
     def _make_log_stream(self, container, element):
@@ -2823,13 +3092,13 @@ class TkPanelView(PanelView):
 
     @staticmethod
     def _log_text(parent, lines=EVENT_LOG_LINES + 1):
-        """The feed itself: read-only text in the small step, on the field
-        colour, one hairline around it."""
+        """The feed itself: read-only text in the small step, in a well of
+        the other ground (no box, E)."""
         return tk.Text(parent, height=lines, width=48,
                        state="disabled", relief="flat", font=_font(SMALL),
-                       background=theme.BACKGROUND, foreground=theme.TEXT,
-                       highlightthickness=1, highlightbackground=theme.RULE,
-                       padx=GAP, pady=GAP, wrap="word")
+                       background=_counter(_bg(parent)), foreground=theme.TEXT,
+                       highlightthickness=0, padx=SPACE[3], pady=SPACE[3],
+                       wrap="word")
 
     # -- a detached log stream's window (G4, I1) --------------------------
     #: The feed's natural size, in characters and lines; the least it may
@@ -3031,10 +3300,12 @@ class TkPanelView(PanelView):
         return "break"
 
     def _wants_data(self, element):
-        """A detached stream is polled only while its window is open."""
+        """A detached stream is polled only while its window is open, and
+        nothing in a closed tier is polled at all: Red Percent's plot and
+        its analysis figure are on demand (E)."""
         if element.get("type") == "log_stream" and element.get("detached"):
             return self._entry_for(element).get("window") is not None
-        return True
+        return self.is_disclosed(self._entry_for(element).get("tier") or 1)
 
     def _make_internal(self, container, element):
         """Renders nothing. The element exists so its command is in the
@@ -3136,11 +3407,20 @@ class TkPanelView(PanelView):
         var = entry.get("var")
         if var is None:
             return
-        text = "" if text is None else str(text)
-        text = self._display_text(element, text)
+        raw = "" if text is None else str(text)
+        text = self._display_text(element, raw)
         if element["type"] == "readonly":
+            previous = entry.get("shown_text")
+            if previous not in (None, "", EMPTY_READOUT) and previous != text:
+                entry["changed_at"] = time.monotonic()
             entry["shown_text"] = text
             self._style_readout(element, text)
+            if ((entry.get("tier") or 1) == 1 and entry.get("box") is not None
+                    and not element.get("rail")):
+                # Status by exception (E): a normal status is silence. A
+                # reading is never hidden - no value is shown as "--".
+                self._set_shown(element, raw.strip() not in theme.QUIET_VALUES
+                                and text not in theme.QUIET_VALUES)
         if element["type"] == "dropdown":
             options = entry.get("options") or []
             if text and text not in options:
@@ -3162,6 +3442,7 @@ class TkPanelView(PanelView):
             self._fit_readout(element)
         if element["type"] == "entry":
             self._bounds_hint(element)
+            self._sync_slider(element, text)
 
     def _set_on(self, element, is_on):
         entry = self._entry_for(element)
@@ -3170,8 +3451,19 @@ class TkPanelView(PanelView):
             return
         was_on = entry.get("is_on")
         entry["is_on"] = is_on
-        if entry.get("mushroom") is not None:
-            entry["mushroom"].set_latched(is_on)
+        if entry.get("switch") is not None:
+            entry["switch"].set_on(is_on)
+            words = entry.get("words")
+            text = _label(element["true_text"] if is_on else element["false_text"])
+            tooltip = entry.get("tooltip")
+            if tooltip is not None:
+                tooltip.text = str(element.get("tooltip_on" if is_on else "tooltip")
+                                   or element.get("tooltip") or "")
+            try:
+                if words is not None and words.cget("text") != text:
+                    words.configure(text=text)
+            except Exception:
+                pass
             return
         if element["type"] == "checkbox":
             # Every refresh, not only on a change: the widget flips its own
@@ -3242,10 +3534,18 @@ class TkPanelView(PanelView):
                 widget.configure(state=live if is_enabled else "disabled")
             except Exception:
                 pass
-        elif element["type"] in self.COMMANDS and entry.get("mushroom") is None:
+        elif element["type"] in self.COMMANDS and entry.get("switch") is None:
             if was_enabled != bool(is_enabled) or "painted" not in entry:
                 entry["painted"] = True
                 self._paint_command(element)
+        scale = entry.get("scale")
+        if scale is not None and was_enabled != bool(is_enabled):
+            # A disabled slider is muted and does not move (its style maps
+            # the disabled state).
+            try:
+                scale.state(["!disabled"] if is_enabled else ["disabled"])
+            except Exception:
+                pass
         if was_enabled != bool(is_enabled):
             events.debug("Gate Changed",
                          f"{self.name}/{element.get('text') or element.get('command')}"
@@ -3276,6 +3576,9 @@ class TkPanelView(PanelView):
                      source=SOURCE)
 
     def _paint_health(self):
+        """The head rule is 2 px of ink; it turns signal while a device link
+        is lost (F3) or while this model's stop did not confirm (E), and the
+        head says which in words."""
         lost, is_stale = self.lost_devices, bool(self._is_stale)
         if lost:
             title = f"{self.name} (connection lost)"
@@ -3284,12 +3587,12 @@ class TkPanelView(PanelView):
         else:
             title = self.name
         heading = theme.MUTED if is_stale and not lost else theme.TEXT
+        is_alarm = bool(lost) or self._is_unconfirmed
         try:
             self._title.configure(foreground=heading, text=title)
-            for label in self._section_titles:
-                label.configure(foreground=heading)
-            self._rule.configure(background=theme.SIGNAL if lost else theme.RULE,
-                                 height=FOCUS_PX if lost else 1)
+            self._rule.configure(background=theme.SIGNAL if is_alarm
+                                 else theme.RULE_STRONG,
+                                 height=theme.RULE_STRONG_PX)
         except Exception:
             pass
         try:
@@ -3298,8 +3601,8 @@ class TkPanelView(PanelView):
                     f"Connection lost: {_device_list(lost)}. Its readings are "
                     "frozen. Press Stop, check the cable, then relaunch from "
                     "Setup."))
-                self._health.pack(fill="x", padx=INSET, pady=(0, GAP),
-                                  after=self._rule)
+                self._health.pack(fill="x", padx=self._inset, pady=(0, GAP),
+                                  after=self._head)
             else:
                 self._health.configure(text="")
                 self._health.pack_forget()
@@ -3348,23 +3651,30 @@ class TkPanelView(PanelView):
         if not reason:
             try:
                 self._status.configure(text="")
+                self._status.pack_forget()
             except Exception:
                 pass
             return
         slot = self._entry_for(self._acting).get("slot") if self._acting else None
         if slot is None:
+            # A refusal with no control to sit under: a line at the foot of
+            # the entry, packed only while it has something to say.
             try:
                 self._status.configure(text=reason, foreground=theme.TEXT,
-                                       background=NOTICE_BG)
+                                       background=theme.SURFACE)
+                self._status.pack(fill="x", side="bottom", padx=self._inset,
+                                  pady=(0, GAP))
             except Exception:
                 pass
             return
         container, row, column, span = slot
         try:
+            # Ink on the other ground: a refusal is something to read, and
+            # it is set off by tone, never by the trace or the signal colour.
             notice = tk.Label(container, text=reason, font=_font(), anchor="w",
                               justify="left", wraplength=self._notice_room(container),
-                              background=NOTICE_BG, foreground=theme.TEXT,
-                              padx=SPACE[3], pady=SPACE[1])
+                              background=_counter(_bg(container)),
+                              foreground=theme.TEXT, padx=SPACE[3], pady=SPACE[1])
             notice.grid(row=row, column=column, columnspan=span, sticky="ew",
                         pady=(0, GAP))
         except Exception as exc:
@@ -3399,7 +3709,13 @@ class TkPanelView(PanelView):
         return 640
 
     def _scroll_into_view(self, widget):
-        """Scroll the panel just enough that `widget` is fully visible."""
+        """Scroll the panel just enough that `widget` is fully visible. On
+        the sheet, the sheet scrolls."""
+        if self._sheet is not None:
+            scroll = getattr(self._sheet, "scroll_into_view", None)
+            if callable(scroll):
+                scroll(widget)
+            return
         try:
             widget.update_idletasks()
             top, node = 0, widget
@@ -3446,7 +3762,9 @@ class TkPanelView(PanelView):
         return state
 
     def _apply_theme(self):
-        for widget in (self.frame, self._body, self._canvas):
+        widgets = (self.frame, self._body) if self._sheet is not None else (
+            self.frame, self._body, self._canvas)
+        for widget in widgets:
             try:
                 widget.configure(background=_page())
             except Exception:
@@ -3465,9 +3783,142 @@ class TkPanelView(PanelView):
                     self._refresh_options(element)
 
 
+class _Sheet:
+    """The scrolling sheet the model entries sit on (E): one canvas, one
+    body, one wheel. An entry is laid out on it by the dashboard and never
+    scrolls by itself; the rail - and the stop in it - never scrolls at all.
+    """
+
+    WHEEL_EVENTS = TkPanelView.WHEEL_EVENTS
+
+    def __init__(self, master):
+        self.frame = tk.Frame(master, background=_page())
+        self.scrollbar = ttk.Scrollbar(self.frame, orient="vertical")
+        self.canvas = tk.Canvas(self.frame, background=_page(), highlightthickness=0,
+                                yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.body = tk.Frame(self.canvas, background=_page(), padx=SPACE[10],
+                             pady=SPACE[9])
+        self.is_scrollbar_shown = False
+        try:
+            self.scrollbar.configure(command=self.canvas.yview)
+            self.window = self.canvas.create_window((0, 0), window=self.body,
+                                                    anchor="nw")
+        except Exception as exc:
+            self.window = None
+            events.debug("Sheet Not Wired", str(exc), source=SOURCE, exception=exc)
+        self.body.bind("<Configure>", self._on_body_resized)
+        self.canvas.bind("<Configure>", self._on_canvas_resized)
+        self.frame.bind("<Enter>", self._on_pointer_enter)
+        self.frame.bind("<Leave>", self._on_pointer_leave)
+
+    def _on_body_resized(self, _event=None):
+        try:
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        except Exception:
+            pass
+        self._sync_scrollbar()
+
+    def _on_canvas_resized(self, event=None):
+        width = getattr(event, "width", 0)
+        if self.window is None or not width:
+            return
+        try:
+            self.canvas.itemconfigure(self.window, width=width)
+        except Exception:
+            pass
+        self._sync_scrollbar()
+
+    def _sync_scrollbar(self):
+        try:
+            content = self.body.winfo_reqheight()
+            viewport = self.canvas.winfo_height()
+        except Exception:
+            return
+        if not (isinstance(content, int) and isinstance(viewport, int)) or viewport <= 1:
+            return
+        needed = content > viewport
+        if needed == self.is_scrollbar_shown:
+            return
+        self.is_scrollbar_shown = needed
+        try:
+            if needed:
+                self.scrollbar.pack(side="right", fill="y", before=self.canvas)
+            else:
+                self.scrollbar.pack_forget()
+                self.canvas.yview_moveto(0)
+        except Exception:
+            pass
+
+    def _on_pointer_enter(self, _event=None):
+        for sequence in self.WHEEL_EVENTS:
+            try:
+                self.frame.bind_all(sequence, self._on_wheel)
+            except Exception:
+                pass
+
+    def _on_pointer_leave(self, _event=None):
+        for sequence in self.WHEEL_EVENTS:
+            try:
+                self.frame.unbind_all(sequence)
+            except Exception:
+                pass
+
+    def _on_wheel(self, event):
+        number, delta = getattr(event, "num", 0), getattr(event, "delta", 0)
+        if number == 4:
+            step = -1
+        elif number == 5:
+            step = 1
+        elif delta:
+            step = -1 if delta > 0 else 1
+        else:
+            return None
+        try:
+            self.canvas.yview_scroll(step, "units")
+        except Exception:
+            pass
+        return "break"
+
+    def scroll_to_top(self):
+        try:
+            self.canvas.yview_moveto(0)
+        except Exception:
+            pass
+
+    def scroll_into_view(self, widget):
+        """Scroll just enough that `widget` is fully on screen."""
+        try:
+            widget.update_idletasks()
+            top, node = 0, widget
+            while node is not None and node is not self.body:
+                top += node.winfo_y()
+                node = node.master
+            bottom = top + widget.winfo_reqheight()
+            total = self.body.winfo_height()
+            first, last = self.canvas.yview()
+        except Exception:
+            return
+        numbers = (top, bottom, total, first, last)
+        if not all(isinstance(v, (int, float)) for v in numbers) or total <= 1:
+            return
+        view_top, view_bottom = first * total, last * total
+        if top >= view_top and bottom <= view_bottom:
+            return
+        target = (top - SPACE[4] if top < view_top
+                  else bottom + SPACE[4] - (view_bottom - view_top))
+        try:
+            self.canvas.yview_moveto(max(0.0, min(1.0, target / total)))
+        except Exception:
+            pass
+
+
 class TkDashboard(Dashboard):
-    """The window: a tab per model, the Setup panel, the global stop,
-    the event log and the acknowledged popup.
+    """The window (Bench sheet, E): a rail on the left - the station's name,
+    A's stop disc, the model list, Setup and Quit - and the sheet, where
+    every open model is an entry, the opened one first and full width.
+    Setup is a page of its own in place of the sheet. The event tray and
+    the alert band sit under the sheet.
 
     Everything that decides *policy* — which events pop up, what closing a
     model means, what the stop toggle does — is in `Dashboard`. This class
