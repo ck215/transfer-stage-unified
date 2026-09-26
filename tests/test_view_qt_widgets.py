@@ -1845,24 +1845,44 @@ def test_f9_the_latched_stop_shows_focus_in_ink(qapp, monkeypatch):
     assert abs(edge.red() - ink.red()) + abs(edge.green() - ink.green()) < 90
 
 
-def test_f9_a_global_shortcut_stops_and_never_clears(dashboard, controller):
-    """Ctrl+. everywhere - Qt's Ctrl is Cmd on macOS, where the physical
-    Control+. is bound too, as Tk binds both. Named on the face's tooltip and
-    on the rail's hint, in Tk's words."""
-    keys = [s.key() for s in dashboard.stop_shortcuts]
-    assert QKeySequence("Ctrl+.") in keys
-    if sys.platform == "darwin":
-        assert QKeySequence("Meta+.") in keys
-    assert all(s.context() == Qt.ShortcutContext.ApplicationShortcut
-               for s in dashboard.stop_shortcuts)
+def test_f9_g5_one_global_shortcut_control_period_stops_and_never_clears(
+        dashboard, controller, qapp):
+    """G5 (owner ruling 2026-09-25): Ctrl+. is the one chord, the physical
+    Control key on every OS; the Cmd+. chord F9 added on macOS is gone. Qt
+    spells the macOS Control key "Meta", so the binding is Qt's Meta there -
+    and Qt's Ctrl (the Command key on macOS) is bound nowhere. Named on the
+    face's tooltip and the rail's hint as "Ctrl+.", never as a glyph."""
+    from PySide6.QtGui import QShortcut
+    from PySide6.QtTest import QTest
+    shortcuts = dashboard.findChildren(QShortcut)
+    stops = [s for s in shortcuts if not s.key().isEmpty()
+             and s.key()[0].key() == Qt.Key.Key_Period]
+    assert stops == [dashboard.stop_shortcut]
+    combo = dashboard.stop_shortcut.key()[0]
+    control = (Qt.KeyboardModifier.MetaModifier if sys.platform == "darwin"
+               else Qt.KeyboardModifier.ControlModifier)
+    assert combo.keyboardModifiers() == control
+    assert dashboard.stop_shortcut.context() == Qt.ShortcutContext.ApplicationShortcut
     dashboard._sync_stop_button()
-    hint = f"Stop every model ({dashboard.stop_shortcut_text()})"
+    hint = "Stop every model (Ctrl+.)"
     assert dashboard.stop_button.toolTip().startswith(hint)
     assert dashboard.stop_hint.full_text() == hint
-    dashboard.stop_shortcuts[-1].activated.emit()
+    for text in (dashboard.stop_button.toolTip(), dashboard.stop_hint.full_text()):
+        assert not any(mark in text for mark in ("\u2318", "\u2303", "Cmd", "Meta"))
+    dashboard.show()
+    dashboard.activateWindow()
+    qapp.processEvents()
+    # The other modifier (Command on macOS, the Windows/Super key elsewhere)
+    # is not the stop.
+    other = (Qt.KeyboardModifier.ControlModifier if sys.platform == "darwin"
+             else Qt.KeyboardModifier.MetaModifier)
+    QTest.keyClick(dashboard, Qt.Key.Key_Period, other)
+    qapp.processEvents()
+    assert controller.estop_calls == 0
+    QTest.keyClick(dashboard, Qt.Key.Key_Period, control)
+    qapp.processEvents()
     assert controller.estop_calls == 1 and controller.is_estopped
-    for shortcut in dashboard.stop_shortcuts:   # latched: it does not clear
-        shortcut.activated.emit()
+    dashboard.stop_shortcut.activated.emit()      # latched: it does not clear
     assert controller.is_estopped is True and controller.estop_calls == 1
     dashboard._sync_stop_button()
     assert dashboard.stop_hint.full_text() == "Clear the stop on every model"

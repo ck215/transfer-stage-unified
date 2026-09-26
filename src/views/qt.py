@@ -1,4 +1,3 @@
-import sys
 """The PySide6 frontend: one window, one panel renderer, three pure widgets.
 
 Replaces `legacy/src/views/pyside/view.py` (1368 lines), `style.qss`, and the PySide
@@ -67,6 +66,7 @@ import math
 import os
 import re
 import shutil
+import sys
 
 import schema as sch
 from events import events
@@ -174,15 +174,19 @@ STOP_FACE_STEP = STEP_READOUT
 #: ring still change, so the state still shows (AUD-14).
 PULSE_MS = 400
 DANGER_ROLE = "danger"
-#: The global stop's keyboard shortcut: Cmd+. on macOS (the platform's own
-#: "stop what you are doing"), Ctrl+. elsewhere. It only ever stops; clearing
-#: stays a deliberate press of the face, and a question (F9).
-STOP_SHORTCUT = "Ctrl+."
-#: Qt's "Ctrl" is the Command key on macOS, so there the physical
-#: Control-period is bound as well, as Tk binds both (`Meta` is Control on
-#: macOS in Qt's naming).
-STOP_SHORTCUTS = (STOP_SHORTCUT,) + (("Meta+.",) if sys.platform == "darwin"
-                                     else ())
+#: The global stop's keyboard shortcut, as the operator reads it: Control
+#: and period, the same two keys on macOS, Windows and Linux (owner ruling
+#: 2026-09-25, G5: no platform-specific UI; the Cmd+. chord is gone). It only
+#: ever stops; clearing stays a deliberate press of the face, and a question
+#: (F9).
+STOP_SHORTCUT_TEXT = "Ctrl+."
+#: The same keys in Qt's spelling. Qt names the macOS Command key "Ctrl" and
+#: the macOS Control key "Meta", so the physical Control+period is "Meta+." on
+#: macOS and "Ctrl+." everywhere else. A naming quirk the toolkit forces, not
+#: a second chord: one binding, the same keys pressed on every OS, and no
+#: Command binding anywhere. (`AA_MacDontSwapCtrlAndMeta` would remove the
+#: branch but also move Copy/Paste in every text field off the Command key.)
+STOP_SHORTCUT = "Meta+." if sys.platform == "darwin" else "Ctrl+."
 #: The stop's two names, the Web and Tk views' words: what a press does.
 STOP_HINT, CLEAR_HINT = "Stop every model", "Clear the stop on every model"
 #: How many of a model's key numbers the rail carries (the Web view's
@@ -3108,13 +3112,9 @@ class QtDashboard(Dashboard, QMainWindow):
         layout.addWidget(self.stop_button, 0, Qt.AlignmentFlag.AlignVCenter)
         # The stop from anywhere in the application, dialogs included; it only
         # ever stops (F9). The face's tooltip names it.
-        self.stop_shortcuts = []
-        for sequence in STOP_SHORTCUTS:
-            shortcut = QShortcut(QKeySequence(sequence), self)
-            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-            shortcut.activated.connect(self._on_stop_shortcut)
-            self.stop_shortcuts.append(shortcut)
-        self.stop_shortcut = self.stop_shortcuts[0]
+        self.stop_shortcut = QShortcut(QKeySequence(STOP_SHORTCUT), self)
+        self.stop_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.stop_shortcut.activated.connect(self._on_stop_shortcut)
 
         stack.addWidget(self._build_alert_band())
         self.setMenuWidget(self.rail)
@@ -3638,9 +3638,11 @@ class QtDashboard(Dashboard, QMainWindow):
         self.toggle_estop_all()
         self._sync_stop_button()
 
-    def stop_shortcut_text(self):
-        return QKeySequence(STOP_SHORTCUT).toString(
-            QKeySequence.SequenceFormat.NativeText)
+    @staticmethod
+    def stop_shortcut_text():
+        """The chord's name, spelled out: Qt's native text would print
+        "⌃." or "⌘." on macOS, and the chord reads the same on every OS."""
+        return STOP_SHORTCUT_TEXT
 
     def _sync_stop_button(self):
         """Face and ring from the Controller, never from the last click."""
