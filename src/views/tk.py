@@ -67,19 +67,32 @@ SPACE = theme.SPACE
 RATIO = theme.TYPE_RATIO
 SMALL, BASE, STEP_1, STEP_2 = -1, 0, 1, 2
 
-#: Widths. In a column section every entry, dropdown and readout fills ONE
-#: value column at least `VALUE_PX` wide, so a readout and the entry under it
-#: are the same width and end at the same right edge; the caption column
-#: takes the slack. `FIELD_WIDTH` (characters) is only an entry's *request*,
-#: deliberately below `VALUE_PX`, so the column decides and not the font.
-#: `DROPDOWN_WIDTH` is a table's dropdown, wide enough for a macOS port name.
+#: Widths. `FIELD_WIDTH` (characters) is an entry's request; a table's
+#: dropdown is `DROPDOWN_WIDTH`, wide enough for a macOS port name.
+#: `VALUE_PX` is the least a sheet cell's readout is given before it elides.
 VALUE_PX, FIELD_WIDTH, DROPDOWN_WIDTH = 168, 8, 22
 
-#: A panel lays its column sections out in as many columns as give each at
-#: least `COLUMN_PX` (a caption and a `VALUE_PX` value without crowding), up
-#: to `MAX_COLUMNS`: one on a narrow window, two at the default 1100 px, three
-#: on a wide one, where two would put a caption half a screen from its value.
-COLUMN_PX, MAX_COLUMNS = 400, 3
+#: The Bench sheet (E, 2026-09-25). The rail is `RAIL_PX` wide, and
+#: `RAIL_NARROW_PX` in a window under `NARROW_WINDOW_PX`, where the entries
+#: also stack in one column. Wider, the models that are not opened share
+#: rows of up to `SHEET_COLUMNS`, each column at least `COLUMN_PX` of the
+#: design size (so 28 pt text gets fewer, wider columns).
+RAIL_PX, RAIL_NARROW_PX, NARROW_WINDOW_PX = 248, 200, 1000
+SHEET_COLUMNS, COLUMN_PX = 3, 300
+
+#: The type sizes the theme gives in pixels (readings, captions, the stop's
+#: face) are drawn at the base font size the theme was designed at, and
+#: scale with `--font-size` from there.
+DESIGN_POINTS = 12
+
+#: A readout is drawn in the trace colour only while its value is changing:
+#: for `CHANGING_S` seconds after it last changed; ink otherwise.
+CHANGING_S = 1.0
+
+#: Axis letters: a readout captioned with one of these is a coordinate, and
+#: a section of them is captioned once, the letters inline ("Position",
+#: then X 12  Y -3  Z 0).
+AXIS_LETTERS = ("X", "Y", "Z")
 
 #: A table's columns when the window is short of width (UXPM5-5). The status
 #: column takes nearly all the slack (`STATUS_WEIGHT` to a dropdown's 1) and
@@ -89,8 +102,8 @@ COLUMN_PX, MAX_COLUMNS = 400, 3
 #: up width before a status word does.
 STATUS_WEIGHT, STATUS_MIN_CHARS = 100, 16
 
-#: Lines the dashboard event log shows before it scrolls. It is a footer, not
-#: a panel: eight lines of log was taking vertical space from the controls.
+#: Lines the event tray shows once "Show events" is pressed. Folded, it is
+#: one line: the latest warning or error, or nothing (status by exception).
 EVENT_LOG_LINES = 5
 
 #: The smallest an indicator lamp gets, in pixels. It grows with the text
@@ -106,21 +119,29 @@ EMPTY_READOUT = "--"
 #: tooltip, so nothing is ever cut off silently.
 ELLIPSIS = "…"
 
-#: The stop object. The dashboard's disc and the per-model disc in a Safety
-#: section are the same object in two sizes, as in the Web view. These are
-#: FLOORS: each disc is sized from its face font (`_Mushroom.diameter_for`),
-#: so "Clear" fits at every `--font-size` (F7). The pulse is one breath
-#: (up 7 %, back) when the latch closes, about 400 ms, and none at all with
-#: `STATION_NO_MOTION=1` in the environment.
-STOP_DIAMETER, MINI_STOP_DIAMETER = 64, 34
+#: The stop object: A's disc in the rail (`theme.STOP`), always signal red.
+#: `STOP_DIAMETER` is its floor at the design size; the disc grows from its
+#: face font (`_Mushroom.diameter_for`), so "Clear" fits at every
+#: `--font-size` (F7). The pulse is one breath (up 7 %, back) when the latch
+#: closes, about 400 ms, and none at all with `STATION_NO_MOTION=1`.
+STOP_DIAMETER, STOP_DIAMETER_NARROW = theme.STOP["diameter"], theme.STOP["diameter_narrow"]
+#: The face is a quarter of the disc, in the numeral face (A's disc).
+STOP_FACE_RATIO = 0.25
 PULSE_FRAMES, PULSE_FRAME_MS = (1.03, 1.06, 1.07, 1.05, 1.025, 1.0), 65
 NO_MOTION_ENV = "STATION_NO_MOTION"
 
-#: Copy the view owns: the stop's face, and what the bar beside it says the
-#: press will do. The Web view's words, so an action keeps its name in every
-#: frontend.
+#: Copy the view owns: the stop's face, what a press will do (its tooltip),
+#: and the line under it. The Web view's words, so an action keeps its name
+#: in every frontend.
 STOP_FACE, CLEAR_FACE = "Stop", "Clear"
 STOP_HINT, CLEAR_HINT = "Stop every model", "Clear the stop on every model"
+STOP_LINE = "Stop"
+LATCHED_LINE = "Stopped: every model latched"
+STOPPED_HEADLINE = "Every model is stopped."
+STOPPED_NEXT = "Clear the stop on the rail to continue."
+UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
+STATION_TITLE = "Transfer stage"
+SIMULATION_LINE = "Simulation, no hardware attached"
 
 #: The stop's keyboard shortcut, from anywhere in the window (F9). It only
 #: ever STOPS: clearing the latch stays a deliberate press on the disc and a
@@ -130,32 +151,35 @@ STOP_KEYS = ("<Control-period>",)
 STOP_KEY_NAME = "Ctrl+."
 
 #: Keyboard focus is a 2 px ring in ink on every focusable control (F25,
-#: WCAG 2.4.13); the stop's ring is `theme.STOP_FOCUS`, never the trace ring
-#: that means "latched".
+#: WCAG 2.4.13); the stop's ring is `theme.STOP_FOCUS`.
 FOCUS_PX = 2
 FOCUS_INK = theme.TEXT
 
-#: The boundary of anything typed into or pressed, at 3:1 on the panel
-#: (WCAG 1.4.11). `theme.RULE_STRONG` measures 1.98:1 on the panel, so this
-#: is derived here with the theme's one `mix()` until the theme carries an
-#: input-border token (CORE CHANGE REQUEST in the handoff).
-INPUT_BORDER = theme.mix(theme.SURFACE, theme.TEXT, 0.40)
+#: The edge of anything typed into, and of an outlined command: the theme's
+#: input border (muted, 5.4:1 on the panel, 5.9:1 on the sheet).
+INPUT_BORDER = theme.INPUT_BORDER
 
-#: The ttk style every tick box is drawn with (G3): a field-dark box with a
-#: 3:1 border and an ink tick - never the signal colour, which is the stop's
-#: alone. Its focus mark is the `_Ring` around it, so ttk's own is off.
+#: The ttk styles the view draws with. A tick box (G3) is an ink box with a
+#: sheet-coloured check mark, never the signal colour; its focus mark is the
+#: `_Ring` around it, so ttk's own is off. A slider is flat: a panel track,
+#: an ink thumb, muted when disabled.
 CHECK_STYLE = "Station.TCheckbutton"
+SCALE_STYLE = "Station.Horizontal.TScale"
+WELL_SCALE_STYLE = "StationWell.Horizontal.TScale"
+WELL_COMBO_STYLE = "Well.TCombobox"
 
 #: Every control a pointer presses is at least this tall, ring included
 #: (WCAG 2.5.8), at every font size.
 MIN_TARGET_PX = 24
 
-#: A refusal sits on a band tinted toward the warning colour, in ink: a
-#: refusal is something to read, and trace text is a live number (HC-16).
-NOTICE_BG = theme.mix(theme.SURFACE, theme.TRACE, 0.12)
+#: The chevron a disclosure wears, closed and open.
+CHEVRON = {False: "\u25b8", True: "\u25be"}
 
-#: The word beside each severity's colour, so severity is never colour alone.
+#: The event tray's marks (status by exception): a solid signal square for
+#: an error, a hollow ink one for a warning. Info is not drawn in the tray.
 SEVERITY_WORD = {"error": "Error", "warning": "Warning", "info": "Info"}
+MARK_SOLID, MARK_HOLLOW = "\u25a0", "\u25a1"
+TRAY_SEVERITIES = ("warning", "error")
 
 #: Unacknowledged errors the band lists by name before it summarises.
 BAND_LINES = 3
@@ -167,17 +191,85 @@ BAND_LINES = 3
 #: theme's points are handed to Tk as pixels (a negative size).
 _PIXEL_FONTS = False
 
+#: The faces Tk found installed (`_resolve_families`, once the root exists):
+#: the text face, else its fallback; the static "Archivo SemiExpanded"
+#: numeral face, else the numeral family, else the text face (bold either
+#: way). Tk has no OpenType feature switch, so tabular figures are the
+#: face's own (Helvetica's digits are tabular).
+_TEXT_FAMILY = theme.FONT_FAMILY
+_NUMERAL_FAMILY = theme.FONT_FAMILY
+
+
+def _resolve_families(root):
+    """Pick the installed faces once, from the theme's names."""
+    global _TEXT_FAMILY, _NUMERAL_FAMILY
+    try:
+        installed = set(str(name) for name in tkfont.families(root))
+    except Exception:
+        return
+    if not installed:
+        return
+    text = theme.FONT_FAMILY if theme.FONT_FAMILY in installed else theme.FONT_FALLBACK
+    numeral = next((name for name in (f"{theme.NUMERAL_FAMILY} SemiExpanded",
+                                      theme.NUMERAL_FAMILY) if name in installed), text)
+    _TEXT_FAMILY, _NUMERAL_FAMILY = text, numeral
+    events.debug("Faces", f"text={text!r} numerals={numeral!r}", source=SOURCE)
+
 
 def _font(step=BASE, bold=False):
     """One step of the type scale, `theme.size(step)`."""
     size = theme.size(step)
-    return (theme.FONT_FAMILY, -size if _PIXEL_FONTS else size,
+    return (_TEXT_FAMILY, -size if _PIXEL_FONTS else size,
             "bold" if bold else "normal")
 
 
+def _design_px(px):
+    """A size the theme gives in pixels, at the current `--font-size`."""
+    return max(1, round(px * theme.FONT_SIZE / DESIGN_POINTS))
+
+
+def _numeral_font(px):
+    """A reading, the stop's face or a headline: the numeral face, bold, at
+    `px` design pixels (Tk takes a negative size as pixels)."""
+    return (_NUMERAL_FAMILY, -_design_px(px), "bold")
+
+
+def _reading_font(kind):
+    return _numeral_font(theme.READING_SIZES[kind])
+
+
+def _value_font():
+    """A readout that is not a rail reading (a statistic, a status): the
+    numeral face, bold, one step over the text."""
+    size = theme.size(STEP_1)
+    return (_NUMERAL_FAMILY, -size if _PIXEL_FONTS else size, "bold")
+
+
+def _caption_font():
+    """A caption, a unit, an axis letter: `theme.CAPTION_SIZE`, muted."""
+    return (_TEXT_FAMILY, -_design_px(theme.CAPTION_SIZE), "normal")
+
+
+def _counter(background):
+    """The other of the two grounds: a well on the sheet is panel-toned, an
+    input inside a panel well is sheet-toned (design-Sheet.md: WELL is
+    context-dependent)."""
+    return theme.SURFACE if background == theme.BACKGROUND else theme.BACKGROUND
+
+
+def _bg(widget):
+    """The ground a widget is drawn on, so a child matches it."""
+    try:
+        colour = widget.cget("background")
+    except Exception:
+        colour = None
+    return colour if colour in (theme.BACKGROUND, theme.SURFACE) else _page()
+
+
 def _page():
-    """A notebook page's surface: the panel colour, as the Web view's cards."""
-    return theme.SURFACE
+    """The sheet: where every reading sits. Panel-toned wells, the rail and
+    inputs on the sheet are `theme.SURFACE` (Bench sheet, E)."""
+    return theme.BACKGROUND
 
 
 def _motion_reduced():
@@ -209,6 +301,38 @@ def _label(text):
     words = re.sub(r"\s*:\s*$", "", _sentence(text)).split(" ")
     return " ".join(word.lower() if index and _CAPITALISED.match(word) else word
                     for index, word in enumerate(words))
+
+
+_UNIT = re.compile(r"^(.*\S)\s*\(([^(),]{1,6})\)$")
+
+
+def _split_unit(text):
+    """A caption and its unit: "Position (deg)" -> ("Position", "deg"). A
+    presentation transform, like the axis letters; the schema is unedited.
+    A parenthetical that is not a short unit ("Velocity (x, y, z)") stays."""
+    match = _UNIT.match(text or "")
+    return (match.group(1), match.group(2)) if match else (text, "")
+
+
+def _is_number(text):
+    """True for a reading ("-352", "24.98", "0.18"), not for a word or an
+    identifier: only a changing NUMBER is drawn in the trace colour."""
+    try:
+        float(str(text).replace(",", "").split(" ")[0])
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _tier_of(section):
+    """A section's tier; 1 when the schema does not say."""
+    return section.get("tier") or 1
+
+
+def _axis_of(text):
+    """"X" for a readout captioned "X:", else None."""
+    letter = _label(text).strip()
+    return letter if letter in AXIS_LETTERS else None
 
 
 _MEASURES = {}
@@ -621,7 +745,7 @@ class _RegionPicker:
         try:
             self._band = self.canvas.create_rectangle(
                 event.x, event.y, event.x, event.y,
-                outline=theme.TRACE, width=2)
+                outline=theme.TEXT, width=2)
         except Exception:
             self._band = None
 
@@ -740,22 +864,36 @@ class _Tooltip:
     close = _on_leave
 
 
+#: An input's underline: 1.5 px in the brief; Tk draws whole pixels.
+UNDERLINE_PX = 2
+
+
 class _Ring:
     """The two-pixel focus ring every focusable control wears (F25).
 
     Aqua draws no highlight ring on a Label and a one-pixel one elsewhere, so
     the ring is two frames: an outer pixel the colour of whatever it sits on,
-    and an inner pixel that is the control's resting border (3:1 on the
-    panel). Focused, both turn ink - a 2 px ring - and nothing moves,
-    because the ring's pixels are always there.
+    and an inner pixel that is the control's resting border. Focused, both
+    turn ink - a 2 px ring - and nothing moves, because the ring's pixels
+    are always there.
+
+    `underline=True` is an input on the Bench sheet: no box at rest (the
+    inner pixel is the ground too) and a muted underline under the field;
+    focused, the same 2 px ink ring and an ink underline.
     """
 
-    def __init__(self, parent, background, border=INPUT_BORDER):
+    def __init__(self, parent, background, border=INPUT_BORDER, underline=False):
         self.background, self.border = background, border
+        self.underline = underline
         self.outer = tk.Frame(parent, background=background,
                               padx=FOCUS_PX - 1, pady=FOCUS_PX - 1)
-        self.inner = tk.Frame(self.outer, background=border, padx=1, pady=1)
+        self.inner = tk.Frame(self.outer, background=background if underline
+                              else border, padx=1, pady=1)
         self.inner.pack(fill="both", expand=True)
+        self.line = None
+        if underline:
+            self.line = tk.Frame(self.inner, height=UNDERLINE_PX, background=border)
+            self.line.pack(side="bottom", fill="x")
         self.is_focused = False
 
     def paint(self, is_focused=None, border=None):
@@ -763,29 +901,36 @@ class _Ring:
             self.is_focused = is_focused
         if border is not None:
             self.border = border
+        rest = self.background if self.underline else self.border
         try:
             self.outer.configure(background=FOCUS_INK if self.is_focused
                                  else self.background)
-            self.inner.configure(background=FOCUS_INK if self.is_focused
-                                 else self.border)
+            self.inner.configure(background=FOCUS_INK if self.is_focused else rest)
+            if self.line is not None:
+                self.line.configure(background=FOCUS_INK if self.is_focused
+                                    else self.border)
         except Exception:
             pass
 
 
 class _Press:
-    """A chrome command for the window itself - Setup, Acknowledge, a
-    confirmation's Yes and No: a Label drawn as a button (`tk.Button`
-    ignores its colours on Aqua), in the ring, with hover, focus and
-    Return/Space. `ghost` draws it without a fill, as the Web rail's
-    Setup."""
+    """A chrome command for the window itself - the rail's Setup and Quit,
+    Acknowledge, Show events, a confirmation's Yes and No: a Label drawn as
+    a button (`tk.Button` ignores its colours on Aqua), in the ring, with
+    hover, focus and Return/Space.
+
+    Outlined in ink on its ground by default; `ghost` is text only (the
+    rail's Quit); `set_active(True)` fills it with ink (the rail's Setup
+    while Setup is the page shown)."""
 
     def __init__(self, parent, text, on_press, background, ghost=False):
         self.on_press = on_press
         self.background = background
         self.ghost = ghost
-        self.ring = _Ring(parent, background)
-        self.fill = background if ghost else theme.colors("neutral")[0]
-        self.ink = theme.MUTED if ghost else theme.TEXT
+        self.is_active = False
+        self.ring = _Ring(parent, background,
+                          border=background if ghost else INPUT_BORDER)
+        self.fill, self.ink = background, theme.TEXT
         self.widget = tk.Label(self.ring.inner, text=text, font=_font(),
                                background=self.fill, foreground=self.ink,
                                relief="flat", padx=SPACE[4], pady=_target_pady(),
@@ -807,13 +952,143 @@ class _Press:
         self.on_press()
         return "break"
 
+    def set_active(self, is_active):
+        if is_active == self.is_active:
+            return
+        self.is_active = is_active
+        self._hover(self.is_hovered)
+
     def _hover(self, is_hovered):
         self.is_hovered = is_hovered
+        if self.is_active:
+            fill, ink = theme.colors("go")
+        elif is_hovered:
+            fill, ink = _counter(self.background), theme.TEXT
+        else:
+            fill, ink = self.fill, self.ink
         try:
-            self.widget.configure(
-                background=theme.mix(self.fill, theme.TEXT, 0.08) if is_hovered
-                else self.fill,
-                foreground=theme.TEXT if is_hovered else self.ink)
+            self.widget.configure(background=fill, foreground=ink)
+        except Exception:
+            pass
+
+    def set_text(self, text):
+        try:
+            if self.widget.cget("text") != text:
+                self.widget.configure(text=text)
+        except Exception:
+            pass
+
+
+class _Switch:
+    """The per-model stop (E, tier 3): a small switch, not a second red disc.
+    Off, a muted track edge and a muted knob at the left; on (latched), a
+    signal track and a white knob at the right - the one other place the
+    signal colour is spent, because it IS the latch. A Canvas: Tk has no
+    switch. Keyboard: focus ring in ink, Return and Space press it."""
+
+    def __init__(self, master, on_press, background):
+        self.on_press = on_press
+        self.background = background
+        self.is_on = None
+        self.is_focused = False
+        width, height = (_design_px(v) for v in theme.SWITCH["track"])
+        self.track = (width, height)
+        pad = FOCUS_PX + SPACE[0]
+        self.canvas = tk.Canvas(master, width=width + 2 * pad, height=height + 2 * pad,
+                                background=background, highlightthickness=0,
+                                takefocus=1, cursor="hand2")
+        for sequence in ("<Button-1>", "<Return>", "<space>"):
+            self.canvas.bind(sequence, self._on_press)
+        self.canvas.bind("<FocusIn>", lambda _e: self._focus(True))
+        self.canvas.bind("<FocusOut>", lambda _e: self._focus(False))
+        self.draw()
+
+    def _on_press(self, _event=None):
+        self.on_press()
+        return "break"
+
+    def _focus(self, is_focused):
+        self.is_focused = is_focused
+        self.draw()
+
+    def set_on(self, is_on):
+        is_on = bool(is_on)
+        if is_on == self.is_on:
+            return
+        self.is_on = is_on
+        self.draw()
+
+    def draw(self):
+        canvas = self.canvas
+        try:
+            canvas.delete("all")
+        except Exception:
+            return
+        width, height = self.track
+        pad = FOCUS_PX + SPACE[0]
+        x0, y0, x1, y1 = pad, pad, pad + width, pad + height
+        radius = height / 2
+        on = bool(self.is_on)
+        fill = theme.SWITCH["on_fill"] if on else self.background
+        edge = theme.SWITCH["on_fill"] if on else theme.SWITCH["off_edge"]
+        knob_fill = theme.SWITCH["knob_on"] if on else theme.SWITCH["knob_off"]
+        knob = _design_px(theme.SWITCH["knob"])
+        try:
+            if self.is_focused:
+                canvas.create_rectangle(x0 - FOCUS_PX, y0 - FOCUS_PX, x1 + FOCUS_PX,
+                                        y1 + FOCUS_PX, outline=FOCUS_INK,
+                                        width=FOCUS_PX)
+            # A pill: two discs and the rectangle between them.
+            for x in (x0, x1 - height):
+                canvas.create_oval(x, y0, x + height, y1, fill=fill, outline=edge)
+            canvas.create_rectangle(x0 + radius, y0, x1 - radius, y1, fill=fill,
+                                    outline=fill)
+            canvas.create_line(x0 + radius, y0, x1 - radius, y0, fill=edge)
+            canvas.create_line(x0 + radius, y1, x1 - radius, y1, fill=edge)
+            centre = x1 - radius if on else x0 + radius
+            canvas.create_oval(centre - knob / 2, y0 + radius - knob / 2,
+                               centre + knob / 2, y0 + radius + knob / 2,
+                               fill=knob_fill, outline=knob_fill)
+        except Exception as exc:
+            events.debug("Switch Draw Failed", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+
+
+class _Disclosure:
+    """The one press that shows a model's next tier (E): a chevron and the
+    section's `disclosure` text, in ink, no box. Open, the chevron points
+    down. Keyboard: the 2 px ink ring, Return and Space."""
+
+    def __init__(self, parent, text, on_toggle, background):
+        self.text = text
+        self.on_toggle = on_toggle
+        self.is_open = False
+        self.ring = _Ring(parent, background, border=background)
+        self.widget = tk.Label(self.ring.inner, text=self._face(), font=_font(bold=True),
+                               background=background, foreground=theme.TEXT,
+                               relief="flat", padx=SPACE[2], pady=_target_pady(),
+                               cursor="hand2", takefocus=1, highlightthickness=0)
+        self.widget.pack(fill="both", expand=True)
+        for sequence in ("<Button-1>", "<Return>", "<space>"):
+            self.widget.bind(sequence, self._on_press)
+        self.widget.bind("<FocusIn>", lambda _e: self.ring.paint(True))
+        self.widget.bind("<FocusOut>", lambda _e: self.ring.paint(False))
+
+    @property
+    def frame(self):
+        return self.ring.outer
+
+    def _face(self):
+        return f"{CHEVRON[self.is_open]} {self.text}"
+
+    def _on_press(self, _event=None):
+        self.on_toggle(not self.is_open)
+        return "break"
+
+    def set_open(self, is_open):
+        self.is_open = bool(is_open)
+        try:
+            self.widget.configure(text=self._face())
         except Exception:
             pass
 
@@ -1090,13 +1365,28 @@ def _device_list(names):
     return ", ".join(words) or "a device"
 
 
+#: Which tiers each model had open, for the session: (model, tier) -> bool.
+#: A model closed and reopened, or an entry rebuilt, opens as it was left.
+_DISCLOSED = {}
+
+
 class TkPanelView(PanelView):
-    """One panel of controls, rendered from a schema.
+    """One model's entry on the Bench sheet, rendered from a schema.
 
     `PanelView.__init__` refuses to construct unless every element type in
     `schema.ELEMENT_TYPES` has a `_make_<type>` here, so a schema element this
     renderer cannot draw is a construction-time failure rather than a silent
     blank in one frontend.
+
+    An entry is a 2 px ink rule, the model's name, then its tier-1 body; its
+    tier-2 sections sit in ONE panel-toned well behind a disclosure, and its
+    tier-3 sections in a second disclosure ("Diagnostics") inside the well
+    (E, 2026-09-25). Every tier is BUILT at once - every entry travels with
+    every command whatever is shown - and a closed tier is simply not
+    mapped, nor polled for data.
+
+    `sheet` is the dashboard's scrolling sheet when the entry lives on it;
+    without one (Setup's page, a test) the view scrolls its own body.
     """
 
     #: How often the dropdown option lists are re-read. Options can be
@@ -3205,17 +3495,15 @@ class TkDashboard(Dashboard):
     def _configure_styles(self):
         """Fonts in the Mac's own points, and ttk drawn from the theme.
 
-        Aqua's ttk ignores colours (a blue-arrowed white combobox and a
-        centred silver tab strip on a dark panel), so ttk runs the `clam`
-        theme here, coloured from the same six tokens, on every platform:
-        tabs left-aligned on the type scale, dark fields with a hairline
-        border and a trace focus ring, quiet scrollbars.
+        Aqua's ttk ignores colours, so ttk runs the `clam` theme here,
+        coloured from the same six tokens, on every platform: no tab strip
+        (the rail is the way between pages), fields with no box, a flat
+        slider, an ink tick box, quiet scrollbars.
         """
         global _PIXEL_FONTS
         _PIXEL_FONTS = _windowing_system(self.root) == "aqua"
-        base, surface, text = theme.BACKGROUND, _page(), theme.TEXT
-        muted, rule = theme.MUTED, theme.RULE
-        control = theme.colors("neutral")[0]
+        base, panel, text = theme.BACKGROUND, theme.SURFACE, theme.TEXT
+        muted = theme.MUTED
         arrow = max(12, theme.size(BASE))
         try:
             style = ttk.Style(self.root)
@@ -3223,62 +3511,68 @@ class TkDashboard(Dashboard):
         except Exception as exc:
             events.debug("ttk Theme Not Set", str(exc), source=SOURCE, exception=exc)
             return
+        combo = dict(background=panel, foreground=text, arrowcolor=muted,
+                     lightcolor=panel, darkcolor=panel,
+                     padding=(SPACE[2], _target_pady() - SPACE[0]),
+                     arrowsize=arrow, focuscolor=FOCUS_INK)
         settings = [
             (".", dict(background=base, foreground=text, font=_font(),
-                       bordercolor=rule, lightcolor=base, darkcolor=base,
-                       troughcolor=base, focuscolor=FOCUS_INK,
-                       fieldbackground=base, selectbackground=control,
+                       bordercolor=panel, lightcolor=base, darkcolor=base,
+                       troughcolor=panel, focuscolor=FOCUS_INK,
+                       fieldbackground=panel, selectbackground=panel,
                        selectforeground=text, insertcolor=text, arrowcolor=muted)),
-            ("TFrame", dict(background=surface)),
+            ("TFrame", dict(background=base)),
             ("TNotebook", dict(background=base, borderwidth=0, tabmargins=(0, 0, 0, 0),
                                tabposition="nw", lightcolor=base, darkcolor=base,
                                bordercolor=base)),
-            # A focused tab is ringed in ink, 2 px; it resolved to the strip's
-            # own colour, so a focused tab showed nothing (AUD-10).
+            # The tab strip is not drawn (the rail chooses the page); should
+            # a tab ever take focus, its ring is ink, 2 px (AUD-10).
             ("TNotebook.Tab", dict(background=base, foreground=muted, font=_font(),
                                    padding=(SPACE[5], _target_pady() + FOCUS_PX),
                                    borderwidth=0, bordercolor=base, lightcolor=base,
                                    darkcolor=base, focuscolor=FOCUS_INK,
                                    focusthickness=FOCUS_PX)),
-            ("TCombobox", dict(fieldbackground=base, background=control,
-                               foreground=text, arrowcolor=muted,
-                               bordercolor=INPUT_BORDER, lightcolor=base,
-                               darkcolor=base, padding=(SPACE[2], _target_pady() - SPACE[0]),
-                               arrowsize=arrow, focuscolor=FOCUS_INK)),
-            (CHECK_STYLE, dict(background=surface, foreground=text,
+            ("TCombobox", dict(combo, fieldbackground=panel, bordercolor=panel)),
+            (WELL_COMBO_STYLE, dict(combo, fieldbackground=base, bordercolor=base,
+                                    background=base, lightcolor=base, darkcolor=base)),
+            (CHECK_STYLE, dict(background=base, foreground=text,
                                indicatorbackground=base, indicatorforeground=text,
-                               upperbordercolor=INPUT_BORDER,
-                               lowerbordercolor=INPUT_BORDER,
+                               upperbordercolor=muted, lowerbordercolor=muted,
                                indicatorsize=_lamp_px(), indicatormargin=0,
                                padding=SPACE[1], focusthickness=0,
-                               focuscolor=surface)),
-            ("Vertical.TScrollbar", dict(background=control, troughcolor=surface,
-                                         bordercolor=surface, lightcolor=control,
-                                         darkcolor=control, arrowcolor=muted,
+                               focuscolor=base)),
+            # A slider (E): drawn by `_style_slider` - the widget's own ground
+            # around a 4 px track and a round thumb.
+            (SCALE_STYLE, dict(background=base, borderwidth=0)),
+            (WELL_SCALE_STYLE, dict(background=panel, borderwidth=0)),
+            ("Vertical.TScrollbar", dict(background=panel, troughcolor=base,
+                                         bordercolor=base, lightcolor=panel,
+                                         darkcolor=panel, arrowcolor=muted,
                                          gripcount=0, arrowsize=arrow)),
         ]
+        combo_map = dict(
+            foreground=[("disabled", theme.DISABLED[1]), ("readonly", text)],
+            arrowcolor=[("disabled", theme.DISABLED[1]), ("hover", text)],
+            selectforeground=[("readonly", text)])
         maps = [
             ("TNotebook.Tab", dict(
-                background=[("selected", surface), ("active", theme.mix(base, surface, 0.5))],
-                foreground=[("selected", text), ("active", text)],
-                lightcolor=[("selected", surface)])),
-            ("TCombobox", dict(
-                fieldbackground=[("disabled", surface), ("readonly", base)],
-                foreground=[("disabled", theme.DISABLED[1]), ("readonly", text)],
-                bordercolor=[("focus", FOCUS_INK), ("hover", muted)],
-                arrowcolor=[("disabled", theme.DISABLED[1]), ("hover", text)],
-                background=[("active", theme.mix(control, text, 0.08))],
-                selectbackground=[("readonly", base)],
-                selectforeground=[("readonly", text)])),
+                background=[("selected", base), ("active", panel)],
+                foreground=[("selected", text), ("active", text)])),
+            ("TCombobox", dict(combo_map,
+                               fieldbackground=[("disabled", base), ("readonly", panel)],
+                               background=[("disabled", base), ("active", panel)],
+                               selectbackground=[("readonly", panel)])),
+            (WELL_COMBO_STYLE, dict(combo_map,
+                                    fieldbackground=[("disabled", panel), ("readonly", base)],
+                                    background=[("disabled", panel), ("active", base)],
+                                    selectbackground=[("readonly", base)])),
             (CHECK_STYLE, dict(
-                background=[("active", surface)],
-                indicatorbackground=[("disabled", surface),
-                                     ("pressed", theme.mix(base, text, 0.08))],
+                background=[("active", base)],
+                indicatorbackground=[("disabled", base), ("pressed", panel)],
                 indicatorforeground=[("disabled", theme.DISABLED[1])],
-                upperbordercolor=[("disabled", rule), ("hover", text)],
-                lowerbordercolor=[("disabled", rule), ("hover", text)])),
-            ("Vertical.TScrollbar", dict(
-                background=[("active", theme.mix(control, text, 0.12))])),
+                upperbordercolor=[("disabled", panel), ("hover", text)],
+                lowerbordercolor=[("disabled", panel), ("hover", text)])),
+            ("Vertical.TScrollbar", dict(background=[("active", muted)])),
         ]
         for name, options in settings:
             try:
@@ -3292,10 +3586,17 @@ class TkDashboard(Dashboard):
             except Exception as exc:
                 events.debug("ttk Style Map Refused", f"{name}: {exc}",
                              source=SOURCE, exception=exc)
+        try:
+            # No tab strip: the rail is the way to Setup and to each model.
+            style.layout("TNotebook.Tab", [])
+        except Exception as exc:
+            events.debug("Tab Strip Kept", str(exc), source=SOURCE, exception=exc)
+        self._style_check_mark(style)
+        self._style_slider(style)
         # A combobox's open list is a plain Tk listbox, styled by option.
         for option, value in (("*TCombobox*Listbox.background", base),
                               ("*TCombobox*Listbox.foreground", text),
-                              ("*TCombobox*Listbox.selectBackground", control),
+                              ("*TCombobox*Listbox.selectBackground", panel),
                               ("*TCombobox*Listbox.selectForeground", text),
                               ("*TCombobox*Listbox.font", _font())):
             try:
