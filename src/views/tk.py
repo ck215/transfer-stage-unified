@@ -134,6 +134,11 @@ FOCUS_INK = theme.TEXT
 #: input-border token (CORE CHANGE REQUEST in the handoff).
 INPUT_BORDER = theme.mix(theme.SURFACE, theme.TEXT, 0.40)
 
+#: The ttk style every tick box is drawn with (G3): a field-dark box with a
+#: 3:1 border and an ink tick - never the signal colour, which is the stop's
+#: alone. Its focus mark is the `_Ring` around it, so ttk's own is off.
+CHECK_STYLE = "Station.TCheckbutton"
+
 #: Every control a pointer presses is at least this tall, ring included
 #: (WCAG 2.5.8), at every font size.
 MIN_TARGET_PX = 24
@@ -1258,7 +1263,7 @@ class TkPanelView(PanelView):
     # -- layout: planning a table --------------------------------------------
     #: Element types drawn with a caption in front of them. A button names
     #: itself; these name the value beside them.
-    CAPTIONED = ("readonly", "entry", "dropdown", "indicator")
+    CAPTIONED = ("readonly", "entry", "dropdown", "indicator", "checkbox")
     #: Element types that are commands, and share one line of buttons.
     COMMANDS = ("button", "toggle", "file_save", "file_open", "region_select")
 
@@ -2068,6 +2073,42 @@ class TkPanelView(PanelView):
         place(self._button_label(parent, element, lambda el: self._run_toggle(el),
                                  text=element.get("false_text", "")))
 
+    def _make_checkbox(self, container, element):
+        """A tick box (G3): a `ttk.Checkbutton` on a BooleanVar.
+
+        The variable is the model's value, written by `_set_on` on every
+        refresh and never read back: a click sends the NEW value through
+        `_run_checkbox`, which reads the model, so a box drawn one refresh
+        behind still flips the right way. In a table it is a narrow column
+        under its caption ("Launch", said once in the header); elsewhere its
+        caption sits in front of it, like a lamp's. It wears the same focus
+        ring as a dropdown, and its hover text is the schema's `tooltip`.
+        """
+        parent, place = self._field(container, element)
+        var = tk.BooleanVar(value=False)
+        ring = _Ring(parent, _page(), border=_page())
+        widget = ttk.Checkbutton(ring.inner, variable=var, takefocus=1,
+                                 style=CHECK_STYLE,
+                                 command=lambda el=element: self._on_checkbox_clicked(el))
+        widget.pack(fill="both", expand=True)
+        place(ring.outer, "mark")
+        widget.bind("<FocusIn>", lambda _e, r=ring: r.paint(True))
+        widget.bind("<FocusOut>", lambda _e, r=ring: r.paint(False))
+        tooltip = _Tooltip(widget)
+        tooltip.text = str(element.get("tooltip") or "")
+        self._register(element, widget=widget, var=var, cell=ring.outer,
+                       ring=ring, tooltip=tooltip)
+
+    def _on_checkbox_clicked(self, element):
+        """Tk has already flipped the variable. A greyed box runs nothing and
+        is put back to what the model holds."""
+        entry = self._entry_for(element)
+        if not entry.get("is_enabled", True):
+            values = (self._last_state or {}).get("values") or {}
+            self._set_on(element, bool(values.get(element.get("model_attr"))))
+            return None
+        return self._run_checkbox(element)
+
     def _on_mushroom_pressed(self, element):
         if not self._entry_for(element).get("is_enabled", True):
             return None
@@ -2316,6 +2357,13 @@ class TkPanelView(PanelView):
         if entry.get("mushroom") is not None:
             entry["mushroom"].set_latched(is_on)
             return
+        if element["type"] == "checkbox":
+            # Every refresh, not only on a change: the widget flips its own
+            # variable on a click, and the model has the last word.
+            var = entry.get("var")
+            if var is not None and var.get() != bool(is_on):
+                var.set(bool(is_on))
+            return
         if element["type"] == "indicator":
             # Never text: the caption in front of the lamp already names it,
             # and a lamp that repeats its own label ("Fault   Fault") is the
@@ -2369,8 +2417,11 @@ class TkPanelView(PanelView):
         widget = entry.get("widget")
         if widget is None:
             return
-        if element["type"] in ("entry", "dropdown"):
-            live = "normal" if element["type"] == "entry" else "readonly"
+        if element["type"] in ("entry", "dropdown", "checkbox"):
+            # A disabled Combobox cannot be opened and a disabled
+            # Checkbutton cannot be ticked: the ttk state is the gate the
+            # operator meets, the flag is the one the handlers check.
+            live = "readonly" if element["type"] == "dropdown" else "normal"
             try:
                 widget.configure(state=live if is_enabled else "disabled")
             except Exception:
@@ -2688,6 +2739,13 @@ class TkDashboard(Dashboard):
                                bordercolor=INPUT_BORDER, lightcolor=base,
                                darkcolor=base, padding=(SPACE[2], _target_pady() - SPACE[0]),
                                arrowsize=arrow, focuscolor=FOCUS_INK)),
+            (CHECK_STYLE, dict(background=surface, foreground=text,
+                               indicatorbackground=base, indicatorforeground=text,
+                               upperbordercolor=INPUT_BORDER,
+                               lowerbordercolor=INPUT_BORDER,
+                               indicatorsize=_lamp_px(), indicatormargin=0,
+                               padding=SPACE[1], focusthickness=0,
+                               focuscolor=surface)),
             ("Vertical.TScrollbar", dict(background=control, troughcolor=surface,
                                          bordercolor=surface, lightcolor=control,
                                          darkcolor=control, arrowcolor=muted,
@@ -2706,6 +2764,13 @@ class TkDashboard(Dashboard):
                 background=[("active", theme.mix(control, text, 0.08))],
                 selectbackground=[("readonly", base)],
                 selectforeground=[("readonly", text)])),
+            (CHECK_STYLE, dict(
+                background=[("active", surface)],
+                indicatorbackground=[("disabled", surface),
+                                     ("pressed", theme.mix(base, text, 0.08))],
+                indicatorforeground=[("disabled", theme.DISABLED[1])],
+                upperbordercolor=[("disabled", rule), ("hover", text)],
+                lowerbordercolor=[("disabled", rule), ("hover", text)])),
             ("Vertical.TScrollbar", dict(
                 background=[("active", theme.mix(control, text, 0.12))])),
         ]
