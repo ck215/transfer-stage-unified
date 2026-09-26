@@ -2131,7 +2131,7 @@ class QtPanelView(PanelView, QWidget):
 
     def _make_log_stream(self, container, element):
         if element.get("detached"):
-            self._make_detached_log(container, element)
+            self._build_detached_log(container, element)
             return
         view = self._log_feed()
         # Fixed, not merely minimum: a QTextEdit takes every spare pixel a
@@ -2149,10 +2149,10 @@ class QtPanelView(PanelView, QWidget):
         return view
 
     # -- G4: a detached log stream -----------------------------------------
-    def _make_detached_log(self, container, element):
+    def _build_detached_log(self, container, element):
         """A button in the feed's place ("Gamepad log…"). The feed lives in
         ONE non-modal window, built on the first press and reused after; it
-        is polled only while that window is open (`_wants_data`)."""
+        is polled only while that window shows, per `_wants_data`."""
         caption = sentence_case(element.get("text", ""))
         button = QPushButton(f"{caption}\u2026")
         button.setProperty("role", element.get("role", "neutral"))
