@@ -386,12 +386,14 @@ every model is latched; a single model clears at its own switch).
 
 | # | Sev | Views | Item | Fix | Route |
 |---|---|---|---|---|---|
-| M1 | S3 | all | The 11 `window` tests and the Tk/Qt Tier L captures were not run on a display (owner working). | Window tests: **11 passed** on the display (owner's go, 2026-09-26 evening). The `l_{tk,qt}_*` capture ritual is still pending. | lead, display free |
+| M1 | S3 | all | The 11 `window` tests and the Tk/Qt Tier L captures were not run on a display (owner working). | **Done**: window tests 11 passed on the display; `l_{tk,qt}_{partial_stop,unconfirmed,cleared,disabled_reason}_1400x900.png` captured on the built-in display by window id (harness `scratchpad/lead/lshots/cap_{tk,qt}.py`) and reviewed by the lead. | done |
 | M2 | S3 | core | `red_monitor.run_id` is a fresh timestamp every second while idle, so the readout ticks (QT7-8). | One slug per idle period: mint it when a run ends / at open, keep it until a run starts or the name changes. | direct (model) |
 | M3 | S3 | core + views | The L3 gate words (mode → sentence) live in each view; Qt added "In manual mode", "No run in progress", "Nothing launched yet". | `views.base.gate_reason(mode)` as the one table; Web serves it. | direct → `router` per view |
 | M4 | S4 | qt, tk | Rail hover tone needs a theme colour (QT7-18). | `theme.RAIL_LIFT = mix(SURFACE, TEXT, 0.08)`, consumed by Tk and Qt. | direct (theme) |
-| M5 | S4 | qt | Red Percent's "Next step" line is cut at 28 characters (full text in the tooltip). | Wrap the readonly's text in the compact entry. | worktree qt |
+| M5 | S4 | qt, tk | Red Percent's "Next step" line is cut in the compact entry (Qt at 28 characters, Tk with an ellipsis); full on the device page. | Wrap the readonly's text in the compact entry. | worktree qt, tk |
 | M6 | S4 | web | Red Percent tier-1 caption misalignment and the "Shut down" wrap (IMP7-15 parts). | Per finding. | worktree web |
+| M8 | S4 | tk | After a partial stop the same "Error: Stop not confirmed …" line is drawn twice: once in the acknowledgement band and once as the tray's latest line (`l_tk_partial_stop`). | The tray's latest line yields while the band shows the same event. | worktree tk |
+| M9 | bench | dc | In SIM under Tk the DC Probe's stop came back unconfirmed on both runs ("Power down not supported", D-7 family) while under Qt it confirmed: the 1 s budget is timing-sensitive when the Tk loop is busy. Not a UI defect; a bench observation for D-7. | note under Tier B / D-7 | owner |
 | M7 | S4 | all | Qt lists Setup status words with a capital; Tk/Web sentence-case them client-side; the model could publish them capitalised once. | `setup.py` status words in sentence case. | direct (core) |
 
 ## Out of scope here
