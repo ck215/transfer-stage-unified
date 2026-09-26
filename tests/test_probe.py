@@ -66,10 +66,22 @@ class FakePort:
 
 
 class FakeGamepad:
+    """The pinned Gamepad surface, reporting input the way the device does.
+
+    Continuous input (sticks, triggers) is in `levels`. Discrete presses
+    (D-pad, bumpers) are *not*: the device zeroes those keys in `levels` and
+    parks one edge per press for `drain_edges()`, the single consumer. This
+    fake used to carry D-pad values in `levels`, which the real device never
+    produces, and that is how D3 (steps never reaching the wire) went unseen.
+    """
+
     status = "connected"
+    EDGE_KEYS = ("dpad_LR", "dpad_UD", "LBumper", "RBumper")
 
     def __init__(self, levels=None, bound=True):
-        self.levels = dict(levels or {})
+        self.levels = {key: (0 if key in self.EDGE_KEYS else value)
+                       for key, value in dict(levels or {}).items()}
+        self.edges = {}
         self.options = ["None", "Pad0", "Pad1"]
         self.log = ["[gamepad] bound"]
         self.is_bound = bound
@@ -97,6 +109,15 @@ class FakeGamepad:
 
     def set_gate(self, is_open):
         self.is_gate_open = bool(is_open)
+
+    def press(self, key, value=1):
+        """One discrete press, parked until drained (as `_capture_state`)."""
+        assert key in self.EDGE_KEYS
+        self.edges[key] = value
+
+    def drain_edges(self):
+        edges, self.edges = self.edges, {}
+        return edges
 
 
 def make_probe(cls=StepperProbe, lines=(), levels=None, bound=True):
@@ -633,6 +654,127 @@ def test_a_gamepad_read_that_raises_is_reported_not_swallowed(probe):
     with Collected() as log:
         assert probe._axis_state() == {}
     assert log.of("warning"), "a failed pad read must reach the operator"
+
+
+# -- D-pad and bumper steps (D3) --------------------------------------------
+#
+# A step travels in the manual jog packet (fields 8-10 of `<BBffffffffff`),
+# built from one drained edge per press. The stop path comes first: a pending
+# edge must never become motion while latched, gated, or outside manual.
+
+STEP_FIELDS = slice(8, 11)         # dpad_LR, dpad_UD, bumpers
+
+
+@pytest.fixture
+def neutral_probe():
+    """A probe whose pad reads neutral levels, as a bound real pad does, so a
+    merged edge *would* reach the packet if the stop path let it."""
+    probe, _port, _gamepad = make_probe(levels=LEVELS)
+    yield probe
+    probe._stop_threads()
+
+
+def _jogs(port):
+    import struct
+    from model.probe import PACKET_FORMAT
+    return [struct.unpack(PACKET_FORMAT, w) for w in port.writes if len(w) == 42]
+
+
+def _steps(port):
+    return [j for j in _jogs(port) if any(j[STEP_FIELDS])]
+
+
+@pytest.mark.loops
+def test_a_latched_probe_never_steps_from_a_pending_edge(neutral_probe):
+    """Stop path: a press parked before or during a latch is discarded, and
+    clearing the latch and re-entering manual does not release it."""
+    probe = neutral_probe
+    gamepad, port = probe.gamepad, probe.port
+    probe.set_mode("manual")
+    gamepad.press("dpad_LR", 1)
+    probe.estop()
+    gamepad.press("LBumper", 1)
+    for _ in range(3):
+        probe._jog_tick()
+    assert gamepad.edges == {}, "the latched tick must still consume the edges"
+    probe.clear_estop(confirmed=True)
+    probe.set_mode("manual")
+    for _ in range(3):
+        probe._jog_tick()
+    assert _steps(port) == [], "a pending edge stepped across a latch"
+
+
+@pytest.mark.loops
+def test_a_closed_gate_never_steps_from_a_pending_edge(neutral_probe):
+    probe = neutral_probe
+    gamepad, port = probe.gamepad, probe.port
+    probe.set_mode("manual")
+    gamepad.set_gate(False)
+    gamepad.press("dpad_UD", -1)
+    gamepad.press("RBumper", 1)
+    probe._jog_tick()
+    assert gamepad.edges == {}, "the gated tick must consume and discard"
+    gamepad.set_gate(True)
+    for _ in range(3):
+        probe._jog_tick()
+    assert _steps(port) == [], "a press made behind a closed gate stepped later"
+
+
+@pytest.mark.loops
+def test_a_press_made_while_idle_is_consumed_there_not_deferred(neutral_probe):
+    """Draining is unconditional: an idle tick eats the edge, so it cannot
+    fire on the first packet after entering manual (audit out_stale.txt)."""
+    probe = neutral_probe
+    gamepad, port = probe.gamepad, probe.port
+    probe.set_mode("idle")
+    gamepad.press("dpad_LR", 1)
+    probe._jog_tick()
+    assert gamepad.edges == {}
+    probe.set_mode("manual")
+    for _ in range(3):
+        probe._jog_tick()
+    assert _steps(port) == []
+
+
+@pytest.mark.loops
+def test_entering_manual_discards_a_press_no_tick_has_seen(neutral_probe):
+    probe = neutral_probe
+    gamepad, port = probe.gamepad, probe.port
+    probe.set_mode("idle")
+    gamepad.press("dpad_LR", 1)          # no tick between the press and entry
+    probe.set_mode("manual")
+    for _ in range(3):
+        probe._jog_tick()
+    assert _steps(port) == []
+
+
+@pytest.mark.loops
+def test_a_pending_edge_steps_once_in_manual_then_zeroes():
+    probe, port, gamepad = make_probe(levels=LEVELS)
+    probe.set_mode("manual")
+    gamepad.press("dpad_LR", -1)
+    gamepad.press("RBumper", 1)
+    for _ in range(4):
+        probe._jog_tick()
+    jogs = _jogs(port)
+    assert len(jogs) == 4
+    assert jogs[0][STEP_FIELDS] == (-1.0, 0.0, -1.0)
+    assert [j[STEP_FIELDS] for j in jogs[1:]] == [(0.0, 0.0, 0.0)] * 3
+    assert jogs[0][5:8] == (float(probe._number("x_step")),
+                            float(probe._number("y_step")),
+                            float(probe._number("z_step")))
+    probe._stop_threads()
+
+
+@pytest.mark.loops
+def test_a_pad_whose_levels_cannot_be_read_does_not_step():
+    """Held at neutral means no step either: an empty read sends no edge."""
+    probe, port, gamepad = make_probe(levels={})
+    probe.set_mode("manual")
+    gamepad.press("dpad_LR", 1)
+    probe._jog_tick()
+    probe._stop_threads()
+    assert _steps(port) == [] and gamepad.edges == {}
 
 
 # -- schema and state -------------------------------------------------------

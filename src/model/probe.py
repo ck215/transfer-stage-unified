@@ -69,6 +69,10 @@ _ENERGIZED = frozenset({ProbeMode.IDLE, ProbeMode.AUTO, ProbeMode.MANUAL,
 #: Modes reached only through a *confirmed* enable (invariant I-3.1).
 _ARMED = frozenset({ProbeMode.IDLE, ProbeMode.AUTO, ProbeMode.MANUAL})
 
+#: The discrete gamepad keys that carry a step in the jog packet (D3). They
+#: come from `Gamepad.drain_edges()`, never from `levels`.
+_STEP_KEYS = gamepad_device.Gamepad.EDGE_KEYS
+
 #: The modes in which a motion parameter may not be edited. One tuple, read by
 #: the schema entries and by the property setters, so what a view greys out and
 #: what the model refuses cannot drift apart (DC-6).
@@ -170,6 +174,7 @@ class Probe(Model):
         self._threads_stop = threading.Event()
         self._threads_stop.set()
         self._jog_thread = None
+        self._was_pumping = False     # the jog tick's previous pumping state
         self._sample_thread = None
         self._coil_kill_reported = False
 
@@ -335,6 +340,10 @@ class Probe(Model):
             self._guard(f"Mode change to {target.value}")
 
             self._energize(reason)
+            if target is ProbeMode.MANUAL and previous is not ProbeMode.MANUAL:
+                # Entering manual starts with no step pending (D3): a press
+                # parked before this point was not made in manual mode.
+                self._drain_edges()
             self._mode = target
             self._moving_deadline = None
             self._clear_fault()
@@ -677,30 +686,54 @@ class Probe(Model):
         the cache before the next send. Gating the *send* is what holds the
         axis.
         """
-        was_pumping = False
+        self._was_pumping = False
         while not self._threads_stop.wait(self.JOG_INTERVAL):
-            try:
-                pumping = self.is_manual and self._is_gate_open
-                if pumping and not self._estop.is_set():
-                    self._send_jog(self._axis_state())
-                elif was_pumping:
-                    # Neutral on exit (I-4.2): leaving manual mode, or having
-                    # the gate close under it, sends one zeroed frame or the
-                    # last non-zero command stands. One frame, not a stream --
-                    # the gate is not a stop.
-                    self._send_jog({})
-                was_pumping = pumping
-            except Refused as refusal:
-                events.debug("Jog Refused", refusal.reason, source=self.NAME,
-                             every=1.0)
-                was_pumping = False
-            except Exception as exc:
-                events.debug("Jog Pump Failed", repr(exc), source=self.NAME,
-                             exception=exc)
-                self._enter_fault("Manual control stopped working. Treat the "
-                                  "probe as live, stop it, and check the "
-                                  "gamepad and the connection.")
+            if not self._jog_tick():
                 return
+
+    def _jog_tick(self):
+        """One jog tick: the body of `_jog_loop`, driven directly by tests.
+
+        Returns False only when the pump has faulted and must stop.
+
+        D-pad and bumper steps (D3) travel in this packet, one per press: the
+        Gamepad parks each press as an edge and zeroes those keys in
+        `levels`, so the levels alone never carry a step. The edges are
+        drained on **every** tick in **every** mode and used only when this
+        tick sends a jog; otherwise they are discarded. Draining only while
+        pumping would leave a tap made while idle, gated or latched parked in
+        the pad, to fire on the first packet after entering manual.
+        """
+        try:
+            edges = self._drain_edges()
+            pumping = self.is_manual and self._is_gate_open
+            if pumping and not self._estop.is_set():
+                levels = self._axis_state()
+                if levels:
+                    # A pad whose levels could not be read is held at
+                    # neutral, so it does not step either.
+                    for key in _STEP_KEYS:
+                        levels[key] = edges.get(key, 0)
+                self._send_jog(levels)
+            elif self._was_pumping:
+                # Neutral on exit (I-4.2): leaving manual mode, or having
+                # the gate close under it, sends one zeroed frame or the
+                # last non-zero command stands. One frame, not a stream --
+                # the gate is not a stop.
+                self._send_jog({})
+            self._was_pumping = pumping
+        except Refused as refusal:
+            events.debug("Jog Refused", refusal.reason, source=self.NAME,
+                         every=1.0)
+            self._was_pumping = False
+        except Exception as exc:
+            events.debug("Jog Pump Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            self._enter_fault("Manual control stopped working. Treat the "
+                              "probe as live, stop it, and check the "
+                              "gamepad and the connection.")
+            return False
+        return True
 
     def _sample_loop(self):
         """Drain the position stream the firmware sends unasked.
@@ -884,6 +917,22 @@ class Probe(Model):
         self._gamepad_name = wanted
         events.debug("Gamepad", f"bound to {wanted!r}", source=self.NAME)
         return wanted
+
+    def _drain_edges(self):
+        """Discrete presses (D-pad, bumpers) since the last tick, or `{}`.
+
+        The one consumer of `Gamepad.drain_edges()`. A failed drain holds the
+        step fields at 0 and is logged; the levels read beside it reports a
+        broken pad to the operator.
+        """
+        if self.gamepad is None:
+            return {}
+        try:
+            return dict(self.gamepad.drain_edges() or {})
+        except Exception as exc:
+            events.debug("Gamepad Drain Failed", repr(exc), source=self.NAME,
+                         exception=exc, every=1.0)
+            return {}
 
     def _axis_state(self):
         """The gamepad's mapped levels, or `{}` if they could not be read.

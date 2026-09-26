@@ -832,3 +832,259 @@ def test_nothing_in_the_poll_loop_reaches_a_view(hub, fake_sdl):
         pad.close()
     finally:
         events.unsubscribe(seen.append)
+
+
+# ----------------------------------------------------------------------
+# D3: a real Gamepad into a real probe -- D-pad and bumper steps
+# ----------------------------------------------------------------------
+#
+# The join between the device and the model, which no test crossed before and
+# which is where the feature died: the device parks one edge per press and
+# zeroes those keys in `levels`, so a probe that reads `levels` alone sends
+# every jog packet with the step fields at 0. Every tick here is driven by
+# hand -- `pad.poll_once()` is one 200 Hz pad tick, `probe._jog_tick()` one
+# 50 Hz jog tick -- so nothing depends on sleeps.
+#
+# The layout numbers are today's LAYOUTS values (B1 / D10 bench items); these
+# tests take them as given and check only that a press becomes one step.
+
+import json
+import pathlib
+import struct
+
+from model.probe import PACKET_FORMAT, ChuckPositioner, StepperProbe
+from test_probe import FakePort
+
+_GOLDEN = json.loads((pathlib.Path(__file__).parent / "golden" / "probes.json")
+                     .read_text())
+_GOLDEN_HEX = {s["id"]: s["frames"][0]["hex"] for s in _GOLDEN["scenarios"]
+               if ".jog." in s["id"]}
+# The capture's motion parameters (tests/golden/capture.py STEP_INPUTS), so a
+# step packet can be compared with the pinned golden bytes byte for byte.
+_MOTION = {"x_step": "4", "y_step": "8", "z_step": "16",
+           "man_full_speed": "175"}
+
+_STEP = slice(8, 11)       # dpad_LR, dpad_UD, bumpers in the decoded packet
+
+# id, platform, SDL name, axes, buttons, idle triggers, bumpers (LB, RB),
+# trigger sources (L, R) as ("axis"|"button", index, pressed, released)
+_LAYOUT_CASES = {
+    "xbox-linux": ("xbox", "linux", "Xbox Series X Controller", 6, 11,
+                   (2, 5), (4, 5), (("axis", 2), ("axis", 5))),
+    "xbox-win32": ("xbox", "win32", "Controller (XBOX 360 For Windows)", 6, 11,
+                   (4, 5), (4, 5), (("axis", 4), ("axis", 5))),
+    "xbox_bluetooth-linux": ("xbox_bluetooth", "linux", "Xbox Wireless Controller",
+                             6, 11, (2, 4, 5), (6, 7),
+                             (("axis", 5), ("axis", 4))),
+    "logitech_f310-dinput": ("logitech_f310", "win32", "Logitech Dual Action",
+                             4, 12, (), (4, 5),
+                             (("button", 6), ("button", 7))),
+    "t16000m-win32": ("t16000m", "win32", "T.16000M", 6, 16, (), (4, 5),
+                      (("button", 3), ("button", 2))),
+}
+
+_PRESSES = {                # name -> (kind, index-or-value, step fields)
+    "dpad_right": ("hat", (1, 0), (1.0, 0.0, 0.0)),
+    "dpad_left": ("hat", (-1, 0), (-1.0, 0.0, 0.0)),
+    "dpad_up": ("hat", (0, 1), (0.0, 1.0, 0.0)),
+    "dpad_down": ("hat", (0, -1), (0.0, -1.0, 0.0)),
+    "bumper_left": ("bumper", 0, (0.0, 0.0, 1.0)),
+    "bumper_right": ("bumper", 1, (0.0, 0.0, -1.0)),
+}
+
+# The golden scenario that pins the same packet on the wire.
+_GOLDEN_FOR = {"dpad_right": "jog.dpad_left_right", "dpad_down": "jog.dpad_up_down",
+               "bumper_left": "jog.bumper_left", "bumper_right": "jog.bumper_right"}
+
+
+class _Rig:
+    """One real Gamepad over the fake SDL, bound into one real probe."""
+
+    def __init__(self, case, cls=StepperProbe):
+        (self.layout_id, platform, name, numaxes, numbuttons, idle,
+         self.bumpers, self.triggers) = _LAYOUT_CASES[case]
+        self.js = FakeJoystick(name=name, numaxes=numaxes,
+                               numbuttons=numbuttons, numhats=1)
+        for index in idle:
+            self.js.axes[index] = -1.0
+        self._patches = [patch.object(gamepad_module, "pygame",
+                                      FakePygame([self.js])),
+                         platform_as(platform)]
+        for p in self._patches:
+            p.__enter__()
+        self.hub = GamepadHub()
+        self.pad = Gamepad(cls.__name__, hub=self.hub)
+        assert self.pad.bind(0) is True
+        assert self.pad._layout_id == self.layout_id, "the case bound the wrong row"
+        self.port = FakePort()
+        self.probe = cls(port=self.port, gamepad=self.pad)
+        self.probe.port, self.probe.gamepad = self.port, self.pad
+        for key, value in _MOTION.items():
+            setattr(self.probe, key, value)
+        self.pad.poll_once()
+
+    def close(self):
+        self.probe._stop_threads()
+        self.pad.close()
+        self.hub.close()
+        for p in reversed(self._patches):
+            p.__exit__(None, None, None)
+
+    # -- input
+    def press(self, name, down=True):
+        kind, arg, _ = _PRESSES[name]
+        if kind == "hat":
+            self.js.hats[0] = arg if down else (0, 0)
+        else:
+            self.js.buttons[self.bumpers[arg]] = 1 if down else 0
+
+    def trigger(self, side, down=True):
+        kind, index = self.triggers[side]
+        if kind == "axis":
+            self.js.axes[index] = 1.0 if down else -1.0
+        else:
+            self.js.buttons[index] = 1 if down else 0
+
+    def tick(self, n=1):
+        """n jog ticks, four pad polls to each (200 Hz vs 50 Hz)."""
+        for _ in range(n):
+            for _ in range(4):
+                self.pad.poll_once()
+            self.probe._jog_tick()
+
+    # -- output
+    def packets(self):
+        return [w for w in self.port.writes if len(w) == 42]
+
+    def decoded(self):
+        return [struct.unpack(PACKET_FORMAT, w) for w in self.packets()]
+
+    def steps(self):
+        return [d for d in self.decoded() if any(d[_STEP])]
+
+
+@pytest.fixture(params=sorted(_LAYOUT_CASES))
+def rig(request):
+    made = _Rig(request.param)
+    yield made
+    made.close()
+
+
+@pytest.mark.parametrize("press", sorted(_PRESSES))
+def test_one_press_sends_exactly_one_step_packet_on_every_layout(rig, press):
+    rig.probe.set_mode("manual")
+    rig.port.writes.clear()
+    rig.press(press)
+    rig.tick(5)
+    rig.press(press, down=False)
+    rig.tick(5)
+
+    steps = rig.steps()
+    assert len(steps) == 1, f"{press}: {len(steps)} step packets, wanted 1"
+    step = steps[0]
+    assert step[_STEP] == _PRESSES[press][2]
+    assert step[5:8] == (4.0, 8.0, 16.0), "step sizes are the probe's own"
+    assert step[2:5] == (0.0, 0.0, 0.0), "a step carries no continuous jog"
+    assert len(rig.decoded()) == 10, "every other tick sent a zero-step packet"
+    if press in _GOLDEN_FOR:
+        packet = next(p for p in rig.packets() if any(
+            struct.unpack(PACKET_FORMAT, p)[_STEP]))
+        assert packet.hex() == _GOLDEN_HEX["stepper." + _GOLDEN_FOR[press]]
+
+
+def test_a_held_press_steps_once_and_a_second_press_steps_again(rig):
+    rig.probe.set_mode("manual")
+    rig.press("dpad_up")
+    rig.tick(50)
+    assert len(rig.steps()) == 1, "a held D-pad repeated"
+    rig.press("dpad_up", down=False)
+    rig.tick(2)
+    rig.press("dpad_up")
+    rig.tick(50)
+    assert len(rig.steps()) == 2
+
+
+def test_a_tap_shorter_than_a_jog_tick_still_steps_once(rig):
+    rig.probe.set_mode("manual")
+    rig.port.writes.clear()
+    rig.press("bumper_left")
+    rig.pad.poll_once()
+    rig.press("bumper_left", down=False)
+    rig.pad.poll_once()
+    rig.probe._jog_tick()
+    rig.tick(3)
+    assert [s[_STEP] for s in rig.steps()] == [(0.0, 0.0, 1.0)]
+
+
+@pytest.mark.parametrize("start", ["idle", "autonomous"])
+def test_a_press_made_outside_manual_never_steps_on_entering_it(rig, start):
+    rig.probe.set_mode(start)
+    rig.press("dpad_right")
+    rig.tick(3)
+    rig.press("dpad_right", down=False)
+    rig.tick(1)
+    rig.press("bumper_right")           # parked, with no jog tick before entry
+    rig.pad.poll_once()
+    rig.press("bumper_right", down=False)
+    rig.pad.poll_once()
+    rig.probe.set_mode("manual")
+    rig.tick(5)
+    assert rig.steps() == [], "a press made before manual stepped on entry"
+
+
+def test_no_step_while_the_gate_is_closed_nor_after_it_reopens(rig):
+    rig.probe.set_mode("manual")
+    rig.pad.set_gate(False)
+    rig.press("dpad_left")
+    rig.pad.poll_once()
+    assert rig.pad._pending_edges, "the pad should have latched the press"
+    rig.tick(3)
+    rig.press("dpad_left", down=False)
+    rig.tick(1)
+    rig.pad.set_gate(True)
+    rig.tick(5)
+    assert rig.steps() == []
+
+
+def test_no_step_while_latched_nor_after_the_latch_clears(rig):
+    rig.probe.set_mode("manual")
+    rig.probe.estop()
+    rig.press("bumper_left")
+    rig.pad.poll_once()
+    assert rig.pad._pending_edges, "the pad should have latched the press"
+    rig.tick(3)
+    rig.press("bumper_left", down=False)
+    rig.tick(1)
+    rig.probe.clear_estop(confirmed=True)
+    rig.probe.set_mode("manual")
+    rig.tick(5)
+    assert rig.steps() == []
+
+
+@pytest.mark.parametrize("side, z", [(0, 1.0), (1, -1.0)])
+def test_the_triggers_drive_continuous_z_and_never_a_step(rig, side, z):
+    rig.probe.set_mode("manual")
+    rig.port.writes.clear()
+    rig.trigger(side)
+    rig.tick(5)
+    rig.trigger(side, down=False)
+    rig.tick(2)
+    decoded = rig.decoded()
+    assert rig.steps() == [], "a trigger produced a step field"
+    assert [d[4] for d in decoded[:5]] == [z] * 5
+    assert decoded[-1][4] == 0.0
+
+
+def test_the_chuck_steps_from_the_same_press():
+    made = _Rig("xbox-win32", cls=ChuckPositioner)
+    try:
+        made.probe.set_mode("manual")
+        made.port.writes.clear()
+        made.press("dpad_down")
+        made.tick(3)
+        packet = next(p for p in made.packets()
+                      if any(struct.unpack(PACKET_FORMAT, p)[_STEP]))
+        assert packet.hex() == _GOLDEN_HEX["chuck.jog.dpad_up_down"]
+        assert len(made.steps()) == 1
+    finally:
+        made.close()
