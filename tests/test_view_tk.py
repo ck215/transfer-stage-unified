@@ -326,8 +326,17 @@ class FakeRoot(FakeWidget):
         self.commands = {}
         self.did_mainloop = 0
         self.did_quit = 0
+        self.titles = []
+        self.attrs = []
+        self.lifted = 0
 
-    def title(self, *_args):
+    def title(self, *args):
+        self.titles.extend(args)
+
+    def lift(self, *_args):
+        self.lifted += 1
+
+    def deiconify(self):
         pass
 
     def geometry(self, *_args):
@@ -348,8 +357,8 @@ class FakeRoot(FakeWidget):
     def overrideredirect(self, _flag):
         pass
 
-    def attributes(self, *_args):
-        pass
+    def attributes(self, *args):
+        self.attrs.append(args)
 
 
 class FakePhotoImage:
@@ -480,6 +489,8 @@ class DemoPanel(Panel):
         self.samples = []
         self.png = b"\x89PNG\r\n\x1a\n-demo"
         self.lines = ["first", "second"]
+        self.side = ["gamepad on", "X+ 1.0"]
+        self.side_reads = 0         # the detached stream's polls (G4)
         self.is_armed = False       # a checkbox (G3)
         self.target = None          # a dropdown live only while armed
 
@@ -517,6 +528,7 @@ class DemoPanel(Panel):
                              tooltip="Arm the demo"),
                 sch.dropdown("Target", "target", "set_target", "source_options",
                              enabled_by="is_armed"),
+                sch.log_stream("Side Log:", "side_lines", detached=True),
                 sch.region_select("Pick area", "set_region", model_attr="region"),
                 sch.file_save("Save", "save_run"),
                 sch.file_open("Load", "load_run"),
@@ -549,6 +561,10 @@ class DemoPanel(Panel):
 
     def source_options(self):
         return ["alpha", "beta"]
+
+    def side_lines(self):
+        self.side_reads += 1
+        return list(self.side)
 
     def set_armed(self, flag):
         self.is_armed = bool(flag)
@@ -2778,3 +2794,97 @@ def test_the_setup_row_dropdowns_follow_the_launch_box(setup_view):
     tick(view, box)
     assert getattr(setup, f"{key}_enabled") is True
     assert widget_of(view, port).cget("state") == "readonly"
+
+
+# ---------------------------------------------------------------------------
+# G4: a detached log stream is a button that opens its own window
+# ---------------------------------------------------------------------------
+
+def side_log(view):
+    return element_of(view, "log_stream", "Side Log:")
+
+
+def test_a_detached_log_stream_renders_a_button_and_no_feed(view):
+    element = side_log(view)
+    entry = view._widgets[id(element)]
+    button = entry["widget"]
+    assert not isinstance(button, FakeText)
+    assert button.cget("text") == "Side log\u2026"
+    assert entry.get("window") is None and entry.get("feed") is None
+    # the attached stream is still a feed on the card
+    assert isinstance(widget_of(view, element_of(view, "log_stream", "Log")), FakeText)
+
+
+def test_a_closed_log_window_is_never_polled(view, panel):
+    assert view._wants_data(side_log(view)) is False
+    assert view._wants_data(element_of(view, "log_stream", "Log")) is True
+    before = panel.side_reads
+    for _ in range(3):
+        view._refresh()
+    assert panel.side_reads == before == 0
+
+
+def test_the_log_button_opens_one_window_showing_the_source_lines(view, panel):
+    element = side_log(view)
+    click(view, element)
+    entry = view._widgets[id(element)]
+    window, feed = entry["window"], entry["feed"]
+    assert isinstance(window, FakeRoot) and not window.is_destroyed
+    assert isinstance(feed, FakeText) and feed.master is not None
+    assert window.titles and "Demo" in window.titles[-1] \
+        and "Side log" in window.titles[-1]
+    assert feed.body == "gamepad on\nX+ 1.0"
+    assert view._wants_data(element) is True
+    panel.side.append("Y- 2.0")
+    view._refresh()
+    assert feed.body.endswith("Y- 2.0")
+
+
+def test_the_log_window_is_not_modal_and_never_over_the_stop(view):
+    click(view, side_log(view))
+    window = view._widgets[id(side_log(view))]["window"]
+    assert GRABS == [], "no grab: the stop takes a click while it is open"
+    assert not any("-topmost" in args for args in window.attrs)
+
+
+def test_a_second_press_raises_the_same_window(view):
+    element = side_log(view)
+    click(view, element)
+    first = view._widgets[id(element)]["window"]
+    click(view, element)
+    assert view._widgets[id(element)]["window"] is first
+    assert first.lifted >= 1
+
+
+def test_escape_and_the_close_button_close_the_log_window(view, panel):
+    element = side_log(view)
+    for gesture in ("<Escape>", "close"):
+        click(view, element)
+        window = view._widgets[id(element)]["window"]
+        if gesture == "close":
+            window.protocols["WM_DELETE_WINDOW"]()
+        else:
+            window.fire(gesture)
+        assert window.is_destroyed, gesture
+        assert view._widgets[id(element)]["window"] is None
+        assert view._wants_data(element) is False
+        assert Focus.current is widget_of(view, element), "focus back to the button"
+    reads = panel.side_reads
+    view._refresh()
+    assert panel.side_reads == reads, "closed again: not polled"
+
+
+def test_closing_the_panel_destroys_the_log_window(controller):
+    built = tkmod.TkPanelView(FakeWidget(), controller, "Demo")
+    click(built, side_log(built))
+    window = built._widgets[id(side_log(built))]["window"]
+    built.close()
+    assert window.is_destroyed
+
+
+def test_the_stop_stays_live_while_the_log_window_is_open(dashboard, controller):
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    click(view, side_log(view))
+    ALL_BINDINGS["<Control-period>"](FakeEvent())
+    assert controller.estop_calls == 1

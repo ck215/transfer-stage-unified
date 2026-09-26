@@ -1251,6 +1251,10 @@ class TkPanelView(PanelView):
         # The wheel binding is application-wide while the pointer is here; a
         # closed panel must not be left holding it.
         self._on_pointer_leave()
+        # A log window outlives nothing it belongs to (G4).
+        for element in list(self._elements):
+            if self._entry_for(element).get("window") is not None:
+                self._close_log_window(element, restore_focus=False)
         super().close()
         self._widgets.clear()
         try:
@@ -2036,7 +2040,7 @@ class TkPanelView(PanelView):
 
     def _refresh_log(self, element, lines):
         entry = self._entry_for(element)
-        widget = entry.get("widget")
+        widget = entry.get("feed") if element.get("detached") else entry.get("widget")
         if widget is None:
             return
         text = "\n".join(str(line) for line in list(lines or [])[-40:])
@@ -2211,14 +2215,127 @@ class TkPanelView(PanelView):
         return lit, lit
 
     def _make_log_stream(self, container, element):
+        """A scrolling feed on the card, or - `detached` (G4) - a command in
+        its place that opens the feed in a window of its own."""
+        if element.get("detached"):
+            parent, place = self._command_slot(container, element)
+            place(self._button_label(parent, element, self._open_log_window,
+                                     text=_label(element.get("text", "")) + ELLIPSIS))
+            self._register(element, window=None, feed=None, last_text=None)
+            return
         parent, place = self._wide_slot(container, element.get("text"))
-        widget = tk.Text(parent, height=EVENT_LOG_LINES + 1, width=48,
-                         state="disabled", relief="flat", font=_font(SMALL),
-                         background=theme.BACKGROUND, foreground=theme.TEXT,
-                         highlightthickness=1, highlightbackground=theme.RULE,
-                         padx=GAP, pady=GAP, wrap="word")
+        widget = self._log_text(parent)
         place(widget)
         self._register(element, widget=widget, last_text=None)
+
+    @staticmethod
+    def _log_text(parent, lines=EVENT_LOG_LINES + 1):
+        """The feed itself: read-only text in the small step, on the field
+        colour, one hairline around it."""
+        return tk.Text(parent, height=lines, width=48,
+                       state="disabled", relief="flat", font=_font(SMALL),
+                       background=theme.BACKGROUND, foreground=theme.TEXT,
+                       highlightthickness=1, highlightbackground=theme.RULE,
+                       padx=GAP, pady=GAP, wrap="word")
+
+    # -- a detached log stream's window (G4) ------------------------------
+    #: The window's size. It opens at the top right of the station window,
+    #: well clear of the stop docked at the bottom, and is never topmost, so
+    #: a click on the station window brings the stop in front of it.
+    LOG_WINDOW_SIZE = (520, 300)
+
+    def _open_log_window(self, element):
+        """ONE non-modal window per stream: pressing again raises it. No
+        grab and no `wait_window`, so the stop disc and Ctrl+. work while
+        it is open; Escape and the close button close it."""
+        entry = self._entry_for(element)
+        window = entry.get("window")
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.deiconify()
+                    window.lift()
+                    window.focus_set()
+                    return window
+            except Exception:
+                pass
+            entry["window"] = entry["feed"] = None
+        label = _label(element.get("text", ""))
+        window = tk.Toplevel(self.frame)
+        try:
+            window.title(f"{self.name} \u2014 {label}")
+        except Exception:
+            pass
+        window.configure(background=_page())
+        body = tk.Frame(window, background=_page())
+        body.pack(fill="both", expand=True, padx=SPACE[4], pady=SPACE[4])
+        scrollbar = ttk.Scrollbar(body, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+        feed = self._log_text(body, lines=12)
+        feed.pack(side="left", fill="both", expand=True)
+        try:
+            feed.configure(yscrollcommand=scrollbar.set)
+            scrollbar.configure(command=feed.yview)
+        except Exception as exc:
+            events.debug("Log Scrollbar Not Wired", str(exc), source=SOURCE,
+                         exception=exc)
+        close = lambda _event=None, el=element: self._close_log_window(el)
+        window.bind("<Escape>", close)
+        try:
+            window.protocol("WM_DELETE_WINDOW", close)
+        except Exception:
+            pass
+        self._place_log_window(window)
+        entry.update(window=window, feed=feed, last_text=None)
+        events.debug("Log Window Opened", f"{self.name}/{label}", source=SOURCE)
+        # Filled now rather than on the next tick.
+        data = self._call(element["source_command"])
+        if data.is_ok:
+            self._refresh_log(element, data.value)
+        try:
+            window.focus_set()
+        except Exception:
+            pass
+        return window
+
+    def _place_log_window(self, window):
+        width, height = self.LOG_WINDOW_SIZE
+        try:
+            owner = self.frame.winfo_toplevel()
+            x = owner.winfo_rootx() + owner.winfo_width() - width - SPACE[6]
+            y = owner.winfo_rooty() + SPACE[6]
+            window.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            try:
+                window.geometry(f"{width}x{height}")
+            except Exception:
+                pass
+
+    def _close_log_window(self, element, restore_focus=True):
+        entry = self._entry_for(element)
+        window = entry.get("window")
+        entry.update(window=None, feed=None, last_text=None)
+        if window is not None:
+            try:
+                window.destroy()
+            except Exception:
+                pass
+            events.debug("Log Window Closed",
+                         f"{self.name}/{_label(element.get('text', ''))}",
+                         source=SOURCE)
+        button = entry.get("widget")
+        if restore_focus and button is not None:
+            try:
+                button.focus_set()      # F12: focus goes back where it came from
+            except Exception:
+                pass
+        return "break"
+
+    def _wants_data(self, element):
+        """A detached stream is polled only while its window is open."""
+        if element.get("type") == "log_stream" and element.get("detached"):
+            return self._entry_for(element).get("window") is not None
+        return True
 
     def _make_internal(self, container, element):
         """Renders nothing. The element exists so its command is in the
