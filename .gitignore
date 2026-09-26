@@ -31,9 +31,11 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# PyInstaller
+# PyInstaller: build/ and dist/ are ignored above; a generated *.spec is
+# scratch, but the station's own spec is source (PACKAGING_PLAN P3).
 *.manifest
 *.spec
+!packaging/station.spec
 
 # Installer logs
 pip-log.txt
