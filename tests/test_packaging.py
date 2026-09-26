@@ -275,3 +275,24 @@ def test_entry_qt_writes_the_plugin_path_into_the_station_log(entry_qt, monkeypa
     finally:
         events.close_file()
     assert "[packaging] Qt Plugin Path: QT_QPA_PLATFORM_PLUGIN_PATH=/x" in text
+
+
+# -- P4: the smoke scripts ----------------------------------------------------
+
+def test_smoke_sh_is_executable_and_parses():
+    import subprocess
+    path = os.path.join(PACKAGING, "smoke.sh")
+    assert os.access(path, os.X_OK)
+    assert subprocess.run(["bash", "-n", path]).returncode == 0
+
+
+@pytest.mark.parametrize("script", ["smoke.sh", "smoke.ps1"])
+def test_smoke_scripts_drive_every_setup_row(script):
+    """The smokes name the six rows; they must be the Setup panel's rows."""
+    from controller.setup import MODEL_TYPES
+    with open(os.path.join(PACKAGING, script), encoding="utf-8") as f:
+        text = f.read()
+    for name in MODEL_TYPES:
+        assert name.lower().replace(" ", "_") in text, name
+    for route in ("/api/state", "/api/theme.css", "/api/estop_all", "/api/quit"):
+        assert route in text, route
