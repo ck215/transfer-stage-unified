@@ -247,7 +247,7 @@ class Heater(Model):
         return sch.schema(
             sch.section(
                 "Temperature",
-                sch.readonly("Current Temperature:", "temperature", rail=True),
+                sch.readonly("Current Temperature:", "temperature", rail=True, unit="°C"),
                 sch.entry(params["setpoint"].label + ":", "setpoint", params["setpoint"]),
                 # Every field of the frame travels with the command and is
                 # validated as a set before it runs (D-5). Without this the
