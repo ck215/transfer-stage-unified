@@ -235,7 +235,7 @@ def test_the_launch_row_is_launch_relaunch_and_stop(panel):
     row = panel.schema["sections"][-1]
     assert row["title"] == "Launch"
     assert [e.get("text") for e in row["elements"]] == [
-        "Launch", "Relaunch", "Stop system"]
+        "Launch", "Relaunch", "Close every model"]
     # I4: no sentence in the Launch row; `summary` is state only.
     assert "summary" not in {e.get("model_attr") for e in row["elements"]}
 

@@ -59,10 +59,10 @@ class Heater(Model):
 
     PARAMS = {
         "setpoint": Param("setpoint", "float", default=0, minimum=0,
-                          maximum=MAX_SETPOINT, decimals=1, unit="C",
+                          maximum=MAX_SETPOINT, decimals=1, unit="°C",
                           label="Setpoint"),
         "ramp_rate": Param("ramp_rate", "float", default=10, minimum=0,
-                           maximum=3600, decimals=2, unit="s/C",
+                           maximum=3600, decimals=2, unit="s/°C",
                            label="Ramp Rate (s/°C)"),
         "p_term": Param("p_term", "float", default=2.0, minimum=0,
                         maximum=1000, decimals=3,
@@ -72,7 +72,7 @@ class Heater(Model):
         "d_term": Param("d_term", "float", default=0.1, minimum=0,
                         maximum=1000, decimals=3, label="Derivative Term (D)"),
         "offset": Param("offset", "float", default=0, minimum=-100,
-                        maximum=100, decimals=2, unit="C", label="Offset"),
+                        maximum=100, decimals=2, unit="°C", label="Offset"),
     }
     #: Frame order. Also the `inputs` of Enter Settings, so the whole frame
     #: travels with the command and is validated as a set (D-5, TEMP-4).
@@ -263,7 +263,8 @@ class Heater(Model):
                 *[sch.entry(params[name].label + ":", name, params[name])
                   for name in self.FRAME_FIELDS if name != "setpoint"],
                 sch.plot("Temperature over time", "series",
-                         x_label="time (s)", y_label="temperature (°C)"),
+                         x_label="time (s)", y_label="temperature (°C)",
+                         empty="No readings yet. The temperature plots here as it is reported."),
                 tier=2, disclosure=f"Configure {self.NAME}",
             ),
             sch.section(

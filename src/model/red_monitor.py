@@ -350,6 +350,13 @@ class RedMonitor(Model):
         return "running" if self.is_running else "idle"
 
     @property
+    def next_step(self):
+        """What unblocks Start run, or "" (quiet) when nothing does (L3)."""
+        if self.gate_mode == "no_region":
+            return "Set a capture region under Red Percent details to start a run."
+        return ""
+
+    @property
     def gate_mode(self):
         """`latched` outranks everything; then `no_region` while idle with no
         capture region, so Start run is greyed out until it can start (F11)."""
@@ -1204,6 +1211,10 @@ class RedMonitor(Model):
                 # REDPERCENT-13: published so every client can gate its plotter
                 # on "is a run actually active" instead of sampling regardless.
                 sch.readonly("Running:", "is_running", role="info"),
+                # L3: the one thing that greys Start run from launch is the
+                # missing capture region; say so where Start run is, not two
+                # tiers down. Empty (quiet) whenever there is nothing to do.
+                sch.readonly("Next step:", "next_step", role="info"),
                 sch.button("Start run", "start_run", inputs=self._entry_names,
                            role="go",
                            disabled_when=("running", "latched", "no_region")),
@@ -1267,7 +1278,8 @@ class RedMonitor(Model):
                              param=P["frames_captured"]),
                 sch.readonly("Rows:", "rows_written", param=P["rows_written"]),
                 sch.plot("Red % over time", "series", x_label="time (s)",
-                         y_label="red (%)"),
+                         y_label="red (%)",
+                         empty="No samples yet. Start a run and red % plots here as it records."),
                 tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(

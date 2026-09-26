@@ -1176,3 +1176,16 @@ def test_the_tier_two_disclosure_names_the_device(monitor):
     tier_two = [s for s in monitor.schema["sections"] if s.get("tier") == 2]
     assert tier_two
     assert {s["disclosure"] for s in tier_two} == {f"{monitor.NAME} details"}
+
+
+def test_the_next_step_line_says_what_unblocks_start_run(monitor):
+    """L3: Start run is greyed from launch until a region exists; the reason
+    is a tier-1 readonly beside it, quiet (empty) once there is a region."""
+    import schema as sch
+    line = next(e for e in sch.elements(monitor.schema) if e.get("model_attr") == "next_step")
+    section = next(s for s in monitor.schema["sections"] if line in s["elements"])
+    assert section.get("tier", 1) == 1
+    assert monitor.region is None or not monitor.region
+    assert monitor.next_step.startswith("Set a capture region")
+    monitor.region = (0, 0, 10, 10)
+    assert monitor.next_step == ""

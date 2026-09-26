@@ -1089,7 +1089,9 @@ class Setup(Panel):
                        enabled_when=[self.LAUNCHED]),
             # Never gated: taking the system down must not depend on what the
             # panel happens to be doing.
-            sch.button("Stop system", "stop_system", role="neutral"),
+            # L17: not a third "stop" word beside the disc; it closes the
+            # models (stop, disconnect, destruct) and Launch builds them again.
+            sch.button("Close every model", "stop_system", role="neutral"),
             layout="row",
         ))
         return sch.schema(*sections)

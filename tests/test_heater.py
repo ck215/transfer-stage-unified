@@ -692,3 +692,9 @@ def test_the_tier_two_disclosure_names_the_device(heater):
     """Tier K (2026-09-26): the disclosure says which device it configures."""
     tier_two = [s for s in heater.schema["sections"] if s.get("tier") == 2]
     assert tier_two and tier_two[0]["disclosure"] == f"Configure {heater.NAME}"
+
+
+def test_the_heaters_plot_and_params_speak_in_their_own_units(heater):
+    plot = next(e for e in _elements(heater) if e["type"] == "plot")
+    assert "red" not in plot["empty"].lower()
+    assert heater.PARAMS["setpoint"].unit == "°C"

@@ -277,3 +277,10 @@ def test_enabled_by_never_loosens_a_mode_gate():
 def test_a_log_stream_is_attached_unless_it_says_detached():
     assert sch.log_stream("Log", "lines")["detached"] is False
     assert sch.log_stream("Log", "lines", detached=True)["detached"] is True
+
+
+def test_a_plot_declares_its_own_empty_state():
+    """L22: one neutral default, and a model may say its own words, so no
+    view borrows Red Percent's sentence for the heater's plot."""
+    assert sch.plot("Series", "series")["empty"] == "No data yet."
+    assert sch.plot("S", "s", empty="Nothing yet.")["empty"] == "Nothing yet."

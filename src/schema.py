@@ -257,11 +257,14 @@ def indicator(text, model_attr, *, on_role="danger", off_role="neutral"):
     }
 
 
-def plot(text, data_command, *, x_label="", y_label="", role="neutral"):
-    """A live series the model supplies through `data_command`."""
+def plot(text, data_command, *, x_label="", y_label="", role="neutral",
+         empty="No data yet."):
+    """A live series the model supplies through `data_command`. `empty` is
+    the one sentence a view draws while the series has no points (L22: the
+    heater's plot used to borrow Red Percent's words in one view)."""
     return {
         "type": "plot", "text": text, "data_command": data_command,
-        "x_label": x_label, "y_label": y_label,
+        "x_label": x_label, "y_label": y_label, "empty": str(empty),
         "writable": False, "role": role,
     }
 
