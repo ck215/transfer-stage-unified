@@ -1826,11 +1826,14 @@ class Dashboard {
   async poll() {
     if (this.isPolling || this.isShutDown) return;
     this.isPolling = true;
+    // When this state was asked for: an answer to a question put before a
+    // stop must not undo what that stop said (forgetUnconfirmed, G6).
+    const askedAt = Date.now();
     try {
       const state = await apiGet('/api/state');
       if (this.isShutDown) return;      // an answer that crossed the Quit
       this.setConnected(true);
-      await this.applyState(state);
+      await this.applyState(state, askedAt);
       await this.pollEvents(state.latest_event);
     } catch (err) {
       this.setConnected(false);
@@ -1951,8 +1954,10 @@ class Dashboard {
         }
         line = { node, words };
         this.railLines.set(key, line);
-        // The stop's own line is always the first thing read.
-        if (key === 'stop') this.dom.railAlert.insertBefore(node, this.dom.railAlert.firstChild);
+        // The stop's own lines are always the first thing read.
+        if (key === 'stop' || key === 'unconfirmed') {
+          this.dom.railAlert.insertBefore(node, this.dom.railAlert.firstChild);
+        }
         else this.dom.railAlert.appendChild(node);
       }
       putText(line.words, text);
@@ -1977,7 +1982,7 @@ class Dashboard {
     }
   }
 
-  async applyState(state) {
+  async applyState(state, askedAt) {
     const models = state.models || {};
     this.isActive = Boolean(state.is_active);
     for (const name of Object.keys(models)) {
@@ -1993,6 +1998,7 @@ class Dashboard {
     this.renderEmptyRack();
     this.renderClosed(state.closed || []);
     this.renderEstop(Boolean(state.is_estopped));
+    this.forgetUnconfirmed(Boolean(state.is_estopped), askedAt);
     let setupState = null;
     if (this.setupCard) {
       try {
@@ -2294,12 +2300,29 @@ class Dashboard {
       return;
     }
     const unconfirmed = (answer && answer.unconfirmed) || [];
-    this.setRailLine('stop', unconfirmed.length
+    // The stop landed: a line saying an earlier one did not is history.
+    this.setRailLine('stop', '');
+    // Which models did not confirm is the state of THIS latch (G6): it is
+    // written by every stop, a later confirmed one included, and dropped by
+    // the poll once the latch is cleared (forgetUnconfirmed).
+    this.unconfirmedAt = Date.now();
+    this.setRailLine('unconfirmed', unconfirmed.length
       ? 'Stop latched, but ' + unconfirmed.map(sentence).join(', ')
         + (unconfirmed.length > 1 ? ' have' : ' has') + ' not confirmed it. Treat '
         + (unconfirmed.length > 1 ? 'them' : 'it') + ' as live.'
       : '', true);
     await this.refreshNow();
+  }
+
+  /** G6 (round-4 IMP-0): "not confirmed" describes a latch. Once the poll
+   *  says the latch is clear - cleared here or from any other client - the
+   *  line goes, and the rail's alert region with it when it was the last
+   *  line. A state asked for before the stop that wrote the line is not
+   *  evidence either way. */
+  forgetUnconfirmed(isEstopped, askedAt) {
+    if (isEstopped || !this.railLines.has('unconfirmed')) return;
+    if (askedAt !== undefined && askedAt < (this.unconfirmedAt || 0)) return;
+    this.setRailLine('unconfirmed', '');
   }
 
   stopFailed(action, err) {

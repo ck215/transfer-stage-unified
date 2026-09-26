@@ -222,6 +222,20 @@ def test_the_global_full_stop_follows_the_state_not_the_click():
     assert "needs_confirm" in toggle, "the latch cleared without asking"
 
 
+def test_the_unconfirmed_stop_line_follows_the_latch_from_the_poll():
+    """G6 (round-4 IMP-0): the line is written by every stop and dropped by
+    the poll once the latch reads clear - so a clear from another client
+    drops it too - but never by an answer asked for before the stop."""
+    apply = _body(r"\n  async applyState\(state, askedAt\) \{(.*?)\n  \}")
+    assert "this.forgetUnconfirmed(Boolean(state.is_estopped), askedAt)" in apply
+    forget = _body(r"\n  forgetUnconfirmed\(isEstopped, askedAt\) \{(.*?)\n  \}")
+    assert "askedAt < (this.unconfirmedAt || 0)" in forget
+    assert "this.setRailLine('unconfirmed', '')" in forget
+    stop = _body(r"\n  async stopAll\(\) \{(.*?)\n  \}")
+    assert "this.unconfirmedAt = Date.now()" in stop
+    assert "this.setRailLine('unconfirmed', unconfirmed.length" in stop
+
+
 def test_model_cards_can_be_closed_and_a_closed_model_can_be_reopened():
     assert "/api/close_model" in APP_JS and "/api/open_model" in APP_JS
     assert "renderClosed(closed)" in APP_JS

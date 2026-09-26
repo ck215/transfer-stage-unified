@@ -1455,3 +1455,49 @@ def test_the_gamepad_log_opens_in_one_panel_that_never_covers_the_stop(station, 
     assert out["askedAfterClose"] == 0, "the log was polled after it closed"
     assert out["byClose"] == {"hidden": True, "focus": "Gamepad log…"}, out["byClose"]
     assert out["afterCardClosed"] == 0, "the panel outlived its card"
+
+
+# --------------------------------------------------------------------------
+# G6 (round-4 audit IMP-0): the unconfirmed-stop line is state, not an event
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_unconfirmed_stop_line_goes_when_the_latch_clears(station, tmp_path):
+    """G6: a stop a model did not confirm puts a line on the rail; once the
+    latch is cleared - here from ANOTHER client, so only the poll can know -
+    the line goes and the rail's alert region is hidden again, instead of
+    claiming a live, unconfirmed stop beside a face that reads "Stop". A
+    later stop that is again unconfirmed brings the line back; clearing it
+    through the page's own control removes it too."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, r"""
+      const r = {};
+      const rail = () => page.evaluate(() => ({
+        hidden: document.getElementById('rail-alert').hidden,
+        text: document.getElementById('rail-alert').textContent,
+        face: document.querySelector('#full-stop .mushroom-face').textContent }));
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      await sleep(400);
+      r.stopped = await rail();
+      await api('/api/clear_estop_all', { confirmed: true });
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      await sleep(700);
+      r.clearedElsewhere = await rail();
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      await sleep(400);
+      r.again = await rail();
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('confirm-modal').hidden);
+      await page.click('#confirm-yes');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      await sleep(700);
+      r.clearedHere = await rail();
+      return r;
+    """, tmp_path)
+    line = "Stop latched, but Fake Probe has not confirmed it. Treat it as live."
+    assert out["stopped"]["face"] == "Clear" and line in out["stopped"]["text"], out
+    assert out["clearedElsewhere"] == {"hidden": True, "text": "", "face": "Stop"}, out
+    assert out["again"]["face"] == "Clear" and line in out["again"]["text"], out
+    assert out["clearedHere"] == {"hidden": True, "text": "", "face": "Stop"}, out
