@@ -37,32 +37,55 @@ def test_no_renderer_exists_for_a_type_the_schema_does_not_declare():
 
 def test_both_section_layouts_offer_the_builders_one_api():
     """`_make_section` returns a container, not a QFormLayout, so none of the
-    thirteen element builders carries a layout branch. Both containers answer
-    the same two calls and say how wide a control in them should be."""
-    for container in (qt.ColumnSection, qt.TableRow):
-        assert callable(container.add) and callable(container.add_wide)
+    element builders carries a layout branch. Every container answers the
+    same calls and says how wide a control in it should be. Updated (E): the
+    column section is a `FlowSection` on the Bench sheet (captions over
+    controls, wrapping like words), and the calls gained `add_inline` (a
+    status word) and `add_axis` (X Y Z under one caption)."""
+    for container in (qt.FlowSection, qt.TableRow, qt.TableBar):
+        for call in ("add", "add_wide", "add_inline", "add_axis"):
+            assert callable(getattr(container, call)), (container, call)
         assert isinstance(container.control_width, int)
-    # A row's cells are sized; a column's controls size themselves.
+    # A row's cells are sized; a flow's controls size themselves.
     assert qt.TableRow.control_width > 0
-    assert qt.ColumnSection.control_width == 0
-    assert qt.TableRow.is_row is True and qt.ColumnSection.is_row is False
+    assert qt.FlowSection.control_width == 0
+    assert qt.TableRow.is_row is True and qt.FlowSection.is_row is False
 
 
 # ---------------------------------------------------------------------------
 # Styling: theme only
 # ---------------------------------------------------------------------------
 
+def _theme_colours():
+    """Every colour value the theme module holds: its tokens, its role pairs,
+    its dicts. A colour in the sheet must be one of these, never a mix the
+    view made for itself."""
+    found = set()
+
+    def walk(value):
+        if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            found.add(value.lower())
+        elif isinstance(value, (tuple, list, set, frozenset)):
+            for item in value:
+                walk(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+    for name in dir(theme):
+        if not name.startswith("_"):
+            walk(getattr(theme, name))
+    return found
+
+
 def test_the_stylesheet_uses_only_theme_colours():
-    """Updated (F23): the sheet now also names the theme's rules, well, lift
-    and severity inks, and the one input border derived with `theme.mix`."""
-    known = {theme.BACKGROUND, theme.SURFACE, theme.TEXT, theme.MUTED}
-    known |= {value for pair in theme.ROLES.values() for value in pair}
-    known |= set(theme.DISABLED)
-    known |= {theme.RULE, theme.RULE_STRONG, theme.WELL, theme.LIFT,
-              theme.STOP_FOCUS, qt.INPUT_BORDER}
-    known |= set(theme.SEVERITY_INK.values())
-    used = set(re.findall(r"#[0-9a-fA-F]{3,8}", qt.stylesheet()))
-    assert used <= {c.lower() for c in known} | known, f"not from theme: {used - known}"
+    """Updated (E, 2026-09-25): the known set is the theme's own members -
+    the Bench sheet tokens, roles, DISABLED, LIFT, INPUT_BORDER, TRACE - and
+    nothing qt.py derived from the old dark tokens (its INPUT_BORDER is
+    gone; the sheet carries the trace for changing readings)."""
+    known = _theme_colours()
+    used = {c.lower() for c in re.findall(r"#[0-9a-fA-F]{3,8}", qt.stylesheet())}
+    assert used <= known, f"not from theme: {used - known}"
+    assert theme.TRACE.lower() in used
 
 
 def test_the_stylesheet_follows_the_launch_font_size():
@@ -90,24 +113,30 @@ def test_the_stylesheet_dresses_the_table_and_the_rail():
     "...and_the_toolbar": the row of toolbar tabs that repeated the dock
     titles is gone, and the rail replaced it.)"""
     sheet = qt.stylesheet()
+    # Updated (E): the rail carries no numbers any more (the sheet's entries
+    # do, once), so `railValue` gave way to the entry's rule, the well, the
+    # tier-3 strip and the rail's model list.
     for selector in ("QLabel#columnHeader", "QLabel#rowTitle", "QFrame#rail",
-                     "QFrame#rail QLabel#railValue", "QDockWidget::title"):
+                     "QPushButton#railModel", "QFrame#entryRule", "QFrame#well",
+                     "QFrame#diagnostics", "QDockWidget::title"):
         assert f"{selector} {{" in sheet, selector
     assert "QToolBar" not in sheet
 
 
 def test_a_readout_and_an_entry_do_not_look_the_same():
-    """The owner's "readouts distinct from entries": an entry is a bordered
-    well sunk to the window colour, a readout is a number in the trace ink on
-    the card (the brief: trace is what a live readout is drawn in). Updated:
-    it asserted bold ink, the look before the one-red palette."""
+    """The owner's "readouts distinct from entries". Updated (E): an entry is
+    a panel-toned well (`theme.WELL`) with a muted underline and no box; a
+    readout is the numeral face straight on the surface, no well and no
+    border, ink at rest and the trace only while it changes (`live`)."""
     sheet = qt.stylesheet()
-    entries = sheet.split("QLineEdit, QComboBox, QTextEdit {")[1].split("}")[0]
+    entries = sheet.split("QLineEdit, QComboBox {")[1].split("}")[0]
     readouts = sheet.split("QLabel#valueLabel {")[1].split("}")[0]
-    assert f"background-color: {theme.BACKGROUND};" in entries
-    assert "border: 1px solid" in entries
-    assert f"color: {theme.TRACE};" in readouts
-    assert "border" not in readouts
+    live = sheet.split('QLabel#valueLabel[live="true"] {')[1].split("}")[0]
+    assert f"background-color: {theme.WELL};" in entries
+    assert "border: none" in entries and "border-bottom:" in entries
+    assert "background" not in readouts and "border" not in readouts
+    assert f"color: {theme.TEXT};" in readouts
+    assert f"color: {theme.TRACE};" in live
 
 
 def test_a_readout_at_rest_is_drawn_muted():
@@ -134,22 +163,31 @@ def test_every_control_has_hover_focus_pressed_and_disabled_states():
 
 def test_signal_red_is_spent_on_the_stop_object_alone():
     """One red. A plain button with the `danger` role (Red Percent's "Stop"
-    run) renders as an ordinary command; the stop object dresses itself."""
+    run) renders as an ordinary command; the stop disc paints itself.
+    Updated (E): an ordinary command is outlined on the sheet, so `danger`
+    is dressed exactly like `neutral` (was: the neutral panel fill)."""
     sheet = qt.stylesheet()
     assert theme.SIGNAL.lower() not in sheet.lower()
     danger = sheet.split('QPushButton[role="danger"] {')[1].split("}")[0]
-    assert f"background-color: {theme.colors('neutral')[0]};" in danger
+    neutral = sheet.split('QPushButton[role="neutral"] {')[1].split("}")[0]
+    assert danger == neutral
 
 
 def test_the_type_scale_is_one_family_on_a_tight_ratio():
-    """Base 12 pt, ratio 1.2: every size in the sheet is a step of it."""
+    """Base 12 pt, ratio 1.2: every text size in the sheet is a step of it.
+    Updated (E): readings are a second, numeral scale - `theme.READING_SIZES`
+    in the numeral face (and the stopped headline at `primary`) - so the
+    sizes are the text steps plus the readings, and the families are the
+    text face and the numerals' face, nothing else."""
     original = theme.FONT_SIZE
     try:
         theme.set_font_size(12)
         sizes = {int(n) for n in re.findall(r"font-size: (\d+)pt", qt.stylesheet())}
-        assert sizes <= {10, 12, 14, 17}, sizes
+        readings = {qt.reading_pt(kind) for kind in theme.READING_SIZES}
+        assert sizes <= {10, 12, 14, 17} | readings, sizes
         families = set(re.findall(r"font-family: ([^;]+);", qt.stylesheet()))
-        assert families == {theme.FONT_FAMILY}
+        assert families == {theme.FONT_FAMILY, qt.numeral_family()}
+        assert qt.numeral_family().startswith(theme.NUMERAL_FAMILY)
     finally:
         theme.set_font_size(original)
 
@@ -239,36 +277,54 @@ def _contrast(a, b):
 
 def test_the_view_mixes_colours_with_the_themes_one_mix():
     """Updated (F23, DS-12): qt.py had its own `mix` that read its amount in
-    the opposite direction to Tk's; it is gone, and so is `rgba`."""
+    the opposite direction to Tk's; it is gone, and so is `rgba`. Updated (E):
+    its `INPUT_BORDER` (a mix of the old dark tokens) is gone too - the
+    border is `theme.INPUT_BORDER`."""
     assert not hasattr(qt, "mix") and not hasattr(qt, "rgba")
-    assert qt.INPUT_BORDER == theme.mix(theme.SURFACE, theme.TEXT, 0.40)
+    assert not hasattr(qt, "INPUT_BORDER")
 
 
 def test_an_input_border_is_at_least_3_to_1_on_the_card():
-    """WCAG 1.4.11 (AUD-11): the well's border was 1.67:1 on the card."""
-    assert _contrast(qt.INPUT_BORDER, theme.SURFACE) >= 3.0
+    """WCAG 1.4.11 (AUD-11): the well's border was 1.67:1 on the card.
+    Updated (E): the edge is `theme.INPUT_BORDER` (muted), an underline only,
+    and it clears 3:1 on both grounds an input sits on."""
+    assert _contrast(theme.INPUT_BORDER, theme.SURFACE) >= 3.0
+    assert _contrast(theme.INPUT_BORDER, theme.BACKGROUND) >= 3.0
     sheet = qt.stylesheet()
-    entries = sheet.split("QLineEdit, QComboBox, QTextEdit {")[1].split("}")[0]
-    assert f"border: 1px solid {qt.INPUT_BORDER}" in entries
+    entries = sheet.split("QLineEdit, QComboBox {")[1].split("}")[0]
+    assert f"border-bottom: 2px solid {theme.INPUT_BORDER}" in entries
 
 
 def test_every_focusable_has_an_ink_ring_including_tabs_and_scroll_areas():
     sheet = qt.stylesheet()
-    for selector in ("QTabBar::tab:focus", "QScrollArea#panelScroll:focus",
+    # Updated (E): no tabs and no per-panel scroll areas any more; the sheet
+    # scrolls as one page, and the disclosures, the slider and the rail's
+    # model list are new focusables.
+    for selector in ("QScrollArea#sheetScroll:focus", "QToolButton#disclosure:focus",
+                     "QSlider:focus", "QPushButton#railModel:focus",
                      "QFrame#tray QTextEdit:focus", "QPushButton#ghost:focus",
                      "QPushButton#iconButton:focus"):
         rule = sheet.split(selector)[1].split("}")[0]
         assert qt.FOCUS_RING in rule, selector
 
 
-def test_the_rail_readout_is_capped_one_step_up():
-    """F25: two steps up made the 28 pt rail and tray a third of the window."""
+def test_readings_take_the_themes_reading_sizes_and_grow_only_so_far():
+    """Replaces "the rail readout is capped one step up" (F25): the rail
+    carries no readings now. A reading is `theme.READING_SIZES` px at 96 dpi,
+    grows with the launch font up to `READING_GROWTH` (a 52 px focal number
+    is not 121 px at 28 pt), and is never smaller than the text beside it."""
     original = theme.FONT_SIZE
     try:
-        theme.set_font_size(28)
+        theme.set_font_size(12)
+        assert qt.reading_pt("focal") == round(theme.READING_SIZES["focal"] * 0.75)
         sheet = qt.stylesheet()
-        value = sheet.split("QFrame#rail QLabel#railValue {")[1].split("}")[0]
-        assert f"font-size: {theme.size(1)}pt" in value
+        for kind in theme.READING_SIZES:
+            rule = sheet.split(f'QLabel#reading[scale="{kind}"] {{')[1].split("}")[0]
+            assert f"font-size: {qt.reading_pt(kind)}pt" in rule
+        theme.set_font_size(28)
+        assert qt.reading_pt("focal") == round(
+            theme.READING_SIZES["focal"] * 0.75 * qt.READING_GROWTH)
+        assert all(qt.reading_pt(k) >= theme.size(1) for k in theme.READING_SIZES)
     finally:
         theme.set_font_size(original)
 
@@ -519,7 +575,9 @@ def test_the_module_imports_on_a_machine_with_no_pyside6():
 
 def test_building_a_qt_widget_without_pyside6_says_so_instead_of_failing_oddly():
     module = _import_without_pyside6()
-    for factory in (module.SeriesPlot, module.DeviceDock, module.RegionOverlay):
+    # Updated (E): the model's dock became a `SheetEntry` on the sheet.
+    for factory in (module.SeriesPlot, module.SheetEntry, module.RegionOverlay,
+                     module.SwitchButton, module.FlowLayout):
         with pytest.raises(RuntimeError, match="PySide6 is not installed"):
             factory(None)
 
@@ -528,14 +586,18 @@ def test_building_a_qt_widget_without_pyside6_says_so_instead_of_failing_oddly()
 # G3: the tick box's look, from the tokens
 # ---------------------------------------------------------------------------
 
-def test_g3_the_tick_box_is_an_ink_square_filled_with_ink_when_ticked():
+def test_g3_the_tick_box_is_an_ink_square_that_takes_an_ink_check():
+    """Updated (E, H10): ticked, the square keeps the sheet fill and an ink
+    check is painted on it (`TickBox`), where it used to fill solid ink - a
+    filled square read as a lamp."""
     sheet = qt.stylesheet()
     square = sheet.split("QCheckBox::indicator {")[1].split("}")[0]
     assert f"border: 1px solid {theme.TEXT}" in square
-    assert _contrast(theme.TEXT, theme.SURFACE) >= 3.0
+    assert _contrast(theme.TEXT, theme.BACKGROUND) >= 3.0
     ticked = sheet.split("QCheckBox::indicator:checked {")[1].split("}")[0]
-    assert f"background-color: {theme.TEXT}" in ticked
+    assert f"background-color: {theme.BACKGROUND}" in ticked
     assert "QCheckBox::indicator:disabled" in sheet
+    assert issubclass(qt.TickBox, qt.QCheckBox) and "paintEvent" in vars(qt.TickBox)
 
 
 def test_g3_the_tick_box_shows_focus_in_ink_round_the_whole_control():
@@ -606,3 +668,120 @@ def test_g5_the_view_shows_no_command_key_and_branches_on_the_os_once():
                       and node.value.id == "sys"]
     assert len(platform_tests) == 1
     assert "darwin" in shown
+
+
+# ---------------------------------------------------------------------------
+# E (2026-09-25): the Bench sheet, tiered - the view's pure rules
+# ---------------------------------------------------------------------------
+
+def test_e_the_opened_model_is_alone_on_top_then_rows_of_three_and_two():
+    names = ["Stepper Probe", "DC Probe", "Chuck Positioner",
+             "Temperature Controller", "Rotator", "Red Percent"]
+    assert qt.entry_rows(names, "Stepper Probe", 3) == [
+        ["Stepper Probe"], ["DC Probe", "Chuck Positioner", "Temperature Controller"],
+        ["Rotator", "Red Percent"]]
+    # A press on Red Percent brings it to the top; the rest keep their order.
+    assert qt.entry_rows(names, "Red Percent", 3)[0] == ["Red Percent"]
+    assert qt.entry_rows(names, "Red Percent", 2)[1:] == [
+        ["Stepper Probe", "DC Probe"], ["Chuck Positioner", "Temperature Controller"],
+        ["Rotator"]]
+    assert qt.entry_rows(names, None, 1) == [[n] for n in names]
+    assert qt.entry_rows(["A", "B", "C", "D", "E"], "A", 3) == [["A"], ["B", "C"], ["D", "E"]]
+    assert qt.entry_rows([], None, 3) == []
+
+
+def test_e_a_label_splits_off_its_unit_but_keeps_a_word():
+    assert qt.split_unit("Position (deg):") == ("Position", "deg")
+    assert qt.split_unit("Brake Distance (steps):") == ("Brake distance", "steps")
+    assert qt.split_unit("Brake Speed (Slow):") == ("Brake speed (Slow)", "")
+    assert qt.split_unit("Velocity (x, y, z):") == ("Velocity (x, y, z)", "")
+    assert qt.split_unit("Setpoint:", "C") == ("Setpoint", "°C")
+
+
+def test_e_axis_readings_share_one_caption_and_the_rest_are_primary_then_secondary():
+    probe = sch.schema(
+        sch.section("Position", *[sch.readonly(f"{a}:", f"position_{a.lower()}", rail=True)
+                                  for a in "XYZ"]),
+        sch.section("Diagnostics", sch.readonly("Velocity:", "v"), tier=3))
+    kinds = qt.reading_kinds(probe)
+    assert sorted(kinds.values()) == ["axis", "axis", "axis"]
+    assert [qt.axis_letter(e) for e in probe["sections"][0]["elements"]] == ["X", "Y", "Z"]
+    red = sch.schema(sch.section("Live", sch.readonly("Current Red:", "r", rail=True),
+                                 sch.readonly("Red Change:", "c", rail=True),
+                                 sch.readonly("Running:", "running")))
+    elements = red["sections"][0]["elements"]
+    kinds = qt.reading_kinds(red)
+    assert [kinds.get(id(e)) for e in elements] == ["primary", "secondary", None]
+
+
+def test_e_a_rail_reading_outside_tier_one_is_not_drawn_at_reading_size():
+    schema = sch.schema(sch.section("Live", sch.readonly("A:", "a")),
+                        sch.section("Stats", sch.readonly("Rows:", "rows", rail=True),
+                                    tier=2, disclosure="Details"))
+    assert qt.reading_kinds(schema) == {}
+
+
+@pytest.mark.parametrize("value", ["Connected", "Idle", "No", "None", "--",
+                                   "Not recording", "", False, "False"])
+def test_e_a_normal_value_is_not_drawn_in_tier_one(value):
+    assert qt.is_normal_value(value) is True
+
+
+@pytest.mark.parametrize("value", ["0", "0.00", "Yes", True, "Moving", "lost"])
+def test_e_an_abnormal_value_is_drawn(value):
+    assert qt.is_normal_value(value) is False
+
+
+def test_e_a_tier_names_its_own_disclosure_or_takes_the_themes():
+    sections = [sch.section("Live", sch.readonly("A:", "a")),
+                sch.section("Stats", sch.readonly("B:", "b"), tier=2, disclosure="Details"),
+                sch.section("Diag", sch.readonly("C:", "c"), tier=3)]
+    assert qt.disclosure_text(sections, 2) == "Details"
+    assert qt.disclosure_text(sections, 3) == theme.TIER_LABELS[3] == "Diagnostics"
+    assert qt.disclosure_text(sections[:1], 2) == theme.TIER_LABELS[2]
+    assert [qt.tier_of(s) for s in sections] == [1, 2, 3]
+
+
+def test_e_the_rail_says_simulation_only_when_nothing_is_real_hardware():
+    sim = {"devices": {"SerialPort": "simulated", "Gamepad": "unbound"}}
+    real = {"devices": {"SerialPort": "verified"}}
+    screen = {"devices": {"Screen": "capturing"}}
+    assert qt.simulation_line({"A": sim, "B": screen, "C": {}}) == qt.SIM_LINE
+    assert qt.simulation_line({"A": sim, "B": real}) == "Simulated: A"
+    assert qt.simulation_line({"B": real, "C": screen}) == ""
+    assert qt.simulation_line({}) == ""
+
+
+def test_e_the_well_the_strip_and_the_slider_are_drawn_from_the_theme():
+    sheet = qt.stylesheet()
+    well = sheet.split("QFrame#well {")[1].split("}")[0]
+    assert f"background-color: {theme.SURFACE}" in well
+    assert f"border-radius: {theme.RADIUS['well']}px" in well
+    strip = sheet.split("QFrame#diagnostics {")[1].split("}")[0]
+    assert f"border-left: 2px solid {theme.MUTED}" in strip
+    handle = sheet.split("QSlider::handle:horizontal {")[1].split("}")[0]
+    assert f"background: {theme.TEXT}" in handle
+    assert f"border: 2px solid {theme.BACKGROUND}" in handle
+    fill = sheet.split("QSlider::sub-page:horizontal {")[1].split("}")[0]
+    assert f"background: {theme.TEXT}" in fill
+    groove = sheet.split("QSlider::groove:horizontal {")[1].split("}")[0]
+    assert "height: 4px" in groove and f"background: {theme.SURFACE}" in groove
+
+
+def test_e_go_is_ink_filled_and_disabled_is_a_dashed_muted_edge():
+    sheet = qt.stylesheet()
+    go = sheet.split('QPushButton[role="go"] {')[1].split("}")[0]
+    assert f"background-color: {theme.TEXT}" in go
+    assert f"color: {theme.BACKGROUND}" in go
+    disabled = sheet.split("QPushButton:disabled {")[1].split("}")[0]
+    assert f"color: {theme.DISABLED[1]}" in disabled
+    assert f"border: 1px dashed {theme.MUTED}" in disabled
+
+
+def test_e_a_lamp_is_ink_never_the_trace():
+    """The trace is for changing numbers only: a lit lamp is ink (a fault's
+    is signal)."""
+    connected = sch.indicator("Stage connected", "is_connected",
+                              on_role="go", off_role="danger")
+    assert qt.lamp_colours(connected, True) == (theme.TEXT, theme.TEXT)
+    assert theme.TRACE not in qt.lamp_colours(connected, True)

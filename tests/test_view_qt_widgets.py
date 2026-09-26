@@ -16,11 +16,10 @@ import threading
 
 import pytest
 
-from PySide6.QtGui import (QColor, QFont, QFontMetrics, QIntValidator,
-                           QKeySequence)
+from PySide6.QtGui import QColor, QFontMetrics, QIntValidator, QKeySequence
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame,
-                               QLabel, QMessageBox, QSizePolicy)
+                               QLabel, QMessageBox)
 
 import schema as sch
 from events import events
@@ -378,18 +377,6 @@ def tall_view(qapp):
     built.close()
 
 
-def column_of(view, element):
-    """Which of the panel's column layouts holds this element's card."""
-    widget = view._widget_for(element)
-    while widget is not None:
-        for index, column in enumerate(view._columns):
-            for position in range(column.count()):
-                if column.itemAt(position).widget() is widget:
-                    return index
-        widget = widget.parentWidget()
-    return None
-
-
 def cell_of(grid, widget):
     """(row, column) of the grid cell `widget` sits in, or None.
 
@@ -743,29 +730,34 @@ def test_escape_cancels_without_reporting_anything(qapp):
 
 
 # ---------------------------------------------------------------------------
-# DeviceDock and the dashboard's panels
+# SheetEntry and the dashboard's panels (E: entries on the sheet, not docks)
 # ---------------------------------------------------------------------------
 
-def test_closing_a_dock_closes_the_model(dashboard, controller):
+def test_closing_an_entry_closes_the_model(dashboard, controller):
+    """Updated (E): a model is an entry on the sheet, not a dock; its close
+    still closes the model."""
     dashboard._add_panel("Fake")
-    dock = dashboard._docks["Fake"]
-    dock.close()
+    entry = dashboard._entries["Fake"]
+    entry.close_button.click()
     assert controller.removed == ["Fake"]
 
 
-def test_a_dock_closed_by_the_controller_does_not_close_the_model_twice(
+def test_an_entry_removed_by_the_controller_does_not_close_the_model_twice(
         dashboard, controller):
     dashboard._add_panel("Fake")
     dashboard._remove_panel("Fake")
     assert controller.removed == []
-    assert "Fake" not in dashboard._docks
+    assert "Fake" not in dashboard._entries
 
 
 def test_the_setup_panel_is_shown_first(dashboard, qapp):
+    """Updated (E): Setup's panel sits in a capped scroll area inside its
+    dock (H3), so the dock's widget is the scroll and the panel is inside."""
     dashboard.open()
     assert dashboard._setup_dock is not None
     assert dashboard._setup_dock.windowTitle() == "Setup"
-    assert isinstance(dashboard._setup_dock.widget(), qt.QtPanelView)
+    assert isinstance(dashboard.setup_view, qt.QtPanelView)
+    assert dashboard._setup_dock.widget().widget() is dashboard.setup_view
 
 
 def test_the_rail_offers_a_way_back_to_every_closed_model(dashboard, controller):
@@ -801,26 +793,23 @@ def test_a_reopen_that_fails_is_logged_instead_of_raising(
     assert "Gone" in dashboard.reopen_buttons
 
 
-def test_the_rail_carries_each_open_models_key_numbers(dashboard, controller,
-                                                      panel):
-    """Numbers first: the rail shows what the model's first section reads,
-    and follows the model on the tick."""
-    dashboard._sync_rail()
-    _, readouts = dashboard._rail_groups["Fake"]
-    assert [e["model_attr"] for e, _ in readouts] == ["reading"]
-    dashboard._sync_readouts()
-    assert readouts[0][1].text() == "1.234"
-    panel.reading = "9.876"
-    dashboard._on_rail_tick()
-    assert readouts[0][1].text() == "9.876"
-    assert readouts[0][1].property("quiet") == "false"
+def test_the_rail_lists_each_open_model_once_and_the_opened_one_is_marked(
+        dashboard, controller):
+    """Updated (E): the rail carries names only - no value appears twice
+    (`design-Sheet.md`); the numbers are on the sheet, once. The opened model
+    is the highlighted one."""
+    dashboard.open()
+    assert list(dashboard._rail_items) == ["Fake"]
+    item = dashboard._rail_items["Fake"]
+    assert item.isChecked() and item.accessibleName() == "Fake"
+    assert dashboard._opened == "Fake"
 
 
 def test_a_closed_model_leaves_the_rail(dashboard, controller):
     dashboard._sync_rail()
     controller.open_names = []
     dashboard._sync_rail()
-    assert "Fake" not in dashboard._rail_groups
+    assert "Fake" not in dashboard._rail_items
 
 
 # ---------------------------------------------------------------------------
@@ -855,13 +844,36 @@ def test_clearing_the_latch_asks_first(dashboard, controller, monkeypatch):
     assert asked == ["Release?"]
 
 
-def test_the_stop_button_colour_comes_from_the_theme(dashboard, controller):
+def _pixel(widget, x, y):
+    return QColor(widget.grab().toImage().pixel(x, y))
+
+
+def _near(colour, token, tolerance=40):
+    target = QColor(token)
+    return (abs(colour.red() - target.red()) + abs(colour.green() - target.green())
+            + abs(colour.blue() - target.blue())) <= tolerance
+
+
+def test_the_stop_disc_is_always_red_and_its_ring_thickens_when_latched(
+        dashboard, controller):
+    """Updated (E): A's disc, painted - a red face, a sheet-coloured gap, a
+    red ring - red in every state (it does not go quiet); latched it reads
+    Clear and the ring goes from `theme.STOP["ring"]` to `["ring_latched"]`.
+    It was a stylesheet whose latched ring was the trace."""
+    button = dashboard.stop_button
+    centre = button.width() // 2
+    assert _near(_pixel(button, centre, centre // 2), theme.SIGNAL)
+    assert button.ring_px() == theme.STOP["ring"]
     controller.is_estopped = True
     dashboard._sync_stop_button()
-    sheet = dashboard.stop_button.styleSheet()
-    assert f"background-color: {theme.colors('danger')[0]}" in sheet
-    # Latched, the ring lights in the trace colour, as the Web mushroom's.
-    assert theme.TRACE in sheet
+    button._pulse.stop()
+    button._on_pulse_done()
+    assert button.text() == "Clear"
+    assert button.ring_px() == theme.STOP["ring_latched"]
+    assert _near(_pixel(button, centre, centre // 2), theme.SIGNAL)
+    edge = button.FOCUS_GAP + button.FOCUS_PX + theme.STOP["ring_latched"] // 2
+    assert _near(_pixel(button, edge, centre), theme.SIGNAL)
+    assert theme.TRACE not in (button.styleSheet() or "")
 
 
 # ---------------------------------------------------------------------------
@@ -929,8 +941,10 @@ def test_no_modal_opens_while_the_dashboard_is_closing(dashboard, qapp,
 
 
 def test_the_event_log_escapes_what_a_device_said(dashboard, qapp):
+    # Updated (E): the tray reports warnings and errors only, so the spoof
+    # is a warning (an info line no longer reaches the tray at all).
     class Spoof:
-        severity, source, title, message, count = "info", "T", "t", "m", 1
+        severity, source, title, message, count = "warning", "T", "t", "m", 1
         needs_ack = False
         text = "<b>not bold</b>"
 
@@ -1095,36 +1109,28 @@ def test_a_panel_with_no_row_section_builds_no_table(view):
 
 
 # ---------------------------------------------------------------------------
-# Two columns when one would run off the bottom of the screen
+# A tall panel stacks (was: two columns when one would run off the screen)
 # ---------------------------------------------------------------------------
 
-def test_a_tall_panel_splits_its_sections_into_two_columns(tall_view):
-    """The split the lead asked for, pinned exactly: Run/Annotation/Metadata/
-    Synced Axes/Detection on the left, Sampling/Live/Control/Analysis/Safety
-    on the right."""
-    assert len(tall_view._columns) == 2
-    placed = {element["model_attr"]: column_of(tall_view, element)
-              for element in tall_view._elements}
-    assert placed == {
-        "run": 0, "operator_annotation": 0, "probe_metadata": 0,
-        "synced_axes": 0, "red_detection": 0,
-        "sampling": 1, "live": 1, "control": 1, "analysis": 1, "safety": 1}
+def test_a_tall_panel_stacks_its_sections_in_schema_order_with_safety_last(tall_view):
+    """Updated (E; was "a tall panel splits into two columns"): the sheet
+    scrolls as one page and tier 2 keeps a tall model's detail out of sight
+    until asked for, so a panel no longer splits itself into columns; its
+    sections stack in schema order, Safety the last."""
+    frames = [f for f in tall_view.findChildren(QFrame) if f.objectName() == "section"]
+    layout = tall_view._tier_layouts[1]
+    order = []
+    for element in tall_view._elements:
+        widget = tall_view._widget_for(element)
+        frame = next(f for f in frames if f.isAncestorOf(widget))
+        order.append(layout.indexOf(frame))
+    assert order == sorted(order) and len(set(order)) == len(TallPanel.SECTIONS)
+    assert tall_view._elements[-1]["model_attr"] == "safety"
 
 
-def test_safety_is_the_foot_of_a_column_rather_than_below_the_fold(tall_view):
-    safety = element_named(tall_view, "safety")
-    assert column_of(tall_view, safety) == len(tall_view._columns) - 1
-
-
-def test_a_panel_of_a_few_sections_stays_in_one_column(view):
-    assert len(view._columns) == 1
-    assert view._split == 0
-
-
-def test_row_sections_are_one_card_and_never_split_a_panel(qapp, monkeypatch):
-    """Counting *sections* rather than cards would split Setup - eight row
-    sections that share a single table - into two columns with one of them
-    empty."""
+def test_row_sections_are_one_table_however_many_there_are(qapp, monkeypatch):
+    """Ten row sections share a single table (Setup's shape). Updated (E): a
+    panel has no columns to split any more; the claim left is one table."""
     panel = TablePanel()
     schema = sch.schema(*[
         sch.section(f"Row {index}", sch.readonly("Port", "scan_status"),
@@ -1134,45 +1140,66 @@ def test_row_sections_are_one_card_and_never_split_a_panel(qapp, monkeypatch):
     built = qt.QtPanelView(FakeController(panel), "Table")
     try:
         assert built._table is not None
-        assert len(built._columns) == 1
+        tables = [f for f in built.findChildren(QFrame) if f.objectName() == "table"]
+        assert len(tables) == 1
     finally:
         built.close()
 
 
 # ---------------------------------------------------------------------------
-# No column is spent on chrome (was: the sidebar is as wide as what it shows)
+# The window's shape (E): the rail on the left, the sheet beside it
 #
-# The sidebar is gone - it repeated the dock titles and carried the stop at
-# the foot of an empty column - so its three width tests became these: the
-# space it wasted now goes to the panels, in proportion to what they hold.
+# Was "no column is spent on chrome": the Bench sheet brings back a left rail
+# on purpose - the stop disc and the model list - and the entries share the
+# sheet's width equally.
 # ---------------------------------------------------------------------------
 
-def test_the_window_spends_no_dock_on_a_model_list(dashboard, qapp):
+def test_the_only_docks_are_the_rail_and_setup(dashboard, qapp):
+    """Updated (E): the rail is a fixed left dock carrying the model list the
+    brief asks for; the models themselves are entries on the sheet, so no
+    dock is spent on a model and there is no second list of them."""
+    from PySide6.QtWidgets import QDockWidget
     dashboard.open()
-    docks = [d.windowTitle() for d in dashboard.findChildren(qt.QDockWidget)
-             if not d.isHidden()]
-    assert "Models" not in docks
+    docks = {d.objectName() for d in dashboard.findChildren(QDockWidget)}
+    assert docks == {"railDock", "setupDock"}
+    assert (dashboard.dockWidgetArea(dashboard.rail_dock)
+            == Qt.DockWidgetArea.LeftDockWidgetArea)
+    assert (dashboard.rail_dock.features()
+            == QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
 
 
-def test_side_by_side_docks_are_sized_by_what_they_hold(dashboard, qapp,
-                                                        controller,
-                                                        monkeypatch):
-    calls = []
-    monkeypatch.setattr(dashboard, "resizeDocks",
-                        lambda docks, sizes, orientation: calls.append(sizes))
-    dashboard._add_panel("Fake")
-    assert calls == []                  # one dock: nothing to share
-    dashboard._add_panel("Gone")
-    assert len(calls) == 1 and len(calls[0]) == 2
-    assert all(size > 0 for size in calls[0])
+def test_entries_in_a_row_share_the_width_equally(qapp):
+    """Updated (E; was "side by side docks are sized by what they hold"): a
+    row of entries is equal columns, none under its own minimum."""
+    controller = FakeController(FakePanel())
+    controller.open_names = ["One", "Two", "Three"]
+    controller.closed = []
+    window = qt.QtDashboard(controller, controller.panel)
+    try:
+        window.open()
+        window.resize(1400, 900)
+        for _ in range(5):
+            qapp.processEvents()
+        window._arrange_entries()
+        for _ in range(5):
+            qapp.processEvents()
+        rows = window._arrangement
+        assert rows[0] == ("One",)
+        side = [window._entries[n] for n in rows[1]]
+        widths = [e.width() for e in side]
+        assert max(widths) - min(widths) <= 2
+        for entry in window._entries.values():
+            assert entry.width() >= entry.minimumSizeHint().width()
+    finally:
+        window.close()
+        events.unsubscribe(window._on_event)
 
 
-def test_a_panel_scrolls_rather_than_pushing_the_window_off_screen(dashboard):
-    """The launched window grew to 1944 x 1267 to fit two panels' minimum
-    sizes - past a laptop screen, which carried the rail's stop off it."""
-    dock = dashboard._add_panel("Fake")
-    assert isinstance(dock.widget(), qt.QScrollArea)
-    assert dock.widget().widget() is dashboard._panels["Fake"]
+def test_the_sheet_scrolls_rather_than_pushing_the_window_off_screen(dashboard):
+    """Updated (E): one scroll for the whole sheet, not one per dock."""
+    entry = dashboard._add_panel("Fake")
+    assert dashboard.sheet_scroll.isAncestorOf(entry)
+    assert entry.panel is dashboard._panels["Fake"]
     assert dashboard.minimumSizeHint().width() < 800
 
 
@@ -1249,62 +1276,79 @@ def test_a_log_stream_stays_a_few_scrollable_lines(view):
     assert stream.toPlainText() == "first\nsecond"
 
 
-def test_a_models_own_stop_takes_the_whole_section_and_the_tall_metric(
-        table_view):
-    """Updated: a model's own stop was a full-width slab reading "FULL STOP",
-    then a red slab reading "LATCHED - click to clear" - two reds that were
-    not the stop object. It is now that object, one size down: round,
-    reading Stop / Clear, with the schema's words as its tooltip."""
+def test_a_models_own_stop_is_a_small_switch_not_a_second_disc(table_view):
+    """Updated (E): a model's own stop was the stop disc one size down; the
+    Bench sheet makes it a small switch (tier 3) - the rail's disc is the
+    stop an operator reaches for, and two red discs would be two stops. Its
+    face is the schema's words; its track is red only when latched."""
     element = next(e for e in table_view._elements
                    if e["type"] == "toggle" and e.get("on_role") == "danger")
-    button = table_view._widget_for(element)
-    assert isinstance(button, qt.StopButton) and button.is_mini is True
-    assert button.width() == button.height()
+    switch = table_view._widget_for(element)
+    assert isinstance(switch, qt.SwitchButton)
+    assert not isinstance(switch, qt.StopButton)
     table_view._refresh()
-    assert button.text() == "Stop"
+    assert switch.text() == "Full stop" and switch.is_on is False
     table_view._set_on(element, True)
-    assert button.text() == "Clear"
-    assert button.toolTip() == "Latched - click to clear"
+    assert switch.is_on is True
+    assert switch.text() == "Latched - click to clear"
+    switch.resize(switch.sizeHint())
+    track = switch._track()
+    colour = _pixel(switch, int(track.left()) + 3, int(track.center().y()))
+    assert _near(colour, theme.SWITCH["on_fill"], 60)
 
 
-def test_an_ordinary_toggle_keeps_its_caption_and_its_natural_size(view):
-    """Only a danger toggle is a stop; everything else stays a labelled row."""
+def test_an_ordinary_toggle_is_a_button_with_its_state_dot(view):
+    """Only a danger toggle is a stop; everything else is a button whose face
+    says what a press does, with a filled or hollow dot for its state."""
     button = view._widget_for(element_of(view, "toggle"))
-    assert not isinstance(button, qt.StopButton)
+    assert not isinstance(button, (qt.StopButton, qt.SwitchButton))
+    view._refresh()
+    assert not button.icon().isNull()
 
 
-def test_a_section_card_keeps_its_natural_height(table_view):
-    """Left to expand, the stepper's System Control card grew to a third of
-    the dock with its title floating in the middle of the empty space."""
-    cards = [c for c in table_view.findChildren(QFrame)
-             if c.objectName() == "card"]
-    assert len(cards) >= 3
-    assert all(c.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Maximum
-               for c in cards)
+def test_a_section_is_not_a_card(table_view):
+    """Updated (E): entries, not cards - a section is a transparent frame with
+    its refusal line; alignment and whitespace do the grouping."""
+    sections = [c for c in table_view.findChildren(QFrame)
+                if c.objectName() == "section"]
+    assert len(sections) >= 2
+    assert not [c for c in table_view.findChildren(QFrame)
+                if c.objectName() == "card"]
 
 
-def test_the_full_stop_button_is_tall_and_set_in_the_theme_size(dashboard):
-    """Updated: a round disc sized in lines of the base font (so it follows
-    --font-size), where it was a fixed-height slab. Updated again (F25): the
-    face is `theme.size(1)` - the same 14 pt at 12 pt as the old 1.2 scale -
-    and shrinks only when a capped disc needs it."""
+def test_the_stop_disc_is_the_themes_diameter_and_narrows_under_1000_px(
+        dashboard, qapp):
+    """Updated (E): A's disc at `theme.STOP["diameter"]` in the 248 px rail,
+    `diameter_narrow` in the 200 px rail under 1000 px wide (was: a disc sized
+    in lines of the base font, capped at 96 px). The window is shown first:
+    Qt holds a hidden widget's resize until it shows."""
     button = dashboard.stop_button
+    dashboard.open()
+    dashboard.resize(1400, 900)
+    qapp.processEvents()
     assert button.width() == button.height()
-    assert button.width() == round(button.line_height() * qt.STOP_DISC_LINES)
-    dashboard._sync_stop_button()
-    assert f"font-size: {theme.size(qt.STOP_FACE_STEP)}pt" in button.styleSheet()
+    assert button.diameter == theme.STOP["diameter"]
+    assert dashboard.rail.width() == qt.RAIL_PX
+    dashboard.resize(900, 900)
+    qapp.processEvents()
+    assert button.diameter == theme.STOP["diameter_narrow"]
+    assert dashboard.rail.width() == qt.RAIL_NARROW_PX
 
 
 def test_the_event_log_keeps_only_its_tail(dashboard):
-    """A window that runs a whole bench session cannot hold every line."""
+    """A window that runs a whole bench session cannot hold every line.
+    Updated (E): only warnings and errors reach the tray, and one event is
+    shown once, so each spoof is a warning with its own line."""
     class Spoof:
-        severity, source, title, message, count = "info", "T", "t", "m", 1
+        severity, source, title, message, count = "warning", "T", "t", "m", 1
         needs_ack = False
         text = "a line"
 
     assert dashboard.event_view.document().maximumBlockCount() == qt.EVENT_LOG_LINES
-    for _ in range(qt.EVENT_LOG_LINES + 25):
-        dashboard._show_event(Spoof())
+    for number in range(qt.EVENT_LOG_LINES + 25):
+        spoof = Spoof()
+        spoof.text = f"a line {number}"
+        dashboard._show_event(spoof)
     assert dashboard.event_view.document().blockCount() <= qt.EVENT_LOG_LINES
 
 
@@ -1351,17 +1395,18 @@ def test_the_collapsed_setup_dock_comes_back_from_the_rail(fresh_dashboard, qapp
 
 def test_the_setup_panel_is_put_away_not_torn_down(fresh_dashboard, qapp, controller):
     """Its scan results and its selections are still there when it comes back,
-    which they would not be if the panel behind it had been destroyed. A
-    model's `DeviceDock` deletes itself on close; Setup's must not."""
+    which they would not be if the panel behind it had been destroyed.
+    Updated (E): the panel is `setup_view`, inside the dock's scroll area."""
     dashboard = fresh_dashboard
     dashboard.open()
-    panel_view = dashboard._setup_dock.widget()
+    panel_view = dashboard.setup_view
     assert not dashboard._setup_dock.testAttribute(
         Qt.WidgetAttribute.WA_DeleteOnClose)
     controller.notify("added", "Fake")
     qapp.processEvents()
     dashboard.show_setup()
-    assert dashboard._setup_dock.widget() is panel_view
+    assert dashboard.setup_view is panel_view
+    assert dashboard._setup_dock.widget().widget() is panel_view
     assert panel_view._timer.isActive() is True
 
 
@@ -1409,15 +1454,18 @@ def test_collapsing_without_a_setup_dock_is_not_an_error(dashboard):
 
 
 def test_there_is_one_navigation_not_two(dashboard, qapp):
-    """Replaces the toolbar test. Three toolbar tabs repeated the three dock
-    titles under them; the docks are the working surface, and the one way
-    back to Setup is the rail's Setup, bound to the dock's own action."""
-    from PySide6.QtWidgets import QToolBar
+    """Replaces the toolbar test. The one way back to Setup is the rail's
+    Setup, bound to the dock's own action. Updated (E): the rail is the left
+    dock (was: the menu widget across the top), its model list the one
+    navigation - no toolbar, no tabs."""
+    from PySide6.QtWidgets import QTabBar, QToolBar
     dashboard.open()
     assert dashboard.findChildren(QToolBar) == []
+    assert [t for t in dashboard.findChildren(QTabBar) if t.isVisible()] == []
     assert dashboard.setup_button.defaultAction() is dashboard.setup_action
     assert dashboard.setup_button.isHidden() is False
-    assert dashboard.menuWidget() is dashboard.rail
+    assert dashboard.rail_dock.widget() is dashboard.rail
+    assert dashboard.rail.isAncestorOf(dashboard.quit_button)
 
 
 def test_the_stop_object_is_on_the_rail_and_the_rail_above_every_dock(
@@ -1493,9 +1541,11 @@ def test_the_event_tray_opens_as_one_line(dashboard, qapp):
 
 
 def test_an_info_event_is_readable_not_panel_grey(dashboard):
-    """`info` was drawn in the info role's fill, a panel grey."""
+    """`info` was drawn in the info role's fill, a panel grey. Updated (E): a
+    warning is ink now - the trace is for changing numbers only."""
     assert dashboard._severity_colour("info") == theme.MUTED
-    assert dashboard._severity_colour("warning") == theme.TRACE
+    assert dashboard._severity_colour("warning") == theme.SEVERITY_INK["warning"]
+    assert theme.SEVERITY_INK["warning"] == theme.TEXT
 
 
 # ---------------------------------------------------------------------------
@@ -1667,16 +1717,17 @@ def rail_dashboard(qapp, names, width, height):
     return window
 
 
-def clipped_rail_numbers(window):
-    """Every visible rail number drawn narrower than its own text - the
-    desktop auditor's measure (AUD-1), with the clip of every ancestor."""
+def clipped_numbers(window):
+    """Every visible number on the sheet drawn narrower than its own text -
+    the desktop auditor's measure (AUD-1). Updated (E): the numbers live in
+    the sheet's entries (`reading`), not on the rail; elided readouts carry
+    their whole value in a tooltip and are not numbers that can be cut."""
     clipped = []
-    for label in window.rail.findChildren(QLabel):
-        if label.objectName() != "railValue" or not label.isVisible():
+    for label in window.findChildren(QLabel):
+        if label.objectName() != "reading" or not label.isVisible():
             continue
         need = label.fontMetrics().horizontalAdvance(label.text())
-        have = min(label.contentsRect().width(),
-                   label.visibleRegion().boundingRect().width())
+        have = label.contentsRect().width()
         if need > have + 1:
             clipped.append((label.text(), have, need))
     return clipped
@@ -1686,57 +1737,66 @@ def clipped_rail_numbers(window):
     (12, ["Stepper Probe", "DC Probe", "Temperature Controller", "Red Percent"], 1000),
     (28, ["Stepper Probe", "Red Percent"], 1000),
 ])
-def test_f5_the_rail_never_clips_a_number(qapp, restore_font, font, names,
+def test_f5_the_sheet_never_clips_a_number(qapp, restore_font, font, names,
                                            width):
+    """Updated (E; was "the rail never clips a number"): a number is never
+    drawn narrower than itself - an entry flows it to the next line, the
+    sheet takes fewer columns - and the sheet never scrolls sideways; the
+    stop stays inside the window."""
     theme.set_font_size(font)
     window = rail_dashboard(qapp, names, width, 700)
     try:
-        assert clipped_rail_numbers(window) == []
+        assert clipped_numbers(window) == []
+        assert window.sheet_scroll.horizontalScrollBar().maximum() == 0
         for name in names:
-            group, readouts = window._rail_groups[name]
-            shown = [v for _, v in readouts if v.isVisible()]
-            assert shown, f"{name} lost every readout"
-            assert all(v.text() in ("12345.678", "0.00", "-9876.5")
-                       for v in shown)
+            panel = window._panels[name]
+            shown = [panel._widget_for(e) for e in panel._elements
+                     if panel._kinds.get(id(e))]
+            assert shown and all(v.text() in ("12345.678", "0.00", "-9876.5")
+                                 for v in shown)
         stop = window.stop_button
         top_left = stop.mapTo(window, QPoint(0, 0))
         assert top_left.x() + stop.width() <= window.width()
+        assert top_left.y() + stop.height() <= window.height()
     finally:
         window._closing = False
         window.close()
         events.unsubscribe(window._on_event)
 
 
-def test_f5_past_two_lines_a_model_shows_fewer_readouts_not_a_clipped_one(
+def test_f5_a_narrow_entry_wraps_its_numbers_rather_than_cutting_one(
         qapp, restore_font):
-    """At 28 pt two models' three readouts do not fit on two lines of a
-    1000 px rail; each model then shows fewer, never a clipped one. (Past one
-    readout a model cannot shed more, and a third line is allowed.)"""
+    """Updated (E; was "past two lines a model shows fewer rail readouts"):
+    every reading is always drawn, whole; at 28 pt in a 1000 px window the
+    entries stack one to a row and a line of numbers wraps."""
     theme.set_font_size(28)
     window = rail_dashboard(qapp, ["A", "B"], 1000, 700)
     try:
-        assert window.rail_readouts.lines <= qt.RAIL_LINES
-        shown = [sum(v.isVisible() for _, v in r)
-                 for _, r in window._rail_groups.values()]
-        assert min(shown) >= 1 and max(shown) < 3
-        group = window._rail_groups["A"][0]
-        assert "12345.678" in group.toolTip()      # the hidden ones, on hover
-        assert clipped_rail_numbers(window) == []
+        assert window._arrangement == (("A",), ("B",))
+        panel = window._panels["A"]
+        tops = {panel._widget_for(e).mapTo(panel, QPoint(0, 0)).y()
+                for e in panel._elements if panel._kinds.get(id(e))}
+        assert len(tops) >= 1
+        assert clipped_numbers(window) == []
     finally:
         window._closing = False
         window.close()
         events.unsubscribe(window._on_event)
 
 
-def test_f25_the_stop_stays_at_most_96_px_at_28_pt_and_its_face_fits(
+def test_f25_the_disc_never_outgrows_the_rail_at_28_pt_and_its_face_fits(
         qapp, restore_font):
+    """Updated (E; was "at most 96 px"): the disc is `theme.STOP`'s diameter
+    at every launch font - it does not grow with the text, so at 28 pt the
+    rail keeps room for the model list - and "Clear" fits inside the face."""
     theme.set_font_size(28)
     button = qt.StopButton()
-    assert button.width() == button.height() <= qt.STOP_MAX_PX
-    font = QFont(theme.FONT_FAMILY, button.face_size())
-    font.setBold(True)
-    inside = button.width() - 2 * (button.FOCUS_GAP + button._ring)
-    assert QFontMetrics(font).horizontalAdvance("Clear") <= inside
+    assert button.diameter == theme.STOP["diameter"]
+    assert button.width() == button.height()
+    button.set_latched(True)
+    room = button.face_rect().width()
+    assert QFontMetrics(qt.numeral_font(button.face_size(), 700)).horizontalAdvance(
+        "Clear") <= room
 
 
 # -- F1: errors never block the stop -----------------------------------------
@@ -1808,9 +1868,11 @@ def test_f8_lamps_are_visible_and_named(view, panel):
 
 
 def test_f8_a_disconnected_stage_is_an_ink_ring_not_a_second_red():
+    """Updated (E): a lit lamp is ink, not the trace (the trace is for
+    changing numbers only)."""
     connected = sch.indicator("Stage connected", "is_connected",
                               on_role="go", off_role="danger")
-    assert qt.lamp_colours(connected, True) == (theme.TRACE, theme.TRACE)
+    assert qt.lamp_colours(connected, True) == (theme.TEXT, theme.TEXT)
     fill, ring = qt.lamp_colours(connected, False)
     assert ring == theme.TEXT and theme.SIGNAL not in (fill, ring)
     fault = sch.indicator("Fault", "is_faulted")
@@ -1866,7 +1928,8 @@ def test_f9_g5_one_global_shortcut_control_period_stops_and_never_clears(
     dashboard._sync_stop_button()
     hint = "Stop every model (Ctrl+.)"
     assert dashboard.stop_button.toolTip().startswith(hint)
-    assert dashboard.stop_hint.full_text() == hint
+    # Updated (E): the line under the disc is the artboard's "Stop: Ctrl+.".
+    assert dashboard.stop_hint.full_text() == "Stop: Ctrl+."
     for text in (dashboard.stop_button.toolTip(), dashboard.stop_hint.full_text()):
         assert not any(mark in text for mark in ("\u2318", "\u2303", "Cmd", "Meta"))
     # Matched as a key sequence, not by a synthesised key press: every
@@ -1887,13 +1950,15 @@ def test_f9_g5_one_global_shortcut_control_period_stops_and_never_clears(
     dashboard.stop_shortcut.activated.emit()      # latched: it does not clear
     assert controller.is_estopped is True and controller.estop_calls == 1
     dashboard._sync_stop_button()
-    assert dashboard.stop_hint.full_text() == "Clear the stop on every model"
+    assert dashboard.stop_button.accessibleName() == "Clear the stop on every model"
 
 
 # -- F3: a lost device ---------------------------------------------------------
 
-def test_f3_a_lost_port_is_said_on_the_panel_the_dock_and_the_rail(
+def test_f3_a_lost_port_is_said_on_the_panel_the_entry_and_the_rail(
         dashboard, qapp, controller, monkeypatch):
+    """Updated (E): the dock's bar became the entry's head, and the rail's
+    readout group (gone) its status line."""
     live = controller.state
 
     def lost(name=None):
@@ -1909,18 +1974,19 @@ def test_f3_a_lost_port_is_said_on_the_panel_the_dock_and_the_rail(
     assert panel_view.notice.isVisibleTo(panel_view)
     assert "Fake lost its serial port" in panel_view.notice.text()
     assert panel_view.property("stale") == "true"
-    dock = dashboard._docks["Fake"]
-    assert dock.title_bar.lost_label.isVisibleTo(dock)
-    group, readouts = dashboard._rail_groups["Fake"]
-    assert group.lost_label.text() == "Serial port lost"
-    assert all(v.property("lost") == "true" for _, v in readouts)
+    entry = dashboard._entries["Fake"]
+    assert entry.lost_label.isVisibleTo(entry)
+    assert entry.lost_label.text() == "Serial port lost"
     assert "Fake lost its serial port" in dashboard.rail_status.full_text()
 
 
 def test_f3_stale_readouts_really_are_repolished(view, panel):
     """The stale rule is a descendant selector; polishing the panel alone
-    never re-read it for the labels, so a stale panel stayed trace."""
+    never re-read it for the labels. Updated (E): a readout is ink at rest
+    and the trace only while it changes, so the value changes first."""
     label = view._widget_for(element_named(view, "reading"))
+    view._refresh()
+    panel.reading = "2.468"
     view._refresh()
     live = label.palette().color(label.foregroundRole()).name()
     view._set_stale(True)
@@ -1950,8 +2016,8 @@ def test_f10_a_refusal_lands_in_the_card_of_the_control_and_scrolls_into_view(
             qapp.processEvents()
         line = view.status_label
         assert "not homed" in line.text()
-        card = line.parentWidget()
-        assert card.objectName() == "card" and card.isAncestorOf(button)
+        section = line.parentWidget()       # updated (E): a section, not a card
+        assert section.objectName() == "section" and section.isAncestorOf(button)
         assert scroll.verticalScrollBar().value() > 0
         top = line.mapTo(scroll.viewport(), QPoint(0, 0)).y()
         assert 0 <= top <= scroll.viewport().height()
@@ -2032,7 +2098,7 @@ def test_f21_the_hidden_setup_panel_stops_ticking(fresh_dashboard, qapp,
                                                   controller):
     dashboard = fresh_dashboard
     dashboard.open()
-    setup_view = dashboard._setup_dock.widget()
+    setup_view = dashboard.setup_view           # updated (E): inside a scroll
     assert setup_view._timer.isActive() is True
     controller.notify("added", "Fake")
     qapp.processEvents()
@@ -2044,21 +2110,29 @@ def test_f21_the_hidden_setup_panel_stops_ticking(fresh_dashboard, qapp,
 
 # -- F22: many models become tabs, not slivers --------------------------------------
 
-def test_f22_the_fourth_model_onward_are_tabs_in_the_last_column(dashboard,
-                                                                 controller):
-    controller.open_names = ["One", "Two", "Three", "Four", "Five"]
+def test_f22_six_models_are_one_full_row_then_rows_of_three_and_two(
+        dashboard, controller, qapp):
+    """Updated (E; was "the fourth model onward are tabs in the last
+    column"): no tabs - the opened model full width, then rows of at most
+    three, the earlier rows the fuller, as many columns as fit."""
+    controller.open_names = ["One", "Two", "Three", "Four", "Five", "Six"]
     dashboard.open()
-    docks = dashboard._docks
-    assert dashboard.tabifiedDockWidgets(docks["One"]) == []
-    assert dashboard.tabifiedDockWidgets(docks["Two"]) == []
-    tabs = set(dashboard.tabifiedDockWidgets(docks["Three"]))
-    assert {docks["Four"], docks["Five"]} <= tabs
-    assert len(dashboard._dock_columns()) == qt.MAX_DOCK_COLUMNS
+    dashboard.resize(4000, 900)
+    for _ in range(5):
+        qapp.processEvents()
+    dashboard._arrange_entries()
+    rows = dashboard._arrangement
+    assert rows[0] == ("One",)
+    assert all(len(row) <= qt.MAX_SHEET_COLUMNS for row in rows)
+    assert [n for row in rows for n in row] == controller.open_names
+    dashboard.open_entry("Four")
+    assert dashboard._arrangement[0] == ("Four",)
+    assert dashboard._rail_items["Four"].isChecked()
 
 
 # -- F25: targets, focus, reopen, motion --------------------------------------------
 
-def test_f25_the_rescan_and_the_dock_close_are_at_least_24_px_and_grow(
+def test_f25_the_rescan_and_the_entry_close_are_at_least_24_px_and_grow(
         qapp, controller, restore_font):
     sizes = {}
     for font in (12, 28):
@@ -2066,22 +2140,23 @@ def test_f25_the_rescan_and_the_dock_close_are_at_least_24_px_and_grow(
         view = qt.QtPanelView(controller, "Fake")
         rescan = next(b for b in view.findChildren(qt.QPushButton)
                       if b.objectName() == "iconButton")
-        dock = qt.DeviceDock("Fake")
-        close = dock.title_bar.close_button
+        entry = qt.SheetEntry("Fake")      # updated (E): the dock's bar
+        close = entry.close_button         # became the entry's head
         sizes[font] = (rescan.width(), rescan.height(), close.width(),
                        close.height())
         assert min(sizes[font]) >= 24
         assert close.accessibleName() == "Close Fake"
         view.close()
-        dock.deleteLater()
+        entry.deleteLater()
     assert min(sizes[28]) > min(sizes[12])
 
 
 def test_f25_a_reopened_model_is_brought_forward(dashboard, qapp, controller,
                                                  monkeypatch):
     raised = []
+    # Updated (E): an entry, named by `name` (a dock by its window title).
     monkeypatch.setattr(type(dashboard), "_bring_forward",
-                        staticmethod(lambda dock: raised.append(dock.windowTitle())))
+                        lambda self, entry: raised.append(entry.name))
     dashboard.open()
     dashboard._sync_rail()
     dashboard.reopen_buttons["Gone"].click()
@@ -2098,12 +2173,13 @@ def test_f25_no_motion_turns_the_pulse_off(qapp, monkeypatch):
     assert button.text() == "Clear"
 
 
-def test_f25_a_panel_scroll_area_shows_focus(dashboard):
-    dock = dashboard._add_panel("Fake")
-    scroll = dock.widget()
-    assert scroll.objectName() == "panelScroll"
+def test_f25_the_sheet_scroll_area_shows_focus(dashboard):
+    """Updated (E): one scroll area for the sheet (was one per dock)."""
+    dashboard._add_panel("Fake")
+    assert dashboard.sheet_scroll.objectName() == "sheetScroll"
     sheet = qt.stylesheet()
-    assert f"QScrollArea#panelScroll:focus {{\n    border: {qt.FOCUS_RING};" in sheet
+    rule = sheet.split("QScrollArea#sheetScroll:focus")[1].split("}")[0]
+    assert qt.FOCUS_RING in rule
 
 
 # ---------------------------------------------------------------------------
@@ -2323,3 +2399,354 @@ def test_g4_the_window_belongs_to_the_main_window_and_the_stop_stays_live(
     assert dashboard.stop_button.isEnabled()
     dashboard.stop_shortcut.activated.emit()
     assert controller.is_estopped is True
+
+
+# ---------------------------------------------------------------------------
+# E (2026-09-25): the Bench sheet, tiered. Written by rb-e-qt, run by the
+# lead (agents do not run the Qt pass).
+# ---------------------------------------------------------------------------
+
+class TieredPanel(Panel):
+    """A probe's shape on the Bench sheet: X/Y/Z and a speed with a slider in
+    tier 1, a step size and a plot behind "Configure", a fault word and the
+    per-model stop behind "Diagnostics"."""
+
+    NAME = "Tiered"
+    PARAMS = {"speed": Param("speed", "int", default=400, minimum=1,
+                             maximum=5000, label="Manual Speed"),
+              "step": Param("step", "int", default=16, minimum=1,
+                            label="X Step Size")}
+
+    def __init__(self):
+        super().__init__()
+        self.position_x, self.position_y, self.position_z = "1184", "-352", "20"
+        self.connection = "Connected"
+        self.motion = "Moving"
+        self.fault = "No"
+        self.is_estopped = False
+        self.commands = []
+
+    @property
+    def schema(self):
+        P = self.PARAMS
+        return sch.schema(
+            sch.section("Position", *[sch.readonly(f"{a}:", f"position_{a.lower()}",
+                                                   rail=True) for a in "XYZ"]),
+            sch.section("Speeds",
+                        sch.entry("Manual Speed:", "speed", P["speed"], slider=(1, 1000)),
+                        sch.button("Step", "step_once", inputs=("speed",), role="go"),
+                        sch.readonly("Connection:", "connection"),
+                        sch.readonly("Motion:", "motion")),
+            sch.section("Configuration", sch.entry("X Step Size:", "step", P["step"]),
+                        sch.plot("Series", "series"), tier=2, disclosure="Configure"),
+            sch.section("Diagnostics", sch.readonly("Fault:", "fault"),
+                        tier=3, disclosure="Diagnostics"),
+            sch.section("Safety", sch.toggle("Stop", "is_estopped", "toggle_estop",
+                                             "Stopped", "Stop", on_role="danger",
+                                             off_role="danger", tooltip="Stop Tiered"),
+                        tier=3, disclosure="Diagnostics"))
+
+    def step_once(self):
+        self.commands.append(("step", self.speed))
+
+    def toggle_estop(self):
+        self.is_estopped = not self.is_estopped
+
+    def series(self):
+        return {"y": [1, 3, 2]}
+
+
+@pytest.fixture
+def tiered(qapp):
+    qt.QtPanelView.open_tiers.clear()
+    panel = TieredPanel()
+    built = qt.QtPanelView(FakeController(panel), "Tiered")
+    yield built, panel
+    built.close()
+    qt.QtPanelView.open_tiers.clear()
+
+
+def test_e_tier_two_is_hidden_until_its_disclosure_is_pressed(tiered):
+    view, _ = tiered
+    step = view._widget_for(element_named(view, "step"))
+    assert view.tier_button.text() == "Configure"
+    assert view.tier_button.isChecked() is False
+    assert step.isVisibleTo(view) is False
+    view.tier_button.click()
+    assert view.well.isVisibleTo(view) and step.isVisibleTo(view)
+    assert view.tier_button.property("open") is True
+    view.tier_button.click()
+    assert step.isVisibleTo(view) is False
+
+
+def test_e_tier_three_sits_inside_tier_two_behind_diagnostics(tiered):
+    view, _ = tiered
+    fault = view._widget_for(element_named(view, "fault"))
+    switch = view._widget_for(element_named(view, "is_estopped"))
+    assert view.well.isAncestorOf(view.diag_button)
+    assert view.diagnostics.isAncestorOf(fault)
+    assert view.diagnostics.isAncestorOf(switch)
+    assert view.diag_button.text() == "Diagnostics"
+    view.tier_button.click()
+    assert fault.isVisibleTo(view) is False
+    view.diag_button.click()
+    assert fault.isVisibleTo(view) and switch.isVisibleTo(view)
+    assert f"border-left: 2px solid {theme.MUTED}" in qt.stylesheet()
+
+
+def test_e_open_tiers_are_remembered_per_model_for_the_session(qapp):
+    qt.QtPanelView.open_tiers.clear()
+    first = qt.QtPanelView(FakeController(TieredPanel()), "Tiered")
+    first.tier_button.click()
+    first.diag_button.click()
+    first.close()
+    again = qt.QtPanelView(FakeController(TieredPanel()), "Tiered")
+    other = qt.QtPanelView(FakeController(TieredPanel()), "Other")
+    try:
+        assert again.tier_is_open(2) and again.tier_is_open(3)
+        assert again.tier_button.isChecked()
+        assert not other.tier_is_open(2)
+    finally:
+        again.close()
+        other.close()
+        qt.QtPanelView.open_tiers.clear()
+
+
+def test_e_an_entry_lifts_the_disclosure_into_its_head(tiered):
+    view, _ = tiered
+    entry = qt.SheetEntry("Tiered", view)
+    assert entry.disclosure is view.tier_button
+    assert not view._disclosure_row.isVisibleTo(view)
+    assert entry.isAncestorOf(view.tier_button)
+    # The entry owns the panel now; deleting it takes the panel and its timer
+    # with it, and the fixture's later close() must survive that.
+    import shiboken6
+    shiboken6.delete(entry)
+    assert not qt.qt_alive(view._timer)
+    assert view.close() is True
+
+
+def test_e_the_slider_and_the_entry_follow_each_other_and_the_command_gets_the_value(
+        tiered):
+    view, panel = tiered
+    element = element_named(view, "speed")
+    entry = view._widget_for(element)
+    slider = view._sliders[id(element)]
+    assert isinstance(slider, qt.QSlider)
+    assert (slider.minimum(), slider.maximum()) == (1, 1000)
+    assert entry.parentWidget() is slider.parentWidget()     # beside, not instead
+    view._refresh()
+    assert slider.value() == 400
+    slider.setValue(250)                  # a key press: not a drag
+    assert entry.text() == "250"
+    assert panel.speed == 250             # committed through `_commit`
+    view._refresh()
+    assert entry.text() == "250" and slider.value() == 250
+    entry.setText("730")
+    entry.editingFinished.emit()
+    assert slider.value() == 730
+    view._run(next(e for e in view._elements if e.get("command") == "step_once"))
+    assert panel.commands[-1] == ("step", 730)
+    entry.setText("4000")                 # past the slider's travel
+    entry.editingFinished.emit()
+    assert slider.value() == 1000 and entry.text() == "4000"
+
+
+def test_e_a_drag_is_not_snapped_back_by_the_refresh(tiered, monkeypatch):
+    view, panel = tiered
+    element = element_named(view, "speed")
+    slider = view._sliders[id(element)]
+    monkeypatch.setattr(slider, "isSliderDown", lambda: True)
+    slider.setValue(600)
+    view._refresh()
+    assert view._widget_for(element).text() == "600"
+    assert panel.speed == 400             # not yet: it commits on release
+    monkeypatch.setattr(slider, "isSliderDown", lambda: False)
+    slider.sliderReleased.emit()
+    assert panel.speed == 600
+
+
+def test_e_a_normal_value_is_not_drawn_in_tier_one(tiered):
+    view, panel = tiered
+    view._refresh()
+    connection = element_named(view, "connection")
+    motion = element_named(view, "motion")
+    assert view._holders[id(connection)].isHidden() is True     # "Connected"
+    assert view._holders[id(motion)].isHidden() is False        # "Moving"
+    panel.connection = "Lost"
+    view._refresh()
+    assert view._holders[id(connection)].isHidden() is False
+    # Tier 3 still draws its normal values ("No" fault) for the diagnostics.
+    view.tier_button.click()
+    view.diag_button.click()
+    assert view._widget_for(element_named(view, "fault")).isVisibleTo(view)
+
+
+def test_e_axis_readings_are_focal_on_the_opened_model_and_compact_otherwise(tiered):
+    view, _ = tiered
+    x = view._widget_for(element_named(view, "position_x"))
+    assert x.objectName() == "reading" and x.property("scale") == "compact"
+    view.set_opened(True)
+    assert x.property("scale") == "focal"
+    assert x.font().pointSize() == qt.reading_pt("focal")   # 52 px at any dpi
+    captions = [w.text() for w in view.findChildren(QLabel) if w.objectName() == "caption"]
+    assert captions.count("Position") == 1                     # once, then X Y Z
+    letters = [w.text() for w in view.findChildren(QLabel)
+               if w.objectName() == "axisLetter"]
+    assert letters == ["X", "Y", "Z"]
+
+
+def test_e_a_number_is_the_trace_only_while_it_changes(tiered, monkeypatch):
+    view, panel = tiered
+    x = view._widget_for(element_named(view, "position_x"))
+    view._refresh()
+    assert x.property("live") == "false"
+    panel.position_x = "1190"
+    view._refresh()
+    assert x.property("live") == "true"
+    later = qt.time.monotonic() + qt.LIVE_S + 0.5
+    monkeypatch.setattr(qt.time, "monotonic", lambda: later)
+    view._refresh()
+    assert x.property("live") == "false"
+
+
+def test_e_a_latched_model_freezes_its_numbers(tiered):
+    view, panel = tiered
+    view._refresh()
+    assert view.property("frozen") in (None, "false")
+    panel.is_estopped = True
+    view._refresh()
+    assert view.property("frozen") == "true"
+    assert view.property("stale") == "true"          # the one dimming rule
+    x = view._widget_for(element_named(view, "position_x"))
+    assert x.palette().color(x.foregroundRole()).name().lower() == theme.MUTED.lower()
+
+
+def test_e_the_disc_reads_stop_then_clear_and_is_red_both_ways(qapp):
+    button = qt.StopButton()
+    assert button.text() == "Stop" and not button.is_latched
+    assert button.diameter == theme.STOP["diameter"]
+    button.set_latched(True)
+    assert button.text() == "Clear" and button.ring_px() == theme.STOP["ring_latched"]
+    button.setEnabled(False)
+    assert button.isEnabled()
+    centre = button.width() // 2
+    colour = QColor(button.grab().toImage().pixel(centre, centre - button.diameter // 3))
+    target = QColor(theme.SIGNAL)
+    assert abs(colour.red() - target.red()) + abs(colour.green() - target.green()) < 60
+
+
+def test_e_a_stop_that_did_not_confirm_is_marked_at_its_entry(dashboard, controller):
+    dashboard.open()
+    monkey_result = {"Fake": False}
+    controller.estop_all = lambda: (setattr(controller, "is_estopped", True)
+                                    or monkey_result)
+    dashboard._on_stop_clicked()
+    entry = dashboard._entries["Fake"]
+    assert entry.is_unconfirmed is True
+    assert entry.unconfirmed_label.text() == "Stop not confirmed. Treat as live."
+    assert entry.unconfirmed_label.isVisibleTo(entry)
+    assert theme.SIGNAL in entry.rule.styleSheet()
+    controller.is_estopped = False
+    dashboard._on_rail_tick()
+    assert entry.is_unconfirmed is False and entry.rule.styleSheet() == ""
+
+
+def test_e_the_tray_reports_warnings_and_errors_only_and_each_once(dashboard):
+    class Spoof:
+        source, title, message, count = "T", "t", "m", 1
+        needs_ack = False
+
+    info, warning = Spoof(), Spoof()
+    info.severity, info.text = "info", "launched"
+    warning.severity, warning.text = "warning", "a port answered nothing"
+    dashboard._show_event(info)
+    assert dashboard.event_latest.full_text() == ""
+    dashboard._show_event(warning)
+    dashboard._show_event(warning)
+    assert dashboard.event_view.toPlainText().count("a port answered nothing") == 1
+    # The warning's mark is a hollow square in the warning ink: an image in
+    # the log (rich text drops a span's border), ink at its edge, clear inside.
+    # (Was an HTML `border:1px solid` span, which Qt never rendered.)
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QTextDocument
+    page = dashboard.event_view.toHtml()
+    assert 'src="mark:warning"' in page
+    image = dashboard.event_view.document().resource(
+        QTextDocument.ResourceType.ImageResource.value, QUrl("mark:warning"))
+    side = image.width()
+    edge, inside = QColor(image.pixel(1, side // 2)), image.pixelColor(side // 2, side // 2)
+    assert _near(edge, theme.SEVERITY_MARK["warning"]) and inside.alpha() == 0
+    error = Spoof()
+    error.severity, error.text = "error", "the heater did not answer"
+    dashboard._show_event(error)
+    assert (f"background-color:{theme.SEVERITY_MARK['error']}".lower()
+            in dashboard.event_view.toHtml().lower().replace(" ", ""))
+
+
+def _six_tiered_window(qapp, width, height):
+    controller = FakeController(TieredPanel())
+    controller.open_names = ["Stepper Probe", "DC Probe", "Chuck Positioner",
+                             "Temperature Controller", "Rotator", "Red Percent"]
+    controller.closed = []
+    window = qt.QtDashboard(controller, controller.panel)
+    window.open()
+    window.resize(width, height)
+    for _ in range(5):
+        qapp.processEvents()
+    window._arrange_entries()
+    for _ in range(5):
+        qapp.processEvents()
+    return window
+
+
+def _cut_labels(window):
+    cut = []
+    for label in window.findChildren(QLabel):
+        if (not label.isVisible() or not label.text() or label.wordWrap()
+                or isinstance(label, (qt.ElidedLabel, qt.ReadoutLabel))):
+            continue
+        need = label.fontMetrics().horizontalAdvance(label.text())
+        if need > label.contentsRect().width() + 1:
+            cut.append((label.objectName(), label.text()))
+    return cut
+
+
+def test_e_nothing_clips_at_1000_by_700_with_six_models(qapp, restore_font):
+    qt.QtPanelView.open_tiers.clear()
+    theme.set_font_size(12)
+    window = _six_tiered_window(qapp, 1000, 700)
+    try:
+        assert _cut_labels(window) == []
+        assert window.sheet_scroll.horizontalScrollBar().maximum() == 0
+        stop = window.stop_button
+        corner = stop.mapTo(window, QPoint(stop.width(), stop.height()))
+        assert corner.x() <= window.width() and corner.y() <= window.height()
+    finally:
+        window.close()
+        events.unsubscribe(window._on_event)
+
+
+def test_e_nothing_clips_at_28_pt_with_a_models_details_open(qapp, restore_font):
+    qt.QtPanelView.open_tiers.clear()
+    theme.set_font_size(28)
+    window = _six_tiered_window(qapp, 1000, 700)
+    try:
+        window.open_entry("Red Percent")
+        panel = window._panels["Red Percent"]
+        panel.tier_button.click()
+        panel.diag_button.click()
+        for _ in range(5):
+            qapp.processEvents()
+        window._arrange_entries()
+        for _ in range(5):
+            qapp.processEvents()
+        assert window._arrangement[0] == ("Red Percent",)
+        assert _cut_labels(window) == []
+        assert window.sheet_scroll.horizontalScrollBar().maximum() == 0
+        entry = window._entries["Red Percent"]
+        assert entry.height() >= entry.heightForWidth(entry.width()) - 1
+    finally:
+        window.close()
+        events.unsubscribe(window._on_event)
+        qt.QtPanelView.open_tiers.clear()
