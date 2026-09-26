@@ -1965,7 +1965,7 @@ class TkPanelView(PanelView):
         return any(element.get("type") == "button" and element.get("role") == "go"
                    for element in sections[index].get("elements") or [])
 
-    def _make_row_section(self, title, kind, pinned=False):
+    def _make_row_section(self, title, kind, pinned=False, parent=None):
         """One line of the table: the row's name in column 0, then its cells.
 
         Every row section in a run shares ONE grid, because columns only line
@@ -1974,22 +1974,23 @@ class TkPanelView(PanelView):
         table with its captions inline. A rule sets the header off from the
         rows, and the rows off from a bar that follows them.
         """
-        self._section_run = None
         if pinned:
             self._table = None
         if self._table is None:
             if pinned:
                 try:
-                    self._pinned.pack(side="bottom", fill="x", before=self._area)
+                    self._pinned.pack(side="bottom", fill="x",
+                                      before=self._area or self._body)
                 except Exception as exc:
                     events.debug("Pinned Row Not Placed", str(exc), source=SOURCE,
                                  exception=exc)
-                tk.Frame(self._pinned, height=1, background=theme.RULE).pack(
-                    fill="x", padx=INSET)
-            self._table = tk.Frame(self._pinned if pinned else self._body,
+                # The commit row is set off by the entry's own rule: 2 px ink.
+                tk.Frame(self._pinned, height=theme.RULE_STRONG_PX,
+                         background=theme.RULE_STRONG).pack(fill="x", padx=INSET)
+            self._table = tk.Frame(self._pinned if pinned else (parent or self._body),
                                    background=_page())
-            self._table.pack(fill="x", padx=INSET,
-                             pady=(GAP, GAP) if pinned else (INSET, GAP))
+            self._table.pack(fill="x", padx=INSET if pinned else 0,
+                             pady=(SPACE[4], SPACE[4]) if pinned else (GAP, GAP))
             width = len(self._table_columns)
             self._grid[id(self._table)] = {
                 "layout": "row", "row": -1, "kind": None, "bar": None,
@@ -2002,13 +2003,26 @@ class TkPanelView(PanelView):
         span = max(1, state["width"])
         if state["kind"] is not None:
             state["row"] += 1           # the previous row's refusal line
+            if kind == "table" and state["kind"] == "table":
+                # A panel-toned hairline between two rows of the table, in
+                # the refusal line's cell (a refusal is drawn over it).
+                tk.Frame(self._table, height=1, background=theme.RULE).grid(
+                    row=state["row"], column=0, columnspan=span + 1, sticky="sew")
         if kind == "table" and not state["has_header"]:
             state["row"] += 1
             for caption, column in self._table_columns.items():
-                tk.Label(self._table, text=caption, font=_font(SMALL), anchor="w",
+                tk.Label(self._table, text=caption, font=_caption_font(), anchor="w",
                          background=_page(), foreground=theme.MUTED
                          ).grid(row=state["row"], column=column, sticky="w",
                                 padx=(0, SPACE[5]), pady=(GAP, 0))
+                # A header is never cut: its column keeps its width (28 pt).
+                need = _width_px(_caption_font(), caption) + SPACE[5] + SPACE[1]
+                sizes = state.setdefault("minsize", {})
+                sizes[column] = max(sizes.get(column, 0), need)
+                try:
+                    self._table.grid_columnconfigure(column, minsize=sizes[column])
+                except Exception:
+                    pass
             state["row"] += 1
             self._hairline(self._table, state["row"], span + 1)
             state["has_header"] = True
@@ -2018,10 +2032,11 @@ class TkPanelView(PanelView):
         state["row"] += 1
         state["kind"] = kind
         state["extra"] = state["width"] + 1
-        caption = tk.Label(self._table, text=_sentence(title), font=_font(bold=True),
+        caption = tk.Label(self._table, text=_sentence(title),
+                           font=_font(STEP_1 if kind == "table" else BASE, bold=True),
                            anchor="w", background=_page(), foreground=theme.TEXT)
         caption.grid(row=state["row"], column=0, sticky="w",
-                     padx=(0, SPACE[5]), pady=GAP)
+                     padx=(0, SPACE[5]), pady=SPACE[2])
         self._section_titles.append(caption)
         state["bar"] = None
         if kind == "bar":
@@ -2997,7 +3012,7 @@ class TkPanelView(PanelView):
         """
         parent, place = self._field(container, element)
         var = tk.BooleanVar(value=False)
-        ring = _Ring(parent, _page(), border=_page())
+        ring = _Ring(parent, _bg(parent), border=_bg(parent))
         widget = ttk.Checkbutton(ring.inner, variable=var, takefocus=1,
                                  style=CHECK_STYLE,
                                  command=lambda el=element: self._on_checkbox_clicked(el))
@@ -3032,10 +3047,20 @@ class TkPanelView(PanelView):
         parent, place = self._field(container, element)
         var = tk.StringVar(value="")
         is_table = self._cursor(container)["layout"] == "row"
+        background = _bg(parent)
+        # A dropdown is a field: the other ground's well and a muted
+        # underline, as an entry (a panel well's has its own style).
+        # How many characters a name may keep: a table's box is sized in
+        # characters; a sheet cell's to a value's room.
+        chars = (DROPDOWN_WIDTH - 1 if is_table else
+                 max(FIELD_WIDTH, (_design_px(VALUE_PX) - SPACE[6])
+                     // max(1, _width_px(_font(), "0"))))
         options = dict(textvariable=var, state="readonly",
-                       width=DROPDOWN_WIDTH if is_table else FIELD_WIDTH,
+                       width=DROPDOWN_WIDTH if is_table else chars,
                        postcommand=lambda el=element: self._refresh_options(el))
-        ring = _Ring(parent, _page(), border=_page())
+        if background == theme.SURFACE:
+            options["style"] = WELL_COMBO_STYLE
+        ring = _Ring(parent, background, underline=True)
         try:
             widget = ttk.Combobox(ring.inner, font=_font(), **options)
         except Exception:
@@ -3048,10 +3073,6 @@ class TkPanelView(PanelView):
                     lambda _e, el=element: self._on_dropdown_selected(el))
         widget.bind("<FocusIn>", lambda _e, r=ring: r.paint(True))
         widget.bind("<FocusOut>", lambda _e, r=ring: r.paint(False))
-        # How many characters a name may keep: a table's box is sized in
-        # characters; a section's fills the value column.
-        chars = (DROPDOWN_WIDTH - 1 if is_table else
-                 max(FIELD_WIDTH, (VALUE_PX - SPACE[6]) // max(1, _width_px(_font(), "0"))))
         self._register(element, widget=widget, var=var, options=[],
                        tooltip=_Tooltip(widget), cell=ring.outer, ring=ring,
                        chars=chars, labels={}, label_of={})
@@ -4181,61 +4202,357 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
 
-    def _build_toolbar(self):
-        """The strip above the tabs. Empty while Setup has a tab of its own;
-        it carries the way back once Setup minimises.
-
-        The frame is packed now and stays packed even while empty, because a
-        frame packed after the notebook lands *below* it. The button is
-        chrome, not an instrument control: a ghost, as the Web rail's Setup.
-        """
-        self._toolbar = tk.Frame(self.root, background=theme.BACKGROUND)
-        self._toolbar.pack(side="top", fill="x")
-        self._setup_press = _Press(self._toolbar, "Setup", self._on_setup_clicked,
-                                   theme.BACKGROUND, ghost=True)
-        self._setup_button = self._setup_press.widget
-
-    def _build_stop_button(self):
-        """The stop object, docked at the bottom of the window.
-
-        The same object as the Web view's: a round signal-red disc reading
-        `Stop`, `Clear` once latched, that breathes once when the latch
-        closes. Bottom-docked on purpose — directly above the tab bar it was
-        an easy accidental-click target when reaching for a tab — and packed
-        before the notebook, so no panel can push it off the window. The
-        line beside it says what a press will do, to every model.
-        """
-        self._stop_bar = tk.Frame(self.root, background=theme.BACKGROUND)
-        self._stop_bar.pack(side="bottom", fill="x")
-        tk.Frame(self._stop_bar, height=1, background=theme.RULE
-                 ).pack(side="top", fill="x")
-        self._stop = _Mushroom(self._stop_bar, self._on_stop_clicked,
-                               background=theme.BACKGROUND, face_step=STEP_1,
-                               floor=STOP_DIAMETER)
-        self._stop_button = self._stop.canvas
-        self._stop_button.pack(side="right", padx=(PAD, INSET), pady=GAP)
-        self._stop_key = STOP_KEY_NAME
-        self._stop_hint = tk.Label(self._stop_bar, text=self._hint(False), font=_font(),
-                                   background=theme.BACKGROUND,
-                                   foreground=theme.MUTED)
-        self._stop_hint.pack(side="right", padx=(INSET, 0))
-        self._stop.tooltip.text = self._hint(False)
-        # The station line: which model lost which link (F3). Left of the
-        # hint, ink, with a signal lamp; empty while every link is up.
+    def _style_check_mark(self, style):
+        """The Launch box (Setup): an ink box with a check mark in the
+        sheet's tone when ticked, a muted edge when not - never an "x" (the
+        clam indicator's), never the signal colour. Drawn once into images
+        ttk's indicator element shows by state."""
         size = _lamp_px()
-        self._station_mark = tk.Canvas(self._stop_bar, width=size, height=size,
-                                       background=theme.BACKGROUND,
-                                       highlightthickness=0)
-        self._station_line = tk.Label(self._stop_bar, text="", font=_font(),
-                                      anchor="w", justify="left",
-                                      background=theme.BACKGROUND,
-                                      foreground=theme.TEXT)
-        self._station_mark.pack(side="left", padx=(INSET, SPACE[2]))
-        self._station_line.pack(side="left", fill="x", expand=True)
 
+        def box(fill, edge, tick):
+            image = tk.PhotoImage(width=size, height=size)
+            image.put(edge, to=(0, 0, size, size))
+            image.put(fill, to=(2, 2, size - 2, size - 2))
+            if tick is not None:
+                # Two strokes, 2 px wide: down-right, then up-right.
+                points = ((0.24, 0.52), (0.42, 0.70), (0.78, 0.30))
+                for (x0, y0), (x1, y1) in zip(points, points[1:]):
+                    steps = size * 2
+                    for index in range(steps + 1):
+                        x = round((x0 + (x1 - x0) * index / steps) * size)
+                        y = round((y0 + (y1 - y0) * index / steps) * size)
+                        image.put(tick, to=(x - 1, y - 1, x + 1, y + 1))
+            return image
+
+        try:
+            off = box(theme.BACKGROUND, theme.MUTED, None)
+            on = box(theme.TEXT, theme.TEXT, theme.BACKGROUND)
+            off_disabled = box(theme.BACKGROUND, theme.SURFACE, None)
+            on_disabled = box(theme.DISABLED[1], theme.DISABLED[1], theme.BACKGROUND)
+            self._images = [off, on, off_disabled, on_disabled]
+            style.element_create("Station.check", "image", off,
+                                 ("disabled", "selected", on_disabled),
+                                 ("disabled", off_disabled), ("selected", on))
+            style.layout(CHECK_STYLE, [("Checkbutton.padding", {
+                "sticky": "nswe", "children": [
+                    ("Station.check", {"side": "left", "sticky": ""})]})])
+        except Exception as exc:
+            events.debug("Check Mark Not Drawn", str(exc), source=SOURCE,
+                         exception=exc)
+
+    def _style_slider(self, style):
+        """The slider (E): a 4 px track in the other ground and an 18 px ink
+        thumb - muted while disabled or held. ttk's own scale is a bevelled
+        box, so its trough and slider are images here; the scale positions
+        whatever element is called `slider`."""
+        thumb, track = _design_px(18), _design_px(4)
+
+        def disc(colour):
+            image = tk.PhotoImage(width=thumb, height=thumb)
+            radius = thumb / 2
+            for y in range(thumb):
+                half = (radius ** 2 - (y + 0.5 - radius) ** 2) ** 0.5
+                x0, x1 = round(radius - half), round(radius + half)
+                if x1 > x0:
+                    image.put(colour, to=(x0, y, x1, y + 1))
+            return image
+
+        def rail(colour):
+            image = tk.PhotoImage(width=3 * track, height=thumb)
+            top = (thumb - track) // 2
+            image.put(colour, to=(0, top, 3 * track, top + track))
+            return image
+
+        try:
+            ink, muted = disc(theme.TEXT), disc(theme.MUTED)
+            for name, ground in ((SCALE_STYLE, theme.BACKGROUND),
+                                 (WELL_SCALE_STYLE, theme.SURFACE)):
+                prefix = name.split(".")[0]
+                trough = rail(_counter(ground))
+                self._images += [trough]
+                style.element_create(f"{prefix}.Scale.trough", "image", trough,
+                                     border=(track, 0), sticky="ew")
+                style.element_create(f"{prefix}.Scale.slider", "image", ink,
+                                     ("disabled", muted), ("pressed", muted))
+                style.layout(name, [(f"{prefix}.Scale.trough", {
+                    "sticky": "ew", "children": [
+                        (f"{prefix}.Scale.slider", {"side": "left", "sticky": ""})]})])
+            self._images += [ink, muted]
+        except Exception as exc:
+            events.debug("Slider Not Drawn", str(exc), source=SOURCE, exception=exc)
+
+    # -- the rail ----------------------------------------------------------
+    def _rail_width(self, is_narrow):
+        """248 px (200 under 1000 px), never narrower than the disc and its
+        focus ring (at 28 pt the disc grows)."""
+        want = RAIL_NARROW_PX if is_narrow else RAIL_PX
+        return max(want, self._stop.size + 2 * SPACE[5])
+
+    def _build_rail(self):
+        """The rail: the station's name and, when simulated, the line that
+        says so; the stop disc with "Stop: Ctrl+." under it; the latched
+        line; the lost-link line; the model list; Setup and Quit at the foot.
+        The disc is packed before the list, so a long list at 28 pt can
+        never push it off (the list gives way first)."""
+        rail = self._rail = tk.Frame(self.root, background=theme.SURFACE,
+                                     padx=SPACE[5], pady=SPACE[6])
+        rail.pack(side="left", fill="y")
+        head = tk.Frame(rail, background=theme.SURFACE)
+        head.pack(side="top", fill="x")
+        tk.Label(head, text=STATION_TITLE, font=_font(STEP_1, bold=True), anchor="w",
+                 background=theme.SURFACE, foreground=theme.TEXT).pack(fill="x")
+        self._sim_line = tk.Label(head, text="", font=_caption_font(), anchor="w",
+                                  justify="left", wraplength=RAIL_PX - 2 * SPACE[5],
+                                  background=theme.SURFACE, foreground=theme.MUTED)
+        self._stop = _Mushroom(rail, self._on_stop_clicked, background=theme.SURFACE)
+        self._stop_button = self._stop.canvas
+        self._stop_button.pack(side="top", pady=(SPACE[5], 0))
+        self._stop_bar = rail
+        self._stop_key = STOP_KEY_NAME
+        self._stop_hint = tk.Label(rail, text=f"{STOP_LINE}: {self._stop_key}",
+                                   font=_caption_font(), background=theme.SURFACE,
+                                   foreground=theme.MUTED)
+        self._stop_hint.pack(side="top", pady=(0, SPACE[4]))
+        self._stop.tooltip.text = self._hint(False)
+        # "Stopped: every model latched", with a signal square: packed only
+        # while the latch holds.
+        size = _lamp_px()
+        self._latched_row = tk.Frame(rail, background=theme.SURFACE)
+        latched_mark = tk.Canvas(self._latched_row, width=size, height=size,
+                                 background=theme.SURFACE, highlightthickness=0)
+        latched_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]), pady=SPACE[0])
+        try:
+            latched_mark.create_rectangle(2, 2, size - 2, size - 2, fill=theme.SIGNAL,
+                                          outline=theme.SIGNAL)
+        except Exception:
+            pass
+        self._latched_line = tk.Label(self._latched_row, text=LATCHED_LINE,
+                                      font=_font(bold=True), anchor="w", justify="left",
+                                      wraplength=RAIL_PX - 3 * SPACE[5],
+                                      background=theme.SURFACE, foreground=theme.TEXT)
+        self._latched_line.pack(side="left", fill="x")
+        # The station line: which model lost which link (F3), in ink with a
+        # signal mark; packed only while a link is lost.
+        self._station_row = tk.Frame(rail, background=theme.SURFACE)
+        self._station_mark = tk.Canvas(self._station_row, width=size, height=size,
+                                       background=theme.SURFACE, highlightthickness=0)
+        self._station_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]),
+                                pady=SPACE[0])
+        self._station_line = tk.Label(self._station_row, text="", font=_font(),
+                                      anchor="w", justify="left",
+                                      wraplength=RAIL_PX - 3 * SPACE[5],
+                                      background=theme.SURFACE, foreground=theme.TEXT)
+        self._station_line.pack(side="left", fill="x")
+        # Setup and Quit, at the foot: packed before the list takes the rest.
+        foot = tk.Frame(rail, background=theme.SURFACE)
+        foot.pack(side="bottom", fill="x")
+        self._setup_press = _Press(foot, "Setup", self._on_setup_clicked,
+                                   theme.SURFACE)
+        self._setup_press.frame.pack(side="left")
+        self._setup_button = self._setup_press.widget
+        self._quit_press = _Press(foot, "Quit", self._on_quit_clicked,
+                                  theme.SURFACE, ghost=True)
+        self._quit_press.frame.pack(side="left", padx=(SPACE[4], 0))
+        self._model_list = tk.Frame(rail, background=theme.SURFACE)
+        self._model_list.pack(side="top", fill="x", pady=(SPACE[4], 0))
+        self._set_rail_width(False)
+
+    def _set_rail_width(self, is_narrow):
+        if is_narrow == self._is_narrow:
+            return
+        self._is_narrow = is_narrow
+        width = self._rail_width(is_narrow)
+        try:
+            self._rail.configure(width=width)
+            self._rail.pack_propagate(False)
+        except Exception:
+            pass
+        for label in (self._sim_line, self._latched_line, self._station_line):
+            try:
+                label.configure(wraplength=width - 3 * SPACE[5])
+            except Exception:
+                pass
+
+    def _build_rail_list(self):
+        """One line per open model: a press opens it on the sheet (it leads,
+        full width); the middle button closes it, as it closed a tab."""
+        for ring, _label in self._rail_items.values():
+            try:
+                ring.outer.destroy()
+            except Exception:
+                pass
+        self._rail_items = {}
+        for name in [n for n in self._panels if n != self.SETUP_TAB]:
+            ring = _Ring(self._model_list, theme.SURFACE, border=theme.SURFACE)
+            label = tk.Label(ring.inner, text=name, font=_font(), anchor="w",
+                             background=theme.SURFACE, foreground=theme.TEXT,
+                             padx=SPACE[3], pady=_target_pady(), cursor="hand2",
+                             takefocus=1, highlightthickness=0)
+            label.pack(fill="x")
+            ring.outer.pack(side="top", fill="x")
+            for sequence in ("<Button-1>", "<Return>", "<space>"):
+                label.bind(sequence, lambda _e, n=name: self._on_rail_pressed(n))
+            label.bind(_close_tab_button(self.root),
+                       lambda _e, n=name: self._on_rail_close(n))
+            label.bind("<FocusIn>", lambda _e, r=ring: r.paint(True))
+            label.bind("<FocusOut>", lambda _e, r=ring: r.paint(False))
+            self._rail_items[name] = (ring, label)
+        self._paint_rail()
+
+    def _paint_rail(self):
+        """The opened model is highlighted while the sheet is shown; Setup
+        is ink-filled while its page is."""
+        on_sheet = self._shown_page != self.SETUP_TAB
+        for name, (_ring, label) in self._rail_items.items():
+            is_current = on_sheet and name == self._opened
+            try:
+                label.configure(background=theme.BACKGROUND if is_current
+                                else theme.SURFACE,
+                                font=_font(bold=is_current))
+            except Exception:
+                pass
+        self._setup_press.set_active(not on_sheet)
+
+    def _on_rail_pressed(self, name):
+        self.show_model(name)
+        return "break"
+
+    def _on_rail_close(self, name):
+        """The middle button on a model's line closes it (the tab gesture,
+        VIEW-TKINTER-18): `Controller.remove` stops and destructs it; the
+        Models menu reopens it."""
+        events.debug("Rail Close Requested", name, source=SOURCE)
+        self.close_model(name)
+        return "break"
+
+    def _on_quit_clicked(self):
+        """Quit asks first (it stops every model and exits); the window's
+        close button and the OS's Quit take the same close path."""
+        if self._confirm(self.QUIT_PROMPT):
+            self.close()
+
+    # -- the sheet -----------------------------------------------------------
+    def _build_headline(self):
+        """"Every model is stopped." at the head of the sheet, while latched."""
+        self._headline = tk.Frame(self._sheet.body, background=_page())
+        self._headline_lines = (
+            tk.Label(self._headline, text=STOPPED_HEADLINE, font=_numeral_font(40),
+                     anchor="w", justify="left", background=_page(),
+                     foreground=theme.TEXT),
+            tk.Label(self._headline, text=STOPPED_NEXT, font=_font(), anchor="w",
+                     justify="left", background=_page(), foreground=theme.MUTED))
+        for line in self._headline_lines:
+            line.pack(side="top", anchor="w", fill="x")
+        self._sheet.canvas.bind("<Configure>", self._on_sheet_resized, add="+")
+        self._is_headline_shown = False
+
+    def _on_sheet_resized(self, event=None):
+        """The headline wraps to the sheet rather than run off it."""
+        width = getattr(event, "width", 0)
+        if not isinstance(width, int) or width <= SPACE[10] * 4:
+            return
+        for line in self._headline_lines:
+            try:
+                line.configure(wraplength=width - 2 * SPACE[10])
+            except Exception:
+                pass
+
+    def _sheet_columns(self):
+        """How many entries share a row after the opened one: one under
+        `NARROW_WINDOW_PX`, else as many as keep each at least `COLUMN_PX`
+        at the current font size, up to `SHEET_COLUMNS`."""
+        try:
+            width = self.root.winfo_width()
+        except Exception:
+            width = None
+        if not isinstance(width, int) or width <= 1:
+            return SHEET_COLUMNS
+        if width < NARROW_WINDOW_PX:
+            return 1
+        room = width - self._rail_width(False) - 2 * SPACE[10]
+        return max(1, min(SHEET_COLUMNS, room // _design_px(COLUMN_PX)))
+
+    def _on_window_resized(self, event=None):
+        if event is not None and getattr(event, "widget", self.root) is not self.root:
+            return
+        width = getattr(event, "width", None)
+        if isinstance(width, int) and width > 1:
+            self._set_rail_width(width < NARROW_WINDOW_PX)
+        self._lay_out_sheet()
+
+    def _lay_out_sheet(self, force=False):
+        """The opened model first, full width; then the others in schema
+        order, in rows of `_sheet_columns()`, each row's entries sharing it
+        equally. Laid out again only when the models, the opened one or the
+        column count change."""
+        names = [name for name in self._panels if name != self.SETUP_TAB]
+        if self._opened not in names:
+            self._opened = names[0] if names else None
+        columns = self._sheet_columns()
+        key = (tuple(names), self._opened, columns)
+        if key == self._sheet_key and not force:
+            return
+        self._sheet_key = key
+        for name in names:
+            view = self._panels[name]
+            view.set_prominence(name == self._opened)
+            try:
+                view.frame.grid_forget()
+            except Exception:
+                pass
+        for row in self._sheet_rows:
+            try:
+                row.destroy()
+            except Exception:
+                pass
+        others = [name for name in names if name != self._opened]
+        groups = ([[self._opened]] if self._opened else []) + [
+            others[index:index + columns] for index in range(0, len(others), columns)]
+        self._sheet_rows = []
+        for group in groups:
+            row = tk.Frame(self._sheet.body, background=_page())
+            row.pack(side="top", fill="x", pady=(0, SPACE[9]))
+            for column, name in enumerate(group):
+                try:
+                    row.grid_columnconfigure(column, weight=1, uniform="entries")
+                    frame = self._panels[name].frame
+                    frame.grid(in_=row, row=0, column=column, sticky="new",
+                               padx=(SPACE[10] if column else 0, 0))
+                    frame.lift()
+                except Exception as exc:
+                    events.debug("Entry Not Placed", f"{name}: {exc}", source=SOURCE,
+                                 exception=exc, every=5.0)
+            self._sheet_rows.append(row)
+        self._paint_rail()
+        events.debug("Sheet Laid Out", f"opened={self._opened} columns={columns} "
+                     f"rows={[len(g) for g in groups]}", source=SOURCE)
+
+    def show_model(self, name):
+        """What a press on the rail does: the sheet leads with `name`, full
+        width and focal, scrolled to the top; Setup gives way. -> bool"""
+        if name not in self._panels or name == self.SETUP_TAB:
+            return False
+        self._opened = name
+        if not self._is_setup_collapsed and self.SETUP_TAB in self._frames:
+            self._collapse_setup()
+        self._select_sheet()
+        self._lay_out_sheet()
+        self._sheet.scroll_to_top()
+        self._paint_rail()
+        events.debug("Model Shown", name, source=SOURCE)
+        return True
+
+    def _select_sheet(self):
+        try:
+            self.notebook.select(self._sheet_page)
+        except Exception as exc:
+            events.debug("Sheet Not Selected", str(exc), source=SOURCE, exception=exc)
+        self._shown_page = self.SHEET_TAB
+
+    # -- the stop ----------------------------------------------------------
     def _hint(self, is_latched):
         """What a press will do - and, unlatched, the key that does it from
-        anywhere in the window (F9)."""
+        anywhere in the window (F9). The disc's tooltip."""
         return CLEAR_HINT if is_latched else f"{STOP_HINT} ({self._stop_key})"
 
     def _bind_stop_keys(self):
@@ -4717,17 +5034,18 @@ class TkDashboard(Dashboard):
         view = self._panels.get(self.SETUP_TAB)
         if view is not None:
             view.pause()             # hidden: no tick until it is back (F21)
+        self._select_sheet()
         self._show_setup_button(True)
         self._build_menu_bar()
-        events.info("Setup Minimised", "Setup is on the toolbar and the menu "
-                    "bar; reopen it to re-scan or relaunch", source=SOURCE)
+        events.info("Setup Minimised", "Setup is on the rail and the menu bar; "
+                    "reopen it to re-scan or relaunch", source=SOURCE)
 
     def restore_setup(self):
-        """Bring the Setup tab back and select it. -> bool.
+        """Bring the Setup page back and show it. -> bool.
 
         Reopenable as often as the operator likes, and idempotent: asking for
-        Setup while it is already showing selects it rather than adding a
-        second tab.
+        Setup while it is already showing shows it rather than adding a
+        second page.
         """
         frame = self._frames.get(self.SETUP_TAB)
         if frame is None:
@@ -4744,8 +5062,9 @@ class TkDashboard(Dashboard):
             events.debug("Setup Not Selected", str(exc), source=SOURCE,
                          exception=exc)
         if self._is_setup_collapsed:
-            events.debug("Setup Restored", "the Setup tab is back", source=SOURCE)
+            events.debug("Setup Restored", "the Setup page is back", source=SOURCE)
         self._is_setup_collapsed = False
+        self._shown_page = self.SETUP_TAB
         view = self._panels.get(self.SETUP_TAB)
         if view is not None:
             view.resume()
@@ -4754,16 +5073,9 @@ class TkDashboard(Dashboard):
         return True
 
     def _show_setup_button(self, is_shown):
-        """The toolbar button exists only while Setup has no tab, so the
-        window never offers two ways to the same visible panel."""
-        try:
-            if is_shown:
-                self._setup_press.frame.pack(side="left", padx=PAD, pady=GAP)
-            else:
-                self._setup_press.frame.pack_forget()
-        except Exception as exc:
-            events.debug("Setup Button Not Drawn", str(exc), source=SOURCE,
-                         exception=exc)
+        """The rail's Setup is always there (E); it is ink-filled while its
+        page is the one shown, outlined while it is a press away."""
+        self._paint_rail()
 
     def _on_setup_clicked(self, _event=None):
         return self.restore_setup()
