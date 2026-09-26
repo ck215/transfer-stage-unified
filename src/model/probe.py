@@ -133,6 +133,10 @@ class Probe(Model):
     #: Idle interlock. Overridable by tests to avoid a five-minute wait.
     INTERLOCK_POLL_INTERVAL = 5.0
     INTERLOCK_TIMEOUT = 300.0
+    #: How long before the interlock fires the views are told it is coming
+    #: (Tier N, owner 2026-09-26): one "Idle Timeout Soon" warning per idle
+    #: period, and `extend_idle` restarts the clock.
+    IDLE_WARN_SECONDS = 60.0
 
     def __init__(self, port=None, gamepad=None, sim=False):
         # Mode and the gated parameter store come first: `Panel.__init__`
@@ -166,6 +170,7 @@ class Probe(Model):
         # one reused Event meant a watchdog stopped by one disable stayed
         # stopped for the next enable.
         self._activity_time = time.monotonic()
+        self._idle_warned = False
         self._interlock_stop = threading.Event()
         self._interlock_stop.set()
         self._interlock_thread = None
@@ -282,6 +287,10 @@ class Probe(Model):
     @property
     def is_active(self):
         return self.is_moving or self._mode is ProbeMode.MANUAL
+
+    @property
+    def is_energized(self):
+        return self.is_enabled
 
     def set_mode(self, target):
         """The one public way to change mode.
@@ -958,6 +967,29 @@ class Probe(Model):
     # -- idle interlock ---------------------------------------------------
     def _touch_activity(self):
         self._activity_time = time.monotonic()
+        self._idle_warned = False       # a fresh period gets its own warning
+
+    @property
+    def idle_remaining(self):
+        """Seconds until the idle interlock powers the motors down, or None
+        while nothing is energized (Tier N: what a view counts down from)."""
+        if not self.is_enabled:
+            return None
+        return max(0.0, round(self.INTERLOCK_TIMEOUT - (time.monotonic() - self._activity_time), 1))
+
+    def extend_idle(self):
+        """The operator's answer to the warning: restart the idle clock. Not a
+        motion command, so no guard; refused when nothing is energized, since
+        there is nothing to keep awake."""
+        if not self.is_enabled:
+            self._refuse(f"Nothing to extend: {self.NAME} is not in a mode.")
+        self._touch_activity()
+        # A new idle period is a new episode: its warning must not fold into
+        # the last one's repeat count inside the log's dedupe window.
+        events.forget("Idle Timeout Soon")
+        events.info("Idle Timeout Extended", f"{self.NAME} stays energized for "
+                    f"another {self.INTERLOCK_TIMEOUT:.0f} s.", source=self.NAME)
+        return True
 
     def _stop_interlock(self):
         self._interlock_stop.set()
@@ -998,6 +1030,15 @@ class Probe(Model):
                 # off-neutral gamepad input through `_send_jog`. D-3 (owner):
                 # manual mode does idle-time-out.
                 idle = time.monotonic() - self._activity_time
+                remaining = self.INTERLOCK_TIMEOUT - idle
+                if 0 < remaining <= self.IDLE_WARN_SECONDS and not self._idle_warned:
+                    # Once per idle period, before the power-down, so a view
+                    # can offer Extend (Tier N). `_touch_activity` re-arms it.
+                    self._idle_warned = True
+                    events.warn("Idle Timeout Soon",
+                                f"{self.NAME} powers its motors down in "
+                                f"{remaining:.0f} s unless it moves or you extend.",
+                                source=self.NAME)
                 if idle > self.INTERLOCK_TIMEOUT:
                     events.debug("Interlock", f"fired after {idle:.1f} s idle "
                                  f"in {self._mode.value}", source=self.NAME)
@@ -1129,6 +1170,11 @@ class Probe(Model):
                 sch.button("Step", "step",
                            inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
                            role="go", disabled_when=("manual", "latched")),
+                # Declared so `run("extend_idle")` passes the allow-list; it
+                # renders nothing. The views draw the countdown and its
+                # Extend from `idle_remaining` in state (Tier N).
+                {"type": "internal", "command": "extend_idle", "writable": False,
+                 "role": "neutral"},
             ),
             sch.section(
                 "Configuration",
@@ -1171,6 +1217,8 @@ class Probe(Model):
             "position": list(self._position),
             "position_time": self._position_time,
             "position_age": self.position_age,
+            "idle_remaining": self.idle_remaining,
+            "idle_warn_seconds": self.IDLE_WARN_SECONDS,
             "velocity": list(self._velocity),
             "is_moving": self.is_moving,
             "is_enabled": self.is_enabled,

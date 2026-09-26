@@ -148,6 +148,8 @@ class Controller:
             models = dict(self._models)
         return {"models": {n: m.state for n, m in models.items()},
                 "is_estopped": self.is_estopped, "is_active": self.is_active,
+                "energized": [n for n, m in models.items()
+                              if getattr(m, "is_energized", False)],
                 "stop": self._stop_state(models),
                 "closed": self.closed_names, "latest_event": events.latest_id}
 

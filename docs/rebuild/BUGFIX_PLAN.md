@@ -396,6 +396,22 @@ every model is latched; a single model clears at its own switch).
 | M9 | bench | dc | In SIM under Tk the DC Probe's stop came back unconfirmed on both runs ("Power down not supported", D-7 family) while under Qt it confirmed: the 1 s budget is timing-sensitive when the Tk loop is busy. Not a UI defect; a bench observation for D-7. | note under Tier B / D-7 | owner |
 | M7 | S4 | all | Qt lists Setup status words with a capital; Tk/Web sentence-case them client-side; the model could publish them capitalised once. | `setup.py` status words in sentence case. | direct (core) |
 
+## Tier N — timeouts an operator can see coming (owner, 2026-09-26)
+
+Owner: a Web popup that warns against closing the tab without disabling
+devices; validate the server's behaviour when the client disconnects (the
+browser-liveness watchdog); validate the idle timeout across all views, with
+a popup that warns of the incoming timeout and offers to extend. Spec for the
+views: `handoff/brief-n-views.md`.
+
+| # | Sev | Views | Item | Fix | Route |
+|---|---|---|---|---|---|
+| N0 | — | web (server) | Validate the browser-liveness watchdog end to end. | **Done, headless** (`scratchpad/lead/watchdog/validate.py`): heater heating, heartbeat, then silence: "Browser Silent" at 4.9 s, FULL STOP with every model latched at 15.2 s (WARN 5 s / STOP 15 s / poll 0.5 s); `/api/state` polls are not heartbeats by design. Existing tests `test_view_web_watchdog.py` cover the rules. | done |
+| N1 | S2 | core | The idle interlock (300 s) disabled the motors with no warning first and no way to keep them awake short of moving. | **Core, landed**: `Probe.idle_remaining` + `idle_warn_seconds` in state; one "Idle Timeout Soon" warning inside the last `IDLE_WARN_SECONDS` (60) per idle period; `extend_idle` command (schema internal; refused when nothing is energized; ends the warning's dedupe episode). Tests in `test_probe.py`. | done |
+| N2 | S2 | all | Views: a non-modal countdown line per probe inside the window, "Stepper Probe powers down in 42 s." with **Extend**; never covers the disc. | Per view from state; brief-n-views.md N1. | worktree per view |
+| N3 | S2 | web | `beforeunload` armed only while `is_active`; a probe merely in a mode did not warn. | Core: `controller.state()["energized"]` (a probe in any mode, a heating heater, a recording run). Web: arm on `energized`; a rail line while energized says the station stops them 15 s after the tab goes (seconds served, not hard-coded). | core done + worktree web |
+| N4 | S3 | tk, qt | The Quit / close confirmation does not say what is energized. | Name the energized models in the prompt. | worktree tk, qt |
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.

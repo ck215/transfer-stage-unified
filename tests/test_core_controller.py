@@ -712,3 +712,14 @@ def test_the_stop_state_carries_the_time_the_newest_latch_closed(controller):
     assert controller.stop_state["since"] > first
     controller.run("two", "clear_estop", args=(True,))
     assert controller.stop_state["since"] == first
+
+
+def test_the_state_names_the_models_that_are_energized(controller):
+    """Tier N: a view warns before the operator walks away from energized
+    hardware; `energized` is wider than `is_active`."""
+    quiet, busy = FakeModel(), FakeModel()
+    controller.add("quiet", quiet)
+    controller.add("busy", busy)
+    assert controller.state()["energized"] == []
+    busy.mode = "running"
+    assert controller.state()["energized"] == ["busy"]

@@ -203,6 +203,14 @@ class Model(Panel):
         """Moving, heating or recording right now."""
         return False
 
+    @property
+    def is_energized(self):
+        """Holding hardware in a state an operator should undo before walking
+        away: coils enabled, heater heating, a run recording. Wider than
+        `is_active` (a probe in a mode but not moving is energized, not
+        active). Tier N: what the Web view's close-tab warning keys on."""
+        return self.is_active
+
     # -- state -------------------------------------------------------------
     def _touch(self):
         self._updated_at = time.monotonic()

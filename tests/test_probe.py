@@ -1106,3 +1106,67 @@ def test_the_tier_two_disclosure_names_the_device(probe):
     press moved down to its well; the disclosure carries the model's name."""
     tier_two = [s for s in probe.schema["sections"] if s.get("tier") == 2]
     assert tier_two and tier_two[0]["disclosure"] == f"Configure {probe.NAME}"
+
+
+# -- the idle countdown (Tier N, owner 2026-09-26: warn before the timeout
+#    and offer to extend) ----------------------------------------------------
+
+def _wait_for(predicate, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    return predicate()
+
+
+@pytest.mark.loops
+def test_the_idle_countdown_is_published_and_warns_once_before_the_interlock(probe):
+    """A view can only offer to extend what it can see coming: `idle_remaining`
+    counts down in state, an "Idle Timeout Soon" warning fires once inside
+    the last IDLE_WARN_SECONDS, and the interlock still fires on time."""
+    from test_core_fakes import EventRecorder
+    probe.INTERLOCK_POLL_INTERVAL = 0.01
+    probe.INTERLOCK_TIMEOUT = 0.4
+    probe.IDLE_WARN_SECONDS = 0.25
+    assert probe.idle_remaining is None, "no mode, no clock"
+    with EventRecorder() as log:
+        probe.set_mode("autonomous")
+        assert 0.3 < probe.idle_remaining <= 0.4
+        assert probe.state["idle_remaining"] == pytest.approx(probe.idle_remaining, abs=0.05)
+        assert _wait_for(lambda: log.titled("Idle Timeout Soon"))
+        assert probe.is_enabled, "the warning must come BEFORE the power-down"
+        assert _wait_for(lambda: not probe.is_enabled)
+    soon = log.titled("Idle Timeout Soon")
+    assert len(soon) == 1 and probe.NAME in soon[0].message
+    assert log.titled("Idle Timeout"), "the interlock itself still fired"
+    assert probe.idle_remaining is None
+
+
+@pytest.mark.loops
+def test_extend_idle_restarts_the_clock_and_rearms_the_warning(probe):
+    from test_core_fakes import EventRecorder
+    probe.INTERLOCK_POLL_INTERVAL = 0.01
+    probe.INTERLOCK_TIMEOUT = 0.4
+    probe.IDLE_WARN_SECONDS = 0.25
+    with EventRecorder() as log:
+        probe.set_mode("autonomous")
+        assert _wait_for(lambda: log.titled("Idle Timeout Soon"))
+        assert probe.run("extend_idle").is_ok, "declared in the schema, so run() lets it through"
+        assert probe.idle_remaining > 0.3
+        time.sleep(0.2)
+        assert probe.is_enabled, "the extension held the interlock off past the old deadline"
+        assert _wait_for(lambda: len(log.titled("Idle Timeout Soon")) == 2), "warned again for the new period"
+        assert _wait_for(lambda: not probe.is_enabled)
+
+
+def test_extend_idle_is_refused_when_nothing_is_energized(probe):
+    with pytest.raises(Refused):
+        probe.extend_idle()
+    assert probe.idle_remaining is None
+
+
+def test_a_probe_in_a_mode_is_energized_even_when_it_is_not_moving(probe):
+    assert probe.is_energized is False
+    probe.set_mode("autonomous")
+    assert probe.is_energized is True and probe.is_active is False
+    probe.set_mode("disabled")
+    assert probe.is_energized is False
