@@ -375,7 +375,7 @@ def test_theme_css_is_the_one_palette(station):
 def test_static_files_are_served_and_traversal_is_not(station):
     view, _, _ = station
     status, _, body = _request(view, "/")
-    assert status == 200 and b"<title>Transfer Stage</title>" in body
+    assert status == 200 and b"<title>Transfer stage</title>" in body  # sentence case, as the rail and Tk name the station (L22)
     status, _, _ = _request(view, "/../server.py")
     assert status == 404
 
