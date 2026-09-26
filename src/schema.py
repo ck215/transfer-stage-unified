@@ -240,11 +240,13 @@ def file_open(text, command, *, extensions=("csv",), role="neutral"):
     }
 
 
-def image(text, data_command, *, role="neutral"):
-    """A picture the model supplies as PNG bytes through `data_command`."""
+def image(text, data_command, *, role="neutral", empty="No image yet."):
+    """A picture the model supplies as PNG bytes through `data_command`;
+    empty bytes mean "nothing to show" and a view draws `empty` as one
+    caption line instead of a full-size pane (L15)."""
     return {
         "type": "image", "text": text, "data_command": data_command,
-        "writable": False, "role": role,
+        "empty": str(empty), "writable": False, "role": role,
     }
 
 

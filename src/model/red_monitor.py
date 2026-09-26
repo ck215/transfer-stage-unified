@@ -1146,9 +1146,10 @@ class RedMonitor(Model):
         if cached is not None and cached[0] == key and cached[1] is loaded:
             return cached[2]
         if loaded is None:
-            png = plot_data.render_figure("0D", red_percents=[],
-                                          size=self.FIGURE_SIZE,
-                                          dpi=self.FIGURE_DPI)
+            # Nothing loaded: no figure. The schema's `empty` sentence is what
+            # a view draws, one caption line tall (L15), instead of a
+            # full-size "No samples in this run." picture.
+            png = b""
         else:
             png = plot_data.render_figure(
                 self._plot_type, *self._plot_dims,
@@ -1297,7 +1298,8 @@ class RedMonitor(Model):
                 sch.readonly("Loaded:", "loaded_run"),
                 sch.dropdown("Plot:", "plot_dims", "set_plot_dims",
                              "plot_dim_options"),
-                sch.image("Analysis Plot", "figure"),
+                sch.image("Analysis Plot", "figure",
+                          empty="No analysis yet. Load a run to plot it."),
                 tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(

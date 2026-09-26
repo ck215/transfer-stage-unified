@@ -675,6 +675,7 @@ class Setup(Panel):
         device = None
         try:
             device = SerialPort(port, baud)
+            device.probe = True   # the scan asks; an unanswered port is information
             device.open()
             identity = self._wait_identity(device, aborted)
             if self._status_of(device) == LOST:

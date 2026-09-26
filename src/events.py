@@ -146,6 +146,16 @@ class EventLog:
                     print(f"[EventLog] subscriber failed: {exc}", file=sys.stderr)
         return event
 
+    def forget(self, title):
+        """End the dedupe episode for every recent event titled `title`, so
+        the next one is a NEW event that re-notifies (round 7, Web CCR 2):
+        stop, clear, stop again inside the window used to fold the second
+        "Stop Not Confirmed" into the first one's count, and the page's
+        event feed never saw it. The Model calls this when its latch clears."""
+        with self._lock:
+            for key in [k for k in self._recent if k[2] == title]:
+                del self._recent[key]
+
     def _prune_recent(self, now):
         for key in [k for k, e in self._recent.items()
                     if now - e.last_seen > self.DEDUPE_SECONDS]:

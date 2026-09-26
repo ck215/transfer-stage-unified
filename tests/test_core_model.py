@@ -506,3 +506,20 @@ def test_a_model_remembers_whether_its_last_stop_confirmed():
         assert stalled.stop_confirmed is False
     finally:
         stalled.release()
+
+
+def test_an_unconfirmed_stop_after_a_clear_is_a_new_event_not_a_count():
+    """Round 7: toggle_estop on a stalled model, clear, toggle again inside
+    the dedupe window: two "Stop Not Confirmed" events, two notifications."""
+    from events import events
+    from test_core_fakes import EventRecorder
+    stalled = FakeModel(halt_blocks=True)
+    try:
+        with EventRecorder() as log:
+            stalled.toggle_estop()
+            stalled.clear_estop(confirmed=True)
+            stalled.toggle_estop()
+        ids = [e.id for e in log.titled("Stop Not Confirmed")]
+        assert len(ids) == 2 and ids[0] != ids[1]
+    finally:
+        stalled.release()

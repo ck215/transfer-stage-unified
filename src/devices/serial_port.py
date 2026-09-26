@@ -255,8 +255,11 @@ class SerialPort(Device):
 
     def __init__(self, port, baud_rate=115200, *, xonxoff=False,
                  read_timeout=None, write_timeout=None, line_terminator="\n",
-                 handshake=True):
-        """was serial.__init__ - minus all the I/O, which is now `open()`."""
+                 handshake=True, probe=False):
+        """was serial.__init__ - minus all the I/O, which is now `open()`.
+        `probe=True` is Setup's scan asking a port what it is: an unanswered
+        handshake there is information (most ports are not ours), not the
+        warning a configured port earns (round 7, Web CCR 3)."""
         write_timeout = self.WRITE_TIMEOUT if write_timeout is None else write_timeout
         if not isinstance(write_timeout, (int, float)) or write_timeout <= 0:
             raise ValueError("write_timeout must be a positive number of "
@@ -270,6 +273,7 @@ class SerialPort(Device):
             raise ValueError("line_terminator must not be empty")
 
         self.port = port
+        self.probe = bool(probe)
         self.baud_rate = baud_rate
         self.xonxoff = bool(xonxoff)
         self.read_timeout = float(read_timeout)
@@ -540,6 +544,9 @@ class SerialPort(Device):
         if verified:
             events.info("Port Verified", f"{self.port} answered as "
                         f"'{self._identity}'", source=self._source)
+        elif self.has_handshake and self.probe:
+            events.info("Port Unverified", f"{self.port} did not answer the "
+                        "identity query during the scan.", source=self._source)
         elif self.has_handshake:
             events.warn("Port Unverified", f"{self.port} opened, but nothing "
                         "answered the identity query. Operating blind.",

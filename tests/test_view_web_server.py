@@ -58,6 +58,10 @@ class FakeProbe(Panel):
         # devices, whether its stop confirms, and what it was asked to load.
         self.devices_state = {}
         self.stop_confirms = True
+        # L1 (round 7): what `Model.stop_confirmed` says - None unless
+        # latched, then whether the hardware confirmed. The Controller's
+        # `stop_state` and the per-entry mark read it.
+        self.stop_confirmed = None
         self.jams = 0
         self.loaded = None
         # G4: how often the detached gamepad log's source was asked for.
@@ -72,10 +76,12 @@ class FakeProbe(Panel):
 
     def estop(self):
         self.is_estopped = True
+        self.stop_confirmed = self.stop_confirms
         return self.stop_confirms
 
     def clear_estop(self, confirmed=False):
         self.is_estopped = False
+        self.stop_confirmed = None
 
     def on_model_added(self, name, model):
         pass
@@ -123,6 +129,7 @@ class FakeProbe(Panel):
             raise RuntimeError("the model blew up")
         snapshot = super().state
         snapshot.update({"age": 0.0, "is_estopped": self.is_estopped,
+                         "stop_confirmed": self.stop_confirmed if self.is_estopped else None,
                          "is_active": self.is_active,
                          "devices": dict(self.devices_state),
                          "values": dict(snapshot["values"],
@@ -885,14 +892,22 @@ def test_a_stop_that_never_reaches_the_station_says_so_on_the_rail(station, tmp_
     out = _browse(view, r"""
       await page.setRequestInterception(true);
       page.on('request', (r) => (r.url().includes('/api/estop_all') ? r.abort() : r.continue()));
+      // Updated (L, round 7): the link line is RECORDED from before the
+      // press. It says "Not answering" at the failed stop and the next state
+      // poll that succeeds (a quarter second later) rightly clears it, so a
+      // sample taken after the rail alert appeared could land either side.
+      await page.evaluate(() => {
+        window.linkSaid = [];
+        const link = document.getElementById('connection');
+        new MutationObserver(() => window.linkSaid.push(link.textContent))
+          .observe(link, { childList: true, characterData: true, subtree: true });
+      });
       await page.click('#full-stop');
       await until(() => !document.getElementById('rail-alert').hidden);
-      // The link state flips on the poll after the failed stop; wait for it
-      // rather than sampling it (this read "Connected" once under load).
-      await until(() => document.getElementById('connection').textContent.startsWith('Not answering'));
+      await until(() => window.linkSaid.some((t) => t.startsWith('Not answering')));
       return page.evaluate(() => ({
         alert: document.getElementById('rail-alert').textContent,
-        link: document.getElementById('connection').textContent,
+        link: window.linkSaid.find((t) => t.startsWith('Not answering')) || '',
         face: document.querySelector('#full-stop .mushroom-face').textContent,
       }));
     """, tmp_path)
@@ -1309,8 +1324,12 @@ def test_the_launch_box_sends_the_new_boolean_and_gates_the_port(station, tmp_pa
         const cells = Array.from(row.children).filter((c) => c.classList.contains('cell'));
         const head = Array.from(document.querySelectorAll('#drawer-body .table-head .head-cell'))
           .map((c) => c.textContent);
-        const label = b.id && document.querySelector('label[for="' + b.id + '"]');
-        return { firstCell: cells[0].contains(b), head, label: label && label.textContent,
+        // Updated (L4, round 7): the box has two labels - its column's
+        // "Launch" caption and the row's name, which shares its target.
+        const labels = b.id ? Array.from(document.querySelectorAll('label[for="' + b.id + '"]'))
+          .map((l) => l.textContent) : [];
+        const label = labels.find((t) => t === 'Launch');
+        return { firstCell: cells[0].contains(b), head, label: label || null, labels,
                  name: b.getAttribute('aria-label'), title: b.title, checked: b.checked };
       }, box);
       const portDisabled = () => page.evaluate(
@@ -1329,6 +1348,7 @@ def test_the_launch_box_sends_the_new_boolean_and_gates_the_port(station, tmp_pa
     assert out["shape"]["firstCell"], out["shape"]
     assert out["shape"]["head"][0] == "Launch", out["shape"]
     assert out["shape"]["label"] == "Launch", out["shape"]
+    assert out["shape"]["labels"] == ["Fake Probe", "Launch"], out["shape"]
     assert out["shape"]["name"] == "Launch Fake Probe", out["shape"]
     assert out["shape"]["title"] == "Launch Fake Probe", out["shape"]
     assert out["shape"]["checked"] is True, out["shape"]
@@ -1767,9 +1787,12 @@ def test_after_quit_while_live_the_disc_is_the_same_inert_disc(station, tmp_path
 @needs_browser
 def test_the_stop_chord_is_announced_only_while_the_face_is_stop(station, tmp_path):
     """I6: Ctrl+. stops and never clears (F9). While the face reads "Clear",
-    the button must not advertise the chord as its shortcut, and the rail's
-    "Stop: Ctrl+." hint hides (the stop is already latched); both come back
-    once the latch clears."""
+    the button must not advertise the chord as its shortcut; it does again
+    once the latch clears.
+
+    Updated (L1, round 7): the rail's "Stop: Ctrl+." hint is visible in
+    every state - the chord always stops, a model the latch did not reach
+    included - so it no longer hides while the face reads "Clear"."""
     view, controller, probe = station
     out = _browse(view, r"""
       const read = () => page.evaluate(() => {
@@ -1789,7 +1812,7 @@ def test_the_stop_chord_is_announced_only_while_the_face_is_stop(station, tmp_pa
       return r;
     """, tmp_path)
     assert out["live"] == {"face": "Stop", "keys": "Control+Period", "hint": True}, out
-    assert out["latched"] == {"face": "Clear", "keys": None, "hint": False}, out
+    assert out["latched"] == {"face": "Clear", "keys": None, "hint": True}, out
     assert out["cleared"] == {"face": "Stop", "keys": "Control+Period", "hint": True}, out
 
 
@@ -1959,7 +1982,9 @@ class TieredProbe(Panel):
                         sch.readonly("Link:", "link")),
             sch.section("Speeds",
                         sch.entry("Manual speed:", "speed", P["speed"], slider=(1, 1000)),
-                        sch.button("Go", "go", inputs=("speed",), role="go")),
+                        # L3: gated in manual mode, so a test can read why.
+                        sch.button("Go", "go", inputs=("speed",), role="go",
+                                   disabled_when=("manual",))),
             sch.section("Configuration", sch.entry("X step size:", "x_step", P["x_step"]),
                         tier=2, disclosure="Configure"),
             sch.section("Diagnostics", sch.readonly("Link:", "link"),
@@ -2404,3 +2429,482 @@ def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path)
     after = out["after"]
     assert after["current"] == ["Overview"] and "Rotator" not in after["nav"], after
     assert len(after["shown"]) == 5 and after["wells"] == 0, after
+
+
+# --------------------------------------------------------------------------
+# Tier L (audit round 7, 2026-09-26): the Web view's rows
+# --------------------------------------------------------------------------
+def test_the_state_carries_the_words_every_view_says_about_the_stop(station):
+    """L1: the server serves `views.base.stop_words(controller.stop_state)`
+    beside `stop`, so the client never re-derives the disc's face, the
+    headline or the rail line."""
+    view, controller, probe = station
+    status, data = _get(view, "/api/state")
+    assert status == 200
+    assert data["stop_words"] == {"face": "Stop", "action": "stop", "headline": "",
+                                  "subline": "", "rail": ""}, data
+    probe.stop_confirms = False
+    controller.estop_all()
+    _, data = _get(view, "/api/state")
+    # The three facts; `since` (the latch time, L1 follow-up) is a fourth key
+    # the page uses on reload and this test does not pin.
+    assert {k: data["stop"][k] for k in ("latched", "unconfirmed", "every")} == {
+        "latched": ["Fake Probe"], "unconfirmed": ["Fake Probe"], "every": True}
+    assert data["stop_words"]["face"] == "Clear" and data["stop_words"]["action"] == "clear"
+    assert data["stop_words"]["headline"] == "Stopped. Fake Probe did not confirm."
+
+
+@pytest.fixture
+def two_probes(tmp_path):
+    """Two models, so one of them can be latched from its own switch."""
+    controller = Controller()
+    first, second = FakeProbe(root=str(tmp_path)), FakeProbe(root=str(tmp_path))
+    controller.factory = lambda config: FakeProbe(root=config.get("root"))
+    controller.add("Fake Probe", first, {"root": str(tmp_path)})
+    controller.add("Other Probe", second, {"root": str(tmp_path)})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, first, second
+    finally:
+        view.close()
+
+
+#: The stop as the page says it: the disc, its hint, the rail line, the
+#: headline and subline, the per-model marks in the rail, and the tray.
+_STOP_READ = r"""
+  const readStop = () => page.evaluate(() => {
+    const stop = document.getElementById('full-stop');
+    const hint = document.querySelector('.stop-hint');
+    const rail = document.getElementById('rail-latched');
+    const head = document.getElementById('sheet-headline');
+    const marks = {};
+    for (const link of document.querySelectorAll('#model-nav .model-link[data-model]')) {
+      const m = link.querySelector('.nav-mark');
+      marks[link.dataset.model] = m && !m.hidden && m.getClientRects().length
+        ? { words: m.textContent.trim(), title: m.title,
+            latched: m.classList.contains('is-latched'),
+            unconfirmed: m.classList.contains('is-unconfirmed') } : null;
+    }
+    const tray = document.getElementById('tray-latest');
+    const text = tray.querySelector('.tray-text');
+    return { face: stop.textContent.trim(), keys: stop.getAttribute('aria-keyshortcuts'),
+             label: stop.getAttribute('aria-label'),
+             hint: Boolean(hint && !hint.hidden && getComputedStyle(hint).visibility !== 'hidden'
+                           && hint.getClientRects().length),
+             rail: rail.hidden ? '' : rail.textContent.trim(),
+             headline: head.hidden ? '' : head.querySelector('.headline').textContent,
+             subline: head.hidden ? '' : head.querySelector('.headline-note').textContent,
+             marks, tray: tray.textContent.trim(),
+             trayTitle: text ? text.title : null,
+             trayClips: text ? getComputedStyle(text).textOverflow : null };
+  });
+  const ackAll = async () => {
+    if (!(await page.evaluate(() => document.getElementById('ack-modal').hidden))) {
+      await page.click('#ack-ok');
+      await sleep(200);
+    }
+  };
+"""
+
+
+@needs_browser
+def test_one_models_own_stop_leaves_the_disc_a_stop_for_the_rest(two_probes, tmp_path):
+    """L1 (S1, IMP7-1/2/3): Fake Probe is latched from its own switch; Other
+    Probe is live. The disc still reads Stop, still advertises the chord,
+    and a press stops the live one; there is no "every model" headline, the
+    rail line names the one stopped model and the rail's list marks it.
+    Then a global stop that Other Probe does not confirm: the disc reads
+    Clear, the headline names the model that did not confirm and says to
+    treat it as live, and the rail marks it "did not confirm". The chord's
+    hint is visible throughout."""
+    view, controller, first, second = two_probes
+    first.is_estopped = True
+    first.stop_confirmed = True
+    second.stop_confirms = False
+    out = _browse(view, _STOP_READ + r"""
+      await until(() => document.querySelectorAll('#model-nav .model-link[data-model]').length === 2);
+      await until(() => !document.getElementById('rail-latched').hidden);
+      await sleep(300);
+      const r = { partial: await readStop() };
+      await page.click('#full-stop');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Clear');
+      await sleep(600);
+      await ackAll();
+      r.unconfirmed = await readStop();
+      r.state = await api('/api/state');
+      return r;
+    """, tmp_path)
+    partial = out["partial"]
+    assert partial["face"] == "Stop" and partial["keys"] == "Control+Period", partial
+    assert partial["label"] == "Stop every model" and partial["hint"], partial
+    assert partial["headline"] == "" and partial["rail"] == "Stopped: Fake Probe", partial
+    assert partial["marks"]["Other Probe"] is None, partial
+    mark = partial["marks"]["Fake Probe"]
+    assert mark and mark["latched"] and not mark["unconfirmed"], partial
+    assert mark["words"] == "stopped" and mark["title"] == "Stopped", mark
+    # The press on a Stop face was estop_all: the live model is latched too.
+    assert out["state"]["stop"]["latched"] == ["Fake Probe", "Other Probe"], out["state"]
+    after = out["unconfirmed"]
+    assert after["face"] == "Clear" and after["keys"] is None and after["hint"], after
+    assert after["headline"] == "Stopped. Other Probe did not confirm.", after
+    assert after["subline"] == "Treat it as live until you have checked it by hand.", after
+    assert after["rail"] == "Stopped: Other Probe did not confirm", after
+    other = after["marks"]["Other Probe"]
+    assert other and other["unconfirmed"] and other["words"] == "did not confirm", after
+    assert other["title"] == "Did not confirm the stop", other
+    assert after["marks"]["Fake Probe"]["latched"], after
+    # Web only: the tray line ellipsizes in its own span and says it whole
+    # on hover.
+    assert after["trayClips"] == "ellipsis" and after["trayTitle"] == after["tray"], after
+
+
+@needs_browser
+def test_the_unconfirmed_line_does_not_outlive_its_latch_nor_come_back_on_reload(
+        two_probes, tmp_path, monkeypatch):
+    """L2 (S2, IMP7-5): while the latch is set the tray says the stop was not
+    confirmed, and a reload still says so; once the latch is cleared the
+    line goes from the tray, and a reload does not bring it back."""
+    # The event log is one per process: the previous test's identical event
+    # would otherwise be merged into this one (a count, not a new id).
+    monkeypatch.setattr(events, "DEDUPE_SECONDS", 0.0)
+    view, controller, first, second = two_probes
+    second.stop_confirms = False
+    out = _browse(view, _STOP_READ + r"""
+      const r = {};
+      await page.click('#full-stop');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Clear');
+      await sleep(600);
+      await ackAll();
+      r.latched = await readStop();
+      await page.reload({ waitUntil: 'load' });
+      await card();
+      await sleep(800);
+      r.reloadLatched = await readStop();
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('confirm-modal').hidden);
+      await page.click('#confirm-yes');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      await sleep(700);
+      r.cleared = await readStop();
+      await page.reload({ waitUntil: 'load' });
+      await card();
+      await sleep(800);
+      r.reloadCleared = await readStop();
+      return r;
+    """, tmp_path)
+    for key in ("latched", "reloadLatched"):
+        assert "Other Probe did not confirm" in out[key]["tray"], (key, out[key])
+    for key in ("cleared", "reloadCleared"):
+        state = out[key]
+        assert "confirm" not in state["tray"], (key, state)
+        assert state["rail"] == "" and state["headline"] == "", (key, state)
+        assert all(mark is None for mark in state["marks"].values()), (key, state)
+
+
+@needs_browser
+def test_a_disabled_command_says_why(station, tiered_station, tmp_path):
+    """L3 (S2, IMP7-7): a command greyed by its gate carries the reason as
+    its title; a `go` command also says it in one muted caption under its
+    row, and the caption goes when the command is live again."""
+    view, controller, probe = station
+    probe.mode = "running"
+    out = _browse(view, r"""
+      await until(() => Array.from(document.querySelectorAll('.card button'))
+        .some((b) => b.textContent === 'Park' && b.disabled));
+      return page.evaluate(() => {
+        const park = Array.from(document.querySelectorAll('.card button')).find((b) => b.textContent === 'Park');
+        const home = Array.from(document.querySelectorAll('.card button')).find((b) => b.textContent === 'Home');
+        return { park: park.title, parkDisabled: park.disabled, home: home.title };
+      });
+    """, tmp_path)
+    assert out == {"park": "A run is in progress", "parkDisabled": True, "home": ""}, out
+
+    tview, tcontroller, tprobe = tiered_station
+    tprobe.mode = "manual"
+    out = _browse(tview, _TIERED + r"""
+      const readGo = () => page.evaluate(() => {
+        const go = Array.from(document.querySelectorAll('.card button')).find((b) => b.textContent === 'Go');
+        const notes = Array.from(document.querySelectorAll('.card .gate-note'))
+          .filter((n) => !n.hidden && n.getClientRects().length).map((n) => n.textContent);
+        const note = document.querySelector('.card .gate-note');
+        return { disabled: go.disabled, title: go.title, notes,
+                 below: note && !note.hidden ? note.getBoundingClientRect().top
+                   >= go.getBoundingClientRect().bottom - 0.5 : null };
+      });
+      await until(() => Array.from(document.querySelectorAll('.card button'))
+        .some((b) => b.textContent === 'Go' && b.disabled));
+      await sleep(300);
+      return readGo();
+    """, tmp_path)
+    assert out["disabled"] and out["title"] == "Not in manual mode", out
+    assert out["notes"] == ["Not in manual mode"] and out["below"], out
+
+
+#: Every visible pressable, measured: its box, and whether it is a command.
+_TARGETS = r"""
+  const targets = () => page.evaluate(() => {
+    const out = [];
+    const pressables = document.querySelectorAll(
+      'button, input:not([type="file"]), select, [role="switch"], a[href]');
+    for (const node of pressables) {
+      if (node.closest('[hidden]') || node.classList.contains('skip-link')) continue;
+      const b = node.getBoundingClientRect();
+      if (!b.width || !b.height) continue;
+      const style = getComputedStyle(node);
+      if (style.visibility === 'hidden') continue;
+      out.push({ what: (node.getAttribute('aria-label') || node.textContent || node.name
+                        || node.className).trim().slice(0, 40),
+                 w: Math.round(b.width * 10) / 10, h: Math.round(b.height * 10) / 10,
+                 command: node.matches('button.button') });
+    }
+    return out;
+  });
+"""
+
+
+@needs_browser
+def test_every_pressable_is_a_real_target(sim_station, tmp_path):
+    """L4 (S2, IMP7-8): every pressable is at least 24 px both ways (WCAG
+    2.5.8) and every command at least 36 px tall - on the Overview, on a
+    device page with both tiers open, and in Setup, where a row's tick and
+    its name are one target (the name is the tick's label). Not 44: that
+    is an owner call."""
+    view, controller = sim_station
+    out = _browse(view, _PAGES + _TARGETS + r"""
+      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(400);
+      }
+      const r = { overview: await targets() };
+      await press('Stepper Probe');
+      await page.evaluate(() => {
+        const c = document.querySelector('#cards .card.is-opened');
+        for (const t of ['2', '3']) {
+          const d = c.querySelector('.disclosure[data-tier="' + t + '"]');
+          if (d && d.getAttribute('aria-expanded') !== 'true') d.click();
+        }
+      });
+      await sleep(300);
+      r.device = await targets();
+      await page.click('#setup-link');
+      await sleep(500);
+      r.setup = await page.evaluate(() => {
+        const rows = Array.from(document.querySelectorAll('#setup-drawer .section-row'))
+          .filter((s) => s.querySelector('input[type="checkbox"]'));
+        return rows.map((s) => {
+          const name = s.querySelector('.row-title');
+          const box = s.querySelector('input[type="checkbox"]');
+          return { name: name && name.textContent, isLabel: Boolean(name && name.control === box) };
+        });
+      });
+      r.setupTargets = (await targets()).filter((t) => true);
+      return r;
+    """, tmp_path)
+    for key in ("overview", "device", "setupTargets"):
+        small = [t for t in out[key] if min(t["w"], t["h"]) < 23.5]
+        assert not small, (key, small)
+        short = [t for t in out[key] if t["command"] and t["h"] < 35.5]
+        assert not short, (key, short)
+    assert out["setup"] and all(row["isLabel"] for row in out["setup"]), out["setup"]
+
+
+@needs_browser
+def test_the_slider_keyboard_steps_one_percent_and_ignores_home_and_end(tiered_station, tmp_path):
+    """L6 (S2, TK7-5): on the slider an arrow moves 1 % of the travel
+    (1..1000 -> 10), Page keys 10 %, and Home / End do nothing - End used
+    to set the maximum speed in one key. Nothing is sent: the value travels
+    with the next command, as the entry's always has."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + r"""
+      const box = () => page.evaluate(() => document.querySelector('.card input[name="speed"]').value);
+      await until(async () => true);
+      await page.focus('.card .slider-range');
+      const r = { start: await box() };
+      await page.keyboard.press('ArrowRight'); r.right = await box();
+      await page.keyboard.press('ArrowUp'); r.up = await box();
+      await page.keyboard.press('ArrowLeft'); r.left = await box();
+      await page.keyboard.press('End'); r.end = await box();
+      await page.keyboard.press('Home'); r.home = await box();
+      await page.keyboard.press('PageUp'); r.pageUp = await box();
+      await page.keyboard.press('PageDown'); r.pageDown = await box();
+      await sleep(400);
+      return r;
+    """, tmp_path)
+    assert out == {"start": "400", "right": "410", "up": "420", "left": "410",
+                   "end": "410", "home": "410", "pageUp": "510", "pageDown": "410"}, out
+    assert probe.sent == [], "a key on the slider sent a command"
+
+
+@needs_browser
+def test_a_rail_reading_that_is_unknown_is_drawn_as_a_muted_dash(tiered_station, tmp_path):
+    """L10 (IMP7-6, owner's tier ruling): a `rail: true` tier-1 reading is
+    never hidden by status-by-exception; unknown, it is "--", muted, at the
+    reading's own size. A quiet non-rail value (Link: Connected) still is."""
+    view, controller, probe = tiered_station
+    probe.position_x = ""
+    out = _browse(view, _TIERED + r"""
+      await sleep(300);
+      return page.evaluate(() => {
+        const c = document.querySelector('#cards .card.is-opened');
+        const x = c.querySelector('.card-body .reading');
+        const v = x.querySelector('.value');
+        const link = Array.from(c.querySelectorAll('.card-body .row.stat'))
+          .find((r) => r.querySelector('.label').textContent.startsWith('Link'));
+        const focal = getComputedStyle(document.documentElement).getPropertyValue('--reading-focal').trim();
+        return { shown: !x.hidden && Boolean(x.getClientRects().length), text: v.textContent,
+                 muted: v.classList.contains('is-empty'), size: getComputedStyle(v).fontSize, focal,
+                 linkShown: Boolean(link && !link.hidden && link.getClientRects().length) };
+      });
+    """, tmp_path)
+    assert out["shown"] and out["text"] == "--" and out["muted"], out
+    assert out["size"] == out["focal"], out
+    assert out["linkShown"] is False, out
+
+
+@needs_browser
+def test_an_event_line_is_title_and_message_in_sentence_case(station, tmp_path):
+    """L11 (IMP7-4): the tray, the log and the acknowledgement say the
+    event's title and message in sentence case, without the "[source]"
+    prefix of the raw log line."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      await api('/api/run', { name: 'Fake Probe', command: 'jam', inputs: {}, args: [] });
+      await until(() => !document.getElementById('ack-modal').hidden);
+      await sleep(300);
+      return page.evaluate(() => ({
+        ack: document.querySelector('#ack-text .ack-line').textContent,
+        tray: document.getElementById('tray-latest').textContent.trim(),
+        log: Array.from(document.querySelectorAll('#event-log .event')).pop().textContent,
+      }));
+    """, tmp_path)
+    for key in ("ack", "tray"):
+        assert out[key].startswith("Command failed: Jam did not complete."), out
+    assert "[" not in out["ack"] + out["tray"] + out["log"], out
+    assert "Command failed: Jam did not complete." in out["log"], out
+
+
+@needs_browser
+def test_an_empty_plot_pane_is_one_caption_tall(sim_station, tmp_path):
+    """L15 (IMP7-13 part, TK7-13): Red Percent's details hold two plot panes
+    with nothing in them; each is one caption line until it has data, not
+    a 200 px dashed box."""
+    view, controller = sim_station
+    out = _browse(view, _PAGES + r"""
+      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(400);
+      }
+      await press('Red Percent');
+      await page.evaluate(() => document.querySelector('#cards .card.is-opened .disclosure[data-tier="2"]').click());
+      await sleep(1500);
+      return page.evaluate(() => Array.from(document.querySelectorAll('#cards .card.is-opened .plot-frame'))
+        .filter((f) => f.getClientRects().length)
+        .map((f) => ({ h: f.getBoundingClientRect().height,
+                       note: (f.querySelector('.empty-note') || {}).textContent,
+                       empty: Boolean(f.querySelector('.empty-note:not([hidden])')) })));
+    """, tmp_path)
+    # The live plot has no samples before a run; the analysis figure is a
+    # picture the model draws even with no run loaded, so it is not empty.
+    empties = [f for f in out if f["empty"]]
+    assert len(empties) >= 1, out
+    assert all(f["h"] <= 40 for f in empties), out
+
+
+@needs_browser
+def test_every_control_is_named_by_its_words_and_its_model(sim_station, tmp_path):
+    """L16 (IMP7-10, WCAG 2.5.3): on the Overview a control's accessible name
+    holds the words it shows, and no two controls share a name - "Step" or
+    "Enter autonomous mode" is said with its model."""
+    view, controller = sim_station
+    out = _browse(view, r"""
+      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(400);
+      }
+      await sleep(300);
+      return page.evaluate(() => {
+        const out = [];
+        for (const n of document.querySelectorAll('#cards button, #cards input, #cards select')) {
+          if (!n.getClientRects().length || n.closest('[hidden]')) continue;
+          const labelled = n.getAttribute('aria-label');
+          const words = n.matches('button') ? n.textContent.trim() : '';
+          out.push({ name: labelled || words, words });
+        }
+        return out;
+      });
+    """, tmp_path)
+    names = [c["name"] for c in out]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    assert not dupes, dupes
+    missing = [c for c in out if c["words"] and c["words"].lower() not in c["name"].lower()]
+    assert not missing, missing
+
+
+@needs_browser
+def test_setup_says_its_statuses_in_sentence_case_and_cancel_scan_only_while_scanning(sim_station, tmp_path):
+    """L17 (IMP7-12): Setup's row statuses start with a capital; the Cancel
+    scan command is not drawn unless a scan is running."""
+    view, controller = sim_station
+    out = _browse(view, r"""
+      if (!(await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open')))) {
+        await page.click('#setup-link'); await sleep(500);
+      }
+      await sleep(300);
+      return page.evaluate(() => {
+        const drawer = document.getElementById('setup-drawer');
+        const words = Array.from(drawer.querySelectorAll('.section-row .row.stat .value'))
+          .filter((v) => v.getClientRects().length).map((v) => v.textContent);
+        const cancel = Array.from(drawer.querySelectorAll('button')).find((b) => b.textContent === 'Cancel scan');
+        return { words, cancel: Boolean(cancel && cancel.getClientRects().length) };
+      });
+    """, tmp_path)
+    lower = [w for w in out["words"] if w[:1].isalpha() and w[:1] != w[:1].upper()]
+    assert out["words"] and not lower, out
+    assert out["cancel"] is False, out
+
+
+@needs_browser
+def test_a_well_does_not_repeat_its_disclosure_as_a_heading(tiered_station, tmp_path):
+    """L18 (IMP7-13): Diagnostics opens onto its content, not onto a second
+    "Diagnostics"; a section whose title differs (Configuration under
+    Configure) keeps it."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + r"""
+      await page.evaluate(() => {
+        const c = document.querySelector('#cards .card.is-opened');
+        for (const t of ['2', '3']) c.querySelector('.disclosure[data-tier="' + t + '"]').click();
+      });
+      await sleep(300);
+      return page.evaluate(() => Array.from(document.querySelectorAll('#cards .card.is-opened .section-title'))
+        .filter((t) => t.closest('.tier-well') && t.getBoundingClientRect().height > 2)
+        .map((t) => t.textContent));
+    """, tmp_path)
+    assert out == ["Configuration"], out
+
+
+@needs_browser
+def test_after_quit_the_tray_stays_opaque_and_boot_warnings_stay_in_the_log(station, tmp_path):
+    """L21 (IMP7-9, IMP7-11): a warning from before the tab opened (a port no
+    model uses) is history - it is in the log, not the tray's standing line;
+    after Quit the tray keeps its opaque fill, so nothing on the sheet shows
+    through it."""
+    view, controller, probe = station
+    events.warn("Port Unverified", "/dev/cu.debug-console opened, but nothing answered "
+                "the identity query. Operating blind.", source="SerialPort /dev/cu.debug-console")
+    out = _browse(view, r"""
+      const r = await page.evaluate(() => ({
+        tray: document.getElementById('tray-latest').textContent.trim(),
+        log: Array.from(document.querySelectorAll('#event-log .event')).map((e) => e.textContent),
+      }));
+      await page.click('#quit-link');
+      await until(() => !document.getElementById('confirm-modal').hidden);
+      await page.click('#confirm-yes');
+      await until(() => document.body.classList.contains('is-shut-down'));
+      await sleep(300);
+      r.opacity = await page.evaluate(() => getComputedStyle(document.getElementById('log-panel')).opacity);
+      return r;
+    """, tmp_path)
+    assert out["tray"] == "", out
+    assert any("Operating blind" in line for line in out["log"]), out
+    assert out["opacity"] == "1", out

@@ -48,7 +48,7 @@ from tkinter import font as tkfont
 import schema as sch
 from events import events
 from views import theme
-from views.base import Dashboard, PanelView
+from views.base import Dashboard, PanelView, stop_words
 
 SOURCE = "TkView"
 
@@ -140,7 +140,21 @@ LATCHED_LINE = "Stopped: every model latched"
 STOPPED_HEADLINE = "Every model is stopped."
 STOPPED_NEXT = "Clear the stop on the rail to continue."
 UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
+#: The rail's per-model marks (round 7, L1): an ink square before a latched
+#: model's name, a signal square before one that did not confirm; the
+#: words are the mark's tooltip, so colour never carries it alone.
+RAIL_MARK_WORDS = {"latched": "Stopped", "unconfirmed": "Did not confirm the stop"}
+#: The event title the views key on for a stop that did not confirm; its
+#: line leaves the band and the tray when the latch opens (L2).
+STOP_NOT_CONFIRMED = "Stop Not Confirmed"
 STATION_TITLE = "Transfer stage"
+#: Titled confirmations whose buttons name what they do (L14, TK7-10). The
+#: Clear question's words are core's and name any model that did not
+#: confirm; the answer that keeps things as they are is the default.
+CLEAR_DIALOG = {"title": "Clear the stop", "yes_text": "Clear the stop",
+                "no_text": "Keep it stopped"}
+QUIT_DIALOG = {"title": "Quit", "yes_text": "Quit", "no_text": "Stay"}
+CONFIRM_TITLE = "Confirm"
 SIMULATION_LINE = "Simulation, no hardware attached"
 
 #: The stop's keyboard shortcut, from anywhere in the window (F9). It only
@@ -169,8 +183,27 @@ WELL_SCALE_STYLE = "StationWell.Horizontal.TScale"
 WELL_COMBO_STYLE = "Well.TCombobox"
 
 #: Every control a pointer presses is at least this tall, ring included
-#: (WCAG 2.5.8), at every font size.
+#: (WCAG 2.5.8), at every font size; a command at least `COMMAND_PX` (L4:
+#: 44 px everywhere is an owner call, so not here).
 MIN_TARGET_PX = 24
+COMMAND_PX = 36
+
+#: Why a command is greyed out (L3): the gate word a schema names in
+#: `disabled_when` / `enabled_when`, said as what the operator can do about
+#: it. Any other word is said as itself, in sentence case.
+GATE_WORDS = {"latched": "Stopped: clear the stop first",
+              "manual": "Not in manual mode",
+              "running": "A run is in progress",
+              "no_region": "Set a capture region first",
+              "disconnected": "Not connected",
+              "moving": "Moving"}
+
+#: A slider's keyboard (L6): an arrow moves 1 % of the travel (at least
+#: one unit), Page Up / Page Down 10 %; Home and End do nothing - one stray
+#: key used to commit the maximum speed.
+SLIDER_ARROW_FRACTION, SLIDER_PAGE_FRACTION = 0.01, 0.10
+SLIDER_KEYS = {"Left": -1, "Down": -1, "Right": 1, "Up": 1}
+SLIDER_PAGE_KEYS = {"Prior": 1, "Next": -1}
 
 #: The chevron a disclosure wears, closed and open.
 CHEVRON = {False: "\u25b8", True: "\u25be"}
@@ -179,6 +212,13 @@ CHEVRON = {False: "\u25b8", True: "\u25be"}
 OPEN_WORD = "Open"
 #: The rail's first item: the page of every launched model (K4).
 OVERVIEW_PAGE = "Overview"
+#: The quiet press at the foot of a model's well that closes it (L13, as
+#: Web): it stops and disconnects the model, so it asks first.
+CLOSE_MODEL_TEXT = "Close this model\u2026"
+#: A detached log window's foot (L12).
+CLOSE_WORD = "Close"
+#: An image pane before the model has drawn one: one caption line (L15).
+NO_FIGURE = "No figure yet."
 
 #: The event tray's marks (status by exception): a solid signal square for
 #: an error, a hollow ink one for a warning. Info is not drawn in the tray.
@@ -188,6 +228,22 @@ TRAY_SEVERITIES = ("warning", "error")
 
 #: Unacknowledged errors the band lists by name before it summarises.
 BAND_LINES = 3
+#: Warnings and errors the tray's history keeps.
+TRAY_HISTORY = 200
+
+
+def _event_line(event):
+    """One event as the band and the tray say it (L11): the severity word,
+    the title in sentence case, then the message - no bracketed source, no
+    Title Case, no SHOUTING. The message is the model's own sentence."""
+    word = SEVERITY_WORD.get(getattr(event, "severity", ""), "")
+    title = _label(getattr(event, "title", "") or "")
+    message = str(getattr(event, "message", "") or "").strip()
+    count = getattr(event, "count", 1) or 1
+    line = f"{title}. {message}" if message else f"{title}."
+    if count > 1:
+        line += f" (x{count})"
+    return f"{word}: {line}" if word else line
 
 #: True once the dashboard has found itself on Aqua. Tk there assumes 96 dpi
 #: (`tk scaling` 1.33), so a 12 pt font is drawn 16 px tall: a third larger
@@ -391,6 +447,24 @@ def _target_pady(step=BASE):
     """Vertical padding that makes a pressable `MIN_TARGET_PX` tall with its
     two-pixel ring, at this font size - never less than GAP."""
     return max(GAP, math.ceil((MIN_TARGET_PX - _line_px(step) - 2 * FOCUS_PX) / 2))
+
+
+def _command_pady(step=BASE):
+    """Vertical padding that makes a command `COMMAND_PX` tall with its ring
+    (L4), at this font size."""
+    return max(GAP, math.ceil((COMMAND_PX - _line_px(step) - 2 * FOCUS_PX) / 2))
+
+
+def _field_pady():
+    """An entry's or a dropdown's inner vertical padding: the field, its
+    ring and its underline at least `MIN_TARGET_PX` tall (L4, TK7-6)."""
+    chrome = 2 * FOCUS_PX + UNDERLINE_PX
+    return max(1, math.ceil((MIN_TARGET_PX - _line_px() - chrome) / 2))
+
+
+def _gate_word(word):
+    word = str(word or "")
+    return GATE_WORDS.get(word) or _label(word.replace("_", " "))
 
 
 def _lamp_px():
@@ -938,8 +1012,9 @@ class _Press:
         self.fill, self.ink = background, theme.TEXT
         self.widget = tk.Label(self.ring.inner, text=text, font=_font(),
                                background=self.fill, foreground=self.ink,
-                               relief="flat", padx=SPACE[4], pady=_target_pady(),
-                               cursor="hand2", takefocus=1, highlightthickness=0)
+                               relief="flat", padx=SPACE[4], pady=_command_pady(),
+                               borderwidth=0, cursor="hand2", takefocus=1,
+                               highlightthickness=0)
         self.widget.pack(fill="both", expand=True)
         self.is_hovered = False
         for sequence in ("<Button-1>", "<Return>", "<space>"):
@@ -1113,10 +1188,12 @@ class _ConfirmDialog:
     #: stop press re-entering the clear path) is declined, not stacked.
     is_open = False
 
-    def __init__(self, master, prompt, yes_text="Yes", no_text="No"):
+    def __init__(self, master, prompt, yes_text="Yes", no_text="No",
+                 title=CONFIRM_TITLE):
         self.master = master
         self.prompt = str(prompt or "")
         self.yes_text, self.no_text = yes_text, no_text
+        self.title = title or CONFIRM_TITLE
         self.answer = False
         self.top = self.yes = self.no = None
 
@@ -1139,7 +1216,7 @@ class _ConfirmDialog:
 
     def _build(self):
         top = self.top = tk.Toplevel(self.master)
-        for call in (lambda: top.title("Confirm"),
+        for call in (lambda: top.title(self.title),
                      lambda: top.transient(self.master.winfo_toplevel()),
                      lambda: top.resizable(False, False)):
             try:
@@ -1189,9 +1266,12 @@ class _ConfirmDialog:
         return "break"
 
 
-def _confirm(master, prompt):
-    """The one confirmation both the dashboard and a panel ask. -> bool"""
-    return _ConfirmDialog(master, prompt).ask()
+def _confirm(master, prompt, title=CONFIRM_TITLE, yes_text="Yes", no_text="No"):
+    """The one confirmation both the dashboard and a panel ask. -> bool.
+    The dashboard's own questions are titled and name their answers
+    (`CLEAR_DIALOG`, `QUIT_DIALOG`)."""
+    return _ConfirmDialog(master, prompt, yes_text=yes_text, no_text=no_text,
+                          title=title).ask()
 
 
 class _Mushroom:
@@ -1435,8 +1515,11 @@ class TkPanelView(PanelView):
         self._tier_count = {}           # tier -> how many sections it holds
         self._disclosures = {}          # tier -> _Disclosure
         self._well = self._diagnostics = None
+        self._well_holder = None        # what is packed to show tier 2
+        self._well_canvas = self._well_window = None
         self._building_tier = 1
         self._readings = []             # (element, base kind) - re-sized by prominence
+        self._why_labels = {}           # id(section container) -> its reason caption
         self._inset = 0 if sheet is not None else INSET
 
         self.frame = tk.Frame(master, background=_page())
@@ -1501,6 +1584,10 @@ class TkPanelView(PanelView):
             self._build_entry_body()
 
         self._build()
+        self.on_close = None            # the dashboard's "close this model"
+        self._close_press = None
+        if sheet is not None:
+            self._build_well_foot()
         for tier in (2, 3):
             if tier in self._tiers:
                 self._set_tier_open(tier, _DISCLOSED.get((self.name, tier), False),
@@ -1521,7 +1608,7 @@ class TkPanelView(PanelView):
         self._canvas = getattr(self._sheet, "canvas", None)
         self._pinned = tk.Frame(self.frame, background=_page())
         self._body = tk.Frame(self.frame, background=_page())
-        self._body.pack(side="top", fill="x")
+        self._body.pack(side="top", fill="both", expand=True)
 
     def _name_font(self):
         """The opened model's name is a step louder than a closed one's."""
@@ -1836,8 +1923,12 @@ class TkPanelView(PanelView):
                 _page())
             self._disclosures[2] = opener
             self._show_opener()
-            well = self._well = tk.Frame(self._body, background=theme.SURFACE,
-                                         padx=SPACE[5], pady=SPACE[4])
+            if self._sheet is not None:
+                well = self._well = self._build_well_scroller()
+            else:
+                well = self._well = self._well_holder = tk.Frame(
+                    self._body, background=theme.SURFACE, padx=SPACE[5],
+                    pady=SPACE[4])
             self._tiers[2] = tk.Frame(well, background=theme.SURFACE)
             self._tiers[2].pack(side="top", fill="x")
         if tier == 3 and 3 not in self._tiers:
@@ -1852,6 +1943,170 @@ class TkPanelView(PanelView):
             self._tiers[3] = tk.Frame(holder, background=theme.SURFACE)
             self._tiers[3].pack(side="left", fill="x", expand=True)
         return self._tiers[min(tier, 3)]
+
+    # -- the well's own scroll (L5) ----------------------------------------------
+    #: The least height the well keeps on the device page before the sheet
+    #: itself has to scroll (a tall tier 1 at 28 pt in a short window).
+    WELL_FLOOR_PX = 160
+
+    def _build_well_scroller(self):
+        """On the sheet the well scrolls by itself (L5, TK7-3): the device
+        page gives the entry the sheet's height, the head and tier 1 keep
+        their place above, and only the well - tiers 2 and 3 - moves under
+        the wheel. The well is a frame on a canvas of its own; the canvas
+        asks for no height, so the entry's natural height is its head and
+        tier 1. -> the well frame"""
+        area = self._well_holder = tk.Frame(self._body, background=_page())
+        self._well_bar = ttk.Scrollbar(area, orient="vertical")
+        canvas = self._well_canvas = tk.Canvas(area, height=1, background=_page(),
+                                               highlightthickness=0,
+                                               yscrollcommand=self._well_bar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        well = tk.Frame(canvas, background=theme.SURFACE, padx=SPACE[5],
+                        pady=SPACE[4])
+        self._is_well_bar_shown = False
+        # The well becomes the canvas's window only when it is first shown
+        # (`_embed_well`): an embedded window in a canvas that is not mapped
+        # sent Tk 9's geometry into a loop that never went idle.
+        self._well_window = None
+        try:
+            self._well_bar.configure(command=canvas.yview)
+        except Exception as exc:
+            events.debug("Well Not Wired", str(exc), source=SOURCE, exception=exc)
+        well.bind("<Configure>", self._on_well_resized, add="+")
+        canvas.bind("<Configure>", self._on_well_canvas_resized, add="+")
+        return well
+
+    def _embed_well(self):
+        if self._well_window is not None or self._well_canvas is None:
+            return
+        try:
+            self._well_window = self._well_canvas.create_window(
+                (0, 0), window=self._well, anchor="nw")
+            width = self._well_canvas.winfo_width()
+            if isinstance(width, int) and width > 1:
+                self._well_canvas.itemconfigure(self._well_window, width=width)
+        except Exception as exc:
+            events.debug("Well Not Embedded", str(exc), source=SOURCE, exception=exc)
+
+    def _on_well_resized(self, _event=None):
+        try:
+            self._well_canvas.configure(scrollregion=self._well_canvas.bbox("all"))
+        except Exception:
+            pass
+        self._sync_well_bar()
+
+    def _on_well_canvas_resized(self, event=None):
+        """The well is as wide as its canvas, so its flows wrap to it."""
+        width = getattr(event, "width", 0)
+        if self._well_window is None or not isinstance(width, int) or width <= 1:
+            return
+        try:
+            self._well_canvas.itemconfigure(self._well_window, width=width)
+        except Exception:
+            pass
+        self._sync_well_bar()
+
+    def _sync_well_bar(self):
+        """A scrollbar beside the well only while it has more than it shows."""
+        try:
+            content = self._well.winfo_reqheight()
+            viewport = self._well_canvas.winfo_height()
+        except Exception:
+            return
+        if not (isinstance(content, int) and isinstance(viewport, int)) or viewport <= 1:
+            return
+        needed = content > viewport
+        if needed == self._is_well_bar_shown:
+            return
+        self._is_well_bar_shown = needed
+        try:
+            if needed:
+                self._well_bar.pack(side="right", fill="y", before=self._well_canvas)
+            else:
+                self._well_bar.pack_forget()
+                self._well_canvas.yview_moveto(0)
+        except Exception:
+            pass
+
+    @property
+    def well_canvas(self):
+        """The canvas the wheel scrolls on the device page while the well is
+        shown (L5), else None."""
+        canvas = getattr(self, "_well_canvas", None)
+        if canvas is None or not self._is_opened or not self.is_disclosed(2):
+            return None
+        return canvas
+
+    def scroll_well(self, step, widget=None):
+        """The wheel over the well scrolls the well (L5). -> True if it did."""
+        canvas = self.well_canvas
+        if canvas is None:
+            return False
+        if widget is not None:
+            node = widget
+            while node is not None and node is not self._well_holder:
+                node = getattr(node, "master", None)
+            if node is None:
+                return False
+        try:
+            canvas.yview_scroll(step, "units")
+        except Exception:
+            return False
+        return True
+
+    def _scroll_well_to(self, widget):
+        """Bring a widget inside the well into view by scrolling the well
+        (a refusal under a tier-2 control). -> True when it was the well's."""
+        canvas = self.well_canvas
+        if canvas is None:
+            return False
+        node, top = widget, 0
+        try:
+            while node is not None and node is not self._well:
+                top += node.winfo_y()
+                node = node.master
+            if node is None:
+                return False
+            bottom = top + widget.winfo_reqheight()
+            total = self._well.winfo_height()
+            first, last = canvas.yview()
+        except Exception:
+            return False
+        numbers = (top, bottom, total, first, last)
+        if not all(isinstance(v, (int, float)) for v in numbers) or total <= 1:
+            return True
+        view_top, view_bottom = first * total, last * total
+        if top >= view_top and bottom <= view_bottom:
+            return True
+        target = (top - SPACE[4] if top < view_top
+                  else bottom + SPACE[4] - (view_bottom - view_top))
+        try:
+            canvas.yview_moveto(max(0.0, min(1.0, target / total)))
+        except Exception:
+            pass
+        return True
+
+    def _build_well_foot(self):
+        """"Close this model…" at the foot of the model's well (L13, as
+        Web): the quietest control the entry has - text only - because it
+        destructs the model. It says what it does when pointed at and the
+        dashboard asks before it does it. A model with no tier-2 sections
+        still gets the well, for this."""
+        self._tier_frame(2)
+        foot = tk.Frame(self._well, background=theme.SURFACE)
+        foot.pack(side="bottom", fill="x", pady=(SPACE[4], 0))
+        press = self._close_press = _Press(foot, CLOSE_MODEL_TEXT,
+                                           self._on_close_pressed, theme.SURFACE,
+                                           ghost=True)
+        press.frame.pack(side="left")
+        tip = _Tooltip(press.widget)
+        tip.text = (f"Close {self.name}: it stops and disconnects. Reopen it "
+                    "from the Models menu.")
+
+    def _on_close_pressed(self):
+        if callable(self.on_close):
+            self.on_close(self.name)
 
     def _show_opener(self):
         """The tier-2 disclosure at the foot of the tier-1 body (K3)."""
@@ -1904,13 +2159,18 @@ class TkPanelView(PanelView):
         on the device page and only while remembered open; the Diagnostics
         strip inside it while remembered open."""
         is_open = bool(_DISCLOSED.get((self.name, tier), False))
-        target = self._well if tier == 2 else self._diagnostics
+        target = self._well_holder if tier == 2 else self._diagnostics
         if target is None:
             return
         try:
             if tier == 2 and is_open and self._is_opened:
-                # Directly under its press, no gap (K3).
-                target.pack(side="top", fill="x", padx=self._inset,
+                # Directly under its press, no gap (K3). On the sheet the
+                # well takes the rest of the page and scrolls by itself (L5).
+                on_sheet = self._sheet is not None
+                if on_sheet:
+                    self._embed_well()
+                target.pack(side="top", fill="both" if on_sheet else "x",
+                            expand=on_sheet, padx=self._inset,
                             pady=(0, SPACE[3]), after=self._disclosures[2].frame)
             elif tier == 3 and is_open:
                 target.pack(side="top", fill="x", padx=self._inset,
@@ -1999,11 +2259,10 @@ class TkPanelView(PanelView):
             if widget is None:
                 continue
             font = _reading_font(self._reading_kind(kind))
-            self._entry_for(element)["font"] = font
-            try:
-                widget.configure(font=font)
-            except Exception:
-                pass
+            entry = self._entry_for(element)
+            entry["font"] = font
+            entry["drawn_font"] = None
+            self._paint_empty(entry, entry.get("shown_text") == EMPTY_READOUT)
 
     def _reading_kind(self, kind):
         if kind == "axes":
@@ -2058,7 +2317,10 @@ class TkPanelView(PanelView):
             heading = tk.Label(container, text=caption, font=_caption_font(),
                                anchor="w", background=background,
                                foreground=theme.MUTED)
-        elif tier > 1 and self._tier_count.get(tier, 0) > 1:
+        elif (tier > 1 and self._tier_count.get(tier, 0) > 1
+              and _label(title).lower() != _label(self._tier_text.get(tier, "")).lower()):
+            # A heading that says what its disclosure just said is noise
+            # ("Diagnostics" under "Diagnostics", L18).
             heading = tk.Label(container, text=_label(title), font=_font(bold=True),
                                anchor="w", background=background,
                                foreground=theme.TEXT)
@@ -2155,6 +2417,7 @@ class TkPanelView(PanelView):
         caption.grid(row=state["row"], column=0, sticky="w",
                      padx=(0, SPACE[5]), pady=SPACE[2])
         self._section_titles.append(caption)
+        state["caption"] = caption
         state["bar"] = None
         if kind == "bar":
             bar = tk.Frame(self._table, background=_page())
@@ -2251,12 +2514,18 @@ class TkPanelView(PanelView):
                             padx=(0, SPACE[2]) if fill == "mark" else 0)
                 if not placed:
                     placed.append(widget)
+                    if label is not None and not state.get("inline"):
+                        # A captioned cell hangs from the line's top, so
+                        # the captions in a line share one (TK7-9).
+                        self._flows[id(strip)].setdefault("captioned", set()).add(
+                            id(cell))
                     self._add_to_flow(strip, cell)
                 if unit and fill in ("value", "field"):
-                    label = tk.Label(line, text=unit, font=_caption_font(), anchor="w",
-                                     background=background, foreground=theme.MUTED)
-                    label.pack(side="left", anchor="s", padx=(SPACE[1], 0))
-                    self._register(element, unit_label=label)
+                    unit_label = tk.Label(line, text=unit, font=_caption_font(),
+                                          anchor="w", background=background,
+                                          foreground=theme.MUTED)
+                    unit_label.pack(side="left", anchor="s", padx=(SPACE[1], 0))
+                    self._register(element, unit_label=unit_label)
                 return widget
             return line, place
         bar = state.get("bar")
@@ -2384,10 +2653,12 @@ class TkPanelView(PanelView):
                     widget.pack_forget()
                 except Exception:
                     pass
+        captioned = flow.get("captioned") or set()
         for widget, index in zip(shown, layout):
             try:
                 widget.pack_forget()
-                widget.pack(in_=lines[index], side="left", anchor="sw",
+                widget.pack(in_=lines[index], side="left",
+                            anchor="nw" if id(widget) in captioned else "sw",
                             padx=(0, SPACE[5]))
                 widget.lift()
             except Exception as exc:
@@ -2467,8 +2738,10 @@ class TkPanelView(PanelView):
         parent, place = self._command_slot(container)
         return parent, lambda widget, sticky=None: place(widget)
 
-    #: The grid row of a section's notice: under everything in it.
+    #: The grid row of a section's notice: under everything in it; the
+    #: muted reason a `go` command is greyed out sits just above it (L3).
     NOTICE_ROW = 999
+    WHY_ROW = 998
 
     def _notice_slot(self, container):
         """(container, row, column, span): the grid cell where a refusal of
@@ -2506,11 +2779,14 @@ class TkPanelView(PanelView):
         widget = tk.Label(ring.inner, text=_label(element.get("text", "") if text is None
                                                  else text),
                           font=_font(), relief="flat", padx=SPACE[4],
-                          pady=_target_pady(), cursor="hand2", takefocus=1,
-                          highlightthickness=0)
+                          pady=_command_pady(), borderwidth=0, cursor="hand2",
+                          takefocus=1, highlightthickness=0)
         widget.pack(fill="both", expand=True)
+        # Why it is greyed out, when it is (L3): its own hover text, shown
+        # by the command's own Enter/Leave so no handler is replaced.
+        gate_tip = _Tooltip(widget, bind=False)
         self._register(element, widget=widget, outline=ring.inner, ring=ring,
-                       ground=background)
+                       ground=background, gate_tip=gate_tip)
 
         def _on_widget_click(_event=None, element=element):
             if not self._entry_for(element).get("is_enabled", True):
@@ -2520,6 +2796,8 @@ class TkPanelView(PanelView):
 
         def _on_flag(name, value, element=element):
             self._entry_for(element)[name] = value
+            if name == "is_hovered":
+                (gate_tip.enter if value else gate_tip.leave)()
             self._paint_command(element)
 
         widget.bind("<Button-1>", _on_widget_click)
@@ -2747,8 +3025,16 @@ class TkPanelView(PanelView):
             scale.bind("<FocusOut>", lambda _e, r=track: r.paint(False), add="+")
             scale.bind("<ButtonRelease-1>",
                        lambda _e, el=element: self._on_entry_commit(el), add="+")
-            scale.bind("<KeyRelease>",
-                       lambda _e, el=element: self._on_entry_commit(el), add="+")
+            for key, direction in SLIDER_KEYS.items():
+                scale.bind(f"<{key}>", lambda _e, el=element, d=direction:
+                           self._on_slider_key(el, d))
+            for key, direction in SLIDER_PAGE_KEYS.items():
+                scale.bind(f"<{key}>", lambda _e, el=element, d=direction:
+                           self._on_slider_key(el, d, page=True))
+            for key in ("<Home>", "<End>"):
+                scale.bind(key, lambda _e: "break")
+            scale.bind("<KeyRelease>", lambda event, el=element:
+                       self._on_slider_key_released(el, event), add="+")
         ring = _Ring(parent, background, underline=True)
         widget = tk.Entry(ring.inner, textvariable=var, font=_font(),
                           width=FIELD_WIDTH, justify="right", relief="flat",
@@ -2757,11 +3043,15 @@ class TkPanelView(PanelView):
                           insertbackground=theme.TEXT,
                           disabledbackground=theme.DISABLED[0],
                           disabledforeground=theme.DISABLED[1])
-        widget.pack(fill="both", expand=True, ipady=max(0, _target_pady() - GAP),
-                    ipadx=SPACE[1])
+        widget.pack(fill="both", expand=True, ipady=_field_pady(), ipadx=SPACE[1])
         if element.get("value_type") in ("int", "float"):
             self._attach_validator(widget, element)
         place(ring.outer, "field")
+        # The well is the target (L4): a press on its ring or its underline
+        # puts the cursor in the field, as a press on the field does.
+        for part in (ring.outer, ring.inner, ring.line):
+            if part is not None:
+                part.bind("<Button-1>", lambda _e, w=widget: self._focus_field(w))
         widget.bind("<Return>", lambda _e, el=element: self._on_entry_commit(el))
         widget.bind("<FocusIn>", lambda _e, r=ring: r.paint(True))
         widget.bind("<FocusOut>", lambda _e, el=element, r=ring:
@@ -2774,6 +3064,41 @@ class TkPanelView(PanelView):
         strip = self._entry_for(element).get("strip")
         if scale is not None and id(strip) in self._flows:
             self._flows[id(strip)].setdefault("sliders", []).append(element)
+
+    @staticmethod
+    def _focus_field(widget):
+        try:
+            if str(widget.cget("state")) != "disabled":
+                widget.focus_set()
+                widget.icursor("end")
+        except Exception:
+            pass
+        return "break"
+
+    def _on_slider_key(self, element, direction, page=False):
+        """An arrow or Page key on a slider (L6): 1 % (10 %) of the travel,
+        at least one unit, never past either end."""
+        entry = self._entry_for(element)
+        scale, travel = entry.get("scale"), element.get("slider")
+        if scale is None or not travel or not entry.get("is_enabled", True):
+            return "break"
+        low, high = travel
+        fraction = SLIDER_PAGE_FRACTION if page else SLIDER_ARROW_FRACTION
+        step = max(1, round((high - low) * fraction))
+        try:
+            now = float(scale.get())
+        except (TypeError, ValueError):
+            return "break"
+        scale.set(max(low, min(high, now + direction * step)))
+        return "break"
+
+    def _on_slider_key_released(self, element, event=None):
+        """Commit as a pointer release does - but only for the keys that
+        move the slider (a Tab into it used to commit)."""
+        keysym = getattr(event, "keysym", "")
+        if keysym in SLIDER_KEYS or keysym in SLIDER_PAGE_KEYS:
+            return self._on_entry_commit(element)
+        return None
 
     def _on_slider_moved(self, element, value):
         """The slider writes the entry: an int field gets a whole number."""
@@ -3012,12 +3337,20 @@ class TkPanelView(PanelView):
             return
         values = [v for v in list((series or {}).get("y") or [])
                   if isinstance(v, (int, float))]
-        width, height = 360, 160
+        is_empty = len(values) < 2
+        want = self._empty_plot_px() if is_empty else _design_px(self.PLOT_PX)
+        if entry.get("plot_px") != want:
+            entry["plot_px"] = want
+            try:
+                canvas.configure(height=want)
+            except Exception:
+                pass
+        width, height = 360, want
         try:
             # The canvas fills its section; draw to the size it was given.
             measured = canvas.winfo_width(), canvas.winfo_height()
             if all(isinstance(v, int) and v > 1 for v in measured):
-                width, height = measured
+                width = measured[0]
         except Exception:
             pass
         is_frozen = (self._last_state or {}).get("mode") == "latched"
@@ -3031,13 +3364,13 @@ class TkPanelView(PanelView):
             canvas.delete("all")
         except Exception:
             return
-        if len(values) < 2:
-            # An empty plot that says why, rather than a blank rectangle
-            # (REDPERCENT-17).
-            text = "no data yet" if not values else "one sample so far"
+        if is_empty:
+            # An empty plot says why, in the model's words, on one line at
+            # the left like any caption (REDPERCENT-17, L15).
             try:
-                canvas.create_text(width / 2, height / 2, text=text,
-                                   fill=theme.MUTED, font=_caption_font())
+                canvas.create_text(0, height / 2, text=self._empty_text(element),
+                                   anchor="w", fill=theme.MUTED,
+                                   font=_caption_font())
             except Exception:
                 pass
             return
@@ -3054,6 +3387,15 @@ class TkPanelView(PanelView):
         except Exception as exc:
             events.debug("Plot Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
+
+    @staticmethod
+    def _empty_plot_px():
+        """One caption line: what an empty plot takes (L15)."""
+        return int(_design_px(theme.CAPTION_SIZE) * 1.6) + 2
+
+    @staticmethod
+    def _empty_text(element):
+        return str(element.get("empty") or "No data yet.")
 
     def _show_image(self, element, data):
         """PNG bytes (or base64 text) -> PhotoImage. Tk reads PNG natively."""
@@ -3079,11 +3421,15 @@ class TkPanelView(PanelView):
         if widget is None:
             return
         text = "\n".join(str(line) for line in list(lines or [])[-40:])
+        is_empty = not text.strip()
+        if is_empty and element.get("detached"):
+            text = self._log_empty_text(element)
         if entry.get("last_text") == text:
             return
         entry["last_text"] = text
         try:
-            widget.configure(state="normal")
+            widget.configure(state="normal",
+                             foreground=theme.MUTED if is_empty else theme.TEXT)
             widget.delete("1.0", "end")
             widget.insert("1.0", text)
             widget.configure(state="disabled")
@@ -3158,6 +3504,16 @@ class TkPanelView(PanelView):
         tooltip.text = str(element.get("tooltip") or "")
         self._register(element, widget=widget, var=var, cell=ring.outer,
                        ring=ring, tooltip=tooltip)
+        caption = self._cursor(container).get("caption")
+        if self._cursor(container)["layout"] == "row" and caption is not None:
+            # The row's name and its tick are one target (L4): Setup's
+            # "Stepper Probe" ticks the Stepper Probe's Launch box.
+            try:
+                caption.configure(cursor="hand2")
+            except Exception:
+                pass
+            caption.bind("<Button-1>",
+                         lambda _e, el=element: self._on_row_name_pressed(el))
 
     def _on_checkbox_clicked(self, element):
         """Tk has already flipped the variable. A greyed box runs nothing and
@@ -3168,6 +3524,18 @@ class TkPanelView(PanelView):
             self._set_on(element, bool(values.get(element.get("model_attr"))))
             return None
         return self._run_checkbox(element)
+
+    def _on_row_name_pressed(self, element):
+        """A press on a table row's name ticks its box, as a press on the
+        box does: the model's value is read and the new one sent."""
+        if not self._entry_for(element).get("is_enabled", True):
+            return "break"
+        self._run_checkbox(element)
+        try:
+            self._entry_for(element)["widget"].focus_set()
+        except Exception:
+            pass
+        return "break"
 
     def _on_switch_pressed(self, element):
         if not self._entry_for(element).get("is_enabled", True):
@@ -3256,20 +3624,26 @@ class TkPanelView(PanelView):
         parent, place = self._command_slot(container, element)
         place(self._button_label(parent, element, self._on_open_clicked))
 
+    #: A plot's height once it has a series to draw.
+    PLOT_PX = 160
+
     def _make_plot(self, container, element):
         """A Canvas polyline in the trace colour. No matplotlib: the model
-        publishes the series and each renderer draws it (D-6)."""
+        publishes the series and each renderer draws it (D-6). Until it has
+        two points it is one caption line tall and says the schema's own
+        sentence (`element["empty"]`, L15/L22): two 600 px panes of "no
+        data" stacked Diagnostics out of reach."""
         parent, place = self._wide_slot(container, element.get("text"))
-        canvas = tk.Canvas(parent, height=160, width=360,
+        canvas = tk.Canvas(parent, height=self._empty_plot_px(), width=360,
                            background=_bg(parent), highlightthickness=0)
         place(canvas)
-        self._register(element, widget=canvas)
+        self._register(element, widget=canvas, plot_px=None)
 
     def _make_image(self, container, element):
         parent, place = self._wide_slot(container, element.get("text"))
         widget = tk.Label(parent, background=_bg(parent),
-                          foreground=theme.MUTED, text="No figure yet",
-                          font=_caption_font(), padx=PAD, pady=PAD)
+                          foreground=theme.MUTED, text=NO_FIGURE,
+                          font=_caption_font(), padx=0, pady=0)
         place(widget, "w")
         self._slow_commands.add(element.get("data_command"))
         self._register(element, widget=widget, photo=None, data=None)
@@ -3379,11 +3753,18 @@ class TkPanelView(PanelView):
         label = _label(element.get("text", ""))
         window = tk.Toplevel(self.frame)
         try:
-            window.title(f"{self.name} \u2014 {label}")
+            window.title(self._log_title(element))
         except Exception:
             pass
         window.configure(background=_page())
         self._wear_menubar(window)
+        close = lambda _event=None, el=element: self._close_log_window(el)
+        # The foot first: packed at the bottom before the feed takes the
+        # rest, so a short window never pushes Close off it (L12).
+        foot = tk.Frame(window, background=_page())
+        foot.pack(side="bottom", fill="x", padx=SPACE[4], pady=(0, SPACE[4]))
+        closer = _Press(foot, CLOSE_WORD, close, _page())
+        closer.frame.pack(side="right")
         body = tk.Frame(window, background=_page())
         body.pack(fill="both", expand=True, padx=SPACE[4], pady=SPACE[4])
         scrollbar = ttk.Scrollbar(body, orient="vertical")
@@ -3396,14 +3777,14 @@ class TkPanelView(PanelView):
         except Exception as exc:
             events.debug("Log Scrollbar Not Wired", str(exc), source=SOURCE,
                          exception=exc)
-        close = lambda _event=None, el=element: self._close_log_window(el)
         window.bind("<Escape>", close)
         try:
             window.protocol("WM_DELETE_WINDOW", close)
         except Exception:
             pass
         self._place_log_window(window, element)
-        entry.update(window=window, feed=feed, last_text=None)
+        entry.update(window=window, feed=feed, last_text=None, closer=closer)
+        self._refresh_log(element, [])
         events.debug("Log Window Opened", f"{self.name}/{label}", source=SOURCE)
         # Filled now rather than on the next tick.
         data = self._call(element["source_command"])
@@ -3414,6 +3795,21 @@ class TkPanelView(PanelView):
         except Exception:
             pass
         return window
+
+    def _log_title(self, element):
+        """"Stepper Probe gamepad log" (L12): the model, then the feed's
+        own name in sentence case - no dash."""
+        label = _label(element.get("text", ""))
+        return f"{self.name} {label[:1].lower()}{label[1:]}"
+
+    @staticmethod
+    def _log_empty_text(element):
+        """What an empty feed says: "No gamepad input yet." for the
+        gamepad log; "Nothing logged yet." for any other."""
+        label = _label(element.get("text", "")).strip()
+        if label.lower().endswith(" log") and len(label) > 4:
+            return f"No {label[:-4].lower()} input yet."
+        return "Nothing logged yet."
 
     def _log_key(self, element):
         return (self.name, _label((element or {}).get("text", "")))
@@ -3601,6 +3997,7 @@ class TkPanelView(PanelView):
         is_changing = (changed_at is not None and not entry.get("is_text")
                        and _is_number(text)
                        and time.monotonic() - changed_at < CHANGING_S)
+        self._paint_empty(entry, text == EMPTY_READOUT)
         if text == EMPTY_READOUT or self._is_quiet():
             foreground = theme.MUTED
         elif is_changing and not is_danger:
@@ -3623,6 +4020,33 @@ class TkPanelView(PanelView):
                     size = int(mark.cget("width") or LAMP_PX)
                     mark.create_rectangle(2, 2, size - 2, size - 2, fill=theme.SIGNAL,
                                           outline=theme.SIGNAL)
+            except Exception:
+                pass
+
+    def _paint_empty(self, entry, is_empty):
+        """"--" is no value (TK7-14, L22): muted, at the reading's own size
+        so a tier-1 position never shrinks away, but in the text face at
+        regular weight - in the bold numeral face it drew two heavy bars
+        that read as a redaction. The unit goes while there is no number."""
+        font = entry.get("font")
+        widget = entry.get("widget")
+        if font is None or widget is None:
+            return
+        want = (_TEXT_FAMILY, font[1], "normal") if is_empty else font
+        if entry.get("drawn_font") != want:
+            entry["drawn_font"] = want
+            try:
+                widget.configure(font=want)
+            except Exception:
+                pass
+        unit = entry.get("unit_label")
+        if unit is not None and entry.get("unit_hidden") != is_empty:
+            entry["unit_hidden"] = is_empty
+            try:
+                if is_empty:
+                    unit.pack_forget()
+                else:
+                    unit.pack(side="left", anchor="s", padx=(SPACE[1], 0))
             except Exception:
                 pass
 
@@ -3766,6 +4190,7 @@ class TkPanelView(PanelView):
             if was_enabled != bool(is_enabled) or "painted" not in entry:
                 entry["painted"] = True
                 self._paint_command(element)
+            self._say_why(element, entry, is_enabled)
         scale = entry.get("scale")
         if scale is not None and was_enabled != bool(is_enabled):
             # A disabled slider is muted and does not move (its style maps
@@ -3779,6 +4204,67 @@ class TkPanelView(PanelView):
                          f"{self.name}/{element.get('text') or element.get('command')}"
                          f" -> {'enabled' if is_enabled else 'disabled'}",
                          source=SOURCE)
+
+    def _gate_reason(self, element):
+        """Why `element` is greyed out now (L3), from the gate it failed:
+        the stop latch first, then an `enabled_by` value that is off, then
+        the mode word the schema names. "" when nothing says."""
+        state = self._last_state or {}
+        mode = state.get("mode") or ""
+        values = state.get("values") or {}
+        if mode == "latched":
+            return GATE_WORDS["latched"]
+        by = element.get("enabled_by")
+        if by and not values.get(by):
+            names = [e.get("text") for e in self._elements
+                     if e.get("model_attr") == by and e is not element]
+            return f"{_label(names[0])} is off" if names else _gate_word(by)
+        if mode in (element.get("disabled_when") or ()):
+            return _gate_word(mode)
+        enabled = element.get("enabled_when") or ()
+        if enabled and mode not in enabled:
+            if "manual" in enabled:
+                return GATE_WORDS["manual"]
+            return _gate_word(mode) if mode else ""
+        return ""
+
+    def _say_why(self, element, entry, is_enabled):
+        """A disabled command carries its reason as hover text; a `go`
+        command also says it in one muted caption under its row (L3)."""
+        reason = "" if is_enabled else self._gate_reason(element)
+        tip = entry.get("gate_tip")
+        if tip is not None:
+            tip.text = reason
+        if element.get("role") != "go" or entry.get("why_reason") == reason:
+            return
+        entry["why_reason"] = reason
+        slot = entry.get("slot")
+        if slot is None:
+            return
+        container = slot[0]
+        why = self._why_labels.get(id(container))
+        if why is None:
+            if not reason:
+                return
+            why = tk.Label(container, text="", font=_caption_font(), anchor="w",
+                           justify="left", background=_bg(container),
+                           foreground=theme.MUTED)
+            self._why_labels[id(container)] = why
+        # One caption per row: the first greyed go command in it speaks.
+        reasons = [self._entry_for(e).get("why_reason") for e in self._elements
+                   if e.get("role") == "go"
+                   and (self._entry_for(e).get("slot") or (None,))[0] is container]
+        text = next((r for r in reasons if r), "")
+        try:
+            why.configure(text=text)
+            if text:
+                why.grid(row=self.WHY_ROW, column=0, columnspan=max(1, slot[3]),
+                         sticky="w", pady=(0, GAP))
+            else:
+                why.grid_forget()
+        except Exception as exc:
+            events.debug("Reason Not Shown", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
 
     def _set_stale(self, is_stale):
         """Grey the panel title when the model's state has stopped updating."""
@@ -3940,6 +4426,8 @@ class TkPanelView(PanelView):
         """Scroll the panel just enough that `widget` is fully visible. On
         the sheet, the sheet scrolls."""
         if self._sheet is not None:
+            if self._scroll_well_to(widget):
+                return
             scroll = getattr(self._sheet, "scroll_into_view", None)
             if callable(scroll):
                 scroll(widget)
@@ -4000,6 +4488,11 @@ class TkPanelView(PanelView):
 
     def _refresh(self):
         super()._refresh()
+        if self._panel is None:
+            # The model's own word on its stop (L1): a latch whose hardware
+            # did not confirm is marked here however it was set - the disc,
+            # the chord, the gamepad or the model's own switch.
+            self.set_unconfirmed(self._last_state.get("stop_confirmed") is False)
         devices = self._last_state.get("devices") or {}
         self._set_lost([name for name, status in sorted(devices.items())
                         if str(status) == "lost"])
@@ -4028,6 +4521,15 @@ class _Sheet:
         self.body = tk.Frame(self.canvas, background=_page(), padx=SPACE[10],
                              pady=SPACE[9])
         self.is_scrollbar_shown = False
+        # The device page (L5): the body is exactly as tall as the sheet -
+        # or `fit_floor()` when that is taller - so the page itself does not
+        # scroll and the opened model's well scrolls instead
+        # (`wheel_target`). The overview scrolls as it always has.
+        self.fit = False
+        self.fit_floor = None           # -> px the page needs at least
+        self.wheel_target = None        # (step) -> True when it scrolled
+        self.viewport = 0
+        self.fitted = 0                 # the window height last applied
         try:
             self.scrollbar.configure(command=self.canvas.yview)
             self.window = self.canvas.create_window((0, 0), window=self.body,
@@ -4049,10 +4551,43 @@ class _Sheet:
 
     def _on_canvas_resized(self, event=None):
         width = getattr(event, "width", 0)
+        height = getattr(event, "height", 0)
+        if isinstance(height, int) and height > 1:
+            self.viewport = height
         if self.window is None or not width:
             return
         try:
             self.canvas.itemconfigure(self.window, width=width)
+        except Exception:
+            pass
+        self.refit()
+        self._sync_scrollbar()
+
+    def set_fit(self, is_fit):
+        """The device page (fit) or the overview (the body's own height)."""
+        self.fit = bool(is_fit)
+        self.refit()
+
+    def refit(self):
+        """Apply the fit: the viewport's height, or the page's floor when
+        that is more. 0 gives the body back its own height. Only a change
+        is applied."""
+        want = 0
+        if self.fit and self.viewport > 1:
+            floor = 0
+            if callable(self.fit_floor):
+                try:
+                    floor = int(self.fit_floor() or 0)
+                except Exception:
+                    floor = 0
+            want = max(self.viewport, floor)
+        if want == self.fitted or self.window is None:
+            return
+        self.fitted = want
+        try:
+            self.canvas.itemconfigure(self.window, height=want)
+            if want:
+                self.canvas.yview_moveto(0)
         except Exception:
             pass
         self._sync_scrollbar()
@@ -4065,6 +4600,8 @@ class _Sheet:
             return
         if not (isinstance(content, int) and isinstance(viewport, int)) or viewport <= 1:
             return
+        if self.fit:
+            content = max(content, self.fitted)
         needed = content > viewport
         if needed == self.is_scrollbar_shown:
             return
@@ -4102,6 +4639,9 @@ class _Sheet:
             step = -1 if delta > 0 else 1
         else:
             return None
+        if (self.fit and callable(self.wheel_target)
+                and self.wheel_target(step, getattr(event, "widget", None))):
+            return "break"
         try:
             self.canvas.yview_scroll(step, "units")
         except Exception:
@@ -4180,14 +4720,16 @@ class TkDashboard(Dashboard):
         self._sheet_key = None
         self._sheet_rows = []
         self._rail_items = {}        # name -> (ring, label)
-        self._unconfirmed = set()    # models whose last stop did not confirm
+        self._stop_seen = None       # (latched, unconfirmed, every) last drawn
+        self._rail_marks = {}        # name -> (Canvas, _Tooltip) before its line
+        self._tray_events = []       # the tray's warnings and errors, oldest first
         self._is_tray_open = False
         self._tray_count = 0         # lines in the tray's history
         self._images = []            # PhotoImages ttk draws with (kept alive)
         self._is_narrow = None
 
         self.root = tk.Tk()
-        self.root.title("Transfer Station")
+        self.root.title(STATION_TITLE)     # the rail's name, not a third one (TK7-18)
         self.root.geometry("1400x900")
         self.root.configure(background=theme.BACKGROUND)
         try:
@@ -4212,9 +4754,23 @@ class TkDashboard(Dashboard):
 
         self.notebook = ClosableNotebook(self._main, on_close_tab=self._on_tab_close)
         self.notebook.pack(side="top", fill="both", expand=True)
+        # Tab order (TK7-7): the hidden tab strip takes no focus, and the
+        # band and the tray come AFTER the sheet - Tk traverses siblings in
+        # stacking order, and they were created (and packed) before it.
+        try:
+            self.notebook.configure(takefocus=0)
+        except Exception:
+            pass
+        for strip in (self._band, self._tray):
+            try:
+                strip.lift()
+            except Exception:
+                pass
         self._sheet_page = ttk.Frame(self.notebook)
         self._sheet = _Sheet(self._sheet_page)
         self._sheet.frame.pack(fill="both", expand=True)
+        self._sheet.fit_floor = self._device_floor
+        self._sheet.wheel_target = self._scroll_device_well
         self._build_headline()
         self.notebook.add(self._sheet_page, text=self.SHEET_TAB)
         self._bind_stop_keys()
@@ -4252,7 +4808,7 @@ class TkDashboard(Dashboard):
             return
         combo = dict(background=panel, foreground=text, arrowcolor=muted,
                      lightcolor=panel, darkcolor=panel,
-                     padding=(SPACE[2], _target_pady() - SPACE[0]),
+                     padding=(SPACE[2], _field_pady() + 1),
                      arrowsize=arrow, focuscolor=FOCUS_INK)
         settings = [
             (".", dict(background=base, foreground=text, font=_font(),
@@ -4398,9 +4954,13 @@ class TkDashboard(Dashboard):
                     image.put(colour, to=(x0, y, x1, y + 1))
             return image
 
+        # The trough is as tall as a target (L4): a press anywhere in the
+        # 24 px band moves the slider, not only on the 18 px thumb.
+        band = max(thumb, MIN_TARGET_PX)
+
         def rail(colour):
-            image = tk.PhotoImage(width=3 * track, height=thumb)
-            top = (thumb - track) // 2
+            image = tk.PhotoImage(width=3 * track, height=band)
+            top = (band - track) // 2
             image.put(colour, to=(0, top, 3 * track, top + track))
             return image
 
@@ -4484,6 +5044,10 @@ class TkDashboard(Dashboard):
                                       wraplength=RAIL_PX - 3 * SPACE[5],
                                       background=theme.SURFACE, foreground=theme.TEXT)
         self._station_line.pack(side="left", fill="x")
+        # The model list is CREATED before the foot, so Tab reaches the
+        # models before Setup and Quit, as the eye does (TK7-7); the foot is
+        # PACKED first, so a long list at 28 pt gives way before it does.
+        self._model_list = tk.Frame(rail, background=theme.SURFACE)
         # Setup and Quit, at the foot: packed before the list takes the rest.
         foot = tk.Frame(rail, background=theme.SURFACE)
         foot.pack(side="bottom", fill="x")
@@ -4494,7 +5058,6 @@ class TkDashboard(Dashboard):
         self._quit_press = _Press(foot, "Quit", self._on_quit_clicked,
                                   theme.SURFACE, ghost=True)
         self._quit_press.frame.pack(side="left", padx=(SPACE[4], 0))
-        self._model_list = tk.Frame(rail, background=theme.SURFACE)
         self._model_list.pack(side="top", fill="x", pady=(SPACE[4], 0))
         self._set_rail_width(False)
 
@@ -4514,12 +5077,21 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
 
-    def _rail_line(self, text, on_press):
+    def _rail_line(self, text, on_press, mark_name=None):
+        """One line of the rail's page list. A model's line (`mark_name`)
+        carries a small square before its name while that model is latched
+        (L1): the square sits in the line's own ground, left of the words."""
         ring = _Ring(self._model_list, theme.SURFACE, border=theme.SURFACE)
         label = tk.Label(ring.inner, text=text, font=_font(), anchor="w",
                          background=theme.SURFACE, foreground=theme.TEXT,
                          padx=SPACE[3], pady=_target_pady(), cursor="hand2",
                          takefocus=1, highlightthickness=0)
+        if mark_name is not None:
+            size = _lamp_px()
+            mark = tk.Canvas(ring.inner, width=size, height=size,
+                             background=theme.SURFACE, highlightthickness=0)
+            mark.pack(side="left", padx=(SPACE[3], 0))
+            self._rail_marks[mark_name] = (mark, _Tooltip(label))
         label.pack(fill="x")
         for sequence in ("<Button-1>", "<Return>", "<space>"):
             label.bind(sequence, lambda _e: on_press())
@@ -4541,6 +5113,7 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
         self._rail_items = {}
+        self._rail_marks = {}
         self._overview_item = None
         names = [n for n in self._panels if n != self.SETUP_TAB]
         if names:
@@ -4548,12 +5121,14 @@ class TkDashboard(Dashboard):
                 OVERVIEW_PAGE, self._on_overview_pressed)
             ring.outer.pack(side="top", fill="x", pady=(0, SPACE[3]))
         for name in names:
-            ring, label = self._rail_line(name, lambda n=name: self._on_rail_pressed(n))
+            ring, label = self._rail_line(name, lambda n=name: self._on_rail_pressed(n),
+                                          mark_name=name)
             ring.outer.pack(side="top", fill="x")
             label.bind(_close_tab_button(self.root),
                        lambda _e, n=name: self._on_rail_close(n))
             self._rail_items[name] = (ring, label)
         self._paint_rail()
+        self._paint_rail_marks()
 
     def _paint_rail(self):
         """The shown page is highlighted while the sheet is shown - the
@@ -4565,10 +5140,14 @@ class TkDashboard(Dashboard):
             lines.append((None, self._overview_item[1]))
         for name, label in lines:
             is_current = on_sheet and name == self._opened
+            ground = theme.BACKGROUND if is_current else theme.SURFACE
             try:
-                label.configure(background=theme.BACKGROUND if is_current
-                                else theme.SURFACE,
-                                font=_font(bold=is_current))
+                label.configure(background=ground, font=_font(bold=is_current))
+                mark = self._rail_marks.get(name) if name else None
+                if mark is not None:
+                    # The mark sits in the line's own ground, lit or not.
+                    mark[0].configure(background=ground)
+                    mark[0].master.configure(background=ground)
             except Exception:
                 pass
         self._setup_press.set_active(not on_sheet)
@@ -4589,10 +5168,20 @@ class TkDashboard(Dashboard):
         self.close_model(name)
         return "break"
 
+    def _confirm_close_model(self, name):
+        """"Close this model…" (L13): it stops and disconnects the model, so
+        it asks first, in words that say so; the Models menu reopens it."""
+        prompt = (f"Close {name}?\n\nIt stops and disconnects. You can reopen "
+                  "it from the Models menu.")
+        if _confirm(self.root, prompt, title=f"Close {name}",
+                    yes_text=f"Close {name}", no_text="Keep it open"):
+            events.debug("Close Model Confirmed", name, source=SOURCE)
+            self.close_model(name)
+
     def _on_quit_clicked(self):
         """Quit asks first (it stops every model and exits); the window's
         close button and the OS's Quit take the same close path."""
-        if self._confirm(self.QUIT_PROMPT):
+        if _confirm(self.root, self.QUIT_PROMPT, **QUIT_DIALOG):
             self.close()
 
     # -- the sheet -----------------------------------------------------------
@@ -4677,9 +5266,29 @@ class TkDashboard(Dashboard):
             groups = [names[index:index + columns]
                       for index in range(0, len(names), columns)]
         self._sheet_rows = []
+        is_device = self._opened is not None
         for group in groups:
             row = tk.Frame(self._sheet.body, background=_page())
-            row.pack(side="top", fill="x", pady=(0, SPACE[9]))
+            # The device page's one row takes the page's height: its entry's
+            # well scrolls inside it (L5).
+            row.pack(side="top", fill="both" if is_device else "x",
+                     expand=is_device, pady=(0, 0 if is_device else SPACE[9]))
+            if is_device:
+                try:
+                    row.grid_rowconfigure(0, weight=1)
+                except Exception:
+                    pass
+            # Every row has the page's columns, filled or not, so a short
+            # last row's entries are as wide as the full rows' (TK7-8).
+            width = 1 if self._opened is not None else columns
+            for index in range(width):
+                try:
+                    if index:
+                        row.grid_columnconfigure(2 * index - 1, weight=0,
+                                                 minsize=SPACE[10])
+                    row.grid_columnconfigure(2 * index, weight=1, uniform="entries")
+                except Exception:
+                    pass
             for index, name in enumerate(group):
                 # The gutter is a column of its own, not the entry's padding:
                 # with the padding on every entry but the first, the uniform
@@ -4693,16 +5302,37 @@ class TkDashboard(Dashboard):
                                                  minsize=SPACE[10])
                     row.grid_columnconfigure(column, weight=1, uniform="entries")
                     frame = self._panels[name].frame
-                    frame.grid(in_=row, row=0, column=column, sticky="new")
+                    frame.grid(in_=row, row=0, column=column,
+                               sticky="nsew" if is_device else "new")
                     frame.lift()
                 except Exception as exc:
                     events.debug("Entry Not Placed", f"{name}: {exc}", source=SOURCE,
                                  exception=exc, every=5.0)
             self._sheet_rows.append(row)
+        self._sheet.set_fit(is_device)
         self._paint_rail()
         events.debug("Sheet Laid Out", f"page={self._opened or OVERVIEW_PAGE} "
                      f"columns={columns} "
                      f"rows={[len(g) for g in groups]}", source=SOURCE)
+
+    def _device_floor(self):
+        """The least the device page needs (L5): the head and tier 1 as
+        they ask, plus room for the well when it is shown. More than the
+        window, and the sheet scrolls as a last resort."""
+        view = self._panels.get(self._opened) if self._opened else None
+        try:
+            need = self._sheet.body.winfo_reqheight()
+        except Exception:
+            return 0
+        if not isinstance(need, int):
+            return 0
+        if view is not None and view.well_canvas is not None:
+            need += view.WELL_FLOOR_PX
+        return need
+
+    def _scroll_device_well(self, step, widget=None):
+        view = self._panels.get(self._opened) if self._opened else None
+        return bool(view is not None and view.scroll_well(step, widget))
 
     def show_model(self, name):
         """The device page (K4): what a press on a model's rail line or on
@@ -4754,21 +5384,34 @@ class TkDashboard(Dashboard):
                              source=SOURCE, exception=exc)
 
     def _on_stop_key(self, _event=None):
+        """The chord always stops and never clears (L1): a partial stop -
+        one model latched from its own switch - is not "already stopped",
+        so the chord stops the rest. Only with every model latched is
+        there nothing left for it to do."""
         events.debug("Stop Key", "the stop shortcut was pressed", source=SOURCE)
-        if not self.controller.is_estopped:
-            self._note_stop(self.controller.estop_all())
+        if self._stop_words()["action"] != "clear":
+            self.controller.estop_all()
         self._sync_stop_button()
         return "break"
 
-    def _note_stop(self, results):
-        """Which models did not confirm THIS stop (E): each is marked at its
-        own entry until the latch clears."""
-        if isinstance(results, dict):
-            self._unconfirmed = {name for name, ok in results.items() if not ok}
-            for name, view in self._panels.items():
-                if name != self.SETUP_TAB:
-                    view.set_unconfirmed(name in self._unconfirmed)
-        return results
+    def _stop_state(self):
+        """`Controller.stop_state`: which models are latched, which of them
+        did not confirm, and whether that is every model."""
+        try:
+            state = self.controller.stop_state
+        except Exception as exc:
+            events.debug("Stop State Unread", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+            state = None
+        if not isinstance(state, dict):
+            latched = [n for n in self._panels if n != self.SETUP_TAB] \
+                if self.controller.is_estopped else []
+            state = {"latched": latched, "unconfirmed": [], "every": bool(latched)}
+        return state
+
+    def _stop_words(self, state=None):
+        """What the disc, the headline and the rail say (`stop_words`)."""
+        return stop_words(state if state is not None else self._stop_state())
 
     # -- the alert band and the tray -----------------------------------------
     def _build_alert_band(self):
@@ -4828,11 +5471,10 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
             return
-        word = SEVERITY_WORD["error"]
         if len(alerts) == 1:
-            text = f"{word}: {alerts[0].text}"
+            text = _event_line(alerts[0])
         else:
-            shown = [f"{word}: {event.text}" for event in alerts[-BAND_LINES:]]
+            shown = [_event_line(event) for event in alerts[-BAND_LINES:]]
             more = len(alerts) - len(shown)
             text = "\n".join([f"{len(alerts)} errors need acknowledgement."]
                              + (["..."] if more else []) + shown)
@@ -4878,10 +5520,12 @@ class TkDashboard(Dashboard):
         # beside it. Unfolded: the history, scrolled to its end.
         self._latest = tk.Frame(body, background=theme.BACKGROUND)
         self._latest.pack(side="left", fill="x", expand=True, padx=(0, SPACE[5]))
-        self._latest_mark = tk.Label(self._latest, text="", font=_font(),
-                                     background=theme.BACKGROUND,
-                                     foreground=theme.TEXT)
-        self._latest_mark.pack(side="left", anchor="n")
+        size = _lamp_px()
+        self._latest_mark = tk.Canvas(self._latest, width=size, height=size,
+                                      background=theme.BACKGROUND,
+                                      highlightthickness=0)
+        self._latest_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]),
+                               pady=SPACE[1])
         self._latest_text = tk.Label(self._latest, text="", font=_font(), anchor="w",
                                      justify="left", wraplength=720,
                                      background=theme.BACKGROUND,
@@ -5094,28 +5738,53 @@ class TkDashboard(Dashboard):
             return
         self._sync_stop_button()
         self._sync_station_line()
+        self._sheet.refit()
         self._schedule_refresh()
 
     def _sync_stop_button(self):
-        """Face and ring follow `Controller.is_estopped`, so the control says
-        what it will do rather than what it did; the disc breathes once on
-        the edge where the latch closes; the rail says the latch holds and
-        the sheet's head says every model is stopped. Nothing is redrawn or
-        reconfigured while the latch holds still (F21)."""
-        is_estopped = bool(self.controller.is_estopped)
-        if self._stop.is_latched == is_estopped:
+        """Everything the station says about the stop, from
+        `Controller.stop_state` through `views.base.stop_words` (L1), so the
+        disc, the headline, its subline and the rail line never disagree:
+
+        - the disc reads Clear (thicker ring, one breath on the edge) only
+          while EVERY model is latched; a partial stop leaves it a Stop;
+        - the headline and its subline are drawn only when there is one
+          ("Every model is stopped." / "Stopped. Rotator did not confirm.");
+        - the rail line under the disc names a partial stop or the models
+          that did not confirm; each model's rail line wears its own mark;
+        - "Stop: Ctrl+." stays under the disc in every state.
+
+        Nothing is redrawn while the state holds still (F21). When the latch
+        opens, the "Stop Not Confirmed" lines leave the band and the tray
+        (L2): they describe a latch that no longer exists."""
+        state = self._stop_state()
+        latched = tuple(state.get("latched") or ())
+        unconfirmed = tuple(state.get("unconfirmed") or ())
+        key = (latched, unconfirmed, bool(state.get("every")))
+        if key == self._stop_seen:
             return
-        events.debug("Stop Button Changed",
-                     CLEAR_FACE if is_estopped else STOP_FACE, source=SOURCE)
-        self._stop.set_latched(is_estopped)
-        self._stop.tooltip.text = self._hint(is_estopped)
-        if not is_estopped and self._unconfirmed:
-            # "Not confirmed" describes a latch; with the latch gone, so is it.
-            self._note_stop({name: True for name in self._unconfirmed})
+        was_latched = bool(self._stop_seen and self._stop_seen[0])
+        self._stop_seen = key
+        words = self._stop_words(state)
+        is_clear = words["action"] == "clear"
+        events.debug("Stop Words Changed",
+                     f"face={words['face']} rail={words['rail']!r} "
+                     f"headline={words['headline']!r}", source=SOURCE)
+        self._stop.set_latched(is_clear)
+        self._stop.tooltip.text = self._hint(is_clear)
+        if was_latched and not latched:
+            self._drop_stop_lines()
         try:
-            if is_estopped:
+            if words["rail"]:
+                self._latched_line.configure(text=words["rail"])
                 self._latched_row.pack(side="top", fill="x", after=self._stop_hint,
                                        pady=(0, SPACE[4]))
+            else:
+                self._latched_row.pack_forget()
+            if words["headline"]:
+                headline, subline = self._headline_lines
+                headline.configure(text=words["headline"])
+                subline.configure(text=words["subline"] or STOPPED_NEXT)
                 first = self._sheet_rows[0] if self._sheet_rows else None
                 if first is not None:
                     self._headline.pack(side="top", fill="x", pady=(0, SPACE[8]),
@@ -5123,12 +5792,52 @@ class TkDashboard(Dashboard):
                 else:
                     self._headline.pack(side="top", fill="x", pady=(0, SPACE[8]))
             else:
-                self._latched_row.pack_forget()
                 self._headline.pack_forget()
-            self._is_headline_shown = is_estopped
+            self._is_headline_shown = bool(words["headline"])
         except Exception as exc:
             events.debug("Stop Button Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
+        self._paint_rail_marks(latched, unconfirmed)
+
+    def _paint_rail_marks(self, latched=None, unconfirmed=None):
+        """A latched model's rail line: an ink square before its name and
+        the tooltip "Stopped"; one whose stop did not confirm: a signal
+        square and "Did not confirm the stop" (L1). Shape and words, never
+        colour alone."""
+        if latched is None:
+            seen = self._stop_seen or ((), (), False)
+            latched, unconfirmed = seen[0], seen[1]
+        size = _lamp_px()
+        for name, (canvas, tooltip) in self._rail_marks.items():
+            if name in (unconfirmed or ()):
+                fill, words = theme.SIGNAL, RAIL_MARK_WORDS["unconfirmed"]
+            elif name in latched:
+                fill, words = theme.TEXT, RAIL_MARK_WORDS["latched"]
+            else:
+                fill, words = None, ""
+            tooltip.text = words
+            try:
+                canvas.delete("all")
+                if fill is not None:
+                    inset = max(3, size // 4)
+                    canvas.create_rectangle(inset, inset, size - inset, size - inset,
+                                            fill=fill, outline=fill)
+            except Exception:
+                pass
+
+    def _drop_stop_lines(self):
+        """The latch opened: a "Stop Not Confirmed" line describes a stop
+        that is no longer set, so it leaves the band and the tray (L2)."""
+        kept = [event for event in self._alerts if event.title != STOP_NOT_CONFIRMED]
+        tray = [event for event in self._tray_events
+                if event.title != STOP_NOT_CONFIRMED]
+        if len(kept) == len(self._alerts) and len(tray) == len(self._tray_events):
+            return
+        events.debug("Stop Lines Dropped", "the latch opened", source=SOURCE)
+        self._alerts = kept
+        self._render_alerts()
+        self._tray_events = tray
+        self._render_tray()
 
     def _sync_station_line(self):
         """Name every model whose link is lost, and the device, in the rail
@@ -5185,7 +5894,18 @@ class TkDashboard(Dashboard):
             pass
 
     def _on_stop_clicked(self, _event=None):
-        return self._note_stop(self.toggle_estop_all())
+        """The disc (L1): it clears only while it reads Clear - every model
+        latched - and asks first; otherwise a press is `estop_all`, so one
+        model's own switch never takes the stop away from the rest."""
+        if self._stop_words()["action"] == "clear":
+            result = self.controller.clear_estop_all()
+            if getattr(result, "needs_confirm", False) and _confirm(
+                    self.root, result.reason, **CLEAR_DIALOG):
+                result = self.controller.clear_estop_all(confirmed=True)
+        else:
+            result = self.controller.estop_all()
+        self._sync_stop_button()
+        return result
 
     # -- panels ------------------------------------------------------------
     def _add_panel(self, name):
@@ -5194,6 +5914,7 @@ class TkDashboard(Dashboard):
         view = TkPanelView(self._sheet.body, self.controller, name, sheet=self._sheet)
         view.log_window_bounds = self._log_window_bounds
         view.on_open = self.show_model
+        view.on_close = self._confirm_close_model
         self._panels[name] = view
         self._frames[name] = view.frame
         self._build_menu_bar()
@@ -5215,7 +5936,6 @@ class TkDashboard(Dashboard):
         if name not in self._panels:
             return
         self._destroy_panel(name)
-        self._unconfirmed.discard(name)
         self._build_menu_bar()
         self._build_rail_list()
         self._lay_out_sheet()
@@ -5362,28 +6082,51 @@ class TkDashboard(Dashboard):
     def _show_event(self, event):
         """Status by exception (E): a warning or an error is one line in the
         tray - a mark in the severity's colour and shape (a hollow ink
-        square, a solid signal one), the severity word, then the text in the
-        severity's ink (F14, UXPM-10). Info is silence here."""
+        square, a solid signal one), then the line in the severity's ink
+        (F14, UXPM-10): its severity word, title and message in sentence
+        case, no bracketed source (L11). Info is silence here."""
         severity = event.severity if event.severity in theme.SEVERITY_ROLE else "info"
         if severity not in TRAY_SEVERITIES:
             return
-        mark = MARK_HOLLOW if severity in theme.SEVERITY_MARK_HOLLOW else MARK_SOLID
+        self._tray_events.append(event)
+        del self._tray_events[:-TRAY_HISTORY]
+        self._render_tray()
+
+    def _render_tray(self):
+        """The folded line is the latest event; the history is every kept
+        one, the latest tagged. Redrawn whole, so a line can also leave
+        (L2)."""
+        latest = self._tray_events[-1] if self._tray_events else None
+        size = _lamp_px()
         try:
-            self._latest_mark.configure(text=f"{mark} ",
-                                        foreground=theme.SEVERITY_MARK[severity])
-            self._latest_text.configure(text=f"{SEVERITY_WORD[severity]}  {event.text}",
-                                        foreground=theme.SEVERITY_INK[severity])
+            self._latest_mark.delete("all")
+            if latest is None:
+                self._latest_text.configure(text="")
+            else:
+                severity = latest.severity
+                color = theme.SEVERITY_MARK[severity]
+                hollow = severity in theme.SEVERITY_MARK_HOLLOW
+                inset = 3
+                self._latest_mark.create_rectangle(
+                    inset, inset, size - inset, size - inset,
+                    fill="" if hollow else color, outline=color,
+                    width=2 if hollow else 1)
+                self._latest_text.configure(text=_event_line(latest),
+                                            foreground=theme.SEVERITY_INK[severity])
         except Exception:
             pass
         try:
             self._event_text.configure(state="normal")
-            self._event_text.tag_remove("latest", "1.0", "end")
-            if self._tray_count:
-                self._event_text.insert("end", "\n")
-            self._tray_count += 1
-            self._event_text.insert("end", f"{mark} ", (f"mark-{severity}",))
-            self._event_text.insert("end", f"{SEVERITY_WORD[severity]}  {event.text}",
-                                    (severity, "latest"))
+            self._event_text.delete("1.0", "end")
+            for index, event in enumerate(self._tray_events):
+                severity = event.severity
+                mark = (MARK_HOLLOW if severity in theme.SEVERITY_MARK_HOLLOW
+                        else MARK_SOLID)
+                if index:
+                    self._event_text.insert("end", "\n")
+                tags = (severity, "latest") if event is latest else (severity,)
+                self._event_text.insert("end", f"{mark} ", (f"mark-{severity}",))
+                self._event_text.insert("end", _event_line(event), tags)
             self._event_text.see("end")
             self._event_text.configure(state="disabled")
         except Exception as exc:

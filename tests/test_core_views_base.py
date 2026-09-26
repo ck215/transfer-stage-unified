@@ -588,3 +588,33 @@ def test_stop_words_for_a_partial_stop_with_an_unconfirmed_model():
     assert words["face"] == "Stop" and words["action"] == "stop"
     assert words["rail"] == "Stopped: B did not confirm"
     assert words["headline"] == ""
+
+
+def test_the_disc_press_stops_the_rest_while_only_one_model_is_latched(station):
+    """L1 (Tk CCR 2): with one model stopped from its own switch, the shared
+    toggle used to open the clear confirmation; it must stop the others."""
+    controller, _ = station
+    controller.add("second", FakeModel())
+    names = controller.model_names
+    assert len(names) >= 2
+    controller.run(names[0], "toggle_estop")
+    dashboard = FakeDashboard(controller)
+    dashboard.toggle_estop_all()
+    assert controller.stop_state["every"] is True, "the press did not stop the rest"
+    assert dashboard.prompts == [], "no clear confirmation over live models"
+    # Every model latched: now the press is the clear (asks first).
+    dashboard.confirm_answer = False
+    dashboard.toggle_estop_all()
+    assert dashboard.prompts, "clear asks first"
+    assert controller.stop_state["every"] is True
+
+
+def test_event_line_is_a_sentence_without_the_source_prefix():
+    from views.base import event_line
+    from events import Event
+    e = Event(7, "error", "Controller", "Stop Not Confirmed",
+              "Rotator did not confirm the stop within 1 s.", None, True, 0.0)
+    assert event_line(e) == "Stop not confirmed: Rotator did not confirm the stop within 1 s."
+    e.count = 3
+    assert event_line(e).endswith(" (x3)")
+    assert event_line({"title": "Port Unverified", "message": "x", "count": 1}) == "Port unverified: x"

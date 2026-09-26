@@ -630,7 +630,8 @@ def test_hooking_exit_is_idempotent(controller):
 
 def test_stop_state_is_empty_while_nothing_is_latched(controller):
     controller.add("one", FakeModel())
-    assert controller.stop_state == {"latched": [], "unconfirmed": [], "every": False}
+    assert controller.stop_state == {"latched": [], "unconfirmed": [], "every": False,
+                                     "since": None}
 
 
 def test_one_models_own_stop_is_a_partial_stop_not_every(controller):
@@ -693,3 +694,21 @@ def test_the_clear_confirmation_names_the_unconfirmed_model_in_plain_words(contr
         assert "stalled did not confirm its stop. Treat it as live" in result.reason
     finally:
         stalled.release()
+
+
+def test_the_stop_state_carries_the_time_the_newest_latch_closed(controller):
+    """Round 7 (Web CCR 1): a view reloaded mid-latch shows only the events
+    newer than the latch, so it needs the latch's wall time."""
+    import time
+    controller.add("one", FakeModel())
+    controller.add("two", FakeModel())
+    assert controller.stop_state["since"] is None
+    before = time.time()
+    controller.run("one", "toggle_estop")
+    first = controller.stop_state["since"]
+    assert before <= first <= time.time()
+    time.sleep(0.01)
+    controller.run("two", "toggle_estop")
+    assert controller.stop_state["since"] > first
+    controller.run("two", "clear_estop", args=(True,))
+    assert controller.stop_state["since"] == first

@@ -458,3 +458,25 @@ def test_an_event_has_slots_so_a_60_hz_fault_stays_cheap():
 def test_the_dedupe_key_is_severity_source_title_message():
     event = Event(1, "error", "Probe", "Fault", "coil open", None, True, 0.0)
     assert event.key == ("error", "Probe", "Fault", "coil open")
+
+
+def test_forget_ends_the_dedupe_episode_so_the_next_one_is_new():
+    """Round 7 (Web CCR 2): stop, clear, stop again inside the dedupe window
+    produced ONE "Stop Not Confirmed" entry with a count and no new id, so
+    the second unconfirmed stop never reached the page's event feed. A
+    clear calls `forget`; the next one is a new event. A 60 Hz fault still
+    folds (the flood rule stands)."""
+    clock = FakeClock()
+    log = EventLog(clock=clock)
+    seen = []
+    log.subscribe(seen.append)
+    first = log.error("Stop Not Confirmed", "Rotator did not confirm the stop.", source="Controller")
+    clock.advance(1.0)
+    log.forget("Stop Not Confirmed")
+    second = log.error("Stop Not Confirmed", "Rotator did not confirm the stop.", source="Controller")
+    assert second.id != first.id and second.count == 1 and first.count == 1
+    assert [e.id for e in seen] == [first.id, second.id]
+    a = log.error("Fault", "coil open", source="Probe")
+    clock.advance(0.5)
+    b = log.error("Fault", "coil open", source="Probe")
+    assert a is b and a.count == 2
