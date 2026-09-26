@@ -250,6 +250,7 @@ app.launch("tk")
 """
 
 
+@pytest.mark.window
 @pytest.mark.skipif(sys.platform != "darwin" and not _os.environ.get("DISPLAY"),
                     reason="needs a display for a real Tk window")
 def test_a_sigterm_under_tk_still_runs_the_close_path(tmp_path):

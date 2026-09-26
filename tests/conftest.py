@@ -69,6 +69,33 @@ if sys.platform == "darwin":
         pass
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "window: maps a real Tk window on this Mac (a child process with the "
+        "real tkinter). Skipped when STATION_NO_WINDOWS=1 is set, so the suite "
+        "can run while someone is working at the display; the lead runs these "
+        "afterwards. Applied automatically to any test that calls the real-Tk "
+        "build helper, and explicitly where a test spawns its own window.")
+
+
+#: The rule that keeps the suite off the operator's screen (owner, 2026-09-26:
+#: "I need a way for you to work strictly in the background"). Every test that
+#: maps a real Tk window carries `window`; with STATION_NO_WINDOWS=1 they skip.
+NO_WINDOWS = bool(os.environ.get("STATION_NO_WINDOWS"))
+
+
+def _maps_a_window(item):
+    if item.get_closest_marker("window") is not None:
+        return True
+    function = getattr(item, "function", None)
+    code = getattr(function, "__code__", None)
+    names = set(getattr(code, "co_names", ()))
+    # `_real_build` is test_view_tk.py's child-process real-Tk harness; a test
+    # that names it maps a window whatever its own name is.
+    return "_real_build" in names
+
+
 def pytest_collection_modifyitems(config, items):
     skip_qt = pytest.mark.skip(
         reason="QApplication() aborts natively in this environment even after "
@@ -76,12 +103,19 @@ def pytest_collection_modifyitems(config, items):
                "_probe_qapplication) — skipping Qt-dependent tests instead of "
                "crashing the whole session."
     )
+    skip_window = pytest.mark.skip(
+        reason="maps a real Tk window; STATION_NO_WINDOWS=1 is set (someone is "
+               "working at the display). Run without the variable to cover it.")
     for item in items:
         needs_qt = "qapp" in item.fixturenames or "qtbot" in item.fixturenames
         if needs_qt:
             item.add_marker(pytest.mark.qt)
             if not _qt_probe_ok:
                 item.add_marker(skip_qt)
+        if _maps_a_window(item):
+            item.add_marker(pytest.mark.window)
+            if NO_WINDOWS:
+                item.add_marker(skip_window)
 
 
 tkinter_mock = MagicMock()
