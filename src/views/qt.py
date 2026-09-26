@@ -86,14 +86,15 @@ import time
 import schema as sch
 from events import events
 from views import theme
-from views.base import Dashboard, PanelView
+from views.base import Dashboard, PanelView, event_line, stop_words
 
 try:                                    # the module imports without PySide6
     from PySide6.QtCore import (QEasingCurve, QEvent, QEventLoop, QLocale,
                                 QPoint, QPointF, QRect, QRectF, QSize, Qt,
                                 QTimer, QUrl, QVariantAnimation, Signal)
     from PySide6.QtGui import (QColor, QDoubleValidator, QFont,
-                               QFontDatabase, QFontMetrics, QIcon, QImage,
+                               QFontDatabase, QFontMetrics, QGuiApplication,
+                               QIcon, QImage,
                                QIntValidator, QKeySequence, QPainter,
                                QPainterPath, QPen, QPixmap, QShortcut,
                                QTextCursor, QTextDocument)
@@ -155,6 +156,7 @@ TABLE_CONTROL_MIN_PX = 150
 #: name is elided from the middle - "/dev/cu.usbm…4401" - because the end of
 #: a port or gamepad name is the part that tells two devices apart (F15).
 DROPDOWN_CHARS = 14
+DROPDOWN_ROW_CHARS = 10
 #: A numeric entry is this many digits wide, a text entry this many letters:
 #: a speed does not need an 800 px well.
 NUMBER_CHARS, TEXT_CHARS = 7, 14
@@ -214,6 +216,8 @@ LIVE_S = 1.0
 #: Readings follow the launch font up to this factor: at 28 pt a 52 px
 #: focal number would otherwise be 121 px.
 READING_GROWTH = 1.6
+#: L4: the floor for anything pressable (WCAG 2.5.8) and for a command.
+TARGET_PX, COMMAND_PX = 24, 36
 #: At most three entries side by side, 44 px apart (`design-Sheet.md`).
 MAX_SHEET_COLUMNS = 3
 SHEET_GUTTER = theme.SPACE[10]
@@ -235,10 +239,21 @@ EMPTY_HINT = "Choose ports in Setup and press Launch."
 #: The rail's simulation line, and the sheet's latched headline (the
 #: artboards' copy).
 SIM_LINE = "Simulation, no hardware attached"
-STOPPED_HEADLINE = "Every model is stopped."
-STOPPED_SUBLINE = "Clear the stop on the rail to continue."
-STOPPED_RAIL_ALL = "Stopped: every model latched"
 UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
+#: L1: a model's state on the rail, beside its name. The words go in its
+#: tooltip and accessible name (never colour alone); the square's colour is
+#: ink for a latched model, the signal for one that did not confirm.
+RAIL_STOP_WORDS = {"stopped": "stopped", "unconfirmed": "did not confirm"}
+#: L2: the Controller's event title for a stop that did not confirm. The
+#: band drops it once the latch opens; while latched it waits for its
+#: acknowledgement like any error.
+UNCONFIRMED_TITLE = "Stop Not Confirmed"
+#: L9 / L14: the questions, titled, answered by verbs - the Tk and Web words.
+QUIT_PROMPT = ("Quit the station? This stops every model, closes every port "
+               "and exits.")
+QUIT_WORDS = ("Quit the station?", "Quit", "Stay")
+CLEAR_WORDS = ("Clear the stop?", "Clear the stop", "Keep it stopped")
+CONFIRM_WORDS = ("Confirm", "Continue", "Cancel")
 #: The sheet's two pages (K4): the rail's first item, and the word at the
 #: right of an overview entry's head (a press opens the device alone).
 OVERVIEW = "Overview"
@@ -352,6 +367,41 @@ def sentence_case(text):
                     else word for index, word in enumerate(words))
 
 
+#: L3: why a command is greyed out, in the operator's words: the gate token
+#: that refused it (`disabled_when`), or what an `enabled_when` command is
+#: waiting for. One map, three views (brief-l-views.md).
+GATE_WORDS = {"latched": "Stopped: clear the stop first",
+              "manual": "In manual mode",
+              "running": "A run is in progress",
+              "no_region": "Set a capture region first",
+              "disconnected": "Not connected",
+              "moving": "Moving"}
+WAITING_WORDS = {"launched": "Nothing launched yet",
+                 "running": "No run in progress",
+                 "manual": "Not in manual mode",
+                 "connected": "Not connected"}
+
+
+def gate_reason(element, mode, values=None, caption_of=None):
+    """Why `schema.is_enabled` refuses `element` in `mode`, or "" when it
+    does not. `caption_of(attr)` names an `enabled_by` switch."""
+    mode = str(mode or "")
+    by = element.get("enabled_by")
+    if by and values is not None and not values.get(by):
+        name = caption_of(by) if caption_of else ""
+        return f"Tick {name} first" if name else "Not selected"
+    if mode in (element.get("disabled_when") or ()):
+        return GATE_WORDS.get(mode) or sentence(mode.replace("_", " "))
+    enabled = element.get("enabled_when")
+    if enabled and mode not in enabled:
+        if mode in GATE_WORDS and mode in ("latched", "disconnected"):
+            return GATE_WORDS[mode]
+        if len(enabled) == 1 and enabled[0] in WAITING_WORDS:
+            return WAITING_WORDS[enabled[0]]
+        return "Only while " + " or ".join(str(m).replace("_", " ") for m in enabled)
+    return ""
+
+
 def split_unit(text, unit=None):
     """(caption, unit) for a label: "Position (deg):" -> ("Position", "deg").
     A declared `unit` wins; a trailing parenthesis that reads as a unit (no
@@ -381,6 +431,12 @@ def as_operator_word(text):
     if isinstance(text, str) and text.strip().lower() in ("true", "false"):
         return "Yes" if text.strip().lower() == "true" else "No"
     return text
+
+
+def is_number(text):
+    """A reading's text is a number ("1 184", "-352", "12.50", "1e-3")."""
+    return bool(re.fullmatch(r"[-+\u2212]?\d[\d,\u2009 ]*(\.\d*)?([eE][-+]?\d+)?",
+                             str("" if text is None else text).strip()))
 
 
 def is_quiet_value(text):
@@ -530,6 +586,12 @@ def numeral_family():
     return f"{theme.NUMERAL_FAMILY} SemiExpanded"
 
 
+def content_px(outer, padding, border):
+    """The QSS `min-height` that makes a control `outer` px tall: in a Qt
+    style sheet it is the content's height, inside the padding and edge."""
+    return outer - 2 * (padding + border)
+
+
 def stylesheet():
     """The whole Qt stylesheet, generated from `views.theme`.
 
@@ -565,6 +627,10 @@ def stylesheet():
     # an 18 px ink handle with a 2 px sheet border.
     groove, handle = theme.SPACE[1], theme.SPACE[6] - theme.SPACE[0]
     reading = {"font-family": numerals, "font-weight": "600"}
+    # L4: a QSS min-height is the content's, so the edge and the padding are
+    # taken off: every pressable is 24 px, a command 36 px (not 44 - the
+    # owner's call is pending).
+    command = f"{content_px(COMMAND_PX, theme.GAP, 1)}px"
 
     sheet = [
         _rule("QWidget", {"background-color": sheet_bg, "color": ink,
@@ -652,6 +718,7 @@ def stylesheet():
                               "border": f"1px solid {ink}",
                               "border-radius": f"{control}px",
                               "padding": f"{theme.GAP}px {theme.INSET}px",
+                              "min-height": command,
                               "font-weight": "500"}),
     ]
     for role in theme.ROLES:
@@ -679,7 +746,8 @@ def stylesheet():
                             "spacing": f"{theme.GAP}px",
                             "border": "2px solid transparent",
                             "border-radius": f"{input_radius}px",
-                            "padding": f"{hair}px"}),
+                            "padding": f"{hair}px",
+                            "min-height": f"{content_px(TARGET_PX, hair, 2)}px"}),
         _rule("QCheckBox:focus", {"border": ring}),
         _rule("QCheckBox::indicator",
               {"width": f"{indicator_px}px", "height": f"{indicator_px}px",
@@ -693,7 +761,8 @@ def stylesheet():
               {"background-color": disabled_bg,
                "border": f"1px dashed {muted}"}),
         # The slider beside a speed entry.
-        _rule("QSlider", {"background": "transparent", "min-height": f"{handle}px"}),
+        _rule("QSlider", {"background": "transparent", "border": "2px solid transparent",
+                          "min-height": f"{content_px(TARGET_PX, 0, 2)}px"}),
         _rule("QSlider:focus", {"border": ring, "border-radius": f"{control}px"}),
         _rule("QSlider::groove:horizontal",
               {"height": f"{groove}px", "background": panel,
@@ -712,7 +781,8 @@ def stylesheet():
         _rule("QToolButton#disclosure",
               {"background": "transparent", "color": ink, "border": "2px solid transparent",
                "border-radius": f"{control}px", "font-weight": "600",
-               "padding": f"{hair}px {tight}px"}),
+               "padding": f"{hair}px {tight}px",
+               "min-height": f"{content_px(TARGET_PX, hair, 2)}px"}),
         _rule("QToolButton#disclosure:hover", {"background": theme.LIFT}),
         _rule("QToolButton#disclosure:focus", {"border": ring}),
         # The tier-2 well and the tier-3 strip inside it.
@@ -729,22 +799,25 @@ def stylesheet():
               {"background": "transparent", "color": ink,
                "border": f"1px solid {ink}", "border-radius": f"{control}px",
                "padding": f"{theme.GAP}px {theme.INSET}px",
-               "font-weight": "500"}),
+               "min-height": command, "font-weight": "500"}),
         _rule("QPushButton#ghost:hover, QToolButton#ghost:hover",
               {"background": theme.LIFT}),
-        _rule("QPushButton#ghost:checked, QToolButton#ghost:checked",
-              {"background": panel}),
+        _rule("QPushButton#ghost:checked", {"background": panel}),
+        # The rail's Setup while Setup is shown (L19): ink-filled, as Tk's.
+        _rule("QToolButton#ghost:checked", {"background": ink, "color": sheet_bg}),
         _rule("QPushButton#ghost:focus, QToolButton#ghost:focus",
               {"border": ring}),
         _rule("QPushButton#quiet", {"background": "transparent", "color": ink,
                                     "border": "2px solid transparent",
                                     "border-radius": f"{control}px",
-                                    "padding": f"{theme.GAP}px {theme.PAD}px"}),
+                                    "padding": f"{theme.GAP}px {theme.PAD}px",
+                                    "min-height": f"{content_px(COMMAND_PX, theme.GAP, 2)}px"}),
         _rule("QPushButton#quiet:hover", {"background": theme.LIFT}),
         _rule("QPushButton#quiet:focus", {"border": ring}),
         _rule("QPushButton#iconButton, QToolButton#iconButton",
               {"background": "transparent", "border": "2px solid transparent",
-               "border-radius": f"{control}px", "padding": f"{hair}px"}),
+               "border-radius": f"{control}px", "padding": f"{hair}px",
+               "min-height": f"{content_px(TARGET_PX, hair, 2)}px"}),
         _rule("QPushButton#iconButton:hover, QToolButton#iconButton:hover",
               {"background": theme.LIFT}),
         _rule("QPushButton#iconButton:focus, QToolButton#iconButton:focus",
@@ -760,9 +833,13 @@ def stylesheet():
         _rule("QPushButton#railModel",
               {"background": "transparent", "color": ink, "border": "2px solid transparent",
                "border-radius": f"{control}px", "text-align": "left",
-               "padding": f"{theme.GAP}px {theme.INSET}px", "font-weight": "400"}),
+               "padding": f"{theme.GAP}px {theme.INSET}px", "font-weight": "400",
+               "min-height": f"{content_px(TARGET_PX, theme.GAP, 2)}px"}),
         _rule("QPushButton#railModel:hover", {"background": theme.LIFT}),
+        # The shown page: the sheet tone and a 2 px ink rule at its left (the
+        # entry rule's language; QT7-18), not a 1.1:1 tone step alone.
         _rule("QPushButton#railModel:checked", {"background": sheet_bg,
+                                                "border-left": f"2px solid {ink}",
                                                 "font-weight": "600"}),
         _rule("QPushButton#railModel:focus", {"border": ring}),
         # The sheet: an entry is a 2 px ink rule and its name, nothing else.
@@ -788,6 +865,9 @@ def stylesheet():
                                    "font-weight": "600"}),
         _rule("QLabel#headline", {"font-family": numerals, "font-weight": "600",
                                   "font-size": f"{reading_pt('primary')}pt"}),
+        # What the headline asks of the operator (L1): ink, not a caption.
+        _rule("QLabel#headlineSub", {"color": ink, "font-weight": "600",
+                                     "font-size": f"{base_size}pt"}),
         _rule("QLabel#emptyTitle", {"font-size": f"{title_size}pt",
                                     "font-weight": "600"}),
         # Setup's dock: its title is the page's heading.
@@ -801,6 +881,10 @@ def stylesheet():
         _rule("QDockWidget::close-button:hover, QDockWidget::float-button:hover",
               {"background": theme.LIFT, "border-color": muted}),
         _rule("QFrame#table", {"background": "transparent"}),
+        # An empty figure pane is its one caption line (L15).
+        _rule("QLabel#figure", {"color": muted, "font-size": f"{small_size}pt"}),
+        _rule("QScrollArea#wellScroll", {"background": "transparent", "border": "none"}),
+        _rule("QLabel#dockTitle", {"font-weight": "600", "font-size": f"{title_size}pt"}),
         # The alert band and the tray, under the sheet: warnings and errors.
         _rule("QFrame#alertBand", {"background-color": sheet_bg,
                                    "border-top": f"1px solid {theme.RULE}"}),
@@ -832,6 +916,17 @@ def stylesheet():
                            "padding": f"{theme.GAP}px"}),
     ]
     return "".join(sheet)
+
+
+def allow_tab_to_every_control():
+    """L7 (QT7-4): Tab reaches every control - buttons, the disc, the rail -
+    on every OS. macOS's default reaches text fields and lists only unless
+    Full Keyboard Access is on, so without this no button was ever focused
+    there; Tk and Web reach them on the same Mac. Asked for everywhere, not
+    branched on the OS: on Windows and Linux it is already the default."""
+    hints = QGuiApplication.styleHints() if QGuiApplication.instance() else None
+    if hints is not None and hints.tabFocusBehavior() != Qt.TabFocusBehavior.TabFocusAllControls:
+        hints.setTabFocusBehavior(Qt.TabFocusBehavior.TabFocusAllControls)
 
 
 def install_font_fallbacks():
@@ -1266,11 +1361,11 @@ class PanelTable:
             self.rows += 1
             self.header_row = self.rows
         self.rows += 1
+        label = None
         if title:
-            label = QLabel(title)
-            label.setObjectName("rowTitle")
+            label = RowTitle(title)
             self.grid.addWidget(label, self.rows, 0)
-        return TableRow(self, self.rows)
+        return TableRow(self, self.rows, label)
 
     def add_bar(self, title):
         """An action line across the whole table: its name, its readouts, and
@@ -1311,12 +1406,16 @@ class TableRow:
     control_width = TABLE_CONTROL_MIN_PX
     is_row = True
 
-    def __init__(self, table, row):
-        self.table, self.row = table, row
+    def __init__(self, table, row, title=None):
+        self.table, self.row, self.title = table, row, title
 
     def add(self, label, widget, unit=""):
-        # A tick box is a narrow column of its own, its header its caption.
-        narrow = isinstance(widget, QCheckBox)
+        # A tick box is a narrow column of its own, its header its caption;
+        # so is a readout (a status word needs no control's floor, L8).
+        narrow = isinstance(widget, (QCheckBox, QLabel))
+        if (isinstance(widget, QCheckBox) and self.title is not None
+                and self.title.target is None):
+            self.title.set_target(widget)       # L4: one target, name and tick
         self.table.grid.addWidget(widget, self.row,
                                   self.table.column_for(label, narrow))
         return widget
@@ -1331,6 +1430,31 @@ class TableRow:
     #: A row has one line; "wide" has nothing to mean here.
     def add_wide(self, label, widget):
         return self.add(label, widget)
+
+
+class RowTitle(QLabel):
+    """A table row's own name. In a row with a tick box, the name is part of
+    the tick's target (L4): a press on "Stepper Probe" ticks its box."""
+
+    def __init__(self, text, parent=None):
+        QLabel.__init__(self, text, parent)
+        self.setObjectName("rowTitle")
+        self.target = None
+
+    def set_target(self, box):
+        self.target = box
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(TARGET_PX)
+
+    def mouseReleaseEvent(self, event):     # noqa: N802 - Qt's name
+        box = self.target
+        if (box is not None and box.isEnabled()
+                and event.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(event.position().toPoint())):
+            event.accept()
+            box.click()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class TableBar:
@@ -1404,27 +1528,53 @@ class SeriesPlot(QWidget):
     `tk.Canvas`. Drawn on whatever it sits on (a well), a muted x-axis only,
     the line in the trace - or muted once the model is latched and the line
     has stopped being live (`design-Sheet.md`).
+
+    Empty, it is one caption line: the schema's `empty` sentence (L15), not
+    a tall box of nothing.
     """
 
     MARGIN_PX = 5
+    HEIGHT_PX = 140
 
-    def __init__(self, role="neutral", parent=None):
+    def __init__(self, role="neutral", parent=None, empty=""):
         QWidget.__init__(self, parent)
         self.role = role
         self.frozen = False
+        self.empty_text = str(empty or "No data yet.")
         self._points = []
-        self.setMinimumHeight(140)
         self.setMinimumWidth(240)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self._sync_height()
 
     @property
     def points(self):
         return list(self._points)
 
+    @property
+    def is_empty(self):
+        return len(self._points) < 2
+
+    def _empty_height(self):
+        return caption_line_px() + 2 * theme.SPACE[1]
+
+    def _sync_height(self):
+        height = self._empty_height() if self.is_empty else self.HEIGHT_PX
+        if self.minimumHeight() != height or self.maximumHeight() != height:
+            self.setFixedHeight(height)
+            self.updateGeometry()
+
+    def sizeHint(self):                     # noqa: N802 - Qt's name
+        return QSize(self.minimumWidth(), self.minimumHeight())
+
+    def minimumSizeHint(self):              # noqa: N802 - Qt's name
+        return QSize(self.minimumWidth(), self.minimumHeight())
+
     def set_series(self, data):
         points = series_points(data)
         if points != self._points:
             self._points = points
+            self._sync_height()
             self.update()
 
     def set_frozen(self, frozen):
@@ -1435,18 +1585,23 @@ class SeriesPlot(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        axis = QPen(QColor(theme.MUTED))
+        muted = QColor(theme.MUTED)
+        if self.is_empty:
+            # The empty sentence, a caption at the left: what to do next.
+            painter.setPen(muted)
+            font = QFont(self.font())
+            font.setPointSizeF(caption_pt())
+            painter.setFont(font)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignLeft
+                             | Qt.AlignmentFlag.AlignVCenter, self.empty_text)
+            return
+        axis = QPen(muted)
         axis.setWidth(1)
         painter.setPen(axis)
         bottom = self.height() - 1
         painter.drawLine(0, bottom, self.width(), bottom)
         scaled = polyline_points(self._points, self.width(), self.height(),
                                  self.MARGIN_PX)
-        if not scaled:
-            # An empty plot says so, rather than being an empty box.
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                             "No samples yet")
-            return
         pen = QPen(QColor(theme.MUTED if self.frozen else theme.TRACE))
         pen.setWidthF(1.75)
         painter.setPen(pen)
@@ -1454,6 +1609,13 @@ class SeriesPlot(QWidget):
         for point in scaled[1:]:
             path.lineTo(QPointF(*point))
         painter.drawPath(path)
+
+
+def caption_line_px():
+    """One caption line's height, in pixels, at the launch font."""
+    font = QFont(theme.FONT_FAMILY)
+    font.setPointSizeF(caption_pt())
+    return QFontMetrics(font).height()
 
 
 def numeral_font(pixels, weight=None):
@@ -1548,13 +1710,14 @@ class StopButton(QPushButton):
         """Never dimmed: the stop answers in every mode."""
         QPushButton.setEnabled(self, True)
 
-    def set_latched(self, is_latched):
+    def set_latched(self, is_latched, face=None):
         """Face and ring from the state, never from the last click. Called on
-        every tick; it repaints only when something it draws has changed."""
+        every tick; it repaints only when something it draws has changed.
+        `face` is `stop_words`' word when the dashboard has it (L1)."""
         is_latched = bool(is_latched)
         was = self.is_latched
         self.is_latched = is_latched
-        wanted = "Clear" if is_latched else "Stop"
+        wanted = face or ("Clear" if is_latched else "Stop")
         if self.text() != wanted:
             self.setText(wanted)
         if is_latched and not was:
@@ -1590,7 +1753,14 @@ class StopButton(QPushButton):
         if event.type() in (QEvent.Type.HoverEnter, QEvent.Type.HoverLeave):
             self._hover = event.type() == QEvent.Type.HoverEnter
             self.update()
-        return QPushButton.event(self, event)
+        handled = QPushButton.event(self, event)
+        if event.type() in (QEvent.Type.Polish, QEvent.Type.StyleChange):
+            # The sheet's command floor (L4) is for commands; the disc is its
+            # own size, whatever a style polish set.
+            side = self._diameter + 2 * (self.FOCUS_GAP + self.FOCUS_PX)
+            if self.minimumSize() != QSize(side, side) or self.maximumSize() != QSize(side, side):
+                self.setFixedSize(side, side)
+        return handled
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -1712,6 +1882,18 @@ class SwitchButton(QAbstractButton):
         painter.drawText(text, int(Qt.AlignmentFlag.AlignLeft
                                    | Qt.AlignmentFlag.AlignVCenter), self.text())
         painter.end()
+
+
+class KeySlider(QSlider):
+    """The speed slider (L6): an arrow is 1 % of the travel and a page key
+    10 %; Home and End do nothing - one key must never commit the maximum
+    speed."""
+
+    def keyPressEvent(self, event):         # noqa: N802 - Qt's name
+        if event.key() in (Qt.Key.Key_Home, Qt.Key.Key_End):
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class TickBox(QCheckBox):
@@ -1916,18 +2098,33 @@ class ReadingLabel(QLabel):
 class FigureLabel(QLabel):
     """A model-rendered figure (the `image` element), scaled down to the width
     it is given and never wider than it was drawn: a 640 px matplotlib figure
-    must not force the sheet to scroll sideways at 28 pt."""
+    must not force the sheet to scroll sideways at 28 pt.
 
-    def __init__(self, parent=None):
+    With no figure it is one caption line saying so (L15)."""
+
+    def __init__(self, parent=None, empty=""):
         QLabel.__init__(self, "", parent)
         self._figure = None
+        self.empty_text = str(empty or "Nothing to show yet.")
         self.setObjectName("figure")
-        self.setMinimumHeight(140)
+        self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.set_figure(None)
+
+    @property
+    def is_empty(self):
+        return self._figure is None or self._figure.isNull()
 
     def set_figure(self, pixmap):
         self._figure = pixmap
+        if self.is_empty:
+            self.clear()
+            self.setText(self.empty_text)
+            self.setMinimumHeight(caption_line_px())
+        else:
+            self.setText("")
+            self.setMinimumHeight(SeriesPlot.HEIGHT_PX)
         self.updateGeometry()
         self._fit()
 
@@ -1936,17 +2133,17 @@ class FigureLabel(QLabel):
         return self._figure.width() / ratio, self._figure.height() / ratio
 
     def hasHeightForWidth(self):            # noqa: N802 - Qt's name
-        return self._figure is not None
+        return not self.is_empty
 
     def heightForWidth(self, width):        # noqa: N802 - Qt's name
-        if self._figure is None:
+        if self.is_empty:
             return self.minimumHeight()
         natural_w, natural_h = self._natural()
         shown = min(width, natural_w) if natural_w else width
         return max(self.minimumHeight(), int(natural_h * shown / max(natural_w, 1)))
 
     def sizeHint(self):                     # noqa: N802 - Qt's name
-        if self._figure is None:
+        if self.is_empty:
             return QSize(0, self.minimumHeight())
         natural_w, natural_h = self._natural()
         return QSize(int(natural_w), int(natural_h))
@@ -1959,7 +2156,7 @@ class FigureLabel(QLabel):
         self._fit()
 
     def _fit(self):
-        if self._figure is None or self._figure.isNull():
+        if self.is_empty:
             return
         natural_w, _ = self._natural()
         width = int(min(max(self.width(), 1), natural_w))
@@ -2067,6 +2264,19 @@ def dot_icon(filled, ink, size=10):
     return _glyph(size, draw, inks)
 
 
+def square_icon(ink, size=10):
+    """A small solid square in `ink`: a model's stop state on the rail (L1),
+    the severity marks' shape. The same square in every mode - a state, not
+    a hover effect."""
+    def draw(painter, side, colour):
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(colour))
+        inset = side * 0.2
+        painter.drawRect(QRectF(inset, inset, side - 2 * inset, side - 2 * inset))
+    return _glyph(size, draw, [(mode, ink) for mode in (
+        QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Selected)])
+
+
 def disclosure_icon(is_open, size=10):
     """The disclosure's small ink triangle: pointing right when closed, down
     when open; the platform arrow is a heavy chevron on macOS."""
@@ -2127,18 +2337,24 @@ def mark_sheet(colour, hollow=False):
 _PENDING_CONFIRMS = []
 
 
-def ask(parent, prompt, title="Confirm"):
-    """A yes/no question that does not block the stop (F1, F17).
+def ask(parent, prompt, title=CONFIRM_WORDS[0], yes=CONFIRM_WORDS[1],
+        no=CONFIRM_WORDS[2]):
+    """A question that does not block the stop (F1, F17), titled and
+    answered by verbs (L14): the title is the question in a few words, the
+    prompt says what happens, the buttons say what they do.
 
     `QMessageBox.question` is application-modal: while one was up, the rail's
     stop could not be pressed. This one is modeless - the rest of the window
     keeps working - and waits in a local event loop so the caller still gets
-    a bool. No is the default and Escape is No: Return never clears a latch
-    by accident.
+    a bool. The "no" verb is the default and Escape answers it: Return never
+    clears a latch by accident.
     """
-    box = QMessageBox(QMessageBox.Icon.Question, title, prompt,
+    box = QMessageBox(QMessageBox.Icon.NoIcon, title, title,
                       QMessageBox.StandardButton.Yes
                       | QMessageBox.StandardButton.No, parent)
+    box.setInformativeText(prompt)
+    box.button(QMessageBox.StandardButton.Yes).setText(yes)
+    box.button(QMessageBox.StandardButton.No).setText(no)
     box.setDefaultButton(QMessageBox.StandardButton.No)
     box.setEscapeButton(QMessageBox.StandardButton.No)
     box.setWindowModality(Qt.WindowModality.NonModal)
@@ -2506,24 +2722,50 @@ class SheetEntry(QFrame):
 
 class RailItem(QPushButton):
     """A model in the rail's list: its name, elided to the rail with the whole
-    name as its tooltip; the opened one is checked (highlighted)."""
+    name as its tooltip; the opened one is checked (highlighted). A latched
+    model carries a small ink square before its name, one whose stop did not
+    confirm a signal square (L1); the words ride in its tooltip and name."""
 
     def __init__(self, name, parent=None):
         QPushButton.__init__(self, name, parent)
         self.name = name
+        self.stop_mark = None       # None, "stopped" or "unconfirmed"
         self.setObjectName("railModel")
         self.setCheckable(True)
         self.setAccessibleName(name)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
+    def set_stop(self, mark_kind):
+        """`None`, "stopped" or "unconfirmed", from `Controller.stop_state`."""
+        if mark_kind == self.stop_mark:
+            return
+        self.stop_mark = mark_kind
+        if mark_kind is None:
+            self.setIcon(QIcon())
+        else:
+            side = theme.SPACE[4] - theme.SPACE[1]
+            ink = theme.SIGNAL if mark_kind == "unconfirmed" else theme.TEXT
+            self.setIcon(square_icon(ink, side))
+            self.setIconSize(QSize(side, side))
+        self.setAccessibleName(self._spoken())
+        self._fit()
+
+    def _spoken(self):
+        words = RAIL_STOP_WORDS.get(self.stop_mark)
+        return f"{self.name}, {words}" if words else self.name
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        room = max(1, self.width() - 2 * theme.INSET - theme.GAP)
+        self._fit()
+
+    def _fit(self):
+        icon = self.iconSize().width() + theme.GAP if self.stop_mark else 0
+        room = max(1, self.width() - 2 * theme.INSET - theme.GAP - icon)
         shown = self.fontMetrics().elidedText(self.name, Qt.TextElideMode.ElideRight, room)
         if shown != self.text():
             self.setText(shown)
-        tip = self.name if shown != self.name else ""
+        tip = self._spoken() if (shown != self.name or self.stop_mark) else ""
         if self.toolTip() != tip:
             self.setToolTip(tip)
 
@@ -2565,6 +2807,12 @@ class QtPanelView(PanelView, QWidget):
         self._tier_of = {}          # id(element) -> its section's tier
         self._changed_at = {}       # id(element) -> when its value last changed
         self._sliders = {}          # id(element) -> the slider beside the entry
+        self._toggle_captions = {}  # id(element) -> the caption shown over a toggle
+        self._unit_labels = {}      # id(element) -> the unit beside its readout
+        self._base_tips = {}        # id(widget) -> its tooltip while enabled (L3)
+        self._reasons = {}          # id(element) -> why it is greyed out, or ""
+        self._reason_lines = {}     # id(section frame) -> its "why" caption (L3)
+        self._reason_frame = {}     # id(element) -> its section frame
         self._pending = set()       # entries a slider is carrying to the model
         self._overlay = None
         self._table = None          # built on the first layout="row" section
@@ -2609,6 +2857,7 @@ class QtPanelView(PanelView, QWidget):
         self.tier_button = self.diag_button = None
         self.well = self.diagnostics = None
         self.tier_block = None
+        self.well_scroll = None
         self._build_tiers()
 
         self._build()
@@ -2666,7 +2915,19 @@ class QtPanelView(PanelView, QWidget):
             strip.setSpacing(theme.SPACE[4])
             self._tier_layouts[3] = strip
             inside.addWidget(self.diagnostics)
-        block.addWidget(self.well)
+        # L5: the well scrolls inside its own area on the device page, so the
+        # head and tier 1 above it never scroll away (the dashboard sizes it
+        # to the room left, `QtDashboard._fit_well`).
+        self.well_scroll = QScrollArea()
+        self.well_scroll.setObjectName("wellScroll")
+        self.well_scroll.setWidgetResizable(True)
+        self.well_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.well_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.well_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.well_scroll.setWidget(self.well)
+        self.well.installEventFilter(self)
+        self._well_height = None
+        block.addWidget(self.well_scroll)
         self._layout.addWidget(self.tier_block)
 
     def _disclosure(self, text, tier):
@@ -2680,8 +2941,12 @@ class QtPanelView(PanelView, QWidget):
         button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setAccessibleName(f"{text}: {self.name}")
-        button.setToolTip(f"Show or hide {self.name}'s "
-                          f"{'diagnostics' if tier == 3 else text.lower()}")
+        # "Show or hide the Stepper Probe settings" (QT7-17), whatever the
+        # disclosure's own words.
+        words = text[len(self.name):].strip() if text.startswith(self.name) else text
+        words = {"configure": "settings"}.get(words.lower(), words.lower())
+        button.setToolTip(f"Show or hide the {self.name} "
+                          f"{'diagnostics' if tier == 3 else words}")
         button.toggled.connect(lambda on, t=tier: self._set_tier_open(t, on))
         return button
 
@@ -2722,10 +2987,34 @@ class QtPanelView(PanelView, QWidget):
             button.setProperty("open", is_open)
             button.setIcon(disclosure_icon(is_open))
         body.setVisible(is_open)
+        if tier == 2 and self.well_scroll is not None:
+            self.well_scroll.setVisible(is_open)
         QtPanelView.open_tiers[(self.name, tier)] = is_open
         window = self.window()
-        if is_open and not self._closed and hasattr(window, "_schedule_arrange"):
+        if not self._closed and hasattr(window, "_schedule_arrange"):
             window._schedule_arrange()
+
+    def well_content_height(self):
+        """The well's natural height at the width its scroll area gives it."""
+        if self.well is None:
+            return 0
+        width = max(1, self.well_scroll.viewport().width())
+        height = (self.well.heightForWidth(width) if self.well.hasHeightForWidth()
+                  else self.well.sizeHint().height())
+        return max(height, self.well.minimumSizeHint().height())
+
+    def eventFilter(self, watched, event):     # noqa: N802 - Qt's name
+        """The well's contents changed size (a section opened, a line
+        wrapped): the dashboard fits the well to its page again (L5)."""
+        if (watched is self.well and event.type() == QEvent.Type.LayoutRequest
+                and not self._closed and self.tier_is_shown(2)):
+            height = self.well_content_height()
+            if height != self._well_height:
+                self._well_height = height
+                window = self.window()
+                if hasattr(window, "_schedule_arrange"):
+                    window._schedule_arrange()
+        return QWidget.eventFilter(self, watched, event)
 
     # `take_disclosure` is retired (K3, 2026-09-26): the entry's head no
     # longer lifts the disclosure out of the body; it stays above its well.
@@ -2878,9 +3167,29 @@ class QtPanelView(PanelView, QWidget):
         holder.setObjectName("flow")
         flow = FlowLayout(holder)
         column.addWidget(holder)
+        column.addWidget(self._reason_caption(frame))
         column.addWidget(self._section_refusal(frame))
         self._tier_layout(self._building_tier).addWidget(frame)
         return FlowSection(flow)
+
+    def _reason_caption(self, frame):
+        """L3: a muted caption under a section's row, hidden until one of its
+        `go` commands is greyed out; then it says why, as the tooltip does."""
+        line = QLabel("")
+        line.setObjectName("caption")
+        line.setWordWrap(True)
+        line.setVisible(False)
+        self._reason_lines[id(frame)] = line
+        return line
+
+    def reason_line(self, widget):
+        """The "why" caption of the section that holds `widget`."""
+        while widget is not None:
+            line = self._reason_lines.get(id(widget))
+            if line is not None:
+                return line
+            widget = widget.parentWidget()
+        return None
 
     def _section_refusal(self, frame):
         """Every section keeps a refusal line at its foot, hidden until a
@@ -2907,6 +3216,7 @@ class QtPanelView(PanelView, QWidget):
             grid = QGridLayout()
             grid.setContentsMargins(0, 0, 0, 0)
             outer.addLayout(grid)
+            outer.addWidget(self._reason_caption(frame))
             outer.addWidget(self._section_refusal(frame))
             grid.setHorizontalSpacing(theme.INSET)
             grid.setVerticalSpacing(theme.PAD)
@@ -2940,6 +3250,7 @@ class QtPanelView(PanelView, QWidget):
                 holder = container.add(caption, value, unit)
             self._remember(element, value)
             self._holders[id(element)] = holder
+            self._remember_unit(element, holder)
             return
         value = ReadoutLabel(EMPTY_READOUT)
         value.setObjectName("valueLabel")
@@ -2960,8 +3271,16 @@ class QtPanelView(PanelView, QWidget):
             shown = _bare_row(value, _unit(unit)) if unit else value
             self._lamps[id(element)] = lamp
             self._holders[id(element)] = container.add_inline(caption, shown, lead=lamp)
+            self._remember_unit(element, shown)
             return
-        container.add(caption, value, unit)
+        self._remember_unit(element, container.add(caption, value, unit))
+
+    def _remember_unit(self, element, holder):
+        """The unit beside a readout, hidden while the value is the empty
+        dash: "— s" reads as a value (L22, QT7-17)."""
+        unit = holder.findChild(QLabel, "unit") if isinstance(holder, QWidget) else None
+        if unit is not None:
+            self._unit_labels[id(element)] = unit
 
     def _make_entry(self, container, element):
         entry = QLineEdit()
@@ -2991,10 +3310,10 @@ class QtPanelView(PanelView, QWidget):
         next refresh does not snap it back. Every command still carries the
         entry's text (`_gather_inputs`)."""
         low, high = (int(math.floor(travel[0])), int(math.ceil(travel[1])))
-        slider = QSlider(Qt.Orientation.Horizontal)
+        slider = KeySlider(Qt.Orientation.Horizontal)
         slider.setRange(low, high)
-        slider.setSingleStep(1)
-        slider.setPageStep(max(1, (high - low) // 20))
+        slider.setSingleStep(max(1, int(round((high - low) / 100.0))))
+        slider.setPageStep(max(1, int(round((high - low) / 10.0))))
         slider.setFixedWidth(text_px(SLIDER_CHARS))
         slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         slider.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -3110,11 +3429,18 @@ class QtPanelView(PanelView, QWidget):
             container.add("", button)
             return
         button = QPushButton(sentence_case(element.get("false_text", "Off")))
-        button.setAccessibleName(caption or button.text())
+        shown = "" if self._names_itself(caption, element) else caption
+        # L16: the name carries the visible words (its caption when one is
+        # shown, then its face) and the model; `_set_on` keeps it current.
+        self._toggle_captions[id(element)] = shown
+        button.setAccessibleName(self._toggle_name(shown, button.text()))
         button.clicked.connect(lambda: self._run_toggle(element))
         self._remember(element, button)
-        shown = "" if self._names_itself(caption, element) else caption
         container.add(element.get("text", "") if container.is_row else shown, button)
+
+    def _toggle_name(self, caption, face):
+        words = f"{caption}: {face}" if caption else face
+        return f"{words}, {self.name}"
 
     def _make_checkbox(self, container, element):
         """A tick box (G3): the value itself, ticked or not.
@@ -3141,7 +3467,10 @@ class QtPanelView(PanelView, QWidget):
         # option: a column of dropdowns is one width, not four.
         combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        combo.setMinimumContentsLength(DROPDOWN_CHARS)
+        # In a table row (Setup) a little narrower, so four columns fit a
+        # 900 px window without a sideways scroll (L8); it elides the middle.
+        combo.setMinimumContentsLength(DROPDOWN_ROW_CHARS if container.is_row
+                                       else DROPDOWN_CHARS)
         combo.setSizePolicy(QSizePolicy.Policy.Expanding,
                             QSizePolicy.Policy.Fixed)
         caption, _ = self._label_for(container, element)
@@ -3158,8 +3487,11 @@ class QtPanelView(PanelView, QWidget):
         refresh.setIcon(reload_icon(side * 7 // 12))
         refresh.setIconSize(QSize(side * 7 // 12, side * 7 // 12))
         refresh.setFixedSize(side, side)
-        refresh.setToolTip("Rescan the choices")
-        refresh.setAccessibleName("Rescan the choices")
+        # L16: one name per rescan - its field, then its row or its model.
+        owner = self._building_title if container.is_row else self.name
+        rescan = f"Rescan {sentence_case(caption) if not container.is_row else caption} choices"
+        refresh.setToolTip(f"{rescan}, {owner}" if owner else rescan)
+        refresh.setAccessibleName(f"{rescan}, {owner}" if owner else rescan)
         refresh.clicked.connect(lambda: self._reload_options(element, combo))
         # Greyed with its dropdown: an unticked row offers nothing to press.
         self._companions[id(element)] = refresh
@@ -3192,14 +3524,15 @@ class QtPanelView(PanelView, QWidget):
         container.add("", button)
 
     def _make_plot(self, container, element):
-        plot = SeriesPlot(role=element.get("role", "neutral"))
+        plot = SeriesPlot(role=element.get("role", "neutral"),
+                          empty=element.get("empty", ""))
         plot.setToolTip(f"{element.get('x_label', '')} / "
                         f"{element.get('y_label', '')}".strip(" /"))
         self._remember(element, plot)
         container.add_wide(element.get("text", ""), plot)
 
     def _make_image(self, container, element):
-        label = FigureLabel()
+        label = FigureLabel(empty=element.get("empty", ""))
         self._remember(element, label)
         container.add_wide(element.get("text", ""), label)
 
@@ -3274,12 +3607,23 @@ class QtPanelView(PanelView, QWidget):
         dialog = QDialog(self._main_window())
         dialog.setObjectName("detachedLog")
         dialog.setModal(False)
-        dialog.setWindowTitle(f"{self.name} — {caption}")
+        # "Stepper Probe gamepad log": no dash (L12, UXPM5-13).
+        dialog.setWindowTitle(f"{self.name} {caption.lower()}")
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
+        layout.setSpacing(theme.PAD)
         feed = self._log_feed()
         feed.setAccessibleName(f"{self.name} {caption.lower()}")
+        # Empty, it says so (L12): the Web view's first sentence.
+        feed.setPlaceholderText("No gamepad input yet." if "gamepad" in caption.lower()
+                                else "Nothing logged yet.")
         layout.addWidget(feed)
+        close = QPushButton("Close")
+        close.setObjectName("logClose")
+        close.setProperty("role", "neutral")
+        close.setAccessibleName(f"Close the {self.name} {caption.lower()}")
+        close.clicked.connect(dialog.reject)
+        layout.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
         metrics = QFontMetrics(feed.font())
         dialog.resize(metrics.averageCharWidth() * DETACHED_LOG_CHARS,
                       metrics.lineSpacing() * DETACHED_LOG_LINES)
@@ -3386,14 +3730,23 @@ class QtPanelView(PanelView, QWidget):
         tier 1 a normal value is not drawn at all (status by exception) and
         "Yes" is a lit lamp beside the caption."""
         text = as_operator_word(text)
+        if self._panel is not None and isinstance(text, str) and not is_number(text):
+            # Setup's status words start with a capital, as every line of
+            # copy does ("Not scanned yet", "Simulated"; QT7-17).
+            text = sentence(text)
         shown = str(text) if str("" if text is None else text).strip() else EMPTY_READOUT
         previous = widget.text()
         if previous != shown:
             widget.setText(shown)
+            # Only a number goes live (L19): an identifier that changes every
+            # second (the Run ID) is not a measurement.
             if (element["type"] == "readonly" and previous
-                    and previous != EMPTY_READOUT):
+                    and previous != EMPTY_READOUT and is_number(shown)):
                 self._changed_at[id(element)] = time.monotonic()
         self._set_prop(widget, "quiet", "true" if is_quiet_value(text) else "false")
+        unit = self._unit_labels.get(id(element))
+        if unit is not None and unit.isHidden() == (shown != EMPTY_READOUT):
+            unit.setVisible(shown != EMPTY_READOUT)
         changed = self._changed_at.get(id(element))
         live = changed is not None and time.monotonic() - changed < LIVE_S
         self._set_prop(widget, "live", "true" if live else "false")
@@ -3466,6 +3819,8 @@ class QtPanelView(PanelView, QWidget):
                                                else "false_text", ""))
             if widget.text() != wanted:
                 widget.setText(wanted)
+                widget.setAccessibleName(self._toggle_name(
+                    self._toggle_captions.get(id(element), ""), wanted))
             return
         # An indicator: a lamp, and no text at all.
         fill, ring = lamp_colours(element, is_on)
@@ -3500,6 +3855,49 @@ class QtPanelView(PanelView, QWidget):
                        self._companions.get(id(element))):
             if widget is not None and widget.isEnabled() != is_enabled:
                 widget.setEnabled(is_enabled)
+        self._show_reason(element, is_enabled)
+
+    def _show_reason(self, element, is_enabled):
+        """L3: a greyed-out command says why - the gate's reason as its
+        tooltip, and for a `go` command a muted caption under its row. The
+        words are `gate_reason`'s; they go when the command is live again."""
+        widget = self._widget_for(element)
+        if not isinstance(widget, QAbstractButton):
+            return
+        state = self._last_state or {}
+        reason = "" if is_enabled else gate_reason(
+            element, state.get("mode"), state.get("values") or {}, self._caption_of)
+        if self._reasons.get(id(element)) == reason:
+            return
+        self._reasons[id(element)] = reason
+        base = self._base_tips.setdefault(id(widget), widget.toolTip())
+        widget.setToolTip(reason or base)
+        if element.get("role") == "go":
+            self._sync_reason_line(widget)
+
+    def _sync_reason_line(self, widget):
+        line = self.reason_line(widget)
+        if line is None:
+            return
+        words = []
+        for other in self._elements:
+            if other.get("role") != "go":
+                continue
+            said = self._reasons.get(id(other))
+            if said and said not in words and self.reason_line(
+                    self._widget_for(other)) is line:
+                words.append(said)
+        text = "; ".join(words)
+        if line.text() != text:
+            line.setText(text)
+        if line.isHidden() == bool(text):
+            line.setVisible(bool(text))
+
+    def _caption_of(self, attr):
+        for element in self._elements:
+            if element.get("model_attr") == attr:
+                return sentence_case(element.get("text", ""))
+        return ""
 
     def _set_stale(self, is_stale):
         self._is_stale = bool(is_stale)
@@ -3654,7 +4052,12 @@ class QtPanelView(PanelView, QWidget):
 
     def _redraw_image(self, element, data):
         widget = self._widget_for(element)
-        if widget is None or not data:
+        if widget is None:
+            return
+        if not data:
+            # Nothing to draw: the pane is its one-line empty state (L15).
+            if not widget.is_empty:
+                widget.set_figure(None)
             return
         pixmap = QPixmap()
         if pixmap.loadFromData(bytes(data)):
@@ -3813,14 +4216,15 @@ class QtDashboard(Dashboard, QMainWindow):
         self._alerts = []           # errors waiting to be acknowledged
         self._raise_on_add = None   # a model being reopened
         self._shown = None          # the device page's model; None: the overview
-        self._unconfirmed = set()   # models whose last stop did not confirm
         self._arrangement = None    # what the sheet's grid last laid out
         self._arrange_pending = False
         self._last_event = None
-        self._latched_text = None
+        self._latest_title = None   # the title of the tray's latest line
+        self._words = None          # the stop's words last drawn (`stop_words`)
         self._narrow = None
+        self._quit_asked = False    # a Quit already answered yes
 
-        self.setWindowTitle("Transfer Stage")
+        self.setWindowTitle("Transfer stage")
         self.resize(1400, 900)
         self.setDockOptions(QMainWindow.DockOption.AllowNestedDocks)
         # The rail owns the left edge top to bottom; Setup sits beside it.
@@ -3828,6 +4232,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self._marshalled.connect(self._on_marshalled, Qt.QueuedConnection)
         install_font_fallbacks()
+        allow_tab_to_every_control()
 
         self._build_rail()
         self._build_sheet()
@@ -3846,6 +4251,7 @@ class QtDashboard(Dashboard, QMainWindow):
         application = QApplication.instance()
         if application is None:
             application = QApplication(list(argv or [sys.argv[0]]))
+        allow_tab_to_every_control()
         return application
 
     def wait(self):
@@ -3873,8 +4279,9 @@ class QtDashboard(Dashboard, QMainWindow):
         self._setup_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetClosable)
         self.setup_view = QtPanelView(self.controller, "Setup", panel=self.setup)
-        margin = theme.SPACE[9]
-        self.setup_view.layout().setContentsMargins(margin, theme.GAP, margin, margin)
+        margin = theme.SPACE[7] if self._narrow else theme.SPACE[9]
+        self.setup_view.layout().setContentsMargins(margin, theme.GAP, margin,
+                                                    theme.SPACE[9])
         # Capped and scrolled (H3): eight rows at 28 pt must not push the
         # sheet off the window.
         self._setup_scroll = QScrollArea()
@@ -3883,6 +4290,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._setup_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._setup_scroll.setWidget(self.setup_view)
         self._setup_dock.setWidget(self._setup_scroll)
+        self._setup_dock.setTitleBarWidget(self._build_setup_title())
         self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, self._setup_dock)
         self._sync_setup_height()
         # `toggleViewAction` rather than a button of our own: the check mark
@@ -3928,7 +4336,23 @@ class QtDashboard(Dashboard, QMainWindow):
             events.debug("View Closed", "Qt dashboard closed", source="QtView")
         return QMainWindow.close(self)
 
+    def _ask_quit(self):
+        """L9: Quit and the window's close ask first, in the Tk and Web words
+        (it stops every model, closes every port and exits); "Stay" keeps
+        the station running."""
+        if self._closing or self._quit_asked:
+            return True
+        self._quit_asked = ask(self, QUIT_PROMPT, *QUIT_WORDS)
+        return self._quit_asked
+
+    def _on_quit_clicked(self):
+        if self._ask_quit():
+            self.close()
+
     def closeEvent(self, event):
+        if not self._closing and not self._ask_quit():
+            event.ignore()
+            return
         if not self._closing:
             Dashboard.close(self)
             events.debug("View Closed", "closeEvent", source="QtView")
@@ -4043,7 +4467,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self.quit_button.setObjectName("quiet")
         self.quit_button.setToolTip("Close the station (stops every model)")
         self.quit_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.quit_button.clicked.connect(self.close)
+        self.quit_button.clicked.connect(self._on_quit_clicked)
         foot.addWidget(self.quit_button)
         foot.addStretch(1)
         column.addLayout(foot)
@@ -4074,14 +4498,59 @@ class QtDashboard(Dashboard, QMainWindow):
             margins = self.sheet.layout().contentsMargins()
             self.sheet.layout().setContentsMargins(side, margins.top(), side,
                                                    margins.bottom())
+            if self.setup_view is not None:
+                # Setup's table too: no sideways scroll at 900 px (L8).
+                margins = self.setup_view.layout().contentsMargins()
+                self.setup_view.layout().setContentsMargins(
+                    side, margins.top(), side, margins.bottom())
         self._narrow = narrow
 
+    def _build_setup_title(self):
+        """Setup's own title bar (L19, QT7-16): its name, and a real way to
+        put it away - a command, not an 8 px glyph. The rail's Setup brings
+        it back."""
+        bar = QWidget()
+        bar.setObjectName("bare")
+        row = QHBoxLayout(bar)
+        side = theme.SPACE[9]
+        row.setContentsMargins(side, theme.PAD, side, 0)
+        row.setSpacing(theme.PAD)
+        title = QLabel("Setup")
+        title.setObjectName("dockTitle")
+        row.addWidget(title)
+        row.addStretch(1)
+        self.setup_close = QPushButton("Put away")
+        self.setup_close.setObjectName("ghost")
+        self.setup_close.setToolTip("Put Setup away (the rail's Setup brings it back)")
+        self.setup_close.setAccessibleName("Put Setup away")
+        self.setup_close.clicked.connect(lambda _=False: self._setup_dock.close())
+        row.addWidget(self.setup_close)
+        return bar
+
     def _sync_setup_height(self):
+        """L8 (QT7-3): while the sheet is empty Setup takes the height it
+        needs - there is nothing under it to push away. With models on the
+        sheet it is capped (H3: eight rows at 28 pt must not push the sheet
+        off the window) and scrolls."""
         scroll = self._setup_scroll
-        if scroll is not None:
-            cap = max(StopButton.line_height() * 8, int(self.height() * 0.55))
-            if scroll.maximumHeight() != cap:
-                scroll.setMaximumHeight(cap)
+        if scroll is None or self.setup_view is None:
+            return
+        line = StopButton.line_height()
+        if not self._entries:
+            view = self.setup_view
+            width = max(1, scroll.viewport().width())
+            need = (view.heightForWidth(width) if view.hasHeightForWidth()
+                    else view.sizeHint().height())
+            need = max(need, view.minimumSizeHint().height()) + 2 * scroll.frameWidth()
+            # Leave the empty sheet its two lines and the tray its one.
+            room = max(line * 8, self.height() - line * 8)
+            least, cap = min(need, room), room
+        else:
+            least, cap = 0, max(line * 8, int(self.height() * 0.55))
+        if scroll.minimumHeight() != least:
+            scroll.setMinimumHeight(least)
+        if scroll.maximumHeight() != cap:
+            scroll.setMaximumHeight(cap)
 
     def _on_rail_tick(self):
         """The rail's render tick, isolated like a panel's (PYSIDE-10)."""
@@ -4142,20 +4611,31 @@ class QtDashboard(Dashboard, QMainWindow):
                 continue
         for name, state in states.items():
             self._show_lost(name, lost_devices(state))
-        latched = [n for n, s in states.items() if (s or {}).get("is_estopped")]
-        every = bool(latched) and len(latched) == len(states)
-        text = (STOPPED_RAIL_ALL if every
-                else f"Stopped: {', '.join(latched)}" if latched else "")
-        if text != self._latched_text:
-            self._latched_text = text
-            self.latched_label.setText(text)
-            self.latched_row.setVisible(bool(text))
-            self.headline_row.setVisible(every)
-        if not self.controller.is_estopped:
-            self._unconfirmed.clear()
+        stop = self._stop_state()
+        words = stop_words(stop)
+        if words != self._words:
+            self._words = words
+            self.latched_label.setText(words["rail"])
+            self.latched_row.setVisible(bool(words["rail"]))
+            self.headline.setText(words["headline"])
+            self.subline.setText(words["subline"])
+            self.subline.setVisible(bool(words["subline"]))
+            self.headline_row.setVisible(bool(words["headline"]))
+        latched, unconfirmed = set(stop["latched"]), set(stop["unconfirmed"])
+        for name, item in self._rail_items.items():
+            item.set_stop("unconfirmed" if name in unconfirmed
+                          else "stopped" if name in latched else None)
         for name, entry in self._entries.items():
-            entry.set_unconfirmed(name in self._unconfirmed)
+            # The model's own word (L1): its stop did not confirm while latched.
+            entry.set_unconfirmed((states.get(name) or {}).get("stop_confirmed") is False)
+        if not latched:
+            self._drop_unconfirmed_alerts()
         self.rail_status.set_full_text(self._rail_status_text(names, states))
+
+    def _stop_state(self):
+        """`Controller.stop_state`: what is latched, what did not confirm,
+        and whether that is every model (L1)."""
+        return self.controller.stop_state
 
     def _show_lost(self, name, lost):
         """A lost device, said on the rail and in the entry's own head."""
@@ -4283,16 +4763,22 @@ class QtDashboard(Dashboard, QMainWindow):
         side = theme.SPACE[9]
         body.setContentsMargins(side, theme.SPACE[8], side, theme.SPACE[9])
         body.setSpacing(theme.SPACE[8])
-        headline = QLabel(STOPPED_HEADLINE)
-        headline.setObjectName("headline")
-        subline = QLabel(STOPPED_SUBLINE)
-        subline.setObjectName("caption")
+        # The stop's headline and, under it, its subline: `stop_words` (L1).
+        # "Every model is stopped." only when every model is latched and
+        # confirmed; a model that did not confirm is named instead.
+        self.headline = QLabel("")
+        self.headline.setObjectName("headline")
+        self.headline.setWordWrap(True)
+        self.subline = QLabel("")
+        self.subline.setObjectName("headlineSub")
+        self.subline.setWordWrap(True)
         self.headline_row = QWidget()
-        self.headline_row.setObjectName("flow")
-        line = FlowLayout(self.headline_row, spacing=theme.SPACE[5],
-                          line_spacing=theme.SPACE[1])
-        line.addWidget(headline)
-        line.addWidget(subline)
+        self.headline_row.setObjectName("bare")
+        line = QVBoxLayout(self.headline_row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(theme.SPACE[1])
+        line.addWidget(self.headline)
+        line.addWidget(self.subline)
         self.headline_row.setVisible(False)
         body.addWidget(self.headline_row)
         body.addWidget(self._build_empty_state())
@@ -4399,7 +4885,37 @@ class QtDashboard(Dashboard, QMainWindow):
             self._arrange_pending = False
             if not self._closing:
                 self._arrange_entries()
+                self._sync_setup_height()
+                self._fit_well()
         QTimer.singleShot(0, run)
+
+    def _fit_well(self):
+        """L5 (QT7-15): on the device page the head and tier 1 never scroll
+        away. The well takes the room left under them on the page and
+        scrolls inside it; a well shorter than that room is its own height.
+        (At a launch font so large that tier 1 alone overflows, the well
+        keeps a few lines and the page scrolls, rather than hiding it.)"""
+        panel = self._panels.get(self._shown) if self._shown is not None else None
+        scroll = getattr(panel, "well_scroll", None)
+        if scroll is None or scroll.isHidden() or not panel.tier_is_shown(2):
+            return
+        content = panel.well_content_height()
+        sheet = self.sheet
+        page = (sheet.heightForWidth(sheet.width()) if sheet.hasHeightForWidth()
+                else sheet.sizeHint().height())
+        others = max(0, page - scroll.height())
+        room = self.sheet_scroll.viewport().height() - others
+        floor = StopButton.line_height() * 4
+        height = max(min(content, room), min(content, floor))
+        if scroll.minimumHeight() != height or scroll.maximumHeight() != height:
+            scroll.setFixedHeight(height)
+            # A parent layout caches its children's sizes; a fixed height set
+            # deep inside is not news to it until each level is told.
+            widget = scroll.parentWidget()
+            while widget is not None and widget is not self.sheet_scroll:
+                widget.updateGeometry()
+                widget = widget.parentWidget()
+            self._schedule_arrange()
 
     def showEvent(self, event):
         """A resize made while the window was hidden is delivered only when it
@@ -4465,6 +4981,11 @@ class QtDashboard(Dashboard, QMainWindow):
         self.event_latest.setObjectName("trayLatest")
         self.event_latest.setProperty("severity", "info")
         self.event_latest.set_full_text("")
+        # Hidden while the log is open, but its room kept: the toggle stays
+        # where it was pressed (QT7-9).
+        policy = self.event_latest.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.event_latest.setSizePolicy(policy)
         head.addWidget(self.event_latest, 1)
         self.tray_toggle = QPushButton("Show events")
         self.tray_toggle.setObjectName("ghost")
@@ -4524,6 +5045,19 @@ class QtDashboard(Dashboard, QMainWindow):
                                  QUrl(name), image)
         return name
 
+    def _hang_last_line(self, hollow):
+        """A wrapped line runs under its words, not under its mark (QT7-19):
+        a hanging indent the width of the mark and its gap."""
+        metrics = self.event_view.fontMetrics()
+        gap = metrics.horizontalAdvance("\u00a0\u00a0")
+        mark_px = metrics.ascent() if hollow else gap
+        indent = float(mark_px + gap)
+        cursor = QTextCursor(self.event_view.document().lastBlock())
+        fmt = cursor.blockFormat()
+        fmt.setLeftMargin(indent)
+        fmt.setTextIndent(-indent)
+        cursor.setBlockFormat(fmt)
+
     #: What the tray reports: warnings and errors only (status by exception).
     TRAY_SEVERITIES = ("warning", "error")
 
@@ -4534,7 +5068,8 @@ class QtDashboard(Dashboard, QMainWindow):
         severity = str(event.severity)
         if severity not in self.TRAY_SEVERITIES:
             return
-        key = (severity, str(event.text))
+        text = event_line(event)
+        key = (severity, text)
         if key == self._last_event:
             return                      # one event, once
         self._last_event = key
@@ -4553,9 +5088,11 @@ class QtDashboard(Dashboard, QMainWindow):
         self.event_view.append(
             f'{cell}&nbsp;&nbsp;'
             f'<span style="color:{ink}"><b>{html.escape(label)}</b>&nbsp;&nbsp;'
-            f"{html.escape(event.text)}</span>")
+            f"{html.escape(text)}</span>")
+        self._hang_last_line(hollow)
         self.event_view.moveCursor(QTextCursor.MoveOperation.End)
-        self.event_latest.set_full_text(f"{label}  {event.text}")
+        self.event_latest.set_full_text(f"{label}  {text}")
+        self._latest_title = getattr(event, "title", None)
         if self.event_latest.property("severity") != severity:
             self.event_latest.setProperty("severity", severity)
             self.event_latest.style().unpolish(self.event_latest)
@@ -4608,7 +5145,7 @@ class QtDashboard(Dashboard, QMainWindow):
                      source="QtView")
         # One event, once: the band carries it, so the tray's line does not
         # say it a second time (it stays in the full log).
-        if self.event_latest.full_text().endswith(str(event.text)):
+        if self.event_latest.full_text().endswith(event_line(event)):
             self.event_latest.set_full_text("")
             self.event_mark.setVisible(False)
         self._alerts.append(event)
@@ -4641,17 +5178,31 @@ class QtDashboard(Dashboard, QMainWindow):
     def alerts(self):
         return list(self._alerts)
 
+    def _drop_unconfirmed_alerts(self):
+        """L2: once the latch opens, "did not confirm" is history, not an
+        alert: its line leaves the band (and the tray's latest line). While
+        latched it waits for its acknowledgement like any error."""
+        kept = [a for a in self._alerts
+                if getattr(a, "title", None) != UNCONFIRMED_TITLE]
+        if len(kept) != len(self._alerts):
+            self._alerts = kept
+            self._render_alerts()
+        if self._latest_title == UNCONFIRMED_TITLE:
+            self._latest_title = None
+            self.event_latest.set_full_text("")
+            self.event_mark.setVisible(False)
+
     @staticmethod
     def _popup_text(event):
-        """The whole line - source, title and message (HC-11)."""
-        text = " ".join(str(getattr(event, "text", "") or
-                            event.message or "").split())
-        if event.count > 1:
-            text += f" (repeated {event.count} times)"
-        return text[:5000]
+        """The whole line - title and message, in the operator's words
+        (HC-11, L11)."""
+        return event_line(event)[:5000]
 
     def _confirm(self, prompt):
-        return ask(self, prompt)
+        """The dashboard's one question from `base.Dashboard` is the clear
+        (`toggle_estop_all`, which clears only while every model is latched):
+        titled, answered by verbs (L14)."""
+        return ask(self, prompt, *CLEAR_WORDS)
 
     # -- panels ------------------------------------------------------------
     def _add_panel(self, name):
@@ -4685,7 +5236,6 @@ class QtDashboard(Dashboard, QMainWindow):
         entry = self._entries.pop(name, None)   # popped first: the entry's own
         panel = self._panels.pop(name, None)    # closeEvent must not re-enter
         self._lost.pop(name, None)
-        self._unconfirmed.discard(name)
         if entry is None:
             self._sync_rail()
             return
@@ -4708,28 +5258,25 @@ class QtDashboard(Dashboard, QMainWindow):
 
     # -- the global stop ---------------------------------------------------
     def _on_stop_clicked(self):
-        # An open question is answered No first: it never stands between the
-        # operator and the stop, and never says Yes for them afterwards.
+        """The disc's press: `base.Dashboard.toggle_estop_all`, which stops
+        unless every model is latched (L1). An open question is answered No
+        first: it never stands between the operator and the stop, and never
+        says Yes for them afterwards."""
         cancel_pending_confirms()
-        self._note_unconfirmed(self.toggle_estop_all())
+        self.toggle_estop_all()
         self._sync_stop_button()
         self._sync_states()
 
     def _on_stop_shortcut(self):
-        """The keyboard's stop: it stops, and does nothing once stopped -
-        clearing the latch is a deliberate press of the face (F9)."""
-        if self.controller.is_estopped:
+        """The keyboard's stop: it stops, and does nothing once every model
+        is stopped - clearing the latch is a deliberate press of the face
+        (F9). A partial stop is no reason to refuse: the rest still run."""
+        if stop_words(self._stop_state())["action"] == "clear":
             return
         cancel_pending_confirms()
-        self._note_unconfirmed(self.toggle_estop_all())
+        self.controller.estop_all()
         self._sync_stop_button()
         self._sync_states()
-
-    def _note_unconfirmed(self, result):
-        """`estop_all` answers {name: confirmed}; a model that did not confirm
-        is marked at its own entry until the latch is cleared."""
-        if isinstance(result, dict):
-            self._unconfirmed = {n for n, ok in result.items() if not ok}
 
     @staticmethod
     def stop_shortcut_text():
@@ -4738,14 +5285,15 @@ class QtDashboard(Dashboard, QMainWindow):
         return STOP_SHORTCUT_TEXT
 
     def _sync_stop_button(self):
-        """Face and ring from the Controller, never from the last click."""
-        is_estopped = bool(self.controller.is_estopped)
-        if self.stop_button.is_latched != is_estopped:
-            events.debug("Stop Button", f"latched={is_estopped}",
-                         source="QtView")
-        self.stop_button.set_latched(is_estopped)
-        name = CLEAR_HINT if is_estopped else STOP_HINT
-        tip = (f"{name}." if is_estopped else
+        """Face and ring from the Controller's `stop_state`, never from the
+        last click: the face is `stop_words`' (L1)."""
+        words = stop_words(self._stop_state())
+        clears = words["action"] == "clear"
+        if self.stop_button.is_latched != clears:
+            events.debug("Stop Button", f"face={words['face']}", source="QtView")
+        self.stop_button.set_latched(clears, words["face"])
+        name = CLEAR_HINT if clears else STOP_HINT
+        tip = (f"{name}." if clears else
                f"{name} ({self.stop_shortcut_text()}). Space or Return presses "
                f"it when it has focus.")
         if self.stop_button.toolTip() != tip:

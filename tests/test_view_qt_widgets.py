@@ -263,6 +263,12 @@ class FakeController:
         self.estop_calls = 0
         self.is_closed = False
         self._subscribers = []
+        # L1: `stop_state` as the Controller serves it. `latched` None means
+        # "every open model while `is_estopped`" (what the older tests set);
+        # a set is a partial stop. `unconfirmed` are latched models whose
+        # stop did not confirm (their state's `stop_confirmed` is False).
+        self.latched = None
+        self.unconfirmed = set()
 
     @property
     def model_names(self):
@@ -278,7 +284,21 @@ class FakeController:
     def state(self, name=None):
         snapshot = dict(self.panel.state)
         snapshot["age"] = 0.0
+        latched = self.stop_state["latched"]
+        snapshot["stop_confirmed"] = (None if name not in latched
+                                      else name not in self.unconfirmed)
         return snapshot
+
+    @property
+    def stop_state(self):
+        names = list(self.open_names)
+        if self.latched is not None:
+            latched = [n for n in names if n in self.latched]
+        else:
+            latched = names if self.is_estopped else []
+        return {"latched": latched,
+                "unconfirmed": [n for n in latched if n in self.unconfirmed],
+                "every": bool(latched) and len(latched) == len(names)}
 
     def run(self, name, command, inputs=None, args=()):
         return self.panel.run(command, inputs, args)
@@ -299,10 +319,13 @@ class FakeController:
     def estop_all(self):
         self.estop_calls += 1
         self.is_estopped = True
-        return {"Fake": True}
+        self.latched = None
+        return {n: n not in self.unconfirmed for n in self.open_names}
 
     def clear_estop_all(self, confirmed=False):
         self.is_estopped = False
+        self.latched = None
+        self.unconfirmed = set()
         return Result(Result.OK)
 
     def reopen(self, name):
@@ -830,21 +853,26 @@ def test_the_full_stop_button_latches_and_relabels(dashboard, controller):
 
 
 def test_clearing_the_latch_asks_first(dashboard, controller, monkeypatch):
+    """Updated (L14): the question goes through `ask` with a title and verb
+    buttons ("Clear the stop" / "Keep it stopped"), not Yes / No; the
+    dashboard's own clear path, since the disc's press is decided by
+    `stop_words` (L1), not by `Controller.is_estopped`."""
     controller.is_estopped = True
     asked = []
 
-    def confirm(prompt):
-        asked.append(prompt)
+    def ask(parent, prompt, title="", yes="", no=""):
+        asked.append((prompt, title, yes, no))
         return True
 
-    monkeypatch.setattr(dashboard, "_confirm", confirm)
+    monkeypatch.setattr(qt, "ask", ask)
     monkeypatch.setattr(controller, "clear_estop_all",
                         lambda confirmed=False: (
                             Result(Result.CONFIRM, reason="Release?",
                                    command="clear_estop_all")
                             if not confirmed else Result(Result.OK)))
     dashboard.toggle_estop_all()
-    assert asked == ["Release?"]
+    assert asked == [("Release?", "Clear the stop?", "Clear the stop",
+                      "Keep it stopped")]
 
 
 def _pixel(widget, x, y):
@@ -946,10 +974,13 @@ def test_no_modal_opens_while_the_dashboard_is_closing(dashboard, qapp,
 def test_the_event_log_escapes_what_a_device_said(dashboard, qapp):
     # Updated (E): the tray reports warnings and errors only, so the spoof
     # is a warning (an info line no longer reaches the tray at all).
+    # Updated (L11): a line is the event's title and message, so the
+    # device's words ride in the message.
     class Spoof:
-        severity, source, title, message, count = "warning", "T", "t", "m", 1
+        severity, source, title, message, count = ("warning", "T", "Reply",
+                                                   "<b>not bold</b>", 1)
         needs_ack = False
-        text = "<b>not bold</b>"
+        text = "[T] Reply: <b>not bold</b>"
 
     dashboard._show_event(Spoof())
     assert "not bold" in dashboard.event_view.toPlainText()
@@ -963,6 +994,8 @@ def test_the_event_log_escapes_what_a_device_said(dashboard, qapp):
 def test_closing_the_window_unsubscribes_before_closing_the_controller(
         dashboard, qapp, monkeypatch):
     from PySide6.QtGui import QCloseEvent
+    # Updated (L9): the window's close asks first; answered Quit here.
+    monkeypatch.setattr(qt, "ask", lambda *args, **kwargs: True)
     dashboard.open()
     dashboard.closeEvent(QCloseEvent())
     assert dashboard._closing is True
@@ -1093,7 +1126,9 @@ def test_every_dropdown_is_one_width_rather_than_as_wide_as_its_longest_option(
     combos = [table_view._widget_for(e) for e in table_view._elements
               if e["type"] == "dropdown"]
     assert len(combos) == 3
-    assert {c.minimumContentsLength() for c in combos} == {qt.DROPDOWN_CHARS}
+    # Updated (L8): a table row's dropdowns are a little narrower (they
+    # elide the middle), so Setup's four columns fit a 900 px window.
+    assert {c.minimumContentsLength() for c in combos} == {qt.DROPDOWN_ROW_CHARS}
     grid = table_view._table.grid
     used = {cell_of(grid, c)[1] for c in combos}
     assert all(grid.columnMinimumWidth(c) == qt.TABLE_CONTROL_MIN_PX
@@ -1526,16 +1561,18 @@ def test_the_empty_state_offers_setup_when_setup_is_away(fresh_dashboard, qapp):
 
 
 def test_the_event_tray_opens_as_one_line(dashboard, qapp):
+    # Updated (L11): title and message in sentence case, no "[Setup]".
     class Spoof:
-        severity, source, title, message, count = "warning", "T", "t", "m", 1
+        severity, source, title, message, count = (
+            "warning", "Setup", "Port Silent", "a port answered nothing", 1)
         needs_ack = False
-        text = "[Setup] a port answered nothing"
+        text = "[Setup] Port Silent: a port answered nothing"
 
     dashboard.open()
     assert dashboard.event_view.isHidden() is True
     dashboard._show_event(Spoof())
     assert dashboard.event_latest.full_text() == (
-        "Warning  [Setup] a port answered nothing")
+        "Warning  Port silent: a port answered nothing")
     assert dashboard.event_latest.toolTip() == dashboard.event_latest.full_text()
     dashboard.tray_toggle.click()
     assert dashboard.event_view.isHidden() is False
@@ -2325,7 +2362,8 @@ def test_g4_pressing_it_opens_one_non_modal_window_holding_the_lines(view, qapp)
     assert dialog.windowModality() == Qt.WindowModality.NonModal
     assert not dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     assert qapp.activeModalWidget() is None
-    assert dialog.windowTitle() == "Fake \u2014 Gamepad log"
+    # Updated (L12): "<model> gamepad log", no dash.
+    assert dialog.windowTitle() == "Fake gamepad log"
     feed = view._detached[id(element)][1]
     assert feed.toPlainText() == "pad up\npad down"
     assert feed.maximumHeight() != qt.LOG_STREAM_PX     # not the card's feed
@@ -2533,9 +2571,12 @@ def test_k3_the_disclosure_is_the_foot_of_the_body_directly_above_its_well(tiere
     assert not hasattr(view, "take_disclosure")
     block = view.tier_block.layout()
     assert block.itemAt(0).widget() is view.tier_button
-    assert block.itemAt(1).widget() is view.well
+    # Updated (L5): the well sits in its own scroll area (only the well
+    # scrolls on the device page), directly under the disclosure.
+    assert block.itemAt(1).widget() is view.well_scroll
+    assert view.well_scroll.widget() is view.well
     assert block.spacing() == 0
-    assert view.tier_button.geometry().bottom() + 1 == view.well.geometry().top()
+    assert view.tier_button.geometry().bottom() + 1 == view.well_scroll.geometry().top()
     assert view.tier_button.x() == 0                        # left-aligned
     # Below every tier-1 widget, and reached after them by Tab.
     step = view._widget_for(next(e for e in view._elements
@@ -2677,10 +2718,10 @@ def test_e_the_disc_reads_stop_then_clear_and_is_red_both_ways(qapp):
 
 
 def test_e_a_stop_that_did_not_confirm_is_marked_at_its_entry(dashboard, controller):
+    """Updated (L1): the mark follows the model's own `stop_confirmed` in its
+    state, not the view's memory of the last `estop_all` answer."""
     dashboard.open()
-    monkey_result = {"Fake": False}
-    controller.estop_all = lambda: (setattr(controller, "is_estopped", True)
-                                    or monkey_result)
+    controller.unconfirmed = {"Fake"}
     dashboard._on_stop_clicked()
     entry = dashboard._entries["Fake"]
     assert entry.is_unconfirmed is True
@@ -2688,6 +2729,7 @@ def test_e_a_stop_that_did_not_confirm_is_marked_at_its_entry(dashboard, control
     assert entry.unconfirmed_label.isVisibleTo(entry)
     assert theme.SIGNAL in entry.rule.styleSheet()
     controller.is_estopped = False
+    controller.unconfirmed = set()
     dashboard._on_rail_tick()
     assert entry.is_unconfirmed is False and entry.rule.styleSheet() == ""
 
@@ -2698,8 +2740,9 @@ def test_e_the_tray_reports_warnings_and_errors_only_and_each_once(dashboard):
         needs_ack = False
 
     info, warning = Spoof(), Spoof()
-    info.severity, info.text = "info", "launched"
-    warning.severity, warning.text = "warning", "a port answered nothing"
+    # Updated (L11): the line is built from the title and the message.
+    info.severity, info.message = "info", "launched"
+    warning.severity, warning.message = "warning", "a port answered nothing"
     dashboard._show_event(info)
     assert dashboard.event_latest.full_text() == ""
     dashboard._show_event(warning)
@@ -2718,7 +2761,7 @@ def test_e_the_tray_reports_warnings_and_errors_only_and_each_once(dashboard):
     edge, inside = QColor(image.pixel(1, side // 2)), image.pixelColor(side // 2, side // 2)
     assert _near(edge, theme.SEVERITY_MARK["warning"]) and inside.alpha() == 0
     error = Spoof()
-    error.severity, error.text = "error", "the heater did not answer"
+    error.severity, error.message = "error", "the heater did not answer"
     dashboard._show_event(error)
     assert (f"background-color:{theme.SEVERITY_MARK['error']}".lower()
             in dashboard.event_view.toHtml().lower().replace(" ", ""))
@@ -2955,3 +2998,623 @@ def test_k4_tier_state_survives_overview_device_overview_device(six, qapp):
     assert panel.tier_button.isChecked() and panel.well.isVisible()
     assert panel.diagnostics.isVisible()
     assert not qt.QtPanelView.open_tiers.get(("DC Probe", 2), False)
+
+
+# ---------------------------------------------------------------------------
+# L (2026-09-26): audit round 7 in the Qt view. Written by rb-l-qt, run by
+# the lead.
+# ---------------------------------------------------------------------------
+
+def _stop_window(six, qapp, latched=None, unconfirmed=(), every=False):
+    """The six-model window with a stop staged on the fake Controller:
+    `latched` names (a partial stop), or `every` model."""
+    controller = six.controller
+    controller.is_estopped = bool(latched) or every
+    controller.latched = None if every else set(latched or ())
+    controller.unconfirmed = set(unconfirmed)
+    six._on_rail_tick()
+    _pump(qapp)
+    return controller
+
+
+def test_l1_one_models_own_stop_leaves_the_disc_a_working_stop(six, qapp):
+    """IMP7-1/2: Rotator's own switch latched Rotator only. The disc still
+    reads Stop and a press stops the other five; nothing says "every model"."""
+    controller = _stop_window(six, qapp, latched={"Rotator"})
+    assert six.stop_button.text() == "Stop" and not six.stop_button.is_latched
+    assert six.latched_label.text() == "Stopped: Rotator"
+    assert six.latched_row.isVisibleTo(six.rail)
+    assert not six.headline_row.isVisibleTo(six.sheet)
+    assert six.stop_button.accessibleName() == "Stop every model"
+    six.stop_button.click()
+    assert controller.estop_calls == 1          # a stop, never a clear
+
+
+def test_l1_a_stop_that_did_not_confirm_is_the_headline_and_the_rail(six, qapp):
+    """QT7-1: every model latched, Rotator unconfirmed. The headline names it,
+    the subline says what to do, the rail line says it too; the disc clears."""
+    _stop_window(six, qapp, every=True, unconfirmed={"Rotator"})
+    assert six.stop_button.text() == "Clear"
+    assert six.headline.text() == "Stopped. Rotator did not confirm."
+    assert six.subline.text() == "Treat it as live until you have checked it by hand."
+    assert six.headline_row.isVisibleTo(six.sheet)
+    assert six.subline.isVisibleTo(six.sheet)
+    # The subline sits under the headline, not beside it.
+    assert six.subline.mapTo(six.sheet, QPoint(0, 0)).y() >= (
+        six.headline.mapTo(six.sheet, QPoint(0, 0)).y() + six.headline.height())
+    assert six.latched_label.text() == "Stopped: Rotator did not confirm"
+    assert six._entries["Rotator"].is_unconfirmed is True
+    assert six._entries["DC Probe"].is_unconfirmed is False
+
+
+def test_l1_every_model_confirmed_says_every_model_is_stopped(six, qapp):
+    _stop_window(six, qapp, every=True)
+    assert six.headline.text() == "Every model is stopped."
+    assert not six.subline.isVisibleTo(six.sheet)            # no subline words
+    assert six.latched_label.text() == "Stopped: every model latched"
+    assert six.stop_button.accessibleName() == "Clear the stop on every model"
+
+
+def test_l1_the_rail_marks_each_model_latched_or_unconfirmed(six, qapp):
+    """A small ink square for a latched model, a signal one for a model that
+    did not confirm, and the words in its tooltip and name: never colour
+    alone."""
+    _stop_window(six, qapp, latched={"Rotator", "DC Probe"},
+                 unconfirmed={"Rotator"})
+    rotator, probe = six._rail_items["Rotator"], six._rail_items["DC Probe"]
+    free = six._rail_items["Stepper Probe"]
+    assert rotator.stop_mark == "unconfirmed" and probe.stop_mark == "stopped"
+    assert free.stop_mark is None and free.icon().isNull()
+    assert not rotator.icon().isNull() and not probe.icon().isNull()
+    assert rotator.accessibleName() == "Rotator, did not confirm"
+    assert probe.accessibleName() == "DC Probe, stopped"
+    assert "did not confirm" in rotator.toolTip() and "stopped" in probe.toolTip()
+    size = rotator.iconSize().width()
+    ink = rotator.icon().pixmap(size, size).toImage().pixelColor(size // 2, size // 2)
+    assert _near(ink, theme.SIGNAL)
+    ink = probe.icon().pixmap(size, size).toImage().pixelColor(size // 2, size // 2)
+    assert _near(ink, theme.TEXT)
+    controller = six.controller
+    controller.is_estopped, controller.latched = False, set()
+    controller.unconfirmed = set()
+    six._on_rail_tick()
+    assert rotator.stop_mark is None and rotator.accessibleName() == "Rotator"
+
+
+def test_l1_the_chord_hint_is_shown_in_every_state(six, qapp):
+    for staged in ({}, {"latched": {"Rotator"}}, {"every": True}):
+        _stop_window(six, qapp, **staged)
+        assert six.stop_hint.isVisibleTo(six.rail)
+        assert six.stop_hint.full_text() == "Stop: Ctrl+."
+
+
+def test_l1_the_chord_stops_a_partial_stop_and_never_clears(six, qapp):
+    controller = _stop_window(six, qapp, latched={"Rotator"})
+    six.stop_shortcut.activated.emit()
+    assert controller.estop_calls == 1
+    six._on_rail_tick()
+    six.stop_shortcut.activated.emit()          # every model latched now
+    assert controller.estop_calls == 1 and controller.is_estopped
+
+
+def test_l2_the_stop_not_confirmed_line_leaves_with_the_latch(six, qapp):
+    """QT7-12: after Clear the band still said "did not confirm". The
+    acknowledgement is required while latched; once the latch opens the line
+    goes, and an unrelated error stays."""
+    import uuid
+    token = uuid.uuid4().hex             # a repeat within 5 s is not re-sent
+    _stop_window(six, qapp, every=True, unconfirmed={"Rotator"})
+    events.error("Stop Not Confirmed", f"Rotator did not confirm the stop {token}.",
+                 source="Controller")
+    events.error("Command Failed", f"the heater did not answer {token}",
+                 source="Heater")
+    _pump(qapp)
+    titles = [a.title for a in six.alerts]
+    assert "Stop Not Confirmed" in titles
+    six._on_rail_tick()                          # still latched: it stays
+    assert "Stop Not Confirmed" in [a.title for a in six.alerts]
+    _stop_window(six, qapp)                      # the latch opens
+    assert [a.title for a in six.alerts] == ["Command Failed"]
+    assert "confirm" not in six.alert_text.full_text()
+
+
+def test_l9_quit_asks_first_in_the_stations_words(dashboard, controller, monkeypatch):
+    """QT7-7: Quit closed the station on one press. It asks, as Tk and Web do,
+    with a title and verb buttons (L14); "Stay" keeps everything running."""
+    asked, answer = [], [False]
+
+    def ask(parent, prompt, title="", yes="", no=""):
+        asked.append((prompt, title, yes, no))
+        return answer[0]
+
+    monkeypatch.setattr(qt, "ask", ask)
+    dashboard.open()
+    dashboard.quit_button.click()
+    assert asked == [("Quit the station? This stops every model, closes every "
+                      "port and exits.", "Quit the station?", "Quit", "Stay")]
+    assert controller.is_closed is False and not dashboard._closing
+    answer[0] = True
+    dashboard.quit_button.click()
+    assert controller.is_closed is True
+
+
+def test_l9_the_windows_close_asks_the_same_question(dashboard, controller,
+                                                     monkeypatch, qapp):
+    asked, answer = [], [False]
+
+    def ask(parent, prompt, title="", yes="", no=""):
+        asked.append(title)
+        return answer[0]
+
+    monkeypatch.setattr(qt, "ask", ask)
+    dashboard.open()
+    from PySide6.QtWidgets import QMainWindow
+    QMainWindow.close(dashboard)                  # the title bar's close
+    _pump(qapp)
+    assert asked == ["Quit the station?"]
+    assert dashboard.isVisible() and controller.is_closed is False
+    answer[0] = True
+    QMainWindow.close(dashboard)
+    _pump(qapp)
+    assert controller.is_closed is True
+
+
+def test_l14_a_question_has_a_title_and_verb_buttons(qapp):
+    """QT7-13: "Yes" / "No" under no title. No stays the default and Escape
+    stays No."""
+    seen = {}
+
+    def look():
+        box = qt._PENDING_CONFIRMS[0]
+        yes = box.button(QMessageBox.StandardButton.Yes)
+        no = box.button(QMessageBox.StandardButton.No)
+        # The heading is the box's text: macOS ignores a message box's
+        # window title, so the title is said where every platform shows it.
+        seen.update(text=box.text(),
+                    detail=box.informativeText(), yes=yes.text(), no=no.text(),
+                    default=box.defaultButton() is no,
+                    escape=box.escapeButton() is no)
+        box.reject()
+    QTimer.singleShot(0, look)
+    answer = qt.ask(None, "Clear the stop on Rotator?", title="Clear the stop?",
+                    yes="Clear the stop", no="Keep it stopped")
+    assert answer is False
+    assert seen == {"text": "Clear the stop?",
+                    "detail": "Clear the stop on Rotator?",
+                    "yes": "Clear the stop", "no": "Keep it stopped",
+                    "default": True, "escape": True}
+
+
+class GatePanel(Panel):
+    """The gates the station's models declare: Red Percent's Start/Stop run,
+    the probe's Step. `mode` is whatever the test sets."""
+
+    NAME = "Gate"
+
+    def __init__(self):
+        super().__init__()
+        self.mode = "idle"
+
+    @property
+    def gate_mode(self):
+        return self.mode
+
+    @property
+    def mode_name(self):
+        return self.mode
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Run",
+                        sch.button("Start run", "start", role="go",
+                                   disabled_when=("running", "latched", "no_region")),
+                        sch.button("Stop run", "end", enabled_when=("running",))),
+            sch.section("Step",
+                        sch.button("Step", "step", role="go",
+                                   disabled_when=("manual", "latched")),
+                        sch.button("Home", "home")))
+
+    def start(self):
+        return None
+
+    def end(self):
+        return None
+
+    def step(self):
+        return None
+
+    def home(self):
+        return None
+
+
+@pytest.fixture
+def gated(qapp):
+    panel = GatePanel()
+    built = qt.QtPanelView(FakeController(panel), "Gate")
+    built.resize(900, 400)
+    built.show()
+    yield built, panel
+    built.close()
+
+
+def _button(view, command):
+    return next(view._widget_for(e) for e in view._elements if e.get("command") == command)
+
+
+def test_l3_a_disabled_command_says_why_and_a_go_row_says_it_under_the_row(gated, qapp):
+    """QT7-6: Start run was greyed from launch with no tooltip. The gate's
+    reason rides in the tooltip; under a `go` command's row, a muted caption
+    says it too. Enabled again, the words go."""
+    view, panel = gated
+    start, stop, step = _button(view, "start"), _button(view, "end"), _button(view, "step")
+    for mode, start_why, stop_why, step_why in (
+            ("no_region", "Set a capture region first", "No run in progress", ""),
+            ("latched", "Stopped: clear the stop first",
+             "Stopped: clear the stop first", "Stopped: clear the stop first"),
+            ("manual", "", "No run in progress", "In manual mode"),
+            ("running", "A run is in progress", "", "")):
+        panel.mode = mode
+        view._refresh()
+        qapp.processEvents()
+        assert start.isEnabled() is (not start_why), mode
+        assert start.toolTip() == start_why, mode
+        assert stop.toolTip() == stop_why, mode
+        assert step.toolTip() == step_why, mode
+        run_line, step_line = view.reason_line(start), view.reason_line(step)
+        assert run_line.text() == start_why and run_line.isVisible() is bool(start_why)
+        # Stop run is not a `go` command: its reason is its tooltip alone.
+        assert step_line.text() == step_why and step_line.isVisible() is bool(step_why)
+        assert run_line.objectName() == "caption"
+    panel.mode = "idle"
+    view._refresh()
+    assert start.toolTip() == "" and not view.reason_line(start).isVisible()
+
+
+def test_l6_the_slider_keys_step_one_percent_and_home_end_do_nothing(tiered):
+    """TK7-5 in Qt: End committed the maximum speed in one key. An arrow is
+    1 % of the travel, a page key 10 %; Home and End are inert. Keys, not
+    bindings, and each commits as today."""
+    from PySide6.QtTest import QTest
+    view, panel = tiered
+    element = element_named(view, "speed")
+    slider = view._sliders[id(element)]
+    view._refresh()
+    assert slider.value() == 400
+    QTest.keyClick(slider, Qt.Key.Key_Right)
+    assert slider.value() == 410 and panel.speed == 410
+    for key in (Qt.Key.Key_End, Qt.Key.Key_Home):
+        QTest.keyClick(slider, key)
+        assert slider.value() == 410 and panel.speed == 410
+    QTest.keyClick(slider, Qt.Key.Key_PageUp)
+    assert slider.value() == 510 and panel.speed == 510
+    QTest.keyClick(slider, Qt.Key.Key_Left)
+    assert slider.value() == 500 and panel.speed == 500
+
+
+def test_l7_tab_from_the_sheet_reaches_the_disc_and_every_button(six, qapp):
+    """QT7-4: with macOS's default (Tab reaches text controls only) no button
+    was ever focused. The dashboard asks for every control, on every OS."""
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QPushButton
+    hints = QGuiApplication.styleHints()
+    hints.setTabFocusBehavior(Qt.TabFocusBehavior.TabFocusTextControls)
+    window = qt.QtDashboard(six.controller, six.controller.panel)
+    try:
+        assert hints.tabFocusBehavior() == Qt.TabFocusBehavior.TabFocusAllControls
+        window.open()
+        window.show()
+        window.activateWindow()
+        _pump(qapp, 10)
+        start = window._entries["Stepper Probe"].head
+        start.setFocus(Qt.FocusReason.TabFocusReason)
+        _pump(qapp)
+        reached = []
+        for _ in range(200):
+            window.focusNextChild()
+            _pump(qapp, 1)
+            focused = QApplication.focusWidget()
+            reached.append(focused)
+            if focused is window.stop_button:
+                break
+        assert window.stop_button in reached
+        assert window.quit_button in reached or any(
+            isinstance(w, QPushButton) for w in reached)
+    finally:
+        window._closing = True
+        window.close()
+        events.unsubscribe(window._on_event)
+
+
+def test_l12_the_gamepad_log_window_is_named_says_it_is_empty_and_closes(view, panel,
+                                                                          qapp):
+    element = next(e for e in view._elements if e.get("detached"))
+    panel.gamepad_lines = lambda: []
+    dialog = view.open_detached(element)
+    try:
+        assert dialog.windowTitle() == "Fake gamepad log"
+        _, feed = view._detached[id(element)]
+        assert feed.toPlainText() == ""
+        assert feed.placeholderText() == "No gamepad input yet."
+        close = dialog.findChild(qt.QPushButton, "logClose")
+        assert close is not None and close.text() == "Close"
+        close.click()
+        qapp.processEvents()
+        assert not dialog.isVisible()
+    finally:
+        dialog.close()
+
+
+def test_l15_an_empty_plot_or_figure_is_one_caption_line_tall(qapp):
+    """QT7-14: two empty panes stacked 600 px of "no data". Empty, a pane is
+    its `empty` sentence, one caption line; with data it takes its height."""
+    plot = qt.SeriesPlot(empty="No samples yet. Start a run.")
+    line = QFontMetrics(plot.font()).height()
+    assert plot.minimumSizeHint().height() <= line + 2 * theme.SPACE[1]
+    assert plot.empty_text == "No samples yet. Start a run."
+    plot.set_series({"y": [1, 3, 2]})
+    assert plot.minimumSizeHint().height() >= 140
+    plot.set_series({"y": []})
+    assert plot.minimumSizeHint().height() <= line + 2 * theme.SPACE[1]
+    figure = qt.FigureLabel(empty="No run loaded.")
+    assert figure.sizeHint().height() <= line + 2 * theme.SPACE[1]
+    assert figure.text() == "No run loaded."
+
+
+def test_l15_the_plot_says_the_schemas_empty_sentence(view):
+    element = element_of(view, "plot")
+    assert view._widget_for(element).empty_text == element["empty"]
+
+
+def test_l16_names_carry_the_visible_words_and_rescans_name_their_field(table_view,
+                                                                       view):
+    """QT7-11: "Enter autonomous mode" was named "Autonomous"; nine rescans
+    were all "Rescan the choices"."""
+    names = [w.accessibleName() for w in table_view.findChildren(qt.QPushButton)
+             if w.objectName() == "iconButton"]
+    assert len(names) == len(set(names))
+    assert "Rescan Port choices, Stepper Probe" in names
+    toggle = view._widget_for(element_of(view, "toggle"))
+    assert toggle.text() in toggle.accessibleName()
+
+
+def _small_targets(window):
+    """(object name, class, width, height) of every visible pressable under
+    24 px, and every visible command under 36 px tall (L4)."""
+    from PySide6.QtWidgets import QAbstractButton, QSlider, QLineEdit, QComboBox
+    small = []
+    for widget in window.findChildren(QWidget):
+        if not widget.isVisible() or not isinstance(
+                widget, (QAbstractButton, QSlider, QLineEdit, QComboBox)):
+            continue
+        if widget.objectName() in ("entryOpen", "qt_toolbar_ext_button"):
+            continue                    # a word inside the head, not a target
+        width, height = widget.width(), widget.height()
+        if width < 24 or height < 24:
+            small.append((widget.objectName(), type(widget).__name__, width, height))
+        command = (type(widget).__name__ == "QPushButton"
+                   and widget.objectName() not in ("railModel", "iconButton"))
+        if command and height < 36:
+            small.append((widget.objectName(), widget.text(), width, height))
+    return small
+
+
+from PySide6.QtWidgets import QWidget  # noqa: E402 - for the L helpers
+
+
+def test_l4_every_target_is_24_px_and_every_command_36(six, qapp):
+    """QT7-5: commands were 22 px tall, under the view's own 24 px floor.
+    Every pressable at least 24 px both ways; commands at least 36 tall
+    (not 44: the owner's call is pending)."""
+    six.open_entry("Stepper Probe")
+    panel = six._panels["Stepper Probe"]
+    panel.tier_button.click()
+    panel.diag_button.click()
+    six.tray_toggle.click()
+    six.alert_band.setVisible(True)
+    _pump(qapp, 10)
+    assert _small_targets(six) == []
+    assert _small_targets(six.rail) == []
+
+
+class TickRowPanel(Panel):
+    NAME = "Rows"
+
+    def __init__(self):
+        super().__init__()
+        self.probe_on = False
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "Stepper Probe",
+            sch.checkbox("Launch", "probe_on", "set_probe_on",
+                         tooltip="Launch Stepper Probe"),
+            sch.readonly("Status:", "probe_on"), layout="row"))
+
+    def set_probe_on(self, flag):
+        self.probe_on = bool(flag)
+
+
+def test_l4_the_setup_tick_and_its_row_name_are_one_target(qapp):
+    from PySide6.QtTest import QTest
+    panel = TickRowPanel()
+    view = qt.QtPanelView(FakeController(panel), "Rows")
+    try:
+        view.show()
+        _pump(qapp)
+        title = next(w for w in view.findChildren(QLabel)
+                     if w.objectName() == "rowTitle" and w.text() == "Stepper Probe")
+        QTest.mouseClick(title, Qt.MouseButton.LeftButton)
+        _pump(qapp)
+        assert panel.probe_on is True
+        QTest.mouseClick(title, Qt.MouseButton.LeftButton)
+        assert panel.probe_on is False
+    finally:
+        view.close()
+
+
+def test_l8_setup_takes_the_height_it_needs_while_the_sheet_is_empty(qapp):
+    """QT7-3: capped at 55 %, Setup hid Launch under its own fold over an
+    empty window; at 900 px a sideways bar covered the Launch row."""
+    class BigSetup(TablePanel):
+        """Setup's size on the bench: eight rows, a port and a gamepad each."""
+        ROWS = tuple((f"Temperature Controller {n}", f"model{n}", True, True)
+                     for n in range(8))
+
+    for width in (1400, 900):
+        setup = BigSetup()
+        controller = FakeController(setup)
+        controller.open_names = []
+        window = qt.QtDashboard(controller, setup)
+        try:
+            window.resize(width, 900)
+            window.open()
+            _pump(qapp, 10)
+            scroll = window._setup_scroll
+            assert scroll.verticalScrollBar().maximum() == 0, width
+            assert scroll.horizontalScrollBar().maximum() == 0, width
+        finally:
+            window.close()
+            events.unsubscribe(window._on_event)
+
+
+def test_l19_an_identifier_is_never_drawn_in_the_trace(tiered):
+    """QT7-8: the Run ID changes every second and was drawn in trace. Only a
+    number goes live."""
+    view, panel = tiered
+    view._refresh()
+    motion = view._widget_for(element_named(view, "motion"))
+    panel.motion = "run_20260926_122437"
+    view._refresh()
+    assert motion.property("live") == "false"
+    x = view._widget_for(element_named(view, "position_x"))
+    panel.position_x = "1200"
+    view._refresh()
+    assert x.property("live") == "true"
+
+
+def test_l19_hide_events_keeps_its_place(dashboard, qapp):
+    """QT7-9: opening the tray turned the toggle into a full-width bar."""
+    class Spoof:
+        severity, source, title, message, count = "warning", "T", "Port", "quiet", 1
+        needs_ack = False
+        text = "[T] Port: quiet"
+
+    dashboard.open()
+    dashboard._show_event(Spoof())
+    _pump(qapp)
+    before = dashboard.tray_toggle.geometry()
+    dashboard.tray_toggle.click()
+    _pump(qapp)
+    after = dashboard.tray_toggle.geometry()
+    assert after.width() < before.width() * 1.5
+    assert abs(after.right() - before.right()) <= 2
+
+
+def test_l19_setup_has_a_real_close_and_the_rails_setup_shows_it_is_open(dashboard,
+                                                                         qapp):
+    dashboard.open()
+    dashboard.show_setup()
+    _pump(qapp)
+    close = dashboard.setup_close
+    assert close.isVisible() and close.width() >= 24 and close.height() >= 24
+    assert dashboard.setup_button.isChecked()
+    sheet = qt.stylesheet()
+    checked = sheet.split("QToolButton#ghost:checked {")[1].split("}")[0]
+    assert f"background: {theme.TEXT}" in checked
+    close.click()
+    _pump(qapp)
+    assert dashboard._setup_dock.isHidden() and not dashboard.setup_button.isChecked()
+
+
+def test_l22_no_unit_after_an_empty_dash(qapp):
+    class UnitPanel(Panel):
+        NAME = "Unit"
+        PARAMS = {}
+
+        def __init__(self):
+            super().__init__()
+            self.age = ""
+
+        @property
+        def schema(self):
+            return sch.schema(sch.section("Info", sch.readonly("Position age (s):", "age"),
+                                          tier=2, disclosure="Configure"))
+
+    panel = UnitPanel()
+    view = qt.QtPanelView(FakeController(panel), "Unit")
+    try:
+        view._set_tier_open(2, True)
+        view._refresh()
+        unit = next(w for w in view.findChildren(QLabel) if w.objectName() == "unit")
+        assert unit.isHidden()
+        panel.age = "1.5"
+        view._refresh()
+        assert not unit.isHidden()
+    finally:
+        view.close()
+
+
+def test_l22_the_disclosure_tooltip_reads_as_a_sentence(tiered):
+    view, _ = tiered
+    assert view.tier_button.toolTip() == "Show or hide the Tiered settings"
+    assert view.diag_button.toolTip() == "Show or hide the Tiered diagnostics"
+
+
+def test_l22_a_wrapped_tray_line_hangs_clear_of_its_mark(dashboard):
+    class Spoof:
+        severity, source, title, message, count = ("warning", "T", "Board",
+                                                   "cannot power down " * 12, 1)
+        needs_ack = False
+        text = ""
+
+    dashboard._show_event(Spoof())
+    block = dashboard.event_view.document().lastBlock()
+    fmt = block.blockFormat()
+    assert fmt.textIndent() < 0 and fmt.leftMargin() == -fmt.textIndent()
+
+
+def test_l22_the_selected_rail_item_has_an_ink_rule_at_its_left():
+    sheet = qt.stylesheet()
+    checked = sheet.split("QPushButton#railModel:checked {")[1].split("}")[0]
+    assert f"border-left: 2px solid {theme.TEXT}" in checked
+
+
+def test_l5_on_the_device_page_only_the_well_scrolls(six, qapp):
+    """QT7-15: a long well scrolled tier 1 away. On the device page the head
+    and tier 1 stay; the well scrolls inside."""
+    six.resize(1400, 560)
+    _pump(qapp)
+    six.open_entry("Stepper Probe")
+    panel = six._panels["Stepper Probe"]
+    panel.tier_button.click()
+    panel.diag_button.click()
+    for _ in range(3):
+        _pump(qapp)
+        six._arrange_entries()
+    _pump(qapp, 10)
+    assert six.sheet_scroll.verticalScrollBar().maximum() == 0
+    assert panel.well_scroll.isVisible()
+    assert panel.well_scroll.verticalScrollBar().maximum() > 0
+    step = next(panel._widget_for(e) for e in panel._elements
+                if e.get("command") == "step_once")
+    top = step.mapTo(six.sheet_scroll.viewport(), QPoint(0, 0)).y()
+    assert 0 <= top and top + step.height() <= six.sheet_scroll.viewport().height()
+    six.show_overview()
+    _pump(qapp)
+    assert not panel.well_scroll.isVisible()
+
+
+def test_l22_setups_status_words_start_with_a_capital(qapp):
+    """QT7-17: "not scanned yet", "simulated", "off" in Setup's table."""
+    setup = TablePanel()
+    setup.scan_status = "not scanned yet"
+    view = qt.QtPanelView(FakeController(setup), "Setup", panel=setup)
+    try:
+        view._refresh()
+        status = view._widget_for(element_named(view, "scan_status"))
+        assert status.full_text() if hasattr(status, "full_text") else status.text()
+        assert status.text() == "Not scanned yet"
+    finally:
+        view.close()

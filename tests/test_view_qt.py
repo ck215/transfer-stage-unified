@@ -811,3 +811,61 @@ def test_e_a_lamp_is_ink_never_the_trace():
                               on_role="go", off_role="danger")
     assert qt.lamp_colours(connected, True) == (theme.TEXT, theme.TEXT)
     assert theme.TRACE not in qt.lamp_colours(connected, True)
+
+
+# ---------------------------------------------------------------------------
+# L (2026-09-26): audit round 7 in the Qt view.
+# ---------------------------------------------------------------------------
+
+class _Event:
+    def __init__(self, title, message, source="Controller", count=1):
+        self.title, self.message, self.source, self.count = title, message, source, count
+        self.text = f"[{source}] {title}: {message}"
+
+
+def test_l11_an_event_line_is_its_title_and_message_in_sentence_case():
+    """QT7-12: the band printed "Error [Controller] Stop Not Confirmed: ...".
+    The view draws the one wording `views.base.event_line` gives all three:
+    no source prefix, the title in sentence case."""
+    from views import base
+    assert qt.event_line is base.event_line
+    line = qt.event_line(_Event("Stop Not Confirmed", "Rotator did not confirm the stop."))
+    assert line == "Stop not confirmed: Rotator did not confirm the stop."
+    assert "[" not in qt.event_line(_Event("Port Silent", "no answer", count=3))
+
+
+def test_l9_l14_the_questions_are_the_tk_and_web_words():
+    assert qt.QUIT_PROMPT == ("Quit the station? This stops every model, closes "
+                              "every port and exits.")
+    assert qt.QUIT_WORDS == ("Quit the station?", "Quit", "Stay")
+    assert qt.CLEAR_WORDS == ("Clear the stop?", "Clear the stop", "Keep it stopped")
+
+
+def test_l22_the_window_title_is_sentence_case():
+    assert 'setWindowTitle("Transfer stage")' in _qt_source()
+
+
+def _qt_source():
+    import pathlib
+    return pathlib.Path(qt.__file__).read_text(encoding="utf-8")
+
+
+def test_l3_a_gate_says_why_in_the_operators_words():
+    start = sch.button("Start run", "start", role="go",
+                       disabled_when=("running", "latched", "no_region"))
+    stop = sch.button("Stop run", "end", enabled_when=("running",))
+    step = sch.button("Step", "step", disabled_when=("manual", "latched"))
+    assert qt.gate_reason(start, "no_region") == "Set a capture region first"
+    assert qt.gate_reason(start, "latched") == "Stopped: clear the stop first"
+    assert qt.gate_reason(start, "running") == "A run is in progress"
+    assert qt.gate_reason(start, "idle") == ""
+    assert qt.gate_reason(stop, "idle") == "No run in progress"
+    assert qt.gate_reason(stop, "latched") == "Stopped: clear the stop first"
+    assert qt.gate_reason(step, "manual") == "In manual mode"
+    port = sch.dropdown("Port", "port", "set_port", "ports", enabled_by="on")
+    assert qt.gate_reason(port, "idle", {"on": False}, lambda _: "Launch") == (
+        "Tick Launch first")
+    relaunch = sch.button("Relaunch", "relaunch", role="go", enabled_when=("launched",))
+    assert qt.gate_reason(relaunch, "idle") == "Nothing launched yet"
+    odd = sch.button("Odd", "odd", disabled_when=("warming_up",))
+    assert qt.gate_reason(odd, "warming_up") == "Warming up"
