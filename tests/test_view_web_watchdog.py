@@ -8,6 +8,7 @@ tested three private copies of this gate - one in `BaseProbe`, one mixed into
 the heater and one into the rotator. There is one now, and it belongs to the
 view that has the browser, not to any model.
 """
+import json
 import socket
 import struct
 import threading
@@ -351,3 +352,73 @@ def test_an_idle_keep_alive_connection_retires_quietly(capfd, monkeypatch):
     finally:
         view.close()
     assert capfd.readouterr().err == ""
+
+
+# --------------------------------------------------------------------------
+# G2: Quit from the console
+# --------------------------------------------------------------------------
+def _post_quit(view, method="POST"):
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{view.port}/api/quit",
+        data=b"{}" if method == "POST" else None, method=method,
+        headers={"Content-Type": "application/json"} if method == "POST" else {})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read().decode("utf-8"))
+
+
+def test_quit_answers_then_releases_wait():
+    """POST /api/quit answers ok first, then releases the launcher's
+    `wait()`, which closes the server and the Controller on ITS thread - the
+    handler never calls close() itself (G2)."""
+    controller = FakeController()
+    view = WebView(controller, object(), port=0, open_browser=False)
+    assert view.open()
+    waiter = threading.Thread(target=view.wait, name="launcher", daemon=True)
+    waiter.start()
+    try:
+        time.sleep(0.2)
+        assert waiter.is_alive(), "wait() returned before anyone asked to quit"
+        assert _post_quit(view) == (200, {"status": "ok"})
+        waiter.join(timeout=1.0)
+        assert not waiter.is_alive(), "wait() was not released within 1 s"
+        assert controller.closed == 1, "the Controller was not closed"
+        assert not view.is_serving
+    finally:
+        view.close()
+
+
+def test_a_second_quit_is_ok_not_an_error():
+    controller = FakeController()
+    view = WebView(controller, object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        assert _post_quit(view) == (200, {"status": "ok"})
+        assert _post_quit(view) == (200, {"status": "ok"})
+        assert controller.closed == 0, "a handler thread closed the Controller"
+        waiter = threading.Thread(target=view.wait, daemon=True)
+        waiter.start()
+        waiter.join(timeout=1.0)
+        assert not waiter.is_alive() and controller.closed == 1
+    finally:
+        view.close()
+
+
+def test_quit_is_a_post_not_a_get():
+    """Like every other command route: a GET is a 404, and quits nothing."""
+    controller = FakeController()
+    view = WebView(controller, object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        status, data = _post_quit(view, method="GET")
+        assert status == 404 and data["status"] == "error"
+        waiter = threading.Thread(target=view.wait, daemon=True)
+        waiter.start()
+        waiter.join(timeout=0.8)
+        assert waiter.is_alive(), "a GET released wait()"
+        assert controller.closed == 0
+    finally:
+        view.close()
+        waiter.join(timeout=2.0)

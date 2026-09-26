@@ -238,6 +238,19 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         if route == "/api/upload":
             return self._receive_upload(body)
 
+        if route == "/api/quit":
+            # The answer goes out FIRST, then the launcher is released: its
+            # `wait()` returns on the main thread and runs `close()`, which
+            # stops the server and closes the Controller (every model is
+            # stopped before anything is closed). Never close() from here -
+            # a handler thread would be shutting down the server it runs in.
+            # A second Quit is the same answer, never an error (G2).
+            self._send_json(200, {"status": "ok"})
+            self.wfile.flush()
+            self.close_connection = True
+            self.view.request_quit()
+            return None
+
         return self._send_json(404, {"status": "error",
                                      "reason": f"no route {route}"})
 
@@ -762,6 +775,19 @@ class WebView:
         except KeyboardInterrupt:
             pass
         self.close()
+
+    def request_quit(self):
+        """The console's Quit (G2): release `wait()`, which then runs
+        `close()` on the launching thread. Idempotent; returns True the first
+        time. Closing the tab never calls this - only the Quit control does."""
+        if self._halt.is_set():
+            events.debug("Quit Requested Again", "already shutting down",
+                         source=SOURCE)
+            return False
+        events.info("Quit", "Quit from the Web console: stopping every model, "
+                    "closing every port and exiting.", source=SOURCE)
+        self._halt.set()
+        return True
 
     def close(self):
         """Watchdog, server, then the Controller. Runs at most once."""
