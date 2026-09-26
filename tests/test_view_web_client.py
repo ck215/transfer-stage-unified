@@ -215,27 +215,34 @@ def test_a_model_with_no_loop_to_be_stale_about_is_not_stale():
 
 
 def test_the_global_full_stop_follows_the_state_not_the_click():
-    assert "this.renderEstop(Boolean(state.is_estopped))" in APP_JS
+    # Updated (L1, round 7): the state's `stop_words` (views.base), not
+    # `is_estopped` (any model latched) - one model's own switch is not
+    # "every model is stopped" - and a press clears only when they say so.
+    assert "this.renderEstop(state.stop_words || NO_STOP_WORDS)" in APP_JS
     toggle = _body(r"async toggleEstopAll\(\) \{(.*?)\n  \}")
+    assert "this.stopAction !== 'clear'" in toggle
     assert "this.stopAll()" in toggle and "/api/clear_estop_all" in toggle
     assert "/api/estop_all" in _body(r"\n  async stopAll\(\) \{(.*?)\n  \}")
     assert "needs_confirm" in toggle, "the latch cleared without asking"
 
 
 def test_the_unconfirmed_stop_line_follows_the_latch_from_the_poll():
-    """G6 (round-4 IMP-0): the line is written by every stop and dropped by
-    the poll once the latch reads clear - so a clear from another client
-    drops it too - but never by an answer asked for before the stop."""
+    """G6 (round-4 IMP-0): the line is dropped by the poll once the latch
+    reads clear - so a clear from another client drops it too - but never
+    by an answer asked for before it was shown.
+
+    Updated (L1/L2, round 7): the entry's mark is the model's own
+    `stop_confirmed` and the rail's marks are `stop`, both from the poll -
+    no longer written from the stop's answer - and what the poll drops once
+    nothing is latched is the tray's "Stop not confirmed" line."""
     apply = _body(r"\n  async applyState\(state, askedAt\) \{(.*?)\n  \}")
-    assert "this.forgetUnconfirmed(Boolean(state.is_estopped), askedAt)" in apply
-    # Updated (Bench sheet, E 2026-09-25): the line moved from the rail to
-    # the unconfirmed model's own entry (setUnconfirmed); the rule is the same.
-    forget = _body(r"\n  forgetUnconfirmed\(isEstopped, askedAt\) \{(.*?)\n  \}")
-    assert "askedAt < (this.unconfirmedAt || 0)" in forget
-    assert "this.setUnconfirmed([])" in forget
-    stop = _body(r"\n  async stopAll\(\) \{(.*?)\n  \}")
-    assert "this.unconfirmedAt = Date.now()" in stop
-    assert "this.setUnconfirmed(unconfirmed)" in stop
+    assert "this.setUnconfirmed(stop.latched || [], stop.unconfirmed || [])" in apply
+    assert "this.forgetStopLine(stop, askedAt)" in apply
+    forget = _body(r"\n  forgetStopLine\(stop, askedAt\) \{(.*?)\n  \}")
+    assert "askedAt < (this.trayAt || 0)" in forget
+    assert "this.setTray(null)" in forget
+    refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
+    assert "state.stop_confirmed === false" in refresh
 
 
 def test_model_cards_can_be_closed_and_a_closed_model_can_be_reopened():
@@ -502,11 +509,13 @@ def test_the_stop_is_a_disc_that_rides_with_the_fixed_rail():
     assert re.search(r"\.stop-ring\.is-latched\s*\{[^}]*var\(--stop-ring-latched\)", STYLES)
     assert 'id="full-stop" type="button" class="mushroom"' in INDEX
     # The copy is the action, and it follows the state rather than the click.
-    estop = _body(r"\n  renderEstop\(isEstopped\) \{(.*?)\n  \}")
-    assert "isEstopped ? 'Clear' : 'Stop'" in estop
-    assert "classList.add('pulse')" in estop and "!wasEstopped" in estop, (
+    # Updated (L1, round 7): the face and the action are the server's
+    # `stop_words`; "Clear" only while every model is latched.
+    estop = _body(r"\n  renderEstop\(words\) \{(.*?)\n  \}")
+    assert "words.action === 'clear'" in estop and "putText(this.dom.stopFace, words.face" in estop
+    assert "classList.add('pulse')" in estop and "!wasClear" in estop, (
         "the latch must pulse once when it is SET, not for as long as it is")
-    assert "this.dom.stopRing.classList.toggle('is-latched', isEstopped)" in estop
+    assert "this.dom.stopRing.classList.toggle('is-latched', isClear)" in estop
     assert re.search(r"\.mushroom\.pulse\s*\{[^}]*animation:\s*latch-pulse", STYLES)
     # The per-model stop is a small switch in Diagnostics, not a second disc.
     switch = _body(r"function renderStopToggle\(panel, element\) \{(.*?)\n\}")
@@ -610,9 +619,13 @@ def test_the_event_tray_reserves_its_own_room_and_starts_as_one_line():
         "the tray must start collapsed, at its one line, with its room "
         "reserved")
     assert "window.addEventListener('resize', () => this.reserveLogSpace())" in APP_JS
-    # the one line is the latest event, not an empty bar with a label on it
-    show = _body(r"\n  showEvent\(event\) \{(.*?)\n  \}")
-    assert "this.dom.trayLatest.textContent = event.text" in show
+    # the one line is the latest event, not an empty bar with a label on it.
+    # Updated (L1/L11, round 7): in its own ellipsizing span (setTray), as
+    # the event's title and message.
+    show = _body(r"\n  showEvent\(event, options\) \{(.*?)\n  \}")
+    assert "this.setTray(event)" in show
+    tray = _body(r"\n  setTray\(event\) \{(.*?)\n  \}")
+    assert "putText(this.dom.trayText, text)" in tray and "eventText(event)" in tray
     assert re.search(r"\.tray:not\(\.open\) \.tray-log\s*\{[^}]*display:\s*none",
                      STYLES)
 
@@ -709,15 +722,17 @@ def test_a_lost_device_is_named_as_an_operator_would_say_it():
 def test_event_severity_is_ink_mark_and_a_word():
     """F14 (DS-2, UXPM-10): the line's text in the severity ink, its bar in
     the severity mark, and a word beside the colour."""
-    # Updated (E): the mark is a square - solid signal for an error, hollow
-    # ink for a warning (--warning-mark-hollow) - and the word is read to a
-    # screen reader (.sr-only) instead of drawn as a badge.
+    # Updated (E): the mark is a square - solid signal for an error - and
+    # the word is read to a screen reader (.sr-only) instead of drawn as a
+    # badge. Updated (L21, round 7, IMP7-11): a warning's mark is a triangle
+    # in the warning mark colour, not a hollow square that reads as a tick
+    # box (--warning-mark-hollow is no longer read).
     assert re.search(r"\.event\.severity-error\s*\{[^}]*color:\s*var\(--error-ink\)", STYLES)
     assert re.search(r"\.severity-info\s*\{[^}]*var\(--info-ink\)", STYLES)
     assert re.search(r"\.event\.severity-error::before\s*\{[^}]*background:\s*var\(--error-mark\)",
                      STYLES)
-    assert "var(--warning-mark-hollow)" in STYLES
-    show = _body(r"\n  showEvent\(event\) \{(.*?)\n  \}")
+    assert "var(--warning-mark)" in STYLES
+    show = _body(r"\n  showEvent\(event, options\) \{(.*?)\n  \}")
     assert "'Error: '" in show and "'Warning: '" in show and "'sr-only'" in show
     assert "event.severity !== 'warning' && event.severity !== 'error'" in show, (
         "the tray line shows warnings and errors only")
@@ -1014,3 +1029,95 @@ def test_app_js_parses():
     result = subprocess.run([NODE, "--check", str(STATIC / "app.js")],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+
+
+# --------------------------------------------------------------------------
+# Tier L (audit round 7, 2026-09-26): the pure parts, run in node
+# --------------------------------------------------------------------------
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_a_disabled_command_says_the_gates_reason():
+    """L3: the reason is read from the same gate `isEnabled` applies - the
+    mode word a `disabled_when` matched, what an `enabled_when` waits for,
+    or the tick an `enabled_by` needs - and is empty when the command is
+    live."""
+    got = _node_value("""[
+      gateReason({disabled_when: ['latched']}, 'latched', {}),
+      gateReason({disabled_when: ['manual', 'latched']}, 'manual', {}),
+      gateReason({disabled_when: ['running']}, 'running', {}),
+      gateReason({disabled_when: ['running', 'no_region']}, 'no_region', {}),
+      gateReason({disabled_when: ['disconnected']}, 'disconnected', {}),
+      gateReason({disabled_when: ['moving']}, 'moving', {}),
+      gateReason({disabled_when: ['warming_up']}, 'warming_up', {}),
+      gateReason({enabled_when: ['running']}, 'no_region', {}),
+      gateReason({enabled_when: ['running']}, 'latched', {}),
+      gateReason({enabled_by: 'probe_enabled'}, 'ready', {probe_enabled: false}),
+      gateReason({disabled_when: ['running']}, 'idle', {}),
+    ]""")
+    assert got == ["Stopped: clear the stop first", "Not in manual mode",
+                   "A run is in progress", "Set a capture region first",
+                   "Not connected", "Moving", "Warming up",
+                   "No run in progress", "Stopped: clear the stop first",
+                   "Tick Launch on this row first", ""]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_an_event_reads_as_its_title_and_message_without_the_source():
+    """L11 (IMP7-4): "[Controller] Stop Not Confirmed: ..." reads "Stop not
+    confirmed: ..."; a shouted title comes down; a repeat keeps its count;
+    a line the page wrote itself (no title) is said as written."""
+    got = _node_value("""[
+      eventText({source: 'Controller', title: 'Stop Not Confirmed',
+                 message: 'Rotator did not confirm the stop within 1 s.', count: 1,
+                 text: '[Controller] Stop Not Confirmed: Rotator did not confirm the stop within 1 s.'}),
+      eventText({source: 'Controller', title: 'FULL STOP', message: 'latched and confirmed on: A', count: 1}),
+      eventText({source: 'X', title: 'Command Failed', message: 'Jam did not complete.', count: 3}),
+      eventText({severity: 'warning', text: 'Rotator did not reopen.'}),
+    ]""")
+    assert got == ["Stop not confirmed: Rotator did not confirm the stop within 1 s.",
+                   "Full stop: latched and confirmed on: A",
+                   "Command failed: Jam did not complete. (x3)",
+                   "Rotator did not reopen."]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_a_caption_does_not_say_its_unit_twice():
+    """L22 (IMP7-15): "Step (deg)" beside a "deg" unit reads "Step"; a
+    caption with no declared unit keeps its brackets."""
+    got = _node_value("""[
+      captionText({text: 'Step (deg):', unit: 'deg'}),
+      captionText({text: 'Ramp rate (s/°C):', unit: 's/°C'}),
+      captionText({text: 'Position (deg):'}),
+      captionText({text: 'Manual Speed:', unit: 'steps/s'}),
+    ]""")
+    assert got == ["Step", "Ramp rate", "Position (deg)", "Manual speed"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_a_slider_key_moves_one_percent_of_the_travel():
+    """L6: the arrows move 1 % of the travel, rounded, never less than 1;
+    the Page keys 10 %; Home and End nothing."""
+    got = _node_value("""[
+      sliderKeyDelta(1, 1000, 'ArrowRight'), sliderKeyDelta(1, 1000, 'ArrowDown'),
+      sliderKeyDelta(0, 50, 'ArrowUp'), sliderKeyDelta(1, 1000, 'PageUp'),
+      sliderKeyDelta(1, 1000, 'PageDown'), sliderKeyDelta(1, 1000, 'Home'),
+      sliderKeyDelta(1, 1000, 'End'), sliderKeyDelta(1, 1000, 'a'),
+    ]""")
+    assert got == [10, -10, 1, 100, -100, 0, 0, None]
+
+
+def test_the_empty_plot_default_does_not_talk_about_red():
+    """L22 (IMP7-14): the heater's plot said "red % is plotted here"; the
+    default for a series is neutral, and a model's own `empty` wins."""
+    series = re.search(r"series:\s*'([^']*)'", APP_JS).group(1)
+    assert "red" not in series.lower(), series
+    assert "element.empty ||" in _body(r"function emptyText\(element, command\) \{(.*?)\n\}")
+
+
+def test_a_warning_mark_is_not_a_box_and_an_entry_shows_where_focus_went():
+    """L21 (IMP7-11): the warning mark is a triangle, which nothing on the
+    sheet that can be ticked looks like; L22 (IMP7-16): an entry focused
+    from the rail shows it."""
+    warning = re.search(r"\.tray-latest\.severity-warning::before,\s*\.event\.severity-warning::before\s*\{([^}]*)\}",
+                        STYLES)
+    assert warning and "clip-path: polygon(" in warning.group(1), "the warning mark is a box"
+    assert re.search(r"\.card:focus-visible\s*\{[^}]*outline:", STYLES)

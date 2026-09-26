@@ -41,6 +41,12 @@ let TIER_LABELS = { 2: 'Details', 3: 'Diagnostics' };
 //: STOPS; clearing the latch stays a deliberate, confirmed act.
 const STOP_KEY = '.';
 const STOP_KEY_HINT = 'Ctrl+.';
+//: What the page says about the stop before the first state arrives:
+//: `views.base.stop_words` for a station with nothing latched.
+const NO_STOP_WORDS = { face: 'Stop', action: 'stop', headline: '', subline: '', rail: '' };
+//: The event title the Controller publishes when a model did not confirm a
+//: stop (controller.py). The views key on the title; its words are core's.
+const UNCONFIRMED_TITLE = 'Stop Not Confirmed';
 //: How many characters of a dropdown option are shown before it is elided
 //: from the middle: the tail of a port or gamepad name is what tells two
 //: devices apart, so the middle goes, never the end (F15).
@@ -180,6 +186,33 @@ function sentenceCase(text) {
     .map((word, index) => (index > 0 && /^\(?[A-Z][a-z]+\)?$/.test(word)
                            ? word.toLowerCase() : word))
     .join(' ');
+}
+
+/** A SHOUTED word brought down ("FULL STOP" -> "full stop"), nothing else
+ *  touched: an event's message is a sentence already, often one that starts
+ *  with a model's name. */
+function unshout(text) {
+  return String(text === null || text === undefined ? '' : text).split(' ')
+    .map((word) => (/^[A-Z]{4,}[:.,;]?$/.test(word) ? word.toLowerCase() : word))
+    .join(' ');
+}
+
+/** An event as the operator reads it (L11, round 7, IMP7-4): its title in
+ *  sentence case, then its message - never the raw log line with its
+ *  "[source]" prefix and Title Case. A repeat keeps its count. A line the
+ *  page wrote itself (`notice`, no title) is said as it was written. */
+function eventText(event) {
+  if (!event) return '';
+  if (!event.title) return String(event.text || event.message || '');
+  const title = sentenceCase(event.title);
+  const message = unshout(event.message || '').trim();
+  const count = Number(event.count) > 1 ? ' (x' + event.count + ')' : '';
+  return (message ? title + ': ' + message : title) + count;
+}
+
+/** The event that says a model did not confirm a stop (L2). */
+function isUnconfirmedEvent(event) {
+  return Boolean(event && event.title === UNCONFIRMED_TITLE);
 }
 
 /** The face of a toggle's state, rendered from the schema's true/false
@@ -1806,6 +1839,9 @@ class PanelCard {
     this.node.classList.toggle('is-lost', isLost);
     this.node.classList.toggle('is-latched', isLatched);
     this.setStateWord(isLatched ? 'Stopped' : '');
+    // L1: the entry's own "Stop not confirmed. Treat as live." follows the
+    // model's `stop_confirmed` (None unless latched), not an event.
+    this.setUnconfirmed(Boolean(state) && state.stop_confirmed === false);
   }
 
   /** The head's one word about the model's state, when it is not normal. */
@@ -1957,8 +1993,14 @@ class Dashboard {
     //: Which models' tier-2 and tier-3 disclosures are open: the page's
     //: memory for the session, per model, surviving a close and reopen.
     this.tierMemory = new Map();
-    //: The models that did not confirm the current latch (G6).
+    //: The models latched, and those that did not confirm (G6, L1): the
+    //: rail's per-model marks. `stopAction` is what a press on the disc does.
+    this.latched = null;
     this.unconfirmed = new Set();
+    this.stopAction = 'stop';
+    //: The event the tray's one line is saying, and when it was put there.
+    this.trayEvent = null;
+    this.trayAt = 0;
     this.closedKey = null;
     this.ackQueue = [];
     this.confirmPending = null;
@@ -1973,6 +2015,8 @@ class Dashboard {
       railAlert: document.getElementById('rail-alert'),
       railLatched: document.getElementById('rail-latched'),
       headline: document.getElementById('sheet-headline'),
+      headlineText: document.querySelector('#sheet-headline .headline'),
+      headlineNote: document.querySelector('#sheet-headline .headline-note'),
       nav: document.getElementById('model-nav'),
       simLine: document.getElementById('sim-line'),
       cards: document.getElementById('cards'),
@@ -1993,6 +2037,7 @@ class Dashboard {
       logPanel: document.getElementById('log-panel'),
       logToggle: document.getElementById('log-toggle'),
       trayLatest: document.getElementById('tray-latest'),
+      trayText: document.querySelector('#tray-latest .tray-text'),
       drawer: document.getElementById('setup-drawer'),
       drawerBody: document.getElementById('drawer-body'),
       drawerClose: document.getElementById('drawer-close'),
@@ -2202,11 +2247,25 @@ class Dashboard {
     // happened is still history: the last few lines go into the log, and
     // the newest is the tray's line, so the tray does not say "Waiting for
     // the station…" beside a rail that says it is connected (WDG-11).
+    //
+    // Updated (L2, L21, round 7): the history goes into the log only. The
+    // tray is status by exception, and a warning from before this tab (a
+    // port no model uses, found by the scan at start) is not a standing
+    // condition. The one line that does stand is "Stop not confirmed" for
+    // the latch that is set now: the newest one, and only while a model is
+    // latched - after a Clear it is over and a reload does not revive it.
     try {
+      let latched = [];
+      try {
+        const now = await apiGet('/api/state');
+        latched = (now && now.stop && now.stop.latched) || [];
+      } catch (err) { /* nothing is known to stand */ }
       const seen = await apiGet('/api/events?since=0');
       this.lastEventId = seen.latest_id || 0;
       const history = (seen.events || []).slice(-20);
-      for (const event of history) this.showEvent(event);
+      for (const event of history) this.showEvent(event, { history: true });
+      const standing = latched.length ? history.filter(isUnconfirmedEvent).pop() : null;
+      if (standing) this.setTray(standing);
     } catch (err) { /* the first poll will retry */ }
     this.setLogCollapsed(true);      // one line: the latest event
     await this.loadSetup();
@@ -2355,7 +2414,7 @@ class Dashboard {
     // Nothing is left to be latched, unconfirmed or acknowledged.
     for (const key of Array.from(this.railLines.keys())) this.setRailLine(key, '');
     this.dom.railAlert.hidden = true;
-    this.setUnconfirmed([]);
+    this.setUnconfirmed([], []);
     this.dom.railLatched.hidden = true;
     this.dom.headline.hidden = true;
     this.dom.stopRing.classList.remove('is-latched');
@@ -2376,9 +2435,9 @@ class Dashboard {
     stop.title = 'The station program has exited: there is nothing left to stop.';
     const hint = document.querySelector('.stop-hint');
     if (hint) hint.hidden = true;
+    for (const card of this.cards.values()) card.setUnconfirmed(false);
     this.setLogCollapsed(true);
-    this.dom.trayLatest.textContent = 'Quit from the Web console';
-    this.dom.trayLatest.className = 'tray-latest';
+    this.setTray({ severity: 'info', text: 'Quit from the Web console' });
     document.body.classList.add('is-offline', 'is-shut-down');
     this.muteReadouts('Shut down');
     for (const control of document.querySelectorAll('button, input, select, textarea')) {
@@ -2464,8 +2523,13 @@ class Dashboard {
     this.renderLostLines(models);
     this.renderEmptyRack();
     this.renderClosed(state.closed || []);
-    this.renderEstop(Boolean(state.is_estopped));
-    this.forgetUnconfirmed(Boolean(state.is_estopped), askedAt);
+    // L1 (round 7): what the page says about the stop is the server's
+    // `stop_words` (views.base.stop_words), never re-derived here; which
+    // models are latched or did not confirm is `stop`.
+    const stop = state.stop || { latched: [], unconfirmed: [], every: false };
+    this.renderEstop(state.stop_words || NO_STOP_WORDS);
+    this.setUnconfirmed(stop.latched || [], stop.unconfirmed || []);
+    this.forgetStopLine(stop, askedAt);
     let setupState = null;
     if (this.setupCard) {
       try {
@@ -2539,7 +2603,6 @@ class Dashboard {
     card.node.style.setProperty('--stagger', String(this.cards.size));
     this.cards.set(name, card);
     this.dom.cards.appendChild(card.node);
-    card.setUnconfirmed(this.unconfirmed.has(name));
   }
 
   removeCard(name) {
@@ -2592,13 +2655,20 @@ class Dashboard {
         this.dom.nav.appendChild(overview);
       }
       for (const name of names) {
-        const link = make('button', 'model-link', sentence(name));
+        const link = make('button', 'model-link');
+        // L1: the stop state per model, a square before the name
+        // (setUnconfirmed); empty and hidden while the model is live.
+        const mark = make('span', 'nav-mark');
+        mark.hidden = true;
+        link.appendChild(mark);
+        link.appendChild(make('span', 'nav-name', sentence(name)));
         link.type = 'button';
         link.dataset.model = name;
         link.setAttribute('translate', 'no');
         link.addEventListener('click', () => this.showPage(name));
         this.dom.nav.appendChild(link);
       }
+      if (this.latched) this.setUnconfirmed(Array.from(this.latched), Array.from(this.unconfirmed));
     }
     for (const link of this.dom.nav.querySelectorAll('.model-link')) {
       const current = link.dataset.page === 'overview' ? !this.opened
@@ -2661,11 +2731,28 @@ class Dashboard {
     if (this.dom.simLine.hidden !== !text) this.dom.simLine.hidden = !text;
   }
 
-  /** G6: which models did not confirm the latch, marked at their own
-   *  entries (E: this replaces the rail line; there is still no Dismiss). */
-  setUnconfirmed(names) {
-    this.unconfirmed = new Set(names || []);
-    for (const [name, card] of this.cards) card.setUnconfirmed(this.unconfirmed.has(name));
+  /** L1 (round 7, IMP7-3): the rail's page list says which models are
+   *  latched and which did not confirm, where the eye already is. A latched
+   *  model gets an ink square, one that did not confirm a signal square;
+   *  the word is read to a screen reader and is the square's title, so the
+   *  colour is never the only carrier. The entry's own "Stop not confirmed.
+   *  Treat as live." follows the model's `stop_confirmed` (PanelCard). */
+  setUnconfirmed(latched, unconfirmed) {
+    this.latched = new Set(latched || []);
+    this.unconfirmed = new Set(unconfirmed || []);
+    for (const link of this.dom.nav.querySelectorAll('.model-link[data-model]')) {
+      const name = link.dataset.model;
+      const mark = link.querySelector('.nav-mark');
+      if (!mark) continue;
+      const isUnconfirmed = this.unconfirmed.has(name);
+      const isLatched = !isUnconfirmed && this.latched.has(name);
+      const words = isUnconfirmed ? 'did not confirm' : (isLatched ? 'stopped' : '');
+      mark.classList.toggle('is-latched', isLatched);
+      mark.classList.toggle('is-unconfirmed', isUnconfirmed);
+      putText(mark, words);
+      putAttr(mark, 'title', isUnconfirmed ? 'Did not confirm the stop' : (isLatched ? 'Stopped' : ''));
+      if (mark.hidden !== !words) mark.hidden = !words;
+    }
   }
 
   async loadSetup() {
@@ -2764,44 +2851,54 @@ class Dashboard {
 
   // -- the global FULL STOP ----------------------------------------------
   //
-  // The mushroom follows the state, never the click. Its copy is the action
-  // it will perform - "Stop", then "Clear" once the latch is set - and it
-  // pulses exactly once, at the moment the latch closes, not for as long as
-  // it stays closed.
-  renderEstop(isEstopped) {
-    const wasEstopped = this.isEstopped;
-    this.isEstopped = isEstopped;
-    putText(this.dom.stopFace, isEstopped ? 'Clear' : 'Stop');
-    this.dom.stop.classList.toggle('is-latched', isEstopped);
-    // Latched: the ring thickens, the rail says so under the disc, and the
-    // sheet's headline says what happened (E, the Stopped artboard).
-    this.dom.stopRing.classList.toggle('is-latched', isEstopped);
-    if (this.dom.railLatched.hidden !== !isEstopped) this.dom.railLatched.hidden = !isEstopped;
-    if (this.dom.headline.hidden !== !isEstopped) this.dom.headline.hidden = !isEstopped;
+  // The mushroom follows the state, never the click. Its face and what a
+  // press does are the server's `stop_words` (L1, round 7): it reads "Clear"
+  // - and a press clears, asking first - only while EVERY model is latched.
+  // One model's own switch leaves it a working "Stop" for the rest. It
+  // pulses exactly once, when its face turns to "Clear".
+  renderEstop(words) {
+    const wasClear = this.stopAction === 'clear';
+    const isClear = words.action === 'clear';
+    this.stopAction = isClear ? 'clear' : 'stop';
+    this.isEstopped = isClear;
+    putText(this.dom.stopFace, words.face || (isClear ? 'Clear' : 'Stop'));
+    this.dom.stop.classList.toggle('is-latched', isClear);
+    // The ring thickens with the "Clear" face (E, the Stopped artboard).
+    this.dom.stopRing.classList.toggle('is-latched', isClear);
+    // The rail's line under the disc: a partial stop's names, "every model
+    // latched", or the models that did not confirm.
+    putText(this.dom.railLatched, words.rail || '');
+    if (this.dom.railLatched.hidden !== !words.rail) this.dom.railLatched.hidden = !words.rail;
+    // The sheet's headline and its subline. With no subline of its own, a
+    // full stop says how to continue.
+    putText(this.dom.headlineText, words.headline || '');
+    putText(this.dom.headlineNote, words.subline
+      || (isClear ? 'Clear the stop on the rail to continue.' : ''));
+    if (this.dom.headline.hidden !== !words.headline) this.dom.headline.hidden = !words.headline;
     putAttr(this.dom.stop, 'aria-label',
-            isEstopped ? 'Clear the stop on every model' : 'Stop every model');
-    // The chord stops and never clears (F9): while the face is "Clear" the
-    // button does not advertise it, and the rail's hint hides - the stop it
-    // names is already latched. Both return with the "Stop" face (I6).
-    if (isEstopped) this.dom.stop.removeAttribute('aria-keyshortcuts');
+            isClear ? 'Clear the stop on every model' : 'Stop every model');
+    // The chord stops and never clears (F9): while a press clears, the
+    // button does not claim the chord as its shortcut. The rail's hint
+    // stays in every state, because the chord always stops (L1).
+    if (isClear) this.dom.stop.removeAttribute('aria-keyshortcuts');
     else putAttr(this.dom.stop, 'aria-keyshortcuts', 'Control+Period');
     const hint = document.querySelector('.stop-hint');
-    if (hint && hint.hidden !== isEstopped) hint.hidden = isEstopped;
+    if (hint && hint.hidden) hint.hidden = false;
     // The keyboard path is written on the object itself (F9).
-    putAttr(this.dom.stop, 'title', isEstopped
+    putAttr(this.dom.stop, 'title', isClear
       ? 'Clear the stop on every model (asks first). ' + STOP_KEY_HINT + ' stops again.'
       : 'Stop every model. Keyboard: ' + STOP_KEY_HINT + ', from anywhere on the page.');
-    if (isEstopped && !wasEstopped) {
+    if (isClear && !wasClear) {
       this.dom.stop.classList.remove('pulse');
       void this.dom.stop.offsetWidth;      // restart the animation
       this.dom.stop.classList.add('pulse');
-    } else if (!isEstopped) {
+    } else if (!isClear) {
       this.dom.stop.classList.toggle('pulse', false);
     }
   }
 
   async toggleEstopAll() {
-    if (!this.isEstopped) {
+    if (this.stopAction !== 'clear') {
       await this.stopAll();
       return;
     }
@@ -2831,28 +2928,25 @@ class Dashboard {
       this.stopFailed('Stop', err);
       return;
     }
-    const unconfirmed = (answer && answer.unconfirmed) || [];
     // The stop landed: a line saying an earlier one did not is history.
     this.setRailLine('stop', '');
-    // Which models did not confirm is the state of THIS latch (G6): it is
-    // written by every stop, a later confirmed one included, and dropped by
-    // the poll once the latch is cleared (forgetUnconfirmed). It has no
-    // Dismiss: it describes hardware this page cannot see, and it stands
-    // for as long as the latch it describes (I8, WDG6-1).
-    this.unconfirmedAt = Date.now();
-    this.setUnconfirmed(unconfirmed);
+    // Which models did not confirm is the state of THIS latch (G6), and
+    // since L1 it is read from the state (`stop.unconfirmed`, each model's
+    // `stop_confirmed`) on the poll this triggers, not from this answer. It
+    // has no Dismiss: it describes hardware this page cannot see, and it
+    // stands for as long as the latch it describes (I8, WDG6-1).
     await this.refreshNow();
   }
 
-  /** G6 (round-4 IMP-0): "not confirmed" describes a latch. Once the poll
-   *  says the latch is clear - cleared here or from any other client - the
-   *  line goes, and the rail's alert region with it when it was the last
-   *  line. A state asked for before the stop that wrote the line is not
-   *  evidence either way. */
-  forgetUnconfirmed(isEstopped, askedAt) {
-    if (isEstopped || !this.unconfirmed.size) return;
-    if (askedAt !== undefined && askedAt < (this.unconfirmedAt || 0)) return;
-    this.setUnconfirmed([]);
+  /** L2 (round 7, IMP7-5): "Stop not confirmed" describes a latch. Once
+   *  the poll says no model is latched - cleared here or from any other
+   *  client - the tray drops that line: a hazard that is over is not the
+   *  one red line on a normal page. A state asked for before the line was
+   *  shown is not evidence either way. (The log keeps it: it is history.) */
+  forgetStopLine(stop, askedAt) {
+    if ((stop.latched || []).length || !isUnconfirmedEvent(this.trayEvent)) return;
+    if (askedAt !== undefined && askedAt < (this.trayAt || 0)) return;
+    this.setTray(null);
   }
 
   stopFailed(action, err) {
@@ -2867,32 +2961,57 @@ class Dashboard {
     if (latest !== undefined && latest === this.lastEventId) return;
     const answer = await apiGet('/api/events?since=' + this.lastEventId);
     for (const event of (answer.events || [])) {
+      // Two polls in flight (a command's refreshNow beside the timer's) can
+      // fetch the same new events: each is shown once.
+      if (typeof event.id === 'number' && event.id <= this.lastEventId) continue;
+      if (typeof event.id === 'number') this.lastEventId = event.id;
       this.showEvent(event);
       if (event.needs_ack) this.showAck(event);
     }
     if (typeof answer.latest_id === 'number') this.lastEventId = answer.latest_id;
   }
 
-  showEvent(event) {
+  showEvent(event, options) {
     // Each line keeps its severity as a word for a screen reader; the eye
-    // gets the mark (a hollow ink square for a warning, a solid signal one
-    // for an error - shape as well as colour).
+    // gets the mark (a triangle for a warning, a solid signal square for an
+    // error - shape as well as colour). The words are the event's title and
+    // message (L11); the source it came from is one hover away.
+    const text = eventText(event);
     const line = make('div', 'event severity-' + event.severity);
     if (event.severity === 'warning' || event.severity === 'error') {
       line.appendChild(make('span', 'sr-only',
         event.severity === 'error' ? 'Error: ' : 'Warning: '));
     }
-    line.appendChild(document.createTextNode(String(event.text || '')));
+    line.appendChild(document.createTextNode(text));
+    if (event.source) line.title = String(event.source);
     this.dom.log.appendChild(line);
     while (this.dom.log.childNodes.length > 200) {
       this.dom.log.removeChild(this.dom.log.firstChild);
     }
     this.dom.log.scrollTop = this.dom.log.scrollHeight;
     // The collapsed tray is one line, and it carries warnings and errors
-    // only (status by exception): an info event is history, in the log.
+    // only (status by exception): an info event is history, in the log. A
+    // line replayed from before this tab opened is history too (L21), bar
+    // the one that still stands (start()).
     if (event.severity !== 'warning' && event.severity !== 'error') return;
-    this.dom.trayLatest.textContent = event.text;
-    this.dom.trayLatest.className = 'tray-latest severity-' + event.severity;
+    if (options && options.history) return;
+    this.setTray(event);
+  }
+
+  /** The tray's one line, or nothing (`null`). The words sit in their own
+   *  span that ellipsizes, with the whole line as its title, so a narrow
+   *  window cuts the end of a sentence, never silently the model's name. */
+  setTray(event) {
+    const text = event ? eventText(event) : '';
+    putText(this.dom.trayText, text);
+    putAttr(this.dom.trayText, 'title', text);
+    const severity = event && (event.severity === 'warning' || event.severity === 'error')
+      ? ' severity-' + event.severity : '';
+    if (this.dom.trayLatest.className !== 'tray-latest' + severity) {
+      this.dom.trayLatest.className = 'tray-latest' + severity;
+    }
+    this.trayEvent = event || null;
+    this.trayAt = Date.now();
   }
 
   /** Only `needs_ack` opens a modal. Everything else is a line in the log.
@@ -2902,9 +3021,10 @@ class Dashboard {
   showAck(event) {
     const wasHidden = this.dom.modal.hidden;
     if (wasHidden) this.ackReturn = document.activeElement;
-    this.ackQueue.push(String(event.text || ''));
+    const text = eventText(event);
+    this.ackQueue.push(text);
     const list = this.dom.modalText;
-    list.appendChild(make('p', 'ack-line', event.text));
+    list.appendChild(make('p', 'ack-line', text));
     const count = this.ackQueue.length;
     putText(this.dom.modalCount, count > 1 ? count + ' messages need acknowledging' : '');
     this.dom.modalCount.hidden = count < 2;

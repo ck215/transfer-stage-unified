@@ -302,11 +302,13 @@ button, select, input[type="range"] {
   white-space: nowrap;
 }
 
-/* Hidden while the face reads "Clear" (I6): it keeps its room, so nothing
-   under it shifts when the latch sets. */
+/* Shown in every state since L1 (the chord always stops); after Quit it
+   keeps its room, so nothing under it shifts. */
 .stop-hint[hidden] { display: inline; visibility: hidden; }
 
-/* "Stopped: every model latched", beside a solid signal square. */
+/* The rail's stop line (views.base.stop_words "rail"): "Stopped: every model
+   latched", "Stopped: Stepper Probe", "Stopped: Rotator did not confirm",
+   beside a solid signal square. */
 .rail-latched {
   align-self: stretch;
   display: flex;
@@ -404,6 +406,29 @@ button, select, input[type="range"] {
 .model-link:hover { background: color-mix(in srgb, var(--bg) 55%, var(--surface)); }
 
 .model-link[aria-current="page"] { background: var(--bg); font-weight: 600; }
+
+/* L1: a model's stop state before its name - an ink square while it is
+   latched, a signal square when it did not confirm. The word is read to a
+   screen reader and is the square's title; the square is drawn, the word
+   is not, so the list stays a list of names. */
+.model-link { display: flex; align-items: center; gap: var(--space-3); }
+
+.nav-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.nav-mark {
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  overflow: hidden;
+  color: transparent;
+  font-size: var(--t-xs);
+  line-height: 1;
+  background: var(--text);
+}
+
+.nav-mark.is-unconfirmed { background: var(--signal); }
+
+.nav-mark[hidden] { display: none; }
 
 /* Models the operator closed: the way back, under the list. */
 .closed {
@@ -1659,7 +1684,15 @@ span.lamp { background: none; }
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
+}
+
+/* The words in their own box, so the ellipsis applies (a flex container's
+   own text-overflow never does) and the whole line is its title (L1). */
+.tray-text {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Severity is a mark's shape as well as its colour (F14, UXPM-10): a
