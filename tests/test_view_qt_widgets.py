@@ -53,6 +53,9 @@ class FakePanel(Panel):
         self.saved_path = None
         self.loaded_path = None
         self.commands = []
+        self.is_armed = False
+        self.gated = "a"
+        self.armed_calls = []
 
     @property
     def mode_name(self):
@@ -69,6 +72,11 @@ class FakePanel(Panel):
             sch.toggle("Power", "is_on", "set_power", "ON", "OFF",
                        on_args=(True,), off_args=(False,)),
             sch.dropdown("Pick:", "choice", "set_choice", "choices"),
+            # G3: a tick box, and a dropdown live only while it is ticked.
+            sch.checkbox("Armed", "is_armed", "set_armed",
+                         tooltip="Arm the fake"),
+            sch.dropdown("Gated:", "gated", "set_gated", "choices",
+                         enabled_by="is_armed"),
             sch.region_select("Select region", "set_region",
                               model_attr="region"),
             sch.file_save("Save", "save_run"),
@@ -77,6 +85,8 @@ class FakePanel(Panel):
             sch.image("Picture", "picture"),
             sch.indicator("Fault", "is_faulted"),
             sch.log_stream("Log", "log_lines"),
+            # G4: the probe's shape - behind a button, in its own window.
+            sch.log_stream("Gamepad Log:", "gamepad_lines", detached=True),
             sch.button("Invisible", "quiet"),
         ))
 
@@ -94,6 +104,14 @@ class FakePanel(Panel):
 
     def set_choice(self, text):
         self.choice = text
+
+    def set_armed(self, flag):
+        self.armed_calls.append(flag)
+        self.is_armed = bool(flag)
+        return self.is_armed
+
+    def set_gated(self, text):
+        self.gated = text
 
     def choices(self):
         return ["a", "b"]
@@ -115,6 +133,10 @@ class FakePanel(Panel):
 
     def log_lines(self):
         return ["first", "second"]
+
+    def gamepad_lines(self):
+        self.gamepad_reads = getattr(self, "gamepad_reads", 0) + 1
+        return ["pad up", "pad down"]
 
     def quiet(self):
         return None
@@ -1823,24 +1845,46 @@ def test_f9_the_latched_stop_shows_focus_in_ink(qapp, monkeypatch):
     assert abs(edge.red() - ink.red()) + abs(edge.green() - ink.green()) < 90
 
 
-def test_f9_a_global_shortcut_stops_and_never_clears(dashboard, controller):
-    """Ctrl+. everywhere - Qt's Ctrl is Cmd on macOS, where the physical
-    Control+. is bound too, as Tk binds both. Named on the face's tooltip and
-    on the rail's hint, in Tk's words."""
-    keys = [s.key() for s in dashboard.stop_shortcuts]
-    assert QKeySequence("Ctrl+.") in keys
-    if sys.platform == "darwin":
-        assert QKeySequence("Meta+.") in keys
-    assert all(s.context() == Qt.ShortcutContext.ApplicationShortcut
-               for s in dashboard.stop_shortcuts)
+def test_f9_g5_one_global_shortcut_control_period_stops_and_never_clears(
+        dashboard, controller):
+    """G5 (owner ruling 2026-09-25): Ctrl+. is the one chord, the physical
+    Control key on every OS; the Cmd+. chord F9 added on macOS is gone. Qt
+    spells the macOS Control key "Meta", so the binding is Qt's Meta there -
+    and Qt's Ctrl (the Command key on macOS) is bound nowhere. Named on the
+    face's tooltip and the rail's hint as "Ctrl+.", never as a glyph."""
+    from PySide6.QtCore import QKeyCombination
+    from PySide6.QtGui import QShortcut
+    shortcuts = dashboard.findChildren(QShortcut)
+    stops = [s for s in shortcuts if not s.key().isEmpty()
+             and s.key()[0].key() == Qt.Key.Key_Period]
+    assert stops == [dashboard.stop_shortcut]
+    combo = dashboard.stop_shortcut.key()[0]
+    control = (Qt.KeyboardModifier.MetaModifier if sys.platform == "darwin"
+               else Qt.KeyboardModifier.ControlModifier)
+    assert combo.keyboardModifiers() == control
+    assert dashboard.stop_shortcut.context() == Qt.ShortcutContext.ApplicationShortcut
     dashboard._sync_stop_button()
-    hint = f"Stop every model ({dashboard.stop_shortcut_text()})"
+    hint = "Stop every model (Ctrl+.)"
     assert dashboard.stop_button.toolTip().startswith(hint)
     assert dashboard.stop_hint.full_text() == hint
-    dashboard.stop_shortcuts[-1].activated.emit()
+    for text in (dashboard.stop_button.toolTip(), dashboard.stop_hint.full_text()):
+        assert not any(mark in text for mark in ("\u2318", "\u2303", "Cmd", "Meta"))
+    # Matched as a key sequence, not by a synthesised key press: every
+    # dashboard an earlier test left alive holds an application-wide stop
+    # shortcut too, and two of them make a real press ambiguous (neither
+    # fires) - a harness artefact, since the app has one window.
+    key = dashboard.stop_shortcut.key()
+    pressed = QKeySequence(QKeyCombination(control, Qt.Key.Key_Period))
+    assert key.matches(pressed) == QKeySequence.SequenceMatch.ExactMatch
+    # The other modifier (Command on macOS, the Windows/Super key elsewhere)
+    # is not the stop.
+    other = (Qt.KeyboardModifier.ControlModifier if sys.platform == "darwin"
+             else Qt.KeyboardModifier.MetaModifier)
+    wrong = QKeySequence(QKeyCombination(other, Qt.Key.Key_Period))
+    assert key.matches(wrong) == QKeySequence.SequenceMatch.NoMatch
+    dashboard.stop_shortcut.activated.emit()
     assert controller.estop_calls == 1 and controller.is_estopped
-    for shortcut in dashboard.stop_shortcuts:   # latched: it does not clear
-        shortcut.activated.emit()
+    dashboard.stop_shortcut.activated.emit()      # latched: it does not clear
     assert controller.is_estopped is True and controller.estop_calls == 1
     dashboard._sync_stop_button()
     assert dashboard.stop_hint.full_text() == "Clear the stop on every model"
@@ -2060,3 +2104,222 @@ def test_f25_a_panel_scroll_area_shows_focus(dashboard):
     assert scroll.objectName() == "panelScroll"
     sheet = qt.stylesheet()
     assert f"QScrollArea#panelScroll:focus {{\n    border: {qt.FOCUS_RING};" in sheet
+
+
+# ---------------------------------------------------------------------------
+# G3: the Launch tick box
+# ---------------------------------------------------------------------------
+
+def test_g3_a_checkbox_renders_a_qcheckbox_named_by_its_tooltip(view):
+    from PySide6.QtWidgets import QCheckBox
+    box = view._widget_for(element_named(view, "is_armed"))
+    assert isinstance(box, QCheckBox)
+    assert box.text() == "Armed"            # a column section: its own words
+    assert box.accessibleName() == "Arm the fake"
+    assert box.toolTip() == "Arm the fake"
+
+
+def test_g3_a_click_sends_true_when_off_and_false_when_on(view, panel):
+    box = view._widget_for(element_named(view, "is_armed"))
+    box.click()
+    assert panel.armed_calls == [True] and panel.is_armed is True
+    assert box.isChecked()
+    box.click()
+    assert panel.armed_calls == [True, False] and panel.is_armed is False
+    assert not box.isChecked()
+
+
+def test_g3_a_refresh_sets_the_tick_from_state_without_sending(view, panel):
+    box = view._widget_for(element_named(view, "is_armed"))
+    toggled = []
+    box.toggled.connect(toggled.append)
+    panel.is_armed = True
+    view._refresh()
+    assert box.isChecked()
+    panel.is_armed = False
+    view._refresh()
+    assert not box.isChecked()
+    assert toggled == [] and panel.armed_calls == []
+
+
+def test_g3_a_refused_tick_is_undone_by_the_refresh(view, panel, monkeypatch):
+    def refuse(flag):
+        raise Refused("not now")
+    monkeypatch.setattr(panel, "set_armed", refuse)
+    box = view._widget_for(element_named(view, "is_armed"))
+    box.click()
+    assert panel.is_armed is False and not box.isChecked()
+
+
+def test_g3_a_gated_dropdown_and_its_rescan_are_greyed_until_the_box_is_ticked(
+        view, panel):
+    element = element_named(view, "gated")
+    combo = view._widget_for(element)
+    rescan = view._companions[id(element)]
+    view._refresh()
+    assert not combo.isEnabled() and not rescan.isEnabled()
+    assert view._widget_for(element_named(view, "choice")).isEnabled()
+    view._widget_for(element_named(view, "is_armed")).click()
+    assert combo.isEnabled() and rescan.isEnabled()
+
+
+def _setup_view(qapp):
+    from controller.controller import Controller
+    from controller.setup import Setup
+    setup = Setup(Controller())
+    return setup, qt.QtPanelView(setup.controller, "Setup", panel=setup)
+
+
+def test_g3_setup_rows_read_launch_port_gamepad_status(qapp):
+    """[Launch] [Port] [Gamepad] [Status]: the box first, as on `main`, in a
+    narrow column of its own that takes no control floor and never stretches."""
+    from PySide6.QtWidgets import QCheckBox
+    setup, built = _setup_view(qapp)
+    try:
+        table = built._table
+        grid = table.grid
+        headers = [grid.itemAtPosition(table.header_row, c).widget().text()
+                   for c in range(1, grid.columnCount())
+                   if grid.itemAtPosition(table.header_row, c) is not None]
+        assert headers == ["Launch", "Port", "Gamepad", "Status"]
+        launch = table.columns["Launch"]
+        assert grid.columnMinimumWidth(launch) == 0
+        assert grid.columnStretch(launch) == 0
+        assert grid.columnMinimumWidth(table.columns["Port"]) == qt.TABLE_CONTROL_MIN_PX
+        boxes = [e for e in built._elements if e["type"] == "checkbox"]
+        assert boxes
+        for element in boxes:
+            box = built._widget_for(element)
+            assert isinstance(box, QCheckBox) and box.text() == ""
+            assert box.accessibleName().startswith("Launch ")
+            assert cell_of(grid, box)[1] == launch
+    finally:
+        built.close()
+
+
+def test_g3_ticking_a_setup_row_ungreys_its_port(qapp):
+    setup, built = _setup_view(qapp)
+    try:
+        box_element = next(e for e in built._elements if e["type"] == "checkbox")
+        key = box_element["model_attr"][:-len("_enabled")]
+        port = built._widget_for(element_named(built, f"{key}_port"))
+        built._refresh()
+        assert not port.isEnabled()
+        built._widget_for(box_element).click()
+        assert getattr(setup, f"{key}_enabled") is True
+        assert port.isEnabled()
+    finally:
+        built.close()
+
+
+# ---------------------------------------------------------------------------
+# G4: the Gamepad Log behind a button, in its own window
+# ---------------------------------------------------------------------------
+
+def detached_of(view):
+    return next(e for e in view._elements
+                if e["type"] == "log_stream" and e.get("detached"))
+
+
+def test_g4_a_detached_stream_is_a_button_not_a_feed(view, panel):
+    from PySide6.QtWidgets import QPushButton, QTextEdit
+    element = detached_of(view)
+    button = view._widget_for(element)
+    assert isinstance(button, QPushButton)
+    assert button.text() == "Gamepad log\u2026"
+    assert view.detached_window(element) is None
+    feeds = [w for w in view.findChildren(QTextEdit)]
+    assert len(feeds) == 1              # the attached "Log" only
+    view._refresh()
+    assert getattr(panel, "gamepad_reads", 0) == 0
+
+
+def test_g4_pressing_it_opens_one_non_modal_window_holding_the_lines(view, qapp):
+    element = detached_of(view)
+    view._widget_for(element).click()
+    dialog = view.detached_window(element)
+    assert isinstance(dialog, QDialog) and dialog.isVisible()
+    assert dialog.isModal() is False
+    assert dialog.windowModality() == Qt.WindowModality.NonModal
+    assert not dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert qapp.activeModalWidget() is None
+    assert dialog.windowTitle() == "Fake \u2014 Gamepad log"
+    feed = view._detached[id(element)][1]
+    assert feed.toPlainText() == "pad up\npad down"
+    assert feed.maximumHeight() != qt.LOG_STREAM_PX     # not the card's feed
+
+
+def test_g4_a_second_press_raises_the_same_window(view):
+    element = detached_of(view)
+    button = view._widget_for(element)
+    button.click()
+    first = view.detached_window(element)
+    first.hide()
+    button.click()
+    assert view.detached_window(element) is first and first.isVisible()
+    button.click()                      # already open: still the one window
+    assert view.detached_window(element) is first
+
+
+def test_g4_escape_hides_it_and_focus_returns_to_the_button(view, qapp):
+    from PySide6.QtTest import QTest
+    element = detached_of(view)
+    view._widget_for(element).click()
+    dialog = view.detached_window(element)
+    returned = []
+    # Which widget holds focus cannot be staged offscreen; the hand-back can.
+    view._return_focus = returned.append
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert not dialog.isVisible()
+    assert view.detached_window(element) is dialog      # hidden, not destroyed
+    assert returned == [element]
+
+
+def test_g4_the_close_button_hides_it_too(view):
+    element = detached_of(view)
+    view._widget_for(element).click()
+    dialog = view.detached_window(element)
+    dialog.close()
+    assert not dialog.isVisible() and view.detached_window(element) is dialog
+
+
+def test_g4_the_stream_is_polled_only_while_its_window_is_open(view, panel):
+    element = detached_of(view)
+    assert view._wants_data(element) is False
+    assert view._wants_data(element_of(view, "log_stream")) is True
+    view._refresh()
+    assert getattr(panel, "gamepad_reads", 0) == 0
+    view._widget_for(element).click()
+    assert view._wants_data(element) is True
+    reads = panel.gamepad_reads
+    view._refresh()
+    assert panel.gamepad_reads == reads + 1
+    view.detached_window(element).hide()
+    assert view._wants_data(element) is False
+    view._refresh()
+    assert panel.gamepad_reads == reads + 1
+
+
+def test_g4_closing_the_panel_closes_its_window(qapp, controller):
+    built = qt.QtPanelView(controller, "Fake")
+    element = detached_of(built)
+    built._widget_for(element).click()
+    dialog = built.detached_window(element)
+    assert dialog.isVisible()
+    built.close()
+    assert not dialog.isVisible()
+    assert built._detached == {}
+
+
+def test_g4_the_window_belongs_to_the_main_window_and_the_stop_stays_live(
+        dashboard, controller):
+    dashboard._add_panel("Fake")
+    panel_view = dashboard._panels["Fake"]
+    element = detached_of(panel_view)
+    panel_view._widget_for(element).click()
+    dialog = panel_view.detached_window(element)
+    assert dialog.parent() is dashboard
+    assert QApplication.activeModalWidget() is None
+    assert dashboard.stop_button.isEnabled()
+    dashboard.stop_shortcut.activated.emit()
+    assert controller.is_estopped is True

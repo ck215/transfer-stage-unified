@@ -1,4 +1,3 @@
-import sys
 """The PySide6 frontend: one window, one panel renderer, three pure widgets.
 
 Replaces `legacy/src/views/pyside/view.py` (1368 lines), `style.qss`, and the PySide
@@ -67,6 +66,7 @@ import math
 import os
 import re
 import shutil
+import sys
 
 import schema as sch
 from events import events
@@ -81,7 +81,8 @@ try:                                    # the module imports without PySide6
                                QIcon, QIntValidator, QKeySequence, QPainter,
                                QPen, QPixmap, QShortcut, QTextCursor)
     from PySide6.QtWidgets import (
-        QAbstractButton, QApplication, QComboBox, QDockWidget, QFileDialog,
+        QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog,
+        QDockWidget, QFileDialog,
         QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
         QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
         QStatusBar, QStyle, QStyleOptionComboBox, QStylePainter, QTextEdit,
@@ -106,7 +107,7 @@ except ImportError:                     # pragma: no cover - exercised by test
                                "be built. Launch with the Tk or Web view.")
 
     QWidget = QMainWindow = QDockWidget = QPushButton = QLabel = _NoQt
-    QComboBox = QFrame = _NoQt
+    QComboBox = QFrame = QCheckBox = QDialog = _NoQt
 
 
 #: A drag smaller than this in either axis is a stray click, not a region.
@@ -149,6 +150,9 @@ LAMP_PX = 16
 #: stepper's Gamepad Log took a third of the panel and pushed Safety - the
 #: section that has to be reachable - off the bottom of the dock.
 LOG_STREAM_PX = 110
+#: A detached stream's window (G4) opens this many characters wide and lines
+#: tall, measured from its font; the operator can resize it.
+DETACHED_LOG_CHARS, DETACHED_LOG_LINES = 72, 18
 #: The event tray's open height, and the number of lines it keeps. Closed, it
 #: is one line: the latest event. It is a companion to the panels, not the
 #: main event, and an append-forever log is an unbounded document in a window
@@ -170,15 +174,19 @@ STOP_FACE_STEP = STEP_READOUT
 #: ring still change, so the state still shows (AUD-14).
 PULSE_MS = 400
 DANGER_ROLE = "danger"
-#: The global stop's keyboard shortcut: Cmd+. on macOS (the platform's own
-#: "stop what you are doing"), Ctrl+. elsewhere. It only ever stops; clearing
-#: stays a deliberate press of the face, and a question (F9).
-STOP_SHORTCUT = "Ctrl+."
-#: Qt's "Ctrl" is the Command key on macOS, so there the physical
-#: Control-period is bound as well, as Tk binds both (`Meta` is Control on
-#: macOS in Qt's naming).
-STOP_SHORTCUTS = (STOP_SHORTCUT,) + (("Meta+.",) if sys.platform == "darwin"
-                                     else ())
+#: The global stop's keyboard shortcut, as the operator reads it: Control
+#: and period, the same two keys on macOS, Windows and Linux (owner ruling
+#: 2026-09-25, G5: no platform-specific UI; the Cmd+. chord is gone). It only
+#: ever stops; clearing stays a deliberate press of the face, and a question
+#: (F9).
+STOP_SHORTCUT_TEXT = "Ctrl+."
+#: The same keys in Qt's spelling. Qt names the macOS Command key "Ctrl" and
+#: the macOS Control key "Meta", so the physical Control+period is "Meta+." on
+#: macOS and "Ctrl+." everywhere else. A naming quirk the toolkit forces, not
+#: a second chord: one binding, the same keys pressed on every OS, and no
+#: Command binding anywhere. (`AA_MacDontSwapCtrlAndMeta` would remove the
+#: branch but also move Copy/Paste in every text field off the Command key.)
+STOP_SHORTCUT = "Meta+." if sys.platform == "darwin" else "Ctrl+."
 #: The stop's two names, the Web and Tk views' words: what a press does.
 STOP_HINT, CLEAR_HINT = "Stop every model", "Clear the stop on every model"
 #: How many of a model's key numbers the rail carries (the Web view's
@@ -373,6 +381,9 @@ def stylesheet():
     rule, rule_strong = theme.RULE, theme.RULE_STRONG
     hair, tight = theme.SPACE[0], theme.SPACE[1]
     ring = FOCUS_RING
+    # A tick box's square is one line of the base font: points to pixels at
+    # Qt's 96 dpi reference, since a sub-control's width takes no `pt`.
+    indicator_px = int(round(base_size * 96 / 72))
 
     sheet = [
         _rule("QWidget", {"background-color": theme.BACKGROUND,
@@ -445,6 +456,30 @@ def stylesheet():
         _rule("QPushButton:disabled, QLineEdit:disabled, QComboBox:disabled",
               {"background-color": disabled_bg, "color": disabled_fg,
                "border-color": rule}),
+        # G3's tick box: an ink square, filled with ink when ticked. Ink, not
+        # trace or a role fill - a tick is a value the operator set, not a
+        # live reading, and the one red stays on the stop. The indicator
+        # follows the font. Focus is the same two pixels of ink (F25), drawn
+        # round the whole control rather than the square: on a ticked box an
+        # ink ring round an ink fill would not show.
+        _rule("QCheckBox", {"background": "transparent",
+                            "spacing": f"{theme.GAP}px",
+                            "border": "2px solid transparent",
+                            "border-radius": "2px",
+                            "padding": f"{hair}px"}),
+        _rule("QCheckBox:focus", {"border": ring}),
+        _rule("QCheckBox::indicator",
+              {"width": f"{indicator_px}px", "height": f"{indicator_px}px",
+               "background-color": theme.WELL,
+               "border": f"1px solid {theme.TEXT}", "border-radius": "2px"}),
+        _rule("QCheckBox::indicator:hover", {"background-color": theme.LIFT}),
+        _rule("QCheckBox::indicator:checked",
+              {"background-color": theme.TEXT}),
+        _rule("QCheckBox:disabled", {"color": disabled_fg}),
+        _rule("QCheckBox::indicator:disabled",
+              {"background-color": disabled_bg, "border-color": rule}),
+        _rule("QCheckBox::indicator:checked:disabled",
+              {"background-color": disabled_fg}),
     ]
     for role, (background, foreground) in theme.ROLES.items():
         if role == DANGER_ROLE:
@@ -844,23 +879,27 @@ class PanelTable:
         self.grid.addWidget(bar.widget, self.rows, 0, 1, -1)
         return bar
 
-    def column_for(self, label):
+    def column_for(self, label, narrow=False):
         """This label's column, allocating one the first time it is seen.
 
         An *unlabelled* widget gets a fresh column of its own: two of them in
-        one row are two controls, not one control written twice.
+        one row are two controls, not one control written twice. A `narrow`
+        column (a tick box: Setup's Launch column, G3) is as wide as its
+        header or its box and never takes the control floor.
         """
         key = (label or "").strip()
         if not key:
-            return self._claim(None)
+            return self._claim(None, narrow)
         if key not in self.columns:
-            self.columns[key] = self._claim(key)
+            self.columns[key] = self._claim(key, narrow)
         return self.columns[key]
 
-    def _claim(self, header):
+    def _claim(self, header, narrow=False):
         column = self._next_column
         self._next_column += 1
-        self.grid.setColumnMinimumWidth(column, TABLE_CONTROL_MIN_PX)
+        if not narrow:
+            self.grid.setColumnMinimumWidth(column, TABLE_CONTROL_MIN_PX)
+        self.grid.setColumnStretch(column, 0)
         if header:
             caption = QLabel(sentence_case(header))
             caption.setObjectName("columnHeader")
@@ -878,8 +917,10 @@ class TableRow:
         self.table, self.row = table, row
 
     def add(self, label, widget):
+        # A tick box is a narrow column of its own, its header its caption.
+        narrow = isinstance(widget, QCheckBox)
         self.table.grid.addWidget(widget, self.row,
-                                  self.table.column_for(label))
+                                  self.table.column_for(label, narrow))
 
     #: A row has one line; "wide" has nothing to mean here.
     add_wide = add
@@ -1649,6 +1690,8 @@ class QtPanelView(PanelView, QWidget):
         QWidget.__init__(self, parent)
         PanelView.__init__(self, controller, name, panel)
         self._widgets = {}          # id(element) -> widget
+        self._companions = {}       # id(element) -> a widget greyed with it
+        self._detached = {}         # id(element) -> (window, feed), G4
         self._clean_text = {}       # id(element) -> last text we wrote
         self._overlay = None
         self._table = None          # built on the first layout="row" section
@@ -1755,6 +1798,12 @@ class QtPanelView(PanelView, QWidget):
         if self._overlay is not None:
             self._overlay.close()
             self._overlay = None
+        # A detached stream's window belongs to the main window, so it would
+        # outlive its panel: closed and dropped here.
+        for dialog, _ in self._detached.values():
+            dialog.close()
+            dialog.deleteLater()
+        self._detached.clear()
         PanelView.close(self)
         events.debug("Panel Closed", self.name, source="QtView")
         return QWidget.close(self)
@@ -1975,6 +2024,27 @@ class QtPanelView(PanelView, QWidget):
         self._remember(element, button)
         container.add(element.get("text", ""), button)
 
+    def _make_checkbox(self, container, element):
+        """A tick box (G3): the value itself, ticked or not.
+
+        `clicked`, never `toggled`: only the operator's click runs the
+        command, and it sends the NEW value read from the model
+        (`_run_checkbox`), so a box drawn one refresh behind still flips the
+        right way. The refresh sets the tick from the model (`_set_on`) and
+        a refused command is undone by that same refresh. In a table row the
+        column header is the caption, so the box carries no words of its own;
+        its accessible name is the tooltip ("Launch Stepper Probe").
+        """
+        caption = sentence_case(element.get("text", ""))
+        box = QCheckBox("" if container.is_row else caption)
+        name = sentence(element.get("tooltip") or caption)
+        box.setAccessibleName(name)
+        if element.get("tooltip"):
+            box.setToolTip(name)
+        box.clicked.connect(lambda *_: self._run_checkbox(element))
+        self._remember(element, box)
+        container.add(element.get("text", "") if container.is_row else "", box)
+
     def _make_dropdown(self, container, element):
         combo = MiddleCombo()
         # Sized to a fixed number of characters rather than to its longest
@@ -2000,6 +2070,8 @@ class QtPanelView(PanelView, QWidget):
         refresh.setToolTip("Rescan the choices")
         refresh.setAccessibleName("Rescan the choices")
         refresh.clicked.connect(lambda: self._reload_options(element, combo))
+        # Greyed with its dropdown: an unticked row offers nothing to press.
+        self._companions[id(element)] = refresh
         cell = self._row(combo, refresh)
         if container.control_width:
             cell.setMinimumWidth(container.control_width)
@@ -2062,14 +2134,109 @@ class QtPanelView(PanelView, QWidget):
         container.add(element.get("text", ""), lamp)
 
     def _make_log_stream(self, container, element):
-        view = QTextEdit()
-        view.setReadOnly(True)
-        view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        if element.get("detached"):
+            self._build_detached_log(container, element)
+            return
+        view = self._log_feed()
         # Fixed, not merely minimum: a QTextEdit takes every spare pixel a
         # form layout will give it.
         view.setFixedHeight(LOG_STREAM_PX)
         self._remember(element, view)
         container.add_wide(element.get("text", ""), view)
+
+    @staticmethod
+    def _log_feed():
+        """The feed itself, attached or in its own window."""
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        return view
+
+    # -- G4: a detached log stream -----------------------------------------
+    def _build_detached_log(self, container, element):
+        """A button in the feed's place ("Gamepad log…"). The feed lives in
+        ONE non-modal window, built on the first press and reused after; it
+        is polled only while that window shows, per `_wants_data`."""
+        caption = sentence_case(element.get("text", ""))
+        button = QPushButton(f"{caption}\u2026")
+        button.setProperty("role", element.get("role", "neutral"))
+        button.setToolTip(f"Open the {caption.lower()} in its own window")
+        button.setAccessibleName(f"Open the {caption.lower()}")
+        button.clicked.connect(lambda: self.open_detached(element))
+        self._remember(element, button)
+        container.add_wide("", button)
+
+    def open_detached(self, element):
+        """Show the stream's window, building it once; a second press shows
+        and raises the same window. Never `exec()`: it is not modal, so the
+        stop, and every other control, stays one press away."""
+        entry = self._detached.get(id(element))
+        if entry is None:
+            entry = self._detached[id(element)] = self._detached_window(element)
+        dialog, _ = entry
+        was_open = dialog.isVisible()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        if not was_open:
+            # Filled now, not one tick later: it opens on its lines.
+            data = self._call(element["source_command"])
+            if data.is_ok:
+                self._set_data(element, data.value)
+        return dialog
+
+    def _detached_window(self, element):
+        caption = sentence_case(element.get("text", ""))
+        dialog = QDialog(self._main_window())
+        dialog.setObjectName("detachedLog")
+        dialog.setModal(False)
+        dialog.setWindowTitle(f"{self.name} \u2014 {caption}")
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
+        feed = self._log_feed()
+        feed.setAccessibleName(f"{self.name} {caption.lower()}")
+        layout.addWidget(feed)
+        metrics = QFontMetrics(feed.font())
+        dialog.resize(metrics.averageCharWidth() * DETACHED_LOG_CHARS,
+                      metrics.lineSpacing() * DETACHED_LOG_LINES)
+        # Escape and the window's close both end in `finished` (a QDialog's
+        # close is a reject): the window hides and focus returns to the
+        # button that opened it (F12).
+        dialog.finished.connect(lambda _code: self._return_focus(element))
+        button = self._widget_for(element)
+        if button is not None:
+            # Beside the button that opened it, below the rail and its stop,
+            # rather than centred over the window.
+            dialog.move(button.mapToGlobal(QPoint(0, button.height())))
+        return dialog, feed
+
+    def _main_window(self):
+        """The QMainWindow this panel sits in, else its own top window."""
+        widget = self.parentWidget()
+        while widget is not None:
+            if isinstance(widget, QMainWindow):
+                return widget
+            widget = widget.parentWidget()
+        return self.window()
+
+    def _return_focus(self, element):
+        if self._closed:
+            return
+        button = self._widget_for(element)
+        if button is not None:
+            button.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def detached_window(self, element):
+        """The stream's window, or None before the first press."""
+        entry = self._detached.get(id(element))
+        return entry[0] if entry else None
+
+    def _wants_data(self, element):
+        """A detached stream is polled only while its window is showing."""
+        if element.get("type") == "log_stream" and element.get("detached"):
+            window = self.detached_window(element)
+            return window is not None and window.isVisible()
+        return True
 
     def _make_internal(self, container, element):
         """Registers a command in the schema's allow-list and draws nothing.
@@ -2138,6 +2305,15 @@ class QtPanelView(PanelView, QWidget):
         widget = self._widget_for(element)
         if widget is None:
             return
+        if isinstance(widget, QCheckBox):
+            if widget.isChecked() != is_on:
+                # Blocked, so a refresh can never re-send the command.
+                was_blocked = widget.blockSignals(True)
+                try:
+                    widget.setChecked(is_on)
+                finally:
+                    widget.blockSignals(was_blocked)
+            return
         if isinstance(widget, StopButton):
             widget.set_latched(is_on)
             wanted = sentence(element.get("true_text" if is_on else "false_text", ""))
@@ -2189,9 +2365,10 @@ class QtPanelView(PanelView, QWidget):
             self._redraw_image(element, data)
 
     def _set_enabled(self, element, is_enabled):
-        widget = self._widget_for(element)
-        if widget is not None and widget.isEnabled() != is_enabled:
-            widget.setEnabled(is_enabled)
+        for widget in (self._widget_for(element),
+                       self._companions.get(id(element))):
+            if widget is not None and widget.isEnabled() != is_enabled:
+                widget.setEnabled(is_enabled)
 
     def _set_stale(self, is_stale):
         self._is_stale = bool(is_stale)
@@ -2325,7 +2502,11 @@ class QtPanelView(PanelView, QWidget):
             widget.set_series(data)
 
     def _refresh_log(self, element, data):
-        widget = self._widget_for(element)
+        if element.get("detached"):
+            entry = self._detached.get(id(element))
+            widget = entry[1] if entry else None
+        else:
+            widget = self._widget_for(element)
         if widget is None:
             return
         lines = data if isinstance(data, (list, tuple)) else str(data or "").splitlines()
@@ -2931,13 +3112,9 @@ class QtDashboard(Dashboard, QMainWindow):
         layout.addWidget(self.stop_button, 0, Qt.AlignmentFlag.AlignVCenter)
         # The stop from anywhere in the application, dialogs included; it only
         # ever stops (F9). The face's tooltip names it.
-        self.stop_shortcuts = []
-        for sequence in STOP_SHORTCUTS:
-            shortcut = QShortcut(QKeySequence(sequence), self)
-            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-            shortcut.activated.connect(self._on_stop_shortcut)
-            self.stop_shortcuts.append(shortcut)
-        self.stop_shortcut = self.stop_shortcuts[0]
+        self.stop_shortcut = QShortcut(QKeySequence(STOP_SHORTCUT), self)
+        self.stop_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.stop_shortcut.activated.connect(self._on_stop_shortcut)
 
         stack.addWidget(self._build_alert_band())
         self.setMenuWidget(self.rail)
@@ -3461,9 +3638,11 @@ class QtDashboard(Dashboard, QMainWindow):
         self.toggle_estop_all()
         self._sync_stop_button()
 
-    def stop_shortcut_text(self):
-        return QKeySequence(STOP_SHORTCUT).toString(
-            QKeySequence.SequenceFormat.NativeText)
+    @staticmethod
+    def stop_shortcut_text():
+        """The chord's name, spelled out: Qt's native text would print
+        "⌃." or "⌘." on macOS, and the chord reads the same on every OS."""
+        return STOP_SHORTCUT_TEXT
 
     def _sync_stop_button(self):
         """Face and ring from the Controller, never from the last click."""

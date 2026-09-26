@@ -522,3 +522,87 @@ def test_building_a_qt_widget_without_pyside6_says_so_instead_of_failing_oddly()
     for factory in (module.SeriesPlot, module.DeviceDock, module.RegionOverlay):
         with pytest.raises(RuntimeError, match="PySide6 is not installed"):
             factory(None)
+
+
+# ---------------------------------------------------------------------------
+# G3: the tick box's look, from the tokens
+# ---------------------------------------------------------------------------
+
+def test_g3_the_tick_box_is_an_ink_square_filled_with_ink_when_ticked():
+    sheet = qt.stylesheet()
+    square = sheet.split("QCheckBox::indicator {")[1].split("}")[0]
+    assert f"border: 1px solid {theme.TEXT}" in square
+    assert _contrast(theme.TEXT, theme.SURFACE) >= 3.0
+    ticked = sheet.split("QCheckBox::indicator:checked {")[1].split("}")[0]
+    assert f"background-color: {theme.TEXT}" in ticked
+    assert "QCheckBox::indicator:disabled" in sheet
+
+
+def test_g3_the_tick_box_shows_focus_in_ink_round_the_whole_control():
+    sheet = qt.stylesheet()
+    focus = sheet.split("QCheckBox:focus {")[1].split("}")[0]
+    assert qt.FOCUS_RING in focus
+
+
+def test_g3_the_tick_box_follows_the_launch_font_size():
+    original = theme.FONT_SIZE
+    try:
+        theme.set_font_size(24)
+        square = qt.stylesheet().split("QCheckBox::indicator {")[1].split("}")[0]
+        assert "width: 32px" in square and "height: 32px" in square
+    finally:
+        theme.set_font_size(original)
+
+
+# ---------------------------------------------------------------------------
+# G5: no platform-specific UI (owner ruling 2026-09-25)
+# ---------------------------------------------------------------------------
+
+def _import_on(platform, monkeypatch):
+    """qt.py executed afresh as if on `platform`."""
+    monkeypatch.setattr(sys, "platform", platform)
+    spec = importlib.util.spec_from_file_location(f"_qt_on_{platform}",
+                                                  qt.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32", "linux"])
+def test_g5_one_stop_chord_the_physical_control_key_on_every_os(platform,
+                                                                monkeypatch):
+    """One binding, read "Ctrl+." everywhere. Qt calls the macOS Control key
+    "Meta" and the Command key "Ctrl", so on macOS the binding is spelled
+    "Meta+." - the same physical keys, never Command+period."""
+    module = _import_on(platform, monkeypatch)
+    assert module.STOP_SHORTCUT_TEXT == "Ctrl+."
+    assert module.STOP_SHORTCUT == ("Meta+." if platform == "darwin" else "Ctrl+.")
+    assert not hasattr(module, "STOP_SHORTCUTS")          # no second chord
+    assert module.QtDashboard.stop_shortcut_text() == "Ctrl+."
+
+
+def test_g5_the_view_shows_no_command_key_and_branches_on_the_os_once():
+    """No string the operator can see names the Command key, and the only
+    platform test left is the Control key's name in Qt's spelling."""
+    import ast
+    tree = ast.parse(open(qt.__file__).read())
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)):
+            body = node.body
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)):
+                docstrings.add(id(body[0].value))
+    shown = [node.value for node in ast.walk(tree)
+             if isinstance(node, ast.Constant) and isinstance(node.value, str)
+             and id(node) not in docstrings]
+    for text in shown:
+        assert "⌘" not in text and "Cmd" not in text, text
+        assert "Command" not in text, text
+    platform_tests = [node for node in ast.walk(tree)
+                      if isinstance(node, ast.Attribute)
+                      and node.attr == "platform"
+                      and isinstance(node.value, ast.Name)
+                      and node.value.id == "sys"]
+    assert len(platform_tests) == 1
+    assert "darwin" in shown
