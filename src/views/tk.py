@@ -261,6 +261,97 @@ def _lamp_px():
     return max(LAMP_PX, round(0.8 * _line_px()))
 
 
+#: Where the operator last dragged each detached log window, for the
+#: session: (panel name, caption) -> (x, y). A reopened window goes back
+#: there instead of to the computed place (I1).
+_LOG_POSITIONS = {}
+
+_GEOMETRY = re.compile(r"(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)")
+
+
+def _parse_geometry(text):
+    """'WxH+X+Y' -> (x, y, w, h), or None."""
+    match = _GEOMETRY.fullmatch(str(text or "").strip())
+    if not match:
+        return None
+    width, height, x, y = (int(part) for part in match.groups())
+    return (x, y, width, height)
+
+
+def _rect_of(widget):
+    """A widget's rect on the screen, (x, y, w, h), or None when Tk cannot say."""
+    try:
+        rect = (widget.winfo_rootx(), widget.winfo_rooty(),
+                widget.winfo_width(), widget.winfo_height())
+    except Exception:
+        return None
+    return rect if all(isinstance(v, int) for v in rect) else None
+
+
+def _overlap(a, b):
+    """The intersection of two rects, or None."""
+    x0, y0 = max(a[0], b[0]), max(a[1], b[1])
+    x1, y1 = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
+    return (x0, y0, x1 - x0, y1 - y0) if x1 > x0 and y1 > y0 else None
+
+
+def _clamp(value, low, high):
+    return max(low, min(value, high))
+
+
+def _log_window_rect(station, screen, natural, minimum, free=None, gap=0):
+    """Where a detached log window goes: its outer rect (x, y, w, h).
+
+    `station` is the station window's outer rect, `screen` the screen's,
+    `natural` the window's own outer size and `minimum` the least it may
+    shrink to. The window goes OUTSIDE the station window - to its right,
+    else below it, else to its left - at its natural size where that fits,
+    shrunk towards `minimum` where only that fits, clamped to the screen.
+    With no room outside, it goes over `free` (the event tray), the one
+    part of the station window that holds no control: never over a panel,
+    whose Safety column carries a Stop and a Fault lamp (UXPM5-1).
+    """
+    sx, sy, sw, sh = station
+    left, top, width, height = screen
+    right, bottom = left + width, top + height
+    nat_w, nat_h = natural
+    min_w, min_h = minimum
+
+    def beside(x_room, x_of):
+        if x_room < min_w or height < min_h:
+            return None
+        w, h = min(nat_w, x_room), min(nat_h, height)
+        return (x_of(w), _clamp(sy, top, bottom - h), w, h)
+
+    def under():
+        y = sy + sh + gap
+        room = bottom - y
+        if room < min_h or width < min_w:
+            return None
+        w, h = min(nat_w, width), min(nat_h, room)
+        return (_clamp(sx + sw - w, left, right - w), y, w, h)
+
+    candidates = [
+        beside(right - (sx + sw + gap), lambda w: sx + sw + gap),
+        under(),
+        beside(sx - gap - left, lambda w: sx - gap - w),
+    ]
+    fitted = [rect for rect in candidates if rect is not None]
+    for rect in fitted:
+        if rect[2:] == (min(nat_w, width), min(nat_h, height)):
+            return rect
+    if fitted:
+        return max(fitted, key=lambda rect: rect[2] * rect[3])
+    room = _overlap(free, screen) if free is not None else None
+    if room is not None:
+        w, h = min(nat_w, room[2]), min(nat_h, room[3])
+        return (room[0] + room[2] - w, room[1], w, h)
+    # Nowhere clear at all (the tray itself is off the screen): the screen's
+    # bottom-right corner, which is at least not the top of any panel.
+    w, h = min(nat_w, width), min(nat_h, height)
+    return (right - w, bottom - h, w, h)
+
+
 def _elide(font, text, room, middle=False):
     """`text`, or as much of it as fits in `room` px with an ellipsis: at the
     end for prose, in the MIDDLE for an identifier (`middle=True`), whose
@@ -2246,11 +2337,19 @@ class TkPanelView(PanelView):
                        highlightthickness=1, highlightbackground=theme.RULE,
                        padx=GAP, pady=GAP, wrap="word")
 
-    # -- a detached log stream's window (G4) ------------------------------
-    #: The window's size. It opens at the top right of the station window,
-    #: well clear of the stop docked at the bottom, and is never topmost, so
-    #: a click on the station window brings the stop in front of it.
-    LOG_WINDOW_SIZE = (520, 300)
+    # -- a detached log stream's window (G4, I1) --------------------------
+    #: The feed's natural size, in characters and lines; the least it may
+    #: shrink to where the screen is short of room.
+    LOG_FEED_CHARS, LOG_FEED_LINES = 48, 12
+    LOG_MIN_CHARS, LOG_MIN_LINES = 24, 4
+    #: The window's padding, the feed's border and the scrollbar, for when
+    #: Tk cannot measure the window itself.
+    LOG_CHROME_PX = 48
+
+    #: Set by the dashboard: -> {"page": rect, "free": rect}, the notebook's
+    #: rect and the event tray's, on the screen. Without it the panel's own
+    #: frame is the page and there is no free region.
+    log_window_bounds = None
 
     def _open_log_window(self, element):
         """ONE non-modal window per stream: pressing again raises it. No
@@ -2293,7 +2392,7 @@ class TkPanelView(PanelView):
             window.protocol("WM_DELETE_WINDOW", close)
         except Exception:
             pass
-        self._place_log_window(window)
+        self._place_log_window(window, element)
         entry.update(window=window, feed=feed, last_text=None)
         events.debug("Log Window Opened", f"{self.name}/{label}", source=SOURCE)
         # Filled now rather than on the next tick.
@@ -2306,24 +2405,98 @@ class TkPanelView(PanelView):
             pass
         return window
 
-    def _place_log_window(self, window):
-        width, height = self.LOG_WINDOW_SIZE
+    def _log_key(self, element):
+        return (self.name, _label((element or {}).get("text", "")))
+
+    def _log_sizes(self, window, decoration):
+        """(natural, minimum) outer sizes: the feed's own request when Tk
+        can measure it, else estimated from the type scale."""
+        chrome = self.LOG_CHROME_PX
+        glyph = _width_px(_font(SMALL), "0")
+        line = _line_px(SMALL)
+        try:
+            window.update_idletasks()
+            width, height = window.winfo_reqwidth(), window.winfo_reqheight()
+        except Exception:
+            width = height = None
+        if not (isinstance(width, int) and isinstance(height, int)
+                and width > 1 and height > 1):
+            width = glyph * self.LOG_FEED_CHARS + chrome
+            height = line * self.LOG_FEED_LINES + chrome
+        minimum = (min(width, glyph * self.LOG_MIN_CHARS + chrome),
+                   min(height, line * self.LOG_MIN_LINES + chrome) + decoration)
+        return (width, height + decoration), minimum
+
+    def _place_log_window(self, window, element=None):
+        """Put the window where it covers no control of this panel (I1).
+
+        It used to open at a fixed 520x300 at the station window's top
+        right, which is where a probe's Safety column is: its Stop disc,
+        Fault lamp, Step, the opener and every Configuration value. Now it
+        goes where the operator last dragged it this session, else outside
+        the station window, else over the event tray - never over the page
+        (`_log_window_rect`). Sized to its feed, not a constant.
+        """
         try:
             owner = self.frame.winfo_toplevel()
-            x = owner.winfo_rootx() + owner.winfo_width() - width - SPACE[6]
-            y = owner.winfo_rooty() + SPACE[6]
-            window.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
-        except Exception:
+            decoration = max(0, owner.winfo_rooty() - owner.winfo_y())
+            station = (owner.winfo_x(), owner.winfo_y(), owner.winfo_width(),
+                       owner.winfo_height() + decoration)
+            screen = (0, 0, owner.winfo_screenwidth(), owner.winfo_screenheight())
+            if not all(isinstance(v, int) for v in station + screen):
+                raise TypeError("no geometry to place against")
+        except Exception as exc:
+            events.debug("Log Window Unplaced", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+            return None
+        natural, minimum = self._log_sizes(window, decoration)
+        bounds = {}
+        if callable(self.log_window_bounds):
             try:
-                window.geometry(f"{width}x{height}")
-            except Exception:
-                pass
+                bounds = self.log_window_bounds() or {}
+            except Exception as exc:
+                events.debug("Log Window Bounds Failed", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
+        remembered = _LOG_POSITIONS.get(self._log_key(element))
+        if remembered is not None:
+            width, height = natural
+            x = _clamp(remembered[0], 0, max(0, screen[2] - width))
+            y = _clamp(remembered[1], 0, max(0, screen[3] - height))
+            rect = (x, y, min(width, screen[2]), min(height, screen[3]))
+        else:
+            rect = _log_window_rect(station, screen, natural, minimum,
+                                    free=bounds.get("free"), gap=SPACE[4])
+        x, y, width, height = rect
+        geometry = f"{width}x{max(1, height - decoration)}+{x}+{y}"
+        try:
+            window.geometry(geometry)
+        except Exception as exc:
+            events.debug("Log Window Geometry Refused", str(exc), source=SOURCE,
+                         exception=exc)
+            return None
+        if element is not None:
+            self._entry_for(element)["placed"] = (x, y)
+        events.debug("Log Window Placed", f"{self.name}: {geometry}", source=SOURCE)
+        return rect
+
+    def _remember_log_position(self, element, window):
+        """A window the operator moved goes back there next time."""
+        placed = self._entry_for(element).get("placed")
+        try:
+            now = _parse_geometry(window.geometry())
+        except Exception:
+            now = None
+        if now is None or placed is None:
+            return
+        if abs(now[0] - placed[0]) > 2 or abs(now[1] - placed[1]) > 2:
+            _LOG_POSITIONS[self._log_key(element)] = now[:2]
 
     def _close_log_window(self, element, restore_focus=True):
         entry = self._entry_for(element)
         window = entry.get("window")
         entry.update(window=None, feed=None, last_text=None)
         if window is not None:
+            self._remember_log_position(element, window)
             try:
                 window.destroy()
             except Exception:
@@ -3084,6 +3257,7 @@ class TkDashboard(Dashboard):
         """
         frame = tk.Frame(self.root, background=theme.BACKGROUND)
         frame.pack(side="bottom", fill="x", padx=INSET, pady=(GAP, GAP))
+        self._tray = frame
         caption = tk.Label(frame, text="Events", font=_font(SMALL),
                            anchor="w", background=theme.BACKGROUND,
                            foreground=theme.MUTED)
@@ -3200,9 +3374,17 @@ class TkDashboard(Dashboard):
                          "close path", source=SOURCE)
         return None
 
+    def _log_window_bounds(self):
+        """What a panel's detached log window must not cover (the notebook:
+        tabs and page) and where it may go when the screen has no room
+        outside the station window (the event tray). I1."""
+        return {"page": _rect_of(self.notebook),
+                "free": _rect_of(getattr(self, "_tray", None))}
+
     def _add_setup_panel(self):
         frame = ttk.Frame(self.notebook)
         view = TkPanelView(frame, self.controller, self.SETUP_TAB, panel=self.setup)
+        view.log_window_bounds = self._log_window_bounds
         view.frame.pack(fill="both", expand=True)
         self.notebook.add(frame, text=self.SETUP_TAB)
         self._panels[self.SETUP_TAB] = view
@@ -3301,6 +3483,7 @@ class TkDashboard(Dashboard):
             return
         frame = ttk.Frame(self.notebook)
         view = TkPanelView(frame, self.controller, name)
+        view.log_window_bounds = self._log_window_bounds
         view.frame.pack(fill="both", expand=True)
         self.notebook.add(frame, text=name)
         self._panels[name] = view

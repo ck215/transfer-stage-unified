@@ -721,6 +721,8 @@ def tk_harness(monkeypatch):
                         lambda _master, prompt: dialogs.askyesno("Confirm", prompt),
                         raising=False)
     monkeypatch.delenv("STATION_NO_MOTION", raising=False)
+    # Where the operator last dragged each log window, for the session (I1).
+    monkeypatch.setattr(tkmod, "_LOG_POSITIONS", {}, raising=False)
     return dialogs
 
 
@@ -2967,3 +2969,178 @@ def test_the_middle_button_closes_a_tab_on_every_platform(monkeypatch, system,
     monkeypatch.setattr(tkmod, "_windowing_system", lambda _w: system)
     monkeypatch.setattr(tkmod, "_tk_version", lambda: version)
     assert tkmod._close_tab_button(FakeWidget()) == expected
+
+
+# ---------------------------------------------------------------------------
+# I1: the Gamepad log window never covers the panel that owns it
+# ---------------------------------------------------------------------------
+
+#: A Mac title bar: the station's client area starts this far below its frame.
+TITLE_BAR = 28
+
+
+class Station:
+    """The station window as `wm` reports it: a frame at (x, y), a client
+    area `width` x `height` under a title bar, on one screen."""
+
+    def __init__(self, x, y, width, height, screen):
+        self.x, self.y, self.width, self.height = x, y, width, height
+        self.screen = screen
+
+    def winfo_x(self):
+        return self.x
+
+    def winfo_y(self):
+        return self.y
+
+    def winfo_rootx(self):
+        return self.x
+
+    def winfo_rooty(self):
+        return self.y + TITLE_BAR
+
+    def winfo_width(self):
+        return self.width
+
+    def winfo_height(self):
+        return self.height
+
+    def winfo_screenwidth(self):
+        return self.screen[0]
+
+    def winfo_screenheight(self):
+        return self.screen[1]
+
+    def wm_maxsize(self):
+        return self.screen
+
+    def update_idletasks(self):
+        pass
+
+
+class LogWindow(FakeRoot):
+    """A Toplevel whose feed asks for `natural` pixels, recording every
+    geometry it is given."""
+
+    def __init__(self, natural=(430, 260), position=None):
+        super().__init__()
+        self.natural = natural
+        self.geometries = []
+        self.position = position
+
+    def geometry(self, *args):
+        if args:
+            self.geometries.append(args[0])
+            return ""
+        if self.position is None:
+            return "1x1+0+0"
+        return "{}x{}+{}+{}".format(*self.natural, *self.position)
+
+    def update_idletasks(self):
+        pass
+
+    def winfo_reqwidth(self):
+        return self.natural[0]
+
+    def winfo_reqheight(self):
+        return self.natural[1]
+
+    def winfo_x(self):
+        return self.position[0]
+
+    def winfo_y(self):
+        return self.position[1]
+
+    def winfo_width(self):
+        return self.natural[0]
+
+    def winfo_height(self):
+        return self.natural[1]
+
+
+def _outer(geometry):
+    """'WxH+X+Y' -> the window's outer rect (x, y, w, h), title bar included."""
+    match = re.fullmatch(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geometry)
+    assert match, geometry
+    width, height, x, y = (int(part) for part in match.groups())
+    return (x, y, width, height + TITLE_BAR)
+
+
+def _intersects(a, b):
+    return (a[0] < b[0] + b[2] and b[0] < a[0] + a[2]
+            and a[1] < b[1] + b[3] and b[1] < a[1] + a[3])
+
+
+def _inside(rect, screen):
+    return (rect[0] >= 0 and rect[1] >= 0 and rect[0] + rect[2] <= screen[0]
+            and rect[1] + rect[3] <= screen[1])
+
+
+def _station_view(view, station):
+    """Point `view` at `station`: the page is the notebook (tabs and page),
+    the tray is the event log between it and the stop bar."""
+    top = station.winfo_rooty()
+    page = (station.x + 8, top + 40, station.width - 16, station.height - 280)
+    tray = (station.x + 8, top + station.height - 230, station.width - 16, 110)
+    view.frame.winfo_toplevel = lambda: station
+    view.log_window_bounds = lambda: {"page": page, "free": tray}
+    return page, tray
+
+
+@pytest.mark.parametrize("screen", [(1800, 1169), (2560, 1440), (1400, 900)])
+def test_the_log_window_never_covers_the_notebook_page(view, screen):
+    """UXPM5-1: the window opened at the station's top right, over the
+    probe's Stop disc, Fault lamp and Step. Outside the station when the
+    screen has room; over the event tray when it has none; never the page."""
+    station = Station(60, 60, 1400, 900, screen)
+    page, _tray = _station_view(view, station)
+    window = LogWindow()
+    view._place_log_window(window)
+    rect = _outer(window.geometries[-1])
+    assert not _intersects(rect, page), (rect, page)
+    assert _inside(rect, screen), (rect, screen)
+
+
+def test_with_no_room_outside_the_log_window_sits_on_the_tray(view):
+    station = Station(60, 60, 1400, 900, (1400, 900))
+    page, tray = _station_view(view, station)
+    window = LogWindow()
+    view._place_log_window(window)
+    rect = _outer(window.geometries[-1])
+    assert _intersects(rect, tray) and not _intersects(rect, page)
+
+
+def test_the_log_window_opens_beside_the_station_when_there_is_room(view):
+    station = Station(60, 60, 1400, 900, (2560, 1440))
+    _station_view(view, station)
+    window = LogWindow()
+    view._place_log_window(window)
+    x, y, width, height = _outer(window.geometries[-1])
+    assert x >= station.x + station.width, "to the right of the station window"
+    assert (width, height - TITLE_BAR) == window.natural, "the feed's own size"
+
+
+def test_the_log_window_is_sized_to_its_feed_not_a_constant(view):
+    station = Station(60, 60, 1400, 900, (2560, 1440))
+    _station_view(view, station)
+    sizes = set()
+    for natural in ((430, 260), (760, 400)):
+        window = LogWindow(natural)
+        view._place_log_window(window)
+        sizes.add(_outer(window.geometries[-1])[2])
+    assert sizes == {430, 760}
+
+
+def test_the_log_window_returns_where_the_operator_dragged_it(view):
+    station = Station(60, 60, 1400, 900, (2560, 1440))
+    _station_view(view, station)
+    element = side_log(view)
+    click(view, element)
+    entry = view._widgets[id(element)]
+    entry["window"].__class__ = LogWindow
+    entry["window"].natural, entry["window"].position = (430, 260), (1700, 900)
+    entry["window"].geometries = []
+    view._close_log_window(element)
+    window = LogWindow()
+    view._place_log_window(window, element)
+    assert window.geometries[-1].endswith("+1700+900")
