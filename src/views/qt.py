@@ -418,13 +418,37 @@ def reading_kinds(schema):
     return kinds
 
 
+def logical_dpi():
+    """The screen's logical dots per inch: 72 on macOS, 96 on Windows and most
+    Linux desktops, 96 with no application yet. A size the theme gives in
+    pixels becomes points through this, so a 52 px reading is 52 px on every
+    OS (at 72 dpi a point IS a pixel)."""
+    try:
+        screen = QApplication.primaryScreen() if QApplication.instance() else None
+        return float(screen.logicalDotsPerInch()) if screen else 96.0
+    except Exception:
+        return 96.0
+
+
+def px_to_pt(pixels):
+    return pixels * 72.0 / logical_dpi()
+
+
 def reading_pt(kind):
-    """A reading's size in points: `theme.READING_SIZES` (px at the base font)
-    at 96 dpi, following the launch font up to `READING_GROWTH`, and never
+    """A reading's size in points: `theme.READING_SIZES` (px at the base
+    font), following the launch font up to `READING_GROWTH`, and never
     smaller than the text beside it."""
     growth = min(max(theme.FONT_SIZE, 8) / 12.0, READING_GROWTH)
     return max(theme.size(STEP_READOUT),
-               int(round(theme.READING_SIZES[kind] * 0.75 * growth)))
+               int(round(px_to_pt(theme.READING_SIZES[kind] * growth))))
+
+
+def caption_pt():
+    """A caption: `theme.CAPTION_SIZE` px, following the launch font, and
+    never smaller than the text scale's caption step."""
+    growth = max(theme.FONT_SIZE, 8) / 12.0
+    wanted = min(px_to_pt(theme.CAPTION_SIZE * growth), theme.size(STEP_BASE) - 1)
+    return max(theme.size(STEP_CAPTION), int(round(wanted)))
 
 
 def tier_of(section):
@@ -502,7 +526,7 @@ def stylesheet():
     """
     family, base_size = theme.FONT_FAMILY, theme.FONT_SIZE
     numerals = numeral_family()
-    small_size = theme.size(STEP_CAPTION)
+    small_size = caption_pt()
     name_size = theme.size(STEP_READOUT)
     title_size = theme.size(STEP_TITLE)
     go_bg, go_fg = theme.colors("go")
@@ -2011,6 +2035,28 @@ def dot_icon(filled, ink, size=10):
     return _glyph(size, draw, inks)
 
 
+def disclosure_icon(is_open, size=10):
+    """The disclosure's small ink triangle: pointing right when closed, down
+    when open; the platform arrow is a heavy chevron on macOS."""
+    def draw(painter, side, colour):
+        painter.setBrush(QColor(colour))
+        painter.setPen(Qt.PenStyle.NoPen)
+        path = QPainterPath()
+        if is_open:
+            path.moveTo(side * 0.2, side * 0.32)
+            path.lineTo(side * 0.8, side * 0.32)
+            path.lineTo(side * 0.5, side * 0.72)
+        else:
+            path.moveTo(side * 0.32, side * 0.2)
+            path.lineTo(side * 0.72, side * 0.5)
+            path.lineTo(side * 0.32, side * 0.8)
+        path.closeSubpath()
+        painter.drawPath(path)
+    inks = [(mode, theme.TEXT) for mode in (QIcon.Mode.Normal, QIcon.Mode.Active)]
+    inks.append((QIcon.Mode.Disabled, theme.DISABLED[1]))
+    return _glyph(size, draw, inks)
+
+
 def target_px():
     """A small control's side: at least 24 px (WCAG 2.5.8), growing with the
     font (AUD-12)."""
@@ -2482,7 +2528,8 @@ class QtPanelView(PanelView, QWidget):
         button.setObjectName("disclosure")
         button.setText(text)
         button.setCheckable(True)
-        button.setArrowType(Qt.ArrowType.RightArrow)
+        button.setIcon(disclosure_icon(False))
+        button.setIconSize(QSize(theme.SPACE[4] - theme.SPACE[1], theme.SPACE[4] - theme.SPACE[1]))
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2506,8 +2553,9 @@ class QtPanelView(PanelView, QWidget):
             was = button.blockSignals(True)
             button.setChecked(is_open)
             button.blockSignals(was)
-        button.setArrowType(Qt.ArrowType.DownArrow if is_open
-                            else Qt.ArrowType.RightArrow)
+        if button.property("open") != is_open:
+            button.setProperty("open", is_open)
+            button.setIcon(disclosure_icon(is_open))
         body.setVisible(is_open)
         QtPanelView.open_tiers[(self.name, tier)] = is_open
         window = self.window()

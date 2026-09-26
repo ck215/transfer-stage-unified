@@ -2472,7 +2472,7 @@ def test_e_tier_two_is_hidden_until_its_disclosure_is_pressed(tiered):
     assert step.isVisibleTo(view) is False
     view.tier_button.click()
     assert view.well.isVisibleTo(view) and step.isVisibleTo(view)
-    assert view.tier_button.arrowType() == Qt.ArrowType.DownArrow
+    assert view.tier_button.property("open") is True
     view.tier_button.click()
     assert step.isVisibleTo(view) is False
 
@@ -2583,7 +2583,7 @@ def test_e_axis_readings_are_focal_on_the_opened_model_and_compact_otherwise(tie
     assert x.objectName() == "reading" and x.property("scale") == "compact"
     view.set_opened(True)
     assert x.property("scale") == "focal"
-    assert x.font().pointSize() == qt.reading_pt("focal")
+    assert x.font().pointSize() == qt.reading_pt("focal")   # 52 px at any dpi
     captions = [w.text() for w in view.findChildren(QLabel) if w.objectName() == "caption"]
     assert captions.count("Position") == 1                     # once, then X Y Z
     letters = [w.text() for w in view.findChildren(QLabel)
