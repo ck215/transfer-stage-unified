@@ -779,3 +779,10 @@ def test_the_latch_greys_out_home_and_every_move_but_not_stop_motion():
         assert sch.is_enabled(by_command["toggle_estop"], mode) is True
     finally:
         _settle(model)
+
+
+def test_the_tier_two_disclosure_names_the_device():
+    """Tier K (2026-09-26): the disclosure says which device it configures."""
+    model = _rotator()
+    tier_two = [s for s in model.schema["sections"] if s.get("tier") == 2]
+    assert tier_two and tier_two[0]["disclosure"] == f"Configure {model.NAME}"

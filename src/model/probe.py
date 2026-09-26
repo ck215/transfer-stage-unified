@@ -1078,9 +1078,10 @@ class Probe(Model):
         P = self.PARAMS
         # Tiers (owner ruling 2026-09-25, canvas row E): position and speed
         # are what an operator adjusts every session, so they are always
-        # drawn; step sizes, targets, brakes and the gamepad choice sit one
-        # disclosure away; velocity, position age, the gamepad log and the
-        # per-model stop are diagnostics.
+        # drawn; step sizes, targets and brakes sit one disclosure away;
+        # velocity, position age, the gamepad log and the per-model stop
+        # are diagnostics. The gamepad CHOICE is tier 1 (owner, 2026-09-26,
+        # Tier K): it is picked every session, right before Manual mode.
         return sch.schema(
             sch.section(
                 "Position",
@@ -1108,6 +1109,8 @@ class Probe(Model):
                 # F11: greyed out while latched. A latched probe is never in
                 # AUTO or MANUAL (the halt leaves both), so the toggle's "off"
                 # direction is not what this takes away.
+                sch.dropdown("Gamepad:", "gamepad_name", "set_gamepad",
+                             "gamepad_options"),
                 sch.toggle("Autonomous:", "is_auto", "set_mode",
                            "Autonomous mode (press to stop)",
                            "Enter Autonomous Mode",
@@ -1129,12 +1132,13 @@ class Probe(Model):
             ),
             sch.section(
                 "Configuration",
-                sch.dropdown("Gamepad:", "gamepad_name", "set_gamepad",
-                             "gamepad_options"),
                 *[sch.entry(P[name].label + ":", name, P[name],
                             disabled_when=_MOTION_GATE)
                   for name in self.CONFIG_PARAMS],
-                tier=2, disclosure="Configure",
+                # The disclosure names the device (Tier K): once the press
+                # sits above its well instead of beside the model's name,
+                # "Configure" alone did not say what it configured.
+                tier=2, disclosure=f"Configure {self.NAME}",
             ),
             sch.section(
                 "Diagnostics",

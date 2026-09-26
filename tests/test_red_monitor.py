@@ -1167,3 +1167,12 @@ def test_the_figure_is_rendered_once_until_something_changes(logged, monkeypatch
     logged.load_run(logged.save())
     logged.figure
     assert len(calls) == 3, "a new load must render afresh"
+
+
+def test_the_tier_two_disclosure_names_the_device(monitor):
+    """Tier K (2026-09-26): Red Percent's second tier is statistics and
+    annotations, not configuration, so its disclosure reads "<name> details";
+    every tier-2 section says the same words (the views draw the first)."""
+    tier_two = [s for s in monitor.schema["sections"] if s.get("tier") == 2]
+    assert tier_two
+    assert {s["disclosure"] for s in tier_two} == {f"{monitor.NAME} details"}

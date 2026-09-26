@@ -686,3 +686,9 @@ def test_the_latch_greys_out_enter_settings_but_not_stop_heater(heater):
     assert sch.is_enabled(by_command["toggle_estop"], mode) is True
     heater.clear_estop(confirmed=True)
     assert sch.is_enabled(by_command["apply_settings"], heater.state["mode"])
+
+
+def test_the_tier_two_disclosure_names_the_device(heater):
+    """Tier K (2026-09-26): the disclosure says which device it configures."""
+    tier_two = [s for s in heater.schema["sections"] if s.get("tier") == 2]
+    assert tier_two and tier_two[0]["disclosure"] == f"Configure {heater.NAME}"

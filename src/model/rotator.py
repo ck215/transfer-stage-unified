@@ -217,7 +217,7 @@ class Rotator(Model):
                 sch.button("Move To", "move_to", inputs=("target_deg",),
                            role="go", disabled_when=moves),
                 sch.button("Reset & Configure", "configure", disabled_when=moves),
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"Configure {self.NAME}",
             ),
             sch.section(
                 "Diagnostics",

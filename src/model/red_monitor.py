@@ -1215,7 +1215,7 @@ class RedMonitor(Model):
                 sch.entry("Run / Cut ID:", "run_name", P["run_name"],
                           disabled_when=("running",)),
                 sch.readonly("Run ID:", "run_id", param=P["run_id"]),
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(
                 # REDPERCENT-23, D-6: declared once so all three views render
@@ -1224,7 +1224,7 @@ class RedMonitor(Model):
                 *[sch.entry(f"{field.label}:", field.name, P[field.name],
                             disabled_when=("running",))
                   for field in self.ANNOTATION_FIELDS],
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(
                 "Probe Metadata",
@@ -1238,7 +1238,7 @@ class RedMonitor(Model):
                 # shape is not expressible.
                 sch.dropdown("Position Source:", "source_name", "set_source",
                              "source_options", disabled_when=("running",)),
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(
                 "Synced Axes",
@@ -1252,13 +1252,13 @@ class RedMonitor(Model):
                            "Off", on_args=("Z",), off_args=("Z",),
                            disabled_when=("running",)),
                 sch.readonly("Synced:", "sync_axes", param=P["sync_axes"]),
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(
                 "Red Detection",
                 sch.entry("Red at least:", "red_min", P["red_min"],
                           disabled_when=("running",)),
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(
                 "Sampling",
@@ -1268,7 +1268,7 @@ class RedMonitor(Model):
                 sch.readonly("Rows:", "rows_written", param=P["rows_written"]),
                 sch.plot("Red % over time", "series", x_label="time (s)",
                          y_label="red (%)"),
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(
                 "Control",
@@ -1277,7 +1277,7 @@ class RedMonitor(Model):
                                   data_command="screen_image"),
                 sch.button("Reset Baseline", "reset_baseline"),
                 sch.file_save("Save", "save", extensions=("csv",), role="info"),
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(
                 "Analysis",
@@ -1286,7 +1286,7 @@ class RedMonitor(Model):
                 sch.dropdown("Plot:", "plot_dims", "set_plot_dims",
                              "plot_dim_options"),
                 sch.image("Analysis Plot", "figure"),
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(
                 "Diagnostics",

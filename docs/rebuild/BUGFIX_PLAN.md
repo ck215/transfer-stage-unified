@@ -308,6 +308,26 @@ none blocks the merge.
 | J6 | S3 | all | The schema cannot say which tier-1 elements a closed (compact) entry keeps, so compact probes show both speeds and the toggles. | A `compact=True` flag on tier-1 elements, or a per-model `rail` set; renderers show only those when the entry is not the opened one. | direct (schema) → per view |
 | J7 | S4 | qt | `base._make_section` receives title and layout only; the tier lives on the section dict. | Hand the section dict to `_make_section` (base change; both desktop views adapt). | direct (base) |
 
+## Tier K — the owner's first pass over the Bench sheet (2026-09-26)
+
+Four rulings from the owner's look at the merged E views, plus a study.
+K1–K2 are core (landed with this tier's first commit); K3–K4 are one
+worktree per view; K5 is a proposal, not code.
+
+| # | Sev | Views | Item | Fix | Route |
+|---|---|---|---|---|---|
+| K1 | S2 | all (core) | The gamepad choice sat behind Configure; it is picked every session. | `probe.schema`: the Gamepad dropdown is tier 1, first in System Control, ahead of the Manual toggle. Views re-render from the schema. | direct — done |
+| K2 | S2 | all (core) | "Configure" / "Details" did not say what they opened. | The tier-2 `disclosure` names the device: "Configure Stepper Probe", "Configure DC Probe", "Configure Chuck Positioner", "Configure Temperature Controller", "Configure Rotator", "Red Percent details". `theme.TIER_LABELS` stays the default for a schema that says nothing. | direct — done |
+| K3 | S2 | web, tk, qt | The disclosure sat in the entry's head (top right) while the well it opens appeared under the whole tier-1 body: the press and its effect were a screen apart. | The disclosure moves to the foot of the tier-1 body, left-aligned, directly above its well; the head's right side keeps only the state words and the close button. | worktree per view |
+| K4 | S1 | web, tk, qt | No overview. The sheet led with one opened model full width and the others underneath; the owner wants a summary of every active device first, and one press to bring a device up alone. | Two pages on the sheet. **Overview** (the rail's first item; shown at launch and whenever the shown device closes): every launched model as a compact entry in the existing grid, tier-1 body only, no wells; each entry's head is a press target that opens the device. **Device page**: that model alone, full width, focal readings, tiers 2 and 3 available, their open state remembered per model for the session. The rail highlights the shown page; the stop disc, the latched headline and the tray are the same on both. | worktree per view |
+| K5 | — | model + firmware | A zeroing / centring routine for the stepper probe with no limit switches ("global zero" at the start of a session). | A proposal first: `handoff/proposal-probe-zeroing.md` (driver, stall detection vs current sensing vs bump homing vs switches vs vision vs software zero; safety; owner decisions). Any firmware or wire change is an owner decision. | subagent (study) → owner |
+
+Assumption stated for K4 (owner may pare it down): the overview keeps each
+device's whole tier-1 body (speed slider and entry, mode toggles, Step),
+because speed is the control the owner named as commonly adjusted; a
+readings-only overview is a one-line change to the compact entry once J6's
+`compact` flag exists.
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.

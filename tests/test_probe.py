@@ -1083,3 +1083,26 @@ def test_a_failed_move_write_reaches_the_view_as_a_sentence(probe):
     assert result.reason.startswith("Step did not complete.")
     shown = [e for e in log.seen if e.severity != "debug"]
     assert all("b'" not in e.message for e in shown)
+
+
+@pytest.mark.schema
+def test_the_gamepad_choice_is_tier_one_beside_the_mode_toggles(probe):
+    """Owner ruling 2026-09-26 (Tier K): the gamepad is chosen every session,
+    so it does not sit behind Configure. It is in the same tier-1 section
+    as the Manual toggle, ahead of it."""
+    import schema as sch
+    section = next(s for s in probe.schema["sections"]
+                   if any(e["type"] == "dropdown" for e in s["elements"]))
+    assert section.get("tier", 1) == 1, section["title"]
+    kinds = [(e["type"], e.get("model_attr")) for e in section["elements"]]
+    assert kinds.index(("dropdown", "gamepad_name")) < kinds.index(("toggle", "is_manual"))
+    assert not any(e["type"] == "dropdown" for s in probe.schema["sections"]
+                   if s.get("tier", 1) != 1 for e in s["elements"])
+
+
+@pytest.mark.schema
+def test_the_tier_two_disclosure_names_the_device(probe):
+    """Tier K: "Configure" alone did not say what it configured once the
+    press moved down to its well; the disclosure carries the model's name."""
+    tier_two = [s for s in probe.schema["sections"] if s.get("tier") == 2]
+    assert tier_two and tier_two[0]["disclosure"] == f"Configure {probe.NAME}"

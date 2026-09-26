@@ -264,7 +264,7 @@ class Heater(Model):
                   for name in self.FRAME_FIELDS if name != "setpoint"],
                 sch.plot("Temperature over time", "series",
                          x_label="time (s)", y_label="temperature (°C)"),
-                tier=2, disclosure="Details",
+                tier=2, disclosure=f"Configure {self.NAME}",
             ),
             sch.section(
                 "Diagnostics",
