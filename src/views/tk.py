@@ -1515,6 +1515,8 @@ class TkPanelView(PanelView):
         self._tier_count = {}           # tier -> how many sections it holds
         self._disclosures = {}          # tier -> _Disclosure
         self._well = self._diagnostics = None
+        self._well_holder = None        # what is packed to show tier 2
+        self._well_canvas = self._well_window = None
         self._building_tier = 1
         self._readings = []             # (element, base kind) - re-sized by prominence
         self._why_labels = {}           # id(section container) -> its reason caption
@@ -1606,7 +1608,7 @@ class TkPanelView(PanelView):
         self._canvas = getattr(self._sheet, "canvas", None)
         self._pinned = tk.Frame(self.frame, background=_page())
         self._body = tk.Frame(self.frame, background=_page())
-        self._body.pack(side="top", fill="x")
+        self._body.pack(side="top", fill="both", expand=True)
 
     def _name_font(self):
         """The opened model's name is a step louder than a closed one's."""
@@ -1921,8 +1923,12 @@ class TkPanelView(PanelView):
                 _page())
             self._disclosures[2] = opener
             self._show_opener()
-            well = self._well = tk.Frame(self._body, background=theme.SURFACE,
-                                         padx=SPACE[5], pady=SPACE[4])
+            if self._sheet is not None:
+                well = self._well = self._build_well_scroller()
+            else:
+                well = self._well = self._well_holder = tk.Frame(
+                    self._body, background=theme.SURFACE, padx=SPACE[5],
+                    pady=SPACE[4])
             self._tiers[2] = tk.Frame(well, background=theme.SURFACE)
             self._tiers[2].pack(side="top", fill="x")
         if tier == 3 and 3 not in self._tiers:
@@ -1937,6 +1943,149 @@ class TkPanelView(PanelView):
             self._tiers[3] = tk.Frame(holder, background=theme.SURFACE)
             self._tiers[3].pack(side="left", fill="x", expand=True)
         return self._tiers[min(tier, 3)]
+
+    # -- the well's own scroll (L5) ----------------------------------------------
+    #: The least height the well keeps on the device page before the sheet
+    #: itself has to scroll (a tall tier 1 at 28 pt in a short window).
+    WELL_FLOOR_PX = 160
+
+    def _build_well_scroller(self):
+        """On the sheet the well scrolls by itself (L5, TK7-3): the device
+        page gives the entry the sheet's height, the head and tier 1 keep
+        their place above, and only the well - tiers 2 and 3 - moves under
+        the wheel. The well is a frame on a canvas of its own; the canvas
+        asks for no height, so the entry's natural height is its head and
+        tier 1. -> the well frame"""
+        area = self._well_holder = tk.Frame(self._body, background=_page())
+        self._well_bar = ttk.Scrollbar(area, orient="vertical")
+        canvas = self._well_canvas = tk.Canvas(area, height=1, background=_page(),
+                                               highlightthickness=0,
+                                               yscrollcommand=self._well_bar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        well = tk.Frame(canvas, background=theme.SURFACE, padx=SPACE[5],
+                        pady=SPACE[4])
+        self._is_well_bar_shown = False
+        # The well becomes the canvas's window only when it is first shown
+        # (`_embed_well`): an embedded window in a canvas that is not mapped
+        # sent Tk 9's geometry into a loop that never went idle.
+        self._well_window = None
+        try:
+            self._well_bar.configure(command=canvas.yview)
+        except Exception as exc:
+            events.debug("Well Not Wired", str(exc), source=SOURCE, exception=exc)
+        well.bind("<Configure>", self._on_well_resized, add="+")
+        canvas.bind("<Configure>", self._on_well_canvas_resized, add="+")
+        return well
+
+    def _embed_well(self):
+        if self._well_window is not None or self._well_canvas is None:
+            return
+        try:
+            self._well_window = self._well_canvas.create_window(
+                (0, 0), window=self._well, anchor="nw")
+            width = self._well_canvas.winfo_width()
+            if isinstance(width, int) and width > 1:
+                self._well_canvas.itemconfigure(self._well_window, width=width)
+        except Exception as exc:
+            events.debug("Well Not Embedded", str(exc), source=SOURCE, exception=exc)
+
+    def _on_well_resized(self, _event=None):
+        try:
+            self._well_canvas.configure(scrollregion=self._well_canvas.bbox("all"))
+        except Exception:
+            pass
+        self._sync_well_bar()
+
+    def _on_well_canvas_resized(self, event=None):
+        """The well is as wide as its canvas, so its flows wrap to it."""
+        width = getattr(event, "width", 0)
+        if self._well_window is None or not isinstance(width, int) or width <= 1:
+            return
+        try:
+            self._well_canvas.itemconfigure(self._well_window, width=width)
+        except Exception:
+            pass
+        self._sync_well_bar()
+
+    def _sync_well_bar(self):
+        """A scrollbar beside the well only while it has more than it shows."""
+        try:
+            content = self._well.winfo_reqheight()
+            viewport = self._well_canvas.winfo_height()
+        except Exception:
+            return
+        if not (isinstance(content, int) and isinstance(viewport, int)) or viewport <= 1:
+            return
+        needed = content > viewport
+        if needed == self._is_well_bar_shown:
+            return
+        self._is_well_bar_shown = needed
+        try:
+            if needed:
+                self._well_bar.pack(side="right", fill="y", before=self._well_canvas)
+            else:
+                self._well_bar.pack_forget()
+                self._well_canvas.yview_moveto(0)
+        except Exception:
+            pass
+
+    @property
+    def well_canvas(self):
+        """The canvas the wheel scrolls on the device page while the well is
+        shown (L5), else None."""
+        canvas = getattr(self, "_well_canvas", None)
+        if canvas is None or not self._is_opened or not self.is_disclosed(2):
+            return None
+        return canvas
+
+    def scroll_well(self, step, widget=None):
+        """The wheel over the well scrolls the well (L5). -> True if it did."""
+        canvas = self.well_canvas
+        if canvas is None:
+            return False
+        if widget is not None:
+            node = widget
+            while node is not None and node is not self._well_holder:
+                node = getattr(node, "master", None)
+            if node is None:
+                return False
+        try:
+            canvas.yview_scroll(step, "units")
+        except Exception:
+            return False
+        return True
+
+    def _scroll_well_to(self, widget):
+        """Bring a widget inside the well into view by scrolling the well
+        (a refusal under a tier-2 control). -> True when it was the well's."""
+        canvas = self.well_canvas
+        if canvas is None:
+            return False
+        node, top = widget, 0
+        try:
+            while node is not None and node is not self._well:
+                top += node.winfo_y()
+                node = node.master
+            if node is None:
+                return False
+            bottom = top + widget.winfo_reqheight()
+            total = self._well.winfo_height()
+            first, last = canvas.yview()
+        except Exception:
+            return False
+        numbers = (top, bottom, total, first, last)
+        if not all(isinstance(v, (int, float)) for v in numbers) or total <= 1:
+            return True
+        view_top, view_bottom = first * total, last * total
+        if top >= view_top and bottom <= view_bottom:
+            return True
+        target = (top - SPACE[4] if top < view_top
+                  else bottom + SPACE[4] - (view_bottom - view_top))
+        try:
+            canvas.yview_moveto(max(0.0, min(1.0, target / total)))
+        except Exception:
+            pass
+        return True
 
     def _build_well_foot(self):
         """"Close this model…" at the foot of the model's well (L13, as
@@ -2010,13 +2159,18 @@ class TkPanelView(PanelView):
         on the device page and only while remembered open; the Diagnostics
         strip inside it while remembered open."""
         is_open = bool(_DISCLOSED.get((self.name, tier), False))
-        target = self._well if tier == 2 else self._diagnostics
+        target = self._well_holder if tier == 2 else self._diagnostics
         if target is None:
             return
         try:
             if tier == 2 and is_open and self._is_opened:
-                # Directly under its press, no gap (K3).
-                target.pack(side="top", fill="x", padx=self._inset,
+                # Directly under its press, no gap (K3). On the sheet the
+                # well takes the rest of the page and scrolls by itself (L5).
+                on_sheet = self._sheet is not None
+                if on_sheet:
+                    self._embed_well()
+                target.pack(side="top", fill="both" if on_sheet else "x",
+                            expand=on_sheet, padx=self._inset,
                             pady=(0, SPACE[3]), after=self._disclosures[2].frame)
             elif tier == 3 and is_open:
                 target.pack(side="top", fill="x", padx=self._inset,
@@ -4272,6 +4426,8 @@ class TkPanelView(PanelView):
         """Scroll the panel just enough that `widget` is fully visible. On
         the sheet, the sheet scrolls."""
         if self._sheet is not None:
+            if self._scroll_well_to(widget):
+                return
             scroll = getattr(self._sheet, "scroll_into_view", None)
             if callable(scroll):
                 scroll(widget)
@@ -4365,6 +4521,15 @@ class _Sheet:
         self.body = tk.Frame(self.canvas, background=_page(), padx=SPACE[10],
                              pady=SPACE[9])
         self.is_scrollbar_shown = False
+        # The device page (L5): the body is exactly as tall as the sheet -
+        # or `fit_floor()` when that is taller - so the page itself does not
+        # scroll and the opened model's well scrolls instead
+        # (`wheel_target`). The overview scrolls as it always has.
+        self.fit = False
+        self.fit_floor = None           # -> px the page needs at least
+        self.wheel_target = None        # (step) -> True when it scrolled
+        self.viewport = 0
+        self.fitted = 0                 # the window height last applied
         try:
             self.scrollbar.configure(command=self.canvas.yview)
             self.window = self.canvas.create_window((0, 0), window=self.body,
@@ -4386,10 +4551,43 @@ class _Sheet:
 
     def _on_canvas_resized(self, event=None):
         width = getattr(event, "width", 0)
+        height = getattr(event, "height", 0)
+        if isinstance(height, int) and height > 1:
+            self.viewport = height
         if self.window is None or not width:
             return
         try:
             self.canvas.itemconfigure(self.window, width=width)
+        except Exception:
+            pass
+        self.refit()
+        self._sync_scrollbar()
+
+    def set_fit(self, is_fit):
+        """The device page (fit) or the overview (the body's own height)."""
+        self.fit = bool(is_fit)
+        self.refit()
+
+    def refit(self):
+        """Apply the fit: the viewport's height, or the page's floor when
+        that is more. 0 gives the body back its own height. Only a change
+        is applied."""
+        want = 0
+        if self.fit and self.viewport > 1:
+            floor = 0
+            if callable(self.fit_floor):
+                try:
+                    floor = int(self.fit_floor() or 0)
+                except Exception:
+                    floor = 0
+            want = max(self.viewport, floor)
+        if want == self.fitted or self.window is None:
+            return
+        self.fitted = want
+        try:
+            self.canvas.itemconfigure(self.window, height=want)
+            if want:
+                self.canvas.yview_moveto(0)
         except Exception:
             pass
         self._sync_scrollbar()
@@ -4402,6 +4600,8 @@ class _Sheet:
             return
         if not (isinstance(content, int) and isinstance(viewport, int)) or viewport <= 1:
             return
+        if self.fit:
+            content = max(content, self.fitted)
         needed = content > viewport
         if needed == self.is_scrollbar_shown:
             return
@@ -4439,6 +4639,9 @@ class _Sheet:
             step = -1 if delta > 0 else 1
         else:
             return None
+        if (self.fit and callable(self.wheel_target)
+                and self.wheel_target(step, getattr(event, "widget", None))):
+            return "break"
         try:
             self.canvas.yview_scroll(step, "units")
         except Exception:
@@ -4566,6 +4769,8 @@ class TkDashboard(Dashboard):
         self._sheet_page = ttk.Frame(self.notebook)
         self._sheet = _Sheet(self._sheet_page)
         self._sheet.frame.pack(fill="both", expand=True)
+        self._sheet.fit_floor = self._device_floor
+        self._sheet.wheel_target = self._scroll_device_well
         self._build_headline()
         self.notebook.add(self._sheet_page, text=self.SHEET_TAB)
         self._bind_stop_keys()
@@ -5057,9 +5262,18 @@ class TkDashboard(Dashboard):
             groups = [names[index:index + columns]
                       for index in range(0, len(names), columns)]
         self._sheet_rows = []
+        is_device = self._opened is not None
         for group in groups:
             row = tk.Frame(self._sheet.body, background=_page())
-            row.pack(side="top", fill="x", pady=(0, SPACE[9]))
+            # The device page's one row takes the page's height: its entry's
+            # well scrolls inside it (L5).
+            row.pack(side="top", fill="both" if is_device else "x",
+                     expand=is_device, pady=(0, 0 if is_device else SPACE[9]))
+            if is_device:
+                try:
+                    row.grid_rowconfigure(0, weight=1)
+                except Exception:
+                    pass
             # Every row has the page's columns, filled or not, so a short
             # last row's entries are as wide as the full rows' (TK7-8).
             width = 1 if self._opened is not None else columns
@@ -5084,16 +5298,37 @@ class TkDashboard(Dashboard):
                                                  minsize=SPACE[10])
                     row.grid_columnconfigure(column, weight=1, uniform="entries")
                     frame = self._panels[name].frame
-                    frame.grid(in_=row, row=0, column=column, sticky="new")
+                    frame.grid(in_=row, row=0, column=column,
+                               sticky="nsew" if is_device else "new")
                     frame.lift()
                 except Exception as exc:
                     events.debug("Entry Not Placed", f"{name}: {exc}", source=SOURCE,
                                  exception=exc, every=5.0)
             self._sheet_rows.append(row)
+        self._sheet.set_fit(is_device)
         self._paint_rail()
         events.debug("Sheet Laid Out", f"page={self._opened or OVERVIEW_PAGE} "
                      f"columns={columns} "
                      f"rows={[len(g) for g in groups]}", source=SOURCE)
+
+    def _device_floor(self):
+        """The least the device page needs (L5): the head and tier 1 as
+        they ask, plus room for the well when it is shown. More than the
+        window, and the sheet scrolls as a last resort."""
+        view = self._panels.get(self._opened) if self._opened else None
+        try:
+            need = self._sheet.body.winfo_reqheight()
+        except Exception:
+            return 0
+        if not isinstance(need, int):
+            return 0
+        if view is not None and view.well_canvas is not None:
+            need += view.WELL_FLOOR_PX
+        return need
+
+    def _scroll_device_well(self, step, widget=None):
+        view = self._panels.get(self._opened) if self._opened else None
+        return bool(view is not None and view.scroll_well(step, widget))
 
     def show_model(self, name):
         """The device page (K4): what a press on a model's rail line or on
@@ -5499,6 +5734,7 @@ class TkDashboard(Dashboard):
             return
         self._sync_stop_button()
         self._sync_station_line()
+        self._sheet.refit()
         self._schedule_refresh()
 
     def _sync_stop_button(self):

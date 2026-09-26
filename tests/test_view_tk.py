@@ -3957,7 +3957,9 @@ def test_k4_the_overview_shows_every_model_with_no_well_and_no_disclosure(
     assert sorted(_shown(built)) == sorted(K_NAMES)
     for name in K_NAMES:
         view = built._panels[name]
-        assert not view._well.is_packed, f"{name}: no well on the overview"
+        # Updated for L5: on the sheet the well sits in a scroller of its
+        # own; that holder is what is shown or not.
+        assert not view._well_holder.is_packed, f"{name}: no well on the overview"
         assert not view._disclosures[2].frame.is_packed, f"{name}: no disclosure"
         assert not view.is_disclosed(2)
         assert view._open_label.is_packed
@@ -4042,11 +4044,12 @@ def test_k4_the_open_tiers_survive_overview_device_overview_device(setup_panel):
     probe = built._panels["Stepper Probe"]
     probe.set_disclosure(2, True)
     probe.set_disclosure(3, True)
-    assert probe._well.is_packed and probe.is_disclosed(3)
+    # Updated for L5: the well's holder (its own scroller) is what is packed.
+    assert probe._well_holder.is_packed and probe.is_disclosed(3)
     built.show_overview()
-    assert not probe._well.is_packed and not probe.is_disclosed(2)
+    assert not probe._well_holder.is_packed and not probe.is_disclosed(2)
     built.show_model("Stepper Probe")
-    assert probe._well.is_packed and probe._diagnostics.is_packed
+    assert probe._well_holder.is_packed and probe._diagnostics.is_packed
     assert probe.is_disclosed(3)
     assert probe._disclosures[2].widget.cget("text").startswith("\u25be")
     tkmod._DISCLOSED.clear()
@@ -4705,3 +4708,55 @@ def test_l20_captions_in_a_line_share_its_top_and_commands_its_foot(gated):
         if widget in (speed, start) and kwargs.get("in_") is not None:
             anchors[widget] = kwargs.get("anchor")
     assert anchors[speed] == "nw" and anchors[start] == "sw"
+
+
+def test_l5_on_the_device_page_only_the_well_scrolls(setup_panel):
+    """TK7-3: with the well open the opened model's X/Y/Z and speeds
+    scrolled off the top. The device page is now the sheet's height; the
+    head and tier 1 stay; the well is a scroller of its own."""
+    built, controller = _two_page_dashboard(setup_panel, *K_NAMES)
+    probe = built._panels["Stepper Probe"]
+    assert probe._well.master is probe._well_canvas, "the well is on its own canvas"
+    assert probe._tiers[1].master is probe._body, "tier 1 is not"
+    assert probe._well_canvas.cget("height") == 1, "it asks for no height"
+    built._sheet._on_canvas_resized(FakeEvent(width=1100, height=800))
+    assert not built._sheet.fit and built._sheet.fitted == 0, "the overview scrolls"
+    built.show_model("Stepper Probe")
+    probe.set_disclosure(2, True)
+    assert built._sheet.fit
+    assert built._sheet.canvas.windows[built._sheet.window]["height"] >= 800
+    packed = [kw for widget, kw in PACK_ORDER if widget is probe._well_holder][-1]
+    assert packed["fill"] == "both" and packed["expand"], "the well takes the rest"
+    row = built._sheet_rows[0]
+    assert [kw for widget, kw in PACK_ORDER if widget is row][-1]["expand"]
+    assert probe.frame.grid_info["sticky"] == "nsew"
+    # The wheel over the well scrolls the well, never the page.
+    handler = ALL_BINDINGS.get("<MouseWheel>")
+    built._sheet._on_pointer_enter()
+    ALL_BINDINGS["<MouseWheel>"](FakeEvent(delta=-1, widget=probe._well))
+    assert probe._well_canvas.scrolled == [(1, "units")]
+    assert built._sheet.canvas.scrolled == []
+    # Back on the overview, the page scrolls as it always has.
+    built.show_overview()
+    assert not built._sheet.fit
+    assert built._sheet.canvas.windows[built._sheet.window]["height"] == 0
+    del handler
+    tkmod._DISCLOSED.clear()
+    built.close()
+
+
+def test_l5_the_well_is_embedded_only_once_it_is_first_shown(setup_panel):
+    """A canvas window inside a canvas that was never mapped sent Tk 9's
+    geometry into a loop that never went idle (the real build hung at the
+    overview). The well joins its canvas when it is first shown."""
+    built, controller = _two_page_dashboard(setup_panel, *K_NAMES)
+    probe = built._panels["Stepper Probe"]
+    assert probe._well_canvas.windows == {}
+    built.show_model("Stepper Probe")
+    probe.set_disclosure(2, True)
+    assert [w["window"] for w in probe._well_canvas.windows.values()] == [probe._well]
+    built.show_overview()
+    built.show_model("Stepper Probe")
+    assert len(probe._well_canvas.windows) == 1, "once"
+    tkmod._DISCLOSED.clear()
+    built.close()
