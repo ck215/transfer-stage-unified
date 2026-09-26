@@ -1705,7 +1705,7 @@ class Dashboard {
     link.textContent = 'The station has shut down. You can close this tab.';
     link.title = 'The station program has exited. Start it again to reconnect.';
     link.className = 'link-state is-shut-down';
-    document.body.classList.add('is-offline');
+    document.body.classList.add('is-offline', 'is-shut-down');
     this.muteReadouts('Shut down');
     for (const control of [this.dom.stop, this.dom.setupLink, this.dom.quitLink]) {
       control.disabled = true;

@@ -218,6 +218,11 @@ button, select, .mushroom {
   cursor: not-allowed;
 }
 
+/* ...and the page under the rail is inert and reads as such: the rack and
+   the tray recede, so nothing on them looks like a control that still
+   reaches the station. */
+.is-shut-down .rack, .is-shut-down .tray { opacity: 0.5; }
+
 /* -- the rail's alert lines ---------------------------------------------- */
 /* A stop that did not land, a device that was lost: a full-width band at the
    foot of the rail, ink on a signal-tinted panel with a signal mark, so the

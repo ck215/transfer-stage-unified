@@ -1200,6 +1200,14 @@ def test_quit_asks_first_then_the_page_says_the_station_is_down(station, tmp_pat
           cardsInert: document.getElementById('cards').inert,
           badge: !card.querySelector('.stale-badge').hidden,
           stopDisabled: document.getElementById('full-stop').disabled,
+          muted: (() => {
+            const v = Array.from(card.querySelectorAll('.value')).find((n) => n.textContent === '0.000');
+            const probe = document.createElement('span');
+            probe.style.color = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim();
+            document.body.appendChild(probe);
+            return getComputedStyle(v).color === getComputedStyle(probe).color;
+          })(),
+          rackDimmed: Number(getComputedStyle(document.getElementById('cards')).opacity) < 1,
           quitDisabled: document.getElementById('quit-link').disabled,
         };
       }, quit, asked, afterCancel, quiet, seen);
@@ -1217,3 +1225,4 @@ def test_quit_asks_first_then_the_page_says_the_station_is_down(station, tmp_pat
     assert out["statesAfter"] == 0 and out["beatsAfter"] == 0, out
     assert out["offline"] and out["cardsInert"] and out["badge"], out
     assert out["stopDisabled"] and out["quitDisabled"], out
+    assert out["muted"] and out["rackDimmed"], out
