@@ -202,26 +202,54 @@ button, select, .mushroom {
   border: 2px solid var(--signal);
 }
 
-/* Quit is deliberate, not a fault: the lamp goes out, muted, not red (G2). */
-.link-state.is-shut-down { white-space: normal; max-width: 14rem; color: var(--muted); }
+/* Quit is deliberate, not a fault: the lamp goes out, not red (G2). The
+   sentence is the one thing left to read on the page, so it is ink at
+   readout size (I5, UXPM5-4); it takes focus only so focus has somewhere to
+   land, and draws no ring. */
+.link-state.is-shut-down {
+  white-space: normal;
+  max-width: 22rem;
+  font-size: var(--t-readout);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.link-state.is-shut-down:focus { outline: none; }
 
 .link-state.is-shut-down::before {
   background: none;
   border: 2px solid var(--muted);
 }
 
-/* After Quit there is no station behind the rail's controls: the stop and
-   the rail buttons are disabled and look it, so a red disc never promises a
-   stop that nothing is left to deliver. */
-.mushroom:disabled, .rail-control:disabled {
+/* After Quit there is no station behind the rail's controls: the rail
+   buttons are disabled and look it. */
+.rail-control:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
+/* The stop disc after Quit, whatever face it had: inert, neutral, no signal
+   red and no ring, so it promises neither a stop nor a latch that nothing is
+   left to deliver. The per-model discs go the same way. */
+.mushroom.is-off,
+.is-shut-down .mushroom,
+.is-shut-down .mushroom:hover,
+.is-shut-down .mushroom.is-latched {
+  background: var(--disabled-bg);
+  border-color: var(--rule-strong);
+  box-shadow: none;
+  color: var(--disabled-fg);
+  cursor: not-allowed;
+  animation: none;
+}
+
 /* ...and the page under the rail is inert and reads as such: the rack and
-   the tray recede, so nothing on them looks like a control that still
-   reaches the station. */
+   the tray recede, and nothing on them keeps a signal mark it can no longer
+   observe. */
 .is-shut-down .rack, .is-shut-down .tray { opacity: 0.5; }
+
+.is-shut-down .card.is-latched,
+.is-shut-down .card.is-lost { border-left-color: var(--rule-strong); }
 
 /* -- the rail's alert lines ---------------------------------------------- */
 /* A stop that did not land, a device that was lost: a full-width band at the

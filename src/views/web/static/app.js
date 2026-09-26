@@ -1390,6 +1390,8 @@ class PanelCard {
 
   // -- refresh -----------------------------------------------------------
   refresh(state) {
+    // A state that crossed the Quit must not re-enable a control (I5).
+    if (this.dashboard && this.dashboard.isShutDown) return;
     this.isOffline = false;
     this.values = (state && state.values) || {};
     const mode = (state && state.mode) || '';
@@ -1917,6 +1919,11 @@ class Dashboard {
     this.showShutDown();
   }
 
+  /** The end-state after Quit (G2, I5): the page stops asserting anything it
+   *  can no longer observe. The rail says one sentence, in ink at readout
+   *  size, and focus lands on it; the stop disc is drawn inert (no red, no
+   *  ring, not a button any more), whatever face it had; every alert line,
+   *  acknowledgement and raw error goes; every control is disabled. */
   showShutDown() {
     this.isShutDown = true;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
@@ -1924,17 +1931,40 @@ class Dashboard {
     this.answerConfirm(false);
     this.closeRegionPicker();
     this.setDrawerOpen(false);
-    this.setRailLine('quit', '');
+    for (const win of this.floating.slice()) {
+      if (win.closeFloating) win.closeFloating();
+    }
+    // Nothing is left to be latched, unconfirmed or acknowledged.
+    for (const key of Array.from(this.railLines.keys())) this.setRailLine(key, '');
+    this.dom.railAlert.hidden = true;
+    this.ackQueue = [];
+    clear(this.dom.modalText);
+    this.dom.modal.hidden = true;
+    const stop = this.dom.stop;
+    stop.classList.remove('is-latched', 'pulse');
+    stop.classList.add('is-off');
+    putText(this.dom.stopFace, 'Off');
+    stop.removeAttribute('aria-keyshortcuts');
+    stop.setAttribute('aria-disabled', 'true');
+    stop.setAttribute('aria-label', 'Stop: the station has shut down');
+    stop.title = 'The station program has exited: there is nothing left to stop.';
+    const hint = document.querySelector('.stop-hint');
+    if (hint) hint.hidden = true;
+    this.setLogCollapsed(true);
+    this.dom.trayLatest.textContent = 'Quit from the Web console';
+    this.dom.trayLatest.className = 'tray-latest';
+    document.body.classList.add('is-offline', 'is-shut-down');
+    this.muteReadouts('Shut down');
+    for (const control of document.querySelectorAll('button, input, select, textarea')) {
+      control.disabled = true;
+    }
+    this.updateInert();
     const link = this.dom.connection;
     link.textContent = 'The station has shut down. You can close this tab.';
     link.title = 'The station program has exited. Start it again to reconnect.';
     link.className = 'link-state is-shut-down';
-    document.body.classList.add('is-offline', 'is-shut-down');
-    this.muteReadouts('Shut down');
-    for (const control of [this.dom.stop, this.dom.setupLink, this.dom.quitLink]) {
-      control.disabled = true;
-    }
-    this.updateInert();
+    link.tabIndex = -1;
+    link.focus({ preventScroll: true });
   }
 
   // -- the rail's alert lines --------------------------------------------

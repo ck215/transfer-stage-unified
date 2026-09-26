@@ -1606,3 +1606,124 @@ def test_the_gamepad_log_panel_opens_in_its_own_card_and_covers_no_other(sim_sta
             assert got["owner"], f"at {width} the {who} log is not in its own card"
         assert out[f"stepperClosed{width}"] == 1, "two log panels open at once"
         assert out[f"stopOnTop{width}"], f"at {width} the log panel covers the stop"
+
+
+# --------------------------------------------------------------------------
+# I5 (audit round 5, UXPM5-4): the page after Quit reads as shut down
+# --------------------------------------------------------------------------
+_SHUT_DOWN = "The station has shut down. You can close this tab."
+
+#: Quit through the page, then describe what is left of it.
+_QUIT_AND_READ = r"""
+  const announced = [];
+  await page.exposeFunction('noteLive', (t) => announced.push(t));
+  await page.evaluate(() => {
+    const region = document.getElementById('connection');
+    new MutationObserver(() => window.noteLive(region.textContent))
+      .observe(region, { childList: true, characterData: true, subtree: true });
+  });
+  await page.click('#quit-link');
+  await until(() => !document.getElementById('confirm-modal').hidden);
+  await page.click('#confirm-yes');
+  await until(() => document.body.classList.contains('is-shut-down'));
+  await sleep(1500);
+  const end = await page.evaluate(() => {
+    const css = getComputedStyle(document.documentElement);
+    const swatch = (name) => {
+      const s = document.createElement('span');
+      s.style.color = css.getPropertyValue(name).trim();
+      document.body.appendChild(s);
+      const c = getComputedStyle(s).color;
+      s.remove();
+      return c;
+    };
+    const signal = swatch('--signal');
+    const text = swatch('--text');
+    const sized = document.createElement('span');
+    sized.style.fontSize = 'var(--t-readout)';
+    document.body.appendChild(sized);
+    const readout = getComputedStyle(sized).fontSize;
+    sized.remove();
+    const red = [];
+    for (const el of document.querySelectorAll('body *')) {
+      if (!el.getClientRects().length) continue;
+      const s = getComputedStyle(el);
+      if (s.visibility === 'hidden' || s.display === 'none') continue;
+      const paints = [s.color, s.backgroundColor, s.backgroundImage];
+      for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
+        if (parseFloat(s['border' + side + 'Width']) > 0) paints.push(s['border' + side + 'Color']);
+      }
+      if (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) paints.push(s.outlineColor);
+      if (paints.some((p) => p && p.includes(signal))) {
+        red.push(el.tagName + '#' + el.id + '.' + el.className);
+      }
+    }
+    const link = document.getElementById('connection');
+    const stop = document.getElementById('full-stop');
+    const enabled = Array.from(document.querySelectorAll('button, input, select, textarea'))
+      .filter((c) => !c.disabled).map((c) => c.id || c.textContent.trim() || c.tagName);
+    return {
+      link: link.textContent, linkIsFocused: document.activeElement === link,
+      linkTabIndex: link.getAttribute('tabindex'),
+      linkSize: getComputedStyle(link).fontSize, readout,
+      linkInk: getComputedStyle(link).color === text,
+      red, enabled,
+      stop: { disabled: stop.disabled, ariaDisabled: stop.getAttribute('aria-disabled'),
+              face: stop.textContent.trim(), keys: stop.getAttribute('aria-keyshortcuts'),
+              latched: stop.classList.contains('is-latched'),
+              ring: getComputedStyle(stop).borderTopColor },
+      railAlert: { hidden: document.getElementById('rail-alert').hidden,
+                   lines: document.querySelectorAll('.rail-alert-line').length,
+                   dismiss: document.querySelectorAll('.rail-alert-dismiss').length },
+      ackOpen: !document.getElementById('ack-modal').hidden,
+      ackLines: document.querySelectorAll('#ack-text .ack-line').length,
+      tray: { collapsed: document.getElementById('event-log').hidden,
+              latest: document.getElementById('tray-latest').textContent },
+    };
+  });
+  end.announced = announced;
+  return end;
+"""
+
+
+def _assert_shut_down(out):
+    assert out["link"] == _SHUT_DOWN, out["link"]
+    assert out["linkIsFocused"] and out["linkTabIndex"] == "-1", out
+    assert out["linkSize"] == out["readout"], (out["linkSize"], out["readout"])
+    assert out["linkInk"], "the sentence is not in ink"
+    assert out["announced"] and out["announced"][-1] == _SHUT_DOWN, out["announced"]
+    assert out["announced"].count(_SHUT_DOWN) == 1, out["announced"]
+    assert out["red"] == [], f"signal red is still on the page: {out['red']}"
+    assert out["enabled"] == [], f"controls still enabled: {out['enabled']}"
+    stop = out["stop"]
+    assert stop["disabled"] and stop["ariaDisabled"] == "true", stop
+    assert stop["face"] not in ("Stop", "Clear") and not stop["latched"], stop
+    assert stop["keys"] is None, stop
+    assert out["railAlert"] == {"hidden": True, "lines": 0, "dismiss": 0}, out["railAlert"]
+    assert not out["ackOpen"] and out["ackLines"] == 0, out
+    assert out["tray"] == {"collapsed": True, "latest": "Quit from the Web console"}, out["tray"]
+
+
+@needs_browser
+def test_after_quit_while_latched_the_page_reads_as_shut_down(station, tmp_path):
+    """I5 (UXPM5-4): Quit while latched and unconfirmed. Afterwards the rail
+    says only "The station has shut down…" in ink at readout size, focused
+    and announced once; the stop disc is inert (no red, no ring, disabled);
+    the unconfirmed line and its Dismiss, the acknowledgement and the raw
+    error are gone; every control is disabled."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, r"""
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      await sleep(600);
+    """ + _QUIT_AND_READ, tmp_path)
+    _assert_shut_down(out)
+
+
+@needs_browser
+def test_after_quit_while_live_the_disc_is_the_same_inert_disc(station, tmp_path):
+    """I5: Quit unlatched leaves no "Stop" face either: the same end-state."""
+    view, controller, probe = station
+    out = _browse(view, _QUIT_AND_READ, tmp_path)
+    _assert_shut_down(out)
