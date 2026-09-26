@@ -150,6 +150,9 @@ LAMP_PX = 16
 #: stepper's Gamepad Log took a third of the panel and pushed Safety - the
 #: section that has to be reachable - off the bottom of the dock.
 LOG_STREAM_PX = 110
+#: A detached stream's window (G4) opens this many characters wide and lines
+#: tall, measured from its font; the operator can resize it.
+DETACHED_LOG_CHARS, DETACHED_LOG_LINES = 72, 18
 #: The event tray's open height, and the number of lines it keeps. Closed, it
 #: is one line: the latest event. It is a companion to the panels, not the
 #: main event, and an append-forever log is an unbounded document in a window
@@ -1684,6 +1687,7 @@ class QtPanelView(PanelView, QWidget):
         PanelView.__init__(self, controller, name, panel)
         self._widgets = {}          # id(element) -> widget
         self._companions = {}       # id(element) -> a widget greyed with it
+        self._detached = {}         # id(element) -> (window, feed), G4
         self._clean_text = {}       # id(element) -> last text we wrote
         self._overlay = None
         self._table = None          # built on the first layout="row" section
@@ -1790,6 +1794,12 @@ class QtPanelView(PanelView, QWidget):
         if self._overlay is not None:
             self._overlay.close()
             self._overlay = None
+        # A detached stream's window belongs to the main window, so it would
+        # outlive its panel: closed and dropped here.
+        for dialog, _ in self._detached.values():
+            dialog.close()
+            dialog.deleteLater()
+        self._detached.clear()
         PanelView.close(self)
         events.debug("Panel Closed", self.name, source="QtView")
         return QWidget.close(self)
@@ -2120,14 +2130,109 @@ class QtPanelView(PanelView, QWidget):
         container.add(element.get("text", ""), lamp)
 
     def _make_log_stream(self, container, element):
-        view = QTextEdit()
-        view.setReadOnly(True)
-        view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        if element.get("detached"):
+            self._make_detached_log(container, element)
+            return
+        view = self._log_feed()
         # Fixed, not merely minimum: a QTextEdit takes every spare pixel a
         # form layout will give it.
         view.setFixedHeight(LOG_STREAM_PX)
         self._remember(element, view)
         container.add_wide(element.get("text", ""), view)
+
+    @staticmethod
+    def _log_feed():
+        """The feed itself, attached or in its own window."""
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        return view
+
+    # -- G4: a detached log stream -----------------------------------------
+    def _make_detached_log(self, container, element):
+        """A button in the feed's place ("Gamepad log…"). The feed lives in
+        ONE non-modal window, built on the first press and reused after; it
+        is polled only while that window is open (`_wants_data`)."""
+        caption = sentence_case(element.get("text", ""))
+        button = QPushButton(f"{caption}\u2026")
+        button.setProperty("role", element.get("role", "neutral"))
+        button.setToolTip(f"Open the {caption.lower()} in its own window")
+        button.setAccessibleName(f"Open the {caption.lower()}")
+        button.clicked.connect(lambda: self.open_detached(element))
+        self._remember(element, button)
+        container.add_wide("", button)
+
+    def open_detached(self, element):
+        """Show the stream's window, building it once; a second press shows
+        and raises the same window. Never `exec()`: it is not modal, so the
+        stop, and every other control, stays one press away."""
+        entry = self._detached.get(id(element))
+        if entry is None:
+            entry = self._detached[id(element)] = self._detached_window(element)
+        dialog, _ = entry
+        was_open = dialog.isVisible()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        if not was_open:
+            # Filled now, not one tick later: it opens on its lines.
+            data = self._call(element["source_command"])
+            if data.is_ok:
+                self._set_data(element, data.value)
+        return dialog
+
+    def _detached_window(self, element):
+        caption = sentence_case(element.get("text", ""))
+        dialog = QDialog(self._main_window())
+        dialog.setObjectName("detachedLog")
+        dialog.setModal(False)
+        dialog.setWindowTitle(f"{self.name} \u2014 {caption}")
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(theme.PAD, theme.PAD, theme.PAD, theme.PAD)
+        feed = self._log_feed()
+        feed.setAccessibleName(f"{self.name} {caption.lower()}")
+        layout.addWidget(feed)
+        metrics = QFontMetrics(feed.font())
+        dialog.resize(metrics.averageCharWidth() * DETACHED_LOG_CHARS,
+                      metrics.lineSpacing() * DETACHED_LOG_LINES)
+        # Escape and the window's close both end in `finished` (a QDialog's
+        # close is a reject): the window hides and focus returns to the
+        # button that opened it (F12).
+        dialog.finished.connect(lambda _code: self._return_focus(element))
+        button = self._widget_for(element)
+        if button is not None:
+            # Beside the button that opened it, below the rail and its stop,
+            # rather than centred over the window.
+            dialog.move(button.mapToGlobal(QPoint(0, button.height())))
+        return dialog, feed
+
+    def _main_window(self):
+        """The QMainWindow this panel sits in, else its own top window."""
+        widget = self.parentWidget()
+        while widget is not None:
+            if isinstance(widget, QMainWindow):
+                return widget
+            widget = widget.parentWidget()
+        return self.window()
+
+    def _return_focus(self, element):
+        if self._closed:
+            return
+        button = self._widget_for(element)
+        if button is not None:
+            button.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def detached_window(self, element):
+        """The stream's window, or None before the first press."""
+        entry = self._detached.get(id(element))
+        return entry[0] if entry else None
+
+    def _wants_data(self, element):
+        """A detached stream is polled only while its window is showing."""
+        if element.get("type") == "log_stream" and element.get("detached"):
+            window = self.detached_window(element)
+            return window is not None and window.isVisible()
+        return True
 
     def _make_internal(self, container, element):
         """Registers a command in the schema's allow-list and draws nothing.
@@ -2393,7 +2498,11 @@ class QtPanelView(PanelView, QWidget):
             widget.set_series(data)
 
     def _refresh_log(self, element, data):
-        widget = self._widget_for(element)
+        if element.get("detached"):
+            entry = self._detached.get(id(element))
+            widget = entry[1] if entry else None
+        else:
+            widget = self._widget_for(element)
         if widget is None:
             return
         lines = data if isinstance(data, (list, tuple)) else str(data or "").splitlines()

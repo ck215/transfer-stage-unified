@@ -85,6 +85,8 @@ class FakePanel(Panel):
             sch.image("Picture", "picture"),
             sch.indicator("Fault", "is_faulted"),
             sch.log_stream("Log", "log_lines"),
+            # G4: the probe's shape - behind a button, in its own window.
+            sch.log_stream("Gamepad Log:", "gamepad_lines", detached=True),
             sch.button("Invisible", "quiet"),
         ))
 
@@ -131,6 +133,10 @@ class FakePanel(Panel):
 
     def log_lines(self):
         return ["first", "second"]
+
+    def gamepad_lines(self):
+        self.gamepad_reads = getattr(self, "gamepad_reads", 0) + 1
+        return ["pad up", "pad down"]
 
     def quiet(self):
         return None
@@ -2182,3 +2188,116 @@ def test_g3_ticking_a_setup_row_ungreys_its_port(qapp):
         assert port.isEnabled()
     finally:
         built.close()
+
+
+# ---------------------------------------------------------------------------
+# G4: the Gamepad Log behind a button, in its own window
+# ---------------------------------------------------------------------------
+
+def detached_of(view):
+    return next(e for e in view._elements
+                if e["type"] == "log_stream" and e.get("detached"))
+
+
+def test_g4_a_detached_stream_is_a_button_not_a_feed(view, panel):
+    from PySide6.QtWidgets import QPushButton, QTextEdit
+    element = detached_of(view)
+    button = view._widget_for(element)
+    assert isinstance(button, QPushButton)
+    assert button.text() == "Gamepad log\u2026"
+    assert view.detached_window(element) is None
+    feeds = [w for w in view.findChildren(QTextEdit)]
+    assert len(feeds) == 1              # the attached "Log" only
+    view._refresh()
+    assert getattr(panel, "gamepad_reads", 0) == 0
+
+
+def test_g4_pressing_it_opens_one_non_modal_window_holding_the_lines(view, qapp):
+    element = detached_of(view)
+    view._widget_for(element).click()
+    dialog = view.detached_window(element)
+    assert isinstance(dialog, QDialog) and dialog.isVisible()
+    assert dialog.isModal() is False
+    assert dialog.windowModality() == Qt.WindowModality.NonModal
+    assert not dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert qapp.activeModalWidget() is None
+    assert dialog.windowTitle() == "Fake \u2014 Gamepad log"
+    feed = view._detached[id(element)][1]
+    assert feed.toPlainText() == "pad up\npad down"
+    assert feed.maximumHeight() != qt.LOG_STREAM_PX     # not the card's feed
+
+
+def test_g4_a_second_press_raises_the_same_window(view):
+    element = detached_of(view)
+    button = view._widget_for(element)
+    button.click()
+    first = view.detached_window(element)
+    first.hide()
+    button.click()
+    assert view.detached_window(element) is first and first.isVisible()
+    button.click()                      # already open: still the one window
+    assert view.detached_window(element) is first
+
+
+def test_g4_escape_hides_it_and_focus_returns_to_the_button(view, qapp):
+    from PySide6.QtTest import QTest
+    element = detached_of(view)
+    view._widget_for(element).click()
+    dialog = view.detached_window(element)
+    returned = []
+    # Which widget holds focus cannot be staged offscreen; the hand-back can.
+    view._return_focus = returned.append
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert not dialog.isVisible()
+    assert view.detached_window(element) is dialog      # hidden, not destroyed
+    assert returned == [element]
+
+
+def test_g4_the_close_button_hides_it_too(view):
+    element = detached_of(view)
+    view._widget_for(element).click()
+    dialog = view.detached_window(element)
+    dialog.close()
+    assert not dialog.isVisible() and view.detached_window(element) is dialog
+
+
+def test_g4_the_stream_is_polled_only_while_its_window_is_open(view, panel):
+    element = detached_of(view)
+    assert view._wants_data(element) is False
+    assert view._wants_data(element_of(view, "log_stream")) is True
+    view._refresh()
+    assert getattr(panel, "gamepad_reads", 0) == 0
+    view._widget_for(element).click()
+    assert view._wants_data(element) is True
+    reads = panel.gamepad_reads
+    view._refresh()
+    assert panel.gamepad_reads == reads + 1
+    view.detached_window(element).hide()
+    assert view._wants_data(element) is False
+    view._refresh()
+    assert panel.gamepad_reads == reads + 1
+
+
+def test_g4_closing_the_panel_closes_its_window(qapp, controller):
+    built = qt.QtPanelView(controller, "Fake")
+    element = detached_of(built)
+    built._widget_for(element).click()
+    dialog = built.detached_window(element)
+    assert dialog.isVisible()
+    built.close()
+    assert not dialog.isVisible()
+    assert built._detached == {}
+
+
+def test_g4_the_window_belongs_to_the_main_window_and_the_stop_stays_live(
+        dashboard, controller):
+    dashboard._add_panel("Fake")
+    panel_view = dashboard._panels["Fake"]
+    element = detached_of(panel_view)
+    panel_view._widget_for(element).click()
+    dialog = panel_view.detached_window(element)
+    assert dialog.parent() is dashboard
+    assert QApplication.activeModalWidget() is None
+    assert dashboard.stop_button.isEnabled()
+    dashboard.stop_shortcut.activated.emit()
+    assert controller.is_estopped is True
