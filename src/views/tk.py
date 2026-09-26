@@ -81,6 +81,14 @@ VALUE_PX, FIELD_WIDTH, DROPDOWN_WIDTH = 168, 8, 22
 #: on a wide one, where two would put a caption half a screen from its value.
 COLUMN_PX, MAX_COLUMNS = 400, 3
 
+#: A table's columns when the window is short of width (UXPM5-5). The status
+#: column takes nearly all the slack (`STATUS_WEIGHT` to a dropdown's 1) and
+#: keeps room for its words: at least its value's width, up to
+#: `STATUS_MIN_CHARS` characters (a longer identifier is cut in the middle,
+#: whole in its tooltip). The dropdowns are the elastic columns: they give
+#: up width before a status word does.
+STATUS_WEIGHT, STATUS_MIN_CHARS = 100, 16
+
 #: Lines the dashboard event log shows before it scrolls. It is a footer, not
 #: a panel: eight lines of log was taking vertical space from the controls.
 EVENT_LOG_LINES = 5
@@ -259,6 +267,110 @@ def _target_pady(step=BASE):
 def _lamp_px():
     """A lamp scales with the caption beside it, from a 16 px floor."""
     return max(LAMP_PX, round(0.8 * _line_px()))
+
+
+#: Where the operator last dragged each detached log window, for the
+#: session: (panel name, caption) -> (x, y). A reopened window goes back
+#: there instead of to the computed place (I1).
+_LOG_POSITIONS = {}
+
+_GEOMETRY = re.compile(r"(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)")
+
+
+def _parse_geometry(text):
+    """'WxH+X+Y' -> (x, y, w, h), or None."""
+    match = _GEOMETRY.fullmatch(str(text or "").strip())
+    if not match:
+        return None
+    width, height, x, y = (int(part) for part in match.groups())
+    return (x, y, width, height)
+
+
+def _rect_of(widget):
+    """A widget's rect on the screen, (x, y, w, h), or None when Tk cannot say."""
+    try:
+        rect = (widget.winfo_rootx(), widget.winfo_rooty(),
+                widget.winfo_width(), widget.winfo_height())
+    except Exception:
+        return None
+    return rect if all(isinstance(v, int) for v in rect) else None
+
+
+def _overlap(a, b):
+    """The intersection of two rects, or None."""
+    x0, y0 = max(a[0], b[0]), max(a[1], b[1])
+    x1, y1 = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
+    return (x0, y0, x1 - x0, y1 - y0) if x1 > x0 and y1 > y0 else None
+
+
+def _flow_lines(widths, room, gap):
+    """Which line each of a run of widgets goes on, filling left to right:
+    a widget that would end past `room` starts the next line. A widget
+    wider than `room` gets a line to itself. No `room`: one line."""
+    lines, line, used = [], 0, 0
+    for width in widths:
+        if room is not None and used and used + width > room:
+            line, used = line + 1, 0
+        lines.append(line)
+        used += width + gap
+    return lines
+
+
+def _clamp(value, low, high):
+    return max(low, min(value, high))
+
+
+def _log_window_rect(station, screen, natural, minimum, free=None, gap=0):
+    """Where a detached log window goes: its outer rect (x, y, w, h).
+
+    `station` is the station window's outer rect, `screen` the screen's,
+    `natural` the window's own outer size and `minimum` the least it may
+    shrink to. The window goes OUTSIDE the station window - to its right,
+    else below it, else to its left - at its natural size where that fits,
+    shrunk towards `minimum` where only that fits, clamped to the screen.
+    With no room outside, it goes over `free` (the event tray), the one
+    part of the station window that holds no control: never over a panel,
+    whose Safety column carries a Stop and a Fault lamp (UXPM5-1).
+    """
+    sx, sy, sw, sh = station
+    left, top, width, height = screen
+    right, bottom = left + width, top + height
+    nat_w, nat_h = natural
+    min_w, min_h = minimum
+
+    def beside(x_room, x_of):
+        if x_room < min_w or height < min_h:
+            return None
+        w, h = min(nat_w, x_room), min(nat_h, height)
+        return (x_of(w), _clamp(sy, top, bottom - h), w, h)
+
+    def under():
+        y = sy + sh + gap
+        room = bottom - y
+        if room < min_h or width < min_w:
+            return None
+        w, h = min(nat_w, width), min(nat_h, room)
+        return (_clamp(sx + sw - w, left, right - w), y, w, h)
+
+    candidates = [
+        beside(right - (sx + sw + gap), lambda w: sx + sw + gap),
+        under(),
+        beside(sx - gap - left, lambda w: sx - gap - w),
+    ]
+    fitted = [rect for rect in candidates if rect is not None]
+    for rect in fitted:
+        if rect[2:] == (min(nat_w, width), min(nat_h, height)):
+            return rect
+    if fitted:
+        return max(fitted, key=lambda rect: rect[2] * rect[3])
+    room = _overlap(free, screen) if free is not None else None
+    if room is not None:
+        w, h = min(nat_w, room[2]), min(nat_h, room[3])
+        return (room[0] + room[2] - w, room[1], w, h)
+    # Nowhere clear at all (the tray itself is off the screen): the screen's
+    # bottom-right corner, which is at least not the top of any panel.
+    w, h = min(nat_w, width), min(nat_h, height)
+    return (right - w, bottom - h, w, h)
 
 
 def _elide(font, text, room, middle=False):
@@ -1001,6 +1113,7 @@ class TkPanelView(PanelView):
         super().__init__(controller, name, panel)
         self._widgets = {}          # id(element) -> {widget, var, ...}
         self._grid = {}             # id(container) -> the grid cursor
+        self._flows = {}            # id(command strip) -> its wrapping lines
         self._table = None          # the frame the current run of row sections shares
         self._section_run = None            # the current run of column sections
         self._runs = []             # every run: its holder, two columns, its sections
@@ -1067,6 +1180,10 @@ class TkPanelView(PanelView):
         """
         area = tk.Frame(self.frame, background=_page())
         area.pack(side="top", fill="both", expand=True)
+        self._area = area
+        # The panel's commit row (Setup's Launch), when it has one, is pinned
+        # here under the scroll area: packed only once a row is pinned.
+        self._pinned = tk.Frame(self.frame, background=_page())
         self._scrollbar = ttk.Scrollbar(area, orient="vertical")
         self._scrollbar.pack(side="right", fill="y")
         self._canvas = tk.Canvas(area, background=_page(),
@@ -1336,8 +1453,9 @@ class TkPanelView(PanelView):
         self._section_index += 1
         if layout == "row":
             kinds = self._row_kinds
+            kind = kinds[index] if index < len(kinds) and kinds[index] else "bar"
             return self._make_row_section(
-                title, kinds[index] if index < len(kinds) and kinds[index] else "bar")
+                title, kind, pinned=kind == "bar" and self._is_commit_row(index))
         # A column section ends the table: the next row section starts a new
         # one, so a schema that interleaves the two still renders in order.
         self._table = None
@@ -1365,7 +1483,18 @@ class TkPanelView(PanelView):
         self._section_run["sections"].append(container)
         return container
 
-    def _make_row_section(self, title, kind):
+    def _is_commit_row(self, index):
+        """The schema's LAST section, a bar holding a `go` command (Setup's
+        Launch row): the step the whole panel leads to. It is pinned under
+        the scroll area, so it is on screen at every font size - at 28 pt
+        it was scrolled below the rows (UXPM5-5)."""
+        sections = list(self._schema().get("sections") or [])
+        if index != len(sections) - 1:
+            return False
+        return any(element.get("type") == "button" and element.get("role") == "go"
+                   for element in sections[index].get("elements") or [])
+
+    def _make_row_section(self, title, kind, pinned=False):
         """One line of the table: the row's name in column 0, then its cells.
 
         Every row section in a run shares ONE grid, because columns only line
@@ -1375,9 +1504,21 @@ class TkPanelView(PanelView):
         rows, and the rows off from a bar that follows them.
         """
         self._section_run = None
+        if pinned:
+            self._table = None
         if self._table is None:
-            self._table = tk.Frame(self._body, background=_page())
-            self._table.pack(fill="x", padx=INSET, pady=(INSET, GAP))
+            if pinned:
+                try:
+                    self._pinned.pack(side="bottom", fill="x", before=self._area)
+                except Exception as exc:
+                    events.debug("Pinned Row Not Placed", str(exc), source=SOURCE,
+                                 exception=exc)
+                tk.Frame(self._pinned, height=1, background=theme.RULE).pack(
+                    fill="x", padx=INSET)
+            self._table = tk.Frame(self._pinned if pinned else self._body,
+                                   background=_page())
+            self._table.pack(fill="x", padx=INSET,
+                             pady=(GAP, GAP) if pinned else (INSET, GAP))
             width = len(self._table_columns)
             self._grid[id(self._table)] = {
                 "layout": "row", "row": -1, "kind": None, "bar": None,
@@ -1385,7 +1526,7 @@ class TkPanelView(PanelView):
             if width:
                 # The last shared column (the status) takes the slack, so a
                 # long status has room instead of being cut off.
-                self._stretch_column(self._table, width)
+                self._stretch_column(self._table, width, STATUS_WEIGHT)
         state = self._grid[id(self._table)]
         span = max(1, state["width"])
         if state["kind"] is not None:
@@ -1487,10 +1628,10 @@ class TkPanelView(PanelView):
         return self._grid.setdefault(id(container), {
             "layout": "column", "row": 1, "strip": None})
 
-    def _stretch_column(self, container, column):
-        """Let one column absorb the slack."""
+    def _stretch_column(self, container, column, weight=1):
+        """Let one column absorb the slack (and give it back first)."""
         try:
-            container.grid_columnconfigure(column, weight=1)
+            container.grid_columnconfigure(column, weight=weight)
         except Exception as exc:
             events.debug("Column Weight Refused", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
@@ -1537,32 +1678,56 @@ class TkPanelView(PanelView):
             state["extra"] += 1
 
         def place(widget, fill):
+            # A table's field (a dropdown) is elastic: it fills its cell and
+            # its column shrinks before the status column does (UXPM5-5).
             widget.grid(row=state["row"], column=column, pady=GAP,
-                        padx=(0, SPACE[5]), sticky="ew" if fill == "value" else "w")
+                        padx=(0, SPACE[5]),
+                        sticky="ew" if fill in ("value", "field") else "w")
+            if fill == "field" and column not in state.setdefault("elastic", set()):
+                state["elastic"].add(column)
+                if column != state.get("width"):
+                    self._stretch_column(container, column)
+            if fill == "value":
+                self._register(element, table=(container, column))
             return widget
         return container, place
 
     def _command_slot(self, container, element=None):
         """Where one command goes. -> (parent, place)
 
-        In a section, consecutive commands share ONE line — "Enter autonomous
-        mode", "Enter manual mode", "Step" — instead of a stack of full-width
-        bars; the line ends at the next control that is not a command. The
-        row under the line is where a refusal of any of them is shown.
+        In a section, consecutive commands share ONE group — "Enter autonomous
+        mode", "Enter manual mode", "Step", "Gamepad log…" — instead of a
+        stack of full-width bars; the group ends at the next control that is
+        not a command. The group WRAPS by measured width (`_flow_strip`): one
+        line while the section has room, more lines when it has not, so no
+        caption is ever cut (UXPM5-2, IMP-3). The row under the group is
+        where a refusal of any of them is shown.
         """
         state = self._cursor(container)
         if state["layout"] == "column":
             strip = state.get("strip")
             if strip is None:
                 strip = tk.Frame(container, background=_page())
-                strip.grid(row=state["row"], column=0, columnspan=3, sticky="w",
+                strip.grid(row=state["row"], column=0, columnspan=3, sticky="ew",
                            pady=GAP)
                 state["strip_slot"] = (container, state["row"] + 1, 0, 3)
                 state["row"] += 2
                 state["strip"] = strip
+                flow = self._flows[id(strip)] = {"items": [], "rows": [],
+                                                 "layout": None}
+                strip.bind("<Configure>",
+                           lambda event, s=strip: self._flow_strip(
+                               s, getattr(event, "width", None)), add="+")
             if element is not None:
                 self._register(element, slot=state["strip_slot"])
-            return strip, lambda widget: widget.pack(side="left", padx=(0, PAD))
+            flow = self._flows[id(strip)]
+
+            def place(widget, strip=strip, flow=flow):
+                flow["items"].append(widget)
+                flow["layout"] = None
+                self._flow_strip(strip, None)
+                return widget
+            return strip, place
         if element is not None:
             self._register(element, slot=self._notice_slot(container))
         bar = state.get("bar")
@@ -1572,6 +1737,57 @@ class TkPanelView(PanelView):
         state["extra"] += 1
         return container, lambda widget: widget.grid(
             row=state["row"], column=column, sticky="w", padx=(0, PAD), pady=GAP)
+
+    def _flow_strip(self, strip, width):
+        """Lay a command group out in as many lines as its width needs.
+
+        Each line is a frame of its own, so a line's buttons are packed
+        side by side at their own widths (a grid would share column widths
+        between lines). The buttons stay children of the strip and are packed
+        `in_` a line, raised above it so the line frame does not hide them.
+        """
+        flow = self._flows.get(id(strip))
+        if flow is None or not flow["items"]:
+            return
+        if not isinstance(width, int) or width <= 1:
+            try:
+                width = strip.winfo_width()
+            except Exception:
+                width = None
+        widths = []
+        for widget in flow["items"]:
+            try:
+                wanted = widget.winfo_reqwidth()
+            except Exception:
+                wanted = None
+            widths.append(wanted if isinstance(wanted, int) else 0)
+        room = width if isinstance(width, int) and width > 1 else None
+        layout = tuple(_flow_lines(widths, room, PAD))
+        if layout == flow["layout"]:
+            return
+        flow["layout"] = layout
+        lines = flow["rows"]
+        while len(lines) < max(layout) + 1:
+            line = tk.Frame(strip, background=_page())
+            lines.append(line)
+        for index, line in enumerate(lines):
+            try:
+                if index <= max(layout):
+                    line.pack(side="top", anchor="w",
+                              pady=(0 if index == 0 else GAP, 0))
+                else:
+                    line.pack_forget()
+            except Exception as exc:
+                events.debug("Command Line Not Placed", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
+        for widget, index in zip(flow["items"], layout):
+            try:
+                widget.pack_forget()
+                widget.pack(in_=lines[index], side="left", padx=(0, PAD))
+                widget.lift()
+            except Exception as exc:
+                events.debug("Command Not Placed", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
 
     def _wide_slot(self, container, caption=None):
         """Where a plot, a picture or a log goes: the full width of its
@@ -1756,6 +1972,7 @@ class TkPanelView(PanelView):
             room = widget.winfo_width() - 2 * int(widget.cget("padx") or 0) - 2
         except Exception:
             room = None
+        room = self._make_room(entry, text, room)
         shown = _elide(entry.get("font"), text, room if isinstance(room, int) else None,
                        middle=_is_identifier(text))
         tooltip = entry.get("tooltip")
@@ -1768,6 +1985,32 @@ class TkPanelView(PanelView):
             widget.configure(text=shown)
         except Exception:
             pass
+
+    def _make_room(self, entry, text, room):
+        """A table's status column is never narrower than the word in it, up
+        to `STATUS_MIN_CHARS` characters: "simulated" read "…" at 28 pt
+        while each dropdown kept 560 px (UXPM5-5). -> the room to elide to."""
+        table = entry.get("table")
+        if table is None or not text:
+            return room
+        container, column = table
+        font = entry.get("font")
+        need = _text_width(font, text)
+        if need is None:
+            return room
+        # The cell's right padding is inside the column, and the label's own
+        # padding and border inside the cell: the word gets what is left.
+        need = min(need, _width_px(font, "0" * STATUS_MIN_CHARS)) + SPACE[3] + SPACE[5]
+        sizes = self._grid.setdefault(id(container), {}).setdefault("minsize", {})
+        if need > sizes.get(column, 0):
+            sizes[column] = need
+            try:
+                container.grid_columnconfigure(column, minsize=need)
+            except Exception as exc:
+                events.debug("Column Minsize Refused", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
+            return max(room, need - SPACE[5]) if isinstance(room, int) else room
+        return room
 
     def _make_entry(self, container, element):
         parent, place = self._field(container, element)
@@ -1911,6 +2154,14 @@ class TkPanelView(PanelView):
         if current and current not in options:
             options = [current] + options
         entry["options"] = options
+        self._relabel(element)
+
+    def _relabel(self, element):
+        """The labels a dropdown shows for its options, at its `chars`."""
+        entry = self._entry_for(element)
+        widget, options = entry.get("widget"), entry.get("options") or []
+        if widget is None:
+            return
         # Long names are cut in the MIDDLE so the part that tells two ports
         # or fifty gamepads apart stays in view (F15); a label that would
         # collide with another keeps its whole name.
@@ -2156,7 +2407,30 @@ class TkPanelView(PanelView):
         self._register(element, widget=widget, var=var, options=[],
                        tooltip=_Tooltip(widget), cell=ring.outer, ring=ring,
                        chars=chars, labels={}, label_of={})
+        if is_table:
+            widget.bind("<Configure>",
+                        lambda event, el=element: self._fit_dropdown(
+                            el, getattr(event, "width", None)), add="+")
         self._refresh_options(element)
+
+    def _fit_dropdown(self, element, width):
+        """A table dropdown given less than its request (the window is short
+        of width) cuts its names to what it shows, in the middle, so the
+        box never hides the end of a name without saying so."""
+        entry = self._entry_for(element)
+        glyph = _width_px(_font(), "0")
+        if not isinstance(width, int) or width <= 1 or not glyph:
+            return
+        arrow = _line_px()
+        chars = max(5, min(DROPDOWN_WIDTH - 1, (width - arrow) // glyph))
+        if chars == entry.get("chars"):
+            return
+        entry["chars"] = chars
+        self._relabel(element)
+        text = entry.get("last_text")
+        if text is not None:
+            entry["last_text"] = None
+            self._set_text(element, text)
 
     def _make_region_select(self, container, element):
         parent, place = self._command_slot(container, element)
@@ -2246,11 +2520,42 @@ class TkPanelView(PanelView):
                        highlightthickness=1, highlightbackground=theme.RULE,
                        padx=GAP, pady=GAP, wrap="word")
 
-    # -- a detached log stream's window (G4) ------------------------------
-    #: The window's size. It opens at the top right of the station window,
-    #: well clear of the stop docked at the bottom, and is never topmost, so
-    #: a click on the station window brings the stop in front of it.
-    LOG_WINDOW_SIZE = (520, 300)
+    # -- a detached log stream's window (G4, I1) --------------------------
+    #: The feed's natural size, in characters and lines; the least it may
+    #: shrink to where the screen is short of room.
+    LOG_FEED_CHARS, LOG_FEED_LINES = 48, 12
+    LOG_MIN_CHARS, LOG_MIN_LINES = 24, 4
+    #: The window's padding, the feed's border and the scrollbar, for when
+    #: Tk cannot measure the window itself.
+    LOG_CHROME_PX = 48
+
+    #: Set by the dashboard: -> {"page": rect, "free": rect}, the notebook's
+    #: rect and the event tray's, on the screen. Without it the panel's own
+    #: frame is the page and there is no free region.
+    log_window_bounds = None
+
+    #: The station window's menubar, set by the dashboard. A log window
+    #: wears the same object (I7): on Aqua a Toplevel with no menu shows the
+    #: system's defaults, and Models and Setup left the menu bar while the
+    #: log had focus. Elsewhere it is the same menu inside the log window.
+    menubar = None
+
+    def share_menubar(self, menubar):
+        """Hand every open log window the station's (new) menubar."""
+        self.menubar = menubar
+        for entry in list(self._widgets.values()):
+            window = entry.get("window")
+            if window is not None:
+                self._wear_menubar(window)
+
+    def _wear_menubar(self, window):
+        if self.menubar is None:
+            return
+        try:
+            window.configure(menu=self.menubar)
+        except Exception as exc:
+            events.debug("Log Window Menu Refused", str(exc), source=SOURCE,
+                         exception=exc)
 
     def _open_log_window(self, element):
         """ONE non-modal window per stream: pressing again raises it. No
@@ -2275,6 +2580,7 @@ class TkPanelView(PanelView):
         except Exception:
             pass
         window.configure(background=_page())
+        self._wear_menubar(window)
         body = tk.Frame(window, background=_page())
         body.pack(fill="both", expand=True, padx=SPACE[4], pady=SPACE[4])
         scrollbar = ttk.Scrollbar(body, orient="vertical")
@@ -2293,7 +2599,7 @@ class TkPanelView(PanelView):
             window.protocol("WM_DELETE_WINDOW", close)
         except Exception:
             pass
-        self._place_log_window(window)
+        self._place_log_window(window, element)
         entry.update(window=window, feed=feed, last_text=None)
         events.debug("Log Window Opened", f"{self.name}/{label}", source=SOURCE)
         # Filled now rather than on the next tick.
@@ -2306,24 +2612,98 @@ class TkPanelView(PanelView):
             pass
         return window
 
-    def _place_log_window(self, window):
-        width, height = self.LOG_WINDOW_SIZE
+    def _log_key(self, element):
+        return (self.name, _label((element or {}).get("text", "")))
+
+    def _log_sizes(self, window, decoration):
+        """(natural, minimum) outer sizes: the feed's own request when Tk
+        can measure it, else estimated from the type scale."""
+        chrome = self.LOG_CHROME_PX
+        glyph = _width_px(_font(SMALL), "0")
+        line = _line_px(SMALL)
+        try:
+            window.update_idletasks()
+            width, height = window.winfo_reqwidth(), window.winfo_reqheight()
+        except Exception:
+            width = height = None
+        if not (isinstance(width, int) and isinstance(height, int)
+                and width > 1 and height > 1):
+            width = glyph * self.LOG_FEED_CHARS + chrome
+            height = line * self.LOG_FEED_LINES + chrome
+        minimum = (min(width, glyph * self.LOG_MIN_CHARS + chrome),
+                   min(height, line * self.LOG_MIN_LINES + chrome) + decoration)
+        return (width, height + decoration), minimum
+
+    def _place_log_window(self, window, element=None):
+        """Put the window where it covers no control of this panel (I1).
+
+        It used to open at a fixed 520x300 at the station window's top
+        right, which is where a probe's Safety column is: its Stop disc,
+        Fault lamp, Step, the opener and every Configuration value. Now it
+        goes where the operator last dragged it this session, else outside
+        the station window, else over the event tray - never over the page
+        (`_log_window_rect`). Sized to its feed, not a constant.
+        """
         try:
             owner = self.frame.winfo_toplevel()
-            x = owner.winfo_rootx() + owner.winfo_width() - width - SPACE[6]
-            y = owner.winfo_rooty() + SPACE[6]
-            window.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
-        except Exception:
+            decoration = max(0, owner.winfo_rooty() - owner.winfo_y())
+            station = (owner.winfo_x(), owner.winfo_y(), owner.winfo_width(),
+                       owner.winfo_height() + decoration)
+            screen = (0, 0, owner.winfo_screenwidth(), owner.winfo_screenheight())
+            if not all(isinstance(v, int) for v in station + screen):
+                raise TypeError("no geometry to place against")
+        except Exception as exc:
+            events.debug("Log Window Unplaced", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+            return None
+        natural, minimum = self._log_sizes(window, decoration)
+        bounds = {}
+        if callable(self.log_window_bounds):
             try:
-                window.geometry(f"{width}x{height}")
-            except Exception:
-                pass
+                bounds = self.log_window_bounds() or {}
+            except Exception as exc:
+                events.debug("Log Window Bounds Failed", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
+        remembered = _LOG_POSITIONS.get(self._log_key(element))
+        if remembered is not None:
+            width, height = natural
+            x = _clamp(remembered[0], 0, max(0, screen[2] - width))
+            y = _clamp(remembered[1], 0, max(0, screen[3] - height))
+            rect = (x, y, min(width, screen[2]), min(height, screen[3]))
+        else:
+            rect = _log_window_rect(station, screen, natural, minimum,
+                                    free=bounds.get("free"), gap=SPACE[4])
+        x, y, width, height = rect
+        geometry = f"{width}x{max(1, height - decoration)}+{x}+{y}"
+        try:
+            window.geometry(geometry)
+        except Exception as exc:
+            events.debug("Log Window Geometry Refused", str(exc), source=SOURCE,
+                         exception=exc)
+            return None
+        if element is not None:
+            self._entry_for(element)["placed"] = (x, y)
+        events.debug("Log Window Placed", f"{self.name}: {geometry}", source=SOURCE)
+        return rect
+
+    def _remember_log_position(self, element, window):
+        """A window the operator moved goes back there next time."""
+        placed = self._entry_for(element).get("placed")
+        try:
+            now = _parse_geometry(window.geometry())
+        except Exception:
+            now = None
+        if now is None or placed is None:
+            return
+        if abs(now[0] - placed[0]) > 2 or abs(now[1] - placed[1]) > 2:
+            _LOG_POSITIONS[self._log_key(element)] = now[:2]
 
     def _close_log_window(self, element, restore_focus=True):
         entry = self._entry_for(element)
         window = entry.get("window")
         entry.update(window=None, feed=None, last_text=None)
         if window is not None:
+            self._remember_log_position(element, window)
             try:
                 window.destroy()
             except Exception:
@@ -2772,6 +3152,7 @@ class TkDashboard(Dashboard):
         self._is_focused = None
         self._is_setup_collapsed = False
         self._setup_menu = None      # the "Show Setup" menu, once built
+        self._menubar = None         # the menubar every log window wears too (I7)
         self._alerts = []            # unacknowledged needs_ack events
         self._station_text = None
 
@@ -3084,6 +3465,7 @@ class TkDashboard(Dashboard):
         """
         frame = tk.Frame(self.root, background=theme.BACKGROUND)
         frame.pack(side="bottom", fill="x", padx=INSET, pady=(GAP, GAP))
+        self._tray = frame
         caption = tk.Label(frame, text="Events", font=_font(SMALL),
                            anchor="w", background=theme.BACKGROUND,
                            foreground=theme.MUTED)
@@ -3152,11 +3534,14 @@ class TkDashboard(Dashboard):
         setup_menu.add_command(label="Show Setup", command=self.restore_setup)
         menubar.add_cascade(label=self.SETUP_TAB, menu=setup_menu)
         self._setup_menu = setup_menu
+        self._menubar = menubar
         try:
             self.root.configure(menu=menubar)
         except Exception as exc:
             events.debug("Menubar Not Attached", str(exc), source=SOURCE,
                          exception=exc)
+        for view in list(self._panels.values()):
+            view.share_menubar(menubar)
 
     def _hook_os_quit(self):
         """Route the OS's own Quit through `close()` (VIEW-TKINTER-8).
@@ -3200,9 +3585,18 @@ class TkDashboard(Dashboard):
                          "close path", source=SOURCE)
         return None
 
+    def _log_window_bounds(self):
+        """What a panel's detached log window must not cover (the notebook:
+        tabs and page) and where it may go when the screen has no room
+        outside the station window (the event tray). I1."""
+        return {"page": _rect_of(self.notebook),
+                "free": _rect_of(getattr(self, "_tray", None))}
+
     def _add_setup_panel(self):
         frame = ttk.Frame(self.notebook)
         view = TkPanelView(frame, self.controller, self.SETUP_TAB, panel=self.setup)
+        view.log_window_bounds = self._log_window_bounds
+        view.share_menubar(self._menubar)
         view.frame.pack(fill="both", expand=True)
         self.notebook.add(frame, text=self.SETUP_TAB)
         self._panels[self.SETUP_TAB] = view
@@ -3301,6 +3695,7 @@ class TkDashboard(Dashboard):
             return
         frame = ttk.Frame(self.notebook)
         view = TkPanelView(frame, self.controller, name)
+        view.log_window_bounds = self._log_window_bounds
         view.frame.pack(fill="both", expand=True)
         self.notebook.add(frame, text=name)
         self._panels[name] = view

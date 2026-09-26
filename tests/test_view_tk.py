@@ -721,6 +721,8 @@ def tk_harness(monkeypatch):
                         lambda _master, prompt: dialogs.askyesno("Confirm", prompt),
                         raising=False)
     monkeypatch.delenv("STATION_NO_MOTION", raising=False)
+    # Where the operator last dragged each log window, for the session (I1).
+    monkeypatch.setattr(tkmod, "_LOG_POSITIONS", {}, raising=False)
     return dialogs
 
 
@@ -1256,7 +1258,12 @@ def test_the_status_of_a_row_takes_the_slack(row_view):
     widget = widget_of(row_view, found)
     assert _cell(row_view, found)["sticky"] == "ew"
     assert widget.cget("anchor") == "w"
-    assert widget.master.column_weights[_cell(row_view, found)["column"]]["weight"] == 1
+    weights = {column: options.get("weight", 0)
+               for column, options in widget.master.column_weights.items()}
+    status = weights[_cell(row_view, found)["column"]]
+    assert status >= 1 and all(status >= 50 * weight for column, weight in weights.items()
+                               if column != _cell(row_view, found)["column"]), \
+        "the status column takes nearly all of the slack"
 
 
 def test_a_row_of_its_own_captions_is_a_bar_across_the_table():
@@ -2967,3 +2974,360 @@ def test_the_middle_button_closes_a_tab_on_every_platform(monkeypatch, system,
     monkeypatch.setattr(tkmod, "_windowing_system", lambda _w: system)
     monkeypatch.setattr(tkmod, "_tk_version", lambda: version)
     assert tkmod._close_tab_button(FakeWidget()) == expected
+
+
+# ---------------------------------------------------------------------------
+# I1: the Gamepad log window never covers the panel that owns it
+# ---------------------------------------------------------------------------
+
+#: A Mac title bar: the station's client area starts this far below its frame.
+TITLE_BAR = 28
+
+
+class Station:
+    """The station window as `wm` reports it: a frame at (x, y), a client
+    area `width` x `height` under a title bar, on one screen."""
+
+    def __init__(self, x, y, width, height, screen):
+        self.x, self.y, self.width, self.height = x, y, width, height
+        self.screen = screen
+
+    def winfo_x(self):
+        return self.x
+
+    def winfo_y(self):
+        return self.y
+
+    def winfo_rootx(self):
+        return self.x
+
+    def winfo_rooty(self):
+        return self.y + TITLE_BAR
+
+    def winfo_width(self):
+        return self.width
+
+    def winfo_height(self):
+        return self.height
+
+    def winfo_screenwidth(self):
+        return self.screen[0]
+
+    def winfo_screenheight(self):
+        return self.screen[1]
+
+    def wm_maxsize(self):
+        return self.screen
+
+    def update_idletasks(self):
+        pass
+
+
+class LogWindow(FakeRoot):
+    """A Toplevel whose feed asks for `natural` pixels, recording every
+    geometry it is given."""
+
+    def __init__(self, natural=(430, 260), position=None):
+        super().__init__()
+        self.natural = natural
+        self.geometries = []
+        self.position = position
+
+    def geometry(self, *args):
+        if args:
+            self.geometries.append(args[0])
+            return ""
+        if self.position is None:
+            return "1x1+0+0"
+        return "{}x{}+{}+{}".format(*self.natural, *self.position)
+
+    def update_idletasks(self):
+        pass
+
+    def winfo_reqwidth(self):
+        return self.natural[0]
+
+    def winfo_reqheight(self):
+        return self.natural[1]
+
+    def winfo_x(self):
+        return self.position[0]
+
+    def winfo_y(self):
+        return self.position[1]
+
+    def winfo_width(self):
+        return self.natural[0]
+
+    def winfo_height(self):
+        return self.natural[1]
+
+
+def _outer(geometry):
+    """'WxH+X+Y' -> the window's outer rect (x, y, w, h), title bar included."""
+    match = re.fullmatch(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geometry)
+    assert match, geometry
+    width, height, x, y = (int(part) for part in match.groups())
+    return (x, y, width, height + TITLE_BAR)
+
+
+def _intersects(a, b):
+    return (a[0] < b[0] + b[2] and b[0] < a[0] + a[2]
+            and a[1] < b[1] + b[3] and b[1] < a[1] + a[3])
+
+
+def _inside(rect, screen):
+    return (rect[0] >= 0 and rect[1] >= 0 and rect[0] + rect[2] <= screen[0]
+            and rect[1] + rect[3] <= screen[1])
+
+
+def _station_view(view, station):
+    """Point `view` at `station`: the page is the notebook (tabs and page),
+    the tray is the event log between it and the stop bar."""
+    top = station.winfo_rooty()
+    page = (station.x + 8, top + 40, station.width - 16, station.height - 280)
+    tray = (station.x + 8, top + station.height - 230, station.width - 16, 110)
+    view.frame.winfo_toplevel = lambda: station
+    view.log_window_bounds = lambda: {"page": page, "free": tray}
+    return page, tray
+
+
+@pytest.mark.parametrize("screen", [(1800, 1169), (2560, 1440), (1400, 900)])
+def test_the_log_window_never_covers_the_notebook_page(view, screen):
+    """UXPM5-1: the window opened at the station's top right, over the
+    probe's Stop disc, Fault lamp and Step. Outside the station when the
+    screen has room; over the event tray when it has none; never the page."""
+    station = Station(60, 60, 1400, 900, screen)
+    page, _tray = _station_view(view, station)
+    window = LogWindow()
+    view._place_log_window(window)
+    rect = _outer(window.geometries[-1])
+    assert not _intersects(rect, page), (rect, page)
+    assert _inside(rect, screen), (rect, screen)
+
+
+def test_with_no_room_outside_the_log_window_sits_on_the_tray(view):
+    station = Station(60, 60, 1400, 900, (1400, 900))
+    page, tray = _station_view(view, station)
+    window = LogWindow()
+    view._place_log_window(window)
+    rect = _outer(window.geometries[-1])
+    assert _intersects(rect, tray) and not _intersects(rect, page)
+
+
+def test_the_log_window_opens_beside_the_station_when_there_is_room(view):
+    station = Station(60, 60, 1400, 900, (2560, 1440))
+    _station_view(view, station)
+    window = LogWindow()
+    view._place_log_window(window)
+    x, y, width, height = _outer(window.geometries[-1])
+    assert x >= station.x + station.width, "to the right of the station window"
+    assert (width, height - TITLE_BAR) == window.natural, "the feed's own size"
+
+
+def test_the_log_window_is_sized_to_its_feed_not_a_constant(view):
+    station = Station(60, 60, 1400, 900, (2560, 1440))
+    _station_view(view, station)
+    sizes = set()
+    for natural in ((430, 260), (760, 400)):
+        window = LogWindow(natural)
+        view._place_log_window(window)
+        sizes.add(_outer(window.geometries[-1])[2])
+    assert sizes == {430, 760}
+
+
+def test_the_log_window_returns_where_the_operator_dragged_it(view):
+    station = Station(60, 60, 1400, 900, (2560, 1440))
+    _station_view(view, station)
+    element = side_log(view)
+    click(view, element)
+    entry = view._widgets[id(element)]
+    entry["window"].__class__ = LogWindow
+    entry["window"].natural, entry["window"].position = (430, 260), (1700, 900)
+    entry["window"].geometries = []
+    view._close_log_window(element)
+    window = LogWindow()
+    view._place_log_window(window, element)
+    assert window.geometries[-1].endswith("+1700+900")
+
+
+# ---------------------------------------------------------------------------
+# I7: the menu bar survives the log window taking focus
+# ---------------------------------------------------------------------------
+
+def test_the_log_window_carries_the_station_menubar(dashboard):
+    """UXPM5-6: on Aqua a Toplevel with no menu shows the system defaults,
+    so Models and Setup left the menu bar while the log had focus. The log
+    window wears the SAME menubar object as the station window."""
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    click(view, side_log(view))
+    window = view._widgets[id(side_log(view))]["window"]
+    menubar = dashboard.root.cget("menu")
+    assert menubar is not None
+    assert window.cget("menu") is menubar
+
+
+def test_a_rebuilt_menubar_reaches_an_open_log_window(dashboard):
+    """The Models menu is rebuilt when a model opens or closes; an open log
+    window must not keep the stale one."""
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    click(view, side_log(view))
+    window = view._widgets[id(side_log(view))]["window"]
+    before = dashboard.root.cget("menu")
+    dashboard._build_menu_bar()
+    assert dashboard.root.cget("menu") is not before
+    assert window.cget("menu") is dashboard.root.cget("menu")
+
+
+# ---------------------------------------------------------------------------
+# I2: nothing clips at 28 pt - measured in a real Tk build
+# ---------------------------------------------------------------------------
+#
+# The stand-in above cannot see geometry, so these build the real station
+# (real Controller, real Setup, a SIM Stepper Probe) in a child process with
+# the real tkinter, in a transparent window, and measure what Tk allotted.
+
+_REAL_BUILD = r'''
+import json, os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "src"))
+POINTS, WIDTH, HEIGHT = int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+from views import theme
+theme.set_font_size(POINTS)
+from controller.controller import Controller
+from controller.setup import Setup, MODEL_TYPES, _key_for
+import views.tk as tkv
+ctl = Controller(); setup = Setup(ctl)
+try:
+    dash = tkv.TkDashboard(ctl, setup)
+except Exception as exc:        # no display: nothing to measure
+    print(json.dumps({"skip": repr(exc)})); sys.exit(0)
+root = dash.root
+# Mapped but fully transparent: a withdrawn root is never given its real
+# size, so its table is laid out at its request and measures nothing.
+root.attributes("-alpha", 0.0)
+dash._add_setup_panel()
+for name in list(MODEL_TYPES)[:3]:
+    key = _key_for(name)
+    setup.run(f"set_{key}_enabled", args=(True,))
+    setup.run(f"set_{key}_port", args=("SIM",))
+root.geometry(f"{WIDTH}x{HEIGHT}+0+0")
+setup_view = dash._panels["Setup"]
+for _ in range(3):
+    setup_view._refresh(); root.update_idletasks(); root.update()
+
+def rect(w):
+    return (w.winfo_rootx(), w.winfo_rooty(), w.winfo_width(), w.winfo_height())
+
+def inside(a, b):
+    return (a[0] >= b[0] and a[1] >= b[1] and a[0] + a[2] <= b[0] + b[2]
+            and a[1] + a[3] <= b[1] + b[3])
+
+out = {"clipped": [], "status": [], "launch": None}
+for element in setup_view._elements:
+    attr = str(element.get("model_attr", ""))
+    if element.get("type") == "readonly" and attr.endswith("_status") and attr != "scan_status":
+        entry = setup_view._entry_for(element)
+        full, shown = str(entry["var"].get() or ""), entry["widget"].cget("text")
+        out["checked"] = out.get("checked", 0) + bool(full)
+        if full and shown != full:
+            out["status"].append([full, shown])
+launch = next(e for e in setup_view._elements
+              if e.get("command") == "launch" and e.get("text") == "Launch")
+button = setup_view._entry_for(launch)["ring"].outer
+seen = rect(button)
+view_rect = rect(setup_view.frame)
+in_body = str(button).startswith(str(setup_view._body))
+out["launch"] = {"rect": seen, "panel": view_rect,
+                 "visible": inside(seen, view_rect) and (
+                     not in_body or inside(seen, rect(setup_view._canvas)))}
+
+el = next(e for e in setup_view._elements if e.get("command") == "launch"
+          and e.get("text") == "Launch")
+setup_view._run(el)
+for name in ctl.model_names:
+    dash._add_panel(name)
+for _ in range(3):
+    root.update_idletasks(); root.update()
+probe = dash._panels["Stepper Probe"]
+area = rect(probe._canvas)
+for element in probe._elements:
+    entry = probe._entry_for(element)
+    ring = entry.get("ring")
+    if ring is None or element.get("type") not in ("button", "toggle", "log_stream"):
+        continue
+    box = ring.outer
+    got, want = rect(box), box.winfo_reqwidth()
+    if got[2] < want or got[0] < area[0] or got[0] + got[2] > area[0] + area[2]:
+        out["clipped"].append([entry["widget"].cget("text"), got, want, area])
+dash.close()
+print(json.dumps(out))
+'''
+
+
+def _real_build(points, width, height):
+    import json
+    import subprocess
+    import sys
+    tree = os.path.dirname(os.path.dirname(os.path.abspath(tkmod.__file__)))
+    tree = os.path.dirname(tree)
+    # After a crashed Python, AppKit opens a modal "reopen windows?" alert
+    # at the next launch and Tk waits on it forever; this argument (read by
+    # NSUserDefaults on a Mac, ignored elsewhere) skips it.
+    done = subprocess.run([sys.executable, "-c", _REAL_BUILD, tree, str(points),
+                           str(width), str(height),
+                           "-ApplePersistenceIgnoreState", "YES"],
+                          capture_output=True, text=True, timeout=120)
+    lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
+    assert done.returncode == 0 and lines, done.stderr[-2000:]
+    result = json.loads(lines[-1])
+    if "skip" in result:
+        pytest.skip(f"no display for a real Tk build: {result['skip']}")
+    return result
+
+
+@pytest.mark.parametrize("points, width, height", [
+    (12, 1400, 900), (12, 900, 900), (28, 1400, 900), (28, 900, 900)])
+def test_every_probe_command_is_whole_inside_its_panel(points, width, height):
+    """UXPM5-2 / H2 IMP-3: the action row did not wrap, so "Gamepad log…"
+    showed 47 of 109 px at 12 pt and was off the panel at 28 pt."""
+    clipped = _real_build(points, width, height)["clipped"]
+    assert clipped == [], clipped
+
+
+def test_setup_at_28_pt_keeps_its_status_words_and_its_launch_row():
+    """UXPM5-5: every Status word elided to "…" and the Launch row was below
+    the scroll viewport at 28 pt."""
+    result = _real_build(28, 1400, 900)
+    assert result.get("checked", 0) >= 3, "the ticked rows carry a status"
+    assert result["status"] == [], result["status"]
+    assert result["launch"]["visible"], result["launch"]
+
+
+def test_the_commit_row_is_pinned_outside_the_scroll_area():
+    """The panel's last row, a bar holding a `go` command (Setup's Launch),
+    is pinned under the scrolling body so no font size scrolls it away."""
+    class CommitPanel(RowPanel):
+        @property
+        def schema(self):
+            base = RowPanel.schema.fget(self)
+            rows = [section for section in base["sections"]
+                    if section.get("layout") == "row"]
+            commit = sch.section("Launch", sch.button("Go", "launch", role="go"),
+                                 layout="row")
+            return sch.schema(*rows, commit)
+
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Rows=CommitPanel()), "Rows")
+    go = built._widgets[id(element_of(built, "button", "Go"))]["ring"].outer
+
+    def ancestors(widget):
+        while widget is not None:
+            yield widget
+            widget = widget.master
+
+    assert built._body not in list(ancestors(go)), "not on the scrolling canvas"
+    assert built._pinned in list(ancestors(go)) and built._pinned.is_packed
+    port = cell_widget(built, built._elements[STEPPER_PORT])
+    assert built._body in list(ancestors(port)), "the rows still scroll"
+    built.close()
