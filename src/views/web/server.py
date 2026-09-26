@@ -150,6 +150,15 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             return self._send_bytes(200, "text/css; charset=utf-8",
                                     theme.css_variables().encode("utf-8"))
 
+        if route == "/api/theme.json":
+            # The two theme rules that are words, not colours: which readonly
+            # values are "normal" and so not drawn in tier 1 (status by
+            # exception), and the default disclosure texts. Served rather
+            # than copied into app.js, so the three views read one list.
+            return self._send_json(200, {
+                "quiet_values": sorted(theme.QUIET_VALUES),
+                "tier_labels": {str(k): v for k, v in theme.TIER_LABELS.items()}})
+
         if route == "/api/data":
             return self._send_data(self._one(query, "name"),
                                    self._one(query, "command"))
