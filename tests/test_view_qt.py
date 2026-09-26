@@ -865,5 +865,7 @@ def test_l3_a_gate_says_why_in_the_operators_words():
     port = sch.dropdown("Port", "port", "set_port", "ports", enabled_by="on")
     assert qt.gate_reason(port, "idle", {"on": False}, lambda _: "Launch") == (
         "Tick Launch first")
+    relaunch = sch.button("Relaunch", "relaunch", role="go", enabled_when=("launched",))
+    assert qt.gate_reason(relaunch, "idle") == "Nothing launched yet"
     odd = sch.button("Odd", "odd", disabled_when=("warming_up",))
     assert qt.gate_reason(odd, "warming_up") == "Warming up"

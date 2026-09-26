@@ -404,7 +404,8 @@ GATE_WORDS = {"latched": "Stopped: clear the stop first",
               "no_region": "Set a capture region first",
               "disconnected": "Not connected",
               "moving": "Moving"}
-WAITING_WORDS = {"running": "No run in progress",
+WAITING_WORDS = {"launched": "Nothing launched yet",
+                 "running": "No run in progress",
                  "manual": "Not in manual mode",
                  "connected": "Not connected"}
 
@@ -1437,9 +1438,11 @@ class TableRow:
         self.table, self.row, self.title = table, row, title
 
     def add(self, label, widget, unit=""):
-        # A tick box is a narrow column of its own, its header its caption.
-        narrow = isinstance(widget, QCheckBox)
-        if narrow and self.title is not None and self.title.target is None:
+        # A tick box is a narrow column of its own, its header its caption;
+        # so is a readout (a status word needs no control's floor, L8).
+        narrow = isinstance(widget, (QCheckBox, QLabel))
+        if (isinstance(widget, QCheckBox) and self.title is not None
+                and self.title.target is None):
             self.title.set_target(widget)       # L4: one target, name and tick
         self.table.grid.addWidget(widget, self.row,
                                   self.table.column_for(label, narrow))
@@ -3756,6 +3759,10 @@ class QtPanelView(PanelView, QWidget):
         tier 1 a normal value is not drawn at all (status by exception) and
         "Yes" is a lit lamp beside the caption."""
         text = as_operator_word(text)
+        if self._panel is not None and isinstance(text, str) and not is_number(text):
+            # Setup's status words start with a capital, as every line of
+            # copy does ("Not scanned yet", "Simulated"; QT7-17).
+            text = sentence(text)
         shown = str(text) if str("" if text is None else text).strip() else EMPTY_READOUT
         previous = widget.text()
         if previous != shown:

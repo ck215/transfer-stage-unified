@@ -3459,7 +3459,7 @@ def test_l8_setup_takes_the_height_it_needs_while_the_sheet_is_empty(qapp):
     empty window; at 900 px a sideways bar covered the Launch row."""
     class BigSetup(TablePanel):
         """Setup's size on the bench: eight rows, a port and a gamepad each."""
-        ROWS = tuple((f"Model Number {n}", f"model{n}", True, True)
+        ROWS = tuple((f"Temperature Controller {n}", f"model{n}", True, True)
                      for n in range(8))
 
     for width in (1400, 900):
@@ -3604,3 +3604,17 @@ def test_l5_on_the_device_page_only_the_well_scrolls(six, qapp):
     six.show_overview()
     _pump(qapp)
     assert not panel.well_scroll.isVisible()
+
+
+def test_l22_setups_status_words_start_with_a_capital(qapp):
+    """QT7-17: "not scanned yet", "simulated", "off" in Setup's table."""
+    setup = TablePanel()
+    setup.scan_status = "not scanned yet"
+    view = qt.QtPanelView(FakeController(setup), "Setup", panel=setup)
+    try:
+        view._refresh()
+        status = view._widget_for(element_named(view, "scan_status"))
+        assert status.full_text() if hasattr(status, "full_text") else status.text()
+        assert status.text() == "Not scanned yet"
+    finally:
+        view.close()
