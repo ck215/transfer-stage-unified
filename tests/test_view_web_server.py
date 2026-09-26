@@ -191,6 +191,11 @@ class FakeSetup(Panel):
         self.scanned = 0
         self.ports = ["SIM", "COM3"]
         self.detected = "not found"
+        # G3: the row's Launch box. Ticked here so the existing browser
+        # scenarios find a live Port dropdown; the checkbox test unticks it.
+        self.probe_enabled = True
+        self.ticks = []
+        self.refuse_ticks = 0         # how many ticks to refuse, then accept
 
     @property
     def schema(self):
@@ -204,7 +209,12 @@ class FakeSetup(Panel):
             ),
             sch.section(
                 "Fake Probe",
-                sch.dropdown("Port", "port", "set_port", "port_options"),
+                # G3: the Launch box first, and the dropdown live only while
+                # it is ticked - the real Setup row's shape.
+                sch.checkbox("Launch", "probe_enabled", "set_probe_enabled",
+                             tooltip="Launch Fake Probe"),
+                sch.dropdown("Port", "port", "set_port", "port_options",
+                             enabled_by="probe_enabled"),
                 sch.readonly("Detected:", "detected"),
                 layout="row",
             ),
@@ -220,6 +230,15 @@ class FakeSetup(Panel):
 
     def set_port(self, port=None):
         return port
+
+    def set_probe_enabled(self, flag):
+        # What the browser sent, exactly: a JSON boolean arrives as a bool.
+        self.ticks.append(flag)
+        if self.refuse_ticks:
+            self.refuse_ticks -= 1
+            raise Refused("the row cannot be ticked right now")
+        self.probe_enabled = bool(flag)
+        return self.probe_enabled
 
 
 # --------------------------------------------------------------------------
@@ -312,7 +331,13 @@ def test_setup_carries_every_sections_layout_through_unchanged(station):
     assert [s["layout"] for s in served] == ["column", "row"]
     rows = [s for s in served if s["layout"] == "row"]
     assert [s["title"] for s in rows] == ["Fake Probe"]
-    assert [e["type"] for e in rows[0]["elements"]] == ["dropdown", "readonly"]
+    # G3: the Launch box first; its gate and its accessible name reach the
+    # browser untouched - the server special-cases no element type.
+    assert [e["type"] for e in rows[0]["elements"]] == ["checkbox", "dropdown", "readonly"]
+    box, port = rows[0]["elements"][:2]
+    assert box["tooltip"] == "Launch Fake Probe" and box["command"] == "set_probe_enabled"
+    assert port["enabled_by"] == "probe_enabled"
+    assert data["state"]["values"]["probe_enabled"] is True, "a boolean became a string"
 
 
 def test_a_models_schema_carries_its_section_layout_too(station):
@@ -1226,3 +1251,85 @@ def test_quit_asks_first_then_the_page_says_the_station_is_down(station, tmp_pat
     assert out["offline"] and out["cardsInert"] and out["badge"], out
     assert out["stopDisabled"] and out["quitDisabled"], out
     assert out["muted"] and out["rackDimmed"], out
+
+
+# --------------------------------------------------------------------------
+# G3: the Setup row's Launch checkbox
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_launch_box_sends_the_new_boolean_and_gates_the_port(station, tmp_path):
+    """G3: a real checkbox, first column of the Setup table under a "Launch"
+    caption. Unticking sends `false` and greys the Port dropdown out (really
+    disabled); ticking sends `true` and brings it back. The box follows the
+    MODEL: a refused tick is undone by the next poll, and a tick made on the
+    station side shows up without anyone touching the box."""
+    view, _, _ = station
+    setup = view.setup
+    out = _browse(view, r"""
+      const r = {};
+      await page.click('#setup-link');
+      await sleep(400);
+      const box = '#drawer-body input[type="checkbox"]';
+      r.shape = await page.evaluate((sel) => {
+        const b = document.querySelector(sel);
+        const row = b.closest('.section-row');
+        const cells = Array.from(row.children).filter((c) => c.classList.contains('cell'));
+        const head = Array.from(document.querySelectorAll('#drawer-body .table-head .head-cell'))
+          .map((c) => c.textContent);
+        const label = b.id && document.querySelector('label[for="' + b.id + '"]');
+        return { firstCell: cells[0].contains(b), head, label: label && label.textContent,
+                 name: b.getAttribute('aria-label'), title: b.title, checked: b.checked };
+      }, box);
+      const portDisabled = () => page.evaluate(
+        () => document.querySelector('#drawer-body select').disabled);
+      r.portBefore = await portDisabled();
+      await page.click(box);
+      await until(() => document.querySelector('#drawer-body select').disabled);
+      r.afterUntick = { port: await portDisabled(),
+        checked: await page.evaluate((sel) => document.querySelector(sel).checked, box) };
+      await page.click(box);
+      await until(() => !document.querySelector('#drawer-body select').disabled);
+      r.afterTick = { port: await portDisabled(),
+        checked: await page.evaluate((sel) => document.querySelector(sel).checked, box) };
+      return r;
+    """, tmp_path)
+    assert out["shape"]["firstCell"], out["shape"]
+    assert out["shape"]["head"][0] == "Launch", out["shape"]
+    assert out["shape"]["label"] == "Launch", out["shape"]
+    assert out["shape"]["name"] == "Launch Fake Probe", out["shape"]
+    assert out["shape"]["title"] == "Launch Fake Probe", out["shape"]
+    assert out["shape"]["checked"] is True, out["shape"]
+    assert out["portBefore"] is False
+    assert out["afterUntick"] == {"port": True, "checked": False}, out
+    assert out["afterTick"] == {"port": False, "checked": True}, out
+    # JSON booleans, never the strings "true" / "false".
+    assert setup.ticks == [False, True], setup.ticks
+
+
+@needs_browser
+def test_the_launch_box_follows_the_model_not_the_click(station, tmp_path):
+    """G3: the state poll sets the box; a refused untick is put back by it,
+    and a row the station unticked by itself (not through the box) shows
+    unticked with its Port dropdown greyed out."""
+    view, _, _ = station
+    setup = view.setup
+    setup.refuse_ticks = 1
+    out = _browse(view, r"""
+      const r = {};
+      await page.click('#setup-link');
+      await sleep(400);
+      const box = '#drawer-body input[type="checkbox"]';
+      await page.click(box);
+      await sleep(900);
+      r.afterRefused = await page.evaluate((sel) => document.querySelector(sel).checked, box);
+      r.portAfterRefused = await page.evaluate(() => document.querySelector('#drawer-body select').disabled);
+      await api('/api/run', { name: '__setup__', command: 'set_probe_enabled', inputs: {}, args: [false] });
+      await until(() => !document.querySelector('#drawer-body input[type="checkbox"]').checked);
+      r.fromModel = await page.evaluate((sel) => document.querySelector(sel).checked, box);
+      r.portFromModel = await page.evaluate(() => document.querySelector('#drawer-body select').disabled);
+      return r;
+    """, tmp_path)
+    assert out["afterRefused"] is True, "a refused untick left the box unticked"
+    assert out["portAfterRefused"] is False
+    assert out["fromModel"] is False and out["portFromModel"] is True, out
+    assert setup.ticks == [False, False], setup.ticks

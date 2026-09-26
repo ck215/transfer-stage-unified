@@ -145,12 +145,54 @@ def test_entries_are_not_overwritten_while_they_are_being_typed_in():
 
 def test_gating_covers_every_element_including_entries():
     refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
-    assert "widget.setEnabled(isEnabled(element, mode))" in refresh, (
+    # G3: the panel's values go with the mode, for `enabled_by`.
+    assert "widget.setEnabled(isEnabled(element, mode, this.values))" in refresh, (
         "gating must be applied to every widget in the loop, not to the "
         "buttons the renderer happens to remember")
     # the rule itself, not a second opinion about it
-    gate = _body(r"function isEnabled\(element, mode\) \{(.*?)\n\}")
+    gate = _body(r"function isEnabled\(element, mode, values\) \{(.*?)\n\}")
     assert "disabled_when" in gate and "enabled_when" in gate
+    assert "enabled_by" in gate
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_enabled_by_gates_exactly_as_schema_is_enabled_does():
+    """G3: `sch.is_enabled(element, mode, values)`, mirrored and checked
+    against the Python rule case by case: an element with `enabled_by` is
+    live only while that value is truthy, the mode gates still apply, and a
+    caller without values skips the rule."""
+    cases = [
+        ({"enabled_by": "on"}, "idle", {"on": False}),
+        ({"enabled_by": "on"}, "idle", {"on": True}),
+        ({"enabled_by": "on"}, "idle", {}),
+        ({"enabled_by": "on"}, "idle", None),
+        ({"enabled_by": "on", "disabled_when": ["run"]}, "run", {"on": True}),
+        ({"enabled_by": "on", "enabled_when": ["ready"]}, "ready", {"on": True}),
+        ({"enabled_by": "on", "enabled_when": ["ready"]}, "idle", {"on": True}),
+        ({"disabled_when": ["run"]}, "run", {"on": True}),
+        ({}, "idle", {"on": False}),
+    ]
+    for element, mode, values in cases:
+        want = sch.is_enabled(element, mode, values)
+        got = _node_value(f"isEnabled({json.dumps(element)}, {json.dumps(mode)}, "
+                          f"{json.dumps(values)})")
+        assert got is want, (element, mode, values)
+
+
+def test_a_checkbox_sends_the_new_value_read_from_the_model():
+    """G3: `PanelView._run_checkbox`, mirrored: ONE argument, the new
+    boolean, computed from the model's value rather than the widget's (a box
+    drawn one poll behind still flips the right way). The box is set from
+    the state on every poll, written only when it differs."""
+    run = _body(r"\n  runCheckbox\(element\) \{(.*?)\n  \}")
+    assert "Boolean(this.values[element.model_attr])" in run
+    assert "this.run(element, [!on])" in run
+    box = _body(r"function renderCheckbox\(panel, element\) \{(.*?)\n\}")
+    assert "type = 'checkbox'" in box and "panel.runCheckbox(element)" in box
+    assert "labelControl(node, input, element)" in box
+    assert "if (input.checked !== next) input.checked = next" in box
+    refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
+    assert "kind === 'checkbox'" in refresh
 
 
 def test_a_stale_state_is_marked_at_the_same_threshold_as_the_desktop_views():
@@ -251,9 +293,10 @@ def test_a_short_row_still_lines_its_status_up_with_the_others():
 
 @pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
 def test_a_row_of_commands_spans_the_table_instead_of_setting_its_widths():
-    """Setup's Launch row carries the whole selection summary. In a shared
-    grid that one long sentence sets the width of every model row's first
-    column, so a row that holds a command spans the table instead."""
+    """Setup's Devices and Launch rows hold commands. In a shared grid their
+    buttons and their sentence (the scan status; the selection count, or the
+    reason Launch is greyed out) would set the widths of the model rows'
+    columns, so a row that holds a command spans the table instead."""
     data_row = {"title": "Stepper Probe", "layout": "row", "elements": [
         {"type": "readonly"}, {"type": "dropdown"}, {"type": "dropdown"},
         {"type": "readonly"}]}
@@ -265,6 +308,13 @@ def test_a_row_of_commands_spans_the_table_instead_of_setting_its_widths():
     # the command row's five elements must not widen the data rows
     assert _node_value(
         f"rowColumnCount({json.dumps([data_row, launch_row])})") == 4
+    # G3: the Launch checkbox is a column of the table like any other cell.
+    ticked_row = {"title": "Stepper Probe", "layout": "row", "elements": [
+        {"type": "checkbox"}, {"type": "dropdown"}, {"type": "dropdown"},
+        {"type": "readonly"}]}
+    assert _node_value(f"isCommandRow({json.dumps(ticked_row)})") is False
+    assert _node_value(
+        f"rowColumnCount({json.dumps([ticked_row, launch_row])})") == 4
     build = _body(r"\n  build\(\) \{(.*?)\n  \}")
     assert "isCommandRow(section)" in build and "' section-span'" in build
     assert "if (isRow && !spans)" in build, (
@@ -479,6 +529,19 @@ def test_the_rail_derives_each_models_key_numbers_from_its_own_schema():
     reduced = STYLES.split("prefers-reduced-motion: reduce")[1]
     assert "animation-duration: 0s !important" in reduced
     assert "transition-duration: 0s !important" in reduced
+
+
+def test_the_setup_drawers_table_has_a_narrow_launch_column_first():
+    """G3: the drawer overrides the table's tracks (name, then one per
+    cell); with the Launch box that is name, Launch, Port, Gamepad, Status,
+    and the Launch track is only as wide as the box."""
+    rule = re.search(r"\.drawer \.card-body\.table\s*\{[^}]*grid-template-columns:([^;]*);",
+                     STYLES)
+    assert rule, "the drawer no longer shapes Setup's table"
+    tracks = re.findall(r"minmax\([^)]*\)|max-content|min-content|auto|[0-9.]+(?:rem|fr)",
+                        rule.group(1).replace("!important", ""))
+    assert len(tracks) == 5, tracks
+    assert tracks[1] in ("max-content", "min-content", "auto"), tracks
 
 
 def test_every_dropdown_is_the_same_width_and_the_log_is_compact():

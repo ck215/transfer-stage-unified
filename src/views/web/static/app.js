@@ -85,7 +85,12 @@ async function apiPostChecked(path, body) {
 // ==========================================================================
 // schema.is_enabled, mirrored. One rule, three views.
 // ==========================================================================
-function isEnabled(element, mode) {
+function isEnabled(element, mode, values) {
+  // G3: an element with `enabled_by` is live only while that value (a Launch
+  // checkbox's) is true. A caller without values skips this rule, as the
+  // Python one does; the mode gates below still apply either way.
+  const by = element.enabled_by;
+  if (by && values !== null && values !== undefined && !values[by]) return false;
   const disabled = element.disabled_when;
   if (disabled && disabled.indexOf(mode) !== -1) return false;
   const enabled = element.enabled_when;
@@ -238,10 +243,12 @@ function isRowSection(section) {
 //: Element types that DO something rather than say something.
 const COMMAND_TYPES = ['button', 'file_save', 'file_open'];
 
-/** A row of commands is not a table row: Setup's Launch row carries the
- *  whole selection summary, and in a shared grid that one long sentence
- *  widens the first column of every model row. A row that holds a command
- *  spans the table instead of lining up with it. */
+/** A row of commands is not a table row: Setup's Devices and Launch rows
+ *  hold buttons and a sentence (the scan status; the selection count, or
+ *  while scanning why Launch waits), and in a shared grid those would set the
+ *  widths of every model row's columns. A row that holds a command spans the
+ *  table instead of lining up with it. A checkbox is not a command: the
+ *  Launch box is a column of each model row (G3). */
 function isCommandRow(section) {
   return isRowSection(section)
     && (section.elements || []).some((e) => COMMAND_TYPES.indexOf(e.type) !== -1);
@@ -586,6 +593,40 @@ function renderStopToggle(panel, element) {
   };
 }
 
+/** A tick box (G3): the box IS the value. Its caption is the row's label;
+ *  the schema's tooltip, when there is one, is its accessible name and its
+ *  title, so a column of "Launch" boxes reads "Launch Stepper probe", ...
+ *  The box is set from the state on every poll and never trusted: a change
+ *  sends the NEW value computed from the model (PanelCard.runCheckbox), and
+ *  the poll after the answer puts the box where the model says it is. */
+function renderCheckbox(panel, element) {
+  const node = row(element, 'check');
+  const input = make('input', 'checkbox');
+  input.type = 'checkbox';
+  labelControl(node, input, element);
+  input.name = element.model_attr || '';
+  if (element.tooltip) {
+    input.setAttribute('aria-label', element.tooltip);
+    input.title = element.tooltip;
+  }
+  input.addEventListener('change', () => panel.runCheckbox(element));
+  node.appendChild(input);
+  return {
+    node,
+    setOn: (on) => {
+      // Diffed against the box itself, not a remembered value: a click the
+      // model refused has flipped the box, and only this puts it back.
+      const next = Boolean(on);
+      if (input.checked !== next) input.checked = next;
+    },
+    setEnabled: (flag) => {
+      if (input.disabled === !flag) return;
+      input.disabled = !flag;
+      node.classList.toggle('disabled', !flag);
+    },
+  };
+}
+
 function renderDropdown(panel, element) {
   const node = row(element);
   const select = make('select', 'select');
@@ -823,6 +864,7 @@ const ELEMENT_RENDERERS = {
   entry: renderEntry,
   button: renderButton,
   toggle: renderToggle,
+  checkbox: renderCheckbox,
   dropdown: renderDropdown,
   region_select: renderRegionSelect,
   file_save: renderFileSave,
@@ -1148,6 +1190,14 @@ class PanelCard {
     return this.run(element, on ? (element.off_args || []) : (element.on_args || []));
   }
 
+  /** `PanelView._run_checkbox`: one argument, the new boolean, read from
+   *  the model rather than the box - a box drawn one poll behind still
+   *  flips the right way. */
+  runCheckbox(element) {
+    const on = Boolean(this.values[element.model_attr]);
+    return this.run(element, [!on]);
+  }
+
   async loadOptions(element, select) {
     let answer;
     try {
@@ -1228,12 +1278,12 @@ class PanelCard {
         if (!widget.isDirty()) widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
       } else if ((kind === 'readonly' || kind === 'region_select' || kind === 'dropdown') && attr) {
         widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
-      } else if (kind === 'toggle' || kind === 'indicator') {
+      } else if (kind === 'toggle' || kind === 'indicator' || kind === 'checkbox') {
         widget.setOn(Boolean(this.values[attr]));
       } else if (kind === 'plot' || kind === 'image' || kind === 'log_stream') {
         if (wantsData) this.loadData(widget);
       }
-      widget.setEnabled(isEnabled(element, mode));
+      widget.setEnabled(isEnabled(element, mode, this.values));
     }
     // A lost device freezes the numbers even while the model's own loop
     // keeps ticking, so `age` alone would call them fresh (F3, HC-1).
@@ -1850,8 +1900,8 @@ class Dashboard {
     const isEmpty = this.cards.size === 0 && !this.isDrawerOpen;
     if (isEmpty && !this.emptyNote) {
       this.emptyNote = make('p', 'rack-empty',
-        'No modules yet. In Setup, give each device you are using a port - '
-        + 'SIM to run against the simulator - and launch.');
+        'No modules yet. In Setup, tick each device you are using, choose its '
+        + 'port - SIM to run against the simulator - and launch.');
       this.dom.cards.appendChild(this.emptyNote);
     } else if (!isEmpty && this.emptyNote) {
       if (this.emptyNote.parentNode) {

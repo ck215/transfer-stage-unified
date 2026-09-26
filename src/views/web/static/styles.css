@@ -601,9 +601,9 @@ button, select, .mushroom {
 }
 
 /* A row that holds a command (Setup's Devices and Launch rows) spans the
-   table rather than lining up with it: its summary would otherwise set the
-   width of every model row's first column. Its last cell still lands hard
-   right, where the status column ends. */
+   table rather than lining up with it: its buttons and its sentence would
+   otherwise set the widths of the model rows' columns. Its last cell still
+   lands hard right, where the status column ends. */
 .card-body.table > .section.section-span {
   display: flex;
   flex-wrap: wrap;
@@ -735,6 +735,20 @@ span.value.is-word,
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* A tick box (G3) is a control on the panel like the others: square, the
+   size of the text beside it, ticked in trace because a ticked box is a lit
+   lamp, and greyed out with the theme's disabled ink, not a fade. */
+.checkbox {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  accent-color: var(--trace);
+  cursor: pointer;
+}
+
+.checkbox:disabled { cursor: not-allowed; }
 
 /* Every dropdown is the same width, whatever is currently chosen. */
 .select { width: 10rem; min-width: 10rem; }
@@ -1096,10 +1110,11 @@ span.lamp { background: none; }
    name share the slack instead of each demanding its longest option's
    width. `build()` writes the track list as an inline style, so overriding
    it here is the only way to reach it; the shape is Setup's and is fixed by
-   src/controller/setup.py: name, port, gamepad, status. */
+   src/controller/setup.py: name, Launch box, port, gamepad, status. The
+   Launch column is as narrow as its box (G3). */
 .drawer .card-body.table {
   grid-template-columns:
-    minmax(0, max-content) minmax(4.5rem, 1fr) minmax(4.5rem, 1fr)
+    minmax(0, max-content) max-content minmax(4.5rem, 1fr) minmax(4.5rem, 1fr)
     minmax(0, max-content)
     !important;
   column-gap: 0.4rem;
@@ -1109,13 +1124,13 @@ span.lamp { background: none; }
 
 /* The device name and the status read at panel scale, not at heading scale:
    what the row is for is the two dropdowns between them. */
-.drawer .section-row > .row-title { font-size: var(--t-sm); }
+.drawer .section-row > .row-title { font-size: var(--t-sm); padding-right: 0.5rem; }
 
 .drawer .value { min-width: 0; font-size: var(--t-sm); }
 
 .drawer .section-row > .cell { min-width: 0; }
 
-/* Setup's Launch row is two lines: what is selected, then the commands,
+/* Setup's Launch row is two lines: how many devices are ticked, then the commands,
    right-aligned as one group, so four things of four widths do not fight
    for one line of the drawer. */
 .drawer .section-span > .actions:last-child {
