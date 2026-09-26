@@ -11,24 +11,41 @@
        apart. styles.css names no colour of its own. -->
   <link rel="stylesheet" href="/api/theme.css">
   <link rel="stylesheet" href="/styles.css">
-  <link rel="preload" href="/fonts/ibm-plex-sans-400.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="/fonts/ibm-plex-sans-500.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="/fonts/ibm-plex-sans-600.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/public-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/archivo-semiexpanded-600-latin.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body>
-  <a class="skip-link" href="#cards">Skip to the modules</a>
-  <!-- The status rail is the instrument's face: the numbers the operator
-       watches, and one stop that is never in doubt. -->
+  <a class="skip-link" href="#cards">Skip to the models</a>
+  <!-- The rail: the station's name, the one stop that is never in doubt,
+       the models by name, and the way to Setup and out. No numbers: a
+       reading is said once, on the sheet. -->
   <header class="rail">
     <div class="rail-head">
       <h1 class="station-name">Transfer stage</h1>
-      <span id="connection" class="link-state" role="status" aria-live="polite">Connecting…</span>
+      <!-- Silent while all is well: the simulation line only when there is
+           no hardware, the link line only when the station stops answering. -->
+      <span id="sim-line" class="rail-note" hidden></span>
+      <span id="connection" class="link-state" role="status" aria-live="polite"></span>
     </div>
-    <div id="rail-readouts" class="rail-readouts" aria-label="Key readouts"></div>
-    <div class="rail-side">
-      <div id="closed-models" class="closed"></div>
+    <div class="stop-block">
+      <div id="stop-ring" class="stop-ring">
+        <button id="full-stop" type="button" class="mushroom" aria-label="Stop every model"
+                aria-keyshortcuts="Control+Period"
+                title="Stop every model. Keyboard: Ctrl+., from anywhere on the page.">
+          <span class="mushroom-face">Stop</span>
+        </button>
+      </div>
       <!-- The stop's keyboard path, said where the stop is (F9). -->
       <span class="stop-hint" aria-hidden="true">Stop: Ctrl+.</span>
+      <p id="rail-latched" class="rail-latched" hidden>Stopped: every model latched</p>
+      <!-- What must be read from across the bench and must not be lost to
+           the next event: a stop that did not reach the station, a lost
+           device, a Quit that did not land. -->
+      <div id="rail-alert" class="rail-alert" role="alert" hidden></div>
+    </div>
+    <nav id="model-nav" class="model-nav" aria-label="Models"></nav>
+    <div id="closed-models" class="closed"></div>
+    <div class="rail-foot">
       <button id="setup-link" type="button" class="ghost rail-control"
               title="Open Setup: ports, devices and launch">Setup</button>
       <!-- Closing the tab never quits: the station keeps running for the
@@ -37,19 +54,18 @@
               aria-label="Quit the station program"
               title="Quit the station program: stops every model, closes every port and exits (asks first)">Quit</button>
     </div>
-    <button id="full-stop" type="button" class="mushroom" aria-label="Stop every model"
-            aria-keyshortcuts="Control+Period"
-            title="Stop every model. Keyboard: Ctrl+., from anywhere on the page.">
-      <span class="mushroom-face">Stop</span>
-    </button>
-    <!-- What the operator must read from across the bench and must not lose
-         to the next event: a stop that did not land, a lost device. -->
-    <div id="rail-alert" class="rail-alert" role="alert" hidden></div>
   </header>
 
-  <main id="cards" class="rack" tabindex="-1"></main>
+  <div class="page">
+    <!-- Said once, at the top of the sheet, while every model is latched. -->
+    <div id="sheet-headline" class="sheet-headline" hidden>
+      <p class="headline">Every model is stopped.</p>
+      <p class="headline-note">Clear the stop on the rail to continue.</p>
+    </div>
+    <main id="cards" class="sheet" tabindex="-1"></main>
+  </div>
 
-  <!-- Setup is a drawer, not a module: it is where a run begins and where it
+  <!-- Setup is a drawer, not an entry: it is where a run begins and where it
        is re-planned, and it withdraws once the station is running. -->
   <div id="scrim" class="scrim" hidden></div>
   <aside id="setup-drawer" class="drawer" aria-label="Setup" tabindex="-1">
@@ -61,11 +77,11 @@
     <div id="drawer-body" class="drawer-body"></div>
   </aside>
 
-  <!-- One line at the foot of the page: the latest event, and the room to
-       read the last few when you ask for it. -->
+  <!-- One line at the foot of the page: the latest warning or error, and
+       the room to read the log when you ask for it. Normal is silence. -->
   <section id="log-panel" class="tray">
     <div class="tray-head">
-      <span id="tray-latest" class="tray-latest" role="status" aria-live="polite">Waiting for the station…</span>
+      <span id="tray-latest" class="tray-latest" role="status" aria-live="polite"></span>
       <button id="log-toggle" type="button" class="ghost rail-control"
               aria-controls="event-log">Show events</button>
     </div>
@@ -73,7 +89,7 @@
   </section>
 
   <!-- Only an event that asks to be acknowledged opens this. Every layer
-       below starts under the rail: nothing this page opens covers the stop. -->
+       starts beside the rail: nothing this page opens covers the stop. -->
   <div id="ack-modal" class="overlay" hidden>
     <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="ack-text">
       <p id="ack-count" class="dialog-count" hidden></p>
