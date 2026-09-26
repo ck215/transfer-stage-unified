@@ -128,7 +128,8 @@ class FakeWidget:
         self.is_packed = False
 
     def grid_columnconfigure(self, column, **options):
-        self.column_weights[column] = options
+        # Tk merges a column's options (a later minsize keeps the weight).
+        self.column_weights.setdefault(column, {}).update(options)
 
     def yview(self, *_args):
         return None
@@ -428,11 +429,35 @@ class FakeStyle:
         STYLE.setdefault(name + ":map", {}).update(options)
 
 
+class FakeScale(FakeWidget):
+    """`ttk.Scale`: like Tk's, `set` runs the widget's command."""
+
+    def __init__(self, master=None, **options):
+        super().__init__(master, **options)
+        self.value = options.get("from_", 0)
+        self.states = []
+
+    def set(self, value):
+        self.value = value
+        command = self.options.get("command")
+        if command is not None:
+            command(str(value))
+
+    def get(self):
+        return self.value
+
+    def state(self, spec=None):
+        if spec is not None:
+            self.states.append(list(spec))
+        return self.states[-1] if self.states else []
+
+
 class FakeTtkModule:
     Frame = FakeWidget
     Combobox = FakeWidget
     Checkbutton = FakeWidget
     Scrollbar = FakeWidget
+    Scale = FakeScale
     Style = FakeStyle
 
 
@@ -862,8 +887,11 @@ def test_a_danger_command_renders_neutral_like_qt_and_web(view):
     outlined in signal in Tk alone; it renders neutral, as in Qt and Web."""
     go = element_of(view, "button", "Go")
     entry = view._widgets[id(go)]
-    assert widget_of(view, go).cget("background") == theme.colors("neutral")[0]
-    assert entry["outline"].cget("background") == tkmod.INPUT_BORDER
+    # Updated for the Bench sheet (E): a non-`go` command is outlined (the
+    # muted input border) on the ground it sits on, not filled with the old
+    # neutral panel tone.
+    assert widget_of(view, go).cget("background") == tkmod._page()
+    assert entry["outline"].cget("background") == theme.INPUT_BORDER
     assert theme.SIGNAL not in (widget_of(view, go).cget("background"),
                                 entry["outline"].cget("background"))
 
@@ -885,9 +913,10 @@ def test_a_command_has_hover_and_disabled_states(view, panel):
 def test_labels_are_sentence_case_without_a_colon(view):
     """The Web view's `sentenceCase`: the schema's "Speed now:" reads "Speed
     now", section titles come down to sentence case."""
-    captions = [child.cget("text") for child in widget_of(
-        view, element_of(view, "readonly", "Speed now:")).master.children]
-    assert "Speed now" in captions and "Speed now:" not in captions
+    # Updated for E: the caption sits OVER its value in the cell, not in a
+    # column beside it.
+    caption = view._widgets[id(element_of(view, "readonly", "Speed now:"))]["caption"]
+    assert caption.cget("text") == "Speed now"
     assert tkmod._label("Coordinate Frame") == "Coordinate frame"
     assert tkmod._label("X Position:") == "X position"
     assert tkmod._label("Target X Dist:") == "Target X dist"
@@ -980,27 +1009,30 @@ def test_an_empty_readout_says_so_instead_of_drawing_a_bare_stripe(view, panel):
     assert view._widgets[id(element)]["var"].get() == tkmod.EMPTY_READOUT
     assert widget.cget("background") == tkmod._page(), "not a coloured stripe"
     assert widget.cget("foreground") == theme.MUTED
+    # Updated for E (status by exception): "--" is a quiet value, so a tier-1
+    # status says nothing at all - its cell takes no place.
+    assert view._widgets[id(element)]["is_quiet"] is True
 
     panel.fault_reason = "over temperature"
     view._refresh()
     assert view._widgets[id(element)]["var"].get() == "over temperature"
     assert widget.cget("text") == "over temperature"
-    # A live value is drawn in the trace colour, on the panel.
-    assert widget.cget("foreground") == theme.TRACE
+    assert view._widgets[id(element)]["is_quiet"] is False
+    # Updated for E: words are ink; trace is for a CHANGING number only.
+    assert widget.cget("foreground") == theme.TEXT
     assert widget.cget("background") == tkmod._page()
 
 
-def test_a_readout_sits_where_an_entry_sits_in_a_column_section(view):
-    """One value column per section, the same width for every entry and
-    every readout: both fill it, so they end at the same right edge."""
-    readout = element_of(view, "readonly", "Speed now:")
-    entry = element_of(view, "entry", "Speed")
-    assert _cell(view, readout)["column"] == _cell(view, entry)["column"] == 1
-    assert _cell(view, readout)["sticky"] == _cell(view, entry)["sticky"] == "ew"
-    for element in (readout, entry):
-        weights = cell_widget(view, element).master.column_weights
-        assert weights[1]["minsize"] == tkmod.VALUE_PX
-        assert weights[0]["weight"] == 1     # the caption takes the slack
+def test_a_readout_and_an_entry_are_cells_with_their_caption_over_them(view):
+    """Rewritten for the Bench sheet (E): a section's controls are cells -
+    the caption over the control - flowing in one strip, not a caption
+    column beside a value column."""
+    for text, kind in (("Speed now:", "readonly"), ("Speed", "entry")):
+        entry = view._widgets[id(element_of(view, kind, text))]
+        box, strip = entry["box"], entry["strip"]
+        assert box.master is strip and box in view._flows[id(strip)]["items"]
+        assert entry["caption"].master is box
+        assert entry["caption"].cget("foreground") == theme.MUTED
 
 
 def test_a_long_readout_is_elided_and_its_whole_text_is_the_tooltip(
@@ -1010,12 +1042,12 @@ def test_a_long_readout_is_elided_and_its_whole_text_is_the_tooltip(
     element = element_of(view, "readonly", "Fault:")
     widget = widget_of(view, element)
     monkeypatch.setattr(tkmod, "_text_width", lambda _font, text: 10 * len(text))
-    widget.winfo_width = lambda: 100
-    widget.options["padx"] = 0
+    # Updated for E: a sheet readout's room is the width of its flow.
+    view._flow_strip(view._widgets[id(element)]["strip"], 300)
     panel.fault_reason = "identifying /dev/cu.debug-console (2 of 2)..."
     view._refresh()
     shown = widget.cget("text")
-    assert shown.endswith(tkmod.ELLIPSIS) and len(shown) * 10 <= 100
+    assert shown.endswith(tkmod.ELLIPSIS) and len(shown) * 10 <= 300
     assert view._widgets[id(element)]["tooltip"].text == panel.fault_reason
 
     panel.fault_reason = "short"
@@ -1034,10 +1066,12 @@ def test_a_readout_is_not_drawn_like_a_box_to_type_in(view):
     assert not readout.cget("highlightthickness")
     assert readout.cget("background") == tkmod._page()
     ring = view._widgets[id(element_of(view, "entry", "Speed"))]["ring"]
-    assert ring.inner.cget("background") == tkmod.INPUT_BORDER   # a border
+    # Updated for E: no box - a muted underline under a panel-toned well.
+    assert ring.line.cget("background") == theme.INPUT_BORDER
+    assert ring.inner.cget("background") == tkmod._page()
     assert entry.master is ring.inner
-    assert entry.cget("background") == theme.BACKGROUND
-    assert readout.cget("anchor") == "e"
+    assert entry.cget("background") == theme.WELL
+    assert entry.cget("justify") == "right"
     # numbers first: the readout is one step larger than the entry's text
     assert abs(readout.cget("font")[1]) > abs(entry.cget("font")[1])
 
@@ -1285,11 +1319,14 @@ def test_a_row_of_its_own_captions_is_a_bar_across_the_table():
     built.close()
 
 
-def test_a_column_section_still_stacks_one_element_per_row(row_view):
+def test_a_column_section_flows_its_cells_in_one_strip(row_view):
+    """Rewritten for E: a column section is a flow of cells - the entry's
+    cell and the command share the section's strip, left to right."""
     entry, button = row_view._elements[COUNT], row_view._elements[LAUNCH]
-    strip = row_view._widgets[id(button)]["ring"].outer.master
-    assert strip.grid_info["row"] == _cell(row_view, entry)["row"] + 2   # + refusal line
-    assert _cell(row_view, entry)["column"] == 1      # column 0 is its caption
+    strip = row_view._widgets[id(entry)]["strip"]
+    items = row_view._flows[id(strip)]["items"]
+    assert row_view._widgets[id(entry)]["box"] in items
+    assert row_view._widgets[id(button)]["ring"].outer in items
 
 
 def test_consecutive_commands_share_one_line(view):
@@ -1300,23 +1337,17 @@ def test_consecutive_commands_share_one_line(view):
     assert len(lines) == 1
 
 
-def test_sections_flow_into_columns_by_width(view):
-    """One column narrow, two at the default window, up to three when wide
-    - never more columns than the run has sections."""
-    def homes():
-        placed = {}
-        for widget, options in PACK_ORDER:
-            if widget in view._runs[0]["sections"]:
-                placed[widget] = options.get("in_")
-        return set(placed.values())
-
-    view._reflow(500)
-    assert view._layout_columns == 1 and len(homes()) == 1
-    view._reflow(900)
-    assert view._layout_columns == 2 and len(homes()) == 2
-    view._reflow(1400)
-    assert view._layout_columns == 3
-    assert len(homes()) == 2, "two sections: no empty third column"
+def test_cells_wrap_onto_more_lines_as_the_room_narrows(view):
+    """Rewritten for E: the width decides how many LINES a section's flow of
+    cells takes (the sheet decides the columns of entries)."""
+    strip = view._widgets[id(element_of(view, "button", "Go"))]["ring"].outer.master
+    flow = view._flows[id(strip)]
+    for item in flow["items"]:
+        item.winfo_reqwidth = lambda: 100
+    view._flow_strip(strip, 2000)
+    assert set(flow["layout"][0]) == {0}
+    view._flow_strip(strip, 250)
+    assert max(flow["layout"][0]) == (len(flow["items"]) - 1) // 2   # two a line
 
 
 def test_a_column_section_ends_the_table(row_view):
@@ -1464,7 +1495,11 @@ def test_out_of_range_text_is_flagged_without_blocking_typing(view):
     speed = element_of(view, "entry", "Speed")
     view._widgets[id(speed)]["var"].set("99")
     view._bounds_hint(speed)
-    assert widget_of(view, speed).cget("foreground") == theme.colors("warning")[0]
+    # Updated for E: a warning is ink, never a colour - the underline turns ink.
+    assert view._widgets[id(speed)]["ring"].line.cget("background") == theme.TEXT
+    view._widgets[id(speed)]["var"].set("5")
+    view._bounds_hint(speed)
+    assert view._widgets[id(speed)]["ring"].line.cget("background") == theme.INPUT_BORDER
 
 
 # ---------------------------------------------------------------------------
@@ -1731,21 +1766,27 @@ def test_a_model_added_later_gets_a_tab(dashboard, controller, panel):
     assert "Demo" in dashboard._panels
 
 
-def test_closing_a_tab_removes_the_model(dashboard, controller):
+def test_closing_a_model_from_the_rail_removes_it(dashboard, controller):
+    """Updated for E: a model is a line in the rail, not a tab; the middle
+    button on its line is the tab-close gesture, and it destructs."""
     dashboard.open()
-    index = list(dashboard.notebook.tabs()).index(str(dashboard._frames["Demo"]))
-    dashboard.notebook.close_tab(index)
+    _ring, label = dashboard._rail_items["Demo"]
+    label.fire(tkmod._close_tab_button(label))
     assert controller.removed == ["Demo"]
     SCHEDULER.pump()
     assert "Demo" not in dashboard._panels
+    assert "Demo" not in dashboard._rail_items
 
 
-def test_a_close_click_on_the_tab_bar_closes_that_tab(dashboard, controller,
-                                                      monkeypatch):
+def test_a_close_gesture_on_a_page_closes_nothing(dashboard, controller,
+                                                  monkeypatch):
+    """Updated for E: the notebook holds two pages, Setup and the sheet;
+    neither is a model, so a close click on either closes nothing."""
     dashboard.open()
-    monkeypatch.setattr(dashboard.notebook, "index", lambda _spec: 1)
-    dashboard.notebook._on_middle_press(FakeEvent(x=5, y=5))
-    assert controller.removed == ["Demo"]
+    for index in (0, 1):
+        monkeypatch.setattr(dashboard.notebook, "index", lambda _spec, i=index: i)
+        dashboard.notebook._on_middle_press(FakeEvent(x=5, y=5))
+    assert controller.removed == []
 
 
 def test_the_setup_tab_cannot_be_closed(dashboard, controller):
@@ -1792,17 +1833,21 @@ def test_the_setup_tab_minimises_when_the_first_model_launches(dashboard,
     assert dashboard.SETUP_TAB in dashboard._panels
 
 
-def test_the_toolbar_offers_setup_only_while_it_is_minimised(dashboard,
-                                                             controller):
+def test_the_rail_always_offers_setup_filled_while_it_is_shown(dashboard,
+                                                               controller):
+    """Updated for E: Setup sits at the foot of the rail on every page; it
+    is ink-filled while its page is shown and outlined while minimised."""
     dashboard.open()
-    assert dashboard._setup_press.frame.is_packed is False
+    assert dashboard._setup_press.frame.is_packed is True
+    assert dashboard._setup_press.is_active is True
     _launch_a_model(dashboard, controller)
     assert dashboard._setup_press.frame.is_packed is True
+    assert dashboard._setup_press.is_active is False
 
     dashboard._setup_button.fire("<Button-1>")
     assert dashboard._is_setup_collapsed is False
     assert _setup_tab_is_shown(dashboard)
-    assert dashboard._setup_press.frame.is_packed is False
+    assert dashboard._setup_press.is_active is True
 
 
 def test_the_menu_bar_brings_setup_back(dashboard, controller):
@@ -1881,29 +1926,28 @@ def test_unticking_a_model_closes_it(dashboard, controller):
     assert controller.removed == ["Demo"]
 
 
-def test_the_stop_bar_and_the_event_log_cannot_be_pushed_off_the_window(
+def test_the_stop_and_the_event_tray_cannot_be_pushed_off_the_window(
         controller, setup_panel, monkeypatch):
     """SAFETY. Pack order is allocation order: the notebook is the one widget
     that expands, so everything it must never push off the window is packed
-    before it. A FULL STOP the operator cannot reach is not a stop."""
-    packed = []
+    before it. A FULL STOP the operator cannot reach is not a stop.
+    Updated for E: the stop is A's disc at the top of the left rail."""
     monkeypatch.setattr(tkmod.ClosableNotebook, "pack",
                         lambda self, **kwargs: PACK_ORDER.append((self, kwargs)),
                         raising=False)
     built = tkmod.TkDashboard(controller, setup_panel)
     packed = [widget for widget, _ in PACK_ORDER]
     notebook = packed.index(built.notebook)
-    assert packed.index(built._stop_button) < notebook
-    assert packed.index(built._event_text.master.master) < notebook
-    # nothing docked at an edge is packed after the expanding widget
-    docked = [index for index, (_, options) in enumerate(PACK_ORDER)
-              if options.get("side") in ("bottom", "top")
-              and not options.get("expand")]
-    assert max(docked) < notebook
-    # The disc lives in the stop bar, and the bar is docked at the bottom.
-    assert built._stop_button.master is built._stop_bar
-    assert packed.index(built._stop_bar) < notebook
-    assert PACK_ORDER[packed.index(built._stop_bar)][1]["side"] == "bottom"
+    # The rail - the stop's home - is docked left before the main column.
+    rail = packed.index(built._rail)
+    assert PACK_ORDER[rail][1]["side"] == "left"
+    assert rail < packed.index(built._main) < notebook
+    # In the rail the disc is packed before the model list, which gives way.
+    assert built._stop_button.master is built._rail
+    assert packed.index(built._stop_button) < packed.index(built._model_list)
+    # The tray is docked at the bottom of the main column before the notebook.
+    assert packed.index(built._tray) < notebook
+    assert PACK_ORDER[packed.index(built._tray)][1]["side"] == "bottom"
     built.close()
 
 
@@ -1918,18 +1962,29 @@ def test_the_stop_button_label_follows_the_controller(dashboard, controller):
         return [item[2] for item in dashboard._stop_button.items
                 if item[0] == "oval" and item[2].get("fill")][-1]
 
+    def ring():
+        return [item[2] for item in dashboard._stop_button.items
+                if item[0] == "oval" and not item[2].get("fill")][-1]
+
     dashboard.open()
     dashboard._sync_stop_button()
     assert faces() == ["Stop"]
     assert disc()["fill"] == theme.SIGNAL
-    assert dashboard._stop_hint.cget("text").startswith(tkmod.STOP_HINT)
+    # Updated for E: A's disc - a red ring, 3 px, thickening to 6 px latched
+    # (never the trace colour); "Stop: Ctrl+." under it in both states, the
+    # press's action in its tooltip.
+    assert ring()["outline"] == theme.SIGNAL
+    assert ring()["width"] == theme.STOP["ring"]
+    assert dashboard._stop_hint.cget("text") == "Stop: Ctrl+."
+    assert dashboard._stop.tooltip.text.startswith(tkmod.STOP_HINT)
 
     controller.is_estopped = True
     dashboard._sync_stop_button()
     assert faces() == ["Clear"]
     assert disc()["fill"] == theme.SIGNAL
-    assert disc()["outline"] == theme.TRACE
-    assert dashboard._stop_hint.cget("text") == tkmod.CLEAR_HINT
+    assert ring()["outline"] == theme.SIGNAL
+    assert ring()["width"] == theme.STOP["ring_latched"]
+    assert dashboard._stop.tooltip.text == tkmod.CLEAR_HINT
 
 
 def test_the_stop_pulses_once_on_the_edge_and_not_while_latched(dashboard,
@@ -1954,9 +2009,9 @@ def test_the_stop_answers_the_keyboard(dashboard, controller):
     assert controller.estop_calls == 1
 
 
-def test_a_models_own_stop_is_the_same_disc(controller, monkeypatch):
-    """A Safety section's stop toggle (`is_estopped`) is the stop object,
-    bench-sized, not a red bar."""
+def test_a_models_own_stop_is_a_small_switch(controller, monkeypatch):
+    """Rewritten for E: a Safety section's stop toggle (`is_estopped`) is a
+    small switch (tier 3), not a second disc; red only while latched."""
     class Safe(DemoPanel):
         def __init__(self):
             super().__init__()
@@ -1968,17 +2023,24 @@ def test_a_models_own_stop_is_the_same_disc(controller, monkeypatch):
                 "FULL STOP", "is_estopped", "set_running", "LATCHED",
                 "FULL STOP", on_role="danger", off_role="danger")))
 
-    built = tkmod.TkPanelView(FakeWidget(), FakeController(Safe=Safe()), "Safe")
+    safe = Safe()
+    own = FakeController(Safe=safe)
+    built = tkmod.TkPanelView(FakeWidget(), own, "Safe")
     element = built._elements[0]
     entry = built._widgets[id(element)]
-    assert entry["mushroom"].diameter >= tkmod.MINI_STOP_DIAMETER
-    assert entry["mushroom"].diameter < built_stop_floor()
+    switch = entry["switch"]
+    assert "mushroom" not in entry
+    fills = {item[2].get("fill") for item in switch.canvas.items if item[0] == "oval"}
+    assert theme.SIGNAL not in fills, "off: no red"
+    assert entry["words"].cget("text") == "Full stop"
+    safe.is_estopped = True
+    built._refresh()
+    fills = {item[2].get("fill") for item in switch.canvas.items if item[0] == "oval"}
+    assert theme.SWITCH["on_fill"] in fills and theme.SWITCH["knob_on"] in fills
+    assert entry["words"].cget("text") == "Latched"
+    switch.canvas.fire("<Button-1>")
+    assert [call[1] for call in own.calls if call[1] == "set_running"], "a press runs it"
     built.close()
-
-
-def built_stop_floor():
-    """The dashboard disc's floor: a model's own disc is the smaller one."""
-    return tkmod.STOP_DIAMETER
 
 
 def test_the_stop_button_toggles_the_global_estop(dashboard, controller,
@@ -2011,8 +2073,9 @@ def test_events_reach_the_log_panel_coloured_by_severity(dashboard):
     dashboard.open()
     for severity in ("info", "warning", "error"):
         dashboard._show_event(_event(severity, needs_ack=False))
+    # Updated for E (status by exception): info is not drawn in the tray.
     assert dashboard._event_text.written_tags == [
-        ("mark-info",), ("info", "latest"), ("mark-warning",), ("warning", "latest"),
+        ("mark-warning",), ("warning", "latest"),
         ("mark-error",), ("error", "latest")]
     tags = dashboard._event_text.tags
     for severity in ("info", "warning", "error"):
@@ -2022,8 +2085,12 @@ def test_events_reach_the_log_panel_coloured_by_severity(dashboard):
     assert tags["latest"]["foreground"] == theme.TEXT
     body = dashboard._event_text.body
     assert "Error  [Demo] error-event" in body and "Warning  " in body
+    assert "Info" not in body
+    # A warning's mark is a hollow square, an error's a solid one.
+    assert "\u25a1 " in body and "\u25a0 " in body
+    assert dashboard._latest_text.cget("text").startswith("Error")
     # `latest` moves: it is taken off the old lines before each new one.
-    assert dashboard._event_text.removed_tags.count("latest") == 3
+    assert dashboard._event_text.removed_tags.count("latest") == 2
     # and it is created after `info`, before `warning`/`error` - priority.
     assert list(tags).index("info") < list(tags).index("latest") \
         < list(tags).index("warning")
@@ -2041,7 +2108,8 @@ def test_only_a_needs_ack_event_reaches_the_alert_band(dashboard, tk_harness):
 def test_an_event_is_marshalled_onto_the_tk_thread(dashboard):
     dashboard.open()
     before = dashboard._event_text.body
-    dashboard._on_event(_event("info", needs_ack=False))
+    # Updated for E: a warning (info is not drawn in the tray).
+    dashboard._on_event(_event("warning", needs_ack=False))
     assert dashboard._event_text.body == before, "drawn straight off the thread"
     SCHEDULER.pump()
     assert dashboard._event_text.body != before
@@ -2191,14 +2259,15 @@ def test_clear_fits_both_stop_discs_at_every_font_size(monkeypatch, pixel_fonts)
     try:
         for points in range(8, 29):
             theme.set_font_size(points)
-            for step, floor in ((tkmod.STEP_1, tkmod.STOP_DIAMETER),
-                                (tkmod.SMALL, tkmod.MINI_STOP_DIAMETER)):
+            # Updated for E: one disc (A's, in the rail), normal and narrow;
+            # a model's own stop is a switch, not a second disc.
+            for narrow, floor in ((False, tkmod.STOP_DIAMETER),
+                                  (True, tkmod.STOP_DIAMETER_NARROW)):
                 disc = tkmod._Mushroom(FakeWidget(), lambda: None,
-                                       background=theme.BACKGROUND,
-                                       face_step=step, floor=floor)
+                                       background=theme.SURFACE, narrow=narrow)
                 inner = disc.diameter - 2 * disc.ring_width(disc.diameter)
-                clear = _helvetica(tkmod._font(step, bold=True), "Clear")
-                assert clear <= inner - 4, (points, step, disc.diameter)
+                clear = _helvetica(disc.face_font, "Clear")
+                assert clear <= inner - 4, (points, narrow, disc.diameter)
                 assert disc.diameter >= floor
                 assert disc.size >= disc.diameter * max(tkmod.PULSE_FRAMES)
                 assert disc.canvas.cget("width") == disc.size
@@ -2207,12 +2276,15 @@ def test_clear_fits_both_stop_discs_at_every_font_size(monkeypatch, pixel_fonts)
 
 
 def test_the_stop_disc_keeps_its_size_at_the_default_font(monkeypatch):
-    """At 12 pt the main disc is still the 64 px object the bench knows."""
+    """Updated for E: at 12 pt the disc is A's 136 px object (theme.STOP),
+    or the few pixels more its face needs - never smaller, never a bench
+    button."""
     monkeypatch.setattr(tkmod, "_text_width", _helvetica)
     monkeypatch.setattr(tkmod, "_PIXEL_FONTS", True)
     monkeypatch.setattr(theme, "FONT_SIZE", 12)
-    disc = tkmod._Mushroom(FakeWidget(), lambda: None, background=theme.BACKGROUND)
-    assert disc.diameter == tkmod.STOP_DIAMETER
+    disc = tkmod._Mushroom(FakeWidget(), lambda: None, background=theme.SURFACE)
+    assert tkmod.STOP_DIAMETER == theme.STOP["diameter"]
+    assert tkmod.STOP_DIAMETER <= disc.diameter <= tkmod.STOP_DIAMETER * 1.1
 
 
 def test_a_fault_is_a_band_beside_the_stop_never_a_modal(dashboard, tk_harness):
@@ -2230,7 +2302,10 @@ def test_a_fault_is_a_band_beside_the_stop_never_a_modal(dashboard, tk_harness):
     band = dashboard._band
     assert band.is_packed
     packed = [options for widget, options in PACK_ORDER if widget is band][-1]
-    assert packed["after"] is dashboard._stop_bar and packed["side"] == "bottom"
+    # Updated for E: the band sits over the tray under the sheet; the stop
+    # is in the rail, which the band never reaches.
+    assert packed["after"] is dashboard._tray and packed["side"] == "bottom"
+    assert band.master is dashboard._main is not dashboard._rail
     text = dashboard._band_text.cget("text")
     assert "3 errors" in text and all(f"Fault {i}" in text for i in range(3))
     assert text.count("Error") >= 3, "a word beside the colour"
@@ -2247,7 +2322,8 @@ def test_the_band_is_never_placed_over_anything(dashboard):
     so it can take space but never cover the stop."""
     dashboard.open()
     dashboard._show_popup(_event("error", needs_ack=True))
-    assert dashboard._band.master is dashboard.root
+    # Updated for E: packed into the main column, beside the rail.
+    assert dashboard._band.master is dashboard._main
     assert not hasattr(dashboard._band, "place_info_called")
 
 
@@ -2407,8 +2483,10 @@ def test_a_lost_serial_port_no_longer_looks_live(tk_harness):
     panel.speed = 2.5
     view = tkmod.TkPanelView(FakeWidget(), FakeController(Probe=panel), "Probe")
     readout = widget_of(view, element_of(view, "readonly", "Speed now:"))
-    assert readout.cget("foreground") == theme.TRACE
-    assert view._rule.cget("background") == theme.RULE
+    # Updated for E: a readout at rest is ink (trace only while it changes);
+    # the entry's head rule is 2 px of ink.
+    assert readout.cget("foreground") == theme.TEXT
+    assert view._rule.cget("background") == theme.RULE_STRONG
 
     panel.link = "lost"
     view._refresh()
@@ -2421,8 +2499,8 @@ def test_a_lost_serial_port_no_longer_looks_live(tk_harness):
 
     panel.link = "verified"
     view._refresh()
-    assert view._rule.cget("background") == theme.RULE
-    assert readout.cget("foreground") == theme.TRACE
+    assert view._rule.cget("background") == theme.RULE_STRONG
+    assert readout.cget("foreground") == theme.TEXT
     assert view._title.cget("text") == "Probe"
     view.close()
 
@@ -2460,7 +2538,8 @@ def test_a_refusal_is_shown_at_the_control_that_caused_it(view):
     container, row, column, span = view._widgets[id(refuse)]["slot"]
     strip = view._widgets[id(refuse)]["ring"].outer.master
     assert notice.master is container is strip.master
-    assert notice.grid_info["row"] == strip.grid_info["row"] + 1 == row
+    # Updated for E: the section's notice row, under all its cells.
+    assert notice.grid_info["row"] == row > strip.grid_info["row"]
     assert notice.cget("wraplength") > 0 and notice.cget("justify") == "left"
     assert notice.cget("foreground") == theme.TEXT, "ink, not trace"
 
@@ -2469,7 +2548,10 @@ def test_an_entry_refusal_sits_under_the_entry(view):
     speed = element_of(view, "entry", "Speed")
     view._widgets[id(speed)]["var"].set("99")
     widget_of(view, speed).fire("<Return>")
-    assert view._notice.grid_info["row"] == cell_widget(view, speed).grid_info["row"] + 1
+    # Updated for E: under the section the entry's cell flows in.
+    strip = view._widgets[id(speed)]["strip"]
+    assert view._notice.master is strip.master
+    assert view._notice.grid_info["row"] > strip.grid_info["row"]
 
 
 def test_a_refusal_below_the_fold_is_scrolled_into_view(view):
@@ -2478,6 +2560,7 @@ def test_a_refusal_below_the_fold_is_scrolled_into_view(view):
     refuse = element_of(view, "button", "Refuse")
     container = view._widgets[id(refuse)]["slot"][0]
     container.winfo_y = lambda: 690
+    view._tiers[1].winfo_y = lambda: 0     # E: sections sit in a tier frame
     view._body.winfo_height = lambda: 1000
     view._canvas.yview = lambda *args: (0.0, 0.4)
     original = FakeWidget.__init__
@@ -2563,13 +2646,13 @@ def test_a_long_run_id_is_cut_in_the_middle(view, panel, monkeypatch):
     element = element_of(view, "readonly", "Fault:")
     widget = widget_of(view, element)
     monkeypatch.setattr(tkmod, "_text_width", lambda _font, text: 10 * len(text))
-    widget.winfo_width = lambda: 200
-    widget.options["padx"] = 0
+    # Updated for E: a sheet readout's room is the width of its flow.
+    view._flow_strip(view._widgets[id(element)]["strip"], 220)
     panel.fault_reason = "RUN-2026-09-24-WSe2-hBN-sample-3-cut-0017"
     view._refresh()
     shown = widget.cget("text")
     assert tkmod.ELLIPSIS in shown and not shown.endswith(tkmod.ELLIPSIS)
-    assert shown.endswith("0017") and len(shown) * 10 <= 200
+    assert shown.endswith("0017") and len(shown) * 10 <= 220
 
 
 def test_the_stop_discs_are_not_rebuilt_while_nothing_changes(dashboard,
@@ -2632,8 +2715,10 @@ def test_a_reopened_model_is_brought_forward(dashboard, controller):
     dashboard.notebook.select(dashboard._frames[dashboard.SETUP_TAB])
     controller.reopen("Demo")
     SCHEDULER.pump()
-    assert dashboard.notebook.select() == str(dashboard._frames["Demo"]) or \
-        dashboard.notebook._selected is dashboard._frames["Demo"]
+    # Updated for E: brought forward = the sheet is shown, leading with it.
+    assert dashboard.notebook.select() == str(dashboard._sheet_page) or \
+        dashboard.notebook._selected is dashboard._sheet_page
+    assert dashboard._opened == "Demo"
 
 
 def test_no_motion_disables_the_pulse(dashboard, controller, monkeypatch):
@@ -2680,9 +2765,13 @@ def test_input_and_command_borders_are_three_to_one_on_the_panel(view):
     """F25 / AUD-11: they measured 1.88:1."""
     speed = view._widgets[id(element_of(view, "entry", "Speed"))]
     go = view._widgets[id(element_of(view, "button", "Go"))]
-    for border in (speed["ring"].inner.cget("background"),
+    # Updated for E: an input's edge is its underline (theme.INPUT_BORDER);
+    # a command's is its outline. Both 3:1 on the panel AND on the sheet.
+    assert speed["ring"].line.cget("background") == theme.INPUT_BORDER
+    for border in (speed["ring"].line.cget("background"),
                    go["outline"].cget("background")):
         assert _contrast(border, theme.SURFACE) >= 3.0
+        assert _contrast(border, theme.BACKGROUND) >= 3.0
 
 
 def test_targets_are_at_least_24_px_at_every_font_size(monkeypatch):
@@ -3208,7 +3297,7 @@ root = dash.root
 # size, so its table is laid out at its request and measures nothing.
 root.attributes("-alpha", 0.0)
 dash._add_setup_panel()
-for name in list(MODEL_TYPES)[:3]:
+for name in list(MODEL_TYPES):
     key = _key_for(name)
     setup.run(f"set_{key}_enabled", args=(True,))
     setup.run(f"set_{key}_port", args=("SIM",))
@@ -3250,17 +3339,42 @@ for name in ctl.model_names:
     dash._add_panel(name)
 for _ in range(3):
     root.update_idletasks(); root.update()
+
+def whole(view, tiers, key):
+    """Every command of `view` in `tiers` is its full width inside the sheet."""
+    area = rect(view._canvas)
+    for element in view._elements:
+        entry = view._entry_for(element)
+        ring = entry.get("ring")
+        if ring is None or element.get("type") not in ("button", "toggle", "log_stream"):
+            continue
+        if (entry.get("tier") or 1) not in tiers:
+            continue
+        box = ring.outer
+        got, want = rect(box), box.winfo_reqwidth()
+        if got[2] < want or got[0] < area[0] or got[0] + got[2] > area[0] + area[2]:
+            out[key].append([entry["widget"].cget("text"), got, want, area])
+
+# E: every tier open, the probe's commands - tier 3's "Gamepad log..." too.
+dash.show_model("Stepper Probe")
 probe = dash._panels["Stepper Probe"]
-area = rect(probe._canvas)
-for element in probe._elements:
-    entry = probe._entry_for(element)
-    ring = entry.get("ring")
-    if ring is None or element.get("type") not in ("button", "toggle", "log_stream"):
-        continue
-    box = ring.outer
-    got, want = rect(box), box.winfo_reqwidth()
-    if got[2] < want or got[0] < area[0] or got[0] + got[2] > area[0] + area[2]:
-        out["clipped"].append([entry["widget"].cget("text"), got, want, area])
+probe.set_disclosure(2, True); probe.set_disclosure(3, True)
+for _ in range(3):
+    root.update_idletasks(); root.update()
+whole(probe, (1, 2, 3), "clipped")
+# E: Red Percent's details open - the stop still whole in the window, and
+# its tier-1 controls whole on the sheet.
+out["red"] = []
+dash.show_model("Red Percent")
+red = dash._panels["Red Percent"]
+red.set_disclosure(2, True)
+for _ in range(3):
+    root.update_idletasks(); root.update()
+whole(red, (1,), "red")
+window = (root.winfo_rootx(), root.winfo_rooty(), root.winfo_width(), root.winfo_height())
+disc = rect(dash._stop_button)
+out["stop"] = {"disc": disc, "window": window, "whole": inside(disc, window)
+               and disc[2] >= dash._stop.size and disc[3] >= dash._stop.size}
 dash.close()
 print(json.dumps(out))
 '''
@@ -3294,6 +3408,18 @@ def test_every_probe_command_is_whole_inside_its_panel(points, width, height):
     showed 47 of 109 px at 12 pt and was off the panel at 28 pt."""
     clipped = _real_build(points, width, height)["clipped"]
     assert clipped == [], clipped
+
+
+@pytest.mark.parametrize("points, width, height", [(12, 900, 900), (28, 900, 900),
+                                                   (28, 1400, 900)])
+def test_the_stop_is_whole_with_red_percents_details_open(points, width, height):
+    """E: Red Percent's Details well is the tallest thing on the sheet; with
+    it open, at 900x900 and at 28 pt, the stop disc is still whole in the
+    window (it is in the rail, which never scrolls) and no tier-1 control of
+    Red Percent is cut."""
+    result = _real_build(points, width, height)
+    assert result["stop"]["whole"], result["stop"]
+    assert result["red"] == [], result["red"]
 
 
 def test_setup_at_28_pt_keeps_its_status_words_and_its_launch_row():
@@ -3331,3 +3457,360 @@ def test_the_commit_row_is_pinned_outside_the_scroll_area():
     port = cell_widget(built, built._elements[STEPPER_PORT])
     assert built._body in list(ancestors(port)), "the rows still scroll"
     built.close()
+
+
+# ---------------------------------------------------------------------------
+# E (2026-09-25): the Bench sheet, tiered
+# ---------------------------------------------------------------------------
+
+class TieredPanel(Panel):
+    """A model's shape on the Bench sheet: X/Y/Z readings, a speed with a
+    slider and a Step that carries it in tier 1; a step size in tier 2
+    ("Configure"); diagnostics in tier 3 with a plot; a quiet status."""
+    NAME = "Tiered"
+    PARAMS = {
+        "speed": Param("speed", "int", default=400, minimum=1, maximum=1000,
+                       label="Speed"),
+        "step_size": Param("step_size", "int", default=5, minimum=1, maximum=50,
+                           label="Step size"),
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.x, self.y, self.z = 10, -3, 0
+        self.link = "Connected"
+        self.age = 0.1
+        self.steps = []
+        self.series_reads = 0
+
+    @property
+    def mode_name(self):
+        return "idle"
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Position",
+                        sch.readonly("X:", "x", rail=True, unit="steps"),
+                        sch.readonly("Y:", "y", rail=True, unit="steps"),
+                        sch.readonly("Z:", "z", rail=True, unit="steps")),
+            sch.section("Speeds",
+                        sch.entry("Speed:", "speed", self.PARAMS["speed"],
+                                  slider=(1, 1000)),
+                        sch.readonly("Link:", "link"),
+                        sch.button("Step", "step", inputs=("speed", "step_size"),
+                                   role="go")),
+            sch.section("Configuration",
+                        sch.entry("Step size:", "step_size", self.PARAMS["step_size"]),
+                        tier=2, disclosure="Configure"),
+            sch.section("Diagnostics",
+                        sch.readonly("Position age (s):", "age"),
+                        sch.readonly("Temperature:", "age", unit="\u00b0C"),
+                        sch.plot("Trend", "series"),
+                        tier=3, disclosure="Diagnostics"),
+        )
+
+    def step(self):
+        self.steps.append((self.speed, self.step_size))
+        return "stepped"
+
+    def series(self):
+        self.series_reads += 1
+        return {"x": [0, 1], "y": [1.0, 2.0]}
+
+
+@pytest.fixture
+def tiered():
+    tkmod._DISCLOSED.clear()
+    panel = TieredPanel()
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Tiered=panel), "Tiered")
+    yield built, panel
+    built.close()
+    tkmod._DISCLOSED.clear()
+
+
+def _mapped(view, frame):
+    """Packed and not forgotten since: what the stand-in knows of mapping."""
+    return frame.is_packed
+
+
+def test_tier_two_is_not_mapped_until_its_disclosure_is_pressed(tiered):
+    view, _panel = tiered
+    well, opener = view._well, view._disclosures[2]
+    assert not _mapped(view, well), "tier 2 is one press away"
+    assert opener.widget.cget("text") == "\u25b8 Configure"
+    size = element_of(view, "entry", "Step size:")
+    assert view._widgets[id(size)]["tier"] == 2, "built all the same, in the well"
+    opener.widget.fire("<Button-1>")
+    assert _mapped(view, well) and view.is_disclosed(2)
+    assert opener.widget.cget("text") == "\u25be Configure"
+    opener.widget.fire("<Return>")
+    assert not _mapped(view, well) and not view.is_disclosed(2)
+
+
+def test_the_open_tiers_are_remembered_per_model_for_the_session(tiered):
+    view, panel = tiered
+    view.set_disclosure(2, True)
+    view.set_disclosure(3, True)
+    view.close()
+    again = tkmod.TkPanelView(FakeWidget(), FakeController(Tiered=panel), "Tiered")
+    assert _mapped(again, again._well) and _mapped(again, again._diagnostics)
+    other = tkmod.TkPanelView(FakeWidget(), FakeController(Other=TieredPanel()),
+                              "Other")
+    assert not _mapped(other, other._well), "per model, not for every model"
+    again.close()
+    other.close()
+
+
+def test_tier_three_sits_inside_tier_two_with_a_muted_rule(tiered):
+    view, _panel = tiered
+    holder = view._diagnostics
+    assert holder.master is view._well
+    assert view._disclosures[3].frame.master is view._well
+    rule = holder.children[0]
+    assert rule.cget("background") == theme.MUTED and rule.cget("width") == 2
+    view.set_disclosure(3, True)
+    assert not view.is_disclosed(3), "tier 3 shows only inside an open tier 2"
+    view.set_disclosure(2, True)
+    assert view.is_disclosed(3) and _mapped(view, holder)
+
+
+def test_a_closed_tier_is_not_polled(tiered):
+    view, panel = tiered
+    before = panel.series_reads
+    view._refresh()
+    assert panel.series_reads == before, "the trend is on demand"
+    view.set_disclosure(2, True)
+    view.set_disclosure(3, True)
+    assert panel.series_reads > before
+
+
+def test_every_entry_travels_whatever_tier_is_shown(tiered):
+    """A tier is where a control is drawn, never whether its value travels."""
+    view, panel = tiered
+    click(view, element_of(view, "button", "Step"))
+    assert panel.steps == [(400, 5)]
+
+
+def test_the_slider_sits_beside_its_entry_never_instead(tiered):
+    view, _panel = tiered
+    entry = view._widgets[id(element_of(view, "entry", "Speed:"))]
+    scale, field = entry["scale"], entry["widget"]
+    assert isinstance(scale, FakeScale)
+    track = scale.master.master                       # the slider's focus ring
+    assert track.master is entry["ring"].outer.master, "one line: slider, then entry"
+    line = track.master
+    assert line.children.index(track) < line.children.index(entry["ring"].outer)
+    assert (scale.cget("from_"), scale.cget("to")) == (1, 1000)
+
+
+def test_the_slider_and_the_entry_write_each_other(tiered):
+    view, panel = tiered
+    element = element_of(view, "entry", "Speed:")
+    entry = view._widgets[id(element)]
+    scale, var = entry["scale"], entry["var"]
+    view._refresh()
+    assert scale.value == 400, "a refresh moves the slider"
+    scale.cget("command")("612.4")                   # the operator drags
+    assert var.get() == "612", "an int field gets a whole number"
+    var.set("250")                                    # the operator types
+    entry["widget"].fire("<KeyRelease>")
+    assert scale.value == 250
+    var.set("five")
+    entry["widget"].fire("<KeyRelease>")
+    assert scale.value == 250, "not a number: the slider stays"
+    var.set("5000")
+    view._sync_slider(element)
+    assert scale.value == 1000, "clamped to the slider's travel"
+
+
+def test_the_command_carries_the_entry_the_slider_wrote(tiered):
+    view, panel = tiered
+    entry = view._widgets[id(element_of(view, "entry", "Speed:"))]
+    entry["scale"].cget("command")("730")
+    click(view, element_of(view, "button", "Step"))
+    assert panel.steps == [(730, 5)]
+
+
+def test_releasing_the_slider_commits_through_the_controller(tiered):
+    view, panel = tiered
+    entry = view._widgets[id(element_of(view, "entry", "Speed:"))]
+    entry["scale"].cget("command")("820")
+    entry["scale"].fire("<ButtonRelease-1>")
+    assert panel.speed == 820
+
+
+def test_a_disabled_slider_is_muted_with_its_entry(tiered):
+    tiered_view, _panel = tiered
+    element = element_of(tiered_view, "entry", "Speed:")
+    tiered_view._set_enabled(element, False)
+    assert tiered_view._widgets[id(element)]["scale"].states[-1] == ["disabled"]
+    tiered_view._set_enabled(element, True)
+    assert tiered_view._widgets[id(element)]["scale"].states[-1] == ["!disabled"]
+
+
+def test_quiet_values_are_not_drawn_in_tier_one(tiered):
+    """Status by exception: "Connected" in tier 1 takes no place; anything
+    else is drawn; a tier-3 readout is drawn whatever it says."""
+    view, panel = tiered
+    link = view._widgets[id(element_of(view, "readonly", "Link:"))]
+    flow = view._flows[id(link["strip"])]
+    view._refresh()
+    assert id(link["box"]) in flow["hidden"]
+    for quiet in ("Idle", "No", "None", "--", "Not recording", ""):
+        panel.link = quiet
+        view._refresh()
+        assert id(link["box"]) in flow["hidden"], quiet
+    panel.link = "Lost"
+    view._refresh()
+    assert id(link["box"]) not in flow["hidden"]
+    age = view._widgets[id(element_of(view, "readonly", "Position age (s):"))]
+    panel.age = "None"
+    view._refresh()
+    assert not age.get("is_quiet")
+
+
+def test_a_reading_is_ink_at_rest_and_trace_only_while_it_changes(tiered,
+                                                                   monkeypatch):
+    view, panel = tiered
+    x = widget_of(view, element_of(view, "readonly", "X:"))
+    assert x.cget("foreground") == theme.TEXT
+    clock = [100.0]
+    monkeypatch.setattr(tkmod.time, "monotonic", lambda: clock[0])
+    panel.x = 11
+    view._refresh()
+    assert x.cget("foreground") == theme.TRACE
+    clock[0] += tkmod.CHANGING_S + 0.1
+    view._refresh()
+    assert x.cget("foreground") == theme.TEXT
+
+
+def test_axis_readings_say_their_caption_once_with_the_letters_inline(tiered):
+    view, _panel = tiered
+    x = view._widgets[id(element_of(view, "readonly", "X:"))]
+    assert x["caption"] is None, "no caption per axis"
+    # The unit the axes share is said once, in the caption (core d3f343a).
+    assert "Position, steps" in [label.cget("text") for label in view._section_titles]
+    words = [child.cget("text") for child in x["widget"].master.children]
+    assert words[0] == "X" and "steps" not in words
+
+
+def test_a_readouts_unit_sits_small_and_muted_after_its_value(tiered):
+    view, _panel = tiered
+    entry = view._widgets[id(element_of(view, "readonly", "Temperature:"))]
+    line = entry["widget"].master.children
+    unit = line[line.index(entry["widget"]) + 1]
+    assert unit.cget("text") == "\u00b0C" and unit.cget("foreground") == theme.MUTED
+    assert unit.cget("font") == tkmod._caption_font()
+    age = view._widgets[id(element_of(view, "readonly", "Position age (s):"))]
+    assert age["caption"].cget("text") == "Position age", "the unit leaves the caption"
+
+
+def test_the_opened_models_axes_are_focal_and_a_closed_ones_compact(controller):
+    panel = TieredPanel()
+    sheet = type("Sheet", (), {"canvas": FakeCanvas()})()
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(T=panel), "T", sheet=sheet)
+    x = widget_of(built, element_of(built, "readonly", "X:"))
+    assert x.cget("font") == tkmod._reading_font("compact")
+    built.set_prominence(True)
+    assert x.cget("font") == tkmod._reading_font("focal")
+    assert abs(tkmod._reading_font("focal")[1]) > abs(tkmod._reading_font("compact")[1])
+    built.close()
+
+
+def test_an_unconfirmed_stop_is_marked_at_its_own_entry(dashboard, controller,
+                                                        monkeypatch):
+    """E: a model whose stop did not confirm gets a signal head rule and the
+    words "Stop not confirmed. Treat as live." at its entry, for as long as
+    the latch it describes."""
+    dashboard.open()
+    monkeypatch.setattr(controller, "estop_all",
+                        lambda: (setattr(controller, "is_estopped", True)
+                                 or {"Demo": False}))
+    dashboard._stop_button.fire("<Button-1>")
+    view = dashboard._panels["Demo"]
+    assert view._rule.cget("background") == theme.SIGNAL
+    assert view._mark_row.is_packed
+    assert view._mark_text.cget("text") == "Stop not confirmed. Treat as live."
+    controller.is_estopped = False
+    dashboard._sync_stop_button()
+    assert view._rule.cget("background") == theme.RULE_STRONG
+    assert not view._mark_row.is_packed
+
+
+def test_latched_the_rail_and_the_sheet_say_so(dashboard, controller):
+    dashboard.open()
+    dashboard._sync_stop_button()
+    assert not dashboard._latched_row.is_packed and not dashboard._headline.is_packed
+    controller.is_estopped = True
+    dashboard._sync_stop_button()
+    assert dashboard._latched_line.cget("text") == "Stopped: every model latched"
+    assert dashboard._latched_row.is_packed and dashboard._headline.is_packed
+
+
+def test_the_rail_lists_every_model_and_a_press_leads_the_sheet_with_it(
+        tk_harness, setup_panel):
+    controller = FakeController(**{"Stepper Probe": DemoPanel(), "Rotator": DemoPanel(),
+                                   "Red Percent": DemoPanel()})
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    assert list(built._rail_items) == ["Stepper Probe", "Rotator", "Red Percent"]
+    built._rail_items["Red Percent"][1].fire("<Button-1>")
+    assert built._opened == "Red Percent"
+    assert built._is_setup_collapsed, "Setup gives way to the sheet"
+    first = built._sheet_rows[0]
+    assert built._panels["Red Percent"].frame.grid_info["in_"] is first
+    assert built._panels["Red Percent"]._is_opened
+    assert not built._panels["Rotator"]._is_opened
+    label = built._rail_items["Red Percent"][1]
+    assert label.cget("background") == theme.BACKGROUND, "the opened one is lit"
+    assert built._rail_items["Rotator"][1].cget("background") == theme.SURFACE
+    built.close()
+
+
+def test_the_sheet_stacks_entries_in_one_column_under_1000_px(tk_harness,
+                                                             setup_panel):
+    names = ["A", "B", "C", "D", "E", "F"]
+    controller = FakeController(**{name: DemoPanel() for name in names})
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    built.root.winfo_width = lambda: 1400
+    built._lay_out_sheet(force=True)
+    assert len({built._panels[n].frame.grid_info["in_"] for n in names[1:4]}) == 1
+    assert len(built._sheet_rows) == 3, "the opened one, then 3, then 2"
+    built.root.winfo_width = lambda: 900
+    built._lay_out_sheet(force=True)
+    assert len(built._sheet_rows) == 6, "one column"
+    built.close()
+
+
+def test_the_rail_says_simulation_while_every_link_is_simulated(dashboard,
+                                                                 controller):
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    view._last_state = {"devices": {"SerialPort": "simulated", "Gamepad": "bound"}}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == "Simulation, no hardware attached"
+    view._last_state = {"devices": {"SerialPort": "verified"}}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == ""
+
+
+def test_quit_asks_first_and_then_closes(dashboard, controller, tk_harness):
+    dashboard.open()
+    tk_harness.confirm_answer = False
+    dashboard._quit_press.widget.fire("<Button-1>")
+    assert not controller.is_closed
+    tk_harness.confirm_answer = True
+    dashboard._quit_press.widget.fire("<Button-1>")
+    assert controller.is_closed
+
+
+def test_no_colour_is_made_in_the_view():
+    """E: every colour is a theme member; the view mixes none of its own
+    (the old view derived its input border and notice tint from the dark
+    tokens)."""
+    code = _executable_source(tkmod.__file__)
+    assert "mix(" not in code
+    for name in re.findall(r"theme\.([A-Z_]+)\b", code):
+        assert hasattr(theme, name), name
