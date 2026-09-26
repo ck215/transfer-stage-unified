@@ -1846,14 +1846,14 @@ def test_f9_the_latched_stop_shows_focus_in_ink(qapp, monkeypatch):
 
 
 def test_f9_g5_one_global_shortcut_control_period_stops_and_never_clears(
-        dashboard, controller, qapp):
+        dashboard, controller):
     """G5 (owner ruling 2026-09-25): Ctrl+. is the one chord, the physical
     Control key on every OS; the Cmd+. chord F9 added on macOS is gone. Qt
     spells the macOS Control key "Meta", so the binding is Qt's Meta there -
     and Qt's Ctrl (the Command key on macOS) is bound nowhere. Named on the
     face's tooltip and the rail's hint as "Ctrl+.", never as a glyph."""
+    from PySide6.QtCore import QKeyCombination
     from PySide6.QtGui import QShortcut
-    from PySide6.QtTest import QTest
     shortcuts = dashboard.findChildren(QShortcut)
     stops = [s for s in shortcuts if not s.key().isEmpty()
              and s.key()[0].key() == Qt.Key.Key_Period]
@@ -1869,18 +1869,20 @@ def test_f9_g5_one_global_shortcut_control_period_stops_and_never_clears(
     assert dashboard.stop_hint.full_text() == hint
     for text in (dashboard.stop_button.toolTip(), dashboard.stop_hint.full_text()):
         assert not any(mark in text for mark in ("\u2318", "\u2303", "Cmd", "Meta"))
-    dashboard.show()
-    dashboard.activateWindow()
-    qapp.processEvents()
+    # Matched as a key sequence, not by a synthesised key press: every
+    # dashboard an earlier test left alive holds an application-wide stop
+    # shortcut too, and two of them make a real press ambiguous (neither
+    # fires) - a harness artefact, since the app has one window.
+    key = dashboard.stop_shortcut.key()
+    pressed = QKeySequence(QKeyCombination(control, Qt.Key.Key_Period))
+    assert key.matches(pressed) == QKeySequence.SequenceMatch.ExactMatch
     # The other modifier (Command on macOS, the Windows/Super key elsewhere)
     # is not the stop.
     other = (Qt.KeyboardModifier.ControlModifier if sys.platform == "darwin"
              else Qt.KeyboardModifier.MetaModifier)
-    QTest.keyClick(dashboard, Qt.Key.Key_Period, other)
-    qapp.processEvents()
-    assert controller.estop_calls == 0
-    QTest.keyClick(dashboard, Qt.Key.Key_Period, control)
-    qapp.processEvents()
+    wrong = QKeySequence(QKeyCombination(other, Qt.Key.Key_Period))
+    assert key.matches(wrong) == QKeySequence.SequenceMatch.NoMatch
+    dashboard.stop_shortcut.activated.emit()
     assert controller.estop_calls == 1 and controller.is_estopped
     dashboard.stop_shortcut.activated.emit()      # latched: it does not clear
     assert controller.is_estopped is True and controller.estop_calls == 1
