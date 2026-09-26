@@ -228,12 +228,14 @@ def test_the_unconfirmed_stop_line_follows_the_latch_from_the_poll():
     drops it too - but never by an answer asked for before the stop."""
     apply = _body(r"\n  async applyState\(state, askedAt\) \{(.*?)\n  \}")
     assert "this.forgetUnconfirmed(Boolean(state.is_estopped), askedAt)" in apply
+    # Updated (Bench sheet, E 2026-09-25): the line moved from the rail to
+    # the unconfirmed model's own entry (setUnconfirmed); the rule is the same.
     forget = _body(r"\n  forgetUnconfirmed\(isEstopped, askedAt\) \{(.*?)\n  \}")
     assert "askedAt < (this.unconfirmedAt || 0)" in forget
-    assert "this.setRailLine('unconfirmed', '')" in forget
+    assert "this.setUnconfirmed([])" in forget
     stop = _body(r"\n  async stopAll\(\) \{(.*?)\n  \}")
     assert "this.unconfirmedAt = Date.now()" in stop
-    assert "this.setRailLine('unconfirmed', unconfirmed.length" in stop
+    assert "this.setUnconfirmed(unconfirmed)" in stop
 
 
 def test_model_cards_can_be_closed_and_a_closed_model_can_be_reopened():
@@ -388,7 +390,10 @@ def test_the_setup_drawer_is_open_at_boot_and_reopens_from_the_rail():
         assert found, f"{selector} has no z-index"
         return int(found.group(1))
     assert z(r"\.rail") > max(z(r"\.drawer"), z(r"\.scrim"), z(r"\.overlay"), z(r"\.tray"))
-    assert re.search(r"\.scrim\s*\{[^}]*inset:\s*var\(--rail-h\)", STYLES), (
+    # Updated (E): the rail is a column on the left, so the scrim starts
+    # beside it (--rail-left) - or under it on a phone (--rail-top).
+    assert re.search(r"\.scrim\s*\{[^}]*inset:\s*var\(--rail-top\) 0 var\(--tray-h\) "
+                     r"var\(--rail-left\)", STYLES), (
         "the scrim dims the rail, and with it the one control that may "
         "never be dimmed")
     assert re.search(r"\.drawer-body\s*\{[^}]*overflow:\s*auto", STYLES), (
@@ -445,27 +450,17 @@ def test_an_int_entry_refuses_the_characters_that_make_it_a_float():
 # --------------------------------------------------------------------------
 # polish: the theme's variables, and no numbers of its own
 # --------------------------------------------------------------------------
-@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
-def test_a_card_with_a_lot_to_say_takes_two_columns_instead_of_one_tall_stripe():
-    """The bench look, 2026-09-22: three equal columns left the Stepper card
-    mostly empty and Red Percent absurdly tall."""
-    many = [{"title": str(n), "elements": [{"type": "button"}] * 3}
-            for n in range(10)]
-    few = [{"title": "Motion", "elements": [{"type": "button"}] * 4}]
-    table = [{"title": "Probe", "layout": "row",
-              "elements": [{"type": "dropdown"}] * 3}] * 8
-    assert _node_value(f"isWideCard({json.dumps(many)})") is True
-    assert _node_value(f"isWideCard({json.dumps(few)})") is False
-    assert _node_value(f"isWideCard({json.dumps(table)})") is False, (
-        "a row-layout card is a table; splitting it into two columns would "
-        "break the very alignment the row layout is for")
-    build = _body(r"\n  build\(\) \{(.*?)\n  \}")
-    assert "isWideCard(sections)" in build and "'wide'" in build
-    assert re.search(r"\.card\.wide\s*\{[^}]*grid-column:\s*span 2", STYLES)
-    assert re.search(r"\.card\.wide > \.card-body\s*\{[^}]*column-count:\s*2",
-                     STYLES)
-    assert re.search(r"\.rack\s*\{[^}]*grid-auto-flow:\s*dense", STYLES), (
-        "a wide panel would leave a column-shaped hole beside it")
+def test_entries_sit_on_a_six_column_sheet_with_the_opened_one_on_top():
+    """Replaces the wide-card rule (E, 2026-09-25): entries, not cards. The
+    opened model is the full-width entry at the top, then three across, then
+    two; two across under 1000 px, one under 760; order by CSS, not DOM."""
+    assert re.search(r"\.sheet\s*\{[^}]*grid-template-columns:\s*repeat\(6", STYLES)
+    assert re.search(r"\.card\.is-opened\s*\{[^}]*grid-column:\s*1 / -1;[^}]*order:\s*-1", STYLES)
+    assert re.search(r"\.card\.span-2\s*\{\s*grid-column:\s*span 2", STYLES)
+    assert "@media (max-width: 62.5rem)" in STYLES
+    layout = _body(r"\n  layoutSheet\(\) \{(.*?)\n  \}")
+    assert "rest.length <= 3" in layout and "index < 3 ? 3 : 2" in layout
+    assert "isWideCard" not in APP_JS
 
 
 def test_a_rendered_figure_sits_on_the_surface_colour_and_is_bounded():
@@ -476,73 +471,85 @@ def test_a_rendered_figure_sits_on_the_surface_colour_and_is_bounded():
         "an unbounded figure made the Red Percent card taller than the page")
 
 
-def test_the_stop_is_a_mushroom_that_rides_with_the_sticky_rail():
-    """The design brief's one bold element: round, signal red, a darker ring
-    and an inset highlight, sitting on a rail that never scrolls away."""
-    assert re.search(r"\.rail\s*\{[^}]*position:\s*sticky", STYLES), (
+def test_the_stop_is_a_disc_that_rides_with_the_fixed_rail():
+    """Updated (E, 2026-09-25): A's disc in a rail that is fixed down the
+    left - round, always signal red, a signal band around a sheet-toned
+    gap that thickens when latched. No inset highlight any more: depth is
+    tone steps, never gradients or shadows."""
+    assert re.search(r"\n\.rail\s*\{[^}]*position:\s*fixed", STYLES), (
         "the stop scrolls off the page with the rail")
     stop = re.search(r"\n\.mushroom\s*\{([^}]*)\}", STYLES)
     assert stop, "styles.css no longer styles the stop"
     body = stop.group(1)
     assert "border-radius: 50%" in body, "the stop is not round"
-    assert "var(--signal)" in body, "the stop is not the signal colour"
-    assert "box-shadow:\n    inset" in body, "the disc has no inset highlight"
-    assert "border: 0.32rem solid" in body, "the disc has no outer ring"
+    assert "var(--danger-bg)" in body and "gradient" not in body and "box-shadow" not in body
+    ring = re.search(r"\n\.stop-ring\s*\{([^}]*)\}", STYLES).group(1)
+    assert "var(--stop-ring) solid var(--signal)" in ring and "var(--stop-gap)" in ring
+    assert re.search(r"\.stop-ring\.is-latched\s*\{[^}]*var\(--stop-ring-latched\)", STYLES)
     assert 'id="full-stop" type="button" class="mushroom"' in INDEX
     # The copy is the action, and it follows the state rather than the click.
     estop = _body(r"\n  renderEstop\(isEstopped\) \{(.*?)\n  \}")
     assert "isEstopped ? 'Clear' : 'Stop'" in estop
     assert "classList.add('pulse')" in estop and "!wasEstopped" in estop, (
         "the latch must pulse once when it is SET, not for as long as it is")
+    assert "this.dom.stopRing.classList.toggle('is-latched', isEstopped)" in estop
     assert re.search(r"\.mushroom\.pulse\s*\{[^}]*animation:\s*latch-pulse", STYLES)
-    # and the per-model Safety stop is the same object, one size down
-    assert re.search(r"\.mushroom\.mini\s*\{", STYLES)
-    mini = _body(r"function renderStopToggle\(panel, element\) \{(.*?)\n\}")
-    assert "button.classList.add('mini')" in mini
-    assert "panel.runToggle(element)" in mini, (
-        "the mini mushroom must run the model's own estop toggle")
+    # The per-model stop is a small switch in Diagnostics, not a second disc.
+    switch = _body(r"function renderStopToggle\(panel, element\) \{(.*?)\n\}")
+    assert "setAttribute('role', 'switch')" in switch and "aria-checked" in switch
+    assert "panel.runToggle(element)" in switch, (
+        "the switch must run the model's own estop toggle")
     assert "if (element.model_attr === 'is_estopped') return renderStopToggle" in APP_JS
 
 
 def test_a_readout_does_not_look_like_a_box_the_operator_can_type_in():
-    """The instrument-console pass takes the well away entirely: a readout is
-    a number set in the trace colour at display size with tabular figures,
-    and an entry is the only thing on the panel wearing a border."""
+    """Updated (E): a value never wears a border and is set in the numeral
+    face with tabular figures; it is INK, and trace only while changing
+    (.is-changing). An entry is a panel-toned well with a muted underline."""
     value = re.search(r"\n\.value\s*\{([^}]*)\}", STYLES)
     assert value, "styles.css no longer styles a readout"
     assert "border: 0;" in value.group(1), "a readout is bordered like an entry"
     assert "background: none" in value.group(1)
-    assert "font-variant-numeric: tabular-nums" in value.group(1)
-    assert "color: var(--trace)" in value.group(1), (
-        "a live number is drawn in the trace colour (design brief)")
-    assert re.search(r"\.input, \.select\s*\{[^}]*border: 1px solid var\(--muted\)",
-                     STYLES), "an entry has to keep a border a readout does not"
+    assert "color: var(--text)" in value.group(1)
+    assert re.search(r"\.value\.is-changing\s*\{\s*color:\s*var\(--trace\)", STYLES)
+    face = re.search(r"\n\.value, \.mushroom[^{]*\{([^}]*)\}", STYLES).group(1)
+    assert "font-variant-numeric: tabular-nums" in face and "var(--numeral-family)" in face
+    assert re.search(r"\.input, \.select\s*\{[^}]*border-bottom: var\(--edge\) solid "
+                     r"var\(--input-border\)", STYLES), "an entry lost its underline"
 
 
-def test_the_rail_derives_each_models_key_numbers_from_its_own_schema():
-    """The rail is the hero and it is generic: no model is named here. The
-    key numbers are the readonly elements of a model's FIRST schema section,
-    which is where every model in this station puts what is watched."""
+def test_a_models_key_numbers_are_readings_on_its_entry_not_the_rail():
+    """Replaces the rail readouts (E): no value is said twice. The key
+    numbers come from the schema (`rail: true`, else the first section) and
+    are set as readings on the model's own entry - axes once captioned with
+    their letters inline, then primary, then secondary. The rail carries
+    names only. The launch stagger moved to the entries."""
     rail = _body(r"function railElements\(schema\) \{(.*?)\n\}")
     assert "element.type === 'readonly'" in rail
     assert "sections" in rail and "slice(0, RAIL_READOUTS)" in rail
-    render = _body(r"\n  renderRail\(models\) \{(.*?)\n  \}")
-    assert "this.railGroups" in render
-    assert "(models[name] || {}).values" in render, (
-        "the rail must follow state.values on every poll")
-    assert "buildRailGroup" in render
-    # built once per model, so the launch stagger plays exactly once
-    build = _body(r"\n  buildRailGroup\(name, index\) \{(.*?)\n  \}")
-    assert "'readout-group is-entering'" in build
-    assert "setProperty('--stagger'" in build
-    assert re.search(r"\.readout-group\.is-entering\s*\{[^}]*animation-delay:"
-                     r"\s*calc\(var\(--stagger, 0\) \* 60ms\)", STYLES), (
-        "the 60 ms stagger the brief asks for is not in the stylesheet")
+    build = _body(r"\n  build\(\) \{(.*?)\n  \}")
+    assert "railElements(this.schema)" in build and "axisLetter(element)" in build
+    assert "'reading-primary'" in build and "'reading-secondary'" in build
+    assert "rail-readouts" not in INDEX and "renderRail" not in APP_JS
+    assert re.search(r"\.card\.is-opened \.reading-axis > \.value\s*\{\s*font-size:\s*"
+                     r"var\(--reading-focal\)", STYLES)
+    assert re.search(r"\.reading-axis > \.value\s*\{\s*font-size:\s*var\(--reading-compact\)",
+                     STYLES)
+    add = _body(r"\n  async addCard\(name\) \{(.*?)\n  \}")
+    assert "'is-entering'" in add and "setProperty('--stagger'" in add
+    assert re.search(r"\.card\.is-entering\s*\{[^}]*animation-delay:"
+                     r"\s*calc\(var\(--stagger, 0\) \* 60ms\)", STYLES)
     assert re.search(r"prefers-reduced-motion: reduce", STYLES), (
         "reduced motion is not respected")
     reduced = STYLES.split("prefers-reduced-motion: reduce")[1]
     assert "animation-duration: 0s !important" in reduced
     assert "transition-duration: 0s !important" in reduced
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_an_axis_readout_is_known_by_its_letter():
+    assert _node_value("['X:', 'Y', 'Z position:', 'Velocity:', 'Xenon:']"
+                       ".map((t) => axisLetter({text: t}))") == ["X", "Y", "Z", "", ""]
 
 
 def test_the_setup_drawers_table_has_a_narrow_launch_column_first():
@@ -621,7 +628,8 @@ def test_a_danger_role_command_is_a_quiet_command_not_a_second_red():
     "Stop" (end the run) was a red button beside the mushroom."""
     rule = re.search(r"button\.button\.role-danger\s*\{([^}]*)\}", STYLES)
     assert rule, "nothing quiets a danger-role command"
-    assert "var(--neutral-bg)" in rule.group(1)
+    # Updated (E): a quiet command is outlined on the sheet, not panel-filled.
+    assert "var(--bg)" in rule.group(1) and "var(--muted)" in rule.group(1)
     assert "signal" not in rule.group(1)
 
 
@@ -635,8 +643,9 @@ def test_a_toggle_face_drops_the_repeated_caption_and_moves_an_aside_to_its_titl
         "text": "Enter manual mode", "hint": ""}
     toggle = _body(r"function renderToggle\(panel, element\) \{(.*?)\n\}")
     assert "aria-pressed" in toggle, "a toggle must say its state without the lamp"
-    assert re.search(r"button\.button\.toggle\s*\{[^}]*width:\s*[0-9.]+rem", STYLES), (
-        "every toggle in a panel is one width")
+    # Updated (E): toggles are as wide as the action they name (the
+    # artboards); a bare On/Off face keeps its caption beside it.
+    assert "bare-face" in toggle, "a bare On/Off face lost its caption"
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
@@ -686,19 +695,27 @@ def test_a_lost_device_is_named_as_an_operator_would_say_it():
 def test_event_severity_is_ink_mark_and_a_word():
     """F14 (DS-2, UXPM-10): the line's text in the severity ink, its bar in
     the severity mark, and a word beside the colour."""
-    assert re.search(r"\.event\.severity-error\s*\{[^}]*color:\s*var\(--error-ink\)"
-                     r"[^}]*border-left-color:\s*var\(--error-mark\)", STYLES)
+    # Updated (E): the mark is a square - solid signal for an error, hollow
+    # ink for a warning (--warning-mark-hollow) - and the word is read to a
+    # screen reader (.sr-only) instead of drawn as a badge.
+    assert re.search(r"\.event\.severity-error\s*\{[^}]*color:\s*var\(--error-ink\)", STYLES)
     assert re.search(r"\.severity-info\s*\{[^}]*var\(--info-ink\)", STYLES)
-    assert re.search(r'\.event\.severity-error::before\s*\{[^}]*content:\s*"Error"', STYLES)
-    assert re.search(r'\.event\.severity-warning::before\s*\{[^}]*content:\s*"Warning"', STYLES)
+    assert re.search(r"\.event\.severity-error::before\s*\{[^}]*background:\s*var\(--error-mark\)",
+                     STYLES)
+    assert "var(--warning-mark-hollow)" in STYLES
+    show = _body(r"\n  showEvent\(event\) \{(.*?)\n  \}")
+    assert "'Error: '" in show and "'Warning: '" in show and "'sr-only'" in show
+    assert "event.severity !== 'warning' && event.severity !== 'error'" in show, (
+        "the tray line shows warnings and errors only")
 
 
 def test_the_stop_face_stays_legible_and_its_focus_is_not_the_latch():
     """F24 (CRIT-7): the highlight is at most 5 % ink, so white on the disc is
     over 4.5:1; F9 (DS-1): the stop's focus ring is --stop-focus."""
+    # Updated (E): the disc is flat signal with white on it (5.99:1) - no
+    # highlight left to wash the word out.
     stop = re.search(r"\n\.mushroom\s*\{([^}]*)\}", STYLES).group(1)
-    highlight = re.search(r"var\(--signal\) (\d+)%, var\(--text\)", stop)
-    assert highlight and int(highlight.group(1)) >= 95, "the highlight washes out the word"
+    assert "var(--danger-bg)" in stop and "var(--danger-fg)" in stop
     ring = re.search(r"\.mushroom:focus-visible\s*\{([^}]*)\}", STYLES)
     assert ring and "var(--stop-focus)" in ring.group(1) and "trace" not in ring.group(1)
     # G5 (owner ruling 2026-09-25): one chord on every platform.
@@ -721,7 +738,9 @@ def test_no_shortcut_or_copy_exists_on_one_platform_only():
 
 def test_every_overlay_starts_below_the_rail():
     """F1 (WDG-1): nothing this page opens covers the stop."""
-    assert re.search(r"\n\.overlay\s*\{[^}]*inset:\s*var\(--rail-h\) 0 0 0", STYLES)
+    # Updated (E): beside the rail's column, or under its phone bar.
+    assert re.search(r"\n\.overlay\s*\{[^}]*inset:\s*var\(--rail-top\) 0 0 var\(--rail-left\)",
+                     STYLES)
 
 
 def test_consecutive_commands_are_one_action_group():
@@ -730,8 +749,10 @@ def test_consecutive_commands_are_one_action_group():
     group = _body(r"function groupCommands\(cells, isTableRow\) \{(.*?)\n\}")
     assert "if (isTableRow) return cells;" in group, (
         "a data row's cells are its table columns and must not be regrouped")
-    assert re.search(r"\n\.actions\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fill",
-                     STYLES), "the commands of a group are not one width"
+    # Updated (E): a group is one line of commands at their own widths (the
+    # artboards), wrapping when it must.
+    assert re.search(r"\n\.actions\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap",
+                     STYLES), "the commands of a group are not one line"
     assert re.search(r"\.drawer \.section-span > \.actions:last-child\s*\{[^}]*"
                      r"flex:\s*1 0 100%", STYLES), (
         "Setup's Launch row crowds its summary and four commands onto one line")
@@ -772,7 +793,8 @@ def test_the_log_panel_sits_under_the_rail_and_under_a_confirmation():
     assert 0 < z < tray < scrim < overlay < rail, (z, tray, scrim, overlay, rail)
     assert "position: relative" in rule.group(1), "the log panel is not in its card's flow"
     assert "position: fixed" not in rule.group(1)
-    assert re.search(r"scroll-margin-top:\s*calc\(var\(--rail-h\)", rule.group(1)), (
+    # Updated (E): the rail's height is only an offset on a phone.
+    assert re.search(r"scroll-margin-top:\s*calc\(var\(--rail-top\)", rule.group(1)), (
         "the panel can scroll in under the rail")
     detached = _body(r"function renderDetachedLog\(panel, element\) \{(.*?)\n\}")
     assert "node.appendChild(win)" in detached, "the log panel does not open in its card"
@@ -799,23 +821,20 @@ def test_a_row_table_says_its_captions_once_in_a_header_row():
         "the per-cell captions must stay as labels but not repeat on every row")
 
 
-def test_the_rail_wraps_and_the_fixed_layers_measure_it():
-    readouts = re.search(r"\n\.rail-readouts\s*\{([^}]*)\}", STYLES)
-    assert readouts and "flex-wrap: wrap" in readouts.group(1)
-    assert "overflow: hidden" not in readouts.group(1), (
-        "a narrow window clipped the rail's numbers to '0...'")
+def test_the_fixed_layers_measure_where_the_rail_is():
+    """Updated (E): the rail is a fixed column (a bar across the top on a
+    phone); the client measures which, and every fixed layer keeps clear of
+    it through --rail-left / --rail-top, and of the tray through --tray-h.
+    (Replaces the rail-wraps and rack-collapses rules of the top rail.)"""
     reserve = _body(r"\n  reserveLogSpace\(\) \{(.*?)\n  \}")
-    assert "setProperty('--rail-h'" in reserve and "setProperty('--tray-h'" in reserve
+    assert "setProperty('--rail-left'" in reserve and "setProperty('--rail-top'" in reserve
+    assert "setProperty('--tray-h'" in reserve
     assert re.search(r"\.drawer\s*\{[^}]*bottom:\s*var\(--tray-h\)", STYLES), (
         "the drawer covered the start of the latest event")
-    assert re.search(r"\.rail\s*\{[^}]*min-height:\s*var\(--rail-min\)", STYLES), (
-        "the rail's floor must not be the height measured from the rail itself")
-
-
-def test_the_rack_collapses_three_two_one_and_never_opens_a_phantom_column():
-    assert re.search(r"\.rack\s*\{[^}]*minmax\(min\(24rem, 100%\), 1fr\)", STYLES)
-    assert "@media (min-width: 76.5rem)" in STYLES, (
-        "a double-width panel must only span where three columns fit")
+    assert re.search(r"\.drawer\s*\{[^}]*left:\s*var\(--rail-left\)", STYLES)
+    assert re.search(r"\.tray\s*\{[^}]*left:\s*var\(--rail-left\)", STYLES)
+    assert re.search(r"\n\.rail\s*\{[^}]*width:\s*var\(--rail-w\)", STYLES)
+    assert re.search(r"--rail-w:\s*200px", STYLES), "the rail does not narrow under 1000 px"
 
 
 def test_rail_and_tray_controls_are_real_touch_targets():
@@ -835,9 +854,12 @@ def test_closing_a_module_is_quiet_says_what_it_does_and_asks_first():
 
 
 def test_every_font_size_is_on_the_scale():
+    # Updated (E): the sheet's px scale in rem (--t-*), plus the theme's own
+    # reading and caption sizes (theme.READING_SIZES, CAPTION_SIZE).
     sizes = re.findall(r"font-size:\s*([^;]+);", STYLES)
     off = [size for size in sizes
-           if not re.fullmatch(r"var\(--(t-(xs|sm|md|lg|readout)|font-size)\)", size.strip())]
+           if not re.fullmatch(r"var\(--(t-[a-z]+|reading-(focal|primary|compact|secondary)"
+                               r"|caption-size|font-size)\)", size.strip())]
     assert not off, f"font sizes off the type scale: {off}"
 
 
@@ -915,6 +937,19 @@ def test_the_stylesheet_names_no_colour_of_its_own():
         f"src/views/theme.py and reaches the browser as /api/theme.css")
 
 
+def test_no_colour_literal_outside_the_theme():
+    """E (2026-09-25): every colour on the page is a token from
+    /api/theme.css - in the stylesheet (above), in app.js (canvas strokes,
+    the plot) and in index.html alike. A named colour counts too."""
+    named = r"\b(white|black|red|blue|gray|grey|silver|navy|orange|yellow|green)\b"
+    for text, where in ((CODE, "app.js"), (INDEX, "index.html")):
+        literals = re.findall(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", text)
+        literals = [x for x in literals if x not in ("#full-stop",)]
+        assert not literals, f"{where} names a colour: {literals}"
+        colours = re.findall(r"(?:color|fill|stroke|background)\s*[:=]\s*['\"]?" + named, text)
+        assert not colours, f"{where} names a colour: {colours}"
+
+
 def test_every_variable_the_stylesheet_uses_is_defined_somewhere():
     """Either by the theme, or by the stylesheet itself out of theme values.
     A shade between two tokens - a hairline, a ring, a scrim - is mixed FROM
@@ -947,7 +982,8 @@ def test_the_page_loads_the_theme_and_the_client():
     assert 'src="/app.js"' in INDEX
     for element_id in ("full-stop", "cards", "event-log", "ack-modal",
                        "region-picker", "closed-models", "connection",
-                       "log-panel", "log-toggle", "rail-readouts",
+                       "log-panel", "log-toggle", "model-nav", "sim-line",
+                       "stop-ring", "rail-latched", "sheet-headline",
                        "setup-drawer", "drawer-body", "drawer-close",
                        "scrim", "setup-link", "tray-latest", "rail-alert",
                        "ack-count", "ack-text", "ack-ok", "confirm-modal",
