@@ -4760,3 +4760,8 @@ def test_l5_the_well_is_embedded_only_once_it_is_first_shown(setup_panel):
     assert len(probe._well_canvas.windows) == 1, "once"
     tkmod._DISCLOSED.clear()
     built.close()
+
+
+def test_l22_the_window_is_titled_as_the_rail_names_the_station(dashboard):
+    """TK7-18: the window said "Transfer Station", the rail "Transfer stage"."""
+    assert dashboard.root.titles == [tkmod.STATION_TITLE] == ["Transfer stage"]

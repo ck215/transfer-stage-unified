@@ -4729,7 +4729,7 @@ class TkDashboard(Dashboard):
         self._is_narrow = None
 
         self.root = tk.Tk()
-        self.root.title("Transfer Station")
+        self.root.title(STATION_TITLE)     # the rail's name, not a third one (TK7-18)
         self.root.geometry("1400x900")
         self.root.configure(background=theme.BACKGROUND)
         try:
