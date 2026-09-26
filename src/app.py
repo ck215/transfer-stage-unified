@@ -43,28 +43,25 @@ ALIASES = {"legacy": "tk", "tkinter": "tk", "pyside": "qt", "pyside6": "qt"}
 DEFAULT_PORT = 8080
 
 
+#: Owner decision D-9, amended 2026-09-25: an unqualified launch opens the
+#: Tkinter view on EVERY platform ("simple and lightweight and local"). It
+#: used to be Tk on macOS and Qt-or-Web elsewhere, which made the operator's
+#: first screen depend on the OS (audit P8) against the no-platform-specific-UI
+#: ruling. `--web` / `--qt` / `--tk` still choose explicitly.
+DEFAULT_VIEW = "tk"
+
+
 def pick_view(requested, platform=None, pyside_available=None):
-    """Resolve the view to launch. Pure, so the defaults are testable.
+    """Resolve the view to launch. Pure, so the default is testable.
     was <app>.select_view ('select' is reserved for operator selections)
 
     `requested` is the parsed --view value, or None for "no flag given".
+    `platform` and `pyside_available` are accepted for the callers and tests
+    that pass them; neither changes the answer any more.
     """
     if requested is not None:
         return ALIASES.get(requested, requested)
-    if platform is None:
-        platform = sys.platform
-    # Owner decision D-9: Tkinter is the macOS default until this codebase is
-    # stabilized. The Web view stays available with --web, but it is not what
-    # an unqualified launch on a lab Mac should start.
-    if platform == "darwin":
-        return "tk"
-    if pyside_available is None:
-        try:
-            import PySide6.QtWidgets  # noqa: F401
-            pyside_available = True
-        except ImportError:
-            pyside_available = False
-    return "qt" if pyside_available else "web"
+    return DEFAULT_VIEW
 
 
 def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
@@ -136,7 +133,7 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Views:
-  tk        Tkinter interface (the default on macOS, owner decision D-9)
+  tk        Tkinter interface (the default on every platform, owner decision D-9)
   qt        Native Qt desktop GUI (PySide6)
   web       Browser-based dashboard, served on localhost
 
@@ -185,6 +182,25 @@ Examples:
     launch(view_name, port=args.port, open_browser=not args.no_browser,
            font_size=args.font_size)
     return 0
+
+
+# -- packaged entry points (PACKAGING_PLAN P2) ------------------------------
+# One function per view for `[project.scripts]` and the PyInstaller EXEs, so
+# a bundle's `station-web` cannot start anything but the Web view. Each one
+# forwards the remaining command-line flags (--port, --no-browser,
+# --font-size, --no-motion) and refuses a second view flag the way `main`
+# does.
+
+def main_tk(argv=None):
+    return main(["--tk", *(sys.argv[1:] if argv is None else argv)])
+
+
+def main_qt(argv=None):
+    return main(["--qt", *(sys.argv[1:] if argv is None else argv)])
+
+
+def main_web(argv=None):
+    return main(["--web", *(sys.argv[1:] if argv is None else argv)])
 
 
 if __name__ == "__main__":

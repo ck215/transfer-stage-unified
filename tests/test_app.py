@@ -71,15 +71,31 @@ def test_an_explicit_request_always_wins():
     assert app.pick_view("qt", "darwin") == "qt"
 
 
-def test_macos_defaults_to_tkinter():
-    """Owner decision D-9: Tkinter is the macOS default until this codebase
-    is stabilized."""
-    assert app.pick_view(None, "darwin") == "tk"
+def test_every_platform_defaults_to_tkinter():
+    """Owner decision D-9, amended 2026-09-25: the unqualified launch is Tk
+    everywhere. It was Tk on macOS and Qt-or-Web elsewhere, which made the
+    first screen depend on the OS (audit P8) against the ruling that no UI
+    behaviour is platform-specific."""
+    for platform in ("darwin", "linux", "win32"):
+        for pyside in (True, False, None):
+            assert app.pick_view(None, platform, pyside_available=pyside) == "tk"
+    assert app.DEFAULT_VIEW == "tk"
 
 
-def test_elsewhere_qt_when_pyside_is_installed_and_web_when_it_is_not():
-    assert app.pick_view(None, "linux", pyside_available=True) == "qt"
-    assert app.pick_view(None, "linux", pyside_available=False) == "web"
+def test_the_packaged_entry_points_fix_the_view_and_forward_the_flags(
+        fake_views, monkeypatch):
+    """PACKAGING_PLAN P2: `station-web` can start nothing but the Web view."""
+    picked = []
+    monkeypatch.setattr(app, "launch",
+                        lambda name, **kwargs: picked.append((name, kwargs)))
+    assert app.main_tk([]) == 0
+    assert app.main_qt(["--font-size", "14"]) == 0
+    assert app.main_web(["--port", "8090", "--no-browser"]) == 0
+    assert [p[0] for p in picked] == ["tk", "qt", "web"]
+    assert picked[1][1]["font_size"] == 14
+    assert picked[2][1]["port"] == 8090 and picked[2][1]["open_browser"] is False
+    with pytest.raises(SystemExit):          # a second view flag is refused
+        app.main_web(["--qt"])
 
 
 def test_the_old_view_names_still_resolve():
@@ -181,7 +197,7 @@ def test_main_defaults_the_view_from_the_platform(fake_views, monkeypatch):
     picked = []
     monkeypatch.setattr(app, "launch",
                         lambda name, **kwargs: picked.append(name))
-    monkeypatch.setattr(app.sys, "platform", "darwin")
+    monkeypatch.setattr(app.sys, "platform", "linux")
     app.main([])
     assert picked == ["tk"]
 

@@ -21,9 +21,9 @@ from `src/`); it leaves the runtime requirements.
 
 ## Decisions
 
-- **D-9 amendment (owner, pending):** the default view when no flag is given.
-  The lead recommends **Web everywhere**; it removes the last visible
-  platform branch (`app.py:59`, audit P8) and packaging bakes the default in.
+- **D-9 amendment (owner, 2026-09-25): Tk is the default on every OS**
+  ("simple and lightweight and local"). It removes the last visible platform
+  branch (audit P8); packaging bakes it in. `--web` / `--qt` stay explicit.
 - **One bundle per platform, three entry points** (`station-web`,
   `station-qt`, `station-tk`), not three packages: the views share every
   library except Qt, so three packages would ship the same ~100 MB three
@@ -39,7 +39,7 @@ from `src/`); it leaves the runtime requirements.
 
 | # | Step | What it produces | Route |
 |---|---|---|---|
-| P1 | D-9 amendment: default view Web on every OS; the three launcher scripts keep passing `--web/--qt/--tk`; `pick_view` loses its platform branch; tests updated (`tests/test_app.py`). | one commit | owner decision → direct |
+| P1 | **Done 2026-09-25.** D-9 amendment: default view Tk on every OS; `pick_view` loses its platform branch; `run_macos.sh` no longer announces Web while starting Tk (D16); `app.main_tk/main_qt/main_web` entry points added for P2; tests in `tests/test_app.py`. | commit on `mvc-refactor` | done (direct) |
 | P2 | `pyproject.toml` (project metadata, pinned runtime deps split from dev deps; `requirements.txt` becomes `pip install -e .`), three console entry points calling `app.main` with the view fixed. | `pyproject.toml`, `src/entry_{web,qt,tk}.py` or `[project.scripts]` | `agy` |
 | P3 | `packaging/station.spec`: one PyInstaller spec, three `EXE`s over one `COLLECT` (one-folder mode: one-file mode unpacks 250 MB to a temp dir on every launch and trips antivirus). Data: `views/web/static/**`. Hooks: pygame (SDL dylibs, hidden imports), PySide6 (platform plugins, `QT_QPA_PLATFORM_PLUGIN_PATH` set at runtime; the macOS `UF_HIDDEN` quirk `run_macos.sh` clears must be checked inside the bundle), matplotlib with `backend_agg` only (exclude the Qt/Tk backends it would otherwise pull), mss, `tkinter` with Tcl/Tk data. Excludes: tests, legacy, docs, pytest. Run log path and run output stay under `~/transfer-stage-runs/` (already outside the bundle). | the spec; `dist/station/` on this Mac | `agy` |
 | P4 | Bundle acceptance test, scripted (`packaging/smoke.sh` / `.ps1`): each entry launches; the Web one serves and answers `/api/state`; SIM launch of all six models; the stop latches; `POST /api/quit` exits 0; log written; gamepad hub opens and closes cleanly; serial enumeration lists ports. | script + a passing run on this Mac | `agy` |

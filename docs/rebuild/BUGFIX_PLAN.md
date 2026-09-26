@@ -97,7 +97,7 @@ reflashed before then (unverified, see D13).
 | D13 | `src/controller/setup.py` identify | A board still on `main`'s firmware answers the identity query identically and launches with no warning, then never enables and misreads every jog packet. | **Owner question**: is a protocol-version reply worth a firmware change? Until then, a one-line note in the README's flashing section. | owner |
 | D14 | `src/model/probe.py` manual mode | Manual speed and step sizes cannot be changed in manual mode; changing them means leaving manual, which de-energizes the coils. The ruling locks distances only in autonomous. | Allow edits in manual; keep the autonomous lock. | `agy` |
 | D15 | `src/views/web/server.py` | **Now G2.** No quit control; closing the browser leaves the process holding the serial ports (until the watchdog latches FULL STOP, which does not exit). | Design call: a Quit command that shuts the Controller down and exits. | direct design → `agy` |
-| D16 | `run_macos.sh` | Prints that it is launching Web but starts Tk. | One-line fix. | direct |
+| D16 | `run_macos.sh` | Prints that it is launching Web but starts Tk. **Done 2026-09-25** with the D-9 amendment. | One-line fix. | done |
 | D17 | `src/devices/smc100.py` | Controller address fixed at 1; `main` had an ID field. Low impact. | Expose the address in Setup only if the bench has more than one SMC100. | owner |
 
 Neutral differences recorded in the audits and not planned (operator-manual
@@ -257,10 +257,9 @@ past `close()` and atexit (nothing stopped, no port closed). The hook adds
 no binding, no menu item and no text on any platform. The lead's reading:
 it is the "toolkit forces it" exception and stays, renamed `_hook_os_quit`.
 Overrule if you want it gone, and the forced Quit then needs its own safe
-shutdown path first. (b) **P8**: `app.py` opens Tk by default on a Mac (D-9)
-and Qt/Web elsewhere: a platform-dependent default UI. It conflicts with
-today's ruling; only the owner can resolve it (the memo's "Web is the
-candidate primary" suggests Web everywhere).
+shutdown path first. (b) **P8**: **resolved 2026-09-25**: D-9 amended, Tk is the default view on
+every OS ("simple and lightweight and local"); `pick_view` has no platform
+branch.
 
 ## Out of scope here
 

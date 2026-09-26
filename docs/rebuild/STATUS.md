@@ -85,8 +85,8 @@ wire is pinned by `tests/golden/`.
 
 `docs/rebuild/PACKAGING_PLAN.md`: one PyInstaller bundle per platform with
 three entry points (`station-web`, `station-qt`, `station-tk`), steps P1–P8
-with routes. P1 is the D-9 amendment (default view Web on every OS), owner
-pending. A design-language proposal (four boards rendered in HTML, one
+with routes. P1 landed 2026-09-25: **D-9 amended, Tk is the default view on
+every OS**; P2–P4 dispatched to `rb-pack`. A design-language proposal (four boards rendered in HTML, one
 component strip each) was published for the owner the same day; the choice
 lands as `palette.py` / `theme.py` tokens.
 
