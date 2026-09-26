@@ -796,13 +796,16 @@ def test_a_reopen_that_fails_is_logged_instead_of_raising(
 def test_the_rail_lists_each_open_model_once_and_the_opened_one_is_marked(
         dashboard, controller):
     """Updated (E): the rail carries names only - no value appears twice
-    (`design-Sheet.md`); the numbers are on the sheet, once. The opened model
-    is the highlighted one."""
+    (`design-Sheet.md`); the numbers are on the sheet, once. Updated (K4):
+    at launch the overview is the shown page, so "Overview" is the checked
+    item; a model is checked once it is shown alone."""
     dashboard.open()
     assert list(dashboard._rail_items) == ["Fake"]
     item = dashboard._rail_items["Fake"]
-    assert item.isChecked() and item.accessibleName() == "Fake"
-    assert dashboard._opened == "Fake"
+    assert not item.isChecked() and item.accessibleName() == "Fake"
+    assert dashboard.overview_item.isChecked() and dashboard.page == "Overview"
+    item.click()
+    assert item.isChecked() and not dashboard.overview_item.isChecked()
 
 
 def test_a_closed_model_leaves_the_rail(dashboard, controller):
@@ -1184,8 +1187,9 @@ def test_entries_in_a_row_share_the_width_equally(qapp):
         for _ in range(5):
             qapp.processEvents()
         rows = window._arrangement
-        assert rows[0] == ("One",)
-        side = [window._entries[n] for n in rows[1]]
+        # Updated (K4): the overview is the grid alone, no leading row.
+        assert rows[0] == ("One", "Two", "Three")
+        side = [window._entries[n] for n in rows[0]]
         widths = [e.width() for e in side]
         assert max(widths) - min(widths) <= 2
         for entry in window._entries.values():
@@ -2122,11 +2126,13 @@ def test_f22_six_models_are_one_full_row_then_rows_of_three_and_two(
         qapp.processEvents()
     dashboard._arrange_entries()
     rows = dashboard._arrangement
-    assert rows[0] == ("One",)
+    # Updated (K4): the overview has no leading row; a press shows one
+    # model alone (its device page) rather than lifting it to the top.
+    assert rows == (("One", "Two", "Three"), ("Four", "Five", "Six"))
     assert all(len(row) <= qt.MAX_SHEET_COLUMNS for row in rows)
     assert [n for row in rows for n in row] == controller.open_names
     dashboard.open_entry("Four")
-    assert dashboard._arrangement[0] == ("Four",)
+    assert dashboard._arrangement == (("Four",),)
     assert dashboard._rail_items["Four"].isChecked()
 
 
@@ -2512,12 +2518,46 @@ def test_e_open_tiers_are_remembered_per_model_for_the_session(qapp):
         qt.QtPanelView.open_tiers.clear()
 
 
-def test_e_an_entry_lifts_the_disclosure_into_its_head(tiered):
+def test_k3_the_disclosure_is_the_foot_of_the_body_directly_above_its_well(tiered):
+    """Replaces "an entry lifts the disclosure into its head" (E): K3 puts the
+    disclosure at the foot of tier 1, left-aligned, the well right under it
+    with no gap; the head holds the name and the close only."""
     view, _ = tiered
     entry = qt.SheetEntry("Tiered", view)
-    assert entry.disclosure is view.tier_button
-    assert not view._disclosure_row.isVisibleTo(view)
-    assert entry.isAncestorOf(view.tier_button)
+    entry.set_page(False)
+    entry.resize(900, 600)
+    entry.show()
+    view.tier_button.click()
+    QApplication.processEvents()
+    assert not entry.head.isAncestorOf(view.tier_button)
+    assert not hasattr(view, "take_disclosure")
+    block = view.tier_block.layout()
+    assert block.itemAt(0).widget() is view.tier_button
+    assert block.itemAt(1).widget() is view.well
+    assert block.spacing() == 0
+    assert view.tier_button.geometry().bottom() + 1 == view.well.geometry().top()
+    assert view.tier_button.x() == 0                        # left-aligned
+    # Below every tier-1 widget, and reached after them by Tab.
+    step = view._widget_for(next(e for e in view._elements
+                                 if e.get("command") == "step_once"))
+    assert view.tier_button.mapTo(view, QPoint(0, 0)).y() > step.mapTo(view, QPoint(0, 0)).y()
+    chain, widget = [], step
+    for _ in range(500):
+        widget = widget.nextInFocusChain()
+        chain.append(widget)
+        if widget is view.tier_button:
+            break
+    assert view.tier_button in chain
+    # Nothing of tier 1 comes after the disclosure; the well's inputs do.
+    after, widget = [], view.tier_button
+    for _ in range(500):
+        widget = widget.nextInFocusChain()
+        if widget is view.tier_button or not view.isAncestorOf(widget):
+            break
+        after.append(widget)
+    assert step not in after
+    assert view._widget_for(element_named(view, "step")) in after
+    entry.hide()
     # The entry owns the panel now; deleting it takes the panel and its timer
     # with it, and the fixture's later close() must survive that.
     import shiboken6
@@ -2741,7 +2781,8 @@ def test_e_nothing_clips_at_28_pt_with_a_models_details_open(qapp, restore_font)
         window._arrange_entries()
         for _ in range(5):
             qapp.processEvents()
-        assert window._arrangement[0] == ("Red Percent",)
+        # Updated (K4): the device page is the model alone.
+        assert window._arrangement == (("Red Percent",),)
         assert _cut_labels(window) == []
         assert window.sheet_scroll.horizontalScrollBar().maximum() == 0
         entry = window._entries["Red Percent"]
@@ -2750,3 +2791,167 @@ def test_e_nothing_clips_at_28_pt_with_a_models_details_open(qapp, restore_font)
         window.close()
         events.unsubscribe(window._on_event)
         qt.QtPanelView.open_tiers.clear()
+
+
+# ---------------------------------------------------------------------------
+# K (2026-09-26): the disclosure at the foot of the body (K3), the overview
+# and the device page (K4). Written by rb-k-qt, run by the lead.
+# ---------------------------------------------------------------------------
+
+def _pump(qapp, times=5):
+    for _ in range(times):
+        qapp.processEvents()
+
+
+@pytest.fixture
+def six(qapp, restore_font):
+    qt.QtPanelView.open_tiers.clear()
+    theme.set_font_size(12)
+    window = _six_tiered_window(qapp, 1400, 900)
+    yield window
+    window.close()
+    events.unsubscribe(window._on_event)
+    qt.QtPanelView.open_tiers.clear()
+
+
+def _shown_entries(window):
+    return [n for n, e in window._entries.items() if e.isVisible()]
+
+
+def test_k3_the_disclosure_says_the_schemas_phrase(tiered):
+    view, _ = tiered
+    assert view.tier_button.text() == "Configure"            # the section's own
+    assert view.diag_button.text() == "Diagnostics"
+
+
+def test_k4_overview_is_the_rails_first_item_and_current_at_launch(six):
+    window = six
+    rail = window.overview_item
+    assert rail.text() == "Overview" and rail.isChecked()
+    assert window.page == "Overview"
+    stack = rail.parentWidget().layout()
+    assert stack.indexOf(rail) == 0
+    tops = [item.mapTo(window.rail, QPoint(0, 0)).y()
+            for item in window._rail_items.values()]
+    assert all(rail.mapTo(window.rail, QPoint(0, 0)).y() < top for top in tops)
+    assert not any(item.isChecked() for item in window._rail_items.values())
+
+
+def test_k4_the_overview_shows_every_model_with_no_well_or_disclosure(six):
+    window = six
+    assert _shown_entries(window) == list(window.controller.model_names)
+    assert window._arrangement == (("Stepper Probe", "DC Probe", "Chuck Positioner"),
+                                   ("Temperature Controller", "Rotator", "Red Percent"))
+    for name, entry in window._entries.items():
+        panel = window._panels[name]
+        assert not panel.tier_button.isVisible()
+        assert not panel.well.isVisible()
+        assert entry.head.is_pressable and entry.open_word.isVisible()
+        assert entry.open_word.text() == "Open"
+        assert entry.head.accessibleName() == f"Open {name}"
+        assert entry.head.toolTip() == f"Open {name}"
+        assert entry.head.focusPolicy() != Qt.FocusPolicy.NoFocus
+
+
+def test_k4_a_plot_behind_a_tier_that_is_not_shown_is_not_polled(six):
+    window = six
+    panel = window._panels["Stepper Probe"]
+    plot = next(e for e in panel._elements if e["type"] == "plot")
+    qt.QtPanelView.open_tiers[("Stepper Probe", 2)] = True
+    panel._set_tier_open(2, True)
+    assert panel._wants_data(plot) is False                  # the overview
+    window.open_entry("Stepper Probe")
+    assert panel._wants_data(plot) is True                   # its page, well open
+    panel.tier_button.click()
+    assert panel._wants_data(plot) is False                  # well closed
+
+
+def test_k4_pressing_a_model_in_the_rail_shows_it_alone_with_its_disclosures(six, qapp):
+    window = six
+    window._rail_items["Rotator"].click()
+    _pump(qapp)
+    assert window.page == "Rotator"
+    assert window._arrangement == (("Rotator",),)
+    assert _shown_entries(window) == ["Rotator"]
+    assert window._rail_items["Rotator"].isChecked()
+    assert not window.overview_item.isChecked()
+    entry, panel = window._entries["Rotator"], window._panels["Rotator"]
+    assert panel.tier_button.isVisible() and panel._opened is True
+    assert not entry.head.is_pressable and not entry.open_word.isVisible()
+    x = panel._widget_for(element_named(panel, "position_x"))
+    assert x.property("scale") == "focal"
+
+
+def test_k4_pressing_an_overview_head_opens_the_device_by_mouse_and_by_key(six, qapp):
+    from PySide6.QtTest import QTest
+    window = six
+    head = window._entries["DC Probe"].head
+    QTest.mouseClick(head, Qt.MouseButton.LeftButton, pos=QPoint(4, head.height() // 2))
+    _pump(qapp)
+    assert window.page == "DC Probe" and _shown_entries(window) == ["DC Probe"]
+    window.show_overview()
+    _pump(qapp)
+    for key in (Qt.Key.Key_Return, Qt.Key.Key_Space):
+        window.show_overview()
+        _pump(qapp)
+        head = window._entries["Rotator"].head
+        head.setFocus()
+        QTest.keyClick(head, key)
+        _pump(qapp)
+        assert window.page == "Rotator"
+
+
+def test_k4_the_close_in_an_overview_head_does_not_open_the_device(six, qapp):
+    window = six
+    window._entries["Rotator"].close_button.click()
+    _pump(qapp)
+    assert window.page == "Overview"
+    assert "Rotator" in window.controller.removed
+
+
+def test_k4_pressing_overview_returns(six, qapp):
+    window = six
+    window.open_entry("Stepper Probe")
+    window.overview_item.click()
+    _pump(qapp)
+    assert window.page == "Overview" and window.overview_item.isChecked()
+    assert _shown_entries(window) == list(window.controller.model_names)
+    panel = window._panels["Stepper Probe"]
+    assert not panel.tier_button.isVisible() and panel._opened is False
+
+
+def test_k4_closing_the_shown_device_returns_to_the_overview(six, qapp):
+    window = six
+    window.open_entry("Rotator")
+    window._entries["Rotator"].close_button.click()
+    window.controller.notify("removed", "Rotator")
+    _pump(qapp)
+    assert "Rotator" not in window._entries
+    assert window.page == "Overview" and window.overview_item.isChecked()
+    assert _shown_entries(window) == list(window.controller.model_names)
+
+
+def test_k4_a_setup_launch_lands_on_the_overview(six, qapp):
+    window = six
+    window.open_entry("DC Probe")
+    window.controller.open_names.append("Seventh")
+    window.controller.notify("added", "Seventh")
+    _pump(qapp)
+    assert window.page == "Overview"
+
+
+def test_k4_tier_state_survives_overview_device_overview_device(six, qapp):
+    window = six
+    panel = window._panels["Stepper Probe"]
+    window.open_entry("Stepper Probe")
+    panel.tier_button.click()
+    panel.diag_button.click()
+    window.show_overview()
+    _pump(qapp)
+    assert not panel.well.isVisible()
+    assert qt.QtPanelView.open_tiers[("Stepper Probe", 2)] is True
+    window.open_entry("Stepper Probe")
+    _pump(qapp)
+    assert panel.tier_button.isChecked() and panel.well.isVisible()
+    assert panel.diagnostics.isVisible()
+    assert not qt.QtPanelView.open_tiers.get(("DC Probe", 2), False)

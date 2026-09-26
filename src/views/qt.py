@@ -217,6 +217,9 @@ READING_GROWTH = 1.6
 #: At most three entries side by side, 44 px apart (`design-Sheet.md`).
 MAX_SHEET_COLUMNS = 3
 SHEET_GUTTER = theme.SPACE[10]
+#: An entry head's edge: transparent at rest, the focus ring when the head
+#: (a press target on the overview) has keyboard focus.
+HEAD_EDGE_PX = 2
 #: Keyboard focus: two pixels of ink on every control (F25). Never trace.
 FOCUS_RING = f"2px solid {theme.STOP_FOCUS}"
 #: A readout whose value is one of these is at rest, not live: it is drawn in
@@ -236,6 +239,10 @@ STOPPED_HEADLINE = "Every model is stopped."
 STOPPED_SUBLINE = "Clear the stop on the rail to continue."
 STOPPED_RAIL_ALL = "Stopped: every model latched"
 UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
+#: The sheet's two pages (K4): the rail's first item, and the word at the
+#: right of an overview entry's head (a press opens the device alone).
+OVERVIEW = "Overview"
+OPEN_WORD = "Open"
 #: A unit as the operator reads it beside a number.
 UNIT_WORDS = {"C": "°C", "s/C": "s/°C"}
 
@@ -475,16 +482,20 @@ def disclosure_text(sections, tier):
 
 
 def entry_rows(names, opened, columns):
-    """The sheet's rows: the opened model alone and full width, then the rest
-    in rows of at most `columns`, the earlier rows the fuller ("3, 2" for
-    five, "2, 2" for four at three columns). Order is the Controller's."""
+    """The grid's rows: models in rows of at most `columns`, the earlier rows
+    the fuller ("3, 2" for five, "2, 2" for four at three columns). Order is
+    the Controller's.
+
+    `opened=None` (or a name not in `names`) is the overview's grid: no
+    leading row (K4). A name puts that model alone and full width first, then
+    the rest - the pre-K4 sheet, kept because the rule is the same grid."""
     names = list(names)
     if not names:
         return []
     if opened not in names:
-        opened = names[0]
+        opened = None
     rest = [n for n in names if n != opened]
-    rows = [[opened]]
+    rows = [[opened]] if opened is not None else []
     columns = max(1, min(int(columns), MAX_SHEET_COLUMNS))
     if rest:
         count = -(-len(rest) // columns)
@@ -762,6 +773,17 @@ def stylesheet():
         _rule("QLabel#entryName", {"font-size": f"{base_size}pt",
                                    "font-weight": "600"}),
         _rule('QLabel#entryName[opened="true"]', {"font-size": f"{name_size}pt"}),
+        # K4: an overview entry's head is one press target (name, "Open" and
+        # its chevron): a transparent 2 px edge that becomes the ink ring on
+        # keyboard focus, the lift on hover. On the device page it is inert.
+        _rule("QFrame#entryHead", {"background": "transparent",
+                                   "border": "2px solid transparent",
+                                   "border-radius": f"{control}px"}),
+        _rule('QFrame#entryHead[pressable="true"]:hover', {"background": theme.LIFT}),
+        _rule("QFrame#entryHead:focus", {"border": ring}),
+        _rule("QToolButton#entryOpen", {"background": "transparent", "color": ink,
+                                        "border": "none", "font-weight": "600",
+                                        "padding": f"{hair}px {tight}px"}),
         _rule("QLabel#entryNote", {"color": ink, "font-size": f"{small_size}pt",
                                    "font-weight": "600"}),
         _rule("QLabel#headline", {"font-family": numerals, "font-weight": "600",
@@ -2274,23 +2296,90 @@ class RegionOverlay(QWidget):
 
 
 
-class SheetEntry(QFrame):
-    """One open model on the sheet: a 2 px ink rule, its name, its body.
+class EntryHead(QFrame):
+    """An entry's head: the name, then (on the overview) "Open" with the
+    disclosure chevron, the close button at the right.
 
-    No card edge: whitespace separates entries. The head carries the model's
-    disclosure (its tier-2 well), what the model must say before anything
-    else - a lost device, a stop that did not confirm (a signal rule and "Stop
-    not confirmed. Treat as live.") - and a close that says what it does:
-    closing a model stops and disconnects it, and the rail reopens it.
+    On the overview the whole head is one press target (K4): a click
+    anywhere on it but the close button, or Return/Space with it focused,
+    emits `pressed`; it takes Tab focus and shows the ink ring. The body
+    below is never part of it (it holds controls). On the device page the
+    head is inert and takes no focus.
+    """
+
+    pressed = Signal()
+
+    def __init__(self, name, parent=None):
+        QFrame.__init__(self, parent)
+        self.name = name
+        self.setObjectName("entryHead")
+        self.is_pressable = False
+        self._down = False
+        self.setAccessibleName(name)
+        self.set_pressable(False)
+
+    def set_pressable(self, flag):
+        flag = bool(flag)
+        self.is_pressable = flag
+        QtPanelView._set_prop(self, "pressable", "true" if flag else "false")
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus if flag else Qt.FocusPolicy.NoFocus)
+        label = f"{OPEN_WORD} {self.name}"
+        self.setToolTip(label if flag else "")
+        self.setAccessibleName(label if flag else self.name)
+        if flag:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.unsetCursor()
+            if self.hasFocus():
+                self.clearFocus()
+
+    def mousePressEvent(self, event):
+        if self.is_pressable and event.button() == Qt.MouseButton.LeftButton:
+            self._down = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        was, self._down = self._down, False
+        if (was and self.is_pressable and event.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(event.position().toPoint())):
+            event.accept()
+            self.pressed.emit()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if self.is_pressable and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                                                 Qt.Key.Key_Space):
+            event.accept()
+            self.pressed.emit()
+            return
+        super().keyPressEvent(event)
+
+
+class SheetEntry(QFrame):
+    """One open model on the sheet: a 2 px ink rule, its head, its body.
+
+    No card edge: whitespace separates entries. The head carries the name,
+    on the overview the "Open" affordance (the head is a press target, K4),
+    and a close that says what it does: closing a model stops and
+    disconnects it, and the rail reopens it. Under the head, what the model
+    must say before anything else - a lost device, a stop that did not
+    confirm (a signal rule and "Stop not confirmed. Treat as live."). The
+    tier-2 disclosure is not in the head (K3): it is the foot of the body.
     """
 
     closed = Signal()
+    #: The head was pressed on the overview: show this device alone.
+    open_requested = Signal()
 
     def __init__(self, name=None, panel=None, parent=None):
         QFrame.__init__(self, parent)
         self.name = name or ""
         self.panel = panel
         self.is_unconfirmed = False
+        self.is_overview = False
         self.setObjectName("entry")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2299,8 +2388,13 @@ class SheetEntry(QFrame):
         self.rule.setObjectName("entryRule")
         self.rule.setFixedHeight(theme.RULE_STRONG_PX)
         layout.addWidget(self.rule)
-        head = QHBoxLayout()
-        head.setContentsMargins(0, theme.SPACE[4], 0, theme.SPACE[3])
+        # The head's 2 px edge (its focus ring) is matched by the body's
+        # inset, so the name still lines up with the captions under it.
+        edge = HEAD_EDGE_PX
+        self.head = EntryHead(self.name)
+        self.head.pressed.connect(self.open_requested.emit)
+        head = QHBoxLayout(self.head)
+        head.setContentsMargins(0, theme.SPACE[4] - edge, 0, theme.SPACE[3] - edge)
         head.setSpacing(theme.PAD)
         # The name wraps rather than forcing the entry wider (Temperature /
         # Controller at 28 pt); it takes the head's slack, so it wraps only
@@ -2310,6 +2404,19 @@ class SheetEntry(QFrame):
         self.title.setProperty("opened", "false")
         self.title.setWordWrap(True)
         head.addWidget(self.title, 1)
+        # "Open" with the disclosure's chevron: a word, not a second button -
+        # it takes no focus and no press of its own; the head does.
+        self.open_word = QToolButton()
+        self.open_word.setObjectName("entryOpen")
+        self.open_word.setText(OPEN_WORD)
+        self.open_word.setIcon(disclosure_icon(False))
+        self.open_word.setIconSize(QSize(theme.SPACE[4] - theme.SPACE[1],
+                                         theme.SPACE[4] - theme.SPACE[1]))
+        self.open_word.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.open_word.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.open_word.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.open_word.setVisible(False)
+        head.addWidget(self.open_word)
         # What the entry must say first - a lost device, a stop that did not
         # confirm - sits on a line of its own under the name, never squeezed.
         self.lost_mark = mark(theme.SIGNAL)
@@ -2331,9 +2438,6 @@ class SheetEntry(QFrame):
             notes.addWidget(line)
         self._lost_line = notes.itemAt(0).widget()
         self._unconfirmed_line = notes.itemAt(1).widget()
-        self.disclosure = panel.take_disclosure() if panel is not None else None
-        if self.disclosure is not None:
-            head.addWidget(self.disclosure)
         side = target_px()
         self.close_button = QToolButton()
         self.close_button.setObjectName("iconButton")
@@ -2345,14 +2449,37 @@ class SheetEntry(QFrame):
         self.close_button.setAccessibleName(f"Close {self.name}")
         self.close_button.clicked.connect(self.close)
         head.addWidget(self.close_button)
-        layout.addLayout(head)
-        layout.addLayout(notes)
+        layout.addWidget(self.head)
+        body = QVBoxLayout()
+        body.setContentsMargins(edge, 0, edge, 0)
+        body.setSpacing(0)
+        body.addLayout(notes)
         if panel is not None:
-            layout.addWidget(panel)
+            body.addWidget(panel)
+        layout.addLayout(body)
+        # A row's entries share one height; the slack goes under the body,
+        # never into the head (a taller head drops its name below its row's).
+        self.head.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        layout.addStretch(1)
 
     def set_opened(self, opened):
         """The opened model's name is one step larger."""
         QtPanelView._set_prop(self.title, "opened", "true" if opened else "false")
+
+    def set_page(self, overview):
+        """Draw this entry for a page (K4). The overview: the compact entry,
+        tier 1 only, the head a press target with "Open". The device page:
+        the model alone, readings `focal`, its disclosures at the foot of the
+        body; the head is inert."""
+        overview = bool(overview)
+        self.is_overview = overview
+        self.set_opened(not overview)
+        self.head.set_pressable(overview)
+        if self.open_word.isHidden() == overview:
+            self.open_word.setVisible(overview)
+        if self.panel is not None:
+            self.panel.set_opened(not overview)
+            self.panel.show_tiers(not overview)
 
     def set_lost(self, text):
         """A lost device, said in the entry's own head."""
@@ -2411,8 +2538,10 @@ class QtPanelView(PanelView, QWidget):
 
     Tier 1 is laid out straight onto the sheet; tier 2 goes into a
     panel-toned well behind `tier_button` (the model's one disclosure); tier 3
-    into a strip behind `diag_button` inside that well. An entry lifts
-    `tier_button` into its head with `take_disclosure`.
+    into a strip behind `diag_button` inside that well. The disclosure is the
+    last thing in the tier-1 body, left-aligned, and the well follows it with
+    no gap (K3): the press and what it reveals are never a screen apart. Both
+    live in `tier_block`, which the overview hides (`show_tiers`).
 
     Every element type in `schema.ELEMENT_TYPES` has a `_make_` here, which is
     what `PanelView.__init__` checks before it will construct: a renderer that
@@ -2479,10 +2608,11 @@ class QtPanelView(PanelView, QWidget):
         self._layout.addLayout(self._tier_layouts[1])
         self.tier_button = self.diag_button = None
         self.well = self.diagnostics = None
-        self._disclosure_row = None
+        self.tier_block = None
         self._build_tiers()
 
         self._build()
+        self._order_focus()
 
         for tier in (2, 3):
             self._set_tier_open(tier, QtPanelView.open_tiers.get((self.name, tier), False))
@@ -2507,11 +2637,16 @@ class QtPanelView(PanelView, QWidget):
         tiers = {tier_of(s) for s in self._sections}
         if not tiers & {2, 3}:
             return
+        # K3: the disclosure at the foot of tier 1, left-aligned, the well
+        # directly under it (no gap); keyboard order follows, since both are
+        # built after tier 1's layout and before nothing else.
+        self.tier_block = QWidget()
+        self.tier_block.setObjectName("bare")
+        block = QVBoxLayout(self.tier_block)
+        block.setContentsMargins(0, 0, 0, 0)
+        block.setSpacing(0)
         self.tier_button = self._disclosure(disclosure_text(self._sections, 2), 2)
-        self._disclosure_row = _bare_row(stretch=False)
-        self._disclosure_row.layout().addStretch(1)
-        self._disclosure_row.layout().addWidget(self.tier_button)
-        self._layout.addWidget(self._disclosure_row)
+        block.addWidget(self.tier_button, 0, Qt.AlignmentFlag.AlignLeft)
         self.well = QFrame()
         self.well.setObjectName("well")
         inside = QVBoxLayout(self.well)
@@ -2531,7 +2666,8 @@ class QtPanelView(PanelView, QWidget):
             strip.setSpacing(theme.SPACE[4])
             self._tier_layouts[3] = strip
             inside.addWidget(self.diagnostics)
-        self._layout.addWidget(self.well)
+        block.addWidget(self.well)
+        self._layout.addWidget(self.tier_block)
 
     def _disclosure(self, text, tier):
         button = QToolButton()
@@ -2548,6 +2684,25 @@ class QtPanelView(PanelView, QWidget):
                           f"{'diagnostics' if tier == 3 else text.lower()}")
         button.toggled.connect(lambda on, t=tier: self._set_tier_open(t, on))
         return button
+
+    def _order_focus(self):
+        """Tab follows the page (K3): every tier-1 control, then the
+        disclosure, then what the well holds. The block is built before the
+        elements (their tiers' layouts must exist), so the creation order
+        alone would put the disclosure first."""
+        if self.tier_block is None:
+            return
+        chain, widget = [], self.nextInFocusChain()
+        while widget is not None and widget is not self and len(chain) < 5000:
+            if self.isAncestorOf(widget):
+                chain.append(widget)
+            widget = widget.nextInFocusChain()
+        block = self.tier_block
+        before = [w for w in chain if w is not block and not block.isAncestorOf(w)]
+        inside = [w for w in chain if w is not self.tier_button and block.isAncestorOf(w)]
+        order = before + [self.tier_button] + inside
+        for first, second in zip(order, order[1:]):
+            QWidget.setTabOrder(first, second)
 
     def tier_is_open(self, tier):
         body = self.well if tier == 2 else self.diagnostics
@@ -2572,14 +2727,28 @@ class QtPanelView(PanelView, QWidget):
         if is_open and not self._closed and hasattr(window, "_schedule_arrange"):
             window._schedule_arrange()
 
-    def take_disclosure(self):
-        """Hand the model's disclosure to its entry's head (the artboard puts
-        "Configure" beside the name). None when the schema has no tier 2/3."""
-        if self.tier_button is None or self._disclosure_row is None:
-            return self.tier_button
-        self._disclosure_row.layout().removeWidget(self.tier_button)
-        self._disclosure_row.setVisible(False)
-        return self.tier_button
+    # `take_disclosure` is retired (K3, 2026-09-26): the entry's head no
+    # longer lifts the disclosure out of the body; it stays above its well.
+
+    def show_tiers(self, shown):
+        """The device page shows the disclosure and its well; the overview
+        shows neither (K4). The remembered open state is not touched: the
+        block is hidden around it, so a trip to the overview and back finds
+        the well as it was."""
+        if self.tier_block is None:
+            return
+        shown = bool(shown)
+        if self.tier_block.isHidden() == shown:
+            self.tier_block.setVisible(shown)
+
+    def tier_is_shown(self, tier):
+        """Whether tier `tier` is on screen as far as this panel decides:
+        its block shown, its well (and for tier 3 its strip) open."""
+        if tier <= 1:
+            return True
+        if self.tier_block is None or self.tier_block.isHidden():
+            return False
+        return self.tier_is_open(2) and (tier == 2 or self.tier_is_open(3))
 
     def set_opened(self, opened):
         """The opened model's axis readings are `focal`, the others `compact`."""
@@ -3146,11 +3315,13 @@ class QtPanelView(PanelView, QWidget):
         return entry[0] if entry else None
 
     def _wants_data(self, element):
-        """A detached stream is polled only while its window is showing."""
+        """A detached stream is polled only while its window is showing; a
+        plot or figure behind a tier that is not shown (a closed well, or the
+        overview, which draws no wells) is not polled at all."""
         if element.get("type") == "log_stream" and element.get("detached"):
             window = self.detached_window(element)
             return window is not None and window.isVisible()
-        return True
+        return self.tier_is_shown(self._tier_of.get(id(element), 1))
 
     def _make_internal(self, container, element):
         """Registers a command in the schema's allow-list and draws nothing
@@ -3601,14 +3772,22 @@ class QtDashboard(Dashboard, QMainWindow):
 
         +- rail -------+- Setup (top dock; put away on launch) --------------+
         | Transfer     | Every model is stopped.   (only when latched)       |
-        | stage        | ==== Stepper Probe ====================== Configure |
-        |  ( Stop )    |  X 1 184   Y -352   Z 20                           |
-        | Stop: Ctrl+. | ==== DC Probe ====  ==== Chuck ====  ==== Temp ==== |
-        | model list   | ==== Rotator =========  ==== Red Percent ========== |
+        | stage        | == Stepper Probe > Open  == DC Probe > Open  == ... |
+        |  ( Stop )    |  X 1 184  Y -352  Z 20      X 0  Y 0  Z 0           |
+        | Stop: Ctrl+. | == Rotator > Open ======  == Red Percent > Open ==== |
+        | Overview     |                                                     |
+        | model list   |                                                     |
         | Setup  Quit  +- tray: the latest warning or error ---- Show events-+
 
     The rail is a fixed left dock (nothing can cover it or push the stop off
     screen); the sheet is the central widget, one scroll for the page.
+
+    The sheet has two pages (K4). The overview (`_shown is None`): every
+    model's compact entry in the grid, tier 1 only, its head a press target.
+    A device page (`_shown` a model's name): that entry alone, full width,
+    readings `focal`, its disclosures at the foot of its body. The rail is
+    the navigation: "Overview" first, then the models, the shown page
+    checked. Launch, and closing the shown device, return to the overview.
     """
 
     #: Every cross-thread hop goes through this, queued. See the module
@@ -3633,7 +3812,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._lost = {}             # name -> the devices it reports lost
         self._alerts = []           # errors waiting to be acknowledged
         self._raise_on_add = None   # a model being reopened
-        self._opened = None         # the model on top of the sheet
+        self._shown = None          # the device page's model; None: the overview
         self._unconfirmed = set()   # models whose last stop did not confirm
         self._arrangement = None    # what the sheet's grid last laid out
         self._arrange_pending = False
@@ -3828,6 +4007,10 @@ class QtDashboard(Dashboard, QMainWindow):
         stack = QVBoxLayout(holder)
         stack.setContentsMargins(0, 0, 0, 0)
         stack.setSpacing(theme.SPACE[0])
+        # The page list: "Overview" first (K4), then one item per model.
+        self.overview_item = RailItem(OVERVIEW)
+        self.overview_item.clicked.connect(lambda _=False: self.show_overview())
+        stack.addWidget(self.overview_item)
         self._rail_list = QVBoxLayout()
         self._rail_list.setSpacing(theme.SPACE[0])
         stack.addLayout(self._rail_list)
@@ -3925,8 +4108,10 @@ class QtDashboard(Dashboard, QMainWindow):
                 self._rail_list.addWidget(item)
                 self._rail_items[name] = item
         for name, item in self._rail_items.items():
-            if item.isChecked() != (name == self._opened):
-                item.setChecked(name == self._opened)
+            if item.isChecked() != (name == self._shown):
+                item.setChecked(name == self._shown)
+        if self.overview_item.isChecked() != (self._shown is None):
+            self.overview_item.setChecked(self._shown is None)
         closed = [n for n in self.controller.closed_names if n not in names]
         if closed != self._closed_shown:
             self._closed_shown = closed
@@ -4025,16 +4210,39 @@ class QtDashboard(Dashboard, QMainWindow):
         self.sheet_scroll.ensureWidgetVisible(entry, 0, 0)
         entry.setFocus(Qt.FocusReason.OtherFocusReason)
 
+    @property
+    def page(self):
+        """The shown page: `OVERVIEW`, or the name of the model shown alone."""
+        return OVERVIEW if self._shown is None else self._shown
+
     def open_entry(self, name):
-        """The rail's press: this model goes to the top of the sheet, its
-        readings `focal`, and the sheet scrolls to it."""
+        """A model's rail item, or its overview head: the device page, that
+        model alone and full width, its readings `focal`, its disclosures at
+        the foot of its body (K4)."""
         if name not in self._entries:
             return
-        self._opened = name
+        entry = self._entries[name]
+        from_keyboard = entry.head.hasFocus()
+        self._shown = name
         self._arrange_entries()
         self._sync_rail()
-        QTimer.singleShot(0, lambda: (self._bring_forward(self._entries[name])
-                                      if name in self._entries else None))
+        # The head that was pressed is inert on the device page; the
+        # keyboard's place moves to the rail item that now names the page.
+        if from_keyboard and name in self._rail_items:
+            self._rail_items[name].setFocus(Qt.FocusReason.OtherFocusReason)
+        self.sheet_scroll.verticalScrollBar().setValue(0)
+
+    def show_overview(self):
+        """The rail's "Overview": every model's compact entry, tier 1 only;
+        the device that was shown is scrolled back into view."""
+        was = self._shown
+        self._shown = None
+        self._arrange_entries()
+        self._sync_rail()
+        if was in self._entries:
+            QTimer.singleShot(0, lambda: (
+                self.sheet_scroll.ensureWidgetVisible(self._entries[was], 0, 0)
+                if was in self._entries else None))
 
     # -- Setup: put away on launch, back from the rail ----------------------
     def _collapse_setup(self):
@@ -4115,43 +4323,56 @@ class QtDashboard(Dashboard, QMainWindow):
         margins = self.sheet.layout().contentsMargins()
         return self.sheet_scroll.viewport().width() - margins.left() - margins.right()
 
-    def _fit_columns(self, names, opened):
+    def _fit_columns(self, names):
         """As many columns as fit with no entry under its minimum - never a
         clipped number (F5) - up to three."""
         room = self._sheet_room()
         gutter = SHEET_GUTTER
         for columns in range(MAX_SHEET_COLUMNS, 1, -1):
-            rows = entry_rows(names, opened, columns)
+            rows = entry_rows(names, None, columns)
             if all(max(self._entries[n].minimumSizeHint().width() for n in row)
                    * len(row) + gutter * (len(row) - 1) <= room
-                   for row in rows[1:]):
+                   for row in rows):
                 return columns
         return 1
 
     def _arrange_entries(self):
-        """The opened model full width on top, the rest in rows of three and
-        two, as many columns as fit (`entry_rows`)."""
+        """The shown page (K4). The overview: every entry compact, in rows of
+        three and two, as many columns as fit (`entry_rows`). A device page:
+        that entry alone, full width; the others are hidden, so their panels
+        stop ticking (F21) and draw nothing."""
         order = [n for n in self.controller.model_names if n in self._entries]
         names = order + [n for n in self._entries if n not in order]
+        if self._shown is not None and self._shown not in names:
+            # The shown device closed, or never came back: the overview.
+            self._shown = None
+            self._sync_rail()
         if not names:
             self._arrangement = None
             return
-        if self._opened not in names:
-            self._opened = names[0]
-        for name, panel in self._panels.items():
-            panel.set_opened(name == self._opened)
-            self._entries[name].set_opened(name == self._opened)
+        overview = self._shown is None
+        for name, entry in self._entries.items():
+            # Only the shown device is drawn for its page; every other entry
+            # stays compact (hidden on a device page, and ready for the grid).
+            compact = name != self._shown
+            if entry.is_overview != compact:
+                entry.set_page(compact)
         for entry in self._entries.values():
             # Columns share the width equally; each entry keeps its own floor.
             entry.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             least = entry.minimumSizeHint().width()
             if entry.minimumWidth() != least:
                 entry.setMinimumWidth(least)
-        rows = entry_rows(names, self._opened, self._fit_columns(names, self._opened))
+        rows = (entry_rows(names, None, self._fit_columns(names)) if overview
+                else [[self._shown]])
         arrangement = tuple(tuple(row) for row in rows)
         if arrangement == self._arrangement:
             return
         self._arrangement = arrangement
+        shown = {n for row in rows for n in row}
+        for name, entry in self._entries.items():
+            if entry.isHidden() == (name in shown):
+                entry.setVisible(name in shown)
         while self._rows.count():
             line = self._rows.takeAt(0).layout()
             while line is not None and line.count():
@@ -4439,15 +4660,22 @@ class QtDashboard(Dashboard, QMainWindow):
         panel = QtPanelView(self.controller, name)
         entry = SheetEntry(name, panel, self.sheet)
         entry.closed.connect(lambda: self._on_entry_closed(name))
+        entry.open_requested.connect(lambda: self.open_entry(name))
+        entry.set_page(True)
         self._entries[name] = entry
         self._panels[name] = panel
         if self._lost.get(name):
             entry.set_lost(sentence(f"{' and '.join(self._lost[name])} lost"))
+        reopened = self._raise_on_add == name
+        # A model Setup launched lands on the overview (K4); one reopened
+        # from the rail is shown alone, like a press on its rail item.
+        self._shown = name if reopened else None
+        self._arrangement = None
         self._sync_empty_state()
         self._arrange_entries()
         self._schedule_arrange()
         self._sync_rail()
-        if self._raise_on_add == name:
+        if reopened:
             self._raise_on_add = None
             self._bring_forward(entry)
         events.debug("Entry Opened", name, source="QtView")

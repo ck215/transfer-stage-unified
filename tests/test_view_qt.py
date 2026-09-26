@@ -690,6 +690,32 @@ def test_e_the_opened_model_is_alone_on_top_then_rows_of_three_and_two():
     assert qt.entry_rows([], None, 3) == []
 
 
+def test_k4_the_overview_grid_has_no_leading_row():
+    """K4: the overview is the grid alone - `opened=None` (or a name that is
+    not running) leads with no model; three across then the rest, the earlier
+    rows the fuller."""
+    names = ["Stepper Probe", "DC Probe", "Chuck Positioner",
+             "Temperature Controller", "Rotator", "Red Percent"]
+    assert qt.entry_rows(names, None, 3) == [names[:3], names[3:]]
+    assert qt.entry_rows(names[:5], None, 3) == [names[:3], names[3:5]]
+    assert qt.entry_rows(names, None, 2) == [names[:2], names[2:4], names[4:]]
+    assert qt.entry_rows(names, "Gone", 3) == [names[:3], names[3:]]
+
+
+def test_k4_the_pages_are_named_in_the_views_own_words():
+    """The rail says "Overview"; an overview entry's affordance says "Open"."""
+    assert qt.OVERVIEW == "Overview"
+    assert qt.OPEN_WORD == "Open"
+
+
+def test_k4_an_entry_head_has_the_ink_ring_and_a_lift_only_when_pressable():
+    sheet = qt.stylesheet()
+    rule = sheet.split("QFrame#entryHead:focus")[1].split("}")[0]
+    assert qt.FOCUS_RING in rule
+    assert 'QFrame#entryHead[pressable="true"]:hover' in sheet
+    assert "QToolButton#entryOpen {" in sheet
+
+
 def test_e_a_label_splits_off_its_unit_but_keeps_a_word():
     assert qt.split_unit("Position (deg):") == ("Position", "deg")
     assert qt.split_unit("Brake Distance (steps):") == ("Brake distance", "steps")
