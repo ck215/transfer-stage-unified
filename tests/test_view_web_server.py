@@ -892,14 +892,22 @@ def test_a_stop_that_never_reaches_the_station_says_so_on_the_rail(station, tmp_
     out = _browse(view, r"""
       await page.setRequestInterception(true);
       page.on('request', (r) => (r.url().includes('/api/estop_all') ? r.abort() : r.continue()));
+      // Updated (L, round 7): the link line is RECORDED from before the
+      // press. It says "Not answering" at the failed stop and the next state
+      // poll that succeeds (a quarter second later) rightly clears it, so a
+      // sample taken after the rail alert appeared could land either side.
+      await page.evaluate(() => {
+        window.linkSaid = [];
+        const link = document.getElementById('connection');
+        new MutationObserver(() => window.linkSaid.push(link.textContent))
+          .observe(link, { childList: true, characterData: true, subtree: true });
+      });
       await page.click('#full-stop');
       await until(() => !document.getElementById('rail-alert').hidden);
-      // The link state flips on the poll after the failed stop; wait for it
-      // rather than sampling it (this read "Connected" once under load).
-      await until(() => document.getElementById('connection').textContent.startsWith('Not answering'));
+      await until(() => window.linkSaid.some((t) => t.startsWith('Not answering')));
       return page.evaluate(() => ({
         alert: document.getElementById('rail-alert').textContent,
-        link: document.getElementById('connection').textContent,
+        link: window.linkSaid.find((t) => t.startsWith('Not answering')) || '',
         face: document.querySelector('#full-stop .mushroom-face').textContent,
       }));
     """, tmp_path)

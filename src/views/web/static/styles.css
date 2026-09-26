@@ -420,7 +420,7 @@ button, select, input[type="range"] {
    is not, so the list stays a list of names. */
 .model-link { display: flex; align-items: center; gap: var(--space-3); }
 
-.nav-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-name { min-width: 0; overflow-wrap: anywhere; }
 
 .nav-mark {
   flex: 0 0 auto;

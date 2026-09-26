@@ -2076,7 +2076,8 @@ class PanelCard {
   /** L3: under a row whose `go` command is disabled, one muted caption says
    *  why - unless another `go` in the row can go (Setup's Launch and
    *  Relaunch take turns), or the model already says what unblocks it in
-   *  the row (Red Percent's "Next step"). One caption per row. */
+   *  the row (Red Percent's "Next step"), or the reason is the latch (the
+   *  headline and the entry's head say that once). One caption per row. */
   sayWhyNotGo() {
     for (const { goes, block } of this.goRows || []) {
       const canGo = goes.some((w) => !w.reason);
@@ -2084,7 +2085,10 @@ class PanelCard {
         && r.dataset.attr === 'next_step');
       let shown = false;
       for (const widget of goes) {
-        const say = !canGo && !said && !shown && Boolean(widget.reason);
+        // The latch is said once - the headline, the entry's "Stopped" -
+        // not under every row of the page; its reason stays in the title.
+        const say = !canGo && !said && !shown && Boolean(widget.reason)
+          && widget.reason !== MODE_REASONS.latched;
         if (say) shown = true;
         putText(widget.note, say ? widget.reason : '');
         if (widget.note.hidden !== !say) widget.note.hidden = !say;
