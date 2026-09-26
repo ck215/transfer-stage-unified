@@ -81,6 +81,14 @@ VALUE_PX, FIELD_WIDTH, DROPDOWN_WIDTH = 168, 8, 22
 #: on a wide one, where two would put a caption half a screen from its value.
 COLUMN_PX, MAX_COLUMNS = 400, 3
 
+#: A table's columns when the window is short of width (UXPM5-5). The status
+#: column takes nearly all the slack (`STATUS_WEIGHT` to a dropdown's 1) and
+#: keeps room for its words: at least its value's width, up to
+#: `STATUS_MIN_CHARS` characters (a longer identifier is cut in the middle,
+#: whole in its tooltip). The dropdowns are the elastic columns: they give
+#: up width before a status word does.
+STATUS_WEIGHT, STATUS_MIN_CHARS = 100, 16
+
 #: Lines the dashboard event log shows before it scrolls. It is a footer, not
 #: a panel: eight lines of log was taking vertical space from the controls.
 EVENT_LOG_LINES = 5
@@ -293,6 +301,19 @@ def _overlap(a, b):
     x0, y0 = max(a[0], b[0]), max(a[1], b[1])
     x1, y1 = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
     return (x0, y0, x1 - x0, y1 - y0) if x1 > x0 and y1 > y0 else None
+
+
+def _flow_lines(widths, room, gap):
+    """Which line each of a run of widgets goes on, filling left to right:
+    a widget that would end past `room` starts the next line. A widget
+    wider than `room` gets a line to itself. No `room`: one line."""
+    lines, line, used = [], 0, 0
+    for width in widths:
+        if room is not None and used and used + width > room:
+            line, used = line + 1, 0
+        lines.append(line)
+        used += width + gap
+    return lines
 
 
 def _clamp(value, low, high):
@@ -1092,6 +1113,7 @@ class TkPanelView(PanelView):
         super().__init__(controller, name, panel)
         self._widgets = {}          # id(element) -> {widget, var, ...}
         self._grid = {}             # id(container) -> the grid cursor
+        self._flows = {}            # id(command strip) -> its wrapping lines
         self._table = None          # the frame the current run of row sections shares
         self._section_run = None            # the current run of column sections
         self._runs = []             # every run: its holder, two columns, its sections
@@ -1158,6 +1180,10 @@ class TkPanelView(PanelView):
         """
         area = tk.Frame(self.frame, background=_page())
         area.pack(side="top", fill="both", expand=True)
+        self._area = area
+        # The panel's commit row (Setup's Launch), when it has one, is pinned
+        # here under the scroll area: packed only once a row is pinned.
+        self._pinned = tk.Frame(self.frame, background=_page())
         self._scrollbar = ttk.Scrollbar(area, orient="vertical")
         self._scrollbar.pack(side="right", fill="y")
         self._canvas = tk.Canvas(area, background=_page(),
@@ -1427,8 +1453,9 @@ class TkPanelView(PanelView):
         self._section_index += 1
         if layout == "row":
             kinds = self._row_kinds
+            kind = kinds[index] if index < len(kinds) and kinds[index] else "bar"
             return self._make_row_section(
-                title, kinds[index] if index < len(kinds) and kinds[index] else "bar")
+                title, kind, pinned=kind == "bar" and self._is_commit_row(index))
         # A column section ends the table: the next row section starts a new
         # one, so a schema that interleaves the two still renders in order.
         self._table = None
@@ -1456,7 +1483,18 @@ class TkPanelView(PanelView):
         self._section_run["sections"].append(container)
         return container
 
-    def _make_row_section(self, title, kind):
+    def _is_commit_row(self, index):
+        """The schema's LAST section, a bar holding a `go` command (Setup's
+        Launch row): the step the whole panel leads to. It is pinned under
+        the scroll area, so it is on screen at every font size - at 28 pt
+        it was scrolled below the rows (UXPM5-5)."""
+        sections = list(self._schema().get("sections") or [])
+        if index != len(sections) - 1:
+            return False
+        return any(element.get("type") == "button" and element.get("role") == "go"
+                   for element in sections[index].get("elements") or [])
+
+    def _make_row_section(self, title, kind, pinned=False):
         """One line of the table: the row's name in column 0, then its cells.
 
         Every row section in a run shares ONE grid, because columns only line
@@ -1466,9 +1504,21 @@ class TkPanelView(PanelView):
         rows, and the rows off from a bar that follows them.
         """
         self._section_run = None
+        if pinned:
+            self._table = None
         if self._table is None:
-            self._table = tk.Frame(self._body, background=_page())
-            self._table.pack(fill="x", padx=INSET, pady=(INSET, GAP))
+            if pinned:
+                try:
+                    self._pinned.pack(side="bottom", fill="x", before=self._area)
+                except Exception as exc:
+                    events.debug("Pinned Row Not Placed", str(exc), source=SOURCE,
+                                 exception=exc)
+                tk.Frame(self._pinned, height=1, background=theme.RULE).pack(
+                    fill="x", padx=INSET)
+            self._table = tk.Frame(self._pinned if pinned else self._body,
+                                   background=_page())
+            self._table.pack(fill="x", padx=INSET,
+                             pady=(GAP, GAP) if pinned else (INSET, GAP))
             width = len(self._table_columns)
             self._grid[id(self._table)] = {
                 "layout": "row", "row": -1, "kind": None, "bar": None,
@@ -1476,7 +1526,7 @@ class TkPanelView(PanelView):
             if width:
                 # The last shared column (the status) takes the slack, so a
                 # long status has room instead of being cut off.
-                self._stretch_column(self._table, width)
+                self._stretch_column(self._table, width, STATUS_WEIGHT)
         state = self._grid[id(self._table)]
         span = max(1, state["width"])
         if state["kind"] is not None:
@@ -1578,10 +1628,10 @@ class TkPanelView(PanelView):
         return self._grid.setdefault(id(container), {
             "layout": "column", "row": 1, "strip": None})
 
-    def _stretch_column(self, container, column):
-        """Let one column absorb the slack."""
+    def _stretch_column(self, container, column, weight=1):
+        """Let one column absorb the slack (and give it back first)."""
         try:
-            container.grid_columnconfigure(column, weight=1)
+            container.grid_columnconfigure(column, weight=weight)
         except Exception as exc:
             events.debug("Column Weight Refused", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
@@ -1628,32 +1678,56 @@ class TkPanelView(PanelView):
             state["extra"] += 1
 
         def place(widget, fill):
+            # A table's field (a dropdown) is elastic: it fills its cell and
+            # its column shrinks before the status column does (UXPM5-5).
             widget.grid(row=state["row"], column=column, pady=GAP,
-                        padx=(0, SPACE[5]), sticky="ew" if fill == "value" else "w")
+                        padx=(0, SPACE[5]),
+                        sticky="ew" if fill in ("value", "field") else "w")
+            if fill == "field" and column not in state.setdefault("elastic", set()):
+                state["elastic"].add(column)
+                if column != state.get("width"):
+                    self._stretch_column(container, column)
+            if fill == "value":
+                self._register(element, table=(container, column))
             return widget
         return container, place
 
     def _command_slot(self, container, element=None):
         """Where one command goes. -> (parent, place)
 
-        In a section, consecutive commands share ONE line — "Enter autonomous
-        mode", "Enter manual mode", "Step" — instead of a stack of full-width
-        bars; the line ends at the next control that is not a command. The
-        row under the line is where a refusal of any of them is shown.
+        In a section, consecutive commands share ONE group — "Enter autonomous
+        mode", "Enter manual mode", "Step", "Gamepad log…" — instead of a
+        stack of full-width bars; the group ends at the next control that is
+        not a command. The group WRAPS by measured width (`_flow_strip`): one
+        line while the section has room, more lines when it has not, so no
+        caption is ever cut (UXPM5-2, IMP-3). The row under the group is
+        where a refusal of any of them is shown.
         """
         state = self._cursor(container)
         if state["layout"] == "column":
             strip = state.get("strip")
             if strip is None:
                 strip = tk.Frame(container, background=_page())
-                strip.grid(row=state["row"], column=0, columnspan=3, sticky="w",
+                strip.grid(row=state["row"], column=0, columnspan=3, sticky="ew",
                            pady=GAP)
                 state["strip_slot"] = (container, state["row"] + 1, 0, 3)
                 state["row"] += 2
                 state["strip"] = strip
+                flow = self._flows[id(strip)] = {"items": [], "rows": [],
+                                                 "layout": None}
+                strip.bind("<Configure>",
+                           lambda event, s=strip: self._flow_strip(
+                               s, getattr(event, "width", None)), add="+")
             if element is not None:
                 self._register(element, slot=state["strip_slot"])
-            return strip, lambda widget: widget.pack(side="left", padx=(0, PAD))
+            flow = self._flows[id(strip)]
+
+            def place(widget, strip=strip, flow=flow):
+                flow["items"].append(widget)
+                flow["layout"] = None
+                self._flow_strip(strip, None)
+                return widget
+            return strip, place
         if element is not None:
             self._register(element, slot=self._notice_slot(container))
         bar = state.get("bar")
@@ -1663,6 +1737,57 @@ class TkPanelView(PanelView):
         state["extra"] += 1
         return container, lambda widget: widget.grid(
             row=state["row"], column=column, sticky="w", padx=(0, PAD), pady=GAP)
+
+    def _flow_strip(self, strip, width):
+        """Lay a command group out in as many lines as its width needs.
+
+        Each line is a frame of its own, so a line's buttons are packed
+        side by side at their own widths (a grid would share column widths
+        between lines). The buttons stay children of the strip and are packed
+        `in_` a line, raised above it so the line frame does not hide them.
+        """
+        flow = self._flows.get(id(strip))
+        if flow is None or not flow["items"]:
+            return
+        if not isinstance(width, int) or width <= 1:
+            try:
+                width = strip.winfo_width()
+            except Exception:
+                width = None
+        widths = []
+        for widget in flow["items"]:
+            try:
+                wanted = widget.winfo_reqwidth()
+            except Exception:
+                wanted = None
+            widths.append(wanted if isinstance(wanted, int) else 0)
+        room = width if isinstance(width, int) and width > 1 else None
+        layout = tuple(_flow_lines(widths, room, PAD))
+        if layout == flow["layout"]:
+            return
+        flow["layout"] = layout
+        lines = flow["rows"]
+        while len(lines) < max(layout) + 1:
+            line = tk.Frame(strip, background=_page())
+            lines.append(line)
+        for index, line in enumerate(lines):
+            try:
+                if index <= max(layout):
+                    line.pack(side="top", anchor="w",
+                              pady=(0 if index == 0 else GAP, 0))
+                else:
+                    line.pack_forget()
+            except Exception as exc:
+                events.debug("Command Line Not Placed", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
+        for widget, index in zip(flow["items"], layout):
+            try:
+                widget.pack_forget()
+                widget.pack(in_=lines[index], side="left", padx=(0, PAD))
+                widget.lift()
+            except Exception as exc:
+                events.debug("Command Not Placed", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
 
     def _wide_slot(self, container, caption=None):
         """Where a plot, a picture or a log goes: the full width of its
@@ -1847,6 +1972,7 @@ class TkPanelView(PanelView):
             room = widget.winfo_width() - 2 * int(widget.cget("padx") or 0) - 2
         except Exception:
             room = None
+        room = self._make_room(entry, text, room)
         shown = _elide(entry.get("font"), text, room if isinstance(room, int) else None,
                        middle=_is_identifier(text))
         tooltip = entry.get("tooltip")
@@ -1859,6 +1985,32 @@ class TkPanelView(PanelView):
             widget.configure(text=shown)
         except Exception:
             pass
+
+    def _make_room(self, entry, text, room):
+        """A table's status column is never narrower than the word in it, up
+        to `STATUS_MIN_CHARS` characters: "simulated" read "…" at 28 pt
+        while each dropdown kept 560 px (UXPM5-5). -> the room to elide to."""
+        table = entry.get("table")
+        if table is None or not text:
+            return room
+        container, column = table
+        font = entry.get("font")
+        need = _text_width(font, text)
+        if need is None:
+            return room
+        # The cell's right padding is inside the column, and the label's own
+        # padding and border inside the cell: the word gets what is left.
+        need = min(need, _width_px(font, "0" * STATUS_MIN_CHARS)) + SPACE[3] + SPACE[5]
+        sizes = self._grid.setdefault(id(container), {}).setdefault("minsize", {})
+        if need > sizes.get(column, 0):
+            sizes[column] = need
+            try:
+                container.grid_columnconfigure(column, minsize=need)
+            except Exception as exc:
+                events.debug("Column Minsize Refused", str(exc), source=SOURCE,
+                             exception=exc, every=5.0)
+            return max(room, need - SPACE[5]) if isinstance(room, int) else room
+        return room
 
     def _make_entry(self, container, element):
         parent, place = self._field(container, element)
@@ -2002,6 +2154,14 @@ class TkPanelView(PanelView):
         if current and current not in options:
             options = [current] + options
         entry["options"] = options
+        self._relabel(element)
+
+    def _relabel(self, element):
+        """The labels a dropdown shows for its options, at its `chars`."""
+        entry = self._entry_for(element)
+        widget, options = entry.get("widget"), entry.get("options") or []
+        if widget is None:
+            return
         # Long names are cut in the MIDDLE so the part that tells two ports
         # or fifty gamepads apart stays in view (F15); a label that would
         # collide with another keeps its whole name.
@@ -2247,7 +2407,30 @@ class TkPanelView(PanelView):
         self._register(element, widget=widget, var=var, options=[],
                        tooltip=_Tooltip(widget), cell=ring.outer, ring=ring,
                        chars=chars, labels={}, label_of={})
+        if is_table:
+            widget.bind("<Configure>",
+                        lambda event, el=element: self._fit_dropdown(
+                            el, getattr(event, "width", None)), add="+")
         self._refresh_options(element)
+
+    def _fit_dropdown(self, element, width):
+        """A table dropdown given less than its request (the window is short
+        of width) cuts its names to what it shows, in the middle, so the
+        box never hides the end of a name without saying so."""
+        entry = self._entry_for(element)
+        glyph = _width_px(_font(), "0")
+        if not isinstance(width, int) or width <= 1 or not glyph:
+            return
+        arrow = _line_px()
+        chars = max(5, min(DROPDOWN_WIDTH - 1, (width - arrow) // glyph))
+        if chars == entry.get("chars"):
+            return
+        entry["chars"] = chars
+        self._relabel(element)
+        text = entry.get("last_text")
+        if text is not None:
+            entry["last_text"] = None
+            self._set_text(element, text)
 
     def _make_region_select(self, container, element):
         parent, place = self._command_slot(container, element)

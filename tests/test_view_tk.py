@@ -1258,7 +1258,12 @@ def test_the_status_of_a_row_takes_the_slack(row_view):
     widget = widget_of(row_view, found)
     assert _cell(row_view, found)["sticky"] == "ew"
     assert widget.cget("anchor") == "w"
-    assert widget.master.column_weights[_cell(row_view, found)["column"]]["weight"] == 1
+    weights = {column: options.get("weight", 0)
+               for column, options in widget.master.column_weights.items()}
+    status = weights[_cell(row_view, found)["column"]]
+    assert status >= 1 and all(status >= 50 * weight for column, weight in weights.items()
+                               if column != _cell(row_view, found)["column"]), \
+        "the status column takes nearly all of the slack"
 
 
 def test_a_row_of_its_own_captions_is_a_bar_across_the_table():
@@ -3174,3 +3179,155 @@ def test_a_rebuilt_menubar_reaches_an_open_log_window(dashboard):
     dashboard._build_menu_bar()
     assert dashboard.root.cget("menu") is not before
     assert window.cget("menu") is dashboard.root.cget("menu")
+
+
+# ---------------------------------------------------------------------------
+# I2: nothing clips at 28 pt - measured in a real Tk build
+# ---------------------------------------------------------------------------
+#
+# The stand-in above cannot see geometry, so these build the real station
+# (real Controller, real Setup, a SIM Stepper Probe) in a child process with
+# the real tkinter, in a transparent window, and measure what Tk allotted.
+
+_REAL_BUILD = r'''
+import json, os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "src"))
+POINTS, WIDTH, HEIGHT = int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+from views import theme
+theme.set_font_size(POINTS)
+from controller.controller import Controller
+from controller.setup import Setup, MODEL_TYPES, _key_for
+import views.tk as tkv
+ctl = Controller(); setup = Setup(ctl)
+try:
+    dash = tkv.TkDashboard(ctl, setup)
+except Exception as exc:        # no display: nothing to measure
+    print(json.dumps({"skip": repr(exc)})); sys.exit(0)
+root = dash.root
+# Mapped but fully transparent: a withdrawn root is never given its real
+# size, so its table is laid out at its request and measures nothing.
+root.attributes("-alpha", 0.0)
+dash._add_setup_panel()
+for name in list(MODEL_TYPES)[:3]:
+    key = _key_for(name)
+    setup.run(f"set_{key}_enabled", args=(True,))
+    setup.run(f"set_{key}_port", args=("SIM",))
+root.geometry(f"{WIDTH}x{HEIGHT}+0+0")
+setup_view = dash._panels["Setup"]
+for _ in range(3):
+    setup_view._refresh(); root.update_idletasks(); root.update()
+
+def rect(w):
+    return (w.winfo_rootx(), w.winfo_rooty(), w.winfo_width(), w.winfo_height())
+
+def inside(a, b):
+    return (a[0] >= b[0] and a[1] >= b[1] and a[0] + a[2] <= b[0] + b[2]
+            and a[1] + a[3] <= b[1] + b[3])
+
+out = {"clipped": [], "status": [], "launch": None}
+for element in setup_view._elements:
+    attr = str(element.get("model_attr", ""))
+    if element.get("type") == "readonly" and attr.endswith("_status") and attr != "scan_status":
+        entry = setup_view._entry_for(element)
+        full, shown = str(entry["var"].get() or ""), entry["widget"].cget("text")
+        out["checked"] = out.get("checked", 0) + bool(full)
+        if full and shown != full:
+            out["status"].append([full, shown])
+launch = next(e for e in setup_view._elements
+              if e.get("command") == "launch" and e.get("text") == "Launch")
+button = setup_view._entry_for(launch)["ring"].outer
+seen = rect(button)
+view_rect = rect(setup_view.frame)
+in_body = str(button).startswith(str(setup_view._body))
+out["launch"] = {"rect": seen, "panel": view_rect,
+                 "visible": inside(seen, view_rect) and (
+                     not in_body or inside(seen, rect(setup_view._canvas)))}
+
+el = next(e for e in setup_view._elements if e.get("command") == "launch"
+          and e.get("text") == "Launch")
+setup_view._run(el)
+for name in ctl.model_names:
+    dash._add_panel(name)
+for _ in range(3):
+    root.update_idletasks(); root.update()
+probe = dash._panels["Stepper Probe"]
+area = rect(probe._canvas)
+for element in probe._elements:
+    entry = probe._entry_for(element)
+    ring = entry.get("ring")
+    if ring is None or element.get("type") not in ("button", "toggle", "log_stream"):
+        continue
+    box = ring.outer
+    got, want = rect(box), box.winfo_reqwidth()
+    if got[2] < want or got[0] < area[0] or got[0] + got[2] > area[0] + area[2]:
+        out["clipped"].append([entry["widget"].cget("text"), got, want, area])
+dash.close()
+print(json.dumps(out))
+'''
+
+
+def _real_build(points, width, height):
+    import json
+    import subprocess
+    import sys
+    tree = os.path.dirname(os.path.dirname(os.path.abspath(tkmod.__file__)))
+    tree = os.path.dirname(tree)
+    # After a crashed Python, AppKit opens a modal "reopen windows?" alert
+    # at the next launch and Tk waits on it forever; this argument (read by
+    # NSUserDefaults on a Mac, ignored elsewhere) skips it.
+    done = subprocess.run([sys.executable, "-c", _REAL_BUILD, tree, str(points),
+                           str(width), str(height),
+                           "-ApplePersistenceIgnoreState", "YES"],
+                          capture_output=True, text=True, timeout=120)
+    lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
+    assert done.returncode == 0 and lines, done.stderr[-2000:]
+    result = json.loads(lines[-1])
+    if "skip" in result:
+        pytest.skip(f"no display for a real Tk build: {result['skip']}")
+    return result
+
+
+@pytest.mark.parametrize("points, width, height", [
+    (12, 1400, 900), (12, 900, 900), (28, 1400, 900), (28, 900, 900)])
+def test_every_probe_command_is_whole_inside_its_panel(points, width, height):
+    """UXPM5-2 / H2 IMP-3: the action row did not wrap, so "Gamepad log…"
+    showed 47 of 109 px at 12 pt and was off the panel at 28 pt."""
+    clipped = _real_build(points, width, height)["clipped"]
+    assert clipped == [], clipped
+
+
+def test_setup_at_28_pt_keeps_its_status_words_and_its_launch_row():
+    """UXPM5-5: every Status word elided to "…" and the Launch row was below
+    the scroll viewport at 28 pt."""
+    result = _real_build(28, 1400, 900)
+    assert result.get("checked", 0) >= 3, "the ticked rows carry a status"
+    assert result["status"] == [], result["status"]
+    assert result["launch"]["visible"], result["launch"]
+
+
+def test_the_commit_row_is_pinned_outside_the_scroll_area():
+    """The panel's last row, a bar holding a `go` command (Setup's Launch),
+    is pinned under the scrolling body so no font size scrolls it away."""
+    class CommitPanel(RowPanel):
+        @property
+        def schema(self):
+            base = RowPanel.schema.fget(self)
+            rows = [section for section in base["sections"]
+                    if section.get("layout") == "row"]
+            commit = sch.section("Launch", sch.button("Go", "launch", role="go"),
+                                 layout="row")
+            return sch.schema(*rows, commit)
+
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Rows=CommitPanel()), "Rows")
+    go = built._widgets[id(element_of(built, "button", "Go"))]["ring"].outer
+
+    def ancestors(widget):
+        while widget is not None:
+            yield widget
+            widget = widget.master
+
+    assert built._body not in list(ancestors(go)), "not on the scrolling canvas"
+    assert built._pinned in list(ancestors(go)) and built._pinned.is_packed
+    port = cell_widget(built, built._elements[STEPPER_PORT])
+    assert built._body in list(ancestors(port)), "the rows still scroll"
+    built.close()
