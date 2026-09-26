@@ -26,6 +26,7 @@ class Model(Panel):
         #: in time (round 7: the views mark an unconfirmed stop from state,
         #: not by parsing the event log).
         self._stop_confirmed = None
+        self._latched_at = None      # wall time the latch closed (round 7)
         self._fault_reason = ""
         self._updated_at = time.monotonic()
 
@@ -97,6 +98,7 @@ class Model(Panel):
         """Latch first (cannot fail), then stop the hardware on a worker and
         wait at most ESTOP_BUDGET. True only if the stop landed in time."""
         self._estop.set()
+        self._latched_at = time.time()
         done, landed = threading.Event(), []
 
         def _stop():
@@ -131,6 +133,9 @@ class Model(Panel):
                 "clear_estop")
         self._estop.clear()
         self._stop_confirmed = None
+        self._latched_at = None
+        # The next unconfirmed stop is a new episode, never a repeat count.
+        events.forget("Stop Not Confirmed")
         events.info("Stop Cleared", f"The stop on the {self.NAME} was cleared. "
                     "Nothing restarts until you start it.", source=self.NAME)
 
@@ -150,6 +155,11 @@ class Model(Panel):
     def stop_confirmed(self):
         """None while clear; True/False for the stop that is latched."""
         return self._stop_confirmed if self._estop.is_set() else None
+
+    @property
+    def latched_at(self):
+        """Wall time (time.time()) the latch closed; None while clear."""
+        return self._latched_at if self._estop.is_set() else None
 
     @property
     def gate_mode(self):
@@ -206,7 +216,7 @@ class Model(Panel):
         snapshot = super().state
         snapshot.update({
             "is_estopped": self.is_estopped, "is_faulted": self.is_faulted,
-            "stop_confirmed": self.stop_confirmed,
+            "stop_confirmed": self.stop_confirmed, "latched_at": self.latched_at,
             "fault": self.fault, "is_active": self.is_active,
             # Seconds since this model's own loop last reported alive; None
             # when it has no loop to be stale about (an idle recorder).

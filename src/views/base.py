@@ -22,6 +22,22 @@ def join_names(names):
     return ", ".join(names[:-1]) + " and " + names[-1]
 
 
+def event_line(event):
+    """The one wording of an event in a tray, a band or a log (round 7,
+    L11): the title in sentence case, a colon, the message, the repeat
+    count; never the `[source]` prefix (the source is the log file's
+    business). Takes an Event or its dict."""
+    get = (lambda k, d=None: event.get(k, d)) if isinstance(event, dict) else (
+        lambda k, d=None: getattr(event, k, d))
+    title = str(get("title") or "").strip()
+    if title and not (len(title) > 1 and title[1:].islower() and title[0].isupper()):
+        title = title[:1].upper() + title[1:].lower()
+    message = str(get("message") or "").strip()
+    count = int(get("count") or 1)
+    line = f"{title}: {message}" if title and message else (title or message)
+    return f"{line} (x{count})" if count > 1 else line
+
+
 def stop_words(stop_state):
     """What every view says about the stop, from `Controller.stop_state`
     (round 7: IMP7-1/2, TK7-1, QT7-1). One function, three views, so the
@@ -215,7 +231,11 @@ class Dashboard:
         return self.controller.remove(name)
 
     def toggle_estop_all(self):
-        if not self.controller.is_estopped:
+        """The disc's press. It clears only while EVERY model is latched
+        (round 7, L1): with one model stopped from its own switch the disc
+        still reads Stop, and a press stops the rest instead of opening the
+        clear confirmation over five live models."""
+        if stop_words(self.controller.stop_state)["action"] != "clear":
             return self.controller.estop_all()
         result = self.controller.clear_estop_all()
         if result.needs_confirm and self._confirm(result.reason):

@@ -203,8 +203,13 @@ class Controller:
         latched = [n for n, m in models.items() if m.is_estopped]
         unconfirmed = [n for n in latched
                        if getattr(models[n], "stop_confirmed", True) is False]
+        since = [getattr(models[n], "latched_at", None) for n in latched]
+        since = [t for t in since if t is not None]
         return {"latched": latched, "unconfirmed": unconfirmed,
-                "every": bool(latched) and len(latched) == len(models)}
+                "every": bool(latched) and len(latched) == len(models),
+                # Wall time the newest latch closed (round 7, Web CCR 1): a
+                # view keeps only events newer than this across a reload.
+                "since": max(since) if since else None}
 
     @property
     def is_active(self):

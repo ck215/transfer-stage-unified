@@ -2446,8 +2446,10 @@ def test_the_state_carries_the_words_every_view_says_about_the_stop(station):
     probe.stop_confirms = False
     controller.estop_all()
     _, data = _get(view, "/api/state")
-    assert data["stop"] == {"latched": ["Fake Probe"], "unconfirmed": ["Fake Probe"],
-                            "every": True}, data
+    # The three facts; `since` (the latch time, L1 follow-up) is a fourth key
+    # the page uses on reload and this test does not pin.
+    assert {k: data["stop"][k] for k in ("latched", "unconfirmed", "every")} == {
+        "latched": ["Fake Probe"], "unconfirmed": ["Fake Probe"], "every": True}
     assert data["stop_words"]["face"] == "Clear" and data["stop_words"]["action"] == "clear"
     assert data["stop_words"]["headline"] == "Stopped. Fake Probe did not confirm."
 

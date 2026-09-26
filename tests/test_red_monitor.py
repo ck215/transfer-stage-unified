@@ -1189,3 +1189,12 @@ def test_the_next_step_line_says_what_unblocks_start_run(monitor):
     assert monitor.next_step.startswith("Set a capture region")
     monitor.region = (0, 0, 10, 10)
     assert monitor.next_step == ""
+
+
+def test_the_analysis_image_is_empty_until_a_run_is_loaded(monitor):
+    """L15: no full-size "No samples" picture; empty bytes and the schema's
+    `empty` sentence, which a view draws as one caption line."""
+    import schema as sch
+    assert monitor.figure == b""
+    image = next(e for e in sch.elements(monitor.schema) if e["type"] == "image")
+    assert image["empty"].startswith("No analysis yet")
