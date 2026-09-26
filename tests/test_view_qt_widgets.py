@@ -1126,7 +1126,9 @@ def test_every_dropdown_is_one_width_rather_than_as_wide_as_its_longest_option(
     combos = [table_view._widget_for(e) for e in table_view._elements
               if e["type"] == "dropdown"]
     assert len(combos) == 3
-    assert {c.minimumContentsLength() for c in combos} == {qt.DROPDOWN_CHARS}
+    # Updated (L8): a table row's dropdowns are a little narrower (they
+    # elide the middle), so Setup's four columns fit a 900 px window.
+    assert {c.minimumContentsLength() for c in combos} == {qt.DROPDOWN_ROW_CHARS}
     grid = table_view._table.grid
     used = {cell_of(grid, c)[1] for c in combos}
     assert all(grid.columnMinimumWidth(c) == qt.TABLE_CONTROL_MIN_PX
@@ -2569,9 +2571,12 @@ def test_k3_the_disclosure_is_the_foot_of_the_body_directly_above_its_well(tiere
     assert not hasattr(view, "take_disclosure")
     block = view.tier_block.layout()
     assert block.itemAt(0).widget() is view.tier_button
-    assert block.itemAt(1).widget() is view.well
+    # Updated (L5): the well sits in its own scroll area (only the well
+    # scrolls on the device page), directly under the disclosure.
+    assert block.itemAt(1).widget() is view.well_scroll
+    assert view.well_scroll.widget() is view.well
     assert block.spacing() == 0
-    assert view.tier_button.geometry().bottom() + 1 == view.well.geometry().top()
+    assert view.tier_button.geometry().bottom() + 1 == view.well_scroll.geometry().top()
     assert view.tier_button.x() == 0                        # left-aligned
     # Below every tier-1 widget, and reached after them by Tab.
     step = view._widget_for(next(e for e in view._elements
@@ -3371,3 +3376,231 @@ def test_l16_names_carry_the_visible_words_and_rescans_name_their_field(table_vi
     assert "Rescan Port choices, Stepper Probe" in names
     toggle = view._widget_for(element_of(view, "toggle"))
     assert toggle.text() in toggle.accessibleName()
+
+
+def _small_targets(window):
+    """(object name, class, width, height) of every visible pressable under
+    24 px, and every visible command under 36 px tall (L4)."""
+    from PySide6.QtWidgets import QAbstractButton, QSlider, QLineEdit, QComboBox
+    small = []
+    for widget in window.findChildren(QWidget):
+        if not widget.isVisible() or not isinstance(
+                widget, (QAbstractButton, QSlider, QLineEdit, QComboBox)):
+            continue
+        if widget.objectName() in ("entryOpen", "qt_toolbar_ext_button"):
+            continue                    # a word inside the head, not a target
+        width, height = widget.width(), widget.height()
+        if width < 24 or height < 24:
+            small.append((widget.objectName(), type(widget).__name__, width, height))
+        command = (type(widget).__name__ == "QPushButton"
+                   and widget.objectName() not in ("railModel", "iconButton"))
+        if command and height < 36:
+            small.append((widget.objectName(), widget.text(), width, height))
+    return small
+
+
+from PySide6.QtWidgets import QWidget  # noqa: E402 - for the L helpers
+
+
+def test_l4_every_target_is_24_px_and_every_command_36(six, qapp):
+    """QT7-5: commands were 22 px tall, under the view's own 24 px floor.
+    Every pressable at least 24 px both ways; commands at least 36 tall
+    (not 44: the owner's call is pending)."""
+    six.open_entry("Stepper Probe")
+    panel = six._panels["Stepper Probe"]
+    panel.tier_button.click()
+    panel.diag_button.click()
+    six.tray_toggle.click()
+    six.alert_band.setVisible(True)
+    _pump(qapp, 10)
+    assert _small_targets(six) == []
+    assert _small_targets(six.rail) == []
+
+
+class TickRowPanel(Panel):
+    NAME = "Rows"
+
+    def __init__(self):
+        super().__init__()
+        self.probe_on = False
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "Stepper Probe",
+            sch.checkbox("Launch", "probe_on", "set_probe_on",
+                         tooltip="Launch Stepper Probe"),
+            sch.readonly("Status:", "probe_on"), layout="row"))
+
+    def set_probe_on(self, flag):
+        self.probe_on = bool(flag)
+
+
+def test_l4_the_setup_tick_and_its_row_name_are_one_target(qapp):
+    from PySide6.QtTest import QTest
+    panel = TickRowPanel()
+    view = qt.QtPanelView(FakeController(panel), "Rows")
+    try:
+        view.show()
+        _pump(qapp)
+        title = next(w for w in view.findChildren(QLabel)
+                     if w.objectName() == "rowTitle" and w.text() == "Stepper Probe")
+        QTest.mouseClick(title, Qt.MouseButton.LeftButton)
+        _pump(qapp)
+        assert panel.probe_on is True
+        QTest.mouseClick(title, Qt.MouseButton.LeftButton)
+        assert panel.probe_on is False
+    finally:
+        view.close()
+
+
+def test_l8_setup_takes_the_height_it_needs_while_the_sheet_is_empty(qapp):
+    """QT7-3: capped at 55 %, Setup hid Launch under its own fold over an
+    empty window; at 900 px a sideways bar covered the Launch row."""
+    class BigSetup(TablePanel):
+        """Setup's size on the bench: eight rows, a port and a gamepad each."""
+        ROWS = tuple((f"Model Number {n}", f"model{n}", True, True)
+                     for n in range(8))
+
+    for width in (1400, 900):
+        setup = BigSetup()
+        controller = FakeController(setup)
+        controller.open_names = []
+        window = qt.QtDashboard(controller, setup)
+        try:
+            window.resize(width, 900)
+            window.open()
+            _pump(qapp, 10)
+            scroll = window._setup_scroll
+            assert scroll.verticalScrollBar().maximum() == 0, width
+            assert scroll.horizontalScrollBar().maximum() == 0, width
+        finally:
+            window.close()
+            events.unsubscribe(window._on_event)
+
+
+def test_l19_an_identifier_is_never_drawn_in_the_trace(tiered):
+    """QT7-8: the Run ID changes every second and was drawn in trace. Only a
+    number goes live."""
+    view, panel = tiered
+    view._refresh()
+    motion = view._widget_for(element_named(view, "motion"))
+    panel.motion = "run_20260926_122437"
+    view._refresh()
+    assert motion.property("live") == "false"
+    x = view._widget_for(element_named(view, "position_x"))
+    panel.position_x = "1200"
+    view._refresh()
+    assert x.property("live") == "true"
+
+
+def test_l19_hide_events_keeps_its_place(dashboard, qapp):
+    """QT7-9: opening the tray turned the toggle into a full-width bar."""
+    class Spoof:
+        severity, source, title, message, count = "warning", "T", "Port", "quiet", 1
+        needs_ack = False
+        text = "[T] Port: quiet"
+
+    dashboard.open()
+    dashboard._show_event(Spoof())
+    _pump(qapp)
+    before = dashboard.tray_toggle.geometry()
+    dashboard.tray_toggle.click()
+    _pump(qapp)
+    after = dashboard.tray_toggle.geometry()
+    assert after.width() < before.width() * 1.5
+    assert abs(after.right() - before.right()) <= 2
+
+
+def test_l19_setup_has_a_real_close_and_the_rails_setup_shows_it_is_open(dashboard,
+                                                                         qapp):
+    dashboard.open()
+    dashboard.show_setup()
+    _pump(qapp)
+    close = dashboard.setup_close
+    assert close.isVisible() and close.width() >= 24 and close.height() >= 24
+    assert dashboard.setup_button.isChecked()
+    sheet = qt.stylesheet()
+    checked = sheet.split("QToolButton#ghost:checked {")[1].split("}")[0]
+    assert f"background: {theme.TEXT}" in checked
+    close.click()
+    _pump(qapp)
+    assert dashboard._setup_dock.isHidden() and not dashboard.setup_button.isChecked()
+
+
+def test_l22_no_unit_after_an_empty_dash(qapp):
+    class UnitPanel(Panel):
+        NAME = "Unit"
+        PARAMS = {}
+
+        def __init__(self):
+            super().__init__()
+            self.age = ""
+
+        @property
+        def schema(self):
+            return sch.schema(sch.section("Info", sch.readonly("Position age (s):", "age"),
+                                          tier=2, disclosure="Configure"))
+
+    panel = UnitPanel()
+    view = qt.QtPanelView(FakeController(panel), "Unit")
+    try:
+        view._set_tier_open(2, True)
+        view._refresh()
+        unit = next(w for w in view.findChildren(QLabel) if w.objectName() == "unit")
+        assert unit.isHidden()
+        panel.age = "1.5"
+        view._refresh()
+        assert not unit.isHidden()
+    finally:
+        view.close()
+
+
+def test_l22_the_disclosure_tooltip_reads_as_a_sentence(tiered):
+    view, _ = tiered
+    assert view.tier_button.toolTip() == "Show or hide the Tiered settings"
+    assert view.diag_button.toolTip() == "Show or hide the Tiered diagnostics"
+
+
+def test_l22_a_wrapped_tray_line_hangs_clear_of_its_mark(dashboard):
+    class Spoof:
+        severity, source, title, message, count = ("warning", "T", "Board",
+                                                   "cannot power down " * 12, 1)
+        needs_ack = False
+        text = ""
+
+    dashboard._show_event(Spoof())
+    block = dashboard.event_view.document().lastBlock()
+    fmt = block.blockFormat()
+    assert fmt.textIndent() < 0 and fmt.leftMargin() == -fmt.textIndent()
+
+
+def test_l22_the_selected_rail_item_has_an_ink_rule_at_its_left():
+    sheet = qt.stylesheet()
+    checked = sheet.split("QPushButton#railModel:checked {")[1].split("}")[0]
+    assert f"border-left: 2px solid {theme.TEXT}" in checked
+
+
+def test_l5_on_the_device_page_only_the_well_scrolls(six, qapp):
+    """QT7-15: a long well scrolled tier 1 away. On the device page the head
+    and tier 1 stay; the well scrolls inside."""
+    six.resize(1400, 560)
+    _pump(qapp)
+    six.open_entry("Stepper Probe")
+    panel = six._panels["Stepper Probe"]
+    panel.tier_button.click()
+    panel.diag_button.click()
+    for _ in range(3):
+        _pump(qapp)
+        six._arrange_entries()
+    _pump(qapp, 10)
+    assert six.sheet_scroll.verticalScrollBar().maximum() == 0
+    assert panel.well_scroll.isVisible()
+    assert panel.well_scroll.verticalScrollBar().maximum() > 0
+    step = next(panel._widget_for(e) for e in panel._elements
+                if e.get("command") == "step_once")
+    top = step.mapTo(six.sheet_scroll.viewport(), QPoint(0, 0)).y()
+    assert 0 <= top and top + step.height() <= six.sheet_scroll.viewport().height()
+    six.show_overview()
+    _pump(qapp)
+    assert not panel.well_scroll.isVisible()
