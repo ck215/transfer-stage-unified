@@ -81,7 +81,8 @@ try:                                    # the module imports without PySide6
                                QIcon, QIntValidator, QKeySequence, QPainter,
                                QPen, QPixmap, QShortcut, QTextCursor)
     from PySide6.QtWidgets import (
-        QAbstractButton, QApplication, QComboBox, QDockWidget, QFileDialog,
+        QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog,
+        QDockWidget, QFileDialog,
         QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
         QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
         QStatusBar, QStyle, QStyleOptionComboBox, QStylePainter, QTextEdit,
@@ -106,7 +107,7 @@ except ImportError:                     # pragma: no cover - exercised by test
                                "be built. Launch with the Tk or Web view.")
 
     QWidget = QMainWindow = QDockWidget = QPushButton = QLabel = _NoQt
-    QComboBox = QFrame = _NoQt
+    QComboBox = QFrame = QCheckBox = QDialog = _NoQt
 
 
 #: A drag smaller than this in either axis is a stray click, not a region.
@@ -373,6 +374,9 @@ def stylesheet():
     rule, rule_strong = theme.RULE, theme.RULE_STRONG
     hair, tight = theme.SPACE[0], theme.SPACE[1]
     ring = FOCUS_RING
+    # A tick box's square is one line of the base font: points to pixels at
+    # Qt's 96 dpi reference, since a sub-control's width takes no `pt`.
+    indicator_px = int(round(base_size * 96 / 72))
 
     sheet = [
         _rule("QWidget", {"background-color": theme.BACKGROUND,
@@ -445,6 +449,30 @@ def stylesheet():
         _rule("QPushButton:disabled, QLineEdit:disabled, QComboBox:disabled",
               {"background-color": disabled_bg, "color": disabled_fg,
                "border-color": rule}),
+        # G3's tick box: an ink square, filled with ink when ticked. Ink, not
+        # trace or a role fill - a tick is a value the operator set, not a
+        # live reading, and the one red stays on the stop. The indicator
+        # follows the font. Focus is the same two pixels of ink (F25), drawn
+        # round the whole control rather than the square: on a ticked box an
+        # ink ring round an ink fill would not show.
+        _rule("QCheckBox", {"background": "transparent",
+                            "spacing": f"{theme.GAP}px",
+                            "border": "2px solid transparent",
+                            "border-radius": "2px",
+                            "padding": f"{hair}px"}),
+        _rule("QCheckBox:focus", {"border": ring}),
+        _rule("QCheckBox::indicator",
+              {"width": f"{indicator_px}px", "height": f"{indicator_px}px",
+               "background-color": theme.WELL,
+               "border": f"1px solid {theme.TEXT}", "border-radius": "2px"}),
+        _rule("QCheckBox::indicator:hover", {"background-color": theme.LIFT}),
+        _rule("QCheckBox::indicator:checked",
+              {"background-color": theme.TEXT}),
+        _rule("QCheckBox:disabled", {"color": disabled_fg}),
+        _rule("QCheckBox::indicator:disabled",
+              {"background-color": disabled_bg, "border-color": rule}),
+        _rule("QCheckBox::indicator:checked:disabled",
+              {"background-color": disabled_fg}),
     ]
     for role, (background, foreground) in theme.ROLES.items():
         if role == DANGER_ROLE:
@@ -844,23 +872,27 @@ class PanelTable:
         self.grid.addWidget(bar.widget, self.rows, 0, 1, -1)
         return bar
 
-    def column_for(self, label):
+    def column_for(self, label, narrow=False):
         """This label's column, allocating one the first time it is seen.
 
         An *unlabelled* widget gets a fresh column of its own: two of them in
-        one row are two controls, not one control written twice.
+        one row are two controls, not one control written twice. A `narrow`
+        column (a tick box: Setup's Launch column, G3) is as wide as its
+        header or its box and never takes the control floor.
         """
         key = (label or "").strip()
         if not key:
-            return self._claim(None)
+            return self._claim(None, narrow)
         if key not in self.columns:
-            self.columns[key] = self._claim(key)
+            self.columns[key] = self._claim(key, narrow)
         return self.columns[key]
 
-    def _claim(self, header):
+    def _claim(self, header, narrow=False):
         column = self._next_column
         self._next_column += 1
-        self.grid.setColumnMinimumWidth(column, TABLE_CONTROL_MIN_PX)
+        if not narrow:
+            self.grid.setColumnMinimumWidth(column, TABLE_CONTROL_MIN_PX)
+        self.grid.setColumnStretch(column, 0)
         if header:
             caption = QLabel(sentence_case(header))
             caption.setObjectName("columnHeader")
@@ -878,8 +910,10 @@ class TableRow:
         self.table, self.row = table, row
 
     def add(self, label, widget):
+        # A tick box is a narrow column of its own, its header its caption.
+        narrow = isinstance(widget, QCheckBox)
         self.table.grid.addWidget(widget, self.row,
-                                  self.table.column_for(label))
+                                  self.table.column_for(label, narrow))
 
     #: A row has one line; "wide" has nothing to mean here.
     add_wide = add
@@ -1649,6 +1683,7 @@ class QtPanelView(PanelView, QWidget):
         QWidget.__init__(self, parent)
         PanelView.__init__(self, controller, name, panel)
         self._widgets = {}          # id(element) -> widget
+        self._companions = {}       # id(element) -> a widget greyed with it
         self._clean_text = {}       # id(element) -> last text we wrote
         self._overlay = None
         self._table = None          # built on the first layout="row" section
@@ -1975,6 +2010,27 @@ class QtPanelView(PanelView, QWidget):
         self._remember(element, button)
         container.add(element.get("text", ""), button)
 
+    def _make_checkbox(self, container, element):
+        """A tick box (G3): the value itself, ticked or not.
+
+        `clicked`, never `toggled`: only the operator's click runs the
+        command, and it sends the NEW value read from the model
+        (`_run_checkbox`), so a box drawn one refresh behind still flips the
+        right way. The refresh sets the tick from the model (`_set_on`) and
+        a refused command is undone by that same refresh. In a table row the
+        column header is the caption, so the box carries no words of its own;
+        its accessible name is the tooltip ("Launch Stepper Probe").
+        """
+        caption = sentence_case(element.get("text", ""))
+        box = QCheckBox("" if container.is_row else caption)
+        name = sentence(element.get("tooltip") or caption)
+        box.setAccessibleName(name)
+        if element.get("tooltip"):
+            box.setToolTip(name)
+        box.clicked.connect(lambda *_: self._run_checkbox(element))
+        self._remember(element, box)
+        container.add(element.get("text", "") if container.is_row else "", box)
+
     def _make_dropdown(self, container, element):
         combo = MiddleCombo()
         # Sized to a fixed number of characters rather than to its longest
@@ -2000,6 +2056,8 @@ class QtPanelView(PanelView, QWidget):
         refresh.setToolTip("Rescan the choices")
         refresh.setAccessibleName("Rescan the choices")
         refresh.clicked.connect(lambda: self._reload_options(element, combo))
+        # Greyed with its dropdown: an unticked row offers nothing to press.
+        self._companions[id(element)] = refresh
         cell = self._row(combo, refresh)
         if container.control_width:
             cell.setMinimumWidth(container.control_width)
@@ -2138,6 +2196,15 @@ class QtPanelView(PanelView, QWidget):
         widget = self._widget_for(element)
         if widget is None:
             return
+        if isinstance(widget, QCheckBox):
+            if widget.isChecked() != is_on:
+                # Blocked, so a refresh can never re-send the command.
+                was_blocked = widget.blockSignals(True)
+                try:
+                    widget.setChecked(is_on)
+                finally:
+                    widget.blockSignals(was_blocked)
+            return
         if isinstance(widget, StopButton):
             widget.set_latched(is_on)
             wanted = sentence(element.get("true_text" if is_on else "false_text", ""))
@@ -2189,9 +2256,10 @@ class QtPanelView(PanelView, QWidget):
             self._redraw_image(element, data)
 
     def _set_enabled(self, element, is_enabled):
-        widget = self._widget_for(element)
-        if widget is not None and widget.isEnabled() != is_enabled:
-            widget.setEnabled(is_enabled)
+        for widget in (self._widget_for(element),
+                       self._companions.get(id(element))):
+            if widget is not None and widget.isEnabled() != is_enabled:
+                widget.setEnabled(is_enabled)
 
     def _set_stale(self, is_stale):
         self._is_stale = bool(is_stale)

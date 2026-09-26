@@ -53,6 +53,9 @@ class FakePanel(Panel):
         self.saved_path = None
         self.loaded_path = None
         self.commands = []
+        self.is_armed = False
+        self.gated = "a"
+        self.armed_calls = []
 
     @property
     def mode_name(self):
@@ -69,6 +72,11 @@ class FakePanel(Panel):
             sch.toggle("Power", "is_on", "set_power", "ON", "OFF",
                        on_args=(True,), off_args=(False,)),
             sch.dropdown("Pick:", "choice", "set_choice", "choices"),
+            # G3: a tick box, and a dropdown live only while it is ticked.
+            sch.checkbox("Armed", "is_armed", "set_armed",
+                         tooltip="Arm the fake"),
+            sch.dropdown("Gated:", "gated", "set_gated", "choices",
+                         enabled_by="is_armed"),
             sch.region_select("Select region", "set_region",
                               model_attr="region"),
             sch.file_save("Save", "save_run"),
@@ -94,6 +102,14 @@ class FakePanel(Panel):
 
     def set_choice(self, text):
         self.choice = text
+
+    def set_armed(self, flag):
+        self.armed_calls.append(flag)
+        self.is_armed = bool(flag)
+        return self.is_armed
+
+    def set_gated(self, text):
+        self.gated = text
 
     def choices(self):
         return ["a", "b"]
@@ -2060,3 +2076,109 @@ def test_f25_a_panel_scroll_area_shows_focus(dashboard):
     assert scroll.objectName() == "panelScroll"
     sheet = qt.stylesheet()
     assert f"QScrollArea#panelScroll:focus {{\n    border: {qt.FOCUS_RING};" in sheet
+
+
+# ---------------------------------------------------------------------------
+# G3: the Launch tick box
+# ---------------------------------------------------------------------------
+
+def test_g3_a_checkbox_renders_a_qcheckbox_named_by_its_tooltip(view):
+    from PySide6.QtWidgets import QCheckBox
+    box = view._widget_for(element_named(view, "is_armed"))
+    assert isinstance(box, QCheckBox)
+    assert box.text() == "Armed"            # a column section: its own words
+    assert box.accessibleName() == "Arm the fake"
+    assert box.toolTip() == "Arm the fake"
+
+
+def test_g3_a_click_sends_true_when_off_and_false_when_on(view, panel):
+    box = view._widget_for(element_named(view, "is_armed"))
+    box.click()
+    assert panel.armed_calls == [True] and panel.is_armed is True
+    assert box.isChecked()
+    box.click()
+    assert panel.armed_calls == [True, False] and panel.is_armed is False
+    assert not box.isChecked()
+
+
+def test_g3_a_refresh_sets_the_tick_from_state_without_sending(view, panel):
+    box = view._widget_for(element_named(view, "is_armed"))
+    toggled = []
+    box.toggled.connect(toggled.append)
+    panel.is_armed = True
+    view._refresh()
+    assert box.isChecked()
+    panel.is_armed = False
+    view._refresh()
+    assert not box.isChecked()
+    assert toggled == [] and panel.armed_calls == []
+
+
+def test_g3_a_refused_tick_is_undone_by_the_refresh(view, panel, monkeypatch):
+    def refuse(flag):
+        raise Refused("not now")
+    monkeypatch.setattr(panel, "set_armed", refuse)
+    box = view._widget_for(element_named(view, "is_armed"))
+    box.click()
+    assert panel.is_armed is False and not box.isChecked()
+
+
+def test_g3_a_gated_dropdown_and_its_rescan_are_greyed_until_the_box_is_ticked(
+        view, panel):
+    element = element_named(view, "gated")
+    combo = view._widget_for(element)
+    rescan = view._companions[id(element)]
+    view._refresh()
+    assert not combo.isEnabled() and not rescan.isEnabled()
+    assert view._widget_for(element_named(view, "choice")).isEnabled()
+    view._widget_for(element_named(view, "is_armed")).click()
+    assert combo.isEnabled() and rescan.isEnabled()
+
+
+def _setup_view(qapp):
+    from controller.controller import Controller
+    from controller.setup import Setup
+    setup = Setup(Controller())
+    return setup, qt.QtPanelView(setup.controller, "Setup", panel=setup)
+
+
+def test_g3_setup_rows_read_launch_port_gamepad_status(qapp):
+    """[Launch] [Port] [Gamepad] [Status]: the box first, as on `main`, in a
+    narrow column of its own that takes no control floor and never stretches."""
+    from PySide6.QtWidgets import QCheckBox
+    setup, built = _setup_view(qapp)
+    try:
+        table = built._table
+        grid = table.grid
+        headers = [grid.itemAtPosition(table.header_row, c).widget().text()
+                   for c in range(1, grid.columnCount())
+                   if grid.itemAtPosition(table.header_row, c) is not None]
+        assert headers == ["Launch", "Port", "Gamepad", "Status"]
+        launch = table.columns["Launch"]
+        assert grid.columnMinimumWidth(launch) == 0
+        assert grid.columnStretch(launch) == 0
+        assert grid.columnMinimumWidth(table.columns["Port"]) == qt.TABLE_CONTROL_MIN_PX
+        boxes = [e for e in built._elements if e["type"] == "checkbox"]
+        assert boxes
+        for element in boxes:
+            box = built._widget_for(element)
+            assert isinstance(box, QCheckBox) and box.text() == ""
+            assert box.accessibleName().startswith("Launch ")
+            assert cell_of(grid, box)[1] == launch
+    finally:
+        built.close()
+
+
+def test_g3_ticking_a_setup_row_ungreys_its_port(qapp):
+    setup, built = _setup_view(qapp)
+    try:
+        box_element = next(e for e in built._elements if e["type"] == "checkbox")
+        key = box_element["model_attr"][:-len("_enabled")]
+        port = built._widget_for(element_named(built, f"{key}_port"))
+        built._refresh()
+        assert not port.isEnabled()
+        built._widget_for(box_element).click()
+        assert getattr(setup, f"{key}_enabled") is True
+        assert port.isEnabled()
+    finally:
+        built.close()

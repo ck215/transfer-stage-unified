@@ -522,3 +522,33 @@ def test_building_a_qt_widget_without_pyside6_says_so_instead_of_failing_oddly()
     for factory in (module.SeriesPlot, module.DeviceDock, module.RegionOverlay):
         with pytest.raises(RuntimeError, match="PySide6 is not installed"):
             factory(None)
+
+
+# ---------------------------------------------------------------------------
+# G3: the tick box's look, from the tokens
+# ---------------------------------------------------------------------------
+
+def test_g3_the_tick_box_is_an_ink_square_filled_with_ink_when_ticked():
+    sheet = qt.stylesheet()
+    square = sheet.split("QCheckBox::indicator {")[1].split("}")[0]
+    assert f"border: 1px solid {theme.TEXT}" in square
+    assert _contrast(theme.TEXT, theme.SURFACE) >= 3.0
+    ticked = sheet.split("QCheckBox::indicator:checked {")[1].split("}")[0]
+    assert f"background-color: {theme.TEXT}" in ticked
+    assert "QCheckBox::indicator:disabled" in sheet
+
+
+def test_g3_the_tick_box_shows_focus_in_ink_round_the_whole_control():
+    sheet = qt.stylesheet()
+    focus = sheet.split("QCheckBox:focus {")[1].split("}")[0]
+    assert qt.FOCUS_RING in focus
+
+
+def test_g3_the_tick_box_follows_the_launch_font_size():
+    original = theme.FONT_SIZE
+    try:
+        theme.set_font_size(24)
+        square = qt.stylesheet().split("QCheckBox::indicator {")[1].split("}")[0]
+        assert "width: 32px" in square and "height: 32px" in square
+    finally:
+        theme.set_font_size(original)
