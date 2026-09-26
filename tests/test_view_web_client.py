@@ -189,7 +189,8 @@ def test_a_checkbox_sends_the_new_value_read_from_the_model():
     assert "this.run(element, [!on])" in run
     box = _body(r"function renderCheckbox\(panel, element\) \{(.*?)\n\}")
     assert "type = 'checkbox'" in box and "panel.runCheckbox(element)" in box
-    assert "labelControl(node, input, element)" in box
+    # Updated (L16): labelled with its panel, for its owner's name.
+    assert "labelControl(node, input, element, panel)" in box
     assert "if (input.checked !== next) input.checked = next" in box
     refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
     assert "kind === 'checkbox'" in refresh
@@ -835,7 +836,11 @@ def test_empty_data_elements_say_what_to_do_next():
     assert re.search(r"\.feed:empty::before\s*\{[^}]*content:\s*attr\(data-empty\)",
                      STYLES)
     plot = _body(r"function renderPlot\(panel, element\) \{(.*?)\n\}")
-    assert "empty-note" in plot and "empty.hidden = drawSeries(" in plot
+    # Updated (L15, round 7): the note shows while nothing is drawn, and the
+    # pane is then one caption line (`is-empty`), written only on a change.
+    assert "empty-note" in plot and "drawSeries(canvas, data, element, frozen)" in plot
+    assert "if (empty.hidden !== isDrawn) empty.hidden = isDrawn" in plot
+    assert "frame.classList.toggle('is-empty', !isDrawn)" in plot
     image = _body(r"function renderImage\(panel, element\) \{(.*?)\n\}")
     assert "'error'" in image and "empty-note" in image
     assert "fillText('No samples" not in APP_JS, (
@@ -893,8 +898,10 @@ def test_every_font_size_is_on_the_scale():
 
 
 def test_form_controls_are_labelled():
-    assert "labelControl(node, input, element)" in APP_JS
-    assert "labelControl(node, select, element)" in APP_JS
+    # Updated (L16, round 7): the panel travels too, so the name says whose
+    # control it is.
+    assert "labelControl(node, input, element, panel)" in APP_JS
+    assert "labelControl(node, select, element, panel)" in APP_JS
     assert "caption.htmlFor = control.id" in APP_JS
     assert "'Select...'" not in APP_JS, "an ellipsis is one character"
 

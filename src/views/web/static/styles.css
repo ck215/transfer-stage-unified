@@ -114,6 +114,13 @@ button, select, input[type="range"] {
    rail's list) draws no ring: it is not a control. */
 .drawer:focus, .sheet:focus, .card:focus { outline: none; }
 
+/* An entry the rail's list focused from the keyboard shows where focus
+   went: its own rule, drawn around it (L22, IMP7-16). */
+.card:focus-visible {
+  outline: var(--rule-strong-px) solid var(--rule-strong);
+  outline-offset: var(--space-2);
+}
+
 /* Read by a screen reader, not drawn. */
 .sr-only {
   position: absolute;
@@ -914,6 +921,19 @@ span.value.is-word,
 .reading-secondary > span.value.is-empty,
 .reading-axis > span.value.is-empty { font-size: var(--t-xl); }
 
+/* L10: a key reading that is unknown is "--" muted at the reading's own
+   size and face - a primary reading does not shrink to a word. */
+.reading > span.value.is-dash {
+  font-family: var(--numeral-family);
+  font-stretch: var(--numeral-stretch);
+  font-weight: var(--numeral-weight);
+}
+
+.reading-primary > span.value.is-dash { font-size: var(--reading-primary); }
+.reading-secondary > span.value.is-dash { font-size: var(--reading-secondary); }
+.reading-axis > span.value.is-dash { font-size: var(--reading-compact); }
+.card.is-opened .reading-axis > span.value.is-dash { font-size: var(--reading-focal); }
+
 /* "Position" once, then X Y Z inline beside their numbers. */
 .axis-group {
   display: flex;
@@ -1168,6 +1188,16 @@ button.button.role-danger {
 
 .actions > .row { min-height: 0; }
 
+/* L3: why a row's go command cannot go, once, muted, under the row. */
+.gate-note {
+  flex: 1 0 100%;
+  margin-top: calc(-1 * var(--space-2));
+  font-size: var(--t-cap);
+  color: var(--muted);
+}
+
+.gate-note[hidden] { display: none; }
+
 /* -- toggles ------------------------------------------------------------- */
 /* A toggle looks like a toggle: a dot at its leading edge and the action in
    words. Off, it is outlined with a hollow dot; on, it is ink-filled with a
@@ -1225,16 +1255,31 @@ button.button.toggle:disabled .toggle-lamp { border-color: var(--disabled-fg); }
   white-space: nowrap;
 }
 
+/* L4: the switch is one target - the drawn track and its words - at
+   least a command's height. */
 .switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: var(--hit-panel);
+  padding: 0 var(--space-2) 0 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.switch-track {
   position: relative;
   flex: 0 0 auto;
   width: var(--switch-track-w);
   height: var(--switch-track-h);
-  padding: 0;
   border: var(--edge) solid var(--muted);
   border-radius: var(--radius-switch);
   background: var(--bg);
-  cursor: pointer;
 }
 
 .switch-knob {
@@ -1248,14 +1293,16 @@ button.button.toggle:disabled .toggle-lamp { border-color: var(--disabled-fg); }
   transition: left 150ms ease-out;
 }
 
-.switch.is-latched { background: var(--signal); border-color: var(--signal); }
+.switch.is-latched .switch-track { background: var(--signal); border-color: var(--signal); }
 
 .switch.is-latched .switch-knob {
   left: calc(var(--switch-track-w) - 2 * var(--edge) - var(--switch-knob) - 2px);
   background: var(--danger-fg);
 }
 
-.switch:disabled { border-style: dashed; cursor: not-allowed; }
+.switch:disabled { cursor: not-allowed; }
+
+.switch:disabled .switch-track { border-style: dashed; }
 
 .switch-words { font-size: var(--t-sm); }
 
@@ -1294,8 +1341,8 @@ span.lamp { background: none; }
   position: relative;
   display: inline-grid;
   place-items: center;
-  width: 1.25rem;
-  height: 1.25rem;
+  width: 1.5rem;
+  height: 1.5rem;
   margin: 0;
   border: var(--edge) solid var(--text);
   border-radius: var(--radius-input);
@@ -1352,6 +1399,23 @@ span.lamp { background: none; }
 
 /* Over a canvas the note sits inside the plot's own room. */
 .plot + .empty-note { position: absolute; inset: 0; }
+
+/* L15: with nothing in it a pane is one caption line - the note, muted,
+   left-aligned - not a 200 px dashed box; the canvas comes back with data. */
+.plot-frame.is-empty .plot,
+.plot-frame.is-empty .picture { display: none; }
+
+.plot-frame.is-empty .empty-note,
+.plot-frame.is-empty .plot + .empty-note {
+  position: static;
+  min-height: 0;
+  padding: 0;
+  display: block;
+  text-align: left;
+  border: 0;
+  font-size: var(--t-sm);
+  line-height: 1.4;
+}
 
 /* A rendered figure is a picture the model draws; what this side controls
    is the surface it sits on and how much of the entry it may take. */
@@ -1501,6 +1565,9 @@ span.lamp { background: none; }
   white-space: nowrap;
   padding: var(--space-4) 0;
 }
+
+/* L4: a Setup row's name is its Launch tick's label - one target. */
+label.row-title[for] { cursor: pointer; }
 
 .section-row > .cell {
   display: flex;
@@ -1711,10 +1778,15 @@ span.lamp { background: none; }
   border: var(--edge) solid;
 }
 
+/* A warning is a triangle (L21, IMP7-11): a hollow square beside a line
+   read as an empty tick box, a shape Setup uses for real two inches away. */
 .tray-latest.severity-warning::before,
 .event.severity-warning::before {
-  border-color: var(--warning-mark);
-  background: color-mix(in srgb, var(--warning-mark) calc((1 - var(--warning-mark-hollow)) * 100%), transparent);
+  width: 0.6875rem;
+  height: 0.625rem;
+  border: 0;
+  background: var(--warning-mark);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
 }
 
 .tray-latest.severity-error::before,
@@ -1850,13 +1922,15 @@ span.lamp { background: none; }
 /* -- after Quit ---------------------------------------------------------- */
 /* The page under the rail is inert and reads as such, and nothing keeps a
    signal mark it can no longer observe. */
-.is-shut-down .sheet, .is-shut-down .sheet-headline, .is-shut-down .tray { opacity: 0.5; }
+/* The tray keeps its opaque fill (L21, IMP7-9): only its contents dim, so
+   the sheet never shows through it. */
+.is-shut-down .sheet, .is-shut-down .sheet-headline, .is-shut-down .tray-head > * { opacity: 0.5; }
 
 .is-shut-down .card.is-lost,
 .is-shut-down .card.is-unconfirmed { border-top-color: var(--rule-strong); }
 
-.is-shut-down .switch,
-.is-shut-down .switch.is-latched { background: var(--disabled-bg); border-color: var(--muted); }
+.is-shut-down .switch .switch-track,
+.is-shut-down .switch.is-latched .switch-track { background: var(--disabled-bg); border-color: var(--muted); }
 
 .is-shut-down .switch .switch-knob { background: var(--muted); }
 

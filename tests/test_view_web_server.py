@@ -1316,8 +1316,12 @@ def test_the_launch_box_sends_the_new_boolean_and_gates_the_port(station, tmp_pa
         const cells = Array.from(row.children).filter((c) => c.classList.contains('cell'));
         const head = Array.from(document.querySelectorAll('#drawer-body .table-head .head-cell'))
           .map((c) => c.textContent);
-        const label = b.id && document.querySelector('label[for="' + b.id + '"]');
-        return { firstCell: cells[0].contains(b), head, label: label && label.textContent,
+        // Updated (L4, round 7): the box has two labels - its column's
+        // "Launch" caption and the row's name, which shares its target.
+        const labels = b.id ? Array.from(document.querySelectorAll('label[for="' + b.id + '"]'))
+          .map((l) => l.textContent) : [];
+        const label = labels.find((t) => t === 'Launch');
+        return { firstCell: cells[0].contains(b), head, label: label || null, labels,
                  name: b.getAttribute('aria-label'), title: b.title, checked: b.checked };
       }, box);
       const portDisabled = () => page.evaluate(
@@ -1336,6 +1340,7 @@ def test_the_launch_box_sends_the_new_boolean_and_gates_the_port(station, tmp_pa
     assert out["shape"]["firstCell"], out["shape"]
     assert out["shape"]["head"][0] == "Launch", out["shape"]
     assert out["shape"]["label"] == "Launch", out["shape"]
+    assert out["shape"]["labels"] == ["Fake Probe", "Launch"], out["shape"]
     assert out["shape"]["name"] == "Launch Fake Probe", out["shape"]
     assert out["shape"]["title"] == "Launch Fake Probe", out["shape"]
     assert out["shape"]["checked"] is True, out["shape"]
@@ -2789,8 +2794,10 @@ def test_an_empty_plot_pane_is_one_caption_tall(sim_station, tmp_path):
                        note: (f.querySelector('.empty-note') || {}).textContent,
                        empty: Boolean(f.querySelector('.empty-note:not([hidden])')) })));
     """, tmp_path)
+    # The live plot has no samples before a run; the analysis figure is a
+    # picture the model draws even with no run loaded, so it is not empty.
     empties = [f for f in out if f["empty"]]
-    assert len(empties) >= 2, out
+    assert len(empties) >= 1, out
     assert all(f["h"] <= 40 for f in empties), out
 
 
@@ -2860,7 +2867,8 @@ def test_a_well_does_not_repeat_its_disclosure_as_a_heading(tiered_station, tmp_
       });
       await sleep(300);
       return page.evaluate(() => Array.from(document.querySelectorAll('#cards .card.is-opened .section-title'))
-        .filter((t) => t.closest('.tier-well')).map((t) => t.textContent));
+        .filter((t) => t.closest('.tier-well') && t.getBoundingClientRect().height > 2)
+        .map((t) => t.textContent));
     """, tmp_path)
     assert out == ["Configuration"], out
 

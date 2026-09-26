@@ -127,29 +127,128 @@ function make(tag, className, text) {
 
 function row(element, extraClass) {
   const node = make('div', 'row' + (extraClass ? ' ' + extraClass : ''));
-  node.appendChild(make('label', 'label',
-                        sentenceCase(element.text || element.model_attr || '')));
+  node.appendChild(make('label', 'label', captionText(element)));
   return node;
 }
 
+/** A control's caption, in sentence case. When the element declares its
+ *  `unit`, a "(unit)" at the end of the caption goes: the unit is drawn
+ *  beside the value, and "Step (deg) ... deg" said it twice (L22, IMP7-15). */
+function captionText(element) {
+  const text = sentenceCase((element && (element.text || element.model_attr || element.command)) || '');
+  return element && element.unit ? text.replace(/\s*\([^)]*\)\s*$/, '') : text;
+}
+
+/** Whose control this is, for its accessible name: the model's name, or in
+ *  Setup the row's (L16, IMP7-10) - so three "Step" buttons are "Step,
+ *  Stepper Probe", "Step, DC Probe", ... */
+function ownerOf(panel) {
+  if (!panel) return '';
+  if (panel.name === SETUP_NAME) return panel.rowOwner || '';
+  return sentence(panel.title || panel.name || '');
+}
+
+/** An accessible name that starts with the words on the control (WCAG
+ *  2.5.3, label in name) and ends with whose it is. */
+function nameFor(words, owner) {
+  const said = String(words || '').trim();
+  if (!owner || said.toLowerCase().indexOf(String(owner).toLowerCase()) !== -1) return said;
+  return said ? said + ', ' + owner : String(owner);
+}
+
 /** Tie a row's caption to its control, so the caption is clickable and a
- *  screen reader names the control by it. Ids are per panel and per
- *  attribute, which is unique inside one page. */
+ *  screen reader names the control by it - and by its model (L16). Ids are
+ *  per panel and per attribute, which is unique inside one page. */
 let controlSerial = 0;
-function labelControl(node, control, element) {
+function labelControl(node, control, element, panel) {
   controlSerial += 1;
   control.id = 'control-' + controlSerial;
   const caption = node.querySelector('.label');
   if (caption) caption.htmlFor = control.id;
-  control.setAttribute('aria-label',
-    sentenceCase(element.text || element.model_attr || element.command || ''));
+  control.setAttribute('aria-label', nameFor(captionText(element), ownerOf(panel)));
+}
+
+/** A control's title is its own words (a hint, the whole of a long value)
+ *  unless it is disabled, when it is WHY (L3). Both are kept, so the reason
+ *  goes and the control's own title comes back when the gate opens. */
+function titler(control) {
+  let own = control.title || '';
+  let reason = '';
+  const apply = () => {
+    const next = reason || own;
+    if (control.title !== next) control.title = next;
+  };
+  return {
+    own: (text) => { own = String(text || ''); apply(); },
+    reason: (text) => { reason = String(text || ''); apply(); },
+  };
+}
+
+//: L3 (round 7, IMP7-7): what a gate's mode word means to the operator. A
+//: word not here is said as itself, in sentence case.
+const MODE_REASONS = {
+  latched: 'Stopped: clear the stop first',
+  manual: 'Not in manual mode',
+  autonomous: 'Not in autonomous mode',
+  running: 'A run is in progress',
+  no_region: 'Set a capture region first',
+  disconnected: 'Not connected',
+  moving: 'Moving',
+  scanning: 'Wait for the scan to finish',
+  launched: 'Already launched',
+};
+//: What an `enabled_when` command is waiting for, when it is not the latch.
+const WAITS_FOR = {
+  running: 'No run in progress',
+  scanning: 'No scan in progress',
+  launched: 'Nothing launched yet',
+};
+
+function modeWords(mode) {
+  return MODE_REASONS[mode] || sentence(String(mode || '').replace(/_/g, ' '));
+}
+
+/** Why `isEnabled` says no, read from the same three rules in the same
+ *  order; '' when the element is live. */
+function gateReason(element, mode, values) {
+  const by = element.enabled_by;
+  if (by && values !== null && values !== undefined && !values[by]) {
+    return /_enabled$/.test(by) ? 'Tick Launch on this row first' : 'Not available yet';
+  }
+  const disabled = element.disabled_when;
+  if (disabled && disabled.indexOf(mode) !== -1) return modeWords(mode);
+  const enabled = element.enabled_when;
+  if (enabled && enabled.indexOf(mode) === -1) {
+    if (mode === 'latched') return MODE_REASONS.latched;
+    for (const want of enabled) if (WAITS_FOR[want]) return WAITS_FOR[want];
+    return modeWords(mode);
+  }
+  return '';
+}
+
+/** L6 (round 7, TK7-5): how far one key moves a slider - 1 % of the travel
+ *  per arrow, 10 % per Page key, rounded and never less than 1; Home and
+ *  End do nothing (End set the maximum speed in one key). null: not a key
+ *  the slider answers. */
+function sliderKeyDelta(low, high, key) {
+  const travel = Math.abs(Number(high) - Number(low));
+  const step = Math.max(1, Math.round(travel / 100));
+  const page = Math.max(1, Math.round(travel / 10));
+  switch (key) {
+    case 'ArrowRight': case 'ArrowUp': return step;
+    case 'ArrowLeft': case 'ArrowDown': return -step;
+    case 'PageUp': return page;
+    case 'PageDown': return -page;
+    case 'Home': case 'End': return 0;
+    default: return null;
+  }
 }
 
 /** What an empty data element says. The view owns this copy: an empty
  *  state says what to do next, not that there is nothing. A model that
  *  declares its own (`empty` on the element) wins. */
 const EMPTY_STATES = {
-  series: 'No samples yet. Start a run and red % is plotted here as it records.',
+  series: 'No samples yet. They plot here as the model reports them.',
   figure: 'No run loaded. Load run opens a saved CSV and plots it here.',
   gamepad_log: 'No gamepad input yet. Choose a gamepad under Configuration, '
     + 'then enter manual mode to drive with it.',
@@ -494,6 +593,7 @@ function clockTime(date) {
  *  (theme.QUIET_VALUES) is not drawn at all: status by exception. */
 function renderReadonly(panel, element) {
   const node = row(element, 'stat');
+  if (element.model_attr) node.dataset.attr = element.model_attr;
   const value = make('span', 'value is-empty ' + roleClass(element.role), '--');
   value.setAttribute('translate', 'no');
   node.appendChild(value);
@@ -512,11 +612,17 @@ function renderReadonly(panel, element) {
       value.classList.toggle('is-changing', isChanging);
     },
     setText: (text) => {
-      const shown = readoutText(text);
+      let shown = readoutText(text);
+      // L17: Setup's statuses are words the model wrote in lower case
+      // ("simulated", "on"); they read in sentence case like every line.
+      if (panel.name === SETUP_NAME && readoutKind(shown) !== 'number') shown = sentence(shown);
       // Status by exception, tier 1 only: tiers 2 and 3 are where a normal
-      // state is still read on purpose.
-      const hide = widget.tier === 1 && isQuiet(text, shown);
+      // state is still read on purpose. A model's key reading (`rail: true`)
+      // is never hidden: unknown is information, drawn "--" muted at the
+      // reading's own size (L10, IMP7-6).
+      const hide = widget.tier === 1 && !element.rail && isQuiet(text, shown);
       if (node.hidden !== hide) node.hidden = hide;
+      value.classList.toggle('is-dash', shown === '--');
       if (value.textContent === shown) return;
       const was = value.textContent;
       value.textContent = shown;
@@ -547,7 +653,8 @@ function renderEntry(panel, element) {
   const node = row(element);
   const group = make('div', 'group');
   const input = make('input', 'input');
-  labelControl(node, input, element);
+  labelControl(node, input, element, panel);
+  const title = titler(input);
   input.name = element.model_attr || '';
   input.autocomplete = 'off';
   input.spellcheck = false;
@@ -578,7 +685,7 @@ function renderEntry(panel, element) {
   // range; a command still reads the ENTRY (gatherInputs), so what travels
   // is exactly what the box says and the wire is unchanged.
   const slider = numeric && Array.isArray(element.slider)
-    ? renderSlider(input, element, isInt) : null;
+    ? renderSlider(input, element, isInt, panel) : null;
   if (slider) {
     node.classList.add('has-slider');
     group.appendChild(slider.node);
@@ -586,9 +693,17 @@ function renderEntry(panel, element) {
   group.appendChild(input);
   if (element.unit) group.appendChild(make('span', 'unit', element.unit));
   node.appendChild(group);
+  // L4: the entry's well is its target - a press on its unit or the space
+  // around it puts the caret in the box (the slider keeps its own press).
+  group.addEventListener('mousedown', (event) => {
+    if (event.target === group || event.target.classList.contains('unit')) {
+      event.preventDefault();
+      if (!input.disabled) input.focus();
+    }
+  });
   let served = '';
   // A text box narrower than what it holds shows the whole of it on hover.
-  if (!numeric) input.addEventListener('input', () => { input.title = input.value; });
+  if (!numeric) input.addEventListener('input', () => { title.own(input.value); });
   return {
     node,
     // Never overwrite what the operator is typing: focused, or edited away
@@ -602,7 +717,7 @@ function renderEntry(panel, element) {
       if (next === served && input.value === served) return;
       served = next;
       input.value = served;
-      if (!numeric) input.title = served;
+      if (!numeric) title.own(served);
       if (slider) slider.follow();
     },
     setEnabled: (flag) => {
@@ -611,6 +726,10 @@ function renderEntry(panel, element) {
       if (slider) slider.setEnabled(flag);
       node.classList.toggle('disabled', !flag);
     },
+    setReason: (reason) => {
+      title.reason(reason);
+      if (slider) slider.setReason(reason);
+    },
   };
 }
 
@@ -618,7 +737,7 @@ function renderEntry(panel, element) {
  *  the value and an 18 px ink thumb (styles.css). Its travel is the
  *  schema's display range; the entry's Param still validates what is typed,
  *  so the range clamps only what it can show, never what the box holds. */
-function renderSlider(input, element, isInt) {
+function renderSlider(input, element, isInt, panel) {
   const low = Number(element.slider[0]);
   const high = Number(element.slider[1]);
   const node = make('span', 'slider');
@@ -631,8 +750,8 @@ function renderSlider(input, element, isInt) {
   const decimals = element.decimals === undefined ? 3 : element.decimals;
   range.step = isInt ? '1' : String(Math.pow(10, -decimals));
   range.tabIndex = 0;
-  range.setAttribute('aria-label',
-    sentenceCase(element.text || element.model_attr || '') + ', slider');
+  range.setAttribute('aria-label', nameFor(captionText(element) + ' slider', ownerOf(panel)));
+  const title = titler(range);
   node.appendChild(range);
   let filled = null;
   const paint = () => {
@@ -656,6 +775,20 @@ function renderSlider(input, element, isInt) {
     input.value = isInt ? String(Math.round(number)) : number.toFixed(decimals);
     paint();
   });
+  // L6: the keyboard moves 1 % of the travel per arrow and 10 % per Page
+  // key, from what the ENTRY says; Home and End do nothing. The value goes
+  // to the box, as a drag does, and travels with the next command.
+  range.addEventListener('keydown', (event) => {
+    const delta = sliderKeyDelta(low, high, event.key);
+    if (delta === null) return;
+    event.preventDefault();
+    if (!delta || range.disabled) return;
+    const typed = Number(input.value);
+    const from = input.value.trim() !== '' && isFinite(typed) ? typed : Number(range.value);
+    const next = Math.max(low, Math.min(high, from + delta));
+    input.value = isInt ? String(Math.round(next)) : next.toFixed(decimals);
+    follow();
+  });
   input.addEventListener('input', follow);
   input.addEventListener('change', follow);
   follow();
@@ -669,6 +802,7 @@ function renderSlider(input, element, isInt) {
       range.disabled = !flag;
       node.classList.toggle('disabled', !flag);
     },
+    setReason: (reason) => title.reason(reason),
   };
 }
 
@@ -677,17 +811,29 @@ function enabler(control) {
   return (flag) => { if (control.disabled === !flag) return; control.disabled = !flag; };
 }
 
+/** A command. Disabled, its title says why (L3); a `go` command also has
+ *  one muted caption under its row saying the same (PanelCard places it
+ *  and says at most one per row). Named by its words and its model (L16). */
 function renderButton(panel, element) {
   const node = make('div', 'row command');
-  const button = make('button', 'button ' + roleClass(element.role),
-                      sentenceCase(element.text || element.command));
+  const words = sentenceCase(element.text || element.command);
+  const button = make('button', 'button ' + roleClass(element.role), words);
   button.type = 'button';
+  button.setAttribute('aria-label', nameFor(words, ownerOf(panel)));
   button.addEventListener('click', () => panel.run(element));
   node.appendChild(button);
-  return {
+  const title = titler(button);
+  const widget = {
     node,
     setEnabled: enabler(button),
+    setReason: (reason) => { title.reason(reason); widget.reason = reason; },
+    reason: '',
   };
+  if (element.role === 'go') {
+    widget.note = make('p', 'gate-note');
+    widget.note.hidden = true;
+  }
+  return widget;
 }
 
 function renderToggle(panel, element) {
@@ -705,9 +851,11 @@ function renderToggle(panel, element) {
   const face = make('span', 'toggle-face');
   button.appendChild(lamp);
   button.appendChild(face);
-  labelControl(node, button, element);
+  labelControl(node, button, element, panel);
+  const title = titler(button);
   button.addEventListener('click', () => panel.runToggle(element));
   node.appendChild(button);
+  const owner = ownerOf(panel);
   let last = null;
   const show = (on) => {
     if (last === Boolean(on)) return;
@@ -721,7 +869,10 @@ function renderToggle(panel, element) {
     face.textContent = shown.text;
     // The aside, if the schema wrote one; otherwise the words themselves,
     // so a face cut short by the fixed width is still readable in full.
-    button.title = shown.hint || shown.text;
+    title.own(shown.hint || shown.text);
+    // L16 (WCAG 2.5.3): the name is the words on the face, and the model;
+    // aria-pressed says the state.
+    button.setAttribute('aria-label', nameFor(shown.text, owner));
     button.setAttribute('aria-pressed', on ? 'true' : 'false');
     button.className = 'button toggle ' + roleClass(on ? element.on_role : element.off_role)
       + (on ? ' on' : ' off');
@@ -731,6 +882,7 @@ function renderToggle(panel, element) {
     node,
     setOn: show,
     setEnabled: enabler(button),
+    setReason: (reason) => title.reason(reason),
   };
 }
 
@@ -741,27 +893,32 @@ function renderToggle(panel, element) {
  *  schema's own wording is its title. */
 function renderStopToggle(panel, element) {
   const node = row(element, 'switch-row');
+  // L4: the track and its words are one target, 36 px tall - the drawn
+  // track alone was 34 x 20.
   const button = make('button', 'switch');
   button.type = 'button';
   button.setAttribute('role', 'switch');
-  button.appendChild(make('span', 'switch-knob'));
+  const track = make('span', 'switch-track');
+  track.setAttribute('aria-hidden', 'true');
+  track.appendChild(make('span', 'switch-knob'));
+  button.appendChild(track);
   const words = make('span', 'switch-words', 'Stop this model only');
-  words.setAttribute('aria-hidden', 'true');
+  button.appendChild(words);
   button.addEventListener('click', () => panel.runToggle(element));
   node.appendChild(button);
-  node.appendChild(words);
+  const title = titler(button);
   let last = null;
   const model = sentence(panel.title || panel.name);
   const show = (on) => {
     if (last === Boolean(on)) return;
     last = Boolean(on);
-    putText(words, on ? 'Stopped. Press to clear' : 'Stop this model only');
+    const said = on ? 'Stopped. Press to clear' : 'Stop this model only';
+    putText(words, said);
     button.classList.toggle('is-latched', last);
-    button.title = sentence(on ? (element.true_text || '')
-                               : (element.false_text || ''));
-    // Named for its model, so a list of switches does not read "Stop, Stop"
-    // (WDG-4).
-    button.setAttribute('aria-label', on ? 'Clear the stop on ' + model : 'Stop ' + model);
+    title.own(sentence(on ? (element.true_text || '') : (element.false_text || '')));
+    // Named by its words and its model, so a list of switches does not read
+    // "Stop, Stop" (WDG-4, L16).
+    button.setAttribute('aria-label', nameFor(said, model));
     button.setAttribute('aria-checked', on ? 'true' : 'false');
   };
   show(false);
@@ -769,6 +926,7 @@ function renderStopToggle(panel, element) {
     node,
     setOn: show,
     setEnabled: enabler(button),
+    setReason: (reason) => title.reason(reason),
   };
 }
 
@@ -782,7 +940,7 @@ function renderCheckbox(panel, element) {
   const node = row(element, 'check');
   const input = make('input', 'checkbox');
   input.type = 'checkbox';
-  labelControl(node, input, element);
+  labelControl(node, input, element, panel);
   input.name = element.model_attr || '';
   if (element.tooltip) {
     input.setAttribute('aria-label', element.tooltip);
@@ -809,14 +967,15 @@ function renderCheckbox(panel, element) {
 function renderDropdown(panel, element) {
   const node = row(element);
   const select = make('select', 'select');
-  labelControl(node, select, element);
+  labelControl(node, select, element, panel);
+  const title = titler(select);
   select.name = element.model_attr || '';
   const placeholder = make('option', null, 'Select…');
   placeholder.value = '';
   placeholder.disabled = true;
   select.appendChild(placeholder);
   select.addEventListener('change', () => {
-    select.title = select.value;
+    title.own(select.value);
     if (select.value !== '') panel.run(element, [select.value]);
   });
   // Options are re-read on focus, not once at first render: a probe added
@@ -833,9 +992,10 @@ function renderDropdown(panel, element) {
         if (known || wanted === '') select.value = wanted;
       }
       // The whole name of what is chosen, one hover away (F15).
-      if (select.title !== select.value) select.title = select.value;
+      title.own(select.value);
     },
     setEnabled: enabler(select),
+    setReason: (reason) => title.reason(reason),
   };
 }
 
@@ -847,6 +1007,8 @@ function renderRegionSelect(panel, element) {
   const button = make('button', 'button ' + roleClass(element.role),
                       sentenceCase(element.text || 'Pick region') + '…');
   button.type = 'button';
+  button.setAttribute('aria-label', nameFor(button.textContent, ownerOf(panel)));
+  const title = titler(button);
   button.addEventListener('click', () => panel.pickRegion(element));
   node.appendChild(value);
   node.appendChild(button);
@@ -859,6 +1021,7 @@ function renderRegionSelect(panel, element) {
       value.classList.toggle('is-empty', shown === 'Not set');
     },
     setEnabled: enabler(button),
+    setReason: (reason) => title.reason(reason),
   };
 }
 
@@ -867,11 +1030,14 @@ function renderFileSave(panel, element) {
   const button = make('button', 'button ' + roleClass(element.role),
                       sentenceCase(element.text || 'Save'));
   button.type = 'button';
+  button.setAttribute('aria-label', nameFor(button.textContent, ownerOf(panel)));
   button.addEventListener('click', () => panel.download(element));
   node.appendChild(button);
+  const title = titler(button);
   return {
     node,
     setEnabled: enabler(button),
+    setReason: (reason) => title.reason(reason),
   };
 }
 
@@ -888,7 +1054,7 @@ function renderFileOpen(panel, element) {
   path.autocomplete = 'off';
   path.spellcheck = false;
   path.placeholder = 'Path to a saved run';
-  path.setAttribute('aria-label', label + ': path on the station');
+  path.setAttribute('aria-label', nameFor(label + ': path on the station', ownerOf(panel)));
   path.addEventListener('input', () => { path.title = path.value; });
   const extensions = (element.extensions || []).map((e) => '.' + String(e).replace(/^\./, ''));
   const picker = make('input', 'file-picker');
@@ -898,6 +1064,7 @@ function renderFileOpen(panel, element) {
   picker.setAttribute('aria-hidden', 'true');
   const choose = make('button', 'button', 'Choose file…');
   choose.type = 'button';
+  choose.setAttribute('aria-label', nameFor('Choose file…', ownerOf(panel)));
   choose.title = 'Choose a ' + (extensions.join(' or ') || 'file')
     + ' on this computer; it is copied to the station and loaded';
   choose.addEventListener('click', () => picker.click());
@@ -914,6 +1081,7 @@ function renderFileOpen(panel, element) {
   });
   const button = make('button', 'button ' + roleClass(element.role), label);
   button.type = 'button';
+  button.setAttribute('aria-label', nameFor(label, ownerOf(panel)));
   const load = () => {
     const typed = path.value.trim();
     if (!typed) {
@@ -952,6 +1120,9 @@ function renderPlot(panel, element) {
   frame.appendChild(canvas);
   frame.appendChild(empty);
   node.appendChild(frame);
+  // L15: with nothing to draw the pane is its one caption line, not a
+  // 200 px box; the canvas takes its room when there is a series.
+  frame.classList.add('is-empty');
   let drawn = null;
   return {
     node,
@@ -961,10 +1132,17 @@ function renderPlot(panel, element) {
       // live changed (F21). A plot behind a closed disclosure has no room:
       // it is drawn when it is opened, on the next data cycle.
       const frozen = Boolean(panel.isFrozen && panel.isFrozen());
-      const key = JSON.stringify(data) + '|' + canvas.clientWidth + '|' + frozen;
+      const key = JSON.stringify(data) + '|' + frame.clientWidth + '|' + frozen;
       if (key === drawn) return;
       drawn = key;
-      empty.hidden = drawSeries(canvas, data, element, frozen);
+      // The canvas is given its room before it is drawn, so it is sized to
+      // it; toggle(force) and a guarded `hidden`, so a redraw that changes
+      // nothing writes nothing (F21).
+      const has = normalisePoints(data).length >= 2;
+      frame.classList.toggle('is-empty', !has);
+      const isDrawn = drawSeries(canvas, data, element, frozen);
+      if (empty.hidden !== isDrawn) empty.hidden = isDrawn;
+      frame.classList.toggle('is-empty', !isDrawn);
     },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
@@ -982,9 +1160,11 @@ function renderImage(panel, element) {
   const empty = make('p', 'empty-note', emptyText(element, element.data_command));
   empty.hidden = true;
   // Written only when they change: the picture reloads every second (F21).
+  // L15: no picture is one caption line, not the picture's room.
   const shown = (isShown) => {
     if (empty.hidden !== isShown) empty.hidden = isShown;
     if (picture.hidden !== !isShown) picture.hidden = !isShown;
+    frame.classList.toggle('is-empty', !isShown);
   };
   picture.addEventListener('load', () => shown(true));
   picture.addEventListener('error', () => shown(false));
@@ -1062,6 +1242,7 @@ function renderDetachedLog(panel, element) {
   const caption = sentenceCase(element.text || element.source_command || 'log');
   const button = make('button', 'button role-neutral', caption + '…');
   button.type = 'button';
+  button.setAttribute('aria-label', nameFor(caption + '…', ownerOf(panel)));
   button.setAttribute('aria-haspopup', 'dialog');
   button.setAttribute('aria-expanded', 'false');
   node.appendChild(button);
@@ -1406,7 +1587,7 @@ class PanelCard {
       close.type = 'button';
       close.title = 'Close ' + name + ': it stops and disconnects. '
         + 'Reopen it from the rail.';
-      close.setAttribute('aria-label', 'Close ' + name);
+      close.setAttribute('aria-label', 'Close this model: ' + name);
       close.addEventListener('click', () => dashboard.closeModel(name));
       this.closeButton = close;
     }
@@ -1461,10 +1642,16 @@ class PanelCard {
     const readings = new Set(railElements(this.schema));
     let hasPrimary = false;
     let hasHead = false;
+    //: The `go` commands of each section, for the one caption a row says
+    //: about why it cannot go (L3; placed below, filled by refresh).
+    this.goRows = [];
     for (const section of sections) {
       const tier = sectionTier(section);
       const isRow = isRowSection(section);
       const spans = isRow && isCommandRow(section);
+      // Whose controls these are, for their names: in Setup, the row's
+      // model (L16).
+      this.rowOwner = isRow ? sentence(section.title || '') : '';
       // A table has one header row: the column captions are said once,
       // above the first data row, instead of beside every cell.
       if (isRow && !spans && !hasHead) {
@@ -1475,15 +1662,23 @@ class PanelCard {
       const block = make('div', 'section' + (isRow ? ' section-row' : '')
                          + (spans ? ' section-span' : ''));
       // An untitled row claims no name column (the rule views/qt.py settled
-      // on); a titled one's caption is the row's name.
+      // on); a titled one's caption is the row's name. A well does not open
+      // onto a heading that repeats its own disclosure ("Diagnostics" under
+      // "Diagnostics", L18): the title stays for a screen reader only.
       const hasTitle = !isRow || Boolean(section.title);
+      let rowTitle = null;
       if (hasTitle) {
-        block.appendChild(isRow
-          ? make('span', 'row-title', sentence(section.title || ''))
-          : make('h3', 'section-title', sentenceCase(section.title || '')));
+        const repeats = tier !== 1 && !isRow
+          && sentenceCase(section.title || '').toLowerCase()
+            === String(this.tierLabel(sections, tier)).toLowerCase();
+        rowTitle = isRow
+          ? make('label', 'row-title', sentence(section.title || ''))
+          : make('h3', 'section-title' + (repeats ? ' sr-only' : ''), sentenceCase(section.title || ''));
+        block.appendChild(rowTitle);
       }
       const cells = [];
       const axes = [];
+      const goes = [];
       for (const element of (section.elements || [])) {
         const render = ELEMENT_RENDERERS[element.type];
         if (!render) {
@@ -1494,6 +1689,18 @@ class PanelCard {
         widget.element = element;
         widget.tier = tier;
         this.widgets.push(widget);
+        if (widget.note) goes.push(widget);
+        // L17: a command that exists only while a scan runs ("Cancel scan")
+        // is not drawn outside one, rather than sitting greyed on its own.
+        const only = element.enabled_when || [];
+        widget.onlyWhileOn = COMMAND_TYPES.indexOf(element.type) !== -1
+          && only.length === 1 && only[0] === 'scanning';
+        // L4: in a Setup row the model's name and its Launch tick are one
+        // target: the name is the tick's label.
+        if (rowTitle && isRow && element.type === 'checkbox' && !rowTitle.htmlFor) {
+          const box = widget.node && widget.node.querySelector('input');
+          if (box) rowTitle.htmlFor = box.id;
+        }
         if (widget.node) {
           if (isRow) widget.node.classList.add('cell');
           if (tier === 1 && element.type === 'readonly' && readings.has(element)) {
@@ -1538,9 +1745,24 @@ class PanelCard {
         }
       }
       for (const cell of groupCommands(cells, isRow && !spans)) block.appendChild(cell);
+      // L3: the notes of this section's `go` commands sit under the row
+      // (after their action group); refresh shows at most one.
+      for (const widget of goes) {
+        const at = widget.node.closest('.actions') || widget.node;
+        at.parentNode.insertBefore(widget.note, at.nextSibling);
+      }
+      if (goes.length) this.goRows.push({ goes, block });
       this.containerFor(tier).appendChild(block);
     }
+    this.rowOwner = '';
     this.buildTiers(sections);
+  }
+
+  /** The words of the disclosure over `tier`: a section's own, or the
+   *  theme's default. */
+  tierLabel(sections, tier) {
+    const own = (sections || []).find((s) => sectionTier(s) === tier && s.disclosure);
+    return (own && own.disclosure) || TIER_LABELS[tier] || (tier === 2 ? 'Details' : 'Diagnostics');
   }
 
   /** The model's one disclosure (tier 2), a panel-toned well under the
@@ -1550,10 +1772,7 @@ class PanelCard {
   buildTiers(sections) {
     if (!this.well && !this.deep && !this.closeButton) return;
     this.containerFor(2);
-    const label = (tier) => {
-      const own = (sections || []).find((s) => sectionTier(s) === tier && s.disclosure);
-      return (own && own.disclosure) || TIER_LABELS[tier] || (tier === 2 ? 'Details' : 'Diagnostics');
-    };
+    const label = (tier) => this.tierLabel(sections, tier);
     this.disclose2 = this.makeDisclosure(2, label(2), this.well);
     this.node.appendChild(this.disclose2);
     this.node.appendChild(this.well);
@@ -1579,6 +1798,9 @@ class PanelCard {
     button.dataset.tier = String(tier);
     button.appendChild(chevron());
     button.appendChild(make('span', 'disclosure-text', text));
+    // L16: "Diagnostics" is said with its model; "Configure Stepper Probe"
+    // already is.
+    if (this.name !== SETUP_NAME) button.setAttribute('aria-label', nameFor(text, ownerOf(this)));
     controlSerial += 1;
     controls.id = 'tier-' + tier + '-' + controlSerial;
     button.setAttribute('aria-controls', controls.id);
@@ -1818,9 +2040,16 @@ class PanelCard {
         if (wantsData && this.wantsData(widget)) this.loadData(widget);
       }
       widget.setEnabled(isEnabled(element, mode, this.values));
+      // L3: a disabled control says why, from the same gate.
+      if (widget.setReason) widget.setReason(gateReason(element, mode, this.values));
+      if (widget.onlyWhileOn && widget.node) {
+        const off = !isEnabled(element, mode, this.values);
+        if (widget.node.hidden !== off) widget.node.hidden = off;
+      }
       // A number that has held still for CHANGING_MS settles to ink.
       if (widget.tick) widget.tick(now);
     }
+    this.sayWhyNotGo();
     // A lost device freezes the numbers even while the model's own loop
     // keeps ticking, so `age` alone would call them fresh (F3, HC-1).
     this.lost = lostDevices(state);
@@ -1842,6 +2071,25 @@ class PanelCard {
     // L1: the entry's own "Stop not confirmed. Treat as live." follows the
     // model's `stop_confirmed` (None unless latched), not an event.
     this.setUnconfirmed(Boolean(state) && state.stop_confirmed === false);
+  }
+
+  /** L3: under a row whose `go` command is disabled, one muted caption says
+   *  why - unless another `go` in the row can go (Setup's Launch and
+   *  Relaunch take turns), or the model already says what unblocks it in
+   *  the row (Red Percent's "Next step"). One caption per row. */
+  sayWhyNotGo() {
+    for (const { goes, block } of this.goRows || []) {
+      const canGo = goes.some((w) => !w.reason);
+      const said = Array.from(block.querySelectorAll('.row.stat')).some((r) => !r.hidden
+        && r.dataset.attr === 'next_step');
+      let shown = false;
+      for (const widget of goes) {
+        const say = !canGo && !said && !shown && Boolean(widget.reason);
+        if (say) shown = true;
+        putText(widget.note, say ? widget.reason : '');
+        if (widget.note.hidden !== !say) widget.note.hidden = !say;
+      }
+    }
   }
 
   /** The head's one word about the model's state, when it is not normal. */
