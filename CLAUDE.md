@@ -34,7 +34,9 @@ The import rules between these layers are a test (`tests/test_architecture.py`).
    verify, the owner rulings, the open items.
 2. `docs/rebuild/BRIEF.md` — the architecture contract and its addenda
    (paths in it are pre-move; its banner maps them).
-3. `docs/rebuild/WEB_DESIGN_BRIEF.md` — the Web view's design ruling.
+3. `docs/rebuild/DESIGN_BRIEF.md` — the design ruling for all three views
+   ("Bench sheet, tiered", 2026-09-25; `WEB_DESIGN_BRIEF.md` is its
+   superseded predecessor).
 4. `docs/rebuild/BUGFIX_PLAN.md` — the ranked defect list, a route per item.
 
 Inputs that open work still reads, kept with a banner: the finding ledger
@@ -47,8 +49,8 @@ second test wave).
 
 ```
 python3 src/app.py --web --no-browser --port 8080
-python3 -m pytest tests -q -p no:cacheprovider -m "not qt"                        # 1900 pass
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 142 pass
+python3 -m pytest tests -q -p no:cacheprovider -m "not qt"                        # 1956 pass
+QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 155 pass
 python3 -m pytest tests/test_wire_golden.py -q                                    # 78 scenarios byte-identical to legacy/src
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
 ```

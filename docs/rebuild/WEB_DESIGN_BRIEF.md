@@ -1,3 +1,8 @@
+> **SUPERSEDED 2026-09-25** by `DESIGN_BRIEF.md` ("Bench sheet, tiered", owner
+> ruling, canvas row E). Kept as the record of the 2026-09-22 "instrument
+> console" ruling; its contract section still describes the Web view's
+> mechanics (theme.css, element parity, tests).
+
 # Web view design brief — "instrument console" (owner ruling 2026-09-22)
 
 The owner wants a fresher, modern look with deliberate motion. If the Web view

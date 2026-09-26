@@ -293,6 +293,21 @@ Everything here is on the tree after Tier G landed (`79d04f5`).
 
 Rail height on Web grew with the Quit control: 130 → 188 px at 1400, 363 px at 900 (H4 worsened). H1–H10 all confirmed open on screen. Round-6 density (Web): 215 words on the first screen at 1400, 9 % of them live numbers; label-to-value ratio 1.29; eight size/weight pairs across five sizes; ten labels appear six times each; the rail takes 21 % of the screen at 1400, 40 % at 900, 46 % on a phone.
 
+## Tier J — follow-ups from the Bench-sheet round (2026-09-26)
+
+Raised by the three view agents' CORE CHANGE REQUESTS and the lead's ritual;
+none blocks the merge.
+
+| # | Sev | Views | Item | Fix | Route |
+|---|---|---|---|---|---|
+| J1 | S2 | tk, qt | Public Sans and Archivo are not installed on this Mac, so the desktop views render Helvetica (E4 again, now with the chosen faces). | Ship the fonts: register the bundled woff2/ttf at startup (Tk 9 `font create` cannot load a file; Qt `QFontDatabase.addApplicationFont` can) or install on the station PC; packaging P3 carries them. | owner (install) + `agy` (Qt loader) |
+| J2 | S3 | all | The heater's reading is the word "Simulated" in SIM, drawn at reading size; a word sits where the number goes. | Model-side: SIM reports a plausible number and the sim state is a quiet status, not the reading (A1 family). | direct (model) |
+| J3 | S3 | all | The per-model stop switch shows the schema's "Stop"/"Stopped"; the artboard says "Stop this model only". | Decide the caption once in `base._safety_section`. | owner → `router` |
+| J4 | S3 | tk, qt | Slider track/thumb sizes are hard-coded per view; a `theme.SLIDER` member would keep the three equal. | Add `SLIDER = {"track": 4, "thumb": 18, "halo": 2}` and consume it. | direct (theme) → `router` per view |
+| J5 | S3 | qt | The theme's pixel sizes (readings, captions, disc) meet a point-based base font; Qt converted through the screen DPI. `theme.py` should state the unit once. | `FONT_SIZE` in px with a pt conversion helper, or the reverse; one rule for three views. | direct (theme) |
+| J6 | S3 | all | The schema cannot say which tier-1 elements a closed (compact) entry keeps, so compact probes show both speeds and the toggles. | A `compact=True` flag on tier-1 elements, or a per-model `rail` set; renderers show only those when the entry is not the opened one. | direct (schema) → per view |
+| J7 | S4 | qt | `base._make_section` receives title and layout only; the tier lives on the section dict. | Hand the section dict to `_make_section` (base change; both desktop views adapt). | direct (base) |
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.
