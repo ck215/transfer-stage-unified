@@ -1943,7 +1943,8 @@ class Dashboard {
     const stop = this.dom.stop;
     stop.classList.remove('is-latched', 'pulse');
     stop.classList.add('is-off');
-    putText(this.dom.stopFace, 'Off');
+    // Every disc, the per-model ones included, says the same: off.
+    for (const face of document.querySelectorAll('.mushroom-face')) putText(face, 'Off');
     stop.removeAttribute('aria-keyshortcuts');
     stop.setAttribute('aria-disabled', 'true');
     stop.setAttribute('aria-label', 'Stop: the station has shut down');
