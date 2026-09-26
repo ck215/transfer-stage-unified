@@ -2350,13 +2350,15 @@ class Dashboard {
     this.setRailLine('stop', '');
     // Which models did not confirm is the state of THIS latch (G6): it is
     // written by every stop, a later confirmed one included, and dropped by
-    // the poll once the latch is cleared (forgetUnconfirmed).
+    // the poll once the latch is cleared (forgetUnconfirmed). It has no
+    // Dismiss: it describes hardware this page cannot see, and it stands
+    // for as long as the latch it describes (I8, WDG6-1).
     this.unconfirmedAt = Date.now();
     this.setRailLine('unconfirmed', unconfirmed.length
       ? 'Stop latched, but ' + unconfirmed.map(sentence).join(', ')
         + (unconfirmed.length > 1 ? ' have' : ' has') + ' not confirmed it. Treat '
         + (unconfirmed.length > 1 ? 'them' : 'it') + ' as live.'
-      : '', true);
+      : '', false);
     await this.refreshNow();
   }
 

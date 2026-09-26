@@ -1759,3 +1759,49 @@ def test_the_stop_chord_is_announced_only_while_the_face_is_stop(station, tmp_pa
     assert out["live"] == {"face": "Stop", "keys": "Control+Period", "hint": True}, out
     assert out["latched"] == {"face": "Clear", "keys": None, "hint": False}, out
     assert out["cleared"] == {"face": "Stop", "keys": "Control+Period", "hint": True}, out
+
+
+# --------------------------------------------------------------------------
+# I8 (audit round 6, WDG6-1): the unconfirmed-stop line cannot be dismissed
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_unconfirmed_stop_line_has_no_dismiss_and_leaves_only_with_the_latch(station, tmp_path):
+    """I8 (WDG6-1, S1): "Stop latched, but X has not confirmed it. Treat it
+    as live." describes hardware the page cannot see. While the latch holds
+    it carries no Dismiss, and a click where Dismiss used to sit leaves it
+    standing; it goes only when the latch clears."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, r"""
+      const r = {};
+      const line = () => page.evaluate(() => {
+        const alert = document.getElementById('rail-alert');
+        const node = Array.from(alert.querySelectorAll('.rail-alert-line'))
+          .find((n) => n.textContent.includes('has not confirmed it'));
+        if (!node) return { present: false, hidden: alert.hidden };
+        const b = node.getBoundingClientRect();
+        return { present: true, hidden: alert.hidden,
+                 dismiss: node.querySelectorAll('button, .rail-alert-dismiss').length,
+                 at: [b.right - 40, b.top + b.height / 2] };
+      });
+      await page.keyboard.down('Control');
+      await page.keyboard.press('.');
+      await page.keyboard.up('Control');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      await sleep(400);
+      r.latched = await line();
+      await page.mouse.click(r.latched.at[0], r.latched.at[1]);
+      await sleep(700);
+      r.afterClick = await line();
+      r.stillLatched = (await api('/api/state')).is_estopped;
+      await api('/api/clear_estop_all', { confirmed: true });
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      await sleep(700);
+      r.cleared = await line();
+      return r;
+    """, tmp_path)
+    assert out["latched"]["present"] and not out["latched"]["hidden"], out
+    assert out["latched"]["dismiss"] == 0, "the unconfirmed-stop line can be dismissed"
+    assert out["stillLatched"] is True
+    assert out["afterClick"]["present"] and not out["afterClick"]["hidden"], out
+    assert out["cleared"] == {"present": False, "hidden": True}, out
