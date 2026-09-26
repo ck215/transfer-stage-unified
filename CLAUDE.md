@@ -57,7 +57,11 @@ cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and
 
 Launchers: `run.sh` / `run_macos.sh` / `run.bat`, passing `--web|--qt|--tk`
 through. Agents do not run the Qt pass (a native SIGABRT can kill the
-session); the lead does. Write test output to a file and read pytest's exit
+session); the lead does. **While anyone is working at this Mac, everything runs
+strictly in the background**: `STATION_NO_WINDOWS=1` before every pytest
+(skips the `window`-marked tests that map a real Tk window; the lead runs
+them later), `QT_QPA_PLATFORM=offscreen` for every Qt process, headless
+Chrome only, and no capture harness on screen (owner ruling 2026-09-26). Write test output to a file and read pytest's exit
 code unpiped.
 
 ## Skills
