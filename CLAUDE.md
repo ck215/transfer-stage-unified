@@ -47,8 +47,8 @@ second test wave).
 
 ```
 python3 src/app.py --web --no-browser --port 8080
-python3 -m pytest tests -q -p no:cacheprovider -m "not qt"                        # 1675 pass
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 127 pass
+python3 -m pytest tests -q -p no:cacheprovider -m "not qt"                        # 1759 pass
+QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 142 pass
 python3 -m pytest tests/test_wire_golden.py -q                                    # 78 scenarios byte-identical to legacy/src
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
 ```
@@ -87,6 +87,10 @@ lookups only; its design-system generator is off-target for this product).
   commit"): each agent works in its own worktree on an exclusive write set
   and commits there; the lead diffs the write set, re-runs the tests,
   hand-drives the feature, and merges. Core files change only by the lead.
+- **No platform-specific UI** (owner ruling 2026-09-25): shortcuts, menu
+  commands and copy are identical on macOS, Windows and Linux. Ctrl+. is the
+  one stop chord. A platform branch is allowed only where the toolkit forces
+  it, never where the operator would notice.
 - Never push, never amend, unless the lead says so.
 - `progress.md` is frozen; do not flip its rows.
 - Scratch files, patches and logs never land in the repo root.

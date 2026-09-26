@@ -96,7 +96,7 @@ reflashed before then (unverified, see D13).
 | D12 | `firmware/flash_firmware.py` | Imports `discover_ports`/`probe_device_at` from the old tree (re-pointed to `legacy/src` on 2026-09-23 so it still runs); `flash.sh`/`flash.bat` deleted on this branch; auto-detect drops every `COM*` port so it finds nothing on Windows; `main`'s 20 tests for it are gone. | Port onto `src/controller/setup.py`'s scan and identify; restore the two launchers; keep COM ports; port the tests. | `agy` |
 | D13 | `src/controller/setup.py` identify | A board still on `main`'s firmware answers the identity query identically and launches with no warning, then never enables and misreads every jog packet. | **Owner question**: is a protocol-version reply worth a firmware change? Until then, a one-line note in the README's flashing section. | owner |
 | D14 | `src/model/probe.py` manual mode | Manual speed and step sizes cannot be changed in manual mode; changing them means leaving manual, which de-energizes the coils. The ruling locks distances only in autonomous. | Allow edits in manual; keep the autonomous lock. | `agy` |
-| D15 | `src/views/web/server.py` | No quit control; closing the browser leaves the process holding the serial ports (until the watchdog latches FULL STOP, which does not exit). | Design call: a Quit command that shuts the Controller down and exits. | direct design → `agy` |
+| D15 | `src/views/web/server.py` | **Now G2.** No quit control; closing the browser leaves the process holding the serial ports (until the watchdog latches FULL STOP, which does not exit). | Design call: a Quit command that shuts the Controller down and exits. | direct design → `agy` |
 | D16 | `run_macos.sh` | Prints that it is launching Web but starts Tk. | One-line fix. | direct |
 | D17 | `src/devices/smc100.py` | Controller address fixed at 1; `main` had an ID field. Low impact. | Expose the address in Setup only if the bench has more than one SMC100. | owner |
 
@@ -174,6 +174,94 @@ makes a task error-prone; S3 inconsistent or off-brief; S4 nit.
 
 Batch order for Tier F: F1, F2+F4, F3, F9 (the stop path, one at a time, lead-verified) → F5, F7, F8 (desktop rail and stop) → F14, F23 (theme tokens, one worktree) → F10–F13, F15–F22 in parallel worktrees by view → F24–F26.
 
+## Tier G — first owner session on the Web console (2026-09-25)
+
+Owner's list from running `./run_macos.sh --web` on the Mac (log
+`~/transfer-stage-runs/logs/station-20260925-164722.log`). Tk and Qt: nothing
+reported yet. Every code item follows the ground rule: test first, prove the
+defect against the pre-fix code. **verified** = the lead reproduced it.
+
+| # | Sev | Views | Finding | Fix | Route |
+|---|---|---|---|---|---|
+| G1 | S2 | web | **Closing the browser tab spews stdlib tracebacks on the terminal.** `_StationServer` (`server.py:610`) inherits `socketserver.BaseServer.handle_error`, which prints a traceback to stderr for any exception in a handler thread. The handler speaks HTTP/1.1, so every keep-alive connection parks a thread in `readline`; when the tab closes the browser resets them all at once and each thread prints `ConnectionResetError: [Errno 54]`. **verified** (standalone repro on the venv's 3.14.7: one RST → one traceback). Nothing was wrong with the station; the noise hides anything that is. | Override `handle_error` on `_StationServer`: `ConnectionResetError` / `BrokenPipeError` / `ConnectionAbortedError` → `events.debug("Client Went Away", …, every=1.0)`; any other exception → `events.error(…, exception=exc)` to the file log and tray, never stderr. Second line: `ApiHandler.timeout = 120` so an idle keep-alive thread retires quietly (`handle_one_request` already treats a timeout as close-connection) instead of living until the browser drops it. Tests: `test_a_reset_connection_is_not_a_traceback` (send one request, close with SO_LINGER 0, assert stderr empty and one debug event) and `test_a_handler_crash_is_an_error_event`. | `agy` (with G2, one Web worktree) |
+| G2 | S2 | web | **No way to quit the program from the console** (was D15). Closing the tab leaves the process holding the serial ports; the watchdog latches FULL STOP but never exits. Tk has ⌘Q / window close, Qt has window close; Web has nothing. | **Design (lead):** a `Quit` ghost control on the rail's side, beside Setup; confirm dialog below the rail with Cancel as the default (F17), text "Stops every model, closes every port and exits the program."; `POST /api/quit` answers `{"status":"ok"}` first and then sets `WebView._halt`, so `wait()` returns → `close()` → `Controller.close()` (which estops everything before it closes anything) → `launch()` returns → the process exits 0 and atexit closes SDL. Client: stop both timers, disarm `beforeunload`, link state reads "The station has shut down. You can close this tab." Quit is allowed while active because the close path stops first. Closing the tab still does NOT quit: the server stays up so a reopened tab finds the station (the watchdog remains the guard). Tests: server `test_quit_answers_then_releases_wait` (wait() returns < 1 s, controller closed, second POST answers 410 or is idempotent); client (headless Chrome) `test_quit_asks_first_then_the_page_says_the_station_is_down`. | direct design (above) → `agy` (with G1) |
+| G3 | S2 | all (core Setup) | **The "Selected:" readout is one long string** (`setup.py:1108`: `"Stepper Probe (/dev/cu.X), DC Probe (simulated), …"`) sitting in the Launch row of every view. `main` shows the selection as a checkbox per device that enables that device's dropdowns (`mainGUI.py:245`). | **Owner call, lead recommends A.** **A:** amend the Setup ruling to "a checkbox and a Port dropdown per row": new element `sch.checkbox(text, model_attr, command)` (Tk `Checkbutton`, Qt `QCheckBox`, Web `input[type=checkbox]`; the conformance test makes all three land together); unchecked = the row is off and its dropdowns are disabled; checking restores the row's last port, else the detected port, else SIM; the dropdown lists SIM and ports only (no Off); auto-assign ticks the row whose board it finds; `is_chosen` stays the operator's claim. The `Selected:` readout goes; the Launch row keeps one sentence only while scanning or when nothing is ticked (F18 text). **B (fallback, no ruling change):** delete the readout, keep the per-row Status cell as the only summary; two lines in `setup.py` plus one test. | A: direct (lead: `schema.py`, `setup.py`, `tests/test_setup.py`, `test_core_schema.py`) → `agy` per view for the renderer (three worktrees, `parallel-stage`). B: `router patch-plan` → direct |
+| G4 | S3 | all | **The Gamepad Log is a persistent panel element** (`probe.py:1074`, a `log_stream` in System Control) on every probe card. Owner wants it behind a button that opens it on demand. | `sch.log_stream(…, detached=True)` (one flag in `schema.py`, set on the probe's element): a renderer draws a `Gamepad log…` button in the element's place; pressing it opens ONE non-modal window holding the feed — Tk `Toplevel` (pattern at `tk.py:736`), Qt non-modal `QDialog` parented to the main window, Web a floating panel that sits BELOW the rail's z-index (never an `overlay` scrim: F1), Escape closes it, focus returns to the button (F12). Reopen raises the existing window; the stream's data poll runs only while it is open. Tests per view: the button renders instead of the feed, opens, shows the source command's lines, closes, and the stop stays reachable while it is open. | flag + probe line: direct (lead) → `agy` per view, in the same three worktrees as G3 |
+
+| G5 | S2 | all | **macOS-only shortcuts and commands** (owner ruling 2026-09-25: the app is multiplatform, so no view may carry a shortcut or command that exists on one OS only). Known: the ⌘. stop chord beside Ctrl+. (Tier F9 landed both), Tk's `::tk::mac::Quit` hook (`tk.py:2978`), and any `darwin` branch that changes what the operator sees or presses. The round-4 auditor lists them all. | One chord everywhere: Ctrl+. for the stop; window close is the quit (plus G2's Quit control on Web); remove the ⌘ variants and the mac Quit hook, and any tooltip or copy that names ⌘. Test: no `Command`/`Meta`/`⌘`/`tk::mac` binding in any view; Ctrl+. presses the stop in all three. | `router patch-plan` → per-view agents (same worktrees as G3/G4) |
+
+**Owner ruling (2026-09-25): no platform-specific UI.** Shortcuts, menu
+commands and copy are the same on macOS, Windows and Linux. A platform
+branch is allowed only where the toolkit forces one (Qt plugin unhiding,
+screen-capture backends), never where the operator would notice.
+
+**Side finding from the same log** (not on the owner's list): at shutdown the
+SIM Rotator reported its stop as unconfirmed and the Controller logged
+`ERROR Stop Not Confirmed: … Rotator. Treat them as live.` for a stage that
+does not exist. This is A1 (what a portless / no-stage stop means); it makes
+every SIM quit end on a red line, so A1's decision moves up with G2.
+
+**Decisions taken (owner, 2026-09-25):** G3 = A; closing the tab keeps the
+process alive and only Quit exits; G4 Web = in-page panel.
+
+**Status (2026-09-25, lead-verified on the merged tree `734c80f`):** G1–G6
+landed from four Opus worktrees (`rb-g-web`, `rb-g-tk`, `rb-g-qt`,
+`rb-g-webui`) on the lead's core commit `0cf11c8`. Gates: fast **1759**,
+golden 78, Qt **142**. Lead launches: five reset connections → zero stderr
+lines; `/api/quit` → exit 0. On-screen after-captures
+`handoff/shots/round4_{tk,qt}_after_*.png`, `round4_web_*.png`. Handoffs
+`handoff/fix-g-{web,tk,qt,webui}.md`. Left open from the round: **G6 part 2**
+(a tab opened after an unconfirmed stop never sees the line: `/api/state`
+should carry the unconfirmed models, a `controller.py` change, lead), and
+the H10 follow-ups below.
+
+| G6 | S1 | web | (audit IMP-0) The rail's "Stop latched, but X has not confirmed it" line survived a clear from any client. **Landed** with G3–G5: the line follows the latch from the poll. Part 2 open (above). | | done / lead |
+| H10 | S3 | tk, qt | Seen on the after-captures: the Qt tick box is a filled light square with no check glyph (ticked vs unticked reads as filled vs outlined; Tk draws an ×); the Tk and Qt Gamepad log windows open as an empty box with no empty-state sentence (Web has one, IMP-9); the Qt log dialog opens near the bottom screen edge. | Check glyph or ink tick mark in the Qt indicator; the Web empty sentence in both desktop feeds; clamp the dialog inside the screen. | `router patch-plan` → per view |
+
+Batch order for Tier G: `rb-g-web` (G1+G2; write set `src/views/web/**`,
+`tests/test_view_web_*.py`) first, lead verifies with a launch: open a tab,
+close it, terminal stays clean; press Quit, process exits 0, log ends with
+`Server Stopped`. Then the lead lands the core of G3 and G4 directly on
+`mvc-refactor` (schema element, Setup semantics, probe flag, core tests).
+Then three view worktrees in parallel (`rb-g-tk`, `rb-g-qt`, `rb-g-webui`),
+each owning one renderer file set, for the G3 checkbox and the G4 window.
+Gates per merge (`verify`): fast ≥ 1675, golden 78, Qt 127 (lead), and the
+screenshot ritual for the view touched.
+
+## Tier H — UI audit round 4 (2026-09-25): first audit on a real display
+
+One `ui-auditor` (Impeccable `audit` + `critique`), Tk and Qt as real Aqua
+windows, Web in a headed Chrome, Retina 2×, 1400×900 / 900×900 / 28 pt, 52
+captures (`handoff/shots/round4_*`, report `handoff/audit-ui-round4.md`).
+IMP-0 became **G6** (Web, with the G3–G5 renderer batch). IMP-8 and IMP-9
+are G3 and G4 before-measurements. IMP-16 is E4. Confirmed on screen: F1,
+F5, F7, F8 hold; E1, F26 and F22 (Web) are still open. Platform-specific
+items P1–P8 are **G5** (P8 is D-9, owner).
+
+| # | Sev | Views | Finding | Fix | Route |
+|---|---|---|---|---|---|
+| H1 | S1 | tk, web | **Latched reads only as the face word "Clear" and a ring** in Tk and Web; Qt says "Stopped". F6's sentence half, now measured on screen (ring on face 2.76:1). (IMP-1) | Tk stop bar and Web link/rail line: "Stopped: every model latched", as Qt has it. Ring colour stays F6 (owner). | `router patch-plan` → per view |
+| H2 | S2 | tk | **28 pt clips controls and numbers**: "Enter manual mode" → "ıanua", Step off the card (IMP-3); velocity readout end-elided to "0.0, 0.0,…" (IMP-4); alert text runs under Acknowledge, `wraplength=720` fixed (IMP-5). | Wrap the action group; never elide a numeric readout (F5's rule, Tk side); wraplength from the band's width on `<Configure>`. | `agy` (Tk) |
+| H3 | S2 | qt | **Red Percent dock clips live numbers** at 1400 and 1000×700 ("Current red 0."), tab titles elide to "R…" (IMP-6); rail captions elide to stubs ("Curre… 0.00") (IMP-7); latched toggles look enabled beside a greyed Step (IMP-15); Setup reopen grows the window by 67 pt at 28 pt (IMP-12). | One-column fallback for Red Percent under ~600 px; tab titles ≥ 8 chars or middle-elided; shed a readout before its caption falls under 6 chars; verify toggle disabled paint; Setup dock in a capped scroll area. | `agy` (Qt) |
+| H4 | S2 | web | **Rail is 428 of 900 px with six models** (48 %); latched adds 60 px; the reopened drawer's Launch row is below the fold. F22's Web part, measured. (IMP-2) | Below ~1100 px collapse each group to its first readout or one `name value` line, as Qt sheds. | design → `agy` (Web) |
+| H5 | S3 | tk, qt | Status words drawn in trace (Setup "ready", "simulated", the heater's "Simulated"); F24 fixed Web only. (IMP-10) | `readoutKind` / quiet words into `views/base.py` (fix-web CCR 3), both desktop views consume them. | direct (base) → `router` per view |
+| H6 | S3 | all | Three product names ("Transfer Station" / "Transfer Stage" / "Transfer stage"); Tk's Aqua app menu reads "Python". (IMP-11) | One title constant in `views/base.py`; the app-menu name is a launcher/bundle matter (S4). | `router` |
+| H7 | S3 | all | One unconfirmed stop raises three notices on Web (rail line, ack dialog, tray) and Tk/Qt show only the raw event with no next step; screen readers hear it twice. (IMP-17) | One authored sentence per view; skip the ack dialog when the rail line carries the event. Moves with A1. | with A1 → `agy` |
+| H8 | S3 | web, qt | A freshly launched SIM Rotator reads "Stale" / "Readings are stale", Motion "Disconnected"; Tk shows nothing for the same state. (IMP-13) | Model-side: what a portless stage reports (A1 family). Views are consistent with the state given. | with A1 (lead) |
+| H9 | S3 | tk, qt | Analysis image and heater plot with no scale and no empty state on screen. (IMP-14) | E1 and F26 as planned; confirmed only. | E1 / F26 |
+
+**Owner decisions from this round:** (a) **P3 / G5**: Tk's `::tk::mac::Quit`
+hook. Aqua gives every Tk app a Quit menu item and ⌘Q whether or not the app
+binds them; the Tk agent measured that without the hook the process exits
+past `close()` and atexit (nothing stopped, no port closed). The hook adds
+no binding, no menu item and no text on any platform. The lead's reading:
+it is the "toolkit forces it" exception and stays, renamed `_hook_os_quit`.
+Overrule if you want it gone, and the forced Quit then needs its own safe
+shutdown path first. (b) **P8**: `app.py` opens Tk by default on a Mac (D-9)
+and Qt/Web elsewhere: a platform-dependent default UI. It conflicts with
+today's ruling; only the owner can resolve it (the memo's "Web is the
+candidate primary" suggests Web everywhere).
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.
@@ -186,5 +274,6 @@ Batch order for Tier F: F1, F2+F4, F3, F9 (the stop path, one at a time, lead-ve
 3. Lead verification: fast suite, golden gate, Qt suite, screenshot ritual for the Web console with a forced watchdog fault.
 4. Bench checklist (Tier B) printed for the next lab visit.
 5. Tier C audits when the bench items are back.
-6. Tier D in the batch order above, in parallel worktrees (`parallel-stage`), after D1–D5 have landed one at a time.
-7. Tier F stop-path items (F1–F4, F9) before or alongside D1–D5; the rest of Tier F by view in parallel worktrees.
+6. Tier G (owner session 2026-09-25) in its own batch order: G1+G2 first, they are the ones an operator meets every session.
+7. Tier D in the batch order above, in parallel worktrees (`parallel-stage`), after D1–D5 have landed one at a time.
+8. Tier F stop-path items (F1–F4, F9) before or alongside D1–D5; the rest of Tier F by view in parallel worktrees.

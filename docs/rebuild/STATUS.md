@@ -1,6 +1,6 @@
 # Rebuild status — cold-resume document
 
-Last updated 2026-09-23. Read this first; then `BRIEF.md` (the architecture
+Last updated 2026-09-25. Read this first; then `BRIEF.md` (the architecture
 contract and its addenda), `WEB_DESIGN_BRIEF.md`, and `BUGFIX_PLAN.md` (the
 ranked defect list with a delegation route per item).
 
@@ -12,6 +12,7 @@ ranked defect list with a delegation route per item).
 | The old app | `legacy/src/` (was `src/`), its suite in `legacy/tests/` (was `tests/` minus `tests/station/`); code untouched, still the reference for the golden wire tests. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
 | Agent worktrees | Removed 2026-09-23: the 12 `rb-*` worktrees and branches were all merged and clean; `../rebuild` retired the same day. Worktrees now: `main`, `mvc-refactor`. |
 | Agent handoffs | `handoff/*.md` (outside every repo). `serial, gamepad, probe, heater, rotator, redmonitor, setup, tk, qt, web, coretests, golden`, then `setup2, tk2, qt2, web2` (polish pass), `web3` (console redesign). Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
+| Owner session round (2026-09-25) | The owner's first list from running the Web console (BUGFIX_PLAN **Tier G**): G1 no stderr tracebacks on tab close (`handle_error` override + handler idle timeout), G2 a Quit control and `POST /api/quit` (closing the tab never quits; the watchdog remains the guard), G3 a **Launch checkbox per Setup row** (new `sch.checkbox` element, `enabled_by` gating in the one `is_enabled` rule, "Off" gone from the Port dropdown, the summary is a count), G4 the **Gamepad log behind a button** in its own non-modal window (`log_stream(detached=True)`, polled only while open), G5 **no platform-specific UI** (owner ruling: Ctrl+. is the one stop chord; ⌘ variants removed in all three views; Tk keeps the `tk::mac::Quit` hook because Aqua's forced Quit would otherwise exit past the shutdown path — owner may overrule), G6 the Web rail's unconfirmed-stop line clears with the latch. Four Opus worktrees on the lead's core commit, lead-verified. Gates: **fast 1759, golden 78, Qt 142**. Real-display audit round 4 (52 captures, `handoff/audit-ui-round4.md`) filed as **Tier H**. Owner decisions open: P3 (the mac Quit hook), P8 (D-9's platform-dependent default view conflicts with the ruling). |
 | UI fix round (2026-09-24) | Tier F rows landed from four Opus worktrees (core, Tk, Qt, Web), lead-verified: no pop-up can cover or block the stop in any view (queued, non-modal acks); a failed stop request and a dead station are visible; a lost serial port turns its card signal in every view; the Qt rail never clips a number; the stop has a keyboard chord everywhere (Ctrl+. / ⌘.); latch pre-disables what it would refuse; the analysis figure is trace-coloured, sized and cached; hung scans can be cancelled; error text is operator sentences; one word for the stop. Gates: fast 1675, golden 78, qt 127. Handoffs `handoff/fix-{core,tk,qt,web}.md`; captures `handoff/shots/round3_*`. Tk still unseen on screen (owner at the Mac). |
 | UI audit (2026-09-24) | Six read-only auditors, one design skill each, on the round-2 tree: 97 findings merged into **BUGFIX_PLAN Tier F** (26 rows, 9 S1). Stop-path S1s the lead reproduced: a pop-up covers the stop; a failed stop request is silent; a lost serial port looks live in every view; the Qt rail clips numbers. Reports `handoff/audit-ui-*.md`. |
 | UI round 2 (2026-09-24) | All three views refined as siblings of the Web console: one red (the stop object reads `Stop` / `Clear`, pulses once on the edge), sentence-case labels without colons, one-header Setup tables, readable event logs, empty states that say what to do next, boolean readouts as Yes/No, `Start run` / `Stop run` / `Stop heater` / `Stop motion` as quiet commands. Handoffs `handoff/{tk3,qt3,web5}.md`; shots `round2_{tk,qt,web}_*`. Tk `after` shots are pending (the Mac was in use; capture commands are in tk3.md UNVERIFIED). |
@@ -28,8 +29,8 @@ cd ../mvc-refactor
 ./run_macos.sh --web | --qt | --tk        # uses the already-active venv (main/.venv)
 python3 src/app.py --web --no-browser --port 8080
 
-python3 -m pytest tests -q -p no:cacheprovider -m "not qt"             # 1675 pass, ~80 s
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt   # 127 pass
+python3 -m pytest tests -q -p no:cacheprovider -m "not qt"             # 1759 pass, ~100 s
+QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt   # 142 pass
 python3 -m pytest tests/test_wire_golden.py -q                         # 78 scenarios byte-identical to legacy/src/
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
 ```
@@ -70,9 +71,12 @@ wire is pinned by `tests/golden/`.
   annotations dropped; velocity only between distinct 10 Hz position samples.
 - Probe distances/speeds/brake fields are ints to the operator (floats on
   the wire, unchanged).
-- Setup: auto-scan at boot + Refresh; one Port dropdown per row (Off / SIM /
-  port), no Mode; one table, one row per model; minimises on launch,
-  reopenable. Integers display without decimals.
+- Setup: auto-scan at boot + Refresh; a **Launch checkbox** and one Port
+  dropdown (SIM / port) per row (2026-09-25, replaces the "Off" entry), no
+  Mode; one table, one row per model; minimises on launch, reopenable.
+  Integers display without decimals.
+- No platform-specific UI (2026-09-25): one stop chord (Ctrl+.), no ⌘
+  variants, no macOS-only commands or copy in any view.
 - Names: "Red Percent", "Rotator", "Temperature Controller".
 - Web = candidate primary frontend ("instrument console"); Tk/Qt persist as
   backups. Making Web the default is `VIEW_MODE` in the launchers.
