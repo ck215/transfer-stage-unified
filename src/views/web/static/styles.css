@@ -202,26 +202,54 @@ button, select, .mushroom {
   border: 2px solid var(--signal);
 }
 
-/* Quit is deliberate, not a fault: the lamp goes out, muted, not red (G2). */
-.link-state.is-shut-down { white-space: normal; max-width: 14rem; color: var(--muted); }
+/* Quit is deliberate, not a fault: the lamp goes out, not red (G2). The
+   sentence is the one thing left to read on the page, so it is ink at
+   readout size (I5, UXPM5-4); it takes focus only so focus has somewhere to
+   land, and draws no ring. */
+.link-state.is-shut-down {
+  white-space: normal;
+  max-width: 22rem;
+  font-size: var(--t-readout);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.link-state.is-shut-down:focus { outline: none; }
 
 .link-state.is-shut-down::before {
   background: none;
   border: 2px solid var(--muted);
 }
 
-/* After Quit there is no station behind the rail's controls: the stop and
-   the rail buttons are disabled and look it, so a red disc never promises a
-   stop that nothing is left to deliver. */
-.mushroom:disabled, .rail-control:disabled {
+/* After Quit there is no station behind the rail's controls: the rail
+   buttons are disabled and look it. */
+.rail-control:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
+/* The stop disc after Quit, whatever face it had: inert, neutral, no signal
+   red and no ring, so it promises neither a stop nor a latch that nothing is
+   left to deliver. The per-model discs go the same way. */
+.mushroom.is-off,
+.is-shut-down .mushroom,
+.is-shut-down .mushroom:hover,
+.is-shut-down .mushroom.is-latched {
+  background: var(--disabled-bg);
+  border-color: var(--rule-strong);
+  box-shadow: none;
+  color: var(--disabled-fg);
+  cursor: not-allowed;
+  animation: none;
+}
+
 /* ...and the page under the rail is inert and reads as such: the rack and
-   the tray recede, so nothing on them looks like a control that still
-   reaches the station. */
+   the tray recede, and nothing on them keeps a signal mark it can no longer
+   observe. */
 .is-shut-down .rack, .is-shut-down .tray { opacity: 0.5; }
+
+.is-shut-down .card.is-latched,
+.is-shut-down .card.is-lost { border-left-color: var(--rule-strong); }
 
 /* -- the rail's alert lines ---------------------------------------------- */
 /* A stop that did not land, a device that was lost: a full-width band at the
@@ -382,6 +410,10 @@ button, select, .mushroom {
   text-align: right;
   white-space: nowrap;
 }
+
+/* Hidden while the face reads "Clear" (I6): it keeps its room, so the rail's
+   controls do not shift under the pointer when the latch sets. */
+.stop-hint[hidden] { display: inline; visibility: hidden; }
 
 /* -- the mushroom -------------------------------------------------------- */
 /* The one bold element on the page. Round, signal red, a darker ring around
@@ -1245,24 +1277,34 @@ span.lamp { background: none; }
 .event.severity-error { color: var(--error-ink); border-left-color: var(--error-mark); }
 
 /* -- in-page panels (G4) --------------------------------------------------- */
-/* A detached log opens here: a panel pinned under the rail at the right, not
-   an overlay - no scrim, nothing behind it goes inert. In z-order it sits
-   below the rail, so the stop is never covered (F1), and below the overlays,
-   so a confirmation still covers it; above the rack and the drawer's scrim.
-   A second one opens a step down and to the left of the first. */
+/* A detached log opens in its own card, directly under its button, and
+   pushes the rest of the card down (I3, UXPM5-3). Pinned to the rack's top
+   right it covered the next card's inputs; in the card's flow it covers
+   nothing and stays beside what opened it. Not an overlay - no scrim,
+   nothing behind it goes inert. In z-order it is part of its card: below
+   the rail, so the stop is never covered (F1); below the overlays, so a
+   confirmation still covers it; below the tray, so a tall panel runs under
+   the event line rather than over it; and under the drawer's scrim with the
+   rest of the rack. Scrolled into view clear of the rail and the tray. */
 .log-window {
-  position: fixed;
-  top: calc(var(--rail-h) + var(--space-3) + var(--stack, 0) * 1.5rem);
-  right: calc(var(--page-gutter) + var(--stack, 0) * 1.5rem);
-  z-index: 9;
-  width: min(30rem, calc(100vw - 2 * var(--page-gutter)));
-  max-height: calc(100vh - var(--rail-h) - var(--tray-h) - 2 * var(--space-3));
+  position: relative;
+  z-index: 1;
+  flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
+  margin-top: var(--space-3);
+  scroll-margin-top: calc(var(--rail-h) + var(--space-3));
+  scroll-margin-bottom: calc(var(--tray-h) + var(--space-3));
   display: flex;
   flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--rule-strong);
   border-left: 0.2rem solid var(--rule-strong);
 }
+
+/* The opener's row wraps, so the open panel takes the line under the
+   button at the card's full width. */
+.row.opener { flex-wrap: wrap; }
 
 .log-window[hidden] { display: none; }
 
@@ -1358,7 +1400,19 @@ span.lamp { background: none; }
 @media (max-width: 40rem) {
   .rail { flex-wrap: wrap; gap: 0.75rem; }
   .rail-head { border-right: 0; padding-right: 0; }
-  .rail-readouts { order: 3; width: 100%; }
+  /* A basis, not a width: under `flex: 1 1 0` a width never applies, and
+     with Setup hidden the readouts shrank to nothing (I9, WDG6-2). */
+  .rail-readouts { order: 3; flex: 1 0 100%; }
+  /* Setup's table at phone width: two lines per model - the name on its
+     own line, the Launch box, the two dropdowns and the status under it -
+     so a long name never runs under the box beside it (I9, WDG6-2). */
+  .drawer .card-body.table {
+    grid-template-columns:
+      max-content minmax(0, 1fr) minmax(0, 1fr) minmax(0, max-content)
+      !important;
+  }
+  .drawer .section-row > .row-title { grid-column: 1 / -1; padding-bottom: 0; }
+  .drawer .table-head > .row-title { display: none; }
   .mushroom { --disc: 4rem; margin-left: auto; }
   .readout-value { font-size: var(--t-lg); }
   .actions { grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); }

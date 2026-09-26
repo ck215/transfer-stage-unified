@@ -1501,3 +1501,372 @@ def test_the_unconfirmed_stop_line_goes_when_the_latch_clears(station, tmp_path)
     assert out["clearedElsewhere"] == {"hidden": True, "text": "", "face": "Stop"}, out
     assert out["again"]["face"] == "Clear" and line in out["again"]["text"], out
     assert out["clearedHere"] == {"hidden": True, "text": "", "face": "Stop"}, out
+
+
+# --------------------------------------------------------------------------
+# I3 (audit round 5, UXPM5-3): the log panel belongs to its own card
+# --------------------------------------------------------------------------
+@pytest.fixture
+def sim_station():
+    """The real six models, every one in SIM, behind a real Setup."""
+    from controller.setup import Setup, SIM
+    controller = Controller()
+    setup = Setup(controller)
+    for key, row in setup._rows.items():
+        getattr(setup, f"set_{key}_enabled")(True)
+        if row["needs_port"]:
+            getattr(setup, f"set_{key}_port")(SIM)
+    assert len(setup.launch()) == 6
+    view = WebView(controller, setup, port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller
+    finally:
+        view.close()
+
+
+#: Open one card's Gamepad log and measure it against every other card.
+_LOG_LAYOUT = r"""
+  const measure = (owner) => page.evaluate((owner) => {
+    const cards = Array.from(document.querySelectorAll('#cards .card'));
+    const titleOf = (c) => (c.querySelector('.card-title') || {}).textContent;
+    const mine = cards.find((c) => titleOf(c) === owner);
+    const open = Array.from(document.querySelectorAll('.log-window'))
+      .filter((w) => !w.hidden && w.getClientRects().length);
+    if (open.length !== 1) return { open: open.length };
+    const w = open[0];
+    const p = w.getBoundingClientRect();
+    const rack = document.getElementById('cards').getBoundingClientRect();
+    const hits = [];
+    for (const card of cards) {
+      if (card === mine || card.classList.contains('setup-card')) continue;
+      for (const c of card.querySelectorAll('button, input, select, textarea')) {
+        const r = c.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const ix = Math.min(p.right, r.right) - Math.max(p.left, r.left);
+        const iy = Math.min(p.bottom, r.bottom) - Math.max(p.top, r.top);
+        if (ix > 0.5 && iy > 0.5) hits.push(titleOf(card) + ': ' + (c.textContent || c.getAttribute('aria-label') || c.tagName).trim());
+      }
+    }
+    const inside = p.left >= rack.left - 0.5 && p.right <= rack.right + 0.5
+      && p.top >= rack.top - 0.5 && p.bottom <= rack.bottom + 0.5;
+    return { open: 1, owner: mine && mine.contains(w), hits, inside,
+             title: document.getElementById(w.getAttribute('aria-labelledby')).textContent,
+             rect: [p.left, p.top, p.right, p.bottom], rack: [rack.left, rack.top, rack.right, rack.bottom] };
+  }, owner);
+  const openLog = (owner) => page.evaluate((owner) => {
+    const card = Array.from(document.querySelectorAll('#cards .card'))
+      .find((c) => (c.querySelector('.card-title') || {}).textContent === owner);
+    Array.from(card.querySelectorAll('button')).find((b) => b.textContent === 'Gamepad log…').click();
+  }, owner);
+  const r = {};
+  await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+  if (await page.evaluate(() => document.body.classList.contains('drawer-open')
+      || !document.getElementById('scrim').hidden)) {
+    await page.click('#drawer-close');
+    await sleep(400);
+  }
+  for (const width of [1400, 900]) {
+    await page.setViewport({ width, height: 900 });
+    await sleep(500);
+    await openLog('Stepper Probe');
+    await until(() => Array.from(document.querySelectorAll('.log-window')).some((w) => !w.hidden));
+    await sleep(300);
+    r['stepper' + width] = await measure('Stepper Probe');
+    await openLog('DC Probe');
+    await sleep(400);
+    r['dc' + width] = await measure('DC Probe');
+    r['stepperClosed' + width] = await page.evaluate(() => Array.from(document.querySelectorAll('.log-window'))
+      .filter((w) => !w.hidden).length);
+    r['stopOnTop' + width] = await page.evaluate(%(stop_hit)s);
+    await page.keyboard.press('Escape');
+    await sleep(300);
+  }
+  return r;
+"""
+
+
+@needs_browser
+def test_the_gamepad_log_panel_opens_in_its_own_card_and_covers_no_other(sim_station, tmp_path):
+    """I3 (UXPM5-3): with all six SIM models up, the Stepper Probe's log opens
+    inside the Stepper Probe's card, within the rack, over none of another
+    card's buttons, inputs or selects - at 1400 and at 900. Opening the DC
+    Probe's log closes the Stepper's: one panel at a time. The rail's stop
+    stays what a click at its centre lands on."""
+    view, controller = sim_station
+    out = _browse(view, _LOG_LAYOUT % {"stop_hit": _STOP_HIT}, tmp_path)
+    for width in (1400, 900):
+        for who, title in (("stepper", "Stepper Probe — Gamepad log"),
+                           ("dc", "DC Probe — Gamepad log")):
+            got = out[f"{who}{width}"]
+            assert got["open"] == 1, (width, who, got)
+            assert got["title"] == title, (width, got)
+            assert got["hits"] == [], f"at {width} the {who} log covers {got['hits']}"
+            assert got["inside"], f"at {width} the {who} log leaves the rack: {got}"
+            assert got["owner"], f"at {width} the {who} log is not in its own card"
+        assert out[f"stepperClosed{width}"] == 1, "two log panels open at once"
+        assert out[f"stopOnTop{width}"], f"at {width} the log panel covers the stop"
+
+
+# --------------------------------------------------------------------------
+# I5 (audit round 5, UXPM5-4): the page after Quit reads as shut down
+# --------------------------------------------------------------------------
+_SHUT_DOWN = "The station has shut down. You can close this tab."
+
+#: Quit through the page, then describe what is left of it.
+_QUIT_AND_READ = r"""
+  const announced = [];
+  await page.exposeFunction('noteLive', (t) => announced.push(t));
+  await page.evaluate(() => {
+    const region = document.getElementById('connection');
+    new MutationObserver(() => window.noteLive(region.textContent))
+      .observe(region, { childList: true, characterData: true, subtree: true });
+  });
+  await page.click('#quit-link');
+  await until(() => !document.getElementById('confirm-modal').hidden);
+  await page.click('#confirm-yes');
+  await until(() => document.body.classList.contains('is-shut-down'));
+  await sleep(1500);
+  const end = await page.evaluate(() => {
+    const css = getComputedStyle(document.documentElement);
+    const swatch = (name) => {
+      const s = document.createElement('span');
+      s.style.color = css.getPropertyValue(name).trim();
+      document.body.appendChild(s);
+      const c = getComputedStyle(s).color;
+      s.remove();
+      return c;
+    };
+    const signal = swatch('--signal');
+    const text = swatch('--text');
+    const sized = document.createElement('span');
+    sized.style.fontSize = 'var(--t-readout)';
+    document.body.appendChild(sized);
+    const readout = getComputedStyle(sized).fontSize;
+    sized.remove();
+    const red = [];
+    for (const el of document.querySelectorAll('body *')) {
+      if (!el.getClientRects().length) continue;
+      const s = getComputedStyle(el);
+      if (s.visibility === 'hidden' || s.display === 'none') continue;
+      const paints = [s.color, s.backgroundColor, s.backgroundImage];
+      for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
+        if (parseFloat(s['border' + side + 'Width']) > 0) paints.push(s['border' + side + 'Color']);
+      }
+      if (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) paints.push(s.outlineColor);
+      if (paints.some((p) => p && p.includes(signal))) {
+        red.push(el.tagName + '#' + el.id + '.' + el.className);
+      }
+    }
+    const link = document.getElementById('connection');
+    const stop = document.getElementById('full-stop');
+    const enabled = Array.from(document.querySelectorAll('button, input, select, textarea'))
+      .filter((c) => !c.disabled).map((c) => c.id || c.textContent.trim() || c.tagName);
+    return {
+      link: link.textContent, linkIsFocused: document.activeElement === link,
+      linkTabIndex: link.getAttribute('tabindex'),
+      linkSize: getComputedStyle(link).fontSize, readout,
+      linkInk: getComputedStyle(link).color === text,
+      red, enabled,
+      stop: { disabled: stop.disabled, ariaDisabled: stop.getAttribute('aria-disabled'),
+              face: stop.textContent.trim(), keys: stop.getAttribute('aria-keyshortcuts'),
+              latched: stop.classList.contains('is-latched'),
+              ring: getComputedStyle(stop).borderTopColor },
+      railAlert: { hidden: document.getElementById('rail-alert').hidden,
+                   lines: document.querySelectorAll('.rail-alert-line').length,
+                   dismiss: document.querySelectorAll('.rail-alert-dismiss').length },
+      ackOpen: !document.getElementById('ack-modal').hidden,
+      ackLines: document.querySelectorAll('#ack-text .ack-line').length,
+      tray: { collapsed: document.getElementById('event-log').hidden,
+              latest: document.getElementById('tray-latest').textContent },
+    };
+  });
+  end.announced = announced;
+  return end;
+"""
+
+
+def _assert_shut_down(out):
+    assert out["link"] == _SHUT_DOWN, out["link"]
+    assert out["linkIsFocused"] and out["linkTabIndex"] == "-1", out
+    assert out["linkSize"] == out["readout"], (out["linkSize"], out["readout"])
+    assert out["linkInk"], "the sentence is not in ink"
+    assert out["announced"] and out["announced"][-1] == _SHUT_DOWN, out["announced"]
+    assert out["announced"].count(_SHUT_DOWN) == 1, out["announced"]
+    assert out["red"] == [], f"signal red is still on the page: {out['red']}"
+    assert out["enabled"] == [], f"controls still enabled: {out['enabled']}"
+    stop = out["stop"]
+    assert stop["disabled"] and stop["ariaDisabled"] == "true", stop
+    assert stop["face"] not in ("Stop", "Clear") and not stop["latched"], stop
+    assert stop["keys"] is None, stop
+    assert out["railAlert"] == {"hidden": True, "lines": 0, "dismiss": 0}, out["railAlert"]
+    assert not out["ackOpen"] and out["ackLines"] == 0, out
+    assert out["tray"] == {"collapsed": True, "latest": "Quit from the Web console"}, out["tray"]
+
+
+@needs_browser
+def test_after_quit_while_latched_the_page_reads_as_shut_down(station, tmp_path):
+    """I5 (UXPM5-4): Quit while latched and unconfirmed. Afterwards the rail
+    says only "The station has shut down…" in ink at readout size, focused
+    and announced once; the stop disc is inert (no red, no ring, disabled);
+    the unconfirmed line and its Dismiss, the acknowledgement and the raw
+    error are gone; every control is disabled."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, r"""
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      await sleep(600);
+    """ + _QUIT_AND_READ, tmp_path)
+    _assert_shut_down(out)
+
+
+@needs_browser
+def test_after_quit_while_live_the_disc_is_the_same_inert_disc(station, tmp_path):
+    """I5: Quit unlatched leaves no "Stop" face either: the same end-state."""
+    view, controller, probe = station
+    out = _browse(view, _QUIT_AND_READ, tmp_path)
+    _assert_shut_down(out)
+
+
+# --------------------------------------------------------------------------
+# I6 (Web part): the chord's hint follows the stop's face
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_stop_chord_is_announced_only_while_the_face_is_stop(station, tmp_path):
+    """I6: Ctrl+. stops and never clears (F9). While the face reads "Clear",
+    the button must not advertise the chord as its shortcut, and the rail's
+    "Stop: Ctrl+." hint hides (the stop is already latched); both come back
+    once the latch clears."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      const read = () => page.evaluate(() => {
+        const stop = document.getElementById('full-stop');
+        const hint = document.querySelector('.stop-hint');
+        return { face: stop.textContent.trim(), keys: stop.getAttribute('aria-keyshortcuts'),
+                 hint: Boolean(hint && !hint.hidden && hint.getClientRects().length) };
+      });
+      const r = {};
+      r.live = await read();
+      await page.click('#full-stop');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Clear');
+      r.latched = await read();
+      await api('/api/clear_estop_all', { confirmed: true });
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      r.cleared = await read();
+      return r;
+    """, tmp_path)
+    assert out["live"] == {"face": "Stop", "keys": "Control+Period", "hint": True}, out
+    assert out["latched"] == {"face": "Clear", "keys": None, "hint": False}, out
+    assert out["cleared"] == {"face": "Stop", "keys": "Control+Period", "hint": True}, out
+
+
+# --------------------------------------------------------------------------
+# I8 (audit round 6, WDG6-1): the unconfirmed-stop line cannot be dismissed
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_unconfirmed_stop_line_has_no_dismiss_and_leaves_only_with_the_latch(station, tmp_path):
+    """I8 (WDG6-1, S1): "Stop latched, but X has not confirmed it. Treat it
+    as live." describes hardware the page cannot see. While the latch holds
+    it carries no Dismiss, and a click where Dismiss used to sit leaves it
+    standing; it goes only when the latch clears."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, r"""
+      const r = {};
+      const line = () => page.evaluate(() => {
+        const alert = document.getElementById('rail-alert');
+        const node = Array.from(alert.querySelectorAll('.rail-alert-line'))
+          .find((n) => n.textContent.includes('has not confirmed it'));
+        if (!node) return { present: false, hidden: alert.hidden };
+        const b = node.getBoundingClientRect();
+        return { present: true, hidden: alert.hidden,
+                 dismiss: node.querySelectorAll('button, .rail-alert-dismiss').length,
+                 at: [b.right - 40, b.top + b.height / 2] };
+      });
+      await page.keyboard.down('Control');
+      await page.keyboard.press('.');
+      await page.keyboard.up('Control');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      await sleep(400);
+      r.latched = await line();
+      await page.mouse.click(r.latched.at[0], r.latched.at[1]);
+      await sleep(700);
+      r.afterClick = await line();
+      r.stillLatched = (await api('/api/state')).is_estopped;
+      await api('/api/clear_estop_all', { confirmed: true });
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      await sleep(700);
+      r.cleared = await line();
+      return r;
+    """, tmp_path)
+    assert out["latched"]["present"] and not out["latched"]["hidden"], out
+    assert out["latched"]["dismiss"] == 0, "the unconfirmed-stop line can be dismissed"
+    assert out["stillLatched"] is True
+    assert out["afterClick"]["present"] and not out["afterClick"]["hidden"], out
+    assert out["cleared"] == {"present": False, "hidden": True}, out
+
+
+# --------------------------------------------------------------------------
+# I9 (audit round 6, WDG6-2): phone width with Setup open
+# --------------------------------------------------------------------------
+@needs_browser
+def test_at_phone_width_with_setup_open_nothing_scrolls_sideways(sim_station, tmp_path):
+    """I9 (WDG6-2): at 390x844, Setup reopened after launch, the page does not
+    scroll sideways, every rail number keeps a real width, and in the Setup
+    table no cell paints over its neighbour (the tick box over the row name,
+    the Gamepad select over Status)."""
+    view, controller = sim_station
+    out = _browse(view, r"""
+      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      await page.setViewport({ width: 390, height: 844 });
+      await sleep(400);
+      if (!await page.evaluate(() => document.getElementById('scrim').hidden === false)) {
+        await page.click('#setup-link');
+      }
+      await sleep(800);
+      return page.evaluate(() => {
+        const values = Array.from(document.querySelectorAll('#rail-readouts .readout-value'));
+        const zero = values.filter((v) => v.getBoundingClientRect().width < 1).length;
+        const overlaps = [];
+        const table = document.querySelector('#drawer-body .card-body.table');
+        if (table) {
+          for (const rowNode of table.querySelectorAll('.section-row:not(.table-head)')) {
+            const cells = Array.from(rowNode.children).filter((c) => c.getClientRects().length);
+            const parts = [];
+            for (const c of cells) {
+              const inner = c.querySelectorAll('input, select, button, .row-title, .value');
+              for (const n of (inner.length ? inner : [c])) {
+                // A word that overflows its track paints where its text is,
+                // not where its box is: measure the text itself.
+                let b = n.getBoundingClientRect();
+                if (n.matches('.row-title, .value') && n.textContent.trim()) {
+                  const range = document.createRange();
+                  range.selectNodeContents(n);
+                  b = range.getBoundingClientRect();
+                }
+                if (b.width && b.height) parts.push([n, b]);
+              }
+            }
+            for (let i = 0; i < parts.length; i++) {
+              for (let j = i + 1; j < parts.length; j++) {
+                const [na, a] = parts[i]; const [nb, b] = parts[j];
+                if (na.contains(nb) || nb.contains(na)) continue;
+                const ix = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+                const iy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+                if (ix > 0.5 && iy > 0.5) overlaps.push((na.className || na.tagName) + ' x ' + (nb.className || nb.tagName)
+                  + ' in ' + (rowNode.querySelector('.row-title') || {}).textContent);
+              }
+            }
+          }
+        }
+        return { scrollWidth: document.documentElement.scrollWidth, values: values.length, zero,
+                 drawerOpen: document.getElementById('scrim').hidden === false,
+                 table: Boolean(table), overlaps };
+      });
+    """, tmp_path)
+    assert out["drawerOpen"] and out["table"], out
+    assert out["values"] > 0, out
+    assert out["scrollWidth"] <= 390, f"the page scrolls sideways: {out}"
+    assert out["zero"] == 0, f"{out['zero']} rail numbers have no width"
+    assert out["overlaps"] == [], out["overlaps"]
