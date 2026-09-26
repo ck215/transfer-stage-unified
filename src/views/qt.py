@@ -86,7 +86,7 @@ import time
 import schema as sch
 from events import events
 from views import theme
-from views.base import Dashboard, PanelView, stop_words
+from views.base import Dashboard, PanelView, event_line, stop_words
 
 try:                                    # the module imports without PySide6
     from PySide6.QtCore import (QEasingCurve, QEvent, QEventLoop, QLocale,
@@ -258,10 +258,6 @@ CONFIRM_WORDS = ("Confirm", "Continue", "Cancel")
 #: right of an overview entry's head (a press opens the device alone).
 OVERVIEW = "Overview"
 OPEN_WORD = "Open"
-#: L15: what an image pane says while the model has no picture for it, when
-#: the schema declares no `empty` of its own (the Web view's words).
-FIGURE_EMPTY = {"figure": "No run loaded. Load run opens a saved CSV and "
-                          "plots it here."}
 #: A unit as the operator reads it beside a number.
 UNIT_WORDS = {"C": "°C", "s/C": "s/°C"}
 
@@ -369,30 +365,6 @@ def sentence_case(text):
     words = re.sub(r"\s*:\s*$", "", sentence(text)).split(" ")
     return " ".join(word.lower() if index and re.fullmatch(r"[A-Z][a-z]+", word)
                     else word for index, word in enumerate(words))
-
-
-def quiet_shouting(text):
-    """A SHOUTED word of four letters or more comes down ("FULL STOP" ->
-    "full stop"); nothing else changes, so a device's reply keeps its case."""
-    return " ".join(word.lower() if re.fullmatch(r"[A-Z]{4,}[:.,]?", word) else word
-                    for word in str("" if text is None else text).split(" "))
-
-
-def event_line(event):
-    """An event as the operator reads it (L11): its title in sentence case,
-    then its message - no `[source]` prefix, no Title Case, no shouting.
-    Something that is not an `events.Event` (no title) keeps its text."""
-    title = str(getattr(event, "title", "") or "").strip()
-    message = " ".join(str(getattr(event, "message", "") or "").split())
-    if not title:
-        text = " ".join(str(getattr(event, "text", "") or message).split())
-    else:
-        title = sentence_case(title)
-        text = f"{title}: {quiet_shouting(message)}" if message else title
-    count = int(getattr(event, "count", 1) or 1)
-    if count > 1:
-        text += f" (repeated {count} times)"
-    return text
 
 
 #: L3: why a command is greyed out, in the operator's words: the gate token
@@ -3560,8 +3532,7 @@ class QtPanelView(PanelView, QWidget):
         container.add_wide(element.get("text", ""), plot)
 
     def _make_image(self, container, element):
-        label = FigureLabel(empty=element.get("empty")
-                            or FIGURE_EMPTY.get(element.get("data_command"), ""))
+        label = FigureLabel(empty=element.get("empty", ""))
         self._remember(element, label)
         container.add_wide(element.get("text", ""), label)
 
@@ -5228,7 +5199,10 @@ class QtDashboard(Dashboard, QMainWindow):
         return event_line(event)[:5000]
 
     def _confirm(self, prompt):
-        return ask(self, prompt)
+        """The dashboard's one question from `base.Dashboard` is the clear
+        (`toggle_estop_all`, which clears only while every model is latched):
+        titled, answered by verbs (L14)."""
+        return ask(self, prompt, *CLEAR_WORDS)
 
     # -- panels ------------------------------------------------------------
     def _add_panel(self, name):
@@ -5283,22 +5257,11 @@ class QtDashboard(Dashboard, QMainWindow):
         self.close_model(name)
 
     # -- the global stop ---------------------------------------------------
-    def toggle_estop_all(self):
-        """The disc's press, decided by `stop_words` (L1): a clear only while
-        EVERY model is latched; otherwise a stop of every model, so one
-        model's own switch never takes the stop away from the rest. The clear
-        asks first, titled, answered by verbs (L14)."""
-        words = stop_words(self._stop_state())
-        if words["action"] != "clear":
-            return self.controller.estop_all()
-        result = self.controller.clear_estop_all()
-        if result.needs_confirm and ask(self, result.reason, *CLEAR_WORDS):
-            result = self.controller.clear_estop_all(confirmed=True)
-        return result
-
     def _on_stop_clicked(self):
-        # An open question is answered No first: it never stands between the
-        # operator and the stop, and never says Yes for them afterwards.
+        """The disc's press: `base.Dashboard.toggle_estop_all`, which stops
+        unless every model is latched (L1). An open question is answered No
+        first: it never stands between the operator and the stop, and never
+        says Yes for them afterwards."""
         cancel_pending_confirms()
         self.toggle_estop_all()
         self._sync_stop_button()

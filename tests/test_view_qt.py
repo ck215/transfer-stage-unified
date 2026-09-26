@@ -824,14 +824,14 @@ class _Event:
 
 
 def test_l11_an_event_line_is_its_title_and_message_in_sentence_case():
-    """QT7-12: the band printed "Error [Controller] Stop Not Confirmed: FULL
-    STOP latched ...". No source prefix, no Title Case, no shouting; a
-    device's own words keep their case."""
-    line = qt.event_line(_Event("Stop Not Confirmed",
-                                "FULL STOP latched; Rotator did not confirm."))
-    assert line == "Stop not confirmed: full stop latched; Rotator did not confirm."
-    assert qt.event_line(_Event("Port Silent", "/dev/cu.usbmodem1 said NAK", count=3)) == (
-        "Port silent: /dev/cu.usbmodem1 said NAK (repeated 3 times)")
+    """QT7-12: the band printed "Error [Controller] Stop Not Confirmed: ...".
+    The view draws the one wording `views.base.event_line` gives all three:
+    no source prefix, the title in sentence case."""
+    from views import base
+    assert qt.event_line is base.event_line
+    line = qt.event_line(_Event("Stop Not Confirmed", "Rotator did not confirm the stop."))
+    assert line == "Stop not confirmed: Rotator did not confirm the stop."
+    assert "[" not in qt.event_line(_Event("Port Silent", "no answer", count=3))
 
 
 def test_l9_l14_the_questions_are_the_tk_and_web_words():
