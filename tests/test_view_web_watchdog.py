@@ -322,3 +322,32 @@ def test_a_handler_crash_is_an_error_event(capfd, captured, monkeypatch):
     assert errors[0].needs_ack is False, "a pop-up from a connection thread"
     err = capfd.readouterr().err
     assert "Traceback" not in err, err
+
+
+def test_an_idle_keep_alive_connection_retires_quietly(capfd, monkeypatch):
+    """G1, second half: without a timeout an idle keep-alive thread lived
+    until the browser dropped the socket. `handle_one_request` already turns
+    a socket timeout into close-connection; the handler just never had one.
+    The station's own tab polls every 250 ms, so a connection it is using
+    never idles this long."""
+    assert ApiHandler.timeout == 120
+    monkeypatch.setattr(ApiHandler, "timeout", 0.3)
+    view = WebView(FakeController(), object(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        client = socket.create_connection(("127.0.0.1", view.port), timeout=5)
+        client.sendall(b"GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        reply = b""
+        while b"\r\n\r\n" not in reply:
+            reply += client.recv(4096)
+        body = reply.split(b"\r\n\r\n", 1)[1]
+        length = int(next(line.split(b":")[1] for line in reply.split(b"\r\n")
+                          if line.lower().startswith(b"content-length")))
+        while len(body) < length:
+            body += client.recv(4096)
+        client.settimeout(3)
+        assert client.recv(4096) == b"", "the idle connection was not closed"
+        client.close()
+    finally:
+        view.close()
+    assert capfd.readouterr().err == ""

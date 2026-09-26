@@ -74,6 +74,13 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
     server_version = "station"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    #: Seconds an idle keep-alive connection may park a thread in `readline`
+    #: (G1). `handle_one_request` turns the socket timeout into
+    #: close-connection, so the thread retires quietly instead of living
+    #: until the browser drops the socket. The tab polls every 250 ms and
+    #: beats every 2 s, so a connection it is using never idles this long; a
+    #: connection closed under an idle browser is simply reopened.
+    timeout = 120
 
     # -- what the handler holds -------------------------------------------
     @property
