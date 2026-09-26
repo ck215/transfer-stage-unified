@@ -60,6 +60,8 @@ class FakeProbe(Panel):
         self.stop_confirms = True
         self.jams = 0
         self.loaded = None
+        # G4: how often the detached gamepad log's source was asked for.
+        self.gamepad_calls = 0
 
     # -- what the Controller needs -------------------------------------
     def open(self):
@@ -108,6 +110,8 @@ class FakeProbe(Panel):
                 sch.plot("Red", "series"),
                 sch.image("Figure", "figure"),
                 sch.log_stream("Log", "log_lines"),
+                # G4: behind a button, polled only while its panel is open.
+                sch.log_stream("Gamepad Log:", "gamepad_lines", detached=True),
                 sch.indicator("Fault", "is_faulted"),
                 sch.button("Jam", "jam"),
                 sch.file_open("Load run", "load_run", extensions=("csv",)),
@@ -178,6 +182,10 @@ class FakeProbe(Panel):
     def log_lines(self):
         return ["first line", "second line"]
 
+    def gamepad_lines(self):
+        self.gamepad_calls += 1
+        return ["LX +0.50", "button A down"]
+
     def screen_image(self):
         return {"image": b"\x89PNG\r\n\x1a\nscreen", "width": 2560,
                 "height": 1440, "left": -1000, "top": 0}
@@ -191,6 +199,11 @@ class FakeSetup(Panel):
         self.scanned = 0
         self.ports = ["SIM", "COM3"]
         self.detected = "not found"
+        # G3: the row's Launch box. Ticked here so the existing browser
+        # scenarios find a live Port dropdown; the checkbox test unticks it.
+        self.probe_enabled = True
+        self.ticks = []
+        self.refuse_ticks = 0         # how many ticks to refuse, then accept
 
     @property
     def schema(self):
@@ -204,7 +217,12 @@ class FakeSetup(Panel):
             ),
             sch.section(
                 "Fake Probe",
-                sch.dropdown("Port", "port", "set_port", "port_options"),
+                # G3: the Launch box first, and the dropdown live only while
+                # it is ticked - the real Setup row's shape.
+                sch.checkbox("Launch", "probe_enabled", "set_probe_enabled",
+                             tooltip="Launch Fake Probe"),
+                sch.dropdown("Port", "port", "set_port", "port_options",
+                             enabled_by="probe_enabled"),
                 sch.readonly("Detected:", "detected"),
                 layout="row",
             ),
@@ -220,6 +238,15 @@ class FakeSetup(Panel):
 
     def set_port(self, port=None):
         return port
+
+    def set_probe_enabled(self, flag):
+        # What the browser sent, exactly: a JSON boolean arrives as a bool.
+        self.ticks.append(flag)
+        if self.refuse_ticks:
+            self.refuse_ticks -= 1
+            raise Refused("the row cannot be ticked right now")
+        self.probe_enabled = bool(flag)
+        return self.probe_enabled
 
 
 # --------------------------------------------------------------------------
@@ -312,7 +339,13 @@ def test_setup_carries_every_sections_layout_through_unchanged(station):
     assert [s["layout"] for s in served] == ["column", "row"]
     rows = [s for s in served if s["layout"] == "row"]
     assert [s["title"] for s in rows] == ["Fake Probe"]
-    assert [e["type"] for e in rows[0]["elements"]] == ["dropdown", "readonly"]
+    # G3: the Launch box first; its gate and its accessible name reach the
+    # browser untouched - the server special-cases no element type.
+    assert [e["type"] for e in rows[0]["elements"]] == ["checkbox", "dropdown", "readonly"]
+    box, port = rows[0]["elements"][:2]
+    assert box["tooltip"] == "Launch Fake Probe" and box["command"] == "set_probe_enabled"
+    assert port["enabled_by"] == "probe_enabled"
+    assert data["state"]["values"]["probe_enabled"] is True, "a boolean became a string"
 
 
 def test_a_models_schema_carries_its_section_layout_too(station):
@@ -923,7 +956,8 @@ def test_offline_every_readout_is_muted_and_marked_stale(station, tmp_path):
 
 @needs_browser
 def test_the_stop_has_a_keyboard_path_and_an_ink_focus_ring(station, tmp_path):
-    """F9 + F17: Ctrl+. and Cmd+. stop from inside a text box; Enter on the focused
+    """F9 + F17 + G5: Ctrl+. stops from inside a text box and Meta+. does
+    nothing (one chord on every platform, and no copy names Cmd); Enter on the focused
     mushroom stops; its focus ring is --stop-focus, not the latched trace;
     the clear confirmation opens on Cancel and Enter there does not clear."""
     view, controller, probe = station
@@ -939,9 +973,8 @@ def test_the_stop_has_a_keyboard_path_and_an_ink_focus_ring(station, tmp_path):
       await page.focus('input[name="label"]');
       await page.keyboard.down('Meta'); await page.keyboard.press('Period'); await page.keyboard.up('Meta');
       await sleep(500);
-      r.byCmd = (await api('/api/state')).is_estopped;
-      await api('/api/clear_estop_all', { confirmed: true });
-      await sleep(500);
+      r.byMeta = (await api('/api/state')).is_estopped;
+      r.visible = await page.evaluate(() => document.body.innerText);
       for (let i = 0; i < 40; i++) {
         await page.keyboard.press('Tab');
         if (await page.evaluate(() => document.activeElement.id === 'full-stop')) break;
@@ -968,9 +1001,12 @@ def test_the_stop_has_a_keyboard_path_and_an_ink_focus_ring(station, tmp_path):
       return r;
     """, tmp_path)
     assert out["byShortcut"] is True, "Ctrl+. did not stop from a text box"
-    assert out["byCmd"] is True, "Cmd+. did not stop"
+    assert out["byMeta"] is False, "Meta+. stopped: a chord that exists on one platform"
     assert out["typed"] == "", "the shortcut typed into the entry"
-    assert "Ctrl+." in out["title"] and "Cmd+." in out["title"]
+    assert "Ctrl+." in out["title"] and "Cmd" not in out["title"], out["title"]
+    assert "Ctrl+." in out["visible"], "the rail does not say the shortcut"
+    for word in ("Cmd", "\u2318", "Mac"):
+        assert word not in out["visible"], f"the page names {word!r}"
     assert out["ring"] == out["focusToken"], out
     assert out["byEnter"] is True, "Enter on the focused stop did not stop"
     assert out["defaultFocus"] == "confirm-no", "the clear confirmation defaults to clearing"
@@ -1226,3 +1262,242 @@ def test_quit_asks_first_then_the_page_says_the_station_is_down(station, tmp_pat
     assert out["offline"] and out["cardsInert"] and out["badge"], out
     assert out["stopDisabled"] and out["quitDisabled"], out
     assert out["muted"] and out["rackDimmed"], out
+
+
+# --------------------------------------------------------------------------
+# G3: the Setup row's Launch checkbox
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_launch_box_sends_the_new_boolean_and_gates_the_port(station, tmp_path):
+    """G3: a real checkbox, first column of the Setup table under a "Launch"
+    caption. Unticking sends `false` and greys the Port dropdown out (really
+    disabled); ticking sends `true` and brings it back. The box follows the
+    MODEL: a refused tick is undone by the next poll, and a tick made on the
+    station side shows up without anyone touching the box."""
+    view, _, _ = station
+    setup = view.setup
+    out = _browse(view, r"""
+      const r = {};
+      await page.click('#setup-link');
+      await sleep(400);
+      const box = '#drawer-body input[type="checkbox"]';
+      r.shape = await page.evaluate((sel) => {
+        const b = document.querySelector(sel);
+        const row = b.closest('.section-row');
+        const cells = Array.from(row.children).filter((c) => c.classList.contains('cell'));
+        const head = Array.from(document.querySelectorAll('#drawer-body .table-head .head-cell'))
+          .map((c) => c.textContent);
+        const label = b.id && document.querySelector('label[for="' + b.id + '"]');
+        return { firstCell: cells[0].contains(b), head, label: label && label.textContent,
+                 name: b.getAttribute('aria-label'), title: b.title, checked: b.checked };
+      }, box);
+      const portDisabled = () => page.evaluate(
+        () => document.querySelector('#drawer-body select').disabled);
+      r.portBefore = await portDisabled();
+      await page.click(box);
+      await until(() => document.querySelector('#drawer-body select').disabled);
+      r.afterUntick = { port: await portDisabled(),
+        checked: await page.evaluate((sel) => document.querySelector(sel).checked, box) };
+      await page.click(box);
+      await until(() => !document.querySelector('#drawer-body select').disabled);
+      r.afterTick = { port: await portDisabled(),
+        checked: await page.evaluate((sel) => document.querySelector(sel).checked, box) };
+      return r;
+    """, tmp_path)
+    assert out["shape"]["firstCell"], out["shape"]
+    assert out["shape"]["head"][0] == "Launch", out["shape"]
+    assert out["shape"]["label"] == "Launch", out["shape"]
+    assert out["shape"]["name"] == "Launch Fake Probe", out["shape"]
+    assert out["shape"]["title"] == "Launch Fake Probe", out["shape"]
+    assert out["shape"]["checked"] is True, out["shape"]
+    assert out["portBefore"] is False
+    assert out["afterUntick"] == {"port": True, "checked": False}, out
+    assert out["afterTick"] == {"port": False, "checked": True}, out
+    # JSON booleans, never the strings "true" / "false".
+    assert setup.ticks == [False, True], setup.ticks
+
+
+@needs_browser
+def test_the_launch_box_follows_the_model_not_the_click(station, tmp_path):
+    """G3: the state poll sets the box; a refused untick is put back by it,
+    and a row the station unticked by itself (not through the box) shows
+    unticked with its Port dropdown greyed out."""
+    view, _, _ = station
+    setup = view.setup
+    setup.refuse_ticks = 1
+    out = _browse(view, r"""
+      const r = {};
+      await page.click('#setup-link');
+      await sleep(400);
+      const box = '#drawer-body input[type="checkbox"]';
+      await page.click(box);
+      await sleep(900);
+      r.afterRefused = await page.evaluate((sel) => document.querySelector(sel).checked, box);
+      r.portAfterRefused = await page.evaluate(() => document.querySelector('#drawer-body select').disabled);
+      await api('/api/run', { name: '__setup__', command: 'set_probe_enabled', inputs: {}, args: [false] });
+      await until(() => !document.querySelector('#drawer-body input[type="checkbox"]').checked);
+      r.fromModel = await page.evaluate((sel) => document.querySelector(sel).checked, box);
+      r.portFromModel = await page.evaluate(() => document.querySelector('#drawer-body select').disabled);
+      return r;
+    """, tmp_path)
+    assert out["afterRefused"] is True, "a refused untick left the box unticked"
+    assert out["portAfterRefused"] is False
+    assert out["fromModel"] is False and out["portFromModel"] is True, out
+    assert setup.ticks == [False, False], setup.ticks
+
+
+
+# --------------------------------------------------------------------------
+# G4: the Gamepad log behind a button, in an in-page panel
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_gamepad_log_opens_in_one_panel_that_never_covers_the_stop(station, tmp_path):
+    """G4: a detached log stream is a "Gamepad log…" button, not a feed. It
+    opens ONE non-modal panel under the rail (the stop stays what a click at
+    its centre lands on, and it stops); pressing the button again raises the
+    same panel; Escape closes it and focus returns to the button; the source
+    command is asked for only while the panel is open; closing the card
+    removes the panel."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      const r = {};
+      const asked = [];
+      page.on('request', (q) => { if (q.url().includes('command=gamepad_lines')) asked.push(Date.now()); });
+      const opener = () => page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…'));
+      r.shape = await page.evaluate(() => {
+        const card = Array.from(document.querySelectorAll('.card')).find((c) => !c.classList.contains('setup-card'));
+        const button = Array.from(card.querySelectorAll('button')).find((b) => b.textContent === 'Gamepad log…');
+        return { button: Boolean(button),
+                 feeds: Array.from(card.querySelectorAll('pre.feed')).map((f) => f.getAttribute('aria-label')),
+                 popup: button && button.getAttribute('aria-haspopup'),
+                 expanded: button && button.getAttribute('aria-expanded') };
+      });
+      await sleep(2500);
+      r.askedWhileClosed = asked.length;
+      await page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…').click());
+      await until(() => { const w = document.querySelector('.log-window'); return w && !w.hidden
+        && w.querySelector('.feed').textContent.includes('button A down'); });
+      r.open = await page.evaluate(() => {
+        const w = document.querySelector('.log-window');
+        const b = w.getBoundingClientRect();
+        const rail = document.querySelector('.rail');
+        w.dataset.mark = 'first';
+        return { role: w.getAttribute('role'), modal: w.getAttribute('aria-modal'),
+                 title: document.getElementById(w.getAttribute('aria-labelledby')).textContent,
+                 lines: w.querySelector('.feed').textContent,
+                 below: b.top >= rail.getBoundingClientRect().bottom - 0.5,
+                 z: Number(getComputedStyle(w).zIndex), railZ: Number(getComputedStyle(rail).zIndex),
+                 overlay: w.classList.contains('overlay') || Boolean(w.closest('.overlay')),
+                 focusIn: w.contains(document.activeElement),
+                 expanded: Array.from(document.querySelectorAll('.card button'))
+                   .find((x) => x.textContent === 'Gamepad log…').getAttribute('aria-expanded') };
+      });
+      r.stopOnTop = await page.evaluate(%s);
+      const box = await page.evaluate(() => {
+        const b = document.getElementById('full-stop').getBoundingClientRect();
+        return [b.left + b.width / 2, b.top + b.height / 2];
+      });
+      await page.mouse.click(box[0], box[1]);
+      await sleep(600);
+      r.latched = (await api('/api/state')).is_estopped;
+      r.stillOpen = await page.evaluate(() => !document.querySelector('.log-window').hidden);
+      await page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…').click());
+      await sleep(200);
+      r.again = await page.evaluate(() => ({
+        count: document.querySelectorAll('.log-window').length,
+        mark: document.querySelector('.log-window').dataset.mark,
+        focusIn: document.querySelector('.log-window').contains(document.activeElement) }));
+      await page.keyboard.press('Escape');
+      await sleep(300);
+      r.closed = await page.evaluate(() => ({
+        hidden: !document.querySelector('.log-window') || document.querySelector('.log-window').hidden,
+        focus: document.activeElement && document.activeElement.textContent,
+        expanded: document.activeElement && document.activeElement.getAttribute('aria-expanded') }));
+      r.askedWhileOpen = asked.length - r.askedWhileClosed;
+      const before = asked.length;
+      await sleep(2500);
+      r.askedAfterClose = asked.length - before;
+      await page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…').click());
+      await until(() => document.querySelector('.log-window') && !document.querySelector('.log-window').hidden);
+      await page.click('.log-window .log-window-close');
+      await sleep(300);
+      r.byClose = await page.evaluate(() => ({
+        hidden: document.querySelector('.log-window').hidden,
+        focus: document.activeElement && document.activeElement.textContent }));
+      await page.evaluate(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent === 'Gamepad log…').click());
+      await api('/api/close_model', { name: 'Fake Probe' });
+      await until(() => !Array.from(document.querySelectorAll('.card')).some((c) => !c.classList.contains('setup-card')));
+      r.afterCardClosed = await page.evaluate(() => document.querySelectorAll('.log-window').length);
+      return r;
+    """ % _STOP_HIT, tmp_path)
+    assert out["shape"]["button"], out["shape"]
+    assert out["shape"]["feeds"] == ["Log"], "the detached log was drawn as a feed on the card"
+    assert out["shape"]["popup"] == "dialog" and out["shape"]["expanded"] == "false", out["shape"]
+    assert out["askedWhileClosed"] == 0, "the closed log's source was polled"
+    opened = out["open"]
+    assert opened["role"] == "dialog" and opened["modal"] == "false", opened
+    assert opened["title"] == "Fake Probe — Gamepad log", opened
+    assert "LX +0.50" in opened["lines"] and "button A down" in opened["lines"], opened
+    assert opened["below"] and 0 < opened["z"] < opened["railZ"], opened
+    assert not opened["overlay"], "the log panel is an overlay scrim"
+    assert opened["focusIn"] and opened["expanded"] == "true", opened
+    assert out["stopOnTop"], "the log panel covers the stop"
+    assert out["latched"] is True, "a click on the stop with the log open did not stop"
+    assert out["stillOpen"] is True
+    assert out["again"] == {"count": 1, "mark": "first", "focusIn": True}, out["again"]
+    assert out["closed"] == {"hidden": True, "focus": "Gamepad log…", "expanded": "false"}, out["closed"]
+    assert out["askedWhileOpen"] >= 1, "the open log was never polled"
+    assert out["askedAfterClose"] == 0, "the log was polled after it closed"
+    assert out["byClose"] == {"hidden": True, "focus": "Gamepad log…"}, out["byClose"]
+    assert out["afterCardClosed"] == 0, "the panel outlived its card"
+
+
+# --------------------------------------------------------------------------
+# G6 (round-4 audit IMP-0): the unconfirmed-stop line is state, not an event
+# --------------------------------------------------------------------------
+@needs_browser
+def test_the_unconfirmed_stop_line_goes_when_the_latch_clears(station, tmp_path):
+    """G6: a stop a model did not confirm puts a line on the rail; once the
+    latch is cleared - here from ANOTHER client, so only the poll can know -
+    the line goes and the rail's alert region is hidden again, instead of
+    claiming a live, unconfirmed stop beside a face that reads "Stop". A
+    later stop that is again unconfirmed brings the line back; clearing it
+    through the page's own control removes it too."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, r"""
+      const r = {};
+      const rail = () => page.evaluate(() => ({
+        hidden: document.getElementById('rail-alert').hidden,
+        text: document.getElementById('rail-alert').textContent,
+        face: document.querySelector('#full-stop .mushroom-face').textContent }));
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      await sleep(400);
+      r.stopped = await rail();
+      await api('/api/clear_estop_all', { confirmed: true });
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      await sleep(700);
+      r.clearedElsewhere = await rail();
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('rail-alert').hidden);
+      await sleep(400);
+      r.again = await rail();
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('confirm-modal').hidden);
+      await page.click('#confirm-yes');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      await sleep(700);
+      r.clearedHere = await rail();
+      return r;
+    """, tmp_path)
+    line = "Stop latched, but Fake Probe has not confirmed it. Treat it as live."
+    assert out["stopped"]["face"] == "Clear" and line in out["stopped"]["text"], out
+    assert out["clearedElsewhere"] == {"hidden": True, "text": "", "face": "Stop"}, out
+    assert out["again"]["face"] == "Clear" and line in out["again"]["text"], out
+    assert out["clearedHere"] == {"hidden": True, "text": "", "face": "Stop"}, out

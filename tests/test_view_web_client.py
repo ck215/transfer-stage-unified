@@ -145,12 +145,54 @@ def test_entries_are_not_overwritten_while_they_are_being_typed_in():
 
 def test_gating_covers_every_element_including_entries():
     refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
-    assert "widget.setEnabled(isEnabled(element, mode))" in refresh, (
+    # G3: the panel's values go with the mode, for `enabled_by`.
+    assert "widget.setEnabled(isEnabled(element, mode, this.values))" in refresh, (
         "gating must be applied to every widget in the loop, not to the "
         "buttons the renderer happens to remember")
     # the rule itself, not a second opinion about it
-    gate = _body(r"function isEnabled\(element, mode\) \{(.*?)\n\}")
+    gate = _body(r"function isEnabled\(element, mode, values\) \{(.*?)\n\}")
     assert "disabled_when" in gate and "enabled_when" in gate
+    assert "enabled_by" in gate
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_enabled_by_gates_exactly_as_schema_is_enabled_does():
+    """G3: `sch.is_enabled(element, mode, values)`, mirrored and checked
+    against the Python rule case by case: an element with `enabled_by` is
+    live only while that value is truthy, the mode gates still apply, and a
+    caller without values skips the rule."""
+    cases = [
+        ({"enabled_by": "on"}, "idle", {"on": False}),
+        ({"enabled_by": "on"}, "idle", {"on": True}),
+        ({"enabled_by": "on"}, "idle", {}),
+        ({"enabled_by": "on"}, "idle", None),
+        ({"enabled_by": "on", "disabled_when": ["run"]}, "run", {"on": True}),
+        ({"enabled_by": "on", "enabled_when": ["ready"]}, "ready", {"on": True}),
+        ({"enabled_by": "on", "enabled_when": ["ready"]}, "idle", {"on": True}),
+        ({"disabled_when": ["run"]}, "run", {"on": True}),
+        ({}, "idle", {"on": False}),
+    ]
+    for element, mode, values in cases:
+        want = sch.is_enabled(element, mode, values)
+        got = _node_value(f"isEnabled({json.dumps(element)}, {json.dumps(mode)}, "
+                          f"{json.dumps(values)})")
+        assert got is want, (element, mode, values)
+
+
+def test_a_checkbox_sends_the_new_value_read_from_the_model():
+    """G3: `PanelView._run_checkbox`, mirrored: ONE argument, the new
+    boolean, computed from the model's value rather than the widget's (a box
+    drawn one poll behind still flips the right way). The box is set from
+    the state on every poll, written only when it differs."""
+    run = _body(r"\n  runCheckbox\(element\) \{(.*?)\n  \}")
+    assert "Boolean(this.values[element.model_attr])" in run
+    assert "this.run(element, [!on])" in run
+    box = _body(r"function renderCheckbox\(panel, element\) \{(.*?)\n\}")
+    assert "type = 'checkbox'" in box and "panel.runCheckbox(element)" in box
+    assert "labelControl(node, input, element)" in box
+    assert "if (input.checked !== next) input.checked = next" in box
+    refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
+    assert "kind === 'checkbox'" in refresh
 
 
 def test_a_stale_state_is_marked_at_the_same_threshold_as_the_desktop_views():
@@ -178,6 +220,20 @@ def test_the_global_full_stop_follows_the_state_not_the_click():
     assert "this.stopAll()" in toggle and "/api/clear_estop_all" in toggle
     assert "/api/estop_all" in _body(r"\n  async stopAll\(\) \{(.*?)\n  \}")
     assert "needs_confirm" in toggle, "the latch cleared without asking"
+
+
+def test_the_unconfirmed_stop_line_follows_the_latch_from_the_poll():
+    """G6 (round-4 IMP-0): the line is written by every stop and dropped by
+    the poll once the latch reads clear - so a clear from another client
+    drops it too - but never by an answer asked for before the stop."""
+    apply = _body(r"\n  async applyState\(state, askedAt\) \{(.*?)\n  \}")
+    assert "this.forgetUnconfirmed(Boolean(state.is_estopped), askedAt)" in apply
+    forget = _body(r"\n  forgetUnconfirmed\(isEstopped, askedAt\) \{(.*?)\n  \}")
+    assert "askedAt < (this.unconfirmedAt || 0)" in forget
+    assert "this.setRailLine('unconfirmed', '')" in forget
+    stop = _body(r"\n  async stopAll\(\) \{(.*?)\n  \}")
+    assert "this.unconfirmedAt = Date.now()" in stop
+    assert "this.setRailLine('unconfirmed', unconfirmed.length" in stop
 
 
 def test_model_cards_can_be_closed_and_a_closed_model_can_be_reopened():
@@ -251,9 +307,10 @@ def test_a_short_row_still_lines_its_status_up_with_the_others():
 
 @pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
 def test_a_row_of_commands_spans_the_table_instead_of_setting_its_widths():
-    """Setup's Launch row carries the whole selection summary. In a shared
-    grid that one long sentence sets the width of every model row's first
-    column, so a row that holds a command spans the table instead."""
+    """Setup's Devices and Launch rows hold commands. In a shared grid their
+    buttons and their sentence (the scan status; the selection count, or the
+    reason Launch is greyed out) would set the widths of the model rows'
+    columns, so a row that holds a command spans the table instead."""
     data_row = {"title": "Stepper Probe", "layout": "row", "elements": [
         {"type": "readonly"}, {"type": "dropdown"}, {"type": "dropdown"},
         {"type": "readonly"}]}
@@ -265,6 +322,13 @@ def test_a_row_of_commands_spans_the_table_instead_of_setting_its_widths():
     # the command row's five elements must not widen the data rows
     assert _node_value(
         f"rowColumnCount({json.dumps([data_row, launch_row])})") == 4
+    # G3: the Launch checkbox is a column of the table like any other cell.
+    ticked_row = {"title": "Stepper Probe", "layout": "row", "elements": [
+        {"type": "checkbox"}, {"type": "dropdown"}, {"type": "dropdown"},
+        {"type": "readonly"}]}
+    assert _node_value(f"isCommandRow({json.dumps(ticked_row)})") is False
+    assert _node_value(
+        f"rowColumnCount({json.dumps([ticked_row, launch_row])})") == 4
     build = _body(r"\n  build\(\) \{(.*?)\n  \}")
     assert "isCommandRow(section)" in build and "' section-span'" in build
     assert "if (isRow && !spans)" in build, (
@@ -481,6 +545,19 @@ def test_the_rail_derives_each_models_key_numbers_from_its_own_schema():
     assert "transition-duration: 0s !important" in reduced
 
 
+def test_the_setup_drawers_table_has_a_narrow_launch_column_first():
+    """G3: the drawer overrides the table's tracks (name, then one per
+    cell); with the Launch box that is name, Launch, Port, Gamepad, Status,
+    and the Launch track is only as wide as the box."""
+    rule = re.search(r"\.drawer \.card-body\.table\s*\{[^}]*grid-template-columns:([^;]*);",
+                     STYLES)
+    assert rule, "the drawer no longer shapes Setup's table"
+    tracks = re.findall(r"minmax\([^)]*\)|max-content|min-content|auto|[0-9.]+(?:rem|fr)",
+                        rule.group(1).replace("!important", ""))
+    assert len(tracks) == 5, tracks
+    assert tracks[1] in ("max-content", "min-content", "auto"), tracks
+
+
 def test_every_dropdown_is_the_same_width_and_the_log_is_compact():
     assert re.search(r"\n\.select\s*\{[^}]*width:\s*10rem", STYLES), (
         "dropdowns sized themselves from whatever was chosen")
@@ -624,8 +701,22 @@ def test_the_stop_face_stays_legible_and_its_focus_is_not_the_latch():
     assert highlight and int(highlight.group(1)) >= 95, "the highlight washes out the word"
     ring = re.search(r"\.mushroom:focus-visible\s*\{([^}]*)\}", STYLES)
     assert ring and "var(--stop-focus)" in ring.group(1) and "trace" not in ring.group(1)
-    assert 'aria-keyshortcuts="Control+Period Meta+Period"' in INDEX
-    assert "Ctrl+." in INDEX and "Cmd+." in INDEX, "the rail does not say the shortcut"
+    # G5 (owner ruling 2026-09-25): one chord on every platform.
+    assert 'aria-keyshortcuts="Control+Period"' in INDEX
+    assert "Ctrl+." in INDEX, "the rail does not say the shortcut"
+
+
+def test_no_shortcut_or_copy_exists_on_one_platform_only():
+    """G5 (owner ruling 2026-09-25: no platform-specific UI). Ctrl+. is the
+    stop chord everywhere; nothing listens for the Meta key, and no copy the
+    operator can read or hear names Cmd or the Command key or a Mac."""
+    assert "metaKey" not in CODE, "a Meta/Cmd chord is bound"
+    stop = _body(r"window\.addEventListener\('keydown', \(event\) => \{(.*?)\n    \}, true\);")
+    assert "event.ctrlKey" in stop and "STOP_KEY" in stop
+    for text, where in ((CODE, "app.js"), (INDEX, "index.html")):
+        for word in ("Cmd", "\u2318", "Meta", "on a Mac", "navigator.platform", "userAgent"):
+            assert word not in text, f"{where} names {word!r}"
+    assert "const STOP_KEY_HINT = 'Ctrl+.';" in APP_JS
 
 
 def test_every_overlay_starts_below_the_rail():
@@ -644,6 +735,40 @@ def test_consecutive_commands_are_one_action_group():
     assert re.search(r"\.drawer \.section-span > \.actions:last-child\s*\{[^}]*"
                      r"flex:\s*1 0 100%", STYLES), (
         "Setup's Launch row crowds its summary and four commands onto one line")
+
+
+def test_a_detached_log_is_a_button_and_is_polled_only_while_open():
+    """G4: `sch.log_stream(..., detached=True)` is drawn as a button that
+    opens an in-page panel, and its source is polled only while the panel is
+    open - `PanelView._wants_data`, mirrored as `PanelCard.wantsData`."""
+    stream = _body(r"function renderLogStream\(panel, element\) \{(.*?)\n\}")
+    assert "if (element.detached) return renderDetachedLog(panel, element);" in stream
+    detached = _body(r"function renderDetachedLog\(panel, element\) \{(.*?)\n\}")
+    assert "'section'" in detached and "'aria-modal', 'false'" in detached
+    assert "'overlay'" not in detached, "the log panel must not be a scrim (F1)"
+    assert "isOpen" in detached and "dispose" in detached
+    refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
+    assert "if (wantsData && this.wantsData(widget)) this.loadData(widget);" in refresh
+    wants = _body(r"\n  wantsData\(widget\) \{(.*?)\n  \}")
+    assert "widget.isOpen" in wants
+    close = _body(r"\n  close\(\) \{(.*?)\n  \}")
+    assert "widget.dispose" in close, "a closed card leaves its log panel behind"
+
+
+def test_the_log_panel_sits_under_the_rail_and_under_a_confirmation():
+    """G4 + F1: the panel starts below the rail and is lower in z-order than
+    both the rail (the stop stays clickable) and the overlays (a
+    confirmation still covers it), and higher than the drawer's scrim."""
+    rule = re.search(r"\n\.log-window\s*\{([^}]*)\}", STYLES)
+    assert rule, "no .log-window rule"
+    z = int(re.search(r"z-index:\s*(\d+)", rule.group(1)).group(1))
+    rail = int(re.search(r"\n\.rail\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
+    overlay = int(re.search(r"\n\.overlay\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
+    scrim = int(re.search(r"\n\.scrim\s*\{[^}]*?z-index:\s*(\d+)", STYLES).group(1))
+    assert scrim < z < overlay < rail, (scrim, z, overlay, rail)
+    assert "position: fixed" in rule.group(1)
+    assert re.search(r"top:\s*calc\(var\(--rail-h\)", rule.group(1)), (
+        "the panel does not start below the rail")
 
 
 def test_empty_data_elements_say_what_to_do_next():

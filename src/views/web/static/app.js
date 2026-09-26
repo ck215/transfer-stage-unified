@@ -24,12 +24,12 @@ const SETUP_NAME = '__setup__';
 //: How many of a model's key numbers the status rail carries. More than this
 //: and the rail stops being readable at a glance, which is its whole job.
 const RAIL_READOUTS = 4;
-//: The keyboard path to the stop (F9): Ctrl+. - Cmd+. on a Mac - the chord
-//: the Tk view already ships and Qt adopts, so the stop has one shortcut in
-//: every view. It works with focus in a text box. It only ever STOPS;
-//: clearing the latch stays a deliberate, confirmed act.
+//: The keyboard path to the stop (F9): Ctrl+., the one chord on every
+//: platform and in every view (G5, owner ruling 2026-09-25: no shortcut
+//: exists on one OS only). It works with focus in a text box. It only ever
+//: STOPS; clearing the latch stays a deliberate, confirmed act.
 const STOP_KEY = '.';
-const STOP_KEY_HINT = 'Ctrl+. (Cmd+. on a Mac)';
+const STOP_KEY_HINT = 'Ctrl+.';
 //: How many characters of a dropdown option are shown before it is elided
 //: from the middle: the tail of a port or gamepad name is what tells two
 //: devices apart, so the middle goes, never the end (F15).
@@ -85,7 +85,12 @@ async function apiPostChecked(path, body) {
 // ==========================================================================
 // schema.is_enabled, mirrored. One rule, three views.
 // ==========================================================================
-function isEnabled(element, mode) {
+function isEnabled(element, mode, values) {
+  // G3: an element with `enabled_by` is live only while that value (a Launch
+  // checkbox's) is true. A caller without values skips this rule, as the
+  // Python one does; the mode gates below still apply either way.
+  const by = element.enabled_by;
+  if (by && values !== null && values !== undefined && !values[by]) return false;
   const disabled = element.disabled_when;
   if (disabled && disabled.indexOf(mode) !== -1) return false;
   const enabled = element.enabled_when;
@@ -238,10 +243,12 @@ function isRowSection(section) {
 //: Element types that DO something rather than say something.
 const COMMAND_TYPES = ['button', 'file_save', 'file_open'];
 
-/** A row of commands is not a table row: Setup's Launch row carries the
- *  whole selection summary, and in a shared grid that one long sentence
- *  widens the first column of every model row. A row that holds a command
- *  spans the table instead of lining up with it. */
+/** A row of commands is not a table row: Setup's Devices and Launch rows
+ *  hold buttons and a sentence (the scan status; the selection count, or
+ *  while scanning why Launch waits), and in a shared grid those would set the
+ *  widths of every model row's columns. A row that holds a command spans the
+ *  table instead of lining up with it. A checkbox is not a command: the
+ *  Launch box is a column of each model row (G3). */
 function isCommandRow(section) {
   return isRowSection(section)
     && (section.elements || []).some((e) => COMMAND_TYPES.indexOf(e.type) !== -1);
@@ -586,6 +593,40 @@ function renderStopToggle(panel, element) {
   };
 }
 
+/** A tick box (G3): the box IS the value. Its caption is the row's label;
+ *  the schema's tooltip, when there is one, is its accessible name and its
+ *  title, so a column of "Launch" boxes reads "Launch Stepper probe", ...
+ *  The box is set from the state on every poll and never trusted: a change
+ *  sends the NEW value computed from the model (PanelCard.runCheckbox), and
+ *  the poll after the answer puts the box where the model says it is. */
+function renderCheckbox(panel, element) {
+  const node = row(element, 'check');
+  const input = make('input', 'checkbox');
+  input.type = 'checkbox';
+  labelControl(node, input, element);
+  input.name = element.model_attr || '';
+  if (element.tooltip) {
+    input.setAttribute('aria-label', element.tooltip);
+    input.title = element.tooltip;
+  }
+  input.addEventListener('change', () => panel.runCheckbox(element));
+  node.appendChild(input);
+  return {
+    node,
+    setOn: (on) => {
+      // Diffed against the box itself, not a remembered value: a click the
+      // model refused has flipped the box, and only this puts it back.
+      const next = Boolean(on);
+      if (input.checked !== next) input.checked = next;
+    },
+    setEnabled: (flag) => {
+      if (input.disabled === !flag) return;
+      input.disabled = !flag;
+      node.classList.toggle('disabled', !flag);
+    },
+  };
+}
+
 function renderDropdown(panel, element) {
   const node = row(element);
   const select = make('select', 'select');
@@ -793,6 +834,7 @@ function renderIndicator(panel, element) {
 }
 
 function renderLogStream(panel, element) {
+  if (element.detached) return renderDetachedLog(panel, element);
   const node = row(element, 'wide');
   const feed = make('pre', 'feed');
   feed.dataset.empty = emptyText(element, element.source_command);
@@ -812,6 +854,120 @@ function renderLogStream(panel, element) {
   };
 }
 
+/** A detached log stream (G4): a button in the element's place, opening ONE
+ *  non-modal panel that holds the feed. The panel is not an overlay - there
+ *  is no scrim, the page behind it stays live - and it sits under the rail
+ *  in z-order, so the stop is never covered (F1). Escape or Close shuts it
+ *  and gives focus back to the button (F12); pressing the button again
+ *  brings the open panel forward instead of making a second one. Its source
+ *  is polled only while it is open (PanelCard.wantsData), and it goes when
+ *  its card goes. */
+function renderDetachedLog(panel, element) {
+  const node = make('div', 'row opener');
+  const caption = sentenceCase(element.text || element.source_command || 'log');
+  const button = make('button', 'button role-neutral', caption + '…');
+  button.type = 'button';
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.setAttribute('aria-expanded', 'false');
+  node.appendChild(button);
+  const dashboard = panel.dashboard;
+  let win = null;
+  let feed = null;
+  let widget = null;
+
+  const isOpen = () => Boolean(win && !win.hidden && win.isConnected);
+
+  const build = () => {
+    controlSerial += 1;
+    const titleId = 'log-window-title-' + controlSerial;
+    win = make('section', 'log-window');
+    win.id = 'log-window-' + controlSerial;
+    win.setAttribute('role', 'dialog');
+    win.setAttribute('aria-modal', 'false');
+    win.setAttribute('aria-labelledby', titleId);
+    win.tabIndex = -1;
+    win.hidden = true;
+    const head = make('header', 'log-window-head');
+    const title = make('h2', 'log-window-title',
+                       sentence(panel.title || panel.name) + ' — ' + caption);
+    title.id = titleId;
+    title.setAttribute('translate', 'no');
+    const close = make('button', 'ghost log-window-close', 'Close');
+    close.type = 'button';
+    close.title = 'Close the ' + caption.toLowerCase() + ' (Escape)';
+    close.addEventListener('click', () => hide());
+    head.appendChild(title);
+    head.appendChild(close);
+    feed = make('pre', 'feed log-window-feed');
+    feed.dataset.empty = emptyText(element, element.source_command);
+    feed.tabIndex = 0;
+    feed.setAttribute('aria-label', caption);
+    win.appendChild(head);
+    win.appendChild(feed);
+    // Escape inside the panel closes it. The page's own Escape handler
+    // leaves a key that started in here to this one (Dashboard).
+    win.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      hide();
+    });
+    button.setAttribute('aria-controls', win.id);
+    document.body.appendChild(win);
+  };
+
+  const show = () => {
+    if (!win) build();
+    if (!isOpen()) {
+      win.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      if (dashboard) dashboard.openFloating(win);
+      // Not a second wait for the data cadence: it opens with its lines.
+      panel.loadData(widget);
+    } else if (dashboard) {
+      dashboard.raiseFloating(win);
+    }
+    win.focus({ preventScroll: true });
+  };
+
+  const hide = () => {
+    if (!isOpen()) return;
+    const hadFocus = win.contains(document.activeElement);
+    win.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+    if (dashboard) dashboard.closeFloating(win);
+    if (hadFocus || document.activeElement === document.body) {
+      if (dashboard) dashboard.restoreFocus(button, dashboard.dom.cards);
+      else button.focus({ preventScroll: true });
+    }
+  };
+
+  button.addEventListener('click', show);
+  widget = {
+    node,
+    dataCommand: element.source_command,
+    isOpen,
+    setData: (data) => {
+      if (!feed) return;
+      const text = ((data && data.lines) || []).join('\n');
+      if (feed.textContent === text) return;
+      feed.textContent = text;
+      feed.scrollTop = feed.scrollHeight;
+    },
+    setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
+    /** The card is going: so is its panel. */
+    dispose: () => {
+      if (!win) return;
+      const hadFocus = win.contains(document.activeElement);
+      if (dashboard) dashboard.closeFloating(win);
+      win.remove();
+      win = null;
+      feed = null;
+      if (hadFocus && dashboard) dashboard.restoreFocus(null, dashboard.dom.cards);
+    },
+  };
+  return widget;
+}
+
 function renderInternal(panel, element) {
   // Declared so the conformance test passes and so an `internal` element
   // cannot silently fall through to "nothing rendered, nothing said".
@@ -823,6 +979,7 @@ const ELEMENT_RENDERERS = {
   entry: renderEntry,
   button: renderButton,
   toggle: renderToggle,
+  checkbox: renderCheckbox,
   dropdown: renderDropdown,
   region_select: renderRegionSelect,
   file_save: renderFileSave,
@@ -1148,6 +1305,14 @@ class PanelCard {
     return this.run(element, on ? (element.off_args || []) : (element.on_args || []));
   }
 
+  /** `PanelView._run_checkbox`: one argument, the new boolean, read from
+   *  the model rather than the box - a box drawn one poll behind still
+   *  flips the right way. */
+  runCheckbox(element) {
+    const on = Boolean(this.values[element.model_attr]);
+    return this.run(element, [!on]);
+  }
+
   async loadOptions(element, select) {
     let answer;
     try {
@@ -1228,12 +1393,12 @@ class PanelCard {
         if (!widget.isDirty()) widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
       } else if ((kind === 'readonly' || kind === 'region_select' || kind === 'dropdown') && attr) {
         widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
-      } else if (kind === 'toggle' || kind === 'indicator') {
+      } else if (kind === 'toggle' || kind === 'indicator' || kind === 'checkbox') {
         widget.setOn(Boolean(this.values[attr]));
       } else if (kind === 'plot' || kind === 'image' || kind === 'log_stream') {
-        if (wantsData) this.loadData(widget);
+        if (wantsData && this.wantsData(widget)) this.loadData(widget);
       }
-      widget.setEnabled(isEnabled(element, mode));
+      widget.setEnabled(isEnabled(element, mode, this.values));
     }
     // A lost device freezes the numbers even while the model's own loop
     // keeps ticking, so `age` alone would call them fresh (F3, HC-1).
@@ -1267,6 +1432,13 @@ class PanelCard {
   setAlert(text) {
     putText(this.alert, text);
     if (this.alert.hidden !== !text) this.alert.hidden = !text;
+  }
+
+  /** `PanelView._wants_data`: whether a data element is polled now. A
+   *  detached log (G4) only while its panel is open; everything else,
+   *  always. */
+  wantsData(widget) {
+    return widget.isOpen ? widget.isOpen() : true;
   }
 
   loadData(widget) {
@@ -1324,6 +1496,9 @@ class PanelCard {
   }
 
   close() {
+    for (const widget of this.widgets) {
+      if (widget.dispose) widget.dispose();
+    }
     this.widgets = [];
     if (this.node.parentNode) this.node.parentNode.removeChild(this.node);
   }
@@ -1373,6 +1548,9 @@ class Dashboard {
     this.ackQueue = [];
     this.confirmPending = null;
     this.isShutDown = false;
+    //: The open in-page panels (a detached log's, G4), oldest first. They sit
+    //: under the rail and above the rack, and go inert under an overlay.
+    this.floating = [];
     this.dom = {
       stop: document.getElementById('full-stop'),
       stopFace: document.querySelector('.mushroom-face'),
@@ -1416,13 +1594,13 @@ class Dashboard {
     this.dom.drawerClose.addEventListener('click', () => this.setDrawerOpen(false));
     this.dom.scrim.addEventListener('click', () => this.setDrawerOpen(false));
     // One keyboard handler, in the capture phase so nothing on the page can
-    // swallow it first. Ctrl+. / Cmd+. stops every model from anywhere, a
+    // swallow it first. Ctrl+. stops every model from anywhere, a
     // text box included (F9). Escape answers the top-most thing over the page: a
     // confirmation is cancelled, the region picker closes, the drawer
     // withdraws. It never dismisses an acknowledgement - that wants one.
     window.addEventListener('keydown', (event) => {
       if (this.isShutDown) return;      // nothing left to stop or answer
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === STOP_KEY) {
+      if (event.ctrlKey && !event.altKey && event.key === STOP_KEY) {
         event.preventDefault();
         this.stopAll();
         return;
@@ -1430,6 +1608,10 @@ class Dashboard {
       if (event.key !== 'Escape') return;
       if (this.confirmPending) { event.preventDefault(); this.answerConfirm(false); return; }
       if (!this.dom.picker.hidden) { this.closeRegionPicker(); return; }
+      // An in-page panel answers its own Escape (G4): the drawer behind it
+      // does not also withdraw.
+      if (document.activeElement && document.activeElement.closest
+          && document.activeElement.closest('.log-window')) return;
       if (this.isDrawerOpen && this.dom.modal.hidden) this.setDrawerOpen(false);
     }, true);
     // Closing the tab silences the heartbeat, and 15 s later the watchdog
@@ -1512,6 +1694,36 @@ class Dashboard {
     setInert(this.dom.drawer, covered || !this.isDrawerOpen || gone);
     setInert(this.dom.closed, gone);
     for (const layer of overlays) setInert(layer, layer !== top);
+    for (const win of this.floating) setInert(win, covered || gone);
+  }
+
+  // -- in-page panels (G4) --------------------------------------------------
+  //
+  // Non-modal: nothing behind them goes inert and nothing is dimmed. Each
+  // new one is offset from the last so two open logs do not sit exactly on
+  // top of each other; the one brought forward is the last in the page, so
+  // it paints over the others at the same z-index.
+  openFloating(win) {
+    if (this.floating.indexOf(win) === -1) this.floating.push(win);
+    win.style.setProperty('--stack', String(this.floating.length - 1));
+    this.raiseFloating(win);
+    this.updateInert();
+  }
+
+  raiseFloating(win) {
+    const at = this.floating.indexOf(win);
+    if (at !== -1 && at !== this.floating.length - 1) {
+      this.floating.splice(at, 1);
+      this.floating.push(win);
+    }
+    if (win.parentNode && win.parentNode.lastElementChild !== win) {
+      win.parentNode.appendChild(win);
+    }
+  }
+
+  closeFloating(win) {
+    const at = this.floating.indexOf(win);
+    if (at !== -1) this.floating.splice(at, 1);
   }
 
   /** Put focus back where it came from, or on a sensible neighbour when
@@ -1614,11 +1826,14 @@ class Dashboard {
   async poll() {
     if (this.isPolling || this.isShutDown) return;
     this.isPolling = true;
+    // When this state was asked for: an answer to a question put before a
+    // stop must not undo what that stop said (forgetUnconfirmed, G6).
+    const askedAt = Date.now();
     try {
       const state = await apiGet('/api/state');
       if (this.isShutDown) return;      // an answer that crossed the Quit
       this.setConnected(true);
-      await this.applyState(state);
+      await this.applyState(state, askedAt);
       await this.pollEvents(state.latest_event);
     } catch (err) {
       this.setConnected(false);
@@ -1739,8 +1954,10 @@ class Dashboard {
         }
         line = { node, words };
         this.railLines.set(key, line);
-        // The stop's own line is always the first thing read.
-        if (key === 'stop') this.dom.railAlert.insertBefore(node, this.dom.railAlert.firstChild);
+        // The stop's own lines are always the first thing read.
+        if (key === 'stop' || key === 'unconfirmed') {
+          this.dom.railAlert.insertBefore(node, this.dom.railAlert.firstChild);
+        }
         else this.dom.railAlert.appendChild(node);
       }
       putText(line.words, text);
@@ -1765,7 +1982,7 @@ class Dashboard {
     }
   }
 
-  async applyState(state) {
+  async applyState(state, askedAt) {
     const models = state.models || {};
     this.isActive = Boolean(state.is_active);
     for (const name of Object.keys(models)) {
@@ -1781,6 +1998,7 @@ class Dashboard {
     this.renderEmptyRack();
     this.renderClosed(state.closed || []);
     this.renderEstop(Boolean(state.is_estopped));
+    this.forgetUnconfirmed(Boolean(state.is_estopped), askedAt);
     let setupState = null;
     if (this.setupCard) {
       try {
@@ -1850,8 +2068,8 @@ class Dashboard {
     const isEmpty = this.cards.size === 0 && !this.isDrawerOpen;
     if (isEmpty && !this.emptyNote) {
       this.emptyNote = make('p', 'rack-empty',
-        'No modules yet. In Setup, give each device you are using a port - '
-        + 'SIM to run against the simulator - and launch.');
+        'No modules yet. In Setup, tick each device you are using, choose its '
+        + 'port - SIM to run against the simulator - and launch.');
       this.dom.cards.appendChild(this.emptyNote);
     } else if (!isEmpty && this.emptyNote) {
       if (this.emptyNote.parentNode) {
@@ -2082,12 +2300,29 @@ class Dashboard {
       return;
     }
     const unconfirmed = (answer && answer.unconfirmed) || [];
-    this.setRailLine('stop', unconfirmed.length
+    // The stop landed: a line saying an earlier one did not is history.
+    this.setRailLine('stop', '');
+    // Which models did not confirm is the state of THIS latch (G6): it is
+    // written by every stop, a later confirmed one included, and dropped by
+    // the poll once the latch is cleared (forgetUnconfirmed).
+    this.unconfirmedAt = Date.now();
+    this.setRailLine('unconfirmed', unconfirmed.length
       ? 'Stop latched, but ' + unconfirmed.map(sentence).join(', ')
         + (unconfirmed.length > 1 ? ' have' : ' has') + ' not confirmed it. Treat '
         + (unconfirmed.length > 1 ? 'them' : 'it') + ' as live.'
       : '', true);
     await this.refreshNow();
+  }
+
+  /** G6 (round-4 IMP-0): "not confirmed" describes a latch. Once the poll
+   *  says the latch is clear - cleared here or from any other client - the
+   *  line goes, and the rail's alert region with it when it was the last
+   *  line. A state asked for before the stop that wrote the line is not
+   *  evidence either way. */
+  forgetUnconfirmed(isEstopped, askedAt) {
+    if (isEstopped || !this.railLines.has('unconfirmed')) return;
+    if (askedAt !== undefined && askedAt < (this.unconfirmedAt || 0)) return;
+    this.setRailLine('unconfirmed', '');
   }
 
   stopFailed(action, err) {
