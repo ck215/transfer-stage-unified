@@ -48,7 +48,7 @@ from tkinter import font as tkfont
 import schema as sch
 from events import events
 from views import theme
-from views.base import Dashboard, PanelView
+from views.base import Dashboard, PanelView, stop_words
 
 SOURCE = "TkView"
 
@@ -140,7 +140,21 @@ LATCHED_LINE = "Stopped: every model latched"
 STOPPED_HEADLINE = "Every model is stopped."
 STOPPED_NEXT = "Clear the stop on the rail to continue."
 UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
+#: The rail's per-model marks (round 7, L1): an ink square before a latched
+#: model's name, a signal square before one that did not confirm; the
+#: words are the mark's tooltip, so colour never carries it alone.
+RAIL_MARK_WORDS = {"latched": "Stopped", "unconfirmed": "Did not confirm the stop"}
+#: The event title the views key on for a stop that did not confirm; its
+#: line leaves the band and the tray when the latch opens (L2).
+STOP_NOT_CONFIRMED = "Stop Not Confirmed"
 STATION_TITLE = "Transfer stage"
+#: Titled confirmations whose buttons name what they do (L14, TK7-10). The
+#: Clear question's words are core's and name any model that did not
+#: confirm; the answer that keeps things as they are is the default.
+CLEAR_DIALOG = {"title": "Clear the stop", "yes_text": "Clear the stop",
+                "no_text": "Keep it stopped"}
+QUIT_DIALOG = {"title": "Quit", "yes_text": "Quit", "no_text": "Stay"}
+CONFIRM_TITLE = "Confirm"
 SIMULATION_LINE = "Simulation, no hardware attached"
 
 #: The stop's keyboard shortcut, from anywhere in the window (F9). It only
@@ -188,6 +202,22 @@ TRAY_SEVERITIES = ("warning", "error")
 
 #: Unacknowledged errors the band lists by name before it summarises.
 BAND_LINES = 3
+#: Warnings and errors the tray's history keeps.
+TRAY_HISTORY = 200
+
+
+def _event_line(event):
+    """One event as the band and the tray say it (L11): the severity word,
+    the title in sentence case, then the message - no bracketed source, no
+    Title Case, no SHOUTING. The message is the model's own sentence."""
+    word = SEVERITY_WORD.get(getattr(event, "severity", ""), "")
+    title = _label(getattr(event, "title", "") or "")
+    message = str(getattr(event, "message", "") or "").strip()
+    count = getattr(event, "count", 1) or 1
+    line = f"{title}. {message}" if message else f"{title}."
+    if count > 1:
+        line += f" (x{count})"
+    return f"{word}: {line}" if word else line
 
 #: True once the dashboard has found itself on Aqua. Tk there assumes 96 dpi
 #: (`tk scaling` 1.33), so a 12 pt font is drawn 16 px tall: a third larger
@@ -1113,10 +1143,12 @@ class _ConfirmDialog:
     #: stop press re-entering the clear path) is declined, not stacked.
     is_open = False
 
-    def __init__(self, master, prompt, yes_text="Yes", no_text="No"):
+    def __init__(self, master, prompt, yes_text="Yes", no_text="No",
+                 title=CONFIRM_TITLE):
         self.master = master
         self.prompt = str(prompt or "")
         self.yes_text, self.no_text = yes_text, no_text
+        self.title = title or CONFIRM_TITLE
         self.answer = False
         self.top = self.yes = self.no = None
 
@@ -1139,7 +1171,7 @@ class _ConfirmDialog:
 
     def _build(self):
         top = self.top = tk.Toplevel(self.master)
-        for call in (lambda: top.title("Confirm"),
+        for call in (lambda: top.title(self.title),
                      lambda: top.transient(self.master.winfo_toplevel()),
                      lambda: top.resizable(False, False)):
             try:
@@ -1189,9 +1221,12 @@ class _ConfirmDialog:
         return "break"
 
 
-def _confirm(master, prompt):
-    """The one confirmation both the dashboard and a panel ask. -> bool"""
-    return _ConfirmDialog(master, prompt).ask()
+def _confirm(master, prompt, title=CONFIRM_TITLE, yes_text="Yes", no_text="No"):
+    """The one confirmation both the dashboard and a panel ask. -> bool.
+    The dashboard's own questions are titled and name their answers
+    (`CLEAR_DIALOG`, `QUIT_DIALOG`)."""
+    return _ConfirmDialog(master, prompt, yes_text=yes_text, no_text=no_text,
+                          title=title).ask()
 
 
 class _Mushroom:
@@ -4000,6 +4035,11 @@ class TkPanelView(PanelView):
 
     def _refresh(self):
         super()._refresh()
+        if self._panel is None:
+            # The model's own word on its stop (L1): a latch whose hardware
+            # did not confirm is marked here however it was set - the disc,
+            # the chord, the gamepad or the model's own switch.
+            self.set_unconfirmed(self._last_state.get("stop_confirmed") is False)
         devices = self._last_state.get("devices") or {}
         self._set_lost([name for name, status in sorted(devices.items())
                         if str(status) == "lost"])
@@ -4180,7 +4220,9 @@ class TkDashboard(Dashboard):
         self._sheet_key = None
         self._sheet_rows = []
         self._rail_items = {}        # name -> (ring, label)
-        self._unconfirmed = set()    # models whose last stop did not confirm
+        self._stop_seen = None       # (latched, unconfirmed, every) last drawn
+        self._rail_marks = {}        # name -> (Canvas, _Tooltip) before its line
+        self._tray_events = []       # the tray's warnings and errors, oldest first
         self._is_tray_open = False
         self._tray_count = 0         # lines in the tray's history
         self._images = []            # PhotoImages ttk draws with (kept alive)
@@ -4514,12 +4556,21 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
 
-    def _rail_line(self, text, on_press):
+    def _rail_line(self, text, on_press, mark_name=None):
+        """One line of the rail's page list. A model's line (`mark_name`)
+        carries a small square before its name while that model is latched
+        (L1): the square sits in the line's own ground, left of the words."""
         ring = _Ring(self._model_list, theme.SURFACE, border=theme.SURFACE)
         label = tk.Label(ring.inner, text=text, font=_font(), anchor="w",
                          background=theme.SURFACE, foreground=theme.TEXT,
                          padx=SPACE[3], pady=_target_pady(), cursor="hand2",
                          takefocus=1, highlightthickness=0)
+        if mark_name is not None:
+            size = _lamp_px()
+            mark = tk.Canvas(ring.inner, width=size, height=size,
+                             background=theme.SURFACE, highlightthickness=0)
+            mark.pack(side="right", padx=(0, SPACE[3]))
+            self._rail_marks[mark_name] = (mark, _Tooltip(label))
         label.pack(fill="x")
         for sequence in ("<Button-1>", "<Return>", "<space>"):
             label.bind(sequence, lambda _e: on_press())
@@ -4541,6 +4592,7 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
         self._rail_items = {}
+        self._rail_marks = {}
         self._overview_item = None
         names = [n for n in self._panels if n != self.SETUP_TAB]
         if names:
@@ -4548,12 +4600,14 @@ class TkDashboard(Dashboard):
                 OVERVIEW_PAGE, self._on_overview_pressed)
             ring.outer.pack(side="top", fill="x", pady=(0, SPACE[3]))
         for name in names:
-            ring, label = self._rail_line(name, lambda n=name: self._on_rail_pressed(n))
+            ring, label = self._rail_line(name, lambda n=name: self._on_rail_pressed(n),
+                                          mark_name=name)
             ring.outer.pack(side="top", fill="x")
             label.bind(_close_tab_button(self.root),
                        lambda _e, n=name: self._on_rail_close(n))
             self._rail_items[name] = (ring, label)
         self._paint_rail()
+        self._paint_rail_marks()
 
     def _paint_rail(self):
         """The shown page is highlighted while the sheet is shown - the
@@ -4592,7 +4646,7 @@ class TkDashboard(Dashboard):
     def _on_quit_clicked(self):
         """Quit asks first (it stops every model and exits); the window's
         close button and the OS's Quit take the same close path."""
-        if self._confirm(self.QUIT_PROMPT):
+        if _confirm(self.root, self.QUIT_PROMPT, **QUIT_DIALOG):
             self.close()
 
     # -- the sheet -----------------------------------------------------------
@@ -4754,21 +4808,34 @@ class TkDashboard(Dashboard):
                              source=SOURCE, exception=exc)
 
     def _on_stop_key(self, _event=None):
+        """The chord always stops and never clears (L1): a partial stop -
+        one model latched from its own switch - is not "already stopped",
+        so the chord stops the rest. Only with every model latched is
+        there nothing left for it to do."""
         events.debug("Stop Key", "the stop shortcut was pressed", source=SOURCE)
-        if not self.controller.is_estopped:
-            self._note_stop(self.controller.estop_all())
+        if self._stop_words()["action"] != "clear":
+            self.controller.estop_all()
         self._sync_stop_button()
         return "break"
 
-    def _note_stop(self, results):
-        """Which models did not confirm THIS stop (E): each is marked at its
-        own entry until the latch clears."""
-        if isinstance(results, dict):
-            self._unconfirmed = {name for name, ok in results.items() if not ok}
-            for name, view in self._panels.items():
-                if name != self.SETUP_TAB:
-                    view.set_unconfirmed(name in self._unconfirmed)
-        return results
+    def _stop_state(self):
+        """`Controller.stop_state`: which models are latched, which of them
+        did not confirm, and whether that is every model."""
+        try:
+            state = self.controller.stop_state
+        except Exception as exc:
+            events.debug("Stop State Unread", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+            state = None
+        if not isinstance(state, dict):
+            latched = [n for n in self._panels if n != self.SETUP_TAB] \
+                if self.controller.is_estopped else []
+            state = {"latched": latched, "unconfirmed": [], "every": bool(latched)}
+        return state
+
+    def _stop_words(self, state=None):
+        """What the disc, the headline and the rail say (`stop_words`)."""
+        return stop_words(state if state is not None else self._stop_state())
 
     # -- the alert band and the tray -----------------------------------------
     def _build_alert_band(self):
@@ -4828,11 +4895,10 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
             return
-        word = SEVERITY_WORD["error"]
         if len(alerts) == 1:
-            text = f"{word}: {alerts[0].text}"
+            text = _event_line(alerts[0])
         else:
-            shown = [f"{word}: {event.text}" for event in alerts[-BAND_LINES:]]
+            shown = [_event_line(event) for event in alerts[-BAND_LINES:]]
             more = len(alerts) - len(shown)
             text = "\n".join([f"{len(alerts)} errors need acknowledgement."]
                              + (["..."] if more else []) + shown)
@@ -4878,10 +4944,12 @@ class TkDashboard(Dashboard):
         # beside it. Unfolded: the history, scrolled to its end.
         self._latest = tk.Frame(body, background=theme.BACKGROUND)
         self._latest.pack(side="left", fill="x", expand=True, padx=(0, SPACE[5]))
-        self._latest_mark = tk.Label(self._latest, text="", font=_font(),
-                                     background=theme.BACKGROUND,
-                                     foreground=theme.TEXT)
-        self._latest_mark.pack(side="left", anchor="n")
+        size = _lamp_px()
+        self._latest_mark = tk.Canvas(self._latest, width=size, height=size,
+                                      background=theme.BACKGROUND,
+                                      highlightthickness=0)
+        self._latest_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]),
+                               pady=SPACE[1])
         self._latest_text = tk.Label(self._latest, text="", font=_font(), anchor="w",
                                      justify="left", wraplength=720,
                                      background=theme.BACKGROUND,
@@ -5097,25 +5165,49 @@ class TkDashboard(Dashboard):
         self._schedule_refresh()
 
     def _sync_stop_button(self):
-        """Face and ring follow `Controller.is_estopped`, so the control says
-        what it will do rather than what it did; the disc breathes once on
-        the edge where the latch closes; the rail says the latch holds and
-        the sheet's head says every model is stopped. Nothing is redrawn or
-        reconfigured while the latch holds still (F21)."""
-        is_estopped = bool(self.controller.is_estopped)
-        if self._stop.is_latched == is_estopped:
+        """Everything the station says about the stop, from
+        `Controller.stop_state` through `views.base.stop_words` (L1), so the
+        disc, the headline, its subline and the rail line never disagree:
+
+        - the disc reads Clear (thicker ring, one breath on the edge) only
+          while EVERY model is latched; a partial stop leaves it a Stop;
+        - the headline and its subline are drawn only when there is one
+          ("Every model is stopped." / "Stopped. Rotator did not confirm.");
+        - the rail line under the disc names a partial stop or the models
+          that did not confirm; each model's rail line wears its own mark;
+        - "Stop: Ctrl+." stays under the disc in every state.
+
+        Nothing is redrawn while the state holds still (F21). When the latch
+        opens, the "Stop Not Confirmed" lines leave the band and the tray
+        (L2): they describe a latch that no longer exists."""
+        state = self._stop_state()
+        latched = tuple(state.get("latched") or ())
+        unconfirmed = tuple(state.get("unconfirmed") or ())
+        key = (latched, unconfirmed, bool(state.get("every")))
+        if key == self._stop_seen:
             return
-        events.debug("Stop Button Changed",
-                     CLEAR_FACE if is_estopped else STOP_FACE, source=SOURCE)
-        self._stop.set_latched(is_estopped)
-        self._stop.tooltip.text = self._hint(is_estopped)
-        if not is_estopped and self._unconfirmed:
-            # "Not confirmed" describes a latch; with the latch gone, so is it.
-            self._note_stop({name: True for name in self._unconfirmed})
+        was_latched = bool(self._stop_seen and self._stop_seen[0])
+        self._stop_seen = key
+        words = self._stop_words(state)
+        is_clear = words["action"] == "clear"
+        events.debug("Stop Words Changed",
+                     f"face={words['face']} rail={words['rail']!r} "
+                     f"headline={words['headline']!r}", source=SOURCE)
+        self._stop.set_latched(is_clear)
+        self._stop.tooltip.text = self._hint(is_clear)
+        if was_latched and not latched:
+            self._drop_stop_lines()
         try:
-            if is_estopped:
+            if words["rail"]:
+                self._latched_line.configure(text=words["rail"])
                 self._latched_row.pack(side="top", fill="x", after=self._stop_hint,
                                        pady=(0, SPACE[4]))
+            else:
+                self._latched_row.pack_forget()
+            if words["headline"]:
+                headline, subline = self._headline_lines
+                headline.configure(text=words["headline"])
+                subline.configure(text=words["subline"] or STOPPED_NEXT)
                 first = self._sheet_rows[0] if self._sheet_rows else None
                 if first is not None:
                     self._headline.pack(side="top", fill="x", pady=(0, SPACE[8]),
@@ -5123,12 +5215,52 @@ class TkDashboard(Dashboard):
                 else:
                     self._headline.pack(side="top", fill="x", pady=(0, SPACE[8]))
             else:
-                self._latched_row.pack_forget()
                 self._headline.pack_forget()
-            self._is_headline_shown = is_estopped
+            self._is_headline_shown = bool(words["headline"])
         except Exception as exc:
             events.debug("Stop Button Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
+        self._paint_rail_marks(latched, unconfirmed)
+
+    def _paint_rail_marks(self, latched=None, unconfirmed=None):
+        """A latched model's rail line: an ink square before its name and
+        the tooltip "Stopped"; one whose stop did not confirm: a signal
+        square and "Did not confirm the stop" (L1). Shape and words, never
+        colour alone."""
+        if latched is None:
+            seen = self._stop_seen or ((), (), False)
+            latched, unconfirmed = seen[0], seen[1]
+        size = _lamp_px()
+        for name, (canvas, tooltip) in self._rail_marks.items():
+            if name in (unconfirmed or ()):
+                fill, words = theme.SIGNAL, RAIL_MARK_WORDS["unconfirmed"]
+            elif name in latched:
+                fill, words = theme.TEXT, RAIL_MARK_WORDS["latched"]
+            else:
+                fill, words = None, ""
+            tooltip.text = words
+            try:
+                canvas.delete("all")
+                if fill is not None:
+                    inset = max(3, size // 4)
+                    canvas.create_rectangle(inset, inset, size - inset, size - inset,
+                                            fill=fill, outline=fill)
+            except Exception:
+                pass
+
+    def _drop_stop_lines(self):
+        """The latch opened: a "Stop Not Confirmed" line describes a stop
+        that is no longer set, so it leaves the band and the tray (L2)."""
+        kept = [event for event in self._alerts if event.title != STOP_NOT_CONFIRMED]
+        tray = [event for event in self._tray_events
+                if event.title != STOP_NOT_CONFIRMED]
+        if len(kept) == len(self._alerts) and len(tray) == len(self._tray_events):
+            return
+        events.debug("Stop Lines Dropped", "the latch opened", source=SOURCE)
+        self._alerts = kept
+        self._render_alerts()
+        self._tray_events = tray
+        self._render_tray()
 
     def _sync_station_line(self):
         """Name every model whose link is lost, and the device, in the rail
@@ -5185,7 +5317,18 @@ class TkDashboard(Dashboard):
             pass
 
     def _on_stop_clicked(self, _event=None):
-        return self._note_stop(self.toggle_estop_all())
+        """The disc (L1): it clears only while it reads Clear - every model
+        latched - and asks first; otherwise a press is `estop_all`, so one
+        model's own switch never takes the stop away from the rest."""
+        if self._stop_words()["action"] == "clear":
+            result = self.controller.clear_estop_all()
+            if getattr(result, "needs_confirm", False) and _confirm(
+                    self.root, result.reason, **CLEAR_DIALOG):
+                result = self.controller.clear_estop_all(confirmed=True)
+        else:
+            result = self.controller.estop_all()
+        self._sync_stop_button()
+        return result
 
     # -- panels ------------------------------------------------------------
     def _add_panel(self, name):
@@ -5215,7 +5358,6 @@ class TkDashboard(Dashboard):
         if name not in self._panels:
             return
         self._destroy_panel(name)
-        self._unconfirmed.discard(name)
         self._build_menu_bar()
         self._build_rail_list()
         self._lay_out_sheet()
@@ -5362,28 +5504,51 @@ class TkDashboard(Dashboard):
     def _show_event(self, event):
         """Status by exception (E): a warning or an error is one line in the
         tray - a mark in the severity's colour and shape (a hollow ink
-        square, a solid signal one), the severity word, then the text in the
-        severity's ink (F14, UXPM-10). Info is silence here."""
+        square, a solid signal one), then the line in the severity's ink
+        (F14, UXPM-10): its severity word, title and message in sentence
+        case, no bracketed source (L11). Info is silence here."""
         severity = event.severity if event.severity in theme.SEVERITY_ROLE else "info"
         if severity not in TRAY_SEVERITIES:
             return
-        mark = MARK_HOLLOW if severity in theme.SEVERITY_MARK_HOLLOW else MARK_SOLID
+        self._tray_events.append(event)
+        del self._tray_events[:-TRAY_HISTORY]
+        self._render_tray()
+
+    def _render_tray(self):
+        """The folded line is the latest event; the history is every kept
+        one, the latest tagged. Redrawn whole, so a line can also leave
+        (L2)."""
+        latest = self._tray_events[-1] if self._tray_events else None
+        size = _lamp_px()
         try:
-            self._latest_mark.configure(text=f"{mark} ",
-                                        foreground=theme.SEVERITY_MARK[severity])
-            self._latest_text.configure(text=f"{SEVERITY_WORD[severity]}  {event.text}",
-                                        foreground=theme.SEVERITY_INK[severity])
+            self._latest_mark.delete("all")
+            if latest is None:
+                self._latest_text.configure(text="")
+            else:
+                severity = latest.severity
+                color = theme.SEVERITY_MARK[severity]
+                hollow = severity in theme.SEVERITY_MARK_HOLLOW
+                inset = 3
+                self._latest_mark.create_rectangle(
+                    inset, inset, size - inset, size - inset,
+                    fill="" if hollow else color, outline=color,
+                    width=2 if hollow else 1)
+                self._latest_text.configure(text=_event_line(latest),
+                                            foreground=theme.SEVERITY_INK[severity])
         except Exception:
             pass
         try:
             self._event_text.configure(state="normal")
-            self._event_text.tag_remove("latest", "1.0", "end")
-            if self._tray_count:
-                self._event_text.insert("end", "\n")
-            self._tray_count += 1
-            self._event_text.insert("end", f"{mark} ", (f"mark-{severity}",))
-            self._event_text.insert("end", f"{SEVERITY_WORD[severity]}  {event.text}",
-                                    (severity, "latest"))
+            self._event_text.delete("1.0", "end")
+            for index, event in enumerate(self._tray_events):
+                severity = event.severity
+                mark = (MARK_HOLLOW if severity in theme.SEVERITY_MARK_HOLLOW
+                        else MARK_SOLID)
+                if index:
+                    self._event_text.insert("end", "\n")
+                tags = (severity, "latest") if event is latest else (severity,)
+                self._event_text.insert("end", f"{mark} ", (f"mark-{severity}",))
+                self._event_text.insert("end", _event_line(event), tags)
             self._event_text.see("end")
             self._event_text.configure(state="disabled")
         except Exception as exc:

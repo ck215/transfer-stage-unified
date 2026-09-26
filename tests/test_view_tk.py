@@ -382,6 +382,7 @@ class FakeDialogs:
         self.confirm_answer = True
         self.errors = []
         self.asked = []
+        self.words = []         # a confirmation's title and answers (L14)
 
     # filedialog
     def asksaveasfilename(self, **kwargs):
@@ -521,6 +522,13 @@ class DemoPanel(Panel):
         self.side_reads = 0         # the detached stream's polls (G4)
         self.is_armed = False       # a checkbox (G3)
         self.target = None          # a dropdown live only while armed
+        self.stop_confirmed = None  # `Model.stop_confirmed` (round 7, L1)
+
+    @property
+    def state(self):
+        state = super().state
+        state["stop_confirmed"] = self.stop_confirmed
+        return state
 
     @property
     def mode_name(self):
@@ -647,6 +655,18 @@ class FakeController:
         self.clear_needs_confirm = False
         self.is_closed = False
         self._subscribers = []
+        #: A stop state to serve instead of the one `is_estopped` implies
+        #: (a partial stop, a model that did not confirm): round 7, L1.
+        self.stop = None
+
+    @property
+    def stop_state(self):
+        """`Controller.stop_state`: every model latched while `is_estopped`,
+        none otherwise, unless a test set `stop`."""
+        if self.stop is not None:
+            return dict(self.stop)
+        latched = list(self.panels) if self.is_estopped else []
+        return {"latched": latched, "unconfirmed": [], "every": bool(latched)}
 
     # -- what a view reads
     def schema(self, name):
@@ -695,6 +715,8 @@ class FakeController:
     def estop_all(self):
         self.estop_calls += 1
         self.is_estopped = True
+        if self.stop is not None:
+            self.stop = dict(self.stop, latched=list(self.panels), every=True)
         return {name: True for name in self.panels}
 
     def clear_estop_all(self, confirmed=False):
@@ -703,6 +725,7 @@ class FakeController:
             return Result(Result.CONFIRM, reason="Release the latch?",
                           command="clear_estop_all")
         self.is_estopped = False
+        self.stop = None
         return Result(Result.OK)
 
     def set_input_focus(self, is_focused):
@@ -745,9 +768,11 @@ def tk_harness(monkeypatch):
     monkeypatch.setattr(tkmod, "messagebox", dialogs, raising=False)
     # The confirmation window is driven by its own tests below; everywhere
     # else a question is answered by `dialogs.confirm_answer`.
-    monkeypatch.setattr(tkmod, "_confirm",
-                        lambda _master, prompt: dialogs.askyesno("Confirm", prompt),
-                        raising=False)
+    def confirm(_master, prompt, **words):
+        dialogs.words.append(words)
+        return dialogs.askyesno(words.get("title", "Confirm"), prompt)
+
+    monkeypatch.setattr(tkmod, "_confirm", confirm, raising=False)
     monkeypatch.delenv("STATION_NO_MOTION", raising=False)
     # Where the operator last dragged each log window, for the session (I1).
     monkeypatch.setattr(tkmod, "_LOG_POSITIONS", {}, raising=False)
@@ -2077,8 +2102,10 @@ def test_events_reach_the_log_panel_coloured_by_severity(dashboard):
     for severity in ("info", "warning", "error"):
         dashboard._show_event(_event(severity, needs_ack=False))
     # Updated for E (status by exception): info is not drawn in the tray.
-    assert dashboard._event_text.written_tags == [
-        ("mark-warning",), ("warning", "latest"),
+    # Updated for L2: the history is redrawn whole (a line can leave it), so
+    # the LAST drawing is the one that counts: only the newest is `latest`.
+    assert dashboard._event_text.written_tags[-4:] == [
+        ("mark-warning",), ("warning",),
         ("mark-error",), ("error", "latest")]
     tags = dashboard._event_text.tags
     for severity in ("info", "warning", "error"):
@@ -2087,13 +2114,14 @@ def test_events_reach_the_log_panel_coloured_by_severity(dashboard):
     assert tags["error"]["foreground"] == theme.TEXT
     assert tags["latest"]["foreground"] == theme.TEXT
     body = dashboard._event_text.body
-    assert "Error  [Demo] error-event" in body and "Warning  " in body
+    # Updated for L11: the severity word, the title in sentence case, then
+    # the message; no bracketed source.
+    assert "Error: Error-event. something happened" in body and "Warning: " in body
+    assert "[Demo]" not in body
     assert "Info" not in body
     # A warning's mark is a hollow square, an error's a solid one.
     assert "\u25a1 " in body and "\u25a0 " in body
     assert dashboard._latest_text.cget("text").startswith("Error")
-    # `latest` moves: it is taken off the old lines before each new one.
-    assert dashboard._event_text.removed_tags.count("latest") == 2
     # and it is created after `info`, before `warning`/`error` - priority.
     assert list(tags).index("info") < list(tags).index("latest") \
         < list(tags).index("warning")
@@ -2364,7 +2392,8 @@ def test_the_panel_and_the_dashboard_ask_through_the_one_dialog(dashboard,
     monkeypatch.setattr(tkmod._ConfirmDialog, "ask",
                         lambda self: asked.append(self.prompt) or False)
     monkeypatch.setattr(tkmod, "_confirm",
-                        lambda master, prompt: tkmod._ConfirmDialog(master, prompt).ask())
+                        lambda master, prompt, **words: tkmod._ConfirmDialog(
+                            master, prompt, **words).ask())
     dashboard.open()
     dashboard.controller.is_estopped = True
     dashboard.controller.clear_needs_confirm = True
@@ -3737,16 +3766,20 @@ def test_an_unconfirmed_stop_is_marked_at_its_own_entry(dashboard, controller,
     words "Stop not confirmed. Treat as live." at its entry, for as long as
     the latch it describes."""
     dashboard.open()
-    monkeypatch.setattr(controller, "estop_all",
-                        lambda: (setattr(controller, "is_estopped", True)
-                                 or {"Demo": False}))
+    # Updated for L1: the mark is the model's own `stop_confirmed`, read on
+    # the entry's refresh, not the result of the press the view happened to
+    # see.
+    controller.panels["Demo"].stop_confirmed = False
     dashboard._stop_button.fire("<Button-1>")
     view = dashboard._panels["Demo"]
+    view._refresh()
     assert view._rule.cget("background") == theme.SIGNAL
     assert view._mark_row.is_packed
     assert view._mark_text.cget("text") == "Stop not confirmed. Treat as live."
     controller.is_estopped = False
+    controller.panels["Demo"].stop_confirmed = None
     dashboard._sync_stop_button()
+    view._refresh()
     assert view._rule.cget("background") == theme.RULE_STRONG
     assert not view._mark_row.is_packed
 
@@ -4042,3 +4075,252 @@ def test_k4_the_overview_settles_where_a_flow_wraps_at_its_columns_width(
     (a real build hung). `_real_build` lays the overview out and returns."""
     result = _real_build(points, width, height)
     assert result["stop"]["whole"], result["stop"]
+
+
+# ---------------------------------------------------------------------------
+# Tier L (audit round 7)
+# ---------------------------------------------------------------------------
+
+L_NAMES = ("Stepper Probe", "DC Probe", "Rotator")
+
+
+def _stop_dashboard(setup_panel):
+    controller = FakeController(**{name: DemoPanel() for name in L_NAMES})
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    return built, controller
+
+
+def _faces(built):
+    return [item[2]["text"] for item in built._stop_button.items if item[0] == "text"]
+
+
+def test_l1_one_models_own_stop_leaves_the_disc_a_working_stop(tk_harness,
+                                                                setup_panel):
+    """S1, IMP7-1/2: one model latched from its own switch is a partial
+    stop. The disc still reads Stop and a press stops the rest; there is no
+    "every model" headline; the rail names the one that is stopped."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    controller.stop = {"latched": ["Rotator"], "unconfirmed": [], "every": False}
+    built._sync_stop_button()
+    assert _faces(built) == ["Stop"]
+    assert not built._headline.is_packed
+    assert built._latched_row.is_packed
+    assert built._latched_line.cget("text") == "Stopped: Rotator"
+    assert built._stop.tooltip.text.startswith(tkmod.STOP_HINT)
+    built._stop_button.fire("<Button-1>")
+    assert controller.estop_calls == 1 and controller.clear_calls == 0
+    built.close()
+
+
+def test_l1_the_chord_stops_during_a_partial_stop(tk_harness, setup_panel):
+    """Ctrl+. always stops and never clears: a partial latch is not "already
+    stopped"."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    controller.stop = {"latched": ["Rotator"], "unconfirmed": [], "every": False}
+    ALL_BINDINGS["<Control-period>"](FakeEvent())
+    assert controller.estop_calls == 1 and controller.clear_calls == 0
+    ALL_BINDINGS["<Control-period>"](FakeEvent())     # every model latched now
+    assert controller.clear_calls == 0, "the chord never clears"
+    built.close()
+
+
+def test_l1_a_global_stop_one_model_did_not_confirm(tk_harness, setup_panel):
+    """TK7-1: the loudest words must not contradict "treat as live"."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    controller.stop = {"latched": list(L_NAMES), "unconfirmed": ["Rotator"],
+                       "every": True}
+    built._sync_stop_button()
+    assert _faces(built) == ["Clear"]
+    headline, subline = built._headline_lines
+    assert built._headline.is_packed
+    assert headline.cget("text") == "Stopped. Rotator did not confirm."
+    assert subline.cget("text") == ("Treat it as live until you have checked it "
+                                    "by hand.")
+    assert built._latched_line.cget("text") == "Stopped: Rotator did not confirm"
+    assert built._stop.tooltip.text == tkmod.CLEAR_HINT
+    built.close()
+
+
+def test_l1_every_model_stopped_and_confirmed(tk_harness, setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    built._sync_stop_button()
+    headline, subline = built._headline_lines
+    assert headline.cget("text") == "Every model is stopped."
+    assert subline.cget("text") == tkmod.STOPPED_NEXT
+    assert built._latched_line.cget("text") == "Stopped: every model latched"
+    built.close()
+
+
+def test_l1_the_words_follow_the_state_as_it_changes(tk_harness, setup_panel):
+    """F21 kept: nothing is redrawn while the state holds still, but a change
+    in WHICH models are latched is a change."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    controller.stop = {"latched": ["Rotator"], "unconfirmed": [], "every": False}
+    built._sync_stop_button()
+    draws = built._stop.draws
+    built._sync_stop_button()
+    assert built._stop.draws == draws
+    controller.stop = {"latched": ["DC Probe", "Rotator"], "unconfirmed": [],
+                       "every": False}
+    built._sync_stop_button()
+    assert built._latched_line.cget("text") == "Stopped: DC Probe and Rotator"
+    controller.stop = None
+    controller.is_estopped = False
+    built._sync_stop_button()
+    assert not built._latched_row.is_packed and not built._headline.is_packed
+    built.close()
+
+
+def test_l1_stop_ctrl_period_is_shown_in_every_state(tk_harness, setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    states = [None, {"latched": ["Rotator"], "unconfirmed": [], "every": False},
+              {"latched": list(L_NAMES), "unconfirmed": ["Rotator"], "every": True},
+              {"latched": list(L_NAMES), "unconfirmed": [], "every": True}]
+    for stop in states:
+        controller.stop = stop
+        controller.is_estopped = stop is not None
+        built._sync_stop_button()
+        assert built._stop_hint.is_packed
+        assert built._stop_hint.cget("text") == "Stop: Ctrl+."
+    built.close()
+
+
+def test_l1_the_rail_marks_each_latched_and_unconfirmed_model(tk_harness,
+                                                              setup_panel):
+    """A latched model: an ink square and "stopped"; one that did not
+    confirm: a signal square and "did not confirm". Never colour alone."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    controller.stop = {"latched": ["DC Probe", "Rotator"], "unconfirmed": ["Rotator"],
+                       "every": False}
+    built._sync_stop_button()
+
+    def squares(name):
+        canvas, _tip = built._rail_marks[name]
+        return [item[2]["fill"] for item in canvas.items if item[0] == "rect"]
+
+    assert squares("Stepper Probe") == []
+    assert squares("DC Probe") == [theme.TEXT]
+    assert squares("Rotator") == [theme.SIGNAL]
+    assert built._rail_marks["DC Probe"][1].text == "Stopped"
+    assert built._rail_marks["Rotator"][1].text == "Did not confirm the stop"
+    assert built._rail_marks["Stepper Probe"][1].text == ""
+    controller.stop = None
+    controller.is_estopped = False
+    built._sync_stop_button()
+    assert squares("Rotator") == [] and squares("DC Probe") == []
+    built.close()
+
+
+def test_l1_the_entry_mark_comes_from_the_models_stop_confirmed(tk_harness,
+                                                                 setup_panel):
+    """The per-entry "Stop not confirmed. Treat as live." is driven by the
+    model's own `stop_confirmed`, not by which press the view saw: a stop
+    from the gamepad or a model's own switch is marked too."""
+    built, controller = _stop_dashboard(setup_panel)
+    view = built._panels["Rotator"]
+    controller.panels["Rotator"].stop_confirmed = False
+    view._refresh()
+    assert view._mark_row.is_packed
+    assert view._rule.cget("background") == theme.SIGNAL
+    controller.panels["Rotator"].stop_confirmed = None
+    view._refresh()
+    assert not view._mark_row.is_packed
+    assert not built._panels["DC Probe"]._mark_row.is_packed
+    built.close()
+
+
+def _stop_not_confirmed(needs_ack=True):
+    return Event(7, "error", "Controller", "Stop Not Confirmed",
+                 "Rotator did not confirm the stop within 2 s. Every model is "
+                 "latched; treat it as live until you have checked by hand.",
+                 None, needs_ack, 0.0)
+
+
+def test_l2_the_stop_not_confirmed_line_goes_when_the_latch_opens(tk_harness,
+                                                                  setup_panel):
+    """TK7-2: after Clear the band and the tray no longer say, in the present
+    tense, that a model did not confirm."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    built._sync_stop_button()
+    built._on_event(_event("error", needs_ack=True))
+    built._on_event(_stop_not_confirmed())
+    SCHEDULER.pump()
+    assert built._band.is_packed
+    assert "did not confirm" in built._band_text.cget("text")
+    assert "did not confirm" in built._latest_text.cget("text")
+    controller.is_estopped = False
+    built._sync_stop_button()
+    assert [event.title for event in built._alerts] == ["error-event"]
+    assert "did not confirm" not in built._band_text.cget("text")
+    assert "did not confirm" not in built._latest_text.cget("text")
+    assert "did not confirm" not in built._event_text.body
+    assert "Error-event" in built._latest_text.cget("text"), "the one before it"
+    built.close()
+
+
+def test_l11_band_and_tray_lines_are_sentences_without_a_source(tk_harness,
+                                                                 setup_panel):
+    """TK7-11: "Error: [Controller] Stop Not Confirmed: ..." was a log line."""
+    built, controller = _stop_dashboard(setup_panel)
+    built._on_event(_stop_not_confirmed())
+    built._on_event(Event(8, "warning", "DC Probe", "Power Down Not Supported",
+                          "The DC board has no coil kill.", None, False, 0.0))
+    SCHEDULER.pump()
+    band = built._band_text.cget("text")
+    assert band.startswith("Error: Stop not confirmed. Rotator did not confirm")
+    assert "[" not in band and "Stop Not Confirmed" not in band
+    assert built._latest_text.cget("text") == (
+        "Warning: Power down not supported. The DC board has no coil kill.")
+    # One mark shape in both places: a drawn square, not a text glyph.
+    assert [item[0] for item in built._latest_mark.items] == ["rect"]
+    assert built._latest_mark.items[0][2]["fill"] == ""       # hollow: a warning
+    built.close()
+
+
+def test_l14_the_clear_and_quit_questions_are_titled_with_verb_answers(
+        tk_harness, setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    controller.clear_needs_confirm = True
+    tk_harness.confirm_answer = False
+    built._stop_button.fire("<Button-1>")
+    assert tk_harness.words[-1] == {"title": "Clear the stop",
+                                    "yes_text": "Clear the stop",
+                                    "no_text": "Keep it stopped"}
+    assert controller.is_estopped, "declined: still stopped"
+    built._quit_press.widget.fire("<Button-1>")
+    assert tk_harness.words[-1] == {"title": "Quit", "yes_text": "Quit",
+                                    "no_text": "Stay"}
+    assert not built._closing, "declined: still running"
+    built.close()
+
+
+def test_l14_the_dialog_wears_its_title_and_its_answers(tk_harness):
+    root = FakeRoot()
+    dialog = tkmod._ConfirmDialog(root, "Quit the station?", **tkmod.QUIT_DIALOG)
+    dialog._build()
+    assert dialog.top.titles == ["Quit"]
+    assert dialog.yes.widget.cget("text") == "Quit"
+    assert dialog.no.widget.cget("text") == "Stay"
+    assert Focus.current is dialog.no.widget, "the default keeps things as they are"
+
+
+def test_l2_the_acknowledgement_stays_required_while_latched(tk_harness,
+                                                             setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    built._sync_stop_button()
+    built._on_event(_stop_not_confirmed())
+    SCHEDULER.pump()
+    built._sync_stop_button()
+    assert [event.title for event in built._alerts] == ["Stop Not Confirmed"]
+    assert built._band.is_packed
+    built.close()
