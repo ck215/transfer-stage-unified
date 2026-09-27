@@ -15,6 +15,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -107,8 +109,10 @@ class FakeProbe(Panel):
                 sch.entry("Label", "label", self.PARAMS["label"]),
                 sch.button("Home", "home", inputs=["x_step"]),
                 sch.button("Park", "park", disabled_when=["running"]),
-                sch.toggle("FULL STOP", "is_estopped", "toggle_estop",
-                           "LATCHED", "FULL STOP", on_role="danger",
+                # Updated (O16): the per-model switch's words as core's
+                # Model schema now says them ("Stop this model" / "Stopped").
+                sch.toggle("Stop", "is_estopped", "toggle_estop",
+                           "Stopped", "Stop this model", on_role="danger",
                            off_role="danger"),
                 sch.dropdown("Source", "source", "set_source", "source_options"),
                 region,
@@ -809,6 +813,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         await sleep(100);
       }
     };
+    // `until` waits on a function run IN the page; `when` on one run here.
+    const when = async (fn, ms) => {
+      const end = Date.now() + (ms || 5000);
+      for (;;) {
+        const got = await fn();
+        if (got || Date.now() > end) return got;
+        await sleep(100);
+      }
+    };
     const card = () => until(() => Array.from(document.querySelectorAll('.card'))
       .some((c) => !c.classList.contains('setup-card')));
     const api = (path, body) => page.evaluate(async (p, b) => {
@@ -1183,6 +1196,9 @@ def test_an_idle_poll_changes_nothing_and_a_word_is_not_a_number(station, tmp_pa
     view, _, probe = station
     probe.source_options = ["None", "/dev/cu.usbmodem1234567890123"]
     probe.is_active = True
+    # Updated (N3): leaving asks while something is ENERGIZED (a probe in a
+    # mode counts), which is wider than active; this model is both.
+    probe.is_energized = True
     out = _browse(view, r"""
       const r = {};
       r.mutations = await page.evaluate(() => new Promise((done) => {
@@ -1741,20 +1757,28 @@ _QUIT_AND_READ = r"""
 """
 
 
-def _assert_shut_down(out):
+def _assert_shut_down(out, unconfirmed=()):
+    """Updated (O5, IMP8-3): a model that did not confirm the stop Quit ran
+    is named on the rail and keeps its entry's red rule; that is the only
+    red left. Everything else is as I5 set it."""
     assert out["link"] == _SHUT_DOWN, out["link"]
     assert out["linkIsFocused"] and out["linkTabIndex"] == "-1", out
     assert out["linkSize"] == out["readout"], (out["linkSize"], out["readout"])
     assert out["linkInk"], "the sentence is not in ink"
     assert out["announced"] and out["announced"][-1] == _SHUT_DOWN, out["announced"]
     assert out["announced"].count(_SHUT_DOWN) == 1, out["announced"]
-    assert out["red"] == [], f"signal red is still on the page: {out['red']}"
+    if unconfirmed:
+        assert out["red"] and all(("rail-alert" in r or "card" in r or "nav-mark" in r
+                                   or "unconfirmed" in r) for r in out["red"]), out["red"]
+    else:
+        assert out["red"] == [], f"signal red is still on the page: {out['red']}"
     assert out["enabled"] == [], f"controls still enabled: {out['enabled']}"
     stop = out["stop"]
     assert stop["disabled"] and stop["ariaDisabled"] == "true", stop
     assert stop["face"] not in ("Stop", "Clear") and not stop["latched"], stop
     assert stop["keys"] is None, stop
-    assert out["railAlert"] == {"hidden": True, "lines": 0, "dismiss": 0}, out["railAlert"]
+    lines = len(unconfirmed)
+    assert out["railAlert"] == {"hidden": not lines, "lines": lines, "dismiss": 0}, out["railAlert"]
     assert not out["ackOpen"] and out["ackLines"] == 0, out
     assert out["tray"] == {"collapsed": True, "latest": "Quit from the Web console"}, out["tray"]
 
@@ -1773,7 +1797,7 @@ def test_after_quit_while_latched_the_page_reads_as_shut_down(station, tmp_path)
       await until(() => document.querySelector('.card.is-unconfirmed'));
       await sleep(600);
     """ + _QUIT_AND_READ, tmp_path)
-    _assert_shut_down(out)
+    _assert_shut_down(out, unconfirmed=["Fake Probe"])
 
 
 @needs_browser
@@ -2640,8 +2664,11 @@ def test_a_disabled_command_says_why(station, tiered_station, tmp_path):
       await sleep(300);
       return readGo();
     """, tmp_path)
-    assert out["disabled"] and out["title"] == "Not in manual mode", out
-    assert out["notes"] == ["Not in manual mode"] and out["below"], out
+    # Updated (O3, IMP8-1): Go is `disabled_when=("manual",)`, so in manual
+    # mode the reason names the mode it IS in; "Not in manual mode" was the
+    # inverse. The words are the served `views.base.GATE_WORDS`.
+    assert out["disabled"] and out["title"] == "In manual mode", out
+    assert out["notes"] == ["In manual mode"] and out["below"], out
 
 
 #: Every visible pressable, measured: its box, and whether it is a command.
@@ -2957,3 +2984,816 @@ def test_theme_json_serves_the_gate_words_and_the_watchdog_seconds(station):
     assert status == 200
     assert body["gate_words"]["manual"] == ["In manual mode", "Not in manual mode"]
     assert body["watchdog"] == {"warn_seconds": 5.0, "stop_seconds": 15.0}
+
+
+# ==========================================================================
+# Tier N + O (2026-09-26): the idle countdown, the close-tab warning, the
+# energized and faulted marks, the Quit end state, live regions, busy
+# commands, commits, and the words. A probe-shaped model that carries the
+# state those read: `idle_remaining`, `is_energized`, `is_faulted`.
+# ==========================================================================
+
+class ModeProbe(Panel):
+    NAME = "Mode Probe"
+    PARAMS = {"x_dist": Param("x_dist", "int", default=0, minimum=-1000, maximum=1000,
+                              label="X distance"),
+              "x_step": Param("x_step", "int", default=16, minimum=1, maximum=1000,
+                              label="X step size"),
+              "full_speed": Param("full_speed", "int", default=400, minimum=1,
+                                  maximum=5000, label="Autonomous speed")}
+
+    def __init__(self, name="Mode Probe"):
+        super().__init__()
+        self.NAME = name
+        self.mode = "disabled"
+        self.is_estopped = False
+        self.stop_confirmed = None
+        self.stop_confirms = True
+        self.idle_remaining = None
+        self.idle_warn_seconds = 60
+        self.is_energized = False
+        self.is_active = False
+        self.fault = ""
+        self.extended = 0
+        self.steps = 0
+        self.step_seconds = 0.0
+        self.position_x = "0"
+
+    def open(self):
+        pass
+
+    def close(self):
+        pass
+
+    def on_model_added(self, name, model):
+        pass
+
+    def on_model_removed(self, name, model):
+        pass
+
+    @property
+    def mode_name(self):
+        return self.mode
+
+    @property
+    def gate_mode(self):
+        return "latched" if self.is_estopped else self.mode
+
+    @property
+    def is_auto(self):
+        return self.mode == "autonomous"
+
+    @property
+    def is_faulted(self):
+        return bool(self.fault)
+
+    @property
+    def schema(self):
+        P = self.PARAMS
+        return sch.schema(
+            sch.section("Position", sch.readonly("X:", "position_x", rail=True)),
+            sch.section("Speeds",
+                        sch.entry("Autonomous speed:", "full_speed", P["full_speed"],
+                                  disabled_when=("autonomous", "manual"), slider=(1, 1000))),
+            sch.section(
+                "System Control",
+                sch.toggle("Autonomous:", "is_auto", "set_mode",
+                           "Autonomous mode (press to stop)", "Enter autonomous mode",
+                           on_args=["autonomous"], off_args=["disabled"],
+                           disabled_when=("latched", "fault")),
+                sch.button("Step", "step", inputs=("x_dist", "full_speed"), role="go",
+                           disabled_when=("manual", "latched")),
+                {"type": "internal", "command": "extend_idle", "writable": False,
+                 "role": "neutral"}),
+            sch.section("Configuration",
+                        sch.entry("X step size:", "x_step", P["x_step"]),
+                        sch.entry("X distance:", "x_dist", P["x_dist"]),
+                        tier=2, disclosure=f"Configure {self.NAME}"),
+            sch.section("Diagnostics",
+                        sch.toggle("Stop", "is_estopped", "toggle_estop",
+                                   "Stopped", "Stop this model"),
+                        sch.readonly("Fault reason:", "fault", role="danger"),
+                        tier=3, disclosure="Diagnostics"),
+        )
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot.update({"age": 0.0, "is_estopped": self.is_estopped,
+                         "stop_confirmed": self.stop_confirmed if self.is_estopped else None,
+                         "is_active": self.is_active, "is_faulted": self.is_faulted,
+                         "fault": self.fault, "devices": {},
+                         "idle_remaining": self.idle_remaining,
+                         "idle_warn_seconds": self.idle_warn_seconds})
+        return snapshot
+
+    def set_mode(self, target):
+        self.mode = target
+        self.is_energized = target != "disabled"
+        return target
+
+    def step(self):
+        self.steps += 1
+        time.sleep(self.step_seconds)
+        return "stepped"
+
+    def extend_idle(self):
+        self.extended += 1
+        self.idle_remaining = 300.0
+        return True
+
+    def estop(self):
+        self.is_estopped = True
+        self.stop_confirmed = self.stop_confirms
+        self.mode = "disabled"
+        self.is_energized = False
+        return self.stop_confirms
+
+    def clear_estop(self, confirmed=False):
+        self.is_estopped = False
+        self.stop_confirmed = None
+
+    def toggle_estop(self, confirmed=False):
+        if self.is_estopped:
+            self.clear_estop()
+        else:
+            self.estop()
+        return self.is_estopped
+
+
+@pytest.fixture
+def mode_station():
+    """Two probe-shaped models, in station order Stepper then DC."""
+    controller = Controller()
+    first, second = ModeProbe("Stepper Probe"), ModeProbe("DC Probe")
+    controller.add("Stepper Probe", first, {})
+    controller.add("DC Probe", second, {})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, first, second
+    finally:
+        view.close()
+
+
+#: The drawer shut, and a reader of the rail's idle lines.
+_RAIL = r"""
+  if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+    await page.click('#drawer-close');
+    await sleep(300);
+  }
+  const idle = () => page.evaluate(() => Array.from(document.querySelectorAll('.idle-line'))
+    .filter((l) => l.getClientRects().length)
+    .map((l) => { const b = l.querySelector('button');
+      return { text: l.querySelector('.idle-text').textContent,
+               name: b && b.getAttribute('aria-label'), button: b && b.textContent,
+               inRail: Boolean(l.closest('.rail')),
+               belowDisc: l.getBoundingClientRect().top
+                 >= document.getElementById('stop-ring').getBoundingClientRect().bottom,
+               dialog: Boolean(l.closest('[role=dialog],[role=alertdialog]')) }; }));
+  const tray = () => page.evaluate(() => document.getElementById('tray-latest').textContent.trim());
+  const logText = () => page.evaluate(() => document.getElementById('event-log').textContent);
+"""
+
+
+@needs_browser
+def test_n2_the_idle_countdown_is_one_line_per_probe_with_extend(mode_station, tmp_path):
+    """N2 (brief-n-views N1): inside the warning window each probe gets ONE
+    non-modal rail line under the disc, "<name> powers down in 42 s." with
+    Extend ("Extend <name>"), in station order, counting from state; Extend
+    runs `extend_idle` on that model and the line goes when state says so.
+    Outside the window, or with nothing energized, there is no line; focus
+    never moves. O13: the "Idle Timeout Soon" event is history in the log,
+    never the tray's line."""
+    view, controller, first, second = mode_station
+    first.idle_remaining = 120.0             # energized, outside the window
+    out = _browse(view, _RAIL + r"""
+      await sleep(600);
+      return { outside: await idle() };
+    """, tmp_path)
+    assert out["outside"] == [], out
+
+    first.idle_remaining = 42.0
+    second.idle_remaining = 30.3
+    # Published while the page is up, so it is news, not history.
+    timer = threading.Timer(2.5, lambda: events.warn(
+        "Idle Timeout Soon", "Stepper Probe powers its motors down in 42 s unless it "
+        "moves or you extend.", source="Stepper Probe"))
+    timer.start()
+    try:
+        out = _browse(view, _RAIL + r"""
+          const r = {};
+          await page.focus('#log-toggle');
+          await when(async () => (await idle()).length === 2);
+          r.two = await idle();
+          r.focus = await page.evaluate(() => document.activeElement.id);
+          r.hit = await page.evaluate(""" + _STOP_HIT + r""");
+          await when(async () => (await logText()).includes('Idle timeout soon'), 6000);
+          await sleep(300);
+          r.tray = await tray();
+          r.log = await logText();
+          await page.click('.idle-line button[aria-label="Extend Stepper Probe"]');
+          await when(async () => (await idle()).length === 1);
+          r.after = await idle();
+          return r;
+        """, tmp_path)
+    finally:
+        timer.cancel()
+    two = out["two"]
+    assert [line["text"] for line in two] == ["Stepper Probe powers down in 42\u00a0s.",
+                                              "DC Probe powers down in 31\u00a0s."], two
+    assert [line["name"] for line in two] == ["Extend Stepper Probe", "Extend DC Probe"], two
+    assert all(line["button"] == "Extend" and line["inRail"] and line["belowDisc"]
+               and not line["dialog"] for line in two), two
+    assert out["focus"] == "log-toggle", "the countdown took focus"
+    assert out["hit"], "the countdown covered the disc"
+    assert "Idle timeout soon" in out["log"], out["log"]
+    assert "Idle timeout soon" not in out["tray"], out["tray"]
+    assert first.extended == 1 and second.extended == 0
+    assert [line["text"] for line in out["after"]] == ["DC Probe powers down in 31\u00a0s."], out
+
+    second.idle_remaining = None             # left its mode
+    out = _browse(view, _RAIL + r"""
+      await sleep(600);
+      return { lines: await idle() };
+    """, tmp_path)
+    assert out["lines"] == [], out
+
+
+@needs_browser
+def test_n2_the_countdown_follows_the_polled_seconds(mode_station, tmp_path):
+    """The number is the state's, re-read every poll; no local timer."""
+    view, controller, first, second = mode_station
+    first.idle_remaining = 42.0
+    out = _browse(view, _RAIL + r"""
+      await when(async () => (await idle()).length === 1);
+      const a = (await idle())[0].text;
+      await page.evaluate(() => fetch('/api/state'));
+      return { a };
+    """, tmp_path)
+    assert out["a"] == "Stepper Probe powers down in 42\u00a0s.", out
+    first.idle_remaining = 7.0
+    out = _browse(view, _RAIL + r"""
+      await when(async () => (await idle()).length === 1);
+      return { b: (await idle())[0].text };
+    """, tmp_path)
+    assert out["b"] == "Stepper Probe powers down in 7\u00a0s.", out
+
+
+#: What the close-tab guard does, and the rail's energized words and marks.
+_ENERGIZED = r"""
+  const guard = () => page.evaluate(() => {
+    const e = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(e);
+    const line = document.getElementById('energized-line');
+    const marks = {};
+    for (const link of document.querySelectorAll('#model-nav .model-link[data-model]')) {
+      const m = link.querySelector('.nav-energized');
+      const s = m && getComputedStyle(m);
+      marks[link.dataset.model] = m && !m.hidden && m.getClientRects().length
+        ? { words: m.textContent.trim(), title: m.title,
+            background: s.backgroundColor, border: s.borderTopWidth,
+            afterStopMark: Boolean(link.querySelector('.nav-mark'))
+              && Boolean(link.querySelector('.nav-mark').compareDocumentPosition(m)
+                         & Node.DOCUMENT_POSITION_FOLLOWING) } : null;
+    }
+    const swatch = document.createElement('span');
+    swatch.style.color = getComputedStyle(document.documentElement).getPropertyValue('--signal').trim();
+    document.body.appendChild(swatch);
+    const signal = getComputedStyle(swatch).color;
+    swatch.remove();
+    return { prevented: e.defaultPrevented,
+             line: line && !line.hidden && line.getClientRects().length ? line.textContent : '',
+             lineRed: line ? getComputedStyle(line).color === signal : null,
+             marks, signal };
+  });
+"""
+
+
+@needs_browser
+def test_n3_the_close_tab_guard_is_armed_exactly_while_something_is_energized(
+        mode_station, tmp_path, monkeypatch):
+    """N3: `beforeunload` is armed on `state.energized`, not `is_active`: a
+    probe merely in a mode arms it, an active-but-not-energized station does
+    not. While armed the rail says so in ink under the chord's hint, with the
+    watchdog's seconds as served (here 12, to prove they are not the page's
+    own 15). O6: an energized model carries a ring before its name in the
+    rail, after the stop marks, not red, titled and read "energized"."""
+    monkeypatch.setattr(WebView, "STOP_SECONDS", 12.0)
+    view, controller, first, second = mode_station
+    first.is_active = True                  # active, but nothing energized
+    out = _browse(view, _RAIL + _ENERGIZED + r"""
+      await sleep(600);
+      const r = { idle: await guard() };
+      await page.click('#model-nav [data-model="Stepper Probe"]');
+      await sleep(300);
+      await page.click('.card.is-opened .toggle');
+      await when(async () => (await guard()).prevented);
+      await sleep(300);
+      r.energized = await guard();
+      r.hintAbove = await page.evaluate(() => document.querySelector('.stop-hint').getBoundingClientRect().bottom
+        <= document.getElementById('energized-line').getBoundingClientRect().top + 0.5);
+      await page.click('.card.is-opened .toggle');
+      await when(async () => !(await guard()).prevented);
+      r.off = await guard();
+      return r;
+    """, tmp_path)
+    assert out["idle"]["prevented"] is False and out["idle"]["line"] == "", out["idle"]
+    on = out["energized"]
+    assert on["prevented"] is True, on
+    assert on["line"] == ("Devices are energized. Disable them before closing this tab; "
+                          "the station stops them 12 s after the tab goes."), on
+    assert on["lineRed"] is False and out["hintAbove"], on
+    mark = on["marks"]["Stepper Probe"]
+    assert mark and mark["words"] == "energized" and mark["title"] == "Energized", on
+    assert mark["afterStopMark"] and mark["background"] != on["signal"], mark
+    assert mark["border"] not in ("0px", ""), "the energized mark is a ring"
+    assert on["marks"]["DC Probe"] is None, on
+    assert out["off"]["prevented"] is False and out["off"]["line"] == "", out["off"]
+
+
+#: A faulted entry, its rail mark and its mode toggle.
+_FAULT_READ = r"""
+  const fault = () => page.evaluate(() => {
+    const card = Array.from(document.querySelectorAll('#cards .card'))
+      .find((c) => c.querySelector('.card-title').textContent === 'Stepper Probe');
+    const mark = card.querySelector('.unconfirmed-mark');
+    const reason = card.querySelector('.fault-line');
+    const toggle = card.querySelector('.toggle');
+    const link = document.querySelector('#model-nav [data-model="Stepper Probe"] .nav-mark');
+    const swatch = document.createElement('span');
+    swatch.style.color = getComputedStyle(document.documentElement).getPropertyValue('--signal').trim();
+    document.body.appendChild(swatch);
+    const signal = getComputedStyle(swatch).color;
+    swatch.remove();
+    return { rule: getComputedStyle(card).borderTopColor === signal,
+             mark: mark && !mark.hidden ? mark.textContent : '',
+             reason: reason && !reason.hidden ? reason.textContent : '',
+             toggle: { disabled: toggle.disabled, title: toggle.title },
+             rail: link && !link.hidden ? { words: link.textContent, title: link.title,
+                                            faulted: link.classList.contains('is-faulted'),
+                                            red: getComputedStyle(link).backgroundColor === signal } : null };
+  });
+"""
+
+
+@needs_browser
+def test_o4_a_faulted_probe_is_marked_like_an_unconfirmed_stop(mode_station, tmp_path):
+    """O4 (IMP8-2): a probe whose disable did not reach the board (FAULT)
+    looked like a safely disabled one. Its entry gets the red head rule and
+    "Disable failed. Treat as live." with the fault's reason in tier 1, the
+    rail a signal mark, and its mode toggle is drawn disabled with "Faulted:
+    clear the fault first". When the fault clears, all of it goes."""
+    view, controller, first, second = mode_station
+    reason = ("The disable did not reach the board, so the motors may still be "
+              "powered. Treat it as live and check the connection.")
+    first.mode, first.fault = "fault", reason
+    out = _browse(view, _RAIL + _FAULT_READ + r"""
+      await when(async () => (await fault()).mark !== '');
+      await sleep(300);
+      return fault();
+    """, tmp_path)
+    assert out["rule"] and out["mark"] == "Disable failed. Treat as live.", out
+    assert out["reason"] == reason, out
+    assert out["toggle"] == {"disabled": True, "title": "Faulted: clear the fault first"}, out
+    rail = out["rail"]
+    assert rail and rail["faulted"] and rail["red"] and rail["words"] == "faulted", out
+    assert rail["title"] == "Disable failed: treat as live", rail
+
+    first.mode, first.fault = "disabled", ""
+    out = _browse(view, _RAIL + _FAULT_READ + r"""
+      await sleep(700);
+      return fault();
+    """, tmp_path)
+    assert not out["rule"] and out["mark"] == "" and out["reason"] == "", out
+    assert out["toggle"]["disabled"] is False and out["rail"] is None, out
+
+
+def test_o5_quit_stops_every_model_before_it_answers_and_names_the_unconfirmed(station):
+    """O5 (IMP8-3): the server answered Quit before any stop, so the page
+    said "Off" regardless. Now the answer carries `estop_all`'s results and
+    the names that did not confirm; a second Quit is the same answer."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    status, answer = _post(view, "/api/quit", {})
+    assert status == 200 and answer["status"] == "ok", answer
+    assert probe.is_estopped, "Quit answered before the stop ran"
+    assert answer["stopped"] == {"Fake Probe": False}, answer
+    assert answer["unconfirmed"] == ["Fake Probe"], answer
+    assert _post(view, "/api/quit", {}) == (200, answer)
+
+
+@needs_browser
+def test_o5_after_quit_the_page_names_the_model_that_did_not_confirm(station, tmp_path):
+    """O5: the end state says "Off" only for what confirmed. The model that
+    did not is named on the rail in the signal colour, its entry keeps its
+    red rule and "Stop not confirmed", and its switch does not read Off."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, r"""
+      await page.click('#quit-link');
+      await until(() => !document.getElementById('confirm-modal').hidden);
+      await page.click('#confirm-yes');
+      await until(() => document.body.classList.contains('is-shut-down'));
+      await sleep(400);
+      return page.evaluate(() => {
+        const card = Array.from(document.querySelectorAll('#cards .card'))
+          .find((c) => c.querySelector('.card-title').textContent === 'Fake Probe');
+        const lines = Array.from(document.querySelectorAll('.rail-alert-line'))
+          .filter((l) => l.getClientRects().length).map((l) => l.textContent);
+        return { link: document.getElementById('connection').textContent, lines,
+                 unconfirmed: card.classList.contains('is-unconfirmed'),
+                 mark: card.querySelector('.unconfirmed-mark').hidden ? '' : card.querySelector('.unconfirmed-mark').textContent,
+                 switchWords: card.querySelector('.switch-words') ? card.querySelector('.switch-words').textContent : null,
+                 face: document.querySelector('#full-stop .mushroom-face').textContent,
+                 prevented: (() => { const e = new Event('beforeunload', { cancelable: true });
+                                     window.dispatchEvent(e); return e.defaultPrevented; })() };
+      });
+    """, tmp_path)
+    assert out["link"] == "The station has shut down. You can close this tab.", out
+    assert out["lines"] == ["Fake Probe did not confirm its stop. Check it by hand."], out
+    assert out["unconfirmed"] and out["mark"] == "Stop not confirmed. Treat as live.", out
+    assert out["face"] == "Off" and out["prevented"] is False, out
+
+
+@needs_browser
+def test_o7_the_stop_and_the_clear_are_announced_and_the_dialogs_do_not_claim_modal(
+        station, tmp_path):
+    """O7 (A11Y-2/3): the headline and the rail line sit in a polite live
+    region inside <main>; the stop and the clear are assertive
+    announcements. The dialogs no longer say aria-modal="true" while the
+    rail stays operable beside them."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      const said = { polite: [], assertive: [] };
+      await page.exposeFunction('noteSaid', (k, t) => said[k].push(t));
+      const found = await page.evaluate(() => {
+        const main = document.querySelector('main');
+        const polite = document.getElementById('announce-polite');
+        const loud = document.getElementById('announce-assertive');
+        for (const [k, node] of [['polite', polite], ['assertive', loud]]) {
+          if (node) new MutationObserver(() => { if (node.textContent) window.noteSaid(k, node.textContent); })
+            .observe(node, { childList: true, characterData: true, subtree: true });
+        }
+        return { main: Boolean(main),
+                 headlineInMain: Boolean(main && main.contains(document.getElementById('sheet-headline'))),
+                 politeInMain: Boolean(main && polite && main.contains(polite)),
+                 politeLive: polite && polite.getAttribute('aria-live'),
+                 loudLive: loud && loud.getAttribute('aria-live'),
+                 modal: Array.from(document.querySelectorAll('[aria-modal="true"]')).map((n) => n.id || n.className) };
+      });
+      await page.click('#full-stop');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Clear');
+      await sleep(500);
+      await page.click('#full-stop');
+      await until(() => !document.getElementById('confirm-modal').hidden);
+      await page.click('#confirm-yes');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
+      await sleep(500);
+      return { found, said };
+    """, tmp_path)
+    found = out["found"]
+    assert found["main"] and found["headlineInMain"] and found["politeInMain"], found
+    assert found["politeLive"] == "polite" and found["loudLive"] == "assertive", found
+    assert found["modal"] == [], found
+    said = out["said"]
+    assert "Every model is stopped." in said["assertive"], said
+    assert "The stop is cleared." in said["assertive"], said
+    assert any("Every model is stopped." in t for t in said["polite"]), said
+
+
+@needs_browser
+def test_o3_a_disabled_reason_names_the_mode_the_model_is_in(mode_station, tmp_path):
+    """O3 (IMP8-1): Step is `disabled_when=("manual", ...)`. In manual mode
+    its reason is "In manual mode" (it said "Not in manual mode", the
+    inverse); the speed entry, gated off in autonomous mode, says "In
+    autonomous mode". The words come from the served table."""
+    view, controller, first, second = mode_station
+    first.mode = "manual"
+    second.mode = "autonomous"
+    out = _browse(view, _RAIL + r"""
+      await sleep(700);
+      return page.evaluate(() => {
+        const card = (n) => Array.from(document.querySelectorAll('#cards .card'))
+          .find((c) => c.querySelector('.card-title').textContent === n);
+        const step = Array.from(card('Stepper Probe').querySelectorAll('button'))
+          .find((b) => b.textContent === 'Step');
+        const note = Array.from(card('Stepper Probe').querySelectorAll('.gate-note'))
+          .filter((n) => !n.hidden).map((n) => n.textContent);
+        const speed = card('DC Probe').querySelector('input[name="full_speed"]');
+        return { step: step.title, disabled: step.disabled, note, speed: speed.title };
+      });
+    """, tmp_path)
+    assert out["disabled"] and out["step"] == "In manual mode", out
+    assert out["note"] == ["In manual mode"], out
+    assert out["speed"] == "In autonomous mode", out
+
+
+@needs_browser
+def test_o10_a_command_in_flight_is_busy_and_a_second_press_is_swallowed(mode_station, tmp_path):
+    """O10 (WDG8-2): two presses on Step 50 ms apart sent two Steps. The
+    command is busy (aria-busy, .is-busy) until its answer, and a press
+    meanwhile is ignored."""
+    view, controller, first, second = mode_station
+    first.step_seconds = 0.6
+    out = _browse(view, _RAIL + r"""
+      await sleep(400);
+      const step = await page.evaluateHandle(() => Array.from(document.querySelectorAll('#cards .card'))
+        .find((c) => c.querySelector('.card-title').textContent === 'Stepper Probe')
+        .querySelector('.button.role-go'));
+      await step.click();
+      await sleep(50);
+      const busy = await page.evaluate((b) => ({ aria: b.getAttribute('aria-busy'),
+        cls: b.classList.contains('is-busy') }), step);
+      await step.click();
+      await sleep(1200);
+      const after = await page.evaluate((b) => ({ aria: b.getAttribute('aria-busy'),
+        cls: b.classList.contains('is-busy') }), step);
+      return { busy, after };
+    """, tmp_path)
+    assert first.steps == 1, f"{first.steps} Steps were sent"
+    assert out["busy"] == {"aria": "true", "cls": True}, out
+    assert out["after"]["aria"] != "true" and not out["after"]["cls"], out
+
+
+@needs_browser
+def test_o10_the_wheel_does_not_change_a_focused_number_box(mode_station, tmp_path):
+    """O10 (WDG8-3): the wheel over a focused number box changed it
+    silently (400400 -> 400403)."""
+    view, controller, first, second = mode_station
+    out = _browse(view, _RAIL + r"""
+      await sleep(400);
+      const box = 'input[name="full_speed"]';
+      await page.focus(box);
+      const b = await page.evaluate((s) => { const r = document.querySelector(s).getBoundingClientRect();
+        return [r.left + r.width / 2, r.top + r.height / 2]; }, box);
+      await page.mouse.move(b[0], b[1]);
+      const before = await page.evaluate((s) => document.querySelector(s).value, box);
+      for (let i = 0; i < 3; i += 1) { await page.mouse.wheel({ deltaY: -100 }); await sleep(60); }
+      const after = await page.evaluate((s) => document.querySelector(s).value, box);
+      return { before, after };
+    """, tmp_path)
+    assert out["before"] == "400" and out["after"] == "400", out
+
+
+@needs_browser
+def test_o10_a_refusal_lands_at_its_field_and_marks_it(mode_station, tmp_path):
+    """O10 (WDG8-4, A11Y-7): a refusal that names a field is put under that
+    field - its well opened if it was shut - with aria-invalid and
+    aria-describedby pointing at the sentence, and the field takes focus."""
+    view, controller, first, second = mode_station
+    out = _browse(view, _RAIL + r"""
+      await page.click('#model-nav [data-model="Stepper Probe"]');
+      await sleep(400);
+      // The value arrives with no input or change event, as a paste that
+      // never blurred would; the well is shut.
+      await page.evaluate(() => { document.querySelector('.card.is-opened input[name="x_step"]').value = '0'; });
+      await page.click('.card.is-opened .button.role-go');
+      await until(() => { const s = document.querySelector('.card.is-opened .status'); return s && !s.hidden; });
+      await sleep(300);
+      return page.evaluate(() => {
+        const card = document.querySelector('.card.is-opened');
+        const box = card.querySelector('input[name="x_step"]');
+        const status = card.querySelector('.status');
+        const row = box.closest('.row');
+        return { text: status.textContent, invalid: box.getAttribute('aria-invalid'),
+                 describedBy: box.getAttribute('aria-describedby'), statusId: status.id,
+                 underField: row.nextElementSibling === status,
+                 wellOpen: !card.querySelector('.tier-well').hidden,
+                 focused: document.activeElement === box };
+      });
+    """, tmp_path)
+    assert out["text"] == "X step size must be at least 1", out
+    assert out["invalid"] == "true" and out["describedBy"] == out["statusId"] != "", out
+    assert out["underField"] and out["wellOpen"] and out["focused"], out
+
+
+@needs_browser
+def test_o10_the_region_can_be_typed_and_the_picker_says_it_is_loading(station, tmp_path):
+    """O10 (WDG8-5): the capture region had a pointer-only picker. Four
+    labelled number fields (in screen pixels) are the keyboard path, and a
+    press on "Use this region" sets exactly what they say. While the grab
+    loads, the dialog says so and is aria-busy."""
+    view, controller, probe = station
+    out = _browse(view, r"""
+      const pick = await page.evaluateHandle(() => Array.from(document.querySelectorAll('.card button'))
+        .find((b) => b.textContent.startsWith('Region')));
+      await pick.click();
+      const loading = await page.evaluate(() => ({
+        busy: document.querySelector('#region-picker .dialog').getAttribute('aria-busy'),
+        help: document.getElementById('region-help').textContent }));
+      await until(() => document.querySelector('#region-picker .dialog').getAttribute('aria-busy') !== 'true');
+      const fields = await page.evaluate(() => Array.from(document.querySelectorAll('#region-picker input'))
+        .map((i) => ({ name: i.name, label: i.labels && i.labels[0] ? i.labels[0].textContent : i.getAttribute('aria-label') })));
+      for (const [name, value] of [['x', '-900'], ['y', '20'], ['width', '300'], ['height', '200']]) {
+        await page.click('#region-picker input[name="' + name + '"]', { clickCount: 3 });
+        await page.keyboard.type(value);
+      }
+      await page.click('#region-use');
+      await until(() => document.getElementById('region-picker').hidden);
+      await sleep(300);
+      return { loading, fields };
+    """, tmp_path)
+    assert out["loading"]["busy"] == "true", out
+    assert out["loading"]["help"] == "Loading the station's screen…", out
+    assert [f["name"] for f in out["fields"]] == ["x", "y", "width", "height"], out
+    assert all(f["label"] for f in out["fields"]), out
+    assert probe.region == {"left": -900, "top": 20, "width": 300, "height": 200}, probe.region
+
+
+@needs_browser
+def test_o12_browser_silent_leaves_the_tray_on_the_next_heartbeat(station, tmp_path):
+    """O12 (PM8-3): "Browser silent … full stop at 15 s" stayed the tray's
+    line after the tab came back. The next heartbeat that lands takes it
+    back (the log keeps it)."""
+    view, controller, probe = station
+    timer = threading.Timer(2.5, lambda: events.warn(
+        "Browser Silent", "No browser has checked in for 5.2s while devices are "
+        "energized. FULL STOP at 15s.", source="Web"))
+    timer.start()
+    try:
+        out = _browse(view, r"""
+          // The tab went quiet: no heartbeat has landed for a while.
+          await page.evaluate(() => { window.station.stopHeartbeat(); window.station.lastBeatOk = 0; });
+          const tray = () => page.evaluate(() => document.getElementById('tray-latest').textContent);
+          await when(async () => (await tray()).includes('Browser silent'), 6000);
+          const r = { silent: await tray() };
+          await page.evaluate(() => window.station.startHeartbeat());
+          await when(async () => !(await tray()).includes('Browser silent'), 4000);
+          r.back = await tray();
+          r.log = await page.evaluate(() => document.getElementById('event-log').textContent);
+          return r;
+        """, tmp_path)
+    finally:
+        timer.cancel()
+    assert "Browser silent" in out["silent"], out
+    assert "Browser silent" not in out["back"], out
+    assert "Browser silent" in out["log"], out
+
+
+@needs_browser
+def test_o14_a_released_slider_and_a_returned_entry_commit_at_once(tiered_station, tmp_path):
+    """O14 (PM8-7): a drag or a typed speed waited for some later command.
+    The slider commits on release and the entry on Enter (or leaving it),
+    through `_commit` for that one field, as Tk and Qt do. A refused value
+    is said at the field and the box goes back to what the station holds."""
+    view, controller, probe = tiered_station
+    out = _browse(view, _TIERED + r"""
+      const box = '.card.is-opened input[name="speed"]';
+      const retype = async (text) => {
+        await page.$eval(box, (el) => { el.value = ''; });
+        await page.focus(box);
+        await page.keyboard.type(text);
+      };
+      await retype('321');
+      await page.keyboard.press('Enter');
+      await sleep(600);
+      const range = '.card.is-opened .slider-range';
+      await page.focus(range);
+      await page.keyboard.press('ArrowRight');
+      await page.evaluate((s) => document.querySelector(s).dispatchEvent(new Event('change', { bubbles: true })), range);
+      await sleep(600);
+      const afterSlider = await page.evaluate((s) => document.querySelector(s).value, box);
+      await retype('9999');
+      await page.keyboard.press('Enter');
+      await sleep(700);
+      return page.evaluate((s, afterSlider) => {
+        const input = document.querySelector(s);
+        const status = document.querySelector('.card.is-opened .status');
+        return { afterSlider, value: input.value, refusal: status.hidden ? '' : status.textContent,
+                 invalid: input.getAttribute('aria-invalid') };
+      }, box, afterSlider);
+    """, tmp_path)
+    assert probe.sent == [], "a commit is not a Go"
+    assert out["afterSlider"] == "331" and probe.speed == 331, (out, probe.speed)
+    assert out["refusal"] == "Manual speed must be at most 5000", out
+    assert out["value"] == "331" and out["invalid"] == "true", out
+
+
+@needs_browser
+def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
+    """O15 (ARCH parity with L5): on a device page the head and the tier-1
+    body stay in view while the details under them scroll."""
+    view, controller = sim_station
+    out = _browse(view, r"""
+      await page.setViewport({ width: 1400, height: 600 });
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      await page.click('#model-nav [data-model="Stepper Probe"]');
+      await sleep(300);
+      await page.click('.card.is-opened .disclosure[data-tier="2"]');
+      await page.click('.card.is-opened .disclosure[data-tier="3"]');
+      await sleep(300);
+      const top = () => page.evaluate(() => {
+        const c = document.querySelector('.card.is-opened');
+        return { head: c.querySelector('.card-head').getBoundingClientRect().top,
+                 body: c.querySelector('.card-body').getBoundingClientRect().top,
+                 well: c.querySelector('.tier-well').getBoundingClientRect().top,
+                 scroll: window.scrollY,
+                 room: document.documentElement.scrollHeight - window.innerHeight };
+      });
+      const before = await top();
+      await page.evaluate(() => window.scrollBy(0, 160));
+      await sleep(300);
+      return { before, after: await top(),
+               pinned: await page.evaluate(() => document.querySelector('.card.is-opened').classList.contains('is-pinned')) };
+    """, tmp_path)
+    before, after = out["before"], out["after"]
+    assert before["room"] > 100, f"nothing to scroll: {before}"
+    assert after["scroll"] > 0, after
+    # Pinned: the head is still at the top of the view and the tier-1 body
+    # still right under it, while the page moved 400 px.
+    assert -0.5 <= after["head"] <= before["head"] + 0.5, out
+    assert abs((after["body"] - after["head"]) - (before["body"] - before["head"])) < 1, out
+    assert after["well"] < before["well"] - 100, "the details did not scroll under it"
+    assert out["pinned"], "the entry was not pinned"
+
+
+@needs_browser
+def test_o16_one_word_per_stop_and_marks_that_differ_by_shape(two_probes, tmp_path):
+    """O16 (PM8-8, A11Y-6, WDG8-7/9): the per-model switch reads "Stop this
+    model" and, latched, "Stopped"; the rail's stopped mark is a square and
+    the did-not-confirm mark carries a "!" as well as its colour; the
+    refusal line's mark is not a box; a log window shows a focus ring when
+    it opens."""
+    view, controller, first, second = two_probes
+    second.stop_confirms = False
+    out = _browse(view, _STOP_READ + r"""
+      await page.click('#model-nav [data-model="Fake Probe"]');
+      await sleep(300);
+      const words = () => page.evaluate(() => document.querySelector('.card.is-opened .switch-words').textContent);
+      const r = { live: await words() };
+      const opener = await page.evaluateHandle(() => Array.from(document.querySelectorAll('.card.is-opened button'))
+        .find((b) => b.textContent.startsWith('Gamepad log')));
+      await opener.focus();
+      await page.keyboard.press('Enter');
+      await sleep(300);
+      r.ring = await page.evaluate(() => { const f = document.activeElement;
+        const s = getComputedStyle(f);
+        return { inLog: Boolean(f.closest('.log-window')), outline: s.outlineStyle, width: s.outlineWidth }; });
+      await page.keyboard.press('Escape');
+      await page.click('#full-stop');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Clear');
+      await sleep(500);
+      await ackAll();
+      r.latched = await words();
+      r.marks = await page.evaluate(() => {
+        const read = (n) => { const m = document.querySelector('#model-nav [data-model="' + n + '"] .nav-mark');
+          const b = getComputedStyle(m, '::before');
+          return { glyph: b.content, cls: m.className }; };
+        return { stopped: read('Fake Probe'), unconfirmed: read('Other Probe') };
+      });
+      r.refusalMark = await page.evaluate(() => {
+        const s = document.createElement('p'); s.className = 'status';
+        document.querySelector('.card.is-opened').appendChild(s);
+        const b = getComputedStyle(s, '::before');
+        const out = { border: b.borderTopWidth, clip: b.clipPath };
+        s.remove();
+        return out;
+      });
+      return r;
+    """, tmp_path)
+    assert out["live"] == "Stop this model" and out["latched"] == "Stopped", out
+    assert out["ring"]["inLog"] and out["ring"]["outline"] != "none", out["ring"]
+    marks = out["marks"]
+    assert marks["stopped"]["glyph"] in ("none", "normal", '""'), marks
+    assert marks["unconfirmed"]["glyph"] == '"!"', marks
+    mark = out["refusalMark"]
+    assert mark["border"] in ("0px", "") and mark["clip"] not in ("none", ""), mark
+
+
+@needs_browser
+def test_o16_under_640_the_chord_hint_and_every_stop_mark_stay_visible(sim_station, tmp_path):
+    """O16 (WDG8-10): under 40rem the rail hid "Stop: Ctrl+." and the list
+    scrolled sideways, taking the stop marks of the last models off-edge."""
+    view, controller = sim_station
+    controller.estop_all()
+    out = _browse(view, r"""
+      await page.setViewport({ width: 620, height: 900 });
+      await sleep(700);
+      return page.evaluate(() => {
+        const hint = document.querySelector('.stop-hint');
+        const w = window.innerWidth;
+        const marks = Array.from(document.querySelectorAll('#model-nav .nav-mark')).map((m) => {
+          const r = m.getBoundingClientRect();
+          return !m.hidden && r.width > 0 && r.left >= 0 && r.right <= w; });
+        return { hint: Boolean(hint.getClientRects().length) && getComputedStyle(hint).visibility !== 'hidden'
+                 && getComputedStyle(hint).display !== 'none',
+                 marks, sideways: document.documentElement.scrollWidth > w };
+      });
+    """, tmp_path)
+    assert out["hint"], out
+    assert len(out["marks"]) == 6 and all(out["marks"]), out
+    assert not out["sideways"], out
+
+
+def test_theme_json_serves_the_event_titles_the_page_keys_on(station):
+    """ARCH-4: the titles the page matches (the unconfirmed stop, the idle
+    warning, the watchdog's warning) are core's constants, served."""
+    view, _, _ = station
+    status, body = _get(view, "/api/theme.json")
+    assert status == 200
+    assert body["event_titles"] == {"stop_not_confirmed": events.STOP_NOT_CONFIRMED,
+                                    "idle_timeout_soon": events.IDLE_TIMEOUT_SOON,
+                                    "browser_silent": events.BROWSER_SILENT}
