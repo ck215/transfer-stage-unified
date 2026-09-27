@@ -268,6 +268,46 @@ CLEAR_WORDS = ("Clear the stop?", "Clear the stop", "Keep it stopped")
 CONFIRM_WORDS = ("Confirm", "Continue", "Cancel")
 
 
+def quit_prompt(energized):
+    """N4 (brief-n-views.md N3): the quit question names what is energized,
+    since quitting stops and disconnects it; else the L9 sentence."""
+    names = list(energized or ())
+    if not names:
+        return QUIT_PROMPT
+    many = len(names) > 1
+    return (f"Quit the station? {join_names(names)} {'are' if many else 'is'} "
+            f"energized; quitting stops and disconnects {'them' if many else 'it'}.")
+
+
+#: N2 (brief-n-views.md N1): the idle countdown. The window is the model's
+#: `idle_warn_seconds` when its state carries it, else this.
+IDLE_WARN_SECONDS = 60
+EXTEND_WORD = "Extend"
+#: O13: events that are history only - they go to the log, never the tray's
+#: latest line, because a live line says the same thing from state.
+HISTORY_ONLY_TITLES = frozenset({"Idle Timeout Soon"})
+
+
+def idle_countdowns(names, states):
+    """[(name, whole seconds)] for every model inside its idle warning
+    window, in station order: `idle_remaining` from state, rounded up so the
+    line never says 0 while there is time left."""
+    lines = []
+    for name in names:
+        state = states.get(name) or {}
+        remaining = state.get("idle_remaining")
+        if remaining is None:
+            continue
+        window = state.get("idle_warn_seconds") or IDLE_WARN_SECONDS
+        if float(remaining) <= float(window):
+            lines.append((name, int(math.ceil(float(remaining)))))
+    return lines
+
+
+def countdown_text(name, seconds):
+    return f"{name} powers down in {seconds} s."
+
+
 def close_model_words(name):
     """O9: the entry's × asks the Tk and Web question - (prompt, title, yes,
     no) for `ask`: closing stops and disconnects the model."""
@@ -4355,6 +4395,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._words = None          # the stop's words last drawn (`stop_words`)
         self._narrow = None
         self._quit_asked = False    # a Quit already answered yes
+        self._energized = []        # the station's `energized` (O6)
 
         self.setWindowTitle("Transfer stage")
         self.resize(1400, 900)
@@ -4474,8 +4515,16 @@ class QtDashboard(Dashboard, QMainWindow):
         the station running."""
         if self._closing or self._quit_asked:
             return True
-        self._quit_asked = ask(self, QUIT_PROMPT, *QUIT_WORDS)
+        self._quit_asked = ask(self, quit_prompt(self._energized_now()), *QUIT_WORDS)
         return self._quit_asked
+
+    def _energized_now(self):
+        """`Controller.state()["energized"]`, read at the moment of asking."""
+        try:
+            station = self.controller.state()
+        except Exception:
+            return []
+        return list((station or {}).get("energized") or []) if isinstance(station, dict) else []
 
     def _on_quit_clicked(self):
         if self._ask_quit():
@@ -4554,6 +4603,16 @@ class QtDashboard(Dashboard, QMainWindow):
         self.latched_row.setVisible(False)
         column.addSpacing(theme.SPACE[3])
         column.addWidget(self.latched_row)
+        # N2: the idle countdown, one line per probe with its Extend, under
+        # the disc and its stop line - never over them, never a window.
+        self.countdown_box = QWidget()
+        self.countdown_box.setObjectName("bare")
+        self._countdown_layout = QVBoxLayout(self.countdown_box)
+        self._countdown_layout.setContentsMargins(0, theme.SPACE[3], 0, 0)
+        self._countdown_layout.setSpacing(theme.PAD)
+        self.countdown_box.setVisible(False)
+        self.countdowns = {}        # name -> (line, Extend), station order
+        column.addWidget(self.countdown_box)
         column.addSpacing(theme.SPACE[5])
 
         # The model list scrolls within the rail, so at 28 pt with eight
@@ -4735,14 +4794,10 @@ class QtDashboard(Dashboard, QMainWindow):
         """What the models' states say, on the rail and the sheet: a lost
         device, the latch, a stop that did not confirm, the simulation line."""
         names = list(self.controller.model_names)
-        states = {}
-        for name in names:
-            try:
-                states[name] = self.controller.state(name)
-            except Exception:
-                continue
+        states = self._model_states(names)
         for name, state in states.items():
             self._show_lost(name, lost_devices(state))
+        self._sync_countdowns(names, states)
         stop = self._stop_state()
         words = stop_words(stop)
         if words != self._words:
@@ -4770,6 +4825,92 @@ class QtDashboard(Dashboard, QMainWindow):
         """`Controller.stop_state`: what is latched, what did not confirm,
         and whether that is every model (L1)."""
         return self.controller.stop_state
+
+    def _model_states(self, names):
+        """Every open model's state from one `Controller.state()` read, with
+        the station's `energized` list kept beside them (O6, N4); a model
+        missing from it is asked for by name."""
+        try:
+            station = self.controller.state()
+        except Exception:
+            station = {}
+        station = station if isinstance(station, dict) else {}
+        models = station.get("models") if isinstance(station.get("models"), dict) else {}
+        self._energized = [n for n in (station.get("energized") or []) if n in names]
+        states = {}
+        for name in names:
+            if name in models:
+                states[name] = models[name]
+                continue
+            try:
+                states[name] = self.controller.state(name)
+            except Exception:
+                continue
+        return states
+
+    def _order_tab(self):
+        """Tab order after a rebuild (O11 fills this in)."""
+
+    # -- N2: the idle countdown ----------------------------------------------
+    def countdown_names(self):
+        return list(self.countdowns)
+
+    def _sync_countdowns(self, names, states):
+        """One line per probe inside its idle warning window, rendered from
+        the polled `idle_remaining` (no local timer that can drift). The line
+        goes when state climbs back out of the window or says None."""
+        lines = idle_countdowns(names, states)
+        wanted = [name for name, _ in lines]
+        if wanted != list(self.countdowns):
+            refocus = any(button.hasFocus() for _, button in self.countdowns.values())
+            while self._countdown_layout.count():
+                item = self._countdown_layout.takeAt(0)
+                if item.widget() is not None:
+                    item.widget().hide()
+                    item.widget().deleteLater()
+            self.countdowns = {}
+            for name in wanted:
+                self.countdowns[name] = self._countdown_row(name)
+            if refocus:
+                # The line that held the keyboard left: the disc takes it,
+                # never a place off the rail.
+                self.stop_button.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._order_tab()
+        for name, seconds in lines:
+            label, _ = self.countdowns[name]
+            text = countdown_text(name, seconds)
+            if label.text() != text:
+                label.setText(text)
+        if self.countdown_box.isHidden() == bool(lines):
+            self.countdown_box.setVisible(bool(lines))
+
+    def _countdown_row(self, name):
+        row = QWidget()
+        row.setObjectName("bare")
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.GAP)
+        label = QLabel("")
+        label.setObjectName("railCountdown")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        button = QPushButton(EXTEND_WORD)
+        button.setObjectName("ghost")
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        button.setAccessibleName(f"{EXTEND_WORD} {name}")
+        button.setToolTip(f"Restart the idle timeout for {name}")
+        button.clicked.connect(lambda _=False, n=name: self._extend_idle(n))
+        layout.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
+        self._countdown_layout.addWidget(row)
+        return label, button
+
+    def _extend_idle(self, name):
+        """Extend: the model restarts its idle clock; the line leaves when
+        its state says so, on the next tick."""
+        result = self.controller.run(name, "extend_idle")
+        if getattr(result, "is_refused", False):
+            events.debug("Extend Refused", f"{name}: {result.reason}", source="QtView")
+        self._sync_states()
 
     def _show_lost(self, name, lost):
         """A lost device, said on the rail and in the entry's own head."""
@@ -5203,9 +5344,11 @@ class QtDashboard(Dashboard, QMainWindow):
         if severity not in self.TRAY_SEVERITIES:
             return
         text = event_line(event)
-        key = (severity, text)
+        # One event, once - keyed on the event, not its words (PM8-10): a
+        # second episode with the same words is a new line.
+        key = (severity, getattr(event, "id", None), text)
         if key == self._last_event:
-            return                      # one event, once
+            return
         self._last_event = key
         ink = self._severity_colour(severity)
         label = sentence(severity.upper())
@@ -5225,6 +5368,8 @@ class QtDashboard(Dashboard, QMainWindow):
             f"{html.escape(text)}</span>")
         self._hang_last_line(hollow)
         self.event_view.moveCursor(QTextCursor.MoveOperation.End)
+        if getattr(event, "title", None) in HISTORY_ONLY_TITLES:
+            return      # O13: history in the log; the live line is the rail's
         self.event_latest.set_full_text(f"{label}  {text}")
         self._latest_title = getattr(event, "title", None)
         if self.event_latest.property("severity") != severity:
