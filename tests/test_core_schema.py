@@ -240,7 +240,7 @@ def test_every_models_stop_uses_one_vocabulary_and_names_its_model():
     model = FakeModel()
     stop = next(e for e in sch.elements(model.schema)
                 if e.get("command") == "toggle_estop")
-    assert (stop["true_text"], stop["false_text"]) == ("Stopped", "Stop")
+    assert (stop["true_text"], stop["false_text"]) == ("Stopped", "Stop this model")  # O16: one word per thing
     assert model.NAME in stop["tooltip"] and model.NAME in stop["tooltip_on"]
     assert "LATCHED" not in stop["true_text"]
 

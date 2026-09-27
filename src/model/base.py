@@ -251,8 +251,10 @@ class Model(Panel):
             # reaches for. Fault and its reason live beside it. (A latched
             # model still announces itself: the readouts freeze and the rail
             # says so; this is where the control sits, not the only sign.)
+            # O16 (round 8): one word per thing. The disc is "Stop"; this
+            # switch is "Stop this model" so six of them are not six "Stop"s.
             sch.toggle("Stop", "is_estopped", "toggle_estop",
-                       "Stopped", "Stop",
+                       "Stopped", "Stop this model",
                        on_role="danger", off_role="danger",
                        tooltip=f"Stop the {self.NAME}",
                        tooltip_on=f"The {self.NAME} is stopped. Press to "

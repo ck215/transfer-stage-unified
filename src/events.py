@@ -52,6 +52,15 @@ class Event:
         return f"<Event {self.id} {self.severity} {self.text!r}>"
 
 
+#: Titles the views key on (round 8, ARCH-4). Models raise them by name so a
+#: wording change cannot silently detach a view.
+STOP_NOT_CONFIRMED = "Stop Not Confirmed"
+IDLE_TIMEOUT_SOON = "Idle Timeout Soon"
+IDLE_TIMEOUT = "Idle Timeout"
+BROWSER_SILENT = "Browser Silent"
+BROWSER_GONE = "Browser Gone - FULL STOP"
+
+
 class EventLog:
     DEDUPE_SECONDS = 5.0
 
@@ -210,3 +219,5 @@ class EventLog:
 
 
 events = EventLog()
+for _name in ("STOP_NOT_CONFIRMED", "IDLE_TIMEOUT_SOON", "IDLE_TIMEOUT", "BROWSER_SILENT", "BROWSER_GONE"):
+    setattr(events, _name, globals()[_name])
