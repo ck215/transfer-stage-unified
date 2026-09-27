@@ -505,6 +505,20 @@ A `PiezoStage` model written from `MODEL_CONTRACT.md` alone was driven through a
 | CON-11 | S3 | core | The idle clock is probe code. | Lift `idle_remaining` / `extend_idle` into a mixin on `Model`. | direct (core) |
 | CON-13 | S2 | rotator (SIM) | A simulated Rotator's stop never confirms: every SIM FULL STOP reads "Rotator did not confirm". `test_model_contract` carries it as an expected failure. | Owner call: does the SIM stage answer its stop, or is the unconfirmed reading the intended rehearsal of the real SMC100? | owner |
 
+## Tier R — modularity (architecture audit 2026-09-26, `handoff/audit-modularity-2026-09-26.md`)
+
+Goal: a new device is wired by writing its Model alone. The UI half already
+is (the model-contract audit's `PiezoStage`); the input half is not.
+
+| # | Sev | Where | Item | Fix | Route |
+|---|---|---|---|---|---|
+| MOD-1 | S2 | core (probe, gamepad) | The gamepad has no contract: the device publishes probe-shaped keys and the probe owns bind, gate, lost-pad, pump and the dropdown/log commands (~200 lines). A second gamepad-driven device copies all of it. | `model/gamepad_input.py` mixin owns the plumbing; the device speaks generic channel names; the model writes `_on_gamepad(levels, edges)`. Wire bytes unchanged (golden gate). | agent (rb-mod-input) |
+| MOD-2 | S3 | core (all models) | Loop scaffolding written four times, four join timeouts; the probe's interlock thread starts outside `_start_threads`. | `Model._spawn(name, target)` + one base `_stop_threads` that joins every spawned loop. | agent (rb-mod-input) |
+| MOD-3 | S3 | core | Idle interlock is probe code (= CON-11). | `IdleInterlock` mixin: `_touch_activity`, `idle_remaining`, `idle_warn_seconds`, `extend_idle`, `_on_idle_expired()` hook. | agent (rb-mod-input) |
+| MOD-4 | S3 | setup | Registry is a tuple, the SMC100 handshake is hard-coded, the constructor signature is fixed, a runtime-added model cannot reopen (= CON-7). | `Setup.register(cls)`; resources declared by the class; `identify_port` classmethod hook; reopen from the registry. | agent (rb-mod-setup); SMC100 relocation by the lead |
+| MOD-5 | S3 | devices, views | `Device` base duck-types `set_gate`, `is_hardware`, lost (CON-6). | Defaults on `Device`; `Model.state["hardware_devices"]`; views count that instead of class names. | agent (rb-mod-views) + rb-mod-input (state key) |
+| MOD-6 | S3 | views | Schema `inputs` is declared and not read (= CON-8). | Views send the button's declared `inputs` plus every dirty writable entry. | agent (rb-mod-views) |
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.
