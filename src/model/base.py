@@ -18,6 +18,10 @@ class Model(Panel):
     NEEDS_PORT = False
     NEEDS_GAMEPAD = False
     ESTOP_BUDGET = 0.08      # s the caller waits for the hardware stop
+    #: s `_stop_threads` waits for each spawned loop (MOD-2). The largest of
+    #: the four per-model values it replaced: Red Percent's 2.0 (probe 1.0,
+    #: heater 1.5, rotator 1.0). Never used on the stop path.
+    THREAD_JOIN_TIMEOUT = 2.0
 
     def __init__(self):
         super().__init__()
@@ -29,6 +33,11 @@ class Model(Panel):
         self._latched_at = None      # wall time the latch closed (round 7)
         self._fault_reason = ""
         self._updated_at = time.monotonic()
+        #: The one stop flag every long-lived loop waits on (MOD-2). Set by
+        #: `_stop_threads`; `_spawn` clears it again.
+        self._threads_stop = threading.Event()
+        self._spawned = []           # [(name, thread, stop_event)], newest last
+        self._spawn_lock = threading.Lock()
 
     # -- devices and lifecycle --------------------------------------------
     @property
@@ -66,10 +75,73 @@ class Model(Panel):
                             exception=exc)
 
     def _start_threads(self):
-        pass
+        """Start this model's loops, each with `_spawn`. Nothing by default."""
+
+    def _spawn(self, name, target, stop=None):
+        """Start `target` on a daemon thread and record it for `_stop_threads`.
+
+        `stop` is the Event the loop waits on; by default the model's one
+        `_threads_stop`, which this clears (the model is running loops
+        again). A loop that owns a narrower Event (the idle interlock's,
+        one per arming) passes it: the base sets it at close as well, so the
+        loop leaves at once instead of outliving the join.
+
+        A live loop of the same name whose stop is not set is returned as it
+        is, not started twice.
+        """
+        if stop is None:
+            stop = self._threads_stop
+            stop.clear()
+        with self._spawn_lock:
+            self._spawned = [e for e in self._spawned if e[1].is_alive()]
+            for known, thread, known_stop in reversed(self._spawned):
+                if known == name and not known_stop.is_set():
+                    return thread
+            thread = threading.Thread(target=target, daemon=True,
+                                      name=f"{name}-{self.NAME}")
+            self._spawned.append((name, thread, stop))
+        thread.start()
+        events.debug("Thread Started", name, source=self.NAME)
+        return thread
+
+    def _thread(self, name):
+        """The newest thread spawned under `name`, or None."""
+        with self._spawn_lock:
+            for known, thread, _stop in reversed(self._spawned):
+                if known == name:
+                    return thread
+        return None
+
+    def _spawned_threads(self):
+        with self._spawn_lock:
+            return [thread for _name, thread, _stop in self._spawned]
 
     def _stop_threads(self):
-        pass
+        """Set every loop's stop, then join each within THREAD_JOIN_TIMEOUT.
+
+        `close()` runs this before the devices close, so no loop is inside a
+        read on a descriptor closing under it. A loop that does not leave in
+        time is reported and left behind (it is a daemon); the close goes on.
+        """
+        self._threads_stop.set()
+        with self._spawn_lock:
+            spawned = list(self._spawned)
+        for _name, _thread, stop in spawned:
+            stop.set()
+        current = threading.current_thread()
+        for name, thread, _stop in spawned:
+            if thread is current or not thread.is_alive():
+                continue
+            started = time.monotonic()
+            thread.join(self.THREAD_JOIN_TIMEOUT)
+            events.debug("Thread Stopped", f"{name}: join took "
+                         f"{(time.monotonic() - started) * 1000:.1f} ms; "
+                         f"alive={thread.is_alive()}", source=self.NAME)
+            if thread.is_alive():
+                events.warn("Thread Still Running",
+                            f"A {self.NAME} loop ({name}) did not stop within "
+                            f"{self.THREAD_JOIN_TIMEOUT} s; closing anyway.",
+                            source=self.NAME)
 
     def enable(self):
         pass

@@ -439,14 +439,16 @@ def test_the_reader_leaves_the_instant_close_asks_however_long_its_backoff(
     port.read_error = OSError("link down")
     heater.open()
     time.sleep(0.05)
-    reader = heater._reader
+    reader = heater._thread("reader")
     assert reader.is_alive()
 
     started = time.monotonic()
     heater._stop_threads()
     elapsed = time.monotonic() - started
     assert not reader.is_alive(), "the reader slept through shutdown"
-    assert elapsed < Heater.READER_JOIN_TIMEOUT
+    # Well inside the longest backoff (MAX_BACKOFF), which is what the old
+    # `while running` flag slept through; the join bound is the base's.
+    assert elapsed < Heater.MAX_BACKOFF / 2
 
 
 def test_stopping_threads_twice_is_harmless(heater):

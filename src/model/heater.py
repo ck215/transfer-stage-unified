@@ -89,7 +89,6 @@ class Heater(Model):
     READ_FLOOR = 0.01            # s between reads: never above ~100 Hz
     MIN_BACKOFF, MAX_BACKOFF = 0.1, 2.0
     PERSISTENT_AFTER = 5         # read failures before the link is called lost
-    READER_JOIN_TIMEOUT = 1.5
     #: s a stop waits for an Enter Settings. Short, so that this plus the
     #: port's own priority wait still fits inside `Model.ESTOP_BUDGET`.
     WRITE_LOCK_TIMEOUT = 0.02
@@ -136,11 +135,10 @@ class Heater(Model):
         # heater-off on the way out is news or a port that never opened.
         self._was_reachable = False
 
-        self._reader = None
-        # An Event, not a bool: a reader parked in a 2 s backoff must leave
-        # the moment close() asks, or it outlives READER_JOIN_TIMEOUT and the
-        # port is shut underneath a thread about to read it (TEMP-2 seam).
-        self._reader_wake = threading.Event()
+        # The reader waits on the base's `_threads_stop` (MOD-2): an Event,
+        # not a bool, so a reader parked in a 2 s backoff leaves the moment
+        # close() asks, or it would outlive the join and the port would shut
+        # underneath a thread about to read it (TEMP-2 seam).
         self._is_link_lost = False
 
     # -- devices and lifecycle ---------------------------------------------
@@ -149,41 +147,10 @@ class Heater(Model):
         return [self.port]
 
     def _start_threads(self):
-        if self._reader is not None and self._reader.is_alive():
-            return
-        self._reader_wake.clear()
-        self._reader = threading.Thread(target=self._read_loop, daemon=True,
-                                        name=f"reader-{self.NAME}")
-        self._reader.start()
-        events.debug("Reader Thread Started", f"port={self.port.status}",
-                     source=self.NAME)
-
-    def _stop_threads(self):
-        """Ask the reader to leave and wait for it, with a bound.
-
-        `Model.close()` runs this BEFORE the devices are closed, so the reader
-        is never inside `read_line` on a descriptor closing under it — the
-        use-after-close shape TEMP-11 describes. The wake event is what makes
-        the bound honest: a plain `while running` flag is only tested at the
-        top of the loop, and the longest backoff (2.0 s) outlives the join.
-        """
-        self._reader_wake.set()
-        reader = self._reader
-        if (reader is None or reader is threading.current_thread()
-                or not reader.is_alive()):
-            events.debug("Reader Thread Stopped", "no reader to join",
-                         source=self.NAME)
-            return
-        started = time.monotonic()
-        reader.join(self.READER_JOIN_TIMEOUT)
-        events.debug("Reader Thread Stopped",
-                     f"join took {(time.monotonic() - started) * 1000:.1f} ms; "
-                     f"alive={reader.is_alive()}", source=self.NAME)
-        if reader.is_alive():
-            events.warn("Reader Still Running",
-                        "the temperature reader did not leave the port within "
-                        f"{self.READER_JOIN_TIMEOUT} s; closing anyway",
-                        source=self.NAME)
+        """The reader, spawned through the base (MOD-2). `Model.close()` stops
+        and joins it BEFORE the devices close, so it is never inside
+        `read_line` on a descriptor closing under it (TEMP-11)."""
+        self._spawn("reader", self._read_loop)
 
     # -- what the operator reads -------------------------------------------
     @property
@@ -530,7 +497,7 @@ class Heater(Model):
         which is exactly the shutdown case, so the two conditions collapse
         into one call and no backoff can outlive a shutdown.
         """
-        return self._reader_wake.wait(seconds)
+        return self._threads_stop.wait(seconds)
 
     def _read_loop(self):
         """was TemperatureSystem.read_serial_data
@@ -548,7 +515,7 @@ class Heater(Model):
         in-loop diagnostic carries `every=`.
         """
         failures = 0
-        while not self._reader_wake.is_set():
+        while not self._threads_stop.is_set():
             self._touch()   # the reader is alive; a frozen value shows in `age` of the reading
             line, why, error = None, None, None
             try:

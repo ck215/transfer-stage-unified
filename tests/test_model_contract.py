@@ -350,3 +350,32 @@ def test_window_focus_gates_every_manual_input_device(model):
                 assert gate is False, f"{type(device).__name__} still open while unfocused"
     finally:
         station.close()
+
+
+# -- MOD-2: loops go through the base -----------------------------------------
+
+#: Classes that still override `_stop_threads`, and why a join cannot do it.
+STOP_THREADS_OVERRIDES = {
+    # A run is a one-shot per-command worker with its own stop (`run.end()`):
+    # ending it is something the base join cannot do.
+    "RedMonitor": "ends the in-flight run before the base join",
+}
+
+
+def test_loops_are_stopped_by_the_base_join(model):
+    cls = type(model)
+    if cls._stop_threads is Model._stop_threads:
+        return
+    assert cls.__name__ in STOP_THREADS_OVERRIDES, (
+        f"{cls.__name__} overrides _stop_threads; spawn its loops with "
+        "Model._spawn and let the base join them")
+
+
+def test_close_leaves_no_spawned_loop_running(model):
+    cls = type(model)
+    fresh = cls() if cls is MinimalModel else cls(port="SIM", gamepad=None, sim=True)
+    fresh.open()
+    spawned = list(fresh._spawned_threads())
+    fresh.close()
+    alive = [t.name for t in spawned if t.is_alive()]
+    assert not alive, f"still running after close: {alive}"

@@ -254,8 +254,8 @@ def test_a_failed_enable_does_not_reach_an_armed_mode(probe):
 def test_an_armed_mode_has_a_live_interlock_generation(probe):
     probe.enable()
     assert probe.mode is ProbeMode.IDLE
-    assert probe._interlock_thread is not None
-    assert probe._interlock_thread.is_alive()
+    assert probe._thread("interlock") is not None
+    assert probe._thread("interlock").is_alive()
     assert probe._interlock_generation >= 1
 
 
@@ -476,7 +476,7 @@ def test_the_interlock_gets_a_fresh_event_each_arming(probe):
     assert probe._interlock_stop is not first
     assert not probe._interlock_stop.is_set()
     assert probe._interlock_generation > first_generation
-    assert probe._interlock_thread.is_alive()
+    assert probe._thread("interlock").is_alive()
 
 
 @pytest.mark.loops
@@ -509,11 +509,11 @@ def test_a_restart_inside_the_stop_window_does_not_reuse_a_dying_thread(probe):
     told to stop stays alive until its next tick."""
     probe.INTERLOCK_POLL_INTERVAL = 5.0
     probe.enable()
-    dying = probe._interlock_thread
+    dying = probe._thread("interlock")
     probe._stop_interlock()                  # set, but the thread is still alive
     assert dying.is_alive()
     probe.enable()
-    assert probe._interlock_thread is not dying
+    assert probe._thread("interlock") is not dying
     assert not probe._interlock_stop.is_set()
 
 
@@ -877,11 +877,11 @@ def test_open_opens_the_devices_and_starts_both_loops(probe):
     probe.open()
     try:
         assert probe.port.opened == 1 and probe.gamepad.opened == 1
-        assert probe._sample_thread.is_alive() and probe._jog_thread.is_alive()
+        assert probe._thread("sample").is_alive() and probe._thread("jog").is_alive()
     finally:
         probe.close()
-    assert not probe._sample_thread.is_alive()
-    assert not probe._jog_thread.is_alive()
+    assert not probe._thread("sample").is_alive()
+    assert not probe._thread("jog").is_alive()
     assert probe.port.closed == 1 and probe.gamepad.closed == 1
 
 

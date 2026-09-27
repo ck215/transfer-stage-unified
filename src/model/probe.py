@@ -191,14 +191,9 @@ class Probe(Model):
         self._idle_warned = False
         self._interlock_stop = threading.Event()
         self._interlock_stop.set()
-        self._interlock_thread = None
         self._interlock_generation = 0
 
-        self._threads_stop = threading.Event()
-        self._threads_stop.set()
-        self._jog_thread = None
         self._was_pumping = False     # the jog tick's previous pumping state
-        self._sample_thread = None
         self._coil_kill_reported = False
 
     # -- devices ----------------------------------------------------------
@@ -246,26 +241,11 @@ class Probe(Model):
 
     # -- threads ----------------------------------------------------------
     def _start_threads(self):
-        self._threads_stop.clear()
-        if self._sample_thread is None or not self._sample_thread.is_alive():
-            self._sample_thread = threading.Thread(
-                target=self._sample_loop, daemon=True,
-                name=f"sample-{self.NAME}")
-            self._sample_thread.start()
-        if self._jog_thread is None or not self._jog_thread.is_alive():
-            self._jog_thread = threading.Thread(
-                target=self._jog_loop, daemon=True, name=f"jog-{self.NAME}")
-            self._jog_thread.start()
+        """Both loops through the base (MOD-2), which also stops and joins
+        them, and the idle interlock's per-arming loop, at close."""
+        self._spawn("sample", self._sample_loop)
+        self._spawn("jog", self._jog_loop)
         events.debug("Threads Started", "sample ~100 Hz, jog 50 Hz",
-                     source=self.NAME)
-
-    def _stop_threads(self):
-        self._threads_stop.set()
-        self._stop_interlock()
-        for thread in (self._jog_thread, self._sample_thread):
-            if thread is not None and thread.is_alive():
-                thread.join(timeout=1.0)
-        events.debug("Threads Stopped", "sample and jog loops joined",
                      source=self.NAME)
 
     # -- mode -------------------------------------------------------------
@@ -1023,8 +1003,8 @@ class Probe(Model):
         fight the current one -- `is_alive()` alone is not enough, because a
         thread told to stop stays alive until its next tick.
         """
-        if (self._interlock_thread is not None
-                and self._interlock_thread.is_alive()
+        running = self._thread("interlock")
+        if (running is not None and running.is_alive()
                 and not self._interlock_stop.is_set()):
             return
         self._interlock_stop = threading.Event()
@@ -1076,10 +1056,7 @@ class Probe(Model):
                                     exception=exc)
                     return
 
-        self._interlock_thread = threading.Thread(
-            target=_watch, daemon=True,
-            name=f"interlock-{self.NAME}-{generation}")
-        self._interlock_thread.start()
+        self._spawn("interlock", _watch, stop=stop_event)
 
     # -- params -----------------------------------------------------------
     def _number(self, name):
