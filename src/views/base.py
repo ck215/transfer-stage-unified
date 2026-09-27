@@ -187,16 +187,30 @@ class PanelView:
         self._refresh()
 
     # -- run ---------------------------------------------------------------
-    def _gather_inputs(self):
-        """Every writable entry's current text travels with every command, so
-        a value typed a moment ago is never one edit behind."""
+    def _gather_inputs(self, element):
+        """What travels with `element`'s command (MOD-6 / CON-8): the
+        entries it declares in `inputs`, edited or not, so they are
+        validated as a set (D-5); plus every writable entry the operator
+        has edited and not committed (`_entry_is_edited`), so a value typed
+        a moment ago is never one edit behind and never lost. A clean entry
+        the command does not declare stays home: a stale or bad box
+        elsewhere cannot refuse an unrelated command."""
+        declared = set((element or {}).get("inputs") or ())
         return {e["model_attr"]: self._read_entry(e) for e in self._elements
-                if e["type"] == "entry" and e.get("writable")}
+                if e["type"] == "entry" and e.get("writable")
+                and (e["model_attr"] in declared or self._entry_is_edited(e))}
+
+    def _entry_is_edited(self, element):
+        """The box holds text the operator typed and has not committed.
+        Defaults to `_entry_is_dirty`; a toolkit whose dirty rule also
+        counts focus (refresh protection) overrides this with the text
+        comparison alone, because focus is not an edit."""
+        return self._entry_is_dirty(element)
 
     def _run(self, element, args=()):
         command = element.get("command")
         args = tuple(element.get("args") or ()) + tuple(args)
-        result = self._call(command, self._gather_inputs(), tuple(args))
+        result = self._call(command, self._gather_inputs(element), tuple(args))
         if result.needs_confirm and self._confirm(result.reason):
             result = self._call(result.command, result.inputs, (*result.args, True))
         if result.is_refused:
@@ -263,6 +277,7 @@ class PanelView:
     def _make_section(self, title, layout="column"): raise NotImplementedError
     def _read_entry(self, element): raise NotImplementedError
     def _entry_is_dirty(self, element): raise NotImplementedError
+    # _entry_is_edited(element) -> bool: optional; see above
     def _set_text(self, element, text): raise NotImplementedError
     def _set_on(self, element, is_on): raise NotImplementedError      # colours: theme.toggle_colors
     def _set_data(self, element, data): raise NotImplementedError

@@ -103,11 +103,13 @@ def _body(pattern):
     return found.group(1)
 
 
-def test_every_command_carries_every_entry_value():
-    """D-5: the value typed a moment ago is never one edit behind."""
-    assert "gatherInputs()" in APP_JS
+def test_every_command_carries_its_inputs_and_the_edited_entries():
+    """D-5: the value typed a moment ago is never one edit behind; MOD-6:
+    what is gathered is the command's declared inputs plus the edited
+    entries (`gatherInputsFor`), so run() gathers for its element."""
+    assert "function gatherInputsFor(element, widgets)" in APP_JS
     run = _body(r"async run\(element, args\) \{(.*?)\n  \}")
-    assert "this.gatherInputs()" in run, (
+    assert "this.gatherInputs(element)" in run, (
         "run() sent a command without gathering the entry values")
 
 
@@ -1174,3 +1176,47 @@ def test_mod5_a_state_without_the_list_falls_back_to_the_class_names():
     assert _node_value(
         f"simLineText({json.dumps({'Probe': sim, 'Rotator': rotator})})") == "Simulated: Probe"
     assert _node_value("simLineText({})") == ""
+
+
+# --------------------------------------------------------------------------
+# MOD-6 / CON-8: a command carries its declared `inputs` plus every edited
+# (typed, not committed) entry - `views.base.PanelView._gather_inputs`.
+# --------------------------------------------------------------------------
+def _gathered(element, boxes):
+    """`gatherInputsFor` over plain widget doubles: {attr: (value, edited)}."""
+    widgets = ", ".join(
+        "{element: %s, readValue: () => %s, isEdited: () => %s}" % (
+            json.dumps({"type": "entry", "writable": True, "model_attr": attr}),
+            json.dumps(value), "true" if edited else "false")
+        for attr, (value, edited) in boxes.items())
+    return _node_value(f"gatherInputsFor({json.dumps(element)}, [{widgets}])")
+
+
+BOXES = {"speed": ("5", False), "steps": ("9", False), "note": ("typed", True)}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_mod6_web_a_declared_input_travels_even_when_clean():
+    got = _gathered({"type": "button", "command": "go", "inputs": ["speed"]}, BOXES)
+    assert got["speed"] == "5"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_mod6_web_an_undeclared_clean_entry_does_not_travel():
+    got = _gathered({"type": "button", "command": "go", "inputs": ["speed"]}, BOXES)
+    assert "steps" not in got
+    assert _gathered({"type": "button", "command": "halt"},
+                     {"steps": ("9", False)}) == {}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_mod6_web_an_undeclared_dirty_entry_travels():
+    got = _gathered({"type": "button", "command": "go", "inputs": ["speed"]}, BOXES)
+    assert got == {"speed": "5", "note": "typed"}
+    assert _gathered({"type": "toggle", "command": "set_mode"}, BOXES) == {"note": "typed"}
+
+
+def test_mod6_web_every_command_path_gathers_for_its_element():
+    """Both callers pass the element: `run` and the file download."""
+    assert "this.gatherInputs()" not in CODE
+    assert CODE.count("this.gatherInputs(element)") == 2

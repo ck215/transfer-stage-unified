@@ -1451,6 +1451,52 @@ def test_every_entry_travels_with_a_command(view, panel, controller):
     assert inputs["speed"] == "7.5"
 
 
+def _var(view, text):
+    return view._widgets[id(element_of(view, "entry", text))]["var"]
+
+
+def test_mod6_a_declared_input_travels_even_when_clean(view, panel, controller):
+    """(a) "Go" declares speed: it goes with the command untouched."""
+    view._refresh()
+    click(view, element_of(view, "button", "Go"))
+    _name, _command, inputs, _args = last_call(controller, "go")
+    assert "speed" in inputs
+
+
+def test_mod6_an_undeclared_clean_entry_does_not_travel(view, panel, controller):
+    """(b) CON-8: Steps and Note are not Go's inputs and nobody typed in them."""
+    view._refresh()
+    click(view, element_of(view, "button", "Go"))
+    _name, _command, inputs, _args = last_call(controller, "go")
+    assert set(inputs) == {"speed"}
+
+
+def test_mod6_an_undeclared_dirty_entry_travels(view, panel, controller):
+    """(c) What the operator just typed is never lost: an edited box goes
+    with any command, declared or not."""
+    view._refresh()
+    _var(view, "Note").set("typed a moment ago")
+    click(view, element_of(view, "button", "Go"))
+    _name, _command, inputs, _args = last_call(controller, "go")
+    assert inputs.get("note") == "typed a moment ago"
+    assert "steps" not in inputs
+
+
+def test_mod6_a_focused_box_nobody_edited_does_not_travel(view, panel, controller):
+    """Focus alone is not an edit: a box the operator clicked into and left
+    unchanged may hold a value one refresh behind (refresh skips a focused
+    box), and sending it would put that stale value back."""
+    view._refresh()
+    steps = element_of(view, "entry", "Steps")
+    Focus.current = view._widgets[id(steps)]["widget"]
+    try:
+        click(view, element_of(view, "button", "Go"))
+    finally:
+        Focus.current = None
+    _name, _command, inputs, _args = last_call(controller, "go")
+    assert "steps" not in inputs
+
+
 def test_refused_reaches_the_panel_and_not_a_popup(view, tk_harness):
     click(view, element_of(view, "button", "Refuse"))
     assert "the bench is busy" in refusal(view)

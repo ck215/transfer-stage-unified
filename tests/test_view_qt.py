@@ -968,3 +968,35 @@ def test_o9_closing_a_model_asks_in_the_tk_and_web_words():
 
 def test_o13_the_idle_warning_is_history_in_the_log_not_the_tray_line():
     assert qt.HISTORY_ONLY_TITLES == frozenset({"Idle Timeout Soon"})
+
+
+class _Box:
+    """A QLineEdit's `text()` and nothing else: no QApplication needed."""
+
+    def __init__(self, text):
+        self._text = text
+
+    def text(self):
+        return self._text
+
+
+def test_mod6_qt_sends_the_declared_inputs_and_every_edited_box_only():
+    """MOD-6 / CON-8, Qt's half: (a) a declared input travels clean, (b) an
+    undeclared clean box stays home, (c) an undeclared edited box travels
+    even though it is not focused - Qt's refresh rule (`_entry_is_dirty`)
+    wants focus, and a click on a button can take it."""
+    import types
+    from views.base import PanelView
+    boxes = {"speed": _Box("5"), "steps": _Box("9"), "note": _Box("typed")}
+    clean = {"speed": "5", "steps": "9", "note": "as served"}
+    elements = [{"type": "entry", "model_attr": k, "writable": True} for k in boxes]
+    stub = types.SimpleNamespace(_elements=elements,
+                                 _widget_for=lambda e: boxes[e["model_attr"]],
+                                 _clean_text={id(e): clean[e["model_attr"]]
+                                              for e in elements})
+    stub._read_entry = lambda e: qt.QtPanelView._read_entry(stub, e)
+    stub._entry_is_edited = lambda e: qt.QtPanelView._entry_is_edited(stub, e)
+    go = {"type": "button", "command": "go", "inputs": ["speed"]}
+    assert PanelView._gather_inputs(stub, go) == {"speed": "5", "note": "typed"}
+    assert PanelView._gather_inputs(stub, {"type": "button", "command": "halt"}) \
+        == {"note": "typed"}
