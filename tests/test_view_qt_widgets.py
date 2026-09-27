@@ -1296,22 +1296,28 @@ def test_a_float_entry_still_gets_the_wide_decimal_validator(view):
 
 def test_an_indicator_is_a_lamp_and_never_repeats_its_own_caption(view, panel):
     """It rendered as "Fault    Fault" on the bench: the caption, then a
-    full-width box carrying the element's text all over again."""
+    full-width box carrying the element's text all over again.
+    Signature (2026-09-27): the lamp is the lamp slot, `theme.LAMP["size"]`
+    (6 x 13), the station's one "on" sign (rule 5) - was a 16 px dot."""
     element = element_of(view, "indicator")
     lamp = view._widget_for(element)
     view._refresh()
     assert lamp.text() == ""
-    assert lamp.width() == qt.LAMP_PX and lamp.height() == qt.LAMP_PX
+    assert (lamp.width(), lamp.height()) == theme.LAMP["size"]
 
 
 def test_a_lamp_takes_its_colour_from_the_state_not_from_a_literal(view, panel):
     """Updated (F8): it asserted the toggle's role fills, which made a lit
     lamp 1.50:1 and an unlit one 1.23:1 on the card. Lamps now use Tk's rule
-    (`qt.lamp_colours`): a Fault lamp is a muted ring off, signal when on."""
+    (`qt.lamp_colours`): a Fault lamp is a muted ring off, signal when on.
+    Signature: the ring is the slot's 1.5 px rim (`KEY_RIM_PX`, was 2 px)
+    round the hollow SURFACE window, radius `LAMP["radius"]`."""
     element = element_of(view, "indicator")
     lamp = view._widget_for(element)
     view._refresh()
-    assert f"border: 2px solid {theme.MUTED}" in lamp.styleSheet()
+    assert f"border: {theme.KEY_RIM_PX:g}px solid {theme.MUTED}" in lamp.styleSheet()
+    assert f"background-color: {theme.LAMP['off']}" in lamp.styleSheet()
+    assert f"border-radius: {theme.LAMP['radius']}px" in lamp.styleSheet()
     panel.is_faulted = True
     view._refresh()
     assert f"background-color: {theme.SIGNAL}" in lamp.styleSheet()
@@ -1522,8 +1528,12 @@ def test_there_is_one_navigation_not_two(dashboard, qapp):
 
 def test_the_stop_object_is_on_the_rail_and_the_rail_above_every_dock(
         dashboard, qapp):
+    """Signature (2026-09-27): the stop sits on the rail's nameplate (the
+    CAP plate with the title and the chord), so its parent is the plate,
+    which is the rail's."""
     dashboard.open()
-    assert dashboard.stop_button.parentWidget() is dashboard.rail
+    assert dashboard.stop_button.parentWidget() is dashboard.nameplate
+    assert dashboard.rail.isAncestorOf(dashboard.stop_button)
     assert not dashboard.findChildren(qt.QDockWidget, "sidebar")
 
 
@@ -2550,7 +2560,10 @@ def test_e_tier_three_sits_inside_tier_two_behind_diagnostics(tiered):
     assert fault.isVisibleTo(view) is False
     view.diag_button.click()
     assert fault.isVisibleTo(view) and switch.isVisibleTo(view)
-    assert f"border-left: 2px solid {theme.MUTED}" in qt.stylesheet()
+    # Signature: tier 3 is the DEEP pocket inside the tray (was a muted
+    # left rule).
+    strip = qt.stylesheet().split("QFrame#diagnostics {")[1].split("}")[0]
+    assert f"background-color: {theme.DEEP}" in strip
 
 
 def test_e_open_tiers_are_remembered_per_model_for_the_session(qapp):
@@ -3545,7 +3558,9 @@ def test_l19_setup_has_a_real_close_and_the_rails_setup_shows_it_is_open(dashboa
     assert dashboard.setup_button.isChecked()
     sheet = qt.stylesheet()
     checked = sheet.split("QToolButton#ghost:checked {")[1].split("}")[0]
-    assert f"background: {theme.TEXT}" in checked
+    # Signature: the latched key - the ink face, down (lip folded to 1 px).
+    assert f"background-color: {theme.TEXT}" in checked
+    assert f"border-bottom: 1px solid {theme.GO_LIP}" in checked
     close.click()
     _pump(qapp)
     assert dashboard._setup_dock.isHidden() and not dashboard.setup_button.isChecked()
@@ -3598,10 +3613,20 @@ def test_l22_a_wrapped_tray_line_hangs_clear_of_its_mark(dashboard):
     assert fmt.textIndent() < 0 and fmt.leftMargin() == -fmt.textIndent()
 
 
-def test_l22_the_selected_rail_item_has_an_ink_rule_at_its_left():
+def test_l22_the_selected_rail_item_has_an_ink_rule_at_its_left(qapp):
+    """Signature (2026-09-27): the shown page is a sunk SURFACE pad with its
+    lamp slot lit ink - the lamp replaces the 2 px ink rule at its left
+    (QT7-18's "not a tone step alone" still holds: the lamp is 13.73:1)."""
     sheet = qt.stylesheet()
     checked = sheet.split("QPushButton#railModel:checked {")[1].split("}")[0]
-    assert f"border-left: 2px solid {theme.TEXT}" in checked
+    assert f"background: {theme.SURFACE}" in checked and "border-left" not in checked
+    item = qt.RailItem("Rotator")
+    item.resize(200, 36)
+    assert item.lamp_state() is None
+    item.setChecked(True)
+    assert item.lamp_state() == "on"
+    lamp = item.lamp_rect().center()
+    assert _near(QColor(item.grab().toImage().pixel(int(lamp.x()), int(lamp.y()))), theme.TEXT)
 
 
 def test_l5_on_the_device_page_only_the_well_scrolls(six, qapp):
@@ -4026,3 +4051,204 @@ def test_o11_a_dropdown_is_announced_by_its_label_and_row(table_view):
               for r in iface.relations(QAccessible.RelationFlag.Label)]
     assert labels == ["Port, Stepper Probe"]
     assert combo.accessibleName() == "Port, Stepper Probe"
+
+
+# ---------------------------------------------------------------------------
+# Signature (owner ruling 2026-09-27): the painted parts - the stop, the lamp
+# slots, the flag window, the nameplate and its chord, the disclosure key,
+# the switch, the fader's index. Written by rb-sig-qt.
+# ---------------------------------------------------------------------------
+
+def _at(widget, x, y):
+    return QColor(widget.grab().toImage().pixel(int(x), int(y)))
+
+
+def test_signature_the_idle_stop_is_a_bullseye_red_pale_then_ink(qapp, monkeypatch):
+    """Idle: a SIGNAL key standing `lift` above centre with its SKIRT
+    showing below it, a pale SURFACE socket band, an ink collar."""
+    monkeypatch.setenv("STATION_NO_MOTION", "1")
+    button = qt.StopButton()
+    stop = theme.STOP
+    outer = button.FOCUS_GAP + button.FOCUS_PX
+    centre = button.width() / 2.0
+    face = button.face_rect()
+    assert face.width() == stop["key"]
+    assert face.center().y() == centre - stop["lift"]
+    assert _near(_at(button, outer + stop["collar"] / 2, centre), theme.TEXT)
+    band = outer + stop["collar"] + (button.diameter - 2 * stop["collar"] - stop["key"]) / 4
+    assert _near(_at(button, band, centre), theme.SURFACE)
+    assert _near(_at(button, centre, face.bottom() - stop["skirt"]), theme.SIGNAL)
+    # The skirt: just under the face's bottom edge, on the centre line.
+    assert _near(_at(button, centre, face.bottom() + stop["skirt"] / 2), theme.SKIRT)
+
+
+def test_signature_the_latched_stop_is_one_solid_red_coin(qapp, monkeypatch):
+    """Latched (every model): the key drops `drop_latched`, loses its skirt,
+    the socket band floods SKIRT and the collar turns SIGNAL; "Clear"."""
+    monkeypatch.setenv("STATION_NO_MOTION", "1")
+    button = qt.StopButton()
+    stop = theme.STOP
+    up = button.face_rect()
+    button.set_latched(True)
+    down = button.face_rect()
+    assert down.top() - up.top() == stop["drop_latched"]
+    assert button.text() == "Clear"
+    outer = button.FOCUS_GAP + button.FOCUS_PX
+    centre = button.width() / 2.0
+    assert _near(_at(button, outer + stop["collar"] / 2, centre), theme.SIGNAL)
+    band = outer + stop["collar"] + (button.diameter - 2 * stop["collar"] - stop["key"]) / 4
+    assert _near(_at(button, band, centre), theme.SKIRT)
+    # No skirt below the face: the flooded band is there instead, and the
+    # face's own bottom edge is red.
+    assert _near(_at(button, centre, down.bottom() - 2), theme.SIGNAL)
+
+
+def test_signature_the_latch_moves_once_in_the_latch_time(qapp, monkeypatch):
+    monkeypatch.delenv("STATION_NO_MOTION", raising=False)
+    button = qt.StopButton()
+    assert button._pulse.duration() == theme.MOTION["latch"]
+    button.set_latched(True)
+    assert button._pulse.state() == button._pulse.State.Running
+    button._on_pulse(0.5)
+    half = button.face_rect().top()
+    button._pulse.stop()
+    button._on_pulse_done()
+    assert button.face_rect().top() > half
+
+
+def test_signature_a_mode_key_carries_a_lamp_slot_hollow_off_lit_on(view, panel):
+    """The latching mode key's lamp slot: hollow (SURFACE in a KEY_RIM rim)
+    off, the CAP window on the ink key when on. Never trace, never signal."""
+    element = element_of(view, "toggle")
+    button = view._widget_for(element)
+    view._refresh()
+    width, height = theme.LAMP["size"]
+    off = button.icon().pixmap(button.iconSize()).toImage()
+    assert _near(off.pixelColor(off.width() * width // (2 * button.iconSize().width()),
+                                off.height() // 2), theme.SURFACE)
+    panel.is_on = True
+    view._refresh()
+    on = button.icon().pixmap(button.iconSize()).toImage()
+    assert _near(on.pixelColor(on.width() * width // (2 * button.iconSize().width()),
+                               on.height() // 2), theme.CAP)
+    assert f"border-bottom: 1px solid {theme.GO_LIP}" in button.styleSheet()
+
+
+def test_signature_an_unconfirmed_model_lights_its_rail_lamp_signal(qapp):
+    item = qt.RailItem("Rotator")
+    item.resize(200, 36)
+    item.set_stop("unconfirmed")
+    assert item.lamp_state() == "unconfirmed"
+    lamp = item.lamp_rect().center()
+    assert _near(_at(item, lamp.x(), lamp.y()), theme.SIGNAL)
+    item.set_stop("stopped")
+    assert item.lamp_state() is None
+
+
+def test_signature_the_flag_window_is_an_ink_frame_signal_and_a_hatch(qapp, monkeypatch):
+    monkeypatch.setenv("STATION_NO_MOTION", "1")
+    flag = qt.FlagWindow()
+    flag.drop()
+    assert (flag.width(), flag.height()) == theme.FLAG["size"]
+    assert flag._fall == 1.0
+    image = flag.grab().toImage()
+    assert _near(QColor(image.pixel(0, 0)), theme.TEXT)
+    colours = {QColor(image.pixel(x, flag.height() // 2)).name()
+               for x in range(flag.FRAME_PX + 1, flag.width() - flag.FRAME_PX - 1)}
+    assert any(_near(QColor(c), theme.SIGNAL) for c in colours)
+    assert any(_near(QColor(c), theme.TEXT) for c in colours)     # the hatch
+
+
+def test_signature_the_flag_drops_in_once_when_motion_is_allowed(qapp, monkeypatch):
+    monkeypatch.delenv("STATION_NO_MOTION", raising=False)
+    flag = qt.FlagWindow()
+    flag.drop()
+    assert flag._drop.state() == flag._drop.State.Running
+    assert flag._drop.duration() == theme.FLAG["drop_ms"]
+
+
+def test_signature_an_unconfirmed_entry_shows_the_flag(dashboard, controller):
+    dashboard.open()
+    controller.unconfirmed = {"Fake"}
+    dashboard._on_stop_clicked()
+    entry = dashboard._entries["Fake"]
+    assert isinstance(entry.unconfirmed_mark, qt.FlagWindow)
+    assert entry.unconfirmed_mark.isVisibleTo(entry)
+
+
+def test_signature_the_nameplate_is_a_cap_plate_with_a_rim(dashboard, qapp):
+    dashboard.open()
+    dashboard.resize(1400, 900)
+    qapp.processEvents()
+    plate = dashboard.nameplate
+    assert plate.isAncestorOf(dashboard.stop_button)
+    assert plate.isAncestorOf(dashboard.stop_hint)
+    image = plate.grab().toImage()
+    assert _near(QColor(image.pixel(plate.width() // 2, 0)), theme.KEY_RIM)
+    # Inside the engraved double frame, above the title: the CAP face.
+    assert _near(QColor(image.pixel(plate.width() // 2, theme.SPACE[3] - 2)), theme.CAP)
+
+
+def test_signature_the_chord_is_two_keycaps_joined_by_plus(qapp):
+    chord = qt.ChordLabel(qt.RAIL_STOP_HINT)
+    assert chord.full_text() == "Stop: Ctrl+." and chord.accessibleName() == "Stop: Ctrl+."
+    assert chord.parts() == ("Stop:", ["Ctrl", "."])
+    assert chord.sizeHint().width() > 0
+
+
+def test_signature_the_disclosure_key_sinks_when_open(tiered):
+    view, _ = tiered
+    button = view.tier_button
+    assert isinstance(button, qt.DisclosureKey)
+    button.resize(button.sizeHint())
+    face = button.key_rect()
+    probe = (face.left() + 3, face.top() + face.height() / 2)
+    assert _near(_at(button, *probe), theme.CAP)
+    button.click()
+    assert _near(_at(button, *probe), theme.SURFACE)
+
+
+def test_signature_the_switch_knob_is_white_on_the_signal_track(qapp):
+    switch = qt.SwitchButton("Stop this model only")
+    switch.resize(switch.sizeHint())
+    switch.set_on(True)
+    track = switch._track()
+    knob = theme.SWITCH["knob"]
+    gap = (track.height() - knob) / 2
+    centre_x = track.right() - gap - knob / 2
+    assert _near(_at(switch, centre_x - knob / 4, track.center().y() - 2),
+                 theme.SWITCH["knob_on"])
+    assert _near(_at(switch, track.left() + 4, track.center().y()), theme.SWITCH["on_fill"], 60)
+
+
+def test_signature_the_fader_cap_carries_an_ink_index_line(qapp):
+    qapp.setStyleSheet(qt.stylesheet())
+    try:
+        slider = qt.KeySlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setValue(50)
+        slider.resize(200, 40)
+        index = slider.index_rect()
+        assert (index.width(), index.height()) == theme.FADER["index"]
+        assert _near(_at(slider, index.center().x(), index.center().y()), theme.TEXT)
+    finally:
+        qapp.setStyleSheet("")
+
+
+def test_signature_a_listed_key_carries_its_glyph(view):
+    button = qt.QPushButton("Home")
+    button.setProperty("role", "go")
+    view._dress_key(button)
+    assert not button.icon().isNull()
+    plain = qt.QPushButton("Move +")
+    view._dress_key(plain)
+    assert plain.icon().isNull()
+
+
+def test_signature_the_error_mark_is_the_warning_glyph(qapp):
+    mark = qt.mark(theme.SIGNAL)
+    assert isinstance(mark, qt.MarkGlyph) and mark.objectName() == "mark"
+    image = mark.pixmap().toImage()
+    inks = [image.pixelColor(x, y) for x in range(image.width())
+            for y in range(image.height()) if image.pixelColor(x, y).alpha() > 200]
+    assert inks and all(_near(c, theme.SIGNAL, 60) for c in inks)

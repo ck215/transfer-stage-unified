@@ -90,7 +90,7 @@ from views import base as view_base
 from views.base import Dashboard, PanelView, event_line, join_names, stop_words
 
 try:                                    # the module imports without PySide6
-    from PySide6.QtCore import (QEasingCurve, QEvent, QEventLoop, QLocale,
+    from PySide6.QtCore import (QByteArray, QEasingCurve, QEvent, QEventLoop, QLocale,
                                 QPoint, QPointF, QRect, QRectF, QSize, Qt,
                                 QTimer, QUrl, QVariantAnimation, Signal)
     from PySide6.QtGui import (QAccessible, QAccessibleActionInterface,
@@ -107,7 +107,8 @@ try:                                    # the module imports without PySide6
         QLayout, QLineEdit, QMainWindow, QMessageBox, QPushButton,
         QScrollArea, QSizePolicy, QSlider, QStyle, QStyleOptionButton,
         QStyleOptionComboBox, QStylePainter, QTextEdit, QToolButton,
-        QVBoxLayout, QWidget)
+        QStyleOptionSlider, QStyleOptionToolButton, QVBoxLayout, QWidget)
+    from PySide6.QtSvg import QSvgRenderer
     HAS_QT = True
 except ImportError:                     # pragma: no cover - exercised by test
     HAS_QT = False
@@ -129,7 +130,7 @@ except ImportError:                     # pragma: no cover - exercised by test
 
     QWidget = QMainWindow = QDockWidget = QPushButton = QLabel = _NoQt
     QComboBox = QFrame = QCheckBox = QDialog = QAbstractButton = _NoQt
-    QLayout = QSlider = _NoQt
+    QLayout = QSlider = QToolButton = _NoQt
 
 
 #: A drag smaller than this in either axis is a stray click, not a region.
@@ -421,7 +422,7 @@ def lamp_colours(element, is_on):
         lit = theme.SIGNAL if element.get("on_role") == DANGER_ROLE else theme.TEXT
         return lit, lit
     ring = theme.TEXT if element.get("off_role") == DANGER_ROLE else theme.MUTED
-    return "transparent", ring
+    return theme.LAMP["off"], ring
 
 
 def sentence(text):
@@ -637,16 +638,150 @@ def is_action_row(section):
 
 
 def numeral_family():
-    """The numerals' face: a static "Archivo SemiExpanded" (Tk/Qt have no
-    width axis, `design-Sheet.md`). When it is not installed Qt substitutes
-    the text face (`install_font_fallbacks`), set at weight 600."""
-    return f"{theme.NUMERAL_FAMILY} SemiExpanded"
+    """The numerals' face (Signature): the static "Rubik SemiBold" (Tk/Qt
+    have no weight axis, `tactile3-Signature.md` "Type"). When it is not
+    installed Qt substitutes Rubik, then the text face
+    (`install_font_fallbacks`), set at `theme.NUMERAL_WEIGHT`."""
+    return f"{theme.NUMERAL_FAMILY} SemiBold"
 
 
 def content_px(outer, padding, border):
     """The QSS `min-height` that makes a control `outer` px tall: in a Qt
     style sheet it is the content's height, inside the padding and edge."""
     return outer - 2 * (padding + border)
+
+
+# -- Signature: the key family (owner ruling 2026-09-27) ----------------------
+#: Keys whose legend carries a glyph ("Legends with a glyph"): the start of
+#: the legend -> the glyph's name in `theme.ICONS`. At most one, before it.
+KEY_GLYPHS = (("home", "home"), ("start run", "run"), ("save run", "download"),
+              ("gamepad log", "gamepad"), ("3d analysis", "link"))
+
+
+def key_glyph(text):
+    """The glyph a key's legend carries, or None."""
+    legend = str(text or "").strip().lower()
+    for start, name in KEY_GLYPHS:
+        if legend.startswith(start):
+            return name
+    return None
+
+
+def rim_px():
+    """The rim as a QSS length: `theme.KEY_RIM_PX` (1.5), which Qt draws at
+    two device pixels at 1x and three at 2x."""
+    return f"{theme.KEY_RIM_PX:g}px"
+
+
+def key_drop(kind="key"):
+    """How far a part's face drops when it is down: its lip less the
+    folded lip (4 - 1 = 3 for a key), so the height never changes."""
+    return theme.KEY_LIP_PX[kind] - theme.KEY_LIP_PX["pressed"]
+
+
+def key_rest(face, legend, rim, lip, kind="key"):
+    """A raised key's declarations: face, legend, a `KEY_RIM_PX` rim and a
+    lip below it (rule 2)."""
+    return {"background-color": face, "color": legend,
+            "border": f"{rim_px()} solid {rim}",
+            "border-bottom": f"{theme.KEY_LIP_PX[kind]:g}px solid {lip}"}
+
+
+def key_down(ground, lip, kind="key"):
+    """A pressed or latched key: the lip folds to 1 px and the face drops by
+    the difference - the top edge becomes the ground it sits on - so the
+    part's height holds."""
+    return {"border-top": f"{key_drop(kind):g}px solid {ground}",
+            "border-bottom": f"{theme.KEY_LIP_PX['pressed']:g}px solid {lip}"}
+
+
+def key_disabled(kind="key", down=False):
+    """A disabled key keeps its silhouette in ghost tones: a dashed EDGE rim,
+    an EDGE_SOFT lip, the DISABLED legend (rule 2)."""
+    lip = theme.KEY_LIP_PX["pressed" if down else kind]
+    return {"background-color": "transparent", "color": theme.DISABLED[1],
+            "border": f"{rim_px()} dashed {theme.EDGE}",
+            "border-bottom": f"{lip:g}px solid {theme.EDGE_SOFT}"}
+
+
+#: What a key sits on, by the container the sheet selects on: the sheet, a
+#: tray (the tier-2 well), the pocket inside it, the rail. A pressed key's
+#: top edge is drawn in this, so its face reads as dropped.
+KEY_GROUNDS = (("", theme.BACKGROUND), ("QFrame#well", theme.SURFACE),
+               ("QFrame#diagnostics", theme.DEEP), ("QFrame#rail", theme.RAIL))
+
+
+def key_ground(widget):
+    """The ground under a widget, from the nearest container that names
+    one (`KEY_GROUNDS`); the sheet when none does."""
+    grounds = {selector.split("#")[1]: colour for selector, colour in KEY_GROUNDS
+               if selector}
+    node = widget.parentWidget() if widget is not None else None
+    while node is not None:
+        if node.objectName() in grounds:
+            return grounds[node.objectName()]
+        node = node.parentWidget()
+    return theme.BACKGROUND
+
+
+def toggle_sheet(element, is_on, ground=None):
+    """A latching mode key's own sheet (Signature). Off: a neutral key (its
+    lamp slot hollow). On: the ink key pressed DOWN - its lip folded to
+    1 px, its face dropped 3 px - with the slot lit (`lamp_icon`), told from
+    `go` by the lit slot and the missing lip. Disabled keeps the
+    silhouette. A selector, not bare declarations, so hover, focus and the
+    disabled state still reach it."""
+    colours = theme.toggle_colors(element, is_on)
+    ground = ground or theme.BACKGROUND
+    lip = theme.GO_LIP if is_on else theme.KEY_LIP
+    rest = key_rest(colours["background"], colours["foreground"], colours["border"], lip)
+    if is_on:
+        rest.update(key_down(ground, lip))
+        disabled = key_disabled(down=True)
+        disabled["border-top"] = f"{key_drop():g}px solid {ground}"
+        hover = {"border-left-color": lip, "border-right-color": lip}
+        focus = {"border-left": FOCUS_RING, "border-right": FOCUS_RING}
+    else:
+        disabled = key_disabled()
+        hover = {"border-color": lip}
+        focus = {"border-left": FOCUS_RING, "border-right": FOCUS_RING,
+                 "border-top": FOCUS_RING}
+    rest["border-radius"] = f"{theme.RADIUS['key']}px"
+    return "".join((_rule("QPushButton", rest), _rule("QPushButton:hover", hover),
+                    _rule("QPushButton:focus", focus),
+                    _rule("QPushButton:pressed", key_down(ground, lip)),
+                    _rule("QPushButton:disabled", disabled))).replace("\n", " ")
+
+
+def rail_text_left():
+    """Where a rail item's name starts: the inset, the lamp slot's width and
+    a gap (the slot's room is kept when it is dark, so names align)."""
+    return theme.INSET + theme.LAMP["size_rail"][0] + theme.PAD
+
+
+def stop_geometry(diameter):
+    """The stop's parts at `diameter` px (Signature, `theme.STOP`): the
+    collar's width, the key's diameter, the skirt, the idle lift above
+    centre, the latched drop, and the legend's pixel size. The full set is
+    172/10/124, the narrow one 150/9/106; any other diameter scales the
+    nearer set, so the parts keep their proportions in a squeezed rail."""
+    stop = theme.STOP
+    narrow = diameter <= stop["diameter_narrow"]
+    ref = stop["diameter_narrow" if narrow else "diameter"]
+    scale = float(diameter) / ref
+    return {"collar": stop["collar_narrow" if narrow else "collar"] * scale,
+            "key": stop["key_narrow" if narrow else "key"] * scale,
+            "skirt": stop["skirt"] * scale, "lift": stop["lift"] * scale,
+            "drop": stop["drop_latched"] * scale,
+            "legend_px": stop["face_pt_narrow" if narrow else "face_pt"] * scale}
+
+
+def axis_pt():
+    """An axis letter (Signature: 14 px, 700, muted): `theme.AXIS_LETTER_SIZE`
+    following the launch font, never smaller than a caption."""
+    growth = max(theme.FONT_SIZE, 8) / 12.0
+    wanted = min(px_to_pt(theme.AXIS_LETTER_SIZE * growth), theme.size(STEP_READOUT))
+    return max(caption_pt(), int(round(wanted)))
 
 
 def stylesheet():
@@ -657,12 +792,21 @@ def stylesheet():
     checked-in sheet is a second palette that drifts from the other two views
     and cannot follow `--font-size` at launch.
 
+    Signature (owner ruling 2026-09-27): every raised part is one family -
+    a CAP face, a `KEY_RIM` outline and a `KEY_LIP` bottom edge; pressed or
+    checked, the lip folds to 1 px and the top edge becomes the ground
+    (`KEY_GROUNDS`), so the face drops and the height holds. `go` is the ink
+    key with a `GO_LIP`; a disabled key keeps its silhouette in ghost tones.
+    Fields are sunk windows with a muted floor lip; the select is a key; the
+    fader cap is `QSlider::handle` (its index line is painted, `KeySlider`).
+    No blur and no `ENGRAVE`: Qt draws none of the Web's garnish (rule 1).
+
     Two scales: the text scale (`theme.size`, ratio 1.2, one family) and the
     numeral scale for readings (`theme.READING_SIZES`, the numeral face at
     600). Every control has its hover, focus, pressed and disabled state
     here; focus is two pixels of ink everywhere (F25). Signal red is not in
-    this sheet at all: the stop disc, the per-model switch and the
-    unconfirmed mark dress themselves.
+    this sheet at all: the stop, the per-model switch, the lamps and the
+    unconfirmed flag paint themselves.
     """
     family, base_size = theme.FONT_FAMILY, theme.FONT_SIZE
     numerals = numeral_family()
@@ -672,22 +816,26 @@ def stylesheet():
     go_bg, go_fg = theme.colors("go")
     disabled_bg, disabled_fg = theme.DISABLED
     ink, muted, sheet_bg, panel = theme.TEXT, theme.MUTED, theme.BACKGROUND, theme.SURFACE
-    control, input_radius = theme.RADIUS["control"], theme.RADIUS["input"]
-    well_radius = theme.RADIUS["well"]
+    control, input_radius = theme.RADIUS["key"], theme.RADIUS["input"]
     hair, tight = theme.SPACE[0], theme.SPACE[1]
     ring = FOCUS_RING
-    underline = f"2px solid {theme.INPUT_BORDER}"
+    rim = rim_px()
+    lip = theme.KEY_LIP_PX["key"]
+    floor = f"{rim} solid {theme.INPUT_BORDER}"
     # A tick box's square is one line of the base font: points to pixels at
     # Qt's 96 dpi reference, since a sub-control's width takes no `pt`.
     indicator_px = int(round(base_size * 96 / 72))
-    # The slider (the brief): a 4 px panel groove, the ink fill to the value,
-    # an 18 px ink handle with a 2 px sheet border.
-    groove, handle = theme.SPACE[1], theme.SPACE[6] - theme.SPACE[0]
-    reading = {"font-family": numerals, "font-weight": "600"}
+    # The fader (Signature): a 6 px sunk groove, the ink fill to the value, a
+    # 16 x 30 key cap with a 3 px lip.
+    groove = theme.FADER["groove"]
+    cap_w, cap_h = theme.FADER["cap"]
+    rim_whole = int(math.ceil(theme.KEY_RIM_PX))
+    reading = {"font-family": numerals, "font-weight": str(theme.NUMERAL_WEIGHT)}
     # L4: a QSS min-height is the content's, so the edge and the padding are
-    # taken off: every pressable is 24 px, a command 36 px (not 44 - the
-    # owner's call is pending).
-    command = f"{content_px(COMMAND_PX, theme.GAP, 1)}px"
+    # taken off: every pressable is 24 px, a command 36 px. A key's edge is
+    # its rim above and its lip below.
+    command = f"{COMMAND_PX - 2 * theme.GAP - rim_whole - lip}px"
+    field = f"{content_px(COMMAND_PX, theme.GAP, rim_whole)}px"
 
     sheet = [
         _rule("QWidget", {"background-color": sheet_bg, "color": ink,
@@ -702,10 +850,14 @@ def stylesheet():
         _rule("QLabel", {"background": "transparent"}),
         # Holders that only place other widgets paint nothing.
         _rule("QWidget#bare, QWidget#tableBar, QWidget#flow, QFrame#section, "
-              "QFrame#entry, QWidget#sheet, QWidget#railList",
+              "QFrame#entry, QWidget#sheet, QWidget#railList, QFrame#nameplate",
               {"background": "transparent"}),
-        _rule("QLabel#caption, QLabel#unit, QLabel#axisLetter",
-              {"color": muted, "font-size": f"{small_size}pt"}),
+        # Captions and units: 13 px, 500, muted (Signature "Type").
+        _rule("QLabel#caption, QLabel#unit",
+              {"color": muted, "font-size": f"{small_size}pt", "font-weight": "500"}),
+        # Axis letters: 14 px, 700, muted.
+        _rule("QLabel#axisLetter", {"color": muted, "font-size": f"{axis_pt()}pt",
+                                    "font-weight": "700"}),
         # The table's furniture (Setup): a column caption is quiet, a row's
         # own name is not.
         _rule("QLabel#columnHeader", {"color": muted,
@@ -740,62 +892,89 @@ def stylesheet():
         _rule("QLabel#refusal", {"color": ink, "padding": f"{tight}px 0px"}),
         _rule("QLabel#staleLabel, QLabel#notice",
               {"color": ink, "padding": f"{hair}px 0px"}),
-        # Inputs: a panel-toned well with a muted underline, no box; on a
-        # well the fill steps back to the sheet (`design-Sheet.md`).
-        _rule("QLineEdit, QComboBox",
+        # Fields (Signature): a sunk window - the panel tone (DEEP inside a
+        # tray), radius 6, a muted 1.5 px floor lip, typed values in the
+        # numerals at 500. Focus is the 2 px ink ring with a 2 px ink floor.
+        _rule("QLineEdit",
               {"background-color": theme.WELL, "color": ink,
-               "border": "none", "border-bottom": underline,
-               "border-top-left-radius": f"{input_radius}px",
-               "border-top-right-radius": f"{input_radius}px",
+               "border": "none", "border-bottom": floor,
+               "border-radius": f"{input_radius}px",
                "padding": f"{theme.GAP}px {theme.PAD}px",
+               "min-height": field,
+               "font-family": numerals, "font-weight": "500",
                "selection-background-color": ink,
                "selection-color": sheet_bg}),
-        _rule("QFrame#well QLineEdit, QFrame#well QComboBox",
-              {"background-color": sheet_bg}),
-        _rule("QLineEdit:hover, QComboBox:hover", {"border-bottom-color": ink}),
-        _rule("QLineEdit:focus, QComboBox:focus, QTextEdit:focus",
-              {"border": ring}),
-        _rule("QLineEdit:disabled, QComboBox:disabled",
-              {"background-color": disabled_bg, "color": disabled_fg,
-               "border": f"1px dashed {muted}"}),
+        _rule("QFrame#well QLineEdit", {"background-color": theme.DEEP}),
+        _rule("QFrame#diagnostics QLineEdit", {"background-color": panel}),
+        _rule("QLineEdit:hover", {"border-bottom-color": ink}),
+        _rule("QLineEdit:focus, QTextEdit:focus", {"border": ring}),
+        _rule("QLineEdit:disabled",
+              {"background-color": "transparent", "color": disabled_fg,
+               "border": f"{rim} dashed {theme.EDGE}"}),
+        # The select (Signature): a neutral key with the disclosure glyph
+        # turned down at its right (`MiddleCombo` paints the glyph).
+        _rule("QComboBox", {**key_rest(theme.CAP, ink, theme.KEY_RIM, theme.KEY_LIP),
+                            "border-radius": f"{control}px",
+                            "padding": f"{theme.GAP}px {theme.PAD}px",
+                            "min-height": command, "font-weight": "600",
+                            "selection-background-color": ink,
+                            "selection-color": sheet_bg}),
+        _rule("QComboBox:hover", {"border-color": theme.KEY_LIP}),
+        _rule("QComboBox:focus", {"border": ring,
+                                  "border-bottom": f"{lip}px solid {theme.KEY_LIP}"}),
+        _rule("QComboBox:on", key_down(sheet_bg, theme.KEY_LIP)),
+        _rule("QComboBox:disabled", key_disabled()),
         _rule("QComboBox::drop-down", {"border": "none", "background": "transparent",
                                        "width": f"{theme.SPACE[6]}px"}),
+        _rule("QComboBox::down-arrow", {"image": "none", "width": "0px", "height": "0px"}),
         _rule("QComboBox QAbstractItemView",
-              {"background-color": sheet_bg, "color": ink,
-               "border": f"1px solid {muted}",
+              {"background-color": theme.CAP, "color": ink,
+               "border": f"{rim} solid {theme.KEY_RIM}",
                "selection-background-color": panel,
                "selection-color": ink}),
         _rule("QTextEdit", {"background-color": theme.WELL, "color": ink,
                             "border": "2px solid transparent",
                             "border-radius": f"{input_radius}px",
                             "padding": f"{theme.GAP}px"}),
-        # Buttons: `go` is ink-filled; every other role is outlined in ink on
-        # the sheet; disabled is the sheet, 45 % ink and a dashed muted edge.
-        _rule("QPushButton", {"background-color": sheet_bg, "color": ink,
-                              "border": f"1px solid {ink}",
+        # Keys (Signature): a CAP face, the rim, a 4 px lip below; legend
+        # 600. `go` is the ink key with an ink rim and GO_LIP.
+        _rule("QPushButton", {**key_rest(theme.CAP, ink, theme.KEY_RIM, theme.KEY_LIP),
                               "border-radius": f"{control}px",
                               "padding": f"{theme.GAP}px {theme.INSET}px",
                               "min-height": command,
-                              "font-weight": "500"}),
+                              "font-weight": "600"}),
     ]
     for role in theme.ROLES:
         # One red. A button that merely *says* stop (Red Percent's "Stop"
-        # run) is an ordinary command; signal red is spent on the stop disc,
-        # which paints itself.
-        background, foreground = (go_bg, go_fg) if role == "go" else (sheet_bg, ink)
+        # run) is an ordinary key; signal red is spent on the stop, which
+        # paints itself.
+        background, foreground = (go_bg, go_fg) if role == "go" else (theme.CAP, ink)
         sheet.append(_rule(f'QPushButton[role="{role}"]',
                            {"background-color": background,
                             "color": foreground}))
     # States after the roles, so they win at equal specificity.
     sheet += [
-        _rule("QPushButton:hover", {"background-color": theme.LIFT}),
+        _rule('QPushButton[role="go"]', {"border-color": go_bg,
+                                         "border-bottom-color": theme.GO_LIP}),
+        _rule("QPushButton:hover", {"border-color": theme.KEY_LIP}),
         _rule('QPushButton[role="go"]:hover', {"background-color": go_bg,
-                                               "border-color": muted}),
-        _rule("QPushButton:focus", {"border": ring}),
-        _rule("QPushButton:pressed", {"background-color": panel}),
-        _rule("QPushButton:disabled", {"background-color": disabled_bg,
-                                       "color": disabled_fg,
-                                       "border": f"1px dashed {muted}"}),
+                                               "border-color": theme.GO_LIP}),
+        # Focus: the 2 px ink ring round the face; the lip stays a lip.
+        _rule("QPushButton:focus", {"border": ring,
+                                    "border-bottom": f"{lip}px solid {theme.KEY_LIP}"}),
+        _rule('QPushButton[role="go"]:focus',
+              {"border-bottom": f"{lip}px solid {theme.GO_LIP}"}),
+        # Pressed or checked: the lip folds and the face drops 3 px.
+        _rule("QPushButton:pressed, QPushButton:checked", key_down(sheet_bg, theme.KEY_LIP)),
+        _rule('QPushButton[role="go"]:pressed', key_down(sheet_bg, theme.GO_LIP)),
+    ]
+    for selector, ground in KEY_GROUNDS[1:]:
+        sheet.append(_rule(f"{selector} QPushButton:pressed, {selector} QPushButton:checked, "
+                           f"{selector} QToolButton#ghost:pressed, "
+                           f"{selector} QToolButton#ghost:checked, {selector} QComboBox:on",
+                           {"border-top-color": ground}))
+    sheet += [
+        _rule("QPushButton:disabled", key_disabled()),
         # G3's tick box: a square outlined in ink; ticked, an ink check is
         # painted on it (`TickBox`). Focus is the same ink ring, round the
         # whole control.
@@ -817,57 +996,68 @@ def stylesheet():
         _rule("QCheckBox::indicator:disabled",
               {"background-color": disabled_bg,
                "border": f"1px dashed {muted}"}),
-        # The slider beside a speed entry.
+        # The fader beside a speed entry.
         _rule("QSlider", {"background": "transparent", "border": "2px solid transparent",
-                          "min-height": f"{content_px(TARGET_PX, 0, 2)}px"}),
+                          "min-height": f"{cap_h}px"}),
         _rule("QSlider:focus", {"border": ring, "border-radius": f"{control}px"}),
         _rule("QSlider::groove:horizontal",
               {"height": f"{groove}px", "background": panel,
-               "border-radius": f"{hair}px"}),
-        _rule("QFrame#well QSlider::groove:horizontal", {"background": sheet_bg}),
+               "border-radius": f"{groove // 2}px"}),
+        _rule("QFrame#well QSlider::groove:horizontal", {"background": theme.DEEP}),
         _rule("QSlider::sub-page:horizontal",
-              {"background": ink, "border-radius": f"{hair}px"}),
+              {"background": ink, "border-radius": f"{groove // 2}px"}),
         _rule("QSlider::handle:horizontal",
-              {"background": ink, "border": f"2px solid {sheet_bg}",
-               "width": f"{handle - 2 * hair}px",
-               "margin": f"-{(handle - groove) // 2}px 0px",
-               "border-radius": f"{handle // 2}px"}),
-        _rule("QSlider::sub-page:horizontal:disabled", {"background": muted}),
-        _rule("QSlider::handle:horizontal:disabled", {"background": muted}),
-        # Disclosures: the tier's words beside an arrow, ink, no box.
+              {"background": theme.CAP, "border": f"{rim} solid {theme.KEY_RIM}",
+               "border-bottom": f"{theme.KEY_LIP_PX['small']:g}px solid {theme.KEY_LIP}",
+               "width": f"{cap_w - 2 * rim_whole}px",
+               "margin": f"-{(cap_h - groove) // 2}px 0px",
+               "border-radius": f"{theme.RADIUS['fader']}px"}),
+        _rule("QSlider::sub-page:horizontal:disabled", {"background": theme.EDGE_SOFT}),
+        _rule("QSlider::handle:horizontal:disabled",
+              {"background": sheet_bg, "border": f"{rim} solid {theme.EDGE}"}),
+        # Disclosures (Signature): a 24 px key holding the glyph, then the
+        # schema's words, 14/600 (`DisclosureKey` paints the key).
         _rule("QToolButton#disclosure",
               {"background": "transparent", "color": ink, "border": "2px solid transparent",
                "border-radius": f"{control}px", "font-weight": "600",
                "padding": f"{hair}px {tight}px",
                "min-height": f"{content_px(TARGET_PX, hair, 2)}px"}),
-        _rule("QToolButton#disclosure:hover", {"background": theme.LIFT}),
+        _rule("QToolButton#disclosure:hover", {"background": "transparent"}),
         _rule("QToolButton#disclosure:focus", {"border": ring}),
-        # The tier-2 well and the tier-3 strip inside it.
+        _rule("QToolButton#disclosure:disabled", {"color": disabled_fg}),
+        # The tray (the tier-2 well) and the pocket inside it (tier 3).
         _rule("QFrame#well", {"background-color": panel,
-                              "border-radius": f"{well_radius}px"}),
+                              "border-radius": f"{theme.RADIUS['tray']}px"}),
         _rule("QFrame#well QWidget#bare, QFrame#well QWidget#flow, "
               "QFrame#well QFrame#section", {"background": "transparent"}),
-        _rule("QFrame#diagnostics", {"background": "transparent",
+        _rule("QFrame#diagnostics", {"background-color": theme.DEEP,
                                      "border": "none",
-                                     "border-left": f"2px solid {muted}"}),
-        # Chrome, not instrument controls: Setup and Quit, the tray's toggle,
-        # an alert's acknowledgement.
+                                     "border-radius": f"{theme.RADIUS['pocket']}px"}),
+        _rule("QFrame#diagnostics QWidget#bare, QFrame#diagnostics QWidget#flow, "
+              "QFrame#diagnostics QFrame#section", {"background": "transparent"}),
+        # Chrome keys: Setup, Show events, Put away, an alert's
+        # acknowledgement - neutral keys of the same family.
         _rule("QPushButton#ghost, QToolButton#ghost",
-              {"background": "transparent", "color": ink,
-               "border": f"1px solid {ink}", "border-radius": f"{control}px",
+              {**key_rest(theme.CAP, ink, theme.KEY_RIM, theme.KEY_LIP),
+               "border-radius": f"{control}px",
                "padding": f"{theme.GAP}px {theme.INSET}px",
-               "min-height": command, "font-weight": "500"}),
+               "min-height": command, "font-weight": "600"}),
         _rule("QPushButton#ghost:hover, QToolButton#ghost:hover",
-              {"background": theme.LIFT}),
-        _rule("QPushButton#ghost:checked", {"background": panel}),
-        # The rail's Setup while Setup is shown (L19): ink-filled, as Tk's.
-        _rule("QToolButton#ghost:checked", {"background": ink, "color": sheet_bg}),
+              {"border-color": theme.KEY_LIP}),
+        _rule("QPushButton#ghost:pressed, QToolButton#ghost:pressed, QPushButton#ghost:checked",
+              key_down(sheet_bg, theme.KEY_LIP)),
+        # The rail's Setup while Setup is shown (L19): the latched key - ink,
+        # down.
+        _rule("QToolButton#ghost:checked", {**key_rest(ink, theme.CAP, ink, theme.GO_LIP),
+                                            **key_down(sheet_bg, theme.GO_LIP)}),
         _rule("QPushButton#ghost:focus, QToolButton#ghost:focus",
-              {"border": ring}),
+              {"border": ring, "border-bottom": f"{lip}px solid {theme.KEY_LIP}"}),
+        # A text key (Quit): no face, no lip.
         _rule("QPushButton#quiet", {"background": "transparent", "color": ink,
                                     "border": "2px solid transparent",
                                     "border-radius": f"{control}px",
                                     "padding": f"{theme.GAP}px {theme.PAD}px",
+                                    "font-weight": "600",
                                     "min-height": f"{content_px(COMMAND_PX, theme.GAP, 2)}px"}),
         _rule("QPushButton#quiet:hover", {"background": theme.LIFT}),
         _rule("QPushButton#quiet:focus", {"border": ring}),
@@ -879,31 +1069,32 @@ def stylesheet():
               {"background": theme.LIFT}),
         _rule("QPushButton#iconButton:focus, QToolButton#iconButton:focus",
               {"border": ring}),
-        # The rail: the panel tone, full height, left.
-        _rule("QFrame#rail", {"background-color": panel}),
+        # The rail: its own raised face, full height, left.
+        _rule("QFrame#rail", {"background-color": theme.RAIL}),
         _rule("QFrame#rail QWidget, QFrame#rail QScrollArea",
               {"background": "transparent"}),
         _rule("QFrame#rail QLabel#railTitle", {"font-size": f"{name_size}pt",
-                                               "font-weight": "600"}),
+                                               "font-weight": "700"}),
         _rule("QFrame#rail QLabel#railLatched", {"font-weight": "600"}),
-        # The model list: the opened one highlighted on the sheet tone.
+        # The model list: 36 px items; room at the left for the lamp slot
+        # (`RailItem` paints it), kept when the lamp is dark so names align.
         _rule("QPushButton#railModel",
               {"background": "transparent", "color": ink, "border": "2px solid transparent",
                "border-radius": f"{control}px", "text-align": "left",
-               "padding": f"{theme.GAP}px {theme.INSET}px", "font-weight": "400",
-               "min-height": f"{content_px(TARGET_PX, theme.GAP, 2)}px"}),
+               "padding": f"{theme.GAP}px {theme.INSET}px",
+               "padding-left": f"{rail_text_left()}px", "font-weight": "500",
+               "min-height": f"{content_px(COMMAND_PX, theme.GAP, 2)}px"}),
         _rule("QPushButton#railModel:hover", {"background": theme.LIFT}),
-        # The shown page: the sheet tone and a 2 px ink rule at its left (the
-        # entry rule's language; QT7-18), not a 1.1:1 tone step alone.
-        _rule("QPushButton#railModel:checked", {"background": sheet_bg,
-                                                "border-left": f"2px solid {ink}",
+        # The shown page (Signature): a sunk panel-toned pad with its lamp
+        # lit ink - the lamp is the "shown" sign, not a rule at its left.
+        _rule("QPushButton#railModel:checked", {"background": panel,
                                                 "font-weight": "600"}),
         _rule("QPushButton#railModel:focus", {"border": ring}),
         # The sheet: an entry is a 2 px ink rule and its name, nothing else.
         _rule("QFrame#entryRule", {"background-color": theme.RULE_STRONG,
                                    "border": "none"}),
         # A model's name: the base size on a closed entry, one step up on the
-        # opened one (the artboard's 17 / 20 px).
+        # opened one.
         _rule("QLabel#entryName", {"font-size": f"{base_size}pt",
                                    "font-weight": "600"}),
         _rule('QLabel#entryName[opened="true"]', {"font-size": f"{name_size}pt"}),
@@ -920,7 +1111,8 @@ def stylesheet():
                                         "padding": f"{hair}px {tight}px"}),
         _rule("QLabel#entryNote", {"color": ink, "font-size": f"{small_size}pt",
                                    "font-weight": "600"}),
-        _rule("QLabel#headline", {"font-family": numerals, "font-weight": "600",
+        _rule("QLabel#headline", {"font-family": numerals,
+                                  "font-weight": str(theme.NUMERAL_WEIGHT),
                                   "font-size": f"{reading_pt('primary')}pt"}),
         # What the headline asks of the operator (L1): ink, not a caption.
         _rule("QLabel#headlineSub", {"color": ink, "font-weight": "600",
@@ -1737,16 +1929,23 @@ def numeral_font(pixels, weight=None):
 
 
 class StopButton(QPushButton):
-    """The stop object: A's disc (the brief) - a red face reading `Stop`, a
-    sheet-coloured gap and a red ring. Always red; latched it reads `Clear`,
-    the ring thickens from `theme.STOP["ring"]` to `["ring_latched"]` and
-    swells exactly once, on the edge where the latch closes. It is never
-    disabled and never dimmed - `setEnabled(False)` is refused here, because a
-    gate on the one control that stops things is the defect, not a state.
+    """The stop object (Signature, owner ruling 2026-09-27): a red key in an
+    ink guard collar, with a pale socket band between them - from across
+    the room a bullseye. The key stands `STOP["lift"]` above centre with
+    its SKIRT showing below; the face reads "Stop".
 
-    Keyboard: Space, Return and Enter all press it (AUD-4). Focus is an ink
-    ring painted *outside* the disc, in a margin kept for it, so it shows in
-    both states and is never mistaken for the latched ring.
+    Latched (every model): the key is DOWN - `drop_latched` lower, no
+    skirt, a darker crescent across the top of the face - the socket band
+    floods SKIRT, the collar turns SIGNAL, and the release glyph sits above
+    "Clear": one solid red coin. The change is carried by tone alone. It
+    moves once, on the edge where the latch closes (`MOTION["latch"]`),
+    and never while it stays; `STATION_NO_MOTION` makes it a cut.
+
+    It is never disabled and never dimmed - `setEnabled(False)` is refused
+    here, because a gate on the one control that stops things is the
+    defect, not a state. Keyboard: Space, Return and Enter all press it
+    (AUD-4). Focus is a 2 px ink ring outside the collar, in a margin kept
+    for it, so it shows in both states and is never mistaken for the latch.
     """
 
     #: The focus ring's width, and the margin kept around the disc for it.
@@ -1756,7 +1955,7 @@ class StopButton(QPushButton):
     def __init__(self, parent=None, diameter=None):
         QPushButton.__init__(self, "Stop", parent)
         self.is_latched = False
-        self._ring_now = None
+        self._ring_now = None       # the latch's travel, 0..1, while it moves
         self._hover = False
         self.setObjectName("stop")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1765,7 +1964,7 @@ class StopButton(QPushButton):
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._pulse = QVariantAnimation(self)
-        self._pulse.setDuration(PULSE_MS)
+        self._pulse.setDuration(theme.MOTION["latch"])
         self._pulse.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._pulse.valueChanged.connect(self._on_pulse)
         self._pulse.finished.connect(self._on_pulse_done)
@@ -1782,27 +1981,46 @@ class StopButton(QPushButton):
         return self._diameter
 
     def set_diameter(self, diameter):
-        """The disc's diameter in px (`theme.STOP`); the widget adds the focus
-        margin round it."""
+        """The collar's outer diameter in px (`theme.STOP`); the widget adds
+        the focus margin round it."""
         self._diameter = int(diameter)
+        self._parts = stop_geometry(self._diameter)
         side = self._diameter + 2 * (self.FOCUS_GAP + self.FOCUS_PX)
         if self.width() != side or self.height() != side:
             self.setFixedSize(side, side)
         self.update()
 
     def ring_px(self):
+        """The collar's width (Signature: `STOP["ring"]` idle, `["ring_latched"]`
+        latched - one width; latched it turns SIGNAL). Narrow, the narrow
+        collar."""
+        if self._diameter <= theme.STOP["diameter_narrow"]:
+            return self._parts["collar"]
         return theme.STOP["ring_latched" if self.is_latched else "ring"]
 
+    def _travel(self):
+        """How far down the key is, 0 (up) .. 1 (latched down)."""
+        if self._ring_now is not None:
+            return self._ring_now
+        return 1.0 if self.is_latched else 0.0
+
     def face_rect(self):
-        inset = self.FOCUS_GAP + self.FOCUS_PX + self.ring_px() + theme.STOP["gap"]
-        return QRectF(inset, inset, self.width() - 2 * inset,
-                      self.height() - 2 * inset)
+        """The key's face where it is now: `lift` above centre at rest,
+        `drop_latched` lower when latched; a press drops it by a key's
+        lip fold, as every key does."""
+        parts = self._parts
+        key = parts["key"]
+        centre = QPointF(self.width() / 2.0, self.height() / 2.0)
+        top = centre.y() - key / 2.0 - parts["lift"] + parts["drop"] * self._travel()
+        if self.isDown() and not self.is_latched:
+            top += key_drop()
+        return QRectF(centre.x() - key / 2.0, top, key, key)
 
     def face_size(self):
-        """The face's pixel size: a quarter of the disc, or smaller if "Clear"
-        would not sit inside the face."""
+        """The legend's pixel size: `STOP["face_pt"]` at this diameter, or
+        smaller if "Clear" would not sit inside the face."""
         room = self.face_rect().width() * 0.8
-        size = max(8, int(self._diameter * 0.25))
+        size = max(8, int(round(self._parts["legend_px"])))
         while size > 8:
             if QFontMetrics(numeral_font(size, 700)).horizontalAdvance("Clear") <= room:
                 break
@@ -1814,8 +2032,8 @@ class StopButton(QPushButton):
         QPushButton.setEnabled(self, True)
 
     def set_latched(self, is_latched, face=None):
-        """Face and ring from the state, never from the last click. Called on
-        every tick; it repaints only when something it draws has changed.
+        """Face and parts from the state, never from the last click. Called
+        on every tick; it repaints only when something it draws has changed.
         `face` is `stop_words`' word when the dashboard has it (L1)."""
         is_latched = bool(is_latched)
         was = self.is_latched
@@ -1826,10 +2044,8 @@ class StopButton(QPushButton):
         if is_latched and not was:
             self._pulse.stop()
             if not motion_reduced():
-                ring = float(theme.STOP["ring_latched"])
-                self._pulse.setStartValue(ring)
-                self._pulse.setKeyValueAt(0.45, ring * 2.0)
-                self._pulse.setEndValue(ring)
+                self._pulse.setStartValue(0.0)
+                self._pulse.setEndValue(1.0)
                 self._pulse.start()       # once, on the edge
         elif not is_latched:
             self._pulse.stop()
@@ -1882,28 +2098,64 @@ class StopButton(QPushButton):
         self.update()
 
     def paintEvent(self, event):
+        stop, parts = theme.STOP, self._parts
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        red = QColor(theme.SIGNAL)
         outer = self.FOCUS_GAP + self.FOCUS_PX
-        ring = self._ring_now if self._ring_now is not None else self.ring_px()
-        ring += 1 if self._hover and not self.isDown() else 0
-        disc = QRectF(outer, outer, self.width() - 2 * outer,
-                      self.height() - 2 * outer)
-        # The ring and the gap: a red disc, then a sheet-coloured one inside it.
+        disc = QRectF(outer, outer, self.width() - 2 * outer, self.height() - 2 * outer)
+        latched = self.is_latched
+        # The collar: ink (SIGNAL latched) with a KEY_RIM edge.
+        edge = QPen(QColor(stop["collar_edge"]))
+        edge.setWidthF(theme.KEY_RIM_PX)
+        painter.setPen(edge if not latched else Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(stop["collar_latched" if latched else "collar_fill"]))
+        half = theme.KEY_RIM_PX / 2.0
+        painter.drawEllipse(disc.adjusted(half, half, -half, -half))
+        # The socket band between key and collar: pale, flooded SKIRT latched.
+        collar = self.ring_px()
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(red)
-        painter.drawEllipse(disc)
-        painter.setBrush(QColor(theme.BACKGROUND))
-        painter.drawEllipse(disc.adjusted(ring, ring, -ring, -ring))
+        painter.setBrush(QColor(stop["socket_latched" if latched else "socket"]))
+        painter.drawEllipse(disc.adjusted(collar, collar, -collar, -collar))
         face = self.face_rect()
-        if self.isDown():
-            face = face.adjusted(2, 2, -2, -2)
-        painter.setBrush(red)
+        travel = self._travel()
+        # The skirt: the key's side, showing below the face while it is up.
+        skirt = parts["skirt"] * (1.0 - travel)
+        pressed = key_drop() if self.isDown() and not latched else 0
+        if skirt > 0.5:
+            # Fixed under the key: a press drops the face onto it.
+            painter.setBrush(QColor(stop["skirt_fill"]))
+            painter.drawEllipse(face.translated(0, skirt - pressed))
+        painter.setBrush(QColor(stop["face"]))
         painter.drawEllipse(face)
-        painter.setPen(QColor(theme.colors(DANGER_ROLE)[1]))
-        painter.setFont(numeral_font(self.face_size(), 700))
-        painter.drawText(face, Qt.AlignmentFlag.AlignCenter, self.text())
+        if latched:
+            # Down: a darker crescent across the top of the face (the face
+            # sunk under the socket's rim), SKIRT over the face's top edge.
+            depth = max(1.0, parts["drop"] - parts["lift"])
+            clip = QPainterPath()
+            clip.addEllipse(face)
+            painter.save()
+            painter.setClipPath(clip)
+            painter.setBrush(QColor(stop["skirt_fill"]))
+            painter.drawRect(QRectF(face.left(), face.top(), face.width(), face.height()))
+            painter.setBrush(QColor(stop["face"]))
+            painter.drawEllipse(face.translated(0, depth))
+            painter.restore()
+        legend = QColor(stop["legend"])
+        font = numeral_font(self.face_size(), theme.NUMERAL_WEIGHT)
+        painter.setFont(font)
+        painter.setPen(legend)
+        if latched:
+            # The release glyph above "Clear": which way the key goes.
+            line = QFontMetrics(font).height()
+            glyph = int(round(line * 0.7))
+            block = glyph + line
+            top = face.center().y() - block / 2.0
+            painter.drawPixmap(QPointF(face.center().x() - glyph / 2.0, top),
+                               glyph_pixmap("clear", glyph, stop["legend"]))
+            painter.drawText(QRectF(face.left(), top + glyph, face.width(), line),
+                             Qt.AlignmentFlag.AlignCenter, self.text())
+        else:
+            painter.drawText(face, Qt.AlignmentFlag.AlignCenter, self.text())
         if self.hasFocus():
             pen = QPen(QColor(theme.STOP_FOCUS))
             pen.setWidthF(self.FOCUS_PX)
@@ -1917,9 +2169,11 @@ class StopButton(QPushButton):
 
 class SwitchButton(QAbstractButton):
     """A model's own stop (tier 3): a small switch, not a second red disc.
-    Off, a muted track and knob; latched, a red track and a white knob. Its
-    words are the schema's ("Stop" / "Stopped"); its tooltip names the model.
-    `is_on` comes from the state, never from the click."""
+    Signature: a sunk SURFACE track with a KEY_RIM edge and an 18 px key-cap
+    knob with a 2.5 px lip; on, the track is SIGNAL and the knob white with
+    a SKIRT lip and rim, at the right. Its words are the schema's ("Stop" /
+    "Stopped"); its tooltip names the model. `is_on` comes from the state,
+    never from the click."""
 
     def __init__(self, text="", parent=None):
         QAbstractButton.__init__(self, parent)
@@ -1948,30 +2202,38 @@ class SwitchButton(QAbstractButton):
     minimumSizeHint = sizeHint
 
     def paintEvent(self, event):
+        switch = theme.SWITCH
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         track = self._track()
-        radius = track.height() / 2.0
-        knob = theme.SWITCH["knob"]
+        radius = theme.RADIUS["switch"]
         enabled = self.isEnabled()
-        if self.is_on:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(theme.SWITCH["on_fill"] if enabled
-                                    else theme.DISABLED[1]))
-            painter.drawRoundedRect(track, radius, radius)
-            knob_colour, left = theme.SWITCH["knob_on"], track.right() - radius
-        else:
-            edge = QPen(QColor(theme.SWITCH["off_edge"] if enabled else theme.DISABLED[1]))
-            edge.setWidthF(1.5)
-            painter.setPen(edge)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(track.adjusted(0.75, 0.75, -0.75, -0.75),
-                                    radius, radius)
-            knob_colour = theme.SWITCH["knob_off"] if enabled else theme.DISABLED[1]
-            left = track.left() + radius
+        rim = theme.KEY_RIM_PX
+        # The track: a sunk window with a rim; SIGNAL when on.
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(knob_colour))
-        painter.drawEllipse(QPointF(left, track.center().y()), knob / 2.0, knob / 2.0)
+        painter.setBrush(QColor(switch["off_edge"] if enabled else theme.EDGE))
+        painter.drawRoundedRect(track, radius, radius)
+        inner = track.adjusted(rim, rim, -rim, -rim)
+        fill = (switch["on_fill"] if enabled else theme.DISABLED[1]) if self.is_on else theme.SURFACE
+        painter.setBrush(QColor(fill))
+        painter.drawRoundedRect(inner, radius - rim, radius - rim)
+        # The knob: a key cap - rim, face, lip below.
+        knob = switch["knob"]
+        lip = theme.KEY_LIP_PX["knob"]
+        gap = (track.height() - knob) / 2.0
+        left = track.right() - gap - knob if self.is_on else track.left() + gap
+        cap = QRectF(left, track.top() + gap - lip / 2.0, knob, knob)
+        if self.is_on:
+            face, edge = switch["knob_on"], switch["knob_lip_on"]
+        else:
+            face, edge = switch["knob_off"], switch["knob_lip"]
+        if not enabled:
+            face, edge = theme.BACKGROUND, theme.EDGE
+        small = theme.RADIUS["small"]
+        painter.setBrush(QColor(edge))
+        painter.drawRoundedRect(cap.adjusted(0, 0, 0, lip), small, small)
+        painter.setBrush(QColor(face))
+        painter.drawRoundedRect(cap.adjusted(rim, rim, -rim, -rim / 2.0), small - rim, small - rim)
         if self.hasFocus():
             pen = QPen(QColor(theme.STOP_FOCUS))
             pen.setWidthF(2)
@@ -1990,13 +2252,265 @@ class SwitchButton(QAbstractButton):
 class KeySlider(QSlider):
     """The speed slider (L6): an arrow is 1 % of the travel and a page key
     10 %; Home and End do nothing - one key must never commit the maximum
-    speed."""
+    speed. Signature: the handle is the fader cap (the sheet's
+    `QSlider::handle`); its 2 x 14 index line is painted here, ink, EDGE
+    when disabled. The fader never animates."""
 
     def keyPressEvent(self, event):         # noqa: N802 - Qt's name
         if event.key() in (Qt.Key.Key_Home, Qt.Key.Key_End):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def index_rect(self):
+        """The index line on the cap, centred on its face (above its lip)."""
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        handle = QRectF(self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, option,
+            QStyle.SubControl.SC_SliderHandle, self))
+        width, height = theme.FADER["index"]
+        centre = handle.center() - QPointF(0, theme.KEY_LIP_PX["small"] / 2.0)
+        return QRectF(centre.x() - width / 2.0, centre.y() - height / 2.0, width, height)
+
+    def paintEvent(self, event):            # noqa: N802 - Qt's name
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme.TEXT if self.isEnabled() else theme.EDGE))
+        painter.drawRect(self.index_rect())
+        painter.end()
+
+
+def paint_key(painter, rect, face, rim, lip, lip_px, down=False, radius=None,
+              dashed=False):
+    """One member of the key family, painted (the disclosure key, the kbd
+    caps, the fader and switch knobs where QSS cannot reach): the lip, then
+    the rim, then the face - `rect` is the whole part, lip included. Down,
+    the lip folds to 1 px and the face drops by the difference."""
+    radius = theme.RADIUS["small"] if radius is None else radius
+    folded = theme.KEY_LIP_PX["pressed"]
+    drop = (lip_px - folded) if down else 0
+    lip_now = folded if down else lip_px
+    body = QRectF(rect.left(), rect.top() + drop, rect.width(), rect.height() - drop)
+    rim_w = theme.KEY_RIM_PX
+    painter.save()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(lip))
+    painter.drawRoundedRect(body, radius, radius)
+    top = body.adjusted(0, 0, 0, -lip_now)
+    if dashed:
+        pen = QPen(QColor(rim))
+        pen.setWidthF(rim_w)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(QColor(face) if face != "transparent" else Qt.BrushStyle.NoBrush)
+        half = rim_w / 2.0
+        painter.drawRoundedRect(top.adjusted(half, half, -half, -half), radius, radius)
+    else:
+        painter.setBrush(QColor(rim))
+        painter.drawRoundedRect(top, radius, radius)
+        painter.setBrush(QColor(face))
+        inner = max(0.0, radius - rim_w)
+        painter.drawRoundedRect(top.adjusted(rim_w, rim_w, -rim_w, -rim_w), inner, inner)
+    painter.restore()
+    return top
+
+
+class DisclosureKey(QToolButton):
+    """A disclosure (Signature): a 24 px member of the key family holding
+    the disclosure glyph, then the schema's words at 14/600. Open, the key
+    sinks (SURFACE face, its lip folded) and the glyph turns down. The
+    sheet's `QToolButton#disclosure` draws the focus ring round the whole."""
+
+    def key_side(self):
+        return theme.SPACE[7]
+
+    def _metrics(self):
+        return QFontMetrics(self.font())
+
+    def sizeHint(self):                     # noqa: N802 - Qt's name
+        edge = 2 * (2 + theme.SPACE[1])
+        width = edge + self.key_side() + theme.PAD + self._metrics().horizontalAdvance(self.text())
+        height = max(self.key_side(), self._metrics().height()) + 2 * (2 + theme.SPACE[0])
+        return QSize(width, max(height, TARGET_PX))
+
+    minimumSizeHint = sizeHint
+
+    def key_rect(self):
+        side = self.key_side()
+        return QRectF(2 + theme.SPACE[1], (self.height() - side) / 2.0, side, side)
+
+    def paintEvent(self, event):            # noqa: N802 - Qt's name
+        painter = QStylePainter(self)
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        option.text, option.icon = "", QIcon()
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        is_open = self.isChecked()
+        enabled = self.isEnabled()
+        small = theme.KEY_LIP_PX["small"]
+        rect = self.key_rect()
+        if enabled:
+            face = paint_key(painter, rect, theme.SURFACE if is_open else theme.CAP,
+                             theme.KEY_RIM, theme.KEY_LIP, small, down=is_open)
+        else:
+            face = paint_key(painter, rect, "transparent", theme.EDGE, theme.EDGE_SOFT,
+                             small, dashed=True)
+        glyph = theme.SPACE[5]
+        ink = theme.TEXT if enabled else theme.DISABLED[1]
+        painter.drawPixmap(QPointF(face.center().x() - glyph / 2.0,
+                                   face.center().y() - glyph / 2.0),
+                           glyph_pixmap("disclosure", glyph, ink, 90 if is_open else 0))
+        painter.setPen(QColor(ink))
+        painter.setFont(self.font())
+        left = rect.right() + theme.PAD
+        painter.drawText(QRectF(left, 0, self.width() - left, self.height()),
+                         int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                         self.text())
+        painter.end()
+
+
+class Nameplate(QFrame):
+    """The rail's title block, the stop and the chord on one CAP plate
+    (Signature "Nameplate"): an engraved double frame - a KEY_RIM line, a
+    CAP gap, a 14 % ink hairline - and four drawn fasteners, 7 px EDGE
+    circles with a slot. Radius `RADIUS["plate"]`."""
+
+    #: The frame's two lines and the fasteners, in px from the plate's edge.
+    GAP_PX = 3
+    FASTENER_PX = 7
+    HAIRLINE_INK = 0.14
+
+    def __init__(self, parent=None):
+        QFrame.__init__(self, parent)
+        self.setObjectName("nameplate")
+
+    def paintEvent(self, event):            # noqa: N802 - Qt's name
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rim = theme.KEY_RIM_PX
+        radius = theme.RADIUS["plate"]
+        plate = QRectF(self.rect()).adjusted(rim / 2.0, rim / 2.0, -rim / 2.0, -rim / 2.0)
+        pen = QPen(QColor(theme.KEY_RIM))
+        pen.setWidthF(rim)
+        painter.setPen(pen)
+        painter.setBrush(QColor(theme.CAP))
+        painter.drawRoundedRect(plate, radius, radius)
+        inset = rim / 2.0 + self.GAP_PX
+        hair = QColor(theme.TEXT)
+        hair.setAlphaF(self.HAIRLINE_INK)
+        pen = QPen(hair)
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(plate.adjusted(inset, inset, -inset, -inset),
+                                radius - inset, radius - inset)
+        # The fasteners: a circle and its slot at each corner.
+        side = self.FASTENER_PX
+        pad = inset + self.GAP_PX
+        pen = QPen(QColor(theme.EDGE))
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        for x in (plate.left() + pad, plate.right() - pad - side):
+            for y in (plate.top() + pad, plate.bottom() - pad - side):
+                circle = QRectF(x, y, side, side)
+                painter.drawEllipse(circle)
+                centre = circle.center()
+                painter.drawLine(QPointF(centre.x() - side * 0.3, centre.y() + side * 0.3),
+                                 QPointF(centre.x() + side * 0.3, centre.y() - side * 0.3))
+        painter.end()
+
+
+class ChordLabel(QWidget):
+    """The stop's chord under the disc (Signature): "Stop:" in MUTED, then
+    each key of the chord as a small keycap (CAP face, rim, 2 px lip,
+    11.5 px 600 legend), joined by "+". Its text is still "Stop: Ctrl+."
+    (`full_text`), its accessible name the same words."""
+
+    KBD_PX = 11.5
+
+    def __init__(self, text="", parent=None):
+        QWidget.__init__(self, parent)
+        self.setObjectName("chord")
+        self._text = ""
+        self.set_full_text(text)
+
+    def set_full_text(self, text):
+        self._text = str(text or "")
+        self.setAccessibleName(self._text)
+        self.setToolTip("")
+        self.updateGeometry()
+        self.update()
+
+    def full_text(self):
+        return self._text
+
+    text = full_text
+
+    def parts(self):
+        """("Stop:", ["Ctrl", "."]) from "Stop: Ctrl+."."""
+        head, _, chord = self._text.partition(": ")
+        keys = [k for k in re.split(r"(?<=.)\+", chord) if k] if chord else []
+        return (head + ":" if chord else self._text), keys
+
+    def _fonts(self):
+        caption = QFont(theme.FONT_FAMILY)
+        caption.setPointSizeF(caption_pt())
+        caption.setWeight(QFont.Weight(500))
+        kbd = QFont(theme.FONT_FAMILY)
+        kbd.setPointSizeF(max(6.0, px_to_pt(self.KBD_PX)))
+        kbd.setWeight(QFont.Weight(600))
+        return caption, kbd
+
+    def _layout(self):
+        caption, kbd = self._fonts()
+        cm, km = QFontMetrics(caption), QFontMetrics(kbd)
+        head, keys = self.parts()
+        pad = theme.SPACE[1]
+        lip = theme.KEY_LIP_PX["kbd"]
+        cap_h = km.height() + theme.SPACE[1] + lip
+        items, x = [], 0
+        items.append(("text", head, x, cm.horizontalAdvance(head)))
+        x += cm.horizontalAdvance(head) + theme.SPACE[2]
+        for index, key in enumerate(keys):
+            if index:
+                plus = cm.horizontalAdvance("+")
+                items.append(("text", "+", x, plus))
+                x += plus + theme.SPACE[1]
+            width = max(km.horizontalAdvance(key) + 2 * pad, cap_h)
+            items.append(("key", key, x, width))
+            x += width + theme.SPACE[1]
+        return items, x, max(cm.height(), cap_h)
+
+    def sizeHint(self):                     # noqa: N802 - Qt's name
+        _, width, height = self._layout()
+        return QSize(int(math.ceil(width)), int(math.ceil(height)) + 2)
+
+    minimumSizeHint = sizeHint
+
+    def paintEvent(self, event):            # noqa: N802 - Qt's name
+        items, width, height = self._layout()
+        caption, kbd = self._fonts()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        left = (self.width() - width) / 2.0
+        top = (self.height() - height) / 2.0
+        lip = theme.KEY_LIP_PX["kbd"]
+        for kind, word, x, w in items:
+            box = QRectF(left + x, top, w, height)
+            if kind == "text":
+                painter.setFont(caption)
+                painter.setPen(QColor(theme.MUTED))
+                painter.drawText(box, Qt.AlignmentFlag.AlignCenter, word)
+                continue
+            face = paint_key(painter, box, theme.CAP, theme.KEY_RIM, theme.KEY_LIP, lip,
+                             radius=theme.RADIUS["fader"])
+            painter.setFont(kbd)
+            painter.setPen(QColor(theme.TEXT))
+            painter.drawText(face, Qt.AlignmentFlag.AlignCenter, word)
+        painter.end()
 
 
 class TickBox(QCheckBox):
@@ -2311,6 +2825,15 @@ class MiddleCombo(QComboBox):
         painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
         option.currentText = self.shown_text()
         painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+        # Signature: the select is a key with the disclosure glyph turned
+        # down at its right, in the legend's ink.
+        side = theme.SPACE[4]
+        arrow = theme.SPACE[6]
+        lip = theme.KEY_LIP_PX["key"]
+        ink = theme.TEXT if self.isEnabled() else theme.DISABLED[1]
+        left = self.width() - arrow + (arrow - side) / 2.0 - theme.GAP
+        top = (self.height() - lip - side) / 2.0
+        painter.drawPixmap(QPointF(left, top), glyph_pixmap("disclosure", side, ink, 90))
 
 
 def _glyph(size, draw, inks=None):
@@ -2356,15 +2879,92 @@ def close_icon(size=14):
     return _glyph(size, draw)
 
 
-def dot_icon(filled, ink, size=10):
-    """A toggle's state dot: filled when on, a ring when off (the artboard's
-    "o Enter autonomous mode" / "* Leave manual mode")."""
-    def draw(painter, side, colour):
-        painter.setBrush(QColor(colour) if filled else Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(QRectF(2, 2, side - 4, side - 4))
-    inks = [(mode, ink) for mode in (QIcon.Mode.Normal, QIcon.Mode.Active)]
-    inks.append((QIcon.Mode.Disabled, theme.DISABLED[1]))
-    return _glyph(size, draw, inks)
+def glyph_pixmap(name, side, colour, turn=0, gap=0):
+    """One glyph of the station's set (`theme.icon_svg`, rule 6) rendered
+    through QtSvg at `side` px in `colour`, at 2x for a sharp edge; `turn`
+    degrees clockwise (the disclosure glyph turns down when open). `gap`
+    px of clear room after it: the space before a key's legend, which a
+    QPushButton has no property for."""
+    pixmap = QPixmap(int((side + gap) * 2), int(side * 2))
+    pixmap.setDevicePixelRatio(2.0)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    renderer = QSvgRenderer(QByteArray(theme.icon_svg(name, side, colour).encode("utf-8")))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if turn:
+        painter.translate(side / 2.0, side / 2.0)
+        painter.rotate(turn)
+        painter.translate(-side / 2.0, -side / 2.0)
+    renderer.render(painter, QRectF(0, 0, side, side))
+    painter.end()
+    return pixmap
+
+
+def glyph_icon(name, colour, side=16, turn=0, gap=0):
+    """A key's glyph as a `QIcon`, tinted by role: the legend's colour at
+    rest and under the pointer, the DISABLED ink when greyed."""
+    icon = QIcon()
+    for mode, ink in ((QIcon.Mode.Normal, colour), (QIcon.Mode.Active, colour),
+                      (QIcon.Mode.Selected, colour),
+                      (QIcon.Mode.Disabled, theme.DISABLED[1])):
+        icon.addPixmap(glyph_pixmap(name, side, ink, turn, gap), mode)
+    return icon
+
+
+def legend_gap():
+    """The room between a key's glyph or lamp and its legend."""
+    return theme.SPACE[3]
+
+
+def paint_lamp(painter, rect, fill, edge=None):
+    """The lamp slot (rule 5): a small window, radius `LAMP["radius"]`,
+    filled; hollow is the SURFACE fill inside a rim."""
+    radius = theme.LAMP["radius"]
+    painter.setPen(Qt.PenStyle.NoPen)
+    if fill == "transparent":
+        # A ghost slot: its rim only, the ground showing through.
+        pen = QPen(QColor(edge))
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        return
+    if edge is not None:
+        painter.setBrush(QColor(edge))
+        painter.drawRoundedRect(rect, radius, radius)
+        rect = rect.adjusted(1, 1, -1, -1)
+        radius = max(0, radius - 1)
+    painter.setBrush(QColor(fill))
+    painter.drawRoundedRect(rect, radius, radius)
+
+
+def lamp_colour(state):
+    """(fill, edge) of a lamp slot: "off" hollow, "on" ink, "lit" the CAP
+    window on an ink key, "unconfirmed" SIGNAL, "disabled" the ghost."""
+    return {"off": (theme.LAMP["off"], theme.LAMP["edge"]),
+            "on": (theme.LAMP["on"], None),
+            "lit": (theme.CAP, None),
+            "unconfirmed": (theme.LAMP["unconfirmed"], None),
+            "disabled": ("transparent", theme.EDGE)}[state]
+
+
+def lamp_icon(state):
+    """A latching mode key's lamp slot as its icon (Signature): hollow off,
+    the CAP window lit on the ink key; ghost when disabled."""
+    width, height = theme.LAMP["size"]
+    icon = QIcon()
+    for mode, kind in ((QIcon.Mode.Normal, state), (QIcon.Mode.Active, state),
+                       (QIcon.Mode.Disabled, "disabled")):
+        pixmap = QPixmap((width + legend_gap()) * 2, height * 2)
+        pixmap.setDevicePixelRatio(2.0)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        fill, edge = lamp_colour(kind)
+        paint_lamp(painter, QRectF(0, 0, width, height), fill, edge)
+        painter.end()
+        icon.addPixmap(pixmap, mode)
+    return icon
 
 
 def square_icon(ink, size=10):
@@ -2424,26 +3024,11 @@ def rail_mark_icon(stop_kind, energized, side):
     return icon
 
 
-def disclosure_icon(is_open, size=10):
-    """The disclosure's small ink triangle: pointing right when closed, down
-    when open; the platform arrow is a heavy chevron on macOS."""
-    def draw(painter, side, colour):
-        painter.setBrush(QColor(colour))
-        painter.setPen(Qt.PenStyle.NoPen)
-        path = QPainterPath()
-        if is_open:
-            path.moveTo(side * 0.2, side * 0.32)
-            path.lineTo(side * 0.8, side * 0.32)
-            path.lineTo(side * 0.5, side * 0.72)
-        else:
-            path.moveTo(side * 0.32, side * 0.2)
-            path.lineTo(side * 0.72, side * 0.5)
-            path.lineTo(side * 0.32, side * 0.8)
-        path.closeSubpath()
-        painter.drawPath(path)
-    inks = [(mode, theme.TEXT) for mode in (QIcon.Mode.Normal, QIcon.Mode.Active)]
-    inks.append((QIcon.Mode.Disabled, theme.DISABLED[1]))
-    return _glyph(size, draw, inks)
+def disclosure_icon(is_open, size=None):
+    """The disclosure glyph (`theme.ICONS["disclosure"]`): pointing right
+    closed, turned down open; ink, DISABLED when greyed."""
+    side = size or theme.SPACE[5]
+    return glyph_icon("disclosure", theme.TEXT, side, 90 if is_open else 0)
 
 
 def target_px():
@@ -2457,17 +3042,29 @@ def lamp_px():
     return max(LAMP_PX, int(round(StopButton.line_height() * 0.8)))
 
 
+class MarkGlyph(QLabel):
+    """A severity or fault mark (Signature, rule 6): the warning glyph in
+    `colour` beside the word that says the same thing (F14: never colour
+    alone). Replaces the square: at 16 px a square reads as a bullet."""
+
+    def __init__(self, colour, side=None):
+        QLabel.__init__(self)
+        self.setObjectName("mark")
+        self.side = int(side or theme.SPACE[5])
+        self.setFixedSize(self.side, self.side)
+        self.colour = None
+        self.set_colour(colour)
+
+    def set_colour(self, colour, hollow=False):
+        """The glyph is stroked, so a warning and an error differ by ink."""
+        if colour != self.colour:
+            self.colour = colour
+            self.setPixmap(glyph_pixmap("warning", self.side, colour))
+
+
 def mark(colour, width=None, hollow=False):
-    """A severity or fault mark: a small square in `colour` - solid, or hollow
-    for a warning (`theme.SEVERITY_MARK_HOLLOW`) - beside the word that says
-    the same thing (F14: never colour alone). Its colour is set once here,
-    never on a tick."""
-    square = QFrame()
-    square.setObjectName("mark")
-    side = width or theme.SPACE[4] - theme.SPACE[1]
-    square.setFixedSize(side, side)
-    square.setStyleSheet(mark_sheet(colour, hollow))
-    return square
+    """The warning glyph in `colour` (`MarkGlyph`)."""
+    return MarkGlyph(colour, width)
 
 
 def mark_sheet(colour, hollow=False):
@@ -2659,6 +3256,74 @@ class RegionOverlay(QWidget):
 
 
 
+class FlagWindow(QWidget):
+    """The tripped-flag window at an unconfirmed model's entry (Signature,
+    rule 4): an ink frame showing SIGNAL with an ink hatch. The flag drops
+    into its frame once when it appears (`FLAG["drop_ms"]`, the one
+    authored moment); `STATION_NO_MOTION` shows it already down. The hatch
+    is a mark, not a texture."""
+
+    #: The frame's line and the hatch's pitch and stroke, in px.
+    FRAME_PX = 2
+    HATCH_PITCH = 6
+    HATCH_PX = 2
+
+    def __init__(self, parent=None):
+        QWidget.__init__(self, parent)
+        self.setObjectName("flag")
+        self.setFixedSize(*theme.FLAG["size"])
+        self._fall = 1.0            # 0 = still above its window, 1 = down
+        self._drop = QVariantAnimation(self)
+        self._drop.setDuration(theme.FLAG["drop_ms"])
+        # cubic-bezier(.16,1,.3,1): a fast start that settles, as OutExpo.
+        self._drop.setEasingCurve(QEasingCurve.Type.OutExpo)
+        self._drop.valueChanged.connect(self._on_drop)
+
+    def drop(self):
+        """Trip the flag: it falls into its window once."""
+        self._drop.stop()
+        if motion_reduced():
+            self._fall = 1.0
+            self.update()
+            return
+        self._drop.setStartValue(0.0)
+        self._drop.setEndValue(1.0)
+        self._drop.start()
+
+    def _on_drop(self, value):
+        self._fall = float(value)
+        self.update()
+
+    def paintEvent(self, event):            # noqa: N802 - Qt's name
+        flag = theme.FLAG
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        frame = self.FRAME_PX
+        window = QRectF(self.rect()).adjusted(frame, frame, -frame, -frame)
+        painter.save()
+        painter.setClipRect(window)
+        shown = window.translated(0, -window.height() * (1.0 - self._fall))
+        painter.fillRect(shown, QColor(flag["fill"]))
+        pen = QPen(QColor(flag["hatch"]))
+        pen.setWidthF(self.HATCH_PX)
+        painter.setPen(pen)
+        pitch = self.HATCH_PITCH
+        x = shown.left() - shown.height()
+        while x < shown.right():
+            painter.drawLine(QPointF(x, shown.bottom()),
+                             QPointF(x + shown.height(), shown.top()))
+            x += pitch
+        painter.restore()
+        pen = QPen(QColor(flag["frame"]))
+        pen.setWidthF(frame)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        half = frame / 2.0
+        painter.drawRect(QRectF(self.rect()).adjusted(half, half, -half, -half))
+        painter.end()
+
+
 class EntryHead(QFrame):
     """An entry's head: the name, then (on the overview) "Open" with the
     disclosure chevron, the close button at the right.
@@ -2788,7 +3453,8 @@ class SheetEntry(QFrame):
         self.lost_mark = mark(theme.SIGNAL)
         self.lost_label = QLabel("")
         self.lost_label.setObjectName("entryNote")
-        self.unconfirmed_mark = mark(theme.SIGNAL)
+        # Signature: the tripped-flag window, not a square (rule 4).
+        self.unconfirmed_mark = FlagWindow()
         self.unconfirmed_label = QLabel(UNCONFIRMED_LINE)
         self.unconfirmed_label.setObjectName("entryNote")
         # O4: a disable that failed, with the fault's own reason.
@@ -2869,6 +3535,8 @@ class SheetEntry(QFrame):
         self.is_unconfirmed = flag
         self._sync_rule()
         self._unconfirmed_line.setVisible(flag)
+        if flag:
+            self.unconfirmed_mark.drop()
 
     def set_faulted(self, flag, reason=""):
         """O4: a disable that failed is drawn like a stop that did not
@@ -2913,6 +3581,30 @@ class RailItem(QPushButton):
         self.setAccessibleName(name)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.toggled.connect(lambda _on: self.update())
+
+    def lamp_state(self):
+        """The item's lamp slot (Signature, rule 5): SIGNAL for a model whose
+        stop did not confirm (or whose disable failed), ink for the shown
+        page, dark otherwise - its room is kept so names align."""
+        if self.stop_mark in ("unconfirmed", "faulted"):
+            return "unconfirmed"
+        return "on" if self.isChecked() else None
+
+    def lamp_rect(self):
+        width, height = theme.LAMP["size_rail"]
+        return QRectF(theme.INSET, (self.height() - height) / 2.0, width, height)
+
+    def paintEvent(self, event):            # noqa: N802 - Qt's name
+        super().paintEvent(event)
+        state = self.lamp_state()
+        if state is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        fill, edge = lamp_colour(state)
+        paint_lamp(painter, self.lamp_rect(), fill, edge)
+        painter.end()
 
     def set_stop(self, mark_kind):
         """`None`, "stopped", "unconfirmed" or "faulted" (`rail_mark`)."""
@@ -2920,6 +3612,7 @@ class RailItem(QPushButton):
             return
         self.stop_mark = mark_kind
         self._draw_marks()
+        self.update()
 
     def set_energized(self, flag):
         """O6: `Controller.state()["energized"]` names this model."""
@@ -2954,7 +3647,7 @@ class RailItem(QPushButton):
 
     def _fit(self):
         icon = self.iconSize().width() + theme.GAP if self._has_marks() else 0
-        room = max(1, self.width() - 2 * theme.INSET - theme.GAP - icon)
+        room = max(1, self.width() - rail_text_left() - theme.INSET - theme.GAP - icon)
         shown = self.fontMetrics().elidedText(self.name, Qt.TextElideMode.ElideRight, room)
         if shown != self.text():
             self.setText(shown)
@@ -3124,7 +3817,7 @@ class QtPanelView(PanelView, QWidget):
         self._layout.addWidget(self.tier_block)
 
     def _disclosure(self, text, tier):
-        button = QToolButton()
+        button = DisclosureKey()
         button.setObjectName("disclosure")
         button.setText(text)
         button.setCheckable(True)
@@ -3454,12 +4147,12 @@ class QtPanelView(PanelView, QWidget):
         if tier == 1 and not container.is_row:
             # A status word on one line; "Yes" is drawn as a lit lamp beside
             # the caption ("* Running"), and a normal value not at all.
+            # Signature: the lamp slot, lit ink ("Running").
             lamp = QLabel("")
             lamp.setObjectName("lamp")
-            side = lamp_px() * 3 // 4
-            lamp.setFixedSize(side, side)
-            lamp.setStyleSheet(f"QLabel#lamp {{ background-color: {theme.TEXT}; "
-                               f"border-radius: {side // 2}px; }}")
+            lamp.setFixedSize(*theme.LAMP["size"])
+            lamp.setStyleSheet(f"QLabel#lamp {{ background-color: {theme.LAMP['on']}; "
+                               f"border-radius: {theme.LAMP['radius']}px; }}")
             lamp.setVisible(False)
             shown = _bare_row(value, _unit(unit)) if unit else value
             self._lamps[id(element)] = lamp
@@ -3589,9 +4282,22 @@ class QtPanelView(PanelView, QWidget):
         validator.setLocale(QLocale.c())
         entry.setValidator(validator)
 
+    @staticmethod
+    def _dress_key(button):
+        """Signature: a key whose legend the spec lists carries its glyph
+        before the legend (`key_glyph`), in the legend's colour."""
+        name = key_glyph(button.text())
+        if name:
+            side = theme.SPACE[5]
+            button.setIcon(glyph_icon(name, theme.colors(button.property("role"))[1],
+                                      side, gap=legend_gap()))
+            button.setIconSize(QSize(side + legend_gap(), side))
+        return button
+
     def _make_button(self, container, element):
         button = QPushButton(sentence_case(element.get("text", "")))
         button.setProperty("role", element.get("role", "neutral"))
+        self._dress_key(button)
         # Values travel with the command (`_gather_inputs` reads the widgets:
         # the button's declared inputs plus every edited box, MOD-6),
         # so PYSIDE-5's "the click read the previous value" cannot recur and
@@ -3717,6 +4423,7 @@ class QtPanelView(PanelView, QWidget):
     def _make_file_save(self, container, element):
         button = QPushButton(sentence_case(element.get("text", "Save")) + "…")
         button.setProperty("role", element.get("role", "neutral"))
+        self._dress_key(button)
         button.clicked.connect(lambda: self._save_to_file(element))
         self._remember(element, button)
         container.add("", button)
@@ -3724,6 +4431,7 @@ class QtPanelView(PanelView, QWidget):
     def _make_file_open(self, container, element):
         button = QPushButton(sentence_case(element.get("text", "Open")) + "…")
         button.setProperty("role", element.get("role", "neutral"))
+        self._dress_key(button)
         button.clicked.connect(lambda: self._open_from_file(element))
         self._remember(element, button)
         container.add("", button)
@@ -3745,8 +4453,7 @@ class QtPanelView(PanelView, QWidget):
         """A lamp beside its caption, never a second copy of the caption."""
         lamp = QLabel("")
         lamp.setObjectName("lamp")
-        side = lamp_px()
-        lamp.setFixedSize(side, side)
+        lamp.setFixedSize(*theme.LAMP["size"])
         caption = sentence_case(element.get("text", ""))
         lamp.setAccessibleName(f"{caption}: off")
         lamp.setToolTip(f"{caption}: off")
@@ -3782,6 +4489,7 @@ class QtPanelView(PanelView, QWidget):
         caption = sentence_case(element.get("text", ""))
         button = QPushButton(f"{caption}…")
         button.setProperty("role", element.get("role", "neutral"))
+        self._dress_key(button)
         button.setToolTip(f"Open the {caption.lower()} in its own window")
         button.setAccessibleName(f"Open the {caption.lower()}")
         button.clicked.connect(lambda: self.open_detached(element))
@@ -4014,21 +4722,13 @@ class QtPanelView(PanelView, QWidget):
                 widget.setAccessibleName(name)
             return
         if element["type"] == "toggle":
-            colours = theme.toggle_colors(element, is_on)
-            disabled_bg, disabled_fg = theme.DISABLED
-            radius = theme.RADIUS["control"]
-            # A selector, not bare declarations, so hover, focus and the
-            # disabled state still reach a toggle.
-            sheet = (f"QPushButton {{ background-color: {colours['background']}; "
-                     f"color: {colours['foreground']}; "
-                     f"border: 1px solid {colours['border']}; "
-                     f"border-radius: {radius}px; }}"
-                     f"QPushButton:hover {{ border-color: {theme.MUTED}; }}"
-                     f"QPushButton:focus {{ border: {FOCUS_RING}; }}"
-                     f"QPushButton:disabled {{ background-color: {disabled_bg}; "
-                     f"color: {disabled_fg}; border: 1px dashed {theme.MUTED}; }}")
+            # Signature: off, a neutral key with its lamp slot hollow; on,
+            # the ink key pressed down with the slot lit (`toggle_sheet`).
+            sheet = toggle_sheet(element, is_on, key_ground(widget))
             if self._styled.get(id(element)) != sheet:
-                widget.setIcon(dot_icon(is_on, colours["foreground"]))
+                widget.setIcon(lamp_icon("lit" if is_on else "off"))
+                width, height = theme.LAMP["size"]
+                widget.setIconSize(QSize(width + legend_gap(), height))
             self._restyle(element, widget, sheet)
             wanted = sentence_case(element.get("true_text" if is_on
                                                else "false_text", ""))
@@ -4037,11 +4737,11 @@ class QtPanelView(PanelView, QWidget):
                 widget.setAccessibleName(self._toggle_name(
                     self._toggle_captions.get(id(element), ""), wanted))
             return
-        # An indicator: a lamp, and no text at all.
+        # An indicator: a lamp slot (rule 5), and no text at all.
         fill, ring = lamp_colours(element, is_on)
         self._restyle(element, widget,
-                      f"background-color: {fill}; border: 2px solid {ring}; "
-                      f"border-radius: {widget.width() // 2}px;")
+                      f"background-color: {fill}; border: {rim_px()} solid {ring}; "
+                      f"border-radius: {theme.LAMP['radius']}px;")
         caption = sentence_case(element.get("text", ""))
         name = f"{caption}: {'on' if is_on else 'off'}"
         if widget.accessibleName() != name:
@@ -4618,29 +5318,48 @@ class QtDashboard(Dashboard, QMainWindow):
         column.setContentsMargins(theme.SPACE[6], theme.SPACE[7],
                                   theme.SPACE[6], theme.SPACE[6])
         column.setSpacing(theme.GAP)
+        # Signature: the title block, the stop and the chord on one CAP
+        # nameplate; what a stop left latched is said on the plate too.
+        self.nameplate = Nameplate()
+        plate = QVBoxLayout(self.nameplate)
+        # The plate's edge is tight round the disc (its 172 px must fit the
+        # 248 px rail); the words inside it keep the plate's inset.
+        edge, inset = theme.SPACE[1], theme.SPACE[4]
+        plate.setContentsMargins(edge, theme.SPACE[5], edge, theme.SPACE[4])
+        plate.setSpacing(theme.SPACE[0])
+        words = QWidget()
+        words.setObjectName("bare")
+        block = QVBoxLayout(words)
+        block.setContentsMargins(inset, 0, inset, 0)
+        block.setSpacing(theme.SPACE[0])
         title = QLabel("Transfer stage")
         title.setObjectName("railTitle")
         title.setWordWrap(True)
-        column.addWidget(title)
+        block.addWidget(title)
         self.rail_status = NoteLabel()
         self.rail_status.setObjectName("caption")
-        column.addWidget(self.rail_status)
-        column.addSpacing(theme.SPACE[5])
+        block.addWidget(self.rail_status)
+        block.addSpacing(theme.SPACE[3])
+        plate_rule = QFrame()
+        plate_rule.setObjectName("plateRule")
+        plate_rule.setFixedHeight(1)
+        plate_rule.setStyleSheet(f"QFrame#plateRule {{ background-color: {theme.RULE}; }}")
+        block.addWidget(plate_rule)
+        plate.addWidget(words)
+        plate.addSpacing(theme.SPACE[4])
 
         self.stop_button = StopButton(self.rail)
         self.stop_button.clicked.connect(self._on_stop_clicked)
-        column.addWidget(self.stop_button, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.stop_hint = ElidedLabel(mode=Qt.TextElideMode.ElideMiddle, min_chars=6)
-        self.stop_hint.setObjectName("caption")
-        self.stop_hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self.stop_hint.set_full_text(RAIL_STOP_HINT)
-        column.addWidget(self.stop_hint)
+        plate.addWidget(self.stop_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        plate.addSpacing(theme.SPACE[3])
+        self.stop_hint = ChordLabel(RAIL_STOP_HINT)
+        plate.addWidget(self.stop_hint, 0, Qt.AlignmentFlag.AlignHCenter)
         # The stop from anywhere in the application, dialogs included; it only
         # ever stops (F9).
         self.stop_shortcut = QShortcut(QKeySequence(STOP_SHORTCUT), self)
         self.stop_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.stop_shortcut.activated.connect(self._on_stop_shortcut)
-        # Latched: a red square and what happened, under the disc.
+        # Latched: the warning glyph and what happened, under the chord.
         self.latched_mark = mark(theme.SIGNAL)
         self.latched_label = QLabel("")
         self.latched_label.setObjectName("railLatched")
@@ -4649,9 +5368,10 @@ class QtDashboard(Dashboard, QMainWindow):
                                      spacing=theme.PAD)
         self.latched_row.layout().setAlignment(self.latched_mark,
                                                Qt.AlignmentFlag.AlignTop)
+        self.latched_row.layout().setContentsMargins(inset, theme.SPACE[3], inset, 0)
         self.latched_row.setVisible(False)
-        column.addSpacing(theme.SPACE[3])
-        column.addWidget(self.latched_row)
+        plate.addWidget(self.latched_row)
+        column.addWidget(self.nameplate)
         # N2: the idle countdown, one line per probe with its Extend, under
         # the disc and its stop line - never over them, never a window.
         self.countdown_box = QWidget()
@@ -4730,7 +5450,15 @@ class QtDashboard(Dashboard, QMainWindow):
         width = int(round((RAIL_NARROW_PX if narrow else RAIL_PX) * growth))
         if self.rail.minimumWidth() != width or self.rail.maximumWidth() != width:
             self.rail.setFixedWidth(width)
-        room = width - 2 * theme.SPACE[6] - 2 * (StopButton.FOCUS_GAP + StopButton.FOCUS_PX)
+        # The rail's margin, and the nameplate's tight edge round the disc.
+        side = theme.SPACE[5] if narrow else theme.SPACE[6]
+        column = self.rail.layout()
+        margins = column.contentsMargins()
+        if margins.left() != side:
+            column.setContentsMargins(side, margins.top(), side, margins.bottom())
+        plate = self.nameplate.layout().contentsMargins()
+        room = (width - 2 * side - plate.left() - plate.right()
+                - 2 * (StopButton.FOCUS_GAP + StopButton.FOCUS_PX))
         diameter = min(theme.STOP["diameter_narrow" if narrow else "diameter"], room)
         if self.stop_button.diameter != diameter:
             self.stop_button.set_diameter(diameter)
@@ -5359,7 +6087,6 @@ class QtDashboard(Dashboard, QMainWindow):
         layout.setSpacing(theme.GAP)
         head = QHBoxLayout()
         head.setSpacing(theme.PAD)
-        self._event_mark_style = mark_sheet(theme.SEVERITY_MARK["error"])
         self.event_mark = mark(theme.SEVERITY_MARK["error"])
         self.event_mark.setVisible(False)
         head.addWidget(self.event_mark, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -5487,10 +6214,7 @@ class QtDashboard(Dashboard, QMainWindow):
             self.event_latest.setProperty("severity", severity)
             self.event_latest.style().unpolish(self.event_latest)
             self.event_latest.style().polish(self.event_latest)
-        style = mark_sheet(colour, hollow)
-        if style != self._event_mark_style:
-            self._event_mark_style = style
-            self.event_mark.setStyleSheet(style)
+        self.event_mark.set_colour(colour, hollow)
         self.event_mark.setVisible(not self.tray_toggle.isChecked())
 
     def _build_alert_band(self):
