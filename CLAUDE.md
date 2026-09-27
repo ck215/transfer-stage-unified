@@ -38,6 +38,9 @@ The import rules between these layers are a test (`tests/test_architecture.py`).
    ("Bench sheet, tiered", 2026-09-25; `WEB_DESIGN_BRIEF.md` is its
    superseded predecessor).
 4. `docs/rebuild/BUGFIX_PLAN.md` — the ranked defect list, a route per item.
+5. `docs/rebuild/MODEL_CONTRACT.md` — how to add a device: what a `Model`
+   subclass must provide and what the views do for free;
+   `tests/test_model_contract.py` asserts it against every registered class.
 
 Inputs that open work still reads, kept with a banner: the finding ledger
 `docs/implementation/progress.md` (`docs/rebuild/carry.json` cites its IDs),
