@@ -94,7 +94,7 @@ reflashed before then (unverified, see D13).
 > stage can drift at the last jog speed; recovery is close-and-reopen in the
 > rail or Relaunch); **D2** rotator Move/Home can report done mid-motion;
 > **D6** Refresh after Launch re-identifies the running boards' ports at both
-> bauds; **D14** Manual Speed and step sizes refuse in Manual; **D11** rotator
+> bauds; **D14** step sizes refuse in Manual (Manual Speed done, `e2f60c7`); **D11** rotator
 > Step defaults to 0. Next batch: D4 and D5 first (stop path), lead, core.
 
 | # | Where | Defect | Fix | Route |
@@ -112,7 +112,7 @@ reflashed before then (unverified, see D13).
 | D11 | `src/model/rotator.py` Step default | Step defaults to 0 (was 1.0), so Move ± does nothing and says nothing. | Default 1.0; refuse a zero step with a message. | `router` |
 | D12 | `firmware/flash_firmware.py` | Imports `discover_ports`/`probe_device_at` from the old tree (re-pointed to `legacy/src` on 2026-09-23 so it still runs); `flash.sh`/`flash.bat` deleted on this branch; auto-detect drops every `COM*` port so it finds nothing on Windows; `main`'s 20 tests for it are gone. | Port onto `src/controller/setup.py`'s scan and identify; restore the two launchers; keep COM ports; port the tests. | `agy` |
 | D13 | `src/controller/setup.py` identify | A board still on `main`'s firmware answers the identity query identically and launches with no warning, then never enables and misreads every jog packet. | **Owner question**: is a protocol-version reply worth a firmware change? Until then, a one-line note in the README's flashing section. | owner |
-| D14 | `src/model/probe.py` manual mode | Manual speed and step sizes cannot be changed in manual mode; changing them means leaving manual, which de-energizes the coils. The ruling locks distances only in autonomous. | Allow edits in manual; keep the autonomous lock. | `agy` |
+| D14 | `src/model/probe.py` manual mode | Manual speed and step sizes cannot be changed in manual mode; changing them means leaving manual, which de-energizes the coils. The ruling locks distances only in autonomous. | Allow edits in manual; keep the autonomous lock. **Manual Speed done** (`e2f60c7`, owner ruling 2026-09-26: live in manual, next jog frame). **Step sizes still refuse in Manual.** | `agy` (step sizes) |
 | D15 | `src/views/web/server.py` | **Now G2.** No quit control; closing the browser leaves the process holding the serial ports (until the watchdog latches FULL STOP, which does not exit). | Design call: a Quit command that shuts the Controller down and exits. | direct design → `agy` |
 | D16 | `run_macos.sh` | Prints that it is launching Web but starts Tk. **Done 2026-09-25** with the D-9 amendment. | One-line fix. | done |
 | D17 | `src/devices/smc100.py` | Controller address fixed at 1; `main` had an ID field. Low impact. | Expose the address in Setup only if the bench has more than one SMC100. | owner |
