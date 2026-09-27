@@ -651,3 +651,20 @@ def test_a_loop_with_its_own_stop_event_is_stopped_by_the_base_too():
 
 def test_the_join_timeout_is_one_constant_on_the_base():
     assert Model.THREAD_JOIN_TIMEOUT == 2.0
+
+
+# -- MOD-5 (model half): which devices are hardware, from the devices ---------
+
+def test_state_names_the_hardware_devices_the_model_owns():
+    """CON-6: a view counts hardware links from `hardware_devices`, not by
+    matching device class names. A device says so with `is_hardware`."""
+    class Link(FakeDevice):
+        is_hardware = True
+
+    model = FakeModel(devices=[Link("port"), FakeDevice("pad")])
+    assert model.state["hardware_devices"] == ["Link"]
+
+
+def test_a_device_that_does_not_say_is_not_hardware():
+    model = FakeModel(devices=[FakeDevice("a")])
+    assert model.state["hardware_devices"] == []

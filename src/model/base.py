@@ -307,6 +307,10 @@ class Model(Panel):
             "age": (round(time.monotonic() - self._updated_at, 2)
                     if self._expects_heartbeat() else None),
             "devices": {type(d).__name__: d.status for d in self.devices},
+            # MOD-5 / CON-6: which of those are real hardware links, as the
+            # device declares it, so no view matches a class name.
+            "hardware_devices": [type(d).__name__ for d in self.devices
+                                 if getattr(d, "is_hardware", False)],
         })
         root = getattr(self, "output_root", None)
         if root is not None:
