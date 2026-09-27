@@ -169,7 +169,12 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                 # [when the mode is in disabled_when, when it is missing from enabled_when].
                 "gate_words": {k: list(v) for k, v in GATE_WORDS.items()},
                 "watchdog": {"warn_seconds": WebView.WARN_SECONDS,
-                             "stop_seconds": WebView.STOP_SECONDS}})
+                             "stop_seconds": WebView.STOP_SECONDS},
+                # The event titles the page keys on (ARCH-4): served, so a
+                # wording change in core cannot silently detach the page.
+                "event_titles": {"stop_not_confirmed": events.STOP_NOT_CONFIRMED,
+                                 "idle_timeout_soon": events.IDLE_TIMEOUT_SOON,
+                                 "browser_silent": events.BROWSER_SILENT}})
 
         if route == "/api/data":
             return self._send_data(self._one(query, "name"),
@@ -260,13 +265,15 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             return self._receive_upload(body)
 
         if route == "/api/quit":
-            # The answer goes out FIRST, then the launcher is released: its
-            # `wait()` returns on the main thread and runs `close()`, which
-            # stops the server and closes the Controller (every model is
-            # stopped before anything is closed). Never close() from here -
-            # a handler thread would be shutting down the server it runs in.
-            # A second Quit is the same answer, never an error (G2).
-            self._send_json(200, {"status": "ok"})
+            # O5 (IMP8-3): every model is stopped BEFORE the answer, and the
+            # answer says which did not confirm, so the page's end state can
+            # name them instead of saying "Off" regardless. Then the answer
+            # goes out, then the launcher is released: its `wait()` returns on
+            # the main thread and runs `close()`, which stops the server and
+            # closes the Controller. Never close() from here - a handler
+            # thread would be shutting down the server it runs in. A second
+            # Quit is the same answer, never an error (G2).
+            self._send_json(200, self.view.quit_answer())
             self.wfile.flush()
             self.close_connection = True
             self.view.request_quit()
@@ -749,6 +756,10 @@ class WebView:
         self._last_beat = None
         self._warned = False
         self._stopped = False
+        # O5: what the first Quit answered (the stop it ran first); a second
+        # Quit is the same answer and stops nothing again.
+        self._quit_lock = threading.Lock()
+        self._quit_answer = None
 
     # -- the address the operator opens ------------------------------------
     @property
@@ -829,6 +840,26 @@ class WebView:
         except KeyboardInterrupt:
             pass
         self.close()
+
+    def quit_answer(self):
+        """Stop every model once, and say how it went: {"status": "ok",
+        "stopped": {name: confirmed}, "unconfirmed": [names]}. The first
+        Quit runs `estop_all`; any later one gets the same answer."""
+        with self._quit_lock:
+            if self._quit_answer is None:
+                try:
+                    stopped = dict(self.controller.estop_all() or {})
+                except Exception as exc:   # never let Quit fail on the stop
+                    events.error("Quit Stop Failed", f"the stop before Quit raised: {exc}",
+                                 source=SOURCE, exception=exc)
+                    # Nothing is known to have stopped: every model is unsure.
+                    stopped = {name: False for name in
+                               list(getattr(self.controller, "model_names", []) or [])}
+                self._quit_answer = {
+                    "status": "ok",
+                    "stopped": {str(k): bool(v) for k, v in stopped.items()},
+                    "unconfirmed": [str(k) for k, v in stopped.items() if not v]}
+            return dict(self._quit_answer)
 
     def request_quit(self):
         """The console's Quit (G2): release `wait()`, which then runs
@@ -917,14 +948,16 @@ class WebView:
             events.debug("Watchdog FULL STOP", f"{silence:.1f}s of browser "
                          f"silence while active", source=SOURCE)
             self.controller.estop_all()
-            events.error("Browser Gone - FULL STOP",
-                         f"No browser has checked in for {silence:.1f}s while "
+            events.error(events.BROWSER_GONE,
+                         f"No browser has checked in for {silence:.1f} s while "
                          f"devices were energized. Every model is latched.",
                          source=SOURCE)
         elif silence > self.WARN_SECONDS and not warned:
             with self._lock:
                 self._warned = True
-            events.warn("Browser Silent",
-                        f"No browser has checked in for {silence:.1f}s while "
-                        f"devices are energized. FULL STOP at "
-                        f"{self.STOP_SECONDS:.0f}s.", source=SOURCE)
+            # PM8-3: a sentence, not a shout, and a space before the unit.
+            # The page takes this line back on the next heartbeat (O12).
+            events.warn(events.BROWSER_SILENT,
+                        f"No browser has checked in for {silence:.1f} s while "
+                        f"devices are energized. The station stops every model "
+                        f"at {self.STOP_SECONDS:.0f} s.", source=SOURCE)
