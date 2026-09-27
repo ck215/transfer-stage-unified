@@ -438,39 +438,17 @@ def sentence_case(text):
                     else word for index, word in enumerate(words))
 
 
-#: L3: why a command is greyed out, in the operator's words: the gate token
-#: that refused it (`disabled_when`), or what an `enabled_when` command is
-#: waiting for. One map, three views (brief-l-views.md).
-GATE_WORDS = {"latched": "Stopped: clear the stop first",
-              "manual": "In manual mode",
-              "running": "A run is in progress",
-              "no_region": "Set a capture region first",
-              "disconnected": "Not connected",
-              "moving": "Moving"}
-WAITING_WORDS = {"launched": "Nothing launched yet",
-                 "running": "No run in progress",
-                 "manual": "Not in manual mode",
-                 "connected": "Not connected"}
-
-
 def gate_reason(element, mode, values=None, caption_of=None):
     """Why `schema.is_enabled` refuses `element` in `mode`, or "" when it
-    does not. `caption_of(attr)` names an `enabled_by` switch."""
-    mode = str(mode or "")
+    does not. O3: the words are `views.base.gate_reason`'s - one table, both
+    directions, three views. The one rule it has no word for is the view's:
+    a control live only while a tick box is ticked (`enabled_by`) names the
+    box, `caption_of(attr)`."""
     by = element.get("enabled_by")
     if by and values is not None and not values.get(by):
         name = caption_of(by) if caption_of else ""
         return f"Tick {name} first" if name else "Not selected"
-    if mode in (element.get("disabled_when") or ()):
-        return GATE_WORDS.get(mode) or sentence(mode.replace("_", " "))
-    enabled = element.get("enabled_when")
-    if enabled and mode not in enabled:
-        if mode in GATE_WORDS and mode in ("latched", "disconnected"):
-            return GATE_WORDS[mode]
-        if len(enabled) == 1 and enabled[0] in WAITING_WORDS:
-            return WAITING_WORDS[enabled[0]]
-        return "Only while " + " or ".join(str(m).replace("_", " ") for m in enabled)
-    return ""
+    return view_base.gate_reason(element, mode)
 
 
 def split_unit(text, unit=None):
