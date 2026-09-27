@@ -301,14 +301,16 @@ def _line_style(count):
 
 def _colormap():
     """The 3D scatter's map: viridis from its dark end to teal, so every
-    value stands off the light sheet (`palette.SURFACE`) at 3:1 or better
-    and no colour approaches the stop's red. (On the earlier dark panel this
-    was plasma's bright half; the test that pins the contrast is the same.)"""
+    value stands off the panel (`palette.SURFACE`) at 3:1 or better and no
+    colour approaches the stop's red. The top of the range follows the
+    panel tone: 0.48 on the 2026-09-25 panel, 0.44 on the Signature panel
+    (2026-09-27, `#d8dcdb`), measured against the test that pins the
+    contrast. (On the earlier dark panel this was plasma's bright half.)"""
     import numpy
     from matplotlib import colormaps
     from matplotlib.colors import ListedColormap
     base = colormaps["viridis"]
-    return ListedColormap(base(numpy.linspace(0.0, 0.48, 256)),
+    return ListedColormap(base(numpy.linspace(0.0, 0.44, 256)),
                           name="station-sheet")
 
 

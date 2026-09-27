@@ -105,3 +105,41 @@ rule; the new tokens through `theme` only (no view-local colour constants
 derived from the old dark tokens); before/after captures at 1400×900 and
 900×900 in the four states (launched, Red Percent details open, stopped,
 setup); every existing test green or updated with the reason in the test.
+
+## Signature (2026-09-27): the aesthetic ruling
+
+The layout above is unchanged. On it, the owner chose the **Signature**
+look (round 3 on the Tactile direction; spec `handoff/tactile3-Signature.md`,
+renders `handoff/shots/tactile3_Signature_*.png`, canvas
+https://claude.ai/artifact/CbDb1WtYKZRJddarJZaU8V): "Signature looks great,
+I'd love to have that be our layout." Implemented as drawn, including the
+two options the spec left open (the ink collar at idle; the rail lamp for
+an unconfirmed model). The eight rule changes it proposed are ratified:
+
+1. Depth is tone steps, rules and the key lip. Exactly two shadow tokens
+   (`SHADOW_RAISED`, `SHADOW_INSET`) and the stop's solid SKIRT offset,
+   all Web-only garnish that no state depends on. No gradients or textures.
+2. Every raised part is one family: a face, a 1.5 px `KEY_RIM` outline and
+   a `KEY_LIP` bottom edge (4 px keys and selects, 3 px small parts).
+   Pressed or latched, the lip folds to 1 px and the face drops by the
+   difference. Disabled keys keep their silhouette in ghost tones.
+3. The stop is a red key in an ink collar with a pale socket band between
+   them. Latched (every model), the key drops, the band floods SKIRT, the
+   collar turns SIGNAL, and the release glyph appears above "Clear".
+4. A model whose stop did not confirm is marked at its own entry with the
+   red rule, the tripped-flag window and the words; its rail lamp turns
+   SIGNAL.
+5. One "on" sign: the lamp slot. Ink when on or shown, SIGNAL only for an
+   unconfirmed model, never trace.
+6. Icons come only from the station's nine-glyph set (`theme.ICONS`); a key
+   carries at most one, before its legend; the warning glyph is the error
+   mark.
+7. White on the stop face, the "on" switch knob, key-top highlights and
+   `ENGRAVE`, and in the CAP and RAIL mixes.
+8. Disabled ink is 72 % of ink.
+
+Type: Figtree for text, Rubik 600 for numerals and the two headlines,
+tabular figures; readings 60/44/36/30. Tokens in `src/palette.py` and
+`src/views/theme.py`; every view reads them and names nothing of its own.
+Tk draws the same parts by tone and lip (1 px rims, square corners, no
+blur); Qt keeps radii and per-side borders; the Web adds the garnish.

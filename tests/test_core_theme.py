@@ -94,15 +94,16 @@ def test_an_on_toggle_is_filled_with_its_on_role():
     assert style["border"] == theme.ROLES["go"][0]
 
 
-def test_an_off_toggle_is_outlined_in_muted_on_the_sheet():
-    """Bench sheet (2026-09-25): OFF is the sheet with a muted outline, as
-    the row-E artboards draw it; the role's own colour is kept only for
-    danger (the stop must read as the stop)."""
+def test_an_off_toggle_is_a_cap_key_with_the_family_rim():
+    """Signature (2026-09-27): OFF is a CAP-faced key outlined in KEY_RIM,
+    one member of the key family, as the Signature artboards draw it; the
+    role's own colour is kept only for danger (the stop must read as the
+    stop). Was: the sheet with a muted outline (Bench sheet, 2026-09-25)."""
     element = sch.toggle("Auto", "is_auto", "set_mode", "ON", "OFF",
                          on_role="go", off_role="neutral")
     style = theme.toggle_colors(element, False)
-    assert style["background"] == theme.BACKGROUND
-    assert style["border"] == theme.MUTED
+    assert style["background"] == theme.CAP
+    assert style["border"] == theme.KEY_RIM
 
 
 @pytest.mark.parametrize("role", sorted(sch.ROLES))
@@ -137,8 +138,9 @@ def test_an_indicator_uses_the_same_two_role_shape():
 
 
 def test_a_toggle_with_no_declared_roles_still_renders():
+    """Signature: a latching key ON is the ink key, whatever its role."""
     style = theme.toggle_colors({}, True)
-    assert style["background"] == theme.ROLES["neutral"][0]
+    assert style["background"] == theme.ROLES["go"][0]
 
 
 def test_every_style_key_a_renderer_needs_is_present():
@@ -169,3 +171,67 @@ def test_css_variables_carry_the_surface_colours_and_the_font():
 def test_css_variables_follow_a_font_size_change():
     theme.set_font_size(20)
     assert "--font-size: 20pt;" in theme.css_variables()
+
+
+# -- Signature (2026-09-27): the derived tokens every view reads ---------------
+
+def test_every_derived_shade_is_a_mix_of_the_six_palette_values():
+    """The spec's measured values (`handoff/tactile3-Signature.md`), so a
+    view that draws them is drawing what the owner ratified."""
+    assert theme.CAP == "#f5f7f6" and theme.RAIL == "#f1f2f2"
+    assert theme.DEEP == "#cdd1d0" and theme.EDGE == "#767a7c"
+    assert theme.EDGE_SOFT == "#aaadad" and theme.SKIRT == "#7e221e"
+    assert theme.KEY_RIM == "#686c6e" and theme.KEY_LIP == "#4d5254"
+    assert theme.GO_LIP == "#0c0e0f" and theme.DISABLED[1] == "#53585a"
+
+
+def test_the_key_family_has_one_lip_per_part_and_one_pressed_lip():
+    assert set(theme.KEY_LIP_PX) == {"key", "small", "knob", "kbd", "pressed"}
+    assert theme.KEY_LIP_PX["pressed"] == 1
+    assert all(px > theme.KEY_LIP_PX["pressed"]
+               for name, px in theme.KEY_LIP_PX.items() if name != "pressed")
+
+
+def test_the_stop_is_a_key_in_a_collar_whose_states_are_tones():
+    """Latched, the socket floods SKIRT and the collar turns SIGNAL; the
+    key itself stays red in every state (the stop rule)."""
+    stop = theme.STOP
+    assert stop["key"] + 2 * (stop["collar"] + stop["gap"]) <= stop["diameter"]
+    assert stop["face"] == theme.SIGNAL and stop["collar_latched"] == theme.SIGNAL
+    assert stop["socket"] == theme.SURFACE and stop["socket_latched"] == theme.SKIRT
+    assert stop["collar_fill"] == theme.TEXT
+    assert stop["key_narrow"] < stop["key"] and stop["diameter_narrow"] < stop["diameter"]
+
+
+def test_the_lamp_is_never_trace_and_signal_only_for_unconfirmed():
+    assert theme.TRACE not in theme.LAMP.values()
+    assert theme.LAMP["unconfirmed"] == theme.SIGNAL
+    assert theme.LAMP["on"] == theme.TEXT and theme.LAMP["off"] == theme.SURFACE
+
+
+def test_the_icon_set_is_the_nine_glyphs_drawn_in_one_stroke():
+    assert tuple(theme.ICONS) == theme.ICON_NAMES
+    assert len(theme.ICON_NAMES) == 9
+    svg = theme.icon_svg("warning", 16, theme.SIGNAL)
+    assert svg.startswith("<svg") and svg.endswith("</svg>")
+    assert 'viewBox="0 0 20 20"' in svg and 'stroke-width="1.75"' in svg
+    assert f'stroke="{theme.SIGNAL}"' in svg and 'width="16"' in svg
+
+
+def test_readings_are_the_signature_sizes_and_weight():
+    assert theme.READING_SIZES == {"focal": 60, "primary": 44, "compact": 36, "secondary": 30}
+    assert theme.READING_FOCAL_NARROW < theme.READING_SIZES["focal"]
+    assert theme.NUMERAL_WEIGHT == 600 and theme.NUMERAL_STRETCH == 100
+    assert theme.NUMERAL_FAMILY == "Rubik" and theme.FONT_FAMILY == "Figtree"
+
+
+def test_css_variables_carry_the_signature_tokens():
+    css = theme.css_variables()
+    for fragment in (f"--cap: {theme.CAP};", f"--key-rim: {theme.KEY_RIM};",
+                     f"--key-lip: {theme.KEY_LIP};", f"--go-lip: {theme.GO_LIP};",
+                     f"--skirt: {theme.SKIRT};", "--lip-key: 4px;", "--lip-pressed: 1px;",
+                     f"--shadow-raised: {theme.SHADOW_RAISED};", f"--engrave: {theme.ENGRAVE};",
+                     "--stop-collar: 10px;", f"--stop-socket-latched: {theme.SKIRT};",
+                     "--lamp-w: 6px;", "--flag-w: 30px;", "--motion-press: 70ms;",
+                     "--radius-key: 8px;", "--fader-w: 16px;", "--reading-focal: 60px;"):
+        assert fragment in css, fragment
