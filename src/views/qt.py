@@ -86,7 +86,8 @@ import time
 import schema as sch
 from events import events
 from views import theme
-from views.base import Dashboard, PanelView, event_line, stop_words
+from views import base as view_base
+from views.base import Dashboard, PanelView, event_line, join_names, stop_words
 
 try:                                    # the module imports without PySide6
     from PySide6.QtCore import (QEasingCurve, QEvent, QEventLoop, QLocale,
@@ -240,10 +241,21 @@ EMPTY_HINT = "Choose ports in Setup and press Launch."
 #: artboards' copy).
 SIM_LINE = "Simulation, no hardware attached"
 UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
+#: O4 (IMP8-2): a probe whose disable failed is said like a stop that did
+#: not confirm - the red rule, these words and the fault's reason - and its
+#: mode toggles are greyed with the gate's words for a fault.
+FAULT_LINE = "Disable failed. Treat as live."
+FAULT_GATE = view_base.GATE_WORDS["fault"][0]
 #: L1: a model's state on the rail, beside its name. The words go in its
-#: tooltip and accessible name (never colour alone); the square's colour is
-#: ink for a latched model, the signal for one that did not confirm.
-RAIL_STOP_WORDS = {"stopped": "stopped", "unconfirmed": "did not confirm"}
+#: tooltip and accessible name (never colour alone); the square is ink for a
+#: latched model, the signal with a "!" knocked out for one that did not
+#: confirm or whose disable failed (O16: shape, not colour alone).
+RAIL_STOP_WORDS = {"stopped": "stopped", "unconfirmed": "did not confirm",
+                   "faulted": "faulted"}
+#: O6: an energized model's rail mark is an ink ring after the stop mark.
+ENERGIZED_WORD = "energized"
+#: Where the ring's stroke runs, as a fraction of the mark's side.
+RING_INSET = 0.22
 #: L2: the Controller's event title for a stop that did not confirm. The
 #: band drops it once the latch opens; while latched it waits for its
 #: acknowledgement like any error.
@@ -254,6 +266,25 @@ QUIT_PROMPT = ("Quit the station? This stops every model, closes every port "
 QUIT_WORDS = ("Quit the station?", "Quit", "Stay")
 CLEAR_WORDS = ("Clear the stop?", "Clear the stop", "Keep it stopped")
 CONFIRM_WORDS = ("Confirm", "Continue", "Cancel")
+
+
+def close_model_words(name):
+    """O9: the entry's × asks the Tk and Web question - (prompt, title, yes,
+    no) for `ask`: closing stops and disconnects the model."""
+    return (f"It stops and disconnects {name}. You can reopen it from the rail.",
+            f"Close {name}?", f"Close {name}", "Keep it open")
+
+
+def rail_mark(name, stop_state, faulted):
+    """The one stop mark a model carries on the rail: a stop that did not
+    confirm outranks a fault, a fault outranks a plain latch."""
+    if name in (stop_state.get("unconfirmed") or ()):
+        return "unconfirmed"
+    if name in faulted:
+        return "faulted"
+    if name in (stop_state.get("latched") or ()):
+        return "stopped"
+    return None
 #: The sheet's two pages (K4): the rail's first item, and the word at the
 #: right of an overview entry's head (a press opens the device alone).
 OVERVIEW = "Overview"
@@ -2277,6 +2308,50 @@ def square_icon(ink, size=10):
         QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Selected)])
 
 
+def rail_mark_icon(stop_kind, energized, side):
+    """A rail item's marks, left to right: the stop mark, then the energized
+    ring (O6). Shapes, not colours alone (O16, A11Y-6): a solid ink square
+    for a latched model; a signal square with a "!" knocked out in the
+    sheet's colour for one that did not confirm or whose disable failed; an
+    open ink ring for an energized one. Never a hover effect."""
+    kinds = ([stop_kind] if stop_kind else []) + (["energized"] if energized else [])
+    gap = theme.GAP
+    width = side * len(kinds) + gap * max(0, len(kinds) - 1)
+    pixmap = QPixmap(width * 2, side * 2)
+    pixmap.setDevicePixelRatio(2.0)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    for index, kind in enumerate(kinds):
+        left = index * (side + gap)
+        if kind == "energized":
+            pen = QPen(QColor(theme.TEXT))
+            pen.setWidthF(max(1.6, side * 0.16))
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            inset = side * RING_INSET
+            painter.drawEllipse(QRectF(left + inset, inset,
+                                       side - 2 * inset, side - 2 * inset))
+            continue
+        loud = kind in ("unconfirmed", "faulted")
+        # The loud square fills its cell, so its "!" is laid on an eighths
+        # grid: a bar three eighths tall, a gap, a dot two eighths square.
+        inset = 0 if loud else side * 0.2
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme.SIGNAL if loud else theme.TEXT))
+        painter.drawRect(QRectF(left + inset, inset, side - 2 * inset, side - 2 * inset))
+        if loud:
+            unit = side / 8.0
+            painter.setBrush(QColor(theme.BACKGROUND))
+            painter.drawRect(QRectF(left + 3 * unit, unit, 2 * unit, 3 * unit))
+            painter.drawRect(QRectF(left + 3 * unit, 5 * unit, 2 * unit, 2 * unit))
+    painter.end()
+    icon = QIcon()
+    for mode in (QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Selected):
+        icon.addPixmap(pixmap, mode)
+    return icon
+
+
 def disclosure_icon(is_open, size=10):
     """The disclosure's small ink triangle: pointing right when closed, down
     when open; the platform arrow is a heavy chevron on macOS."""
@@ -2587,6 +2662,8 @@ class SheetEntry(QFrame):
     """
 
     closed = Signal()
+    #: The head's ×: the dashboard asks before it closes the model (O9).
+    close_requested = Signal()
     #: The head was pressed on the overview: show this device alone.
     open_requested = Signal()
 
@@ -2595,6 +2672,7 @@ class SheetEntry(QFrame):
         self.name = name or ""
         self.panel = panel
         self.is_unconfirmed = False
+        self.is_faulted = False
         self.is_overview = False
         self.setObjectName("entry")
         layout = QVBoxLayout(self)
@@ -2641,11 +2719,16 @@ class SheetEntry(QFrame):
         self.unconfirmed_mark = mark(theme.SIGNAL)
         self.unconfirmed_label = QLabel(UNCONFIRMED_LINE)
         self.unconfirmed_label.setObjectName("entryNote")
+        # O4: a disable that failed, with the fault's own reason.
+        self.fault_mark = mark(theme.SIGNAL)
+        self.fault_label = QLabel(FAULT_LINE)
+        self.fault_label.setObjectName("entryNote")
         notes = QVBoxLayout()
         notes.setContentsMargins(0, 0, 0, theme.SPACE[3])
         notes.setSpacing(theme.GAP)
         for marker, label in ((self.lost_mark, self.lost_label),
-                              (self.unconfirmed_mark, self.unconfirmed_label)):
+                              (self.unconfirmed_mark, self.unconfirmed_label),
+                              (self.fault_mark, self.fault_label)):
             label.setWordWrap(True)
             line = _bare_row(marker, label, spacing=theme.PAD)
             line.layout().setAlignment(marker, Qt.AlignmentFlag.AlignVCenter)
@@ -2654,6 +2737,7 @@ class SheetEntry(QFrame):
             notes.addWidget(line)
         self._lost_line = notes.itemAt(0).widget()
         self._unconfirmed_line = notes.itemAt(1).widget()
+        self._fault_line = notes.itemAt(2).widget()
         side = target_px()
         self.close_button = QToolButton()
         self.close_button.setObjectName("iconButton")
@@ -2663,7 +2747,7 @@ class SheetEntry(QFrame):
         self.close_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.close_button.setToolTip(f"Close {self.name} (stops and disconnects it)")
         self.close_button.setAccessibleName(f"Close {self.name}")
-        self.close_button.clicked.connect(self.close)
+        self.close_button.clicked.connect(self.close_requested.emit)
         head.addWidget(self.close_button)
         layout.addWidget(self.head)
         body = QVBoxLayout()
@@ -2711,9 +2795,30 @@ class SheetEntry(QFrame):
         if flag == self.is_unconfirmed:
             return
         self.is_unconfirmed = flag
-        self.rule.setStyleSheet(
-            f"QFrame#entryRule {{ background-color: {theme.SIGNAL}; }}" if flag else "")
+        self._sync_rule()
         self._unconfirmed_line.setVisible(flag)
+
+    def set_faulted(self, flag, reason=""):
+        """O4: a disable that failed is drawn like a stop that did not
+        confirm - the red rule and "Disable failed. Treat as live." - with
+        the fault's reason after it, so it is read in tier 1, not two
+        disclosures down."""
+        flag = bool(flag)
+        text = FAULT_LINE + (f" {sentence(str(reason).strip())}"
+                             if flag and str(reason or "").strip() else "")
+        if self.fault_label.text() != text:
+            self.fault_label.setText(text)
+        if flag == self.is_faulted:
+            return
+        self.is_faulted = flag
+        self._sync_rule()
+        self._fault_line.setVisible(flag)
+
+    def _sync_rule(self):
+        red = self.is_unconfirmed or self.is_faulted
+        sheet = f"QFrame#entryRule {{ background-color: {theme.SIGNAL}; }}" if red else ""
+        if self.rule.styleSheet() != sheet:
+            self.rule.setStyleSheet(sheet)
 
     def closeEvent(self, event):
         self.closed.emit()
@@ -2729,7 +2834,8 @@ class RailItem(QPushButton):
     def __init__(self, name, parent=None):
         QPushButton.__init__(self, name, parent)
         self.name = name
-        self.stop_mark = None       # None, "stopped" or "unconfirmed"
+        self.stop_mark = None       # None, "stopped", "unconfirmed" or "faulted"
+        self.is_energized = False   # O6: an ink ring after the stop mark
         self.setObjectName("railModel")
         self.setCheckable(True)
         self.setAccessibleName(name)
@@ -2737,35 +2843,50 @@ class RailItem(QPushButton):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
     def set_stop(self, mark_kind):
-        """`None`, "stopped" or "unconfirmed", from `Controller.stop_state`."""
+        """`None`, "stopped", "unconfirmed" or "faulted" (`rail_mark`)."""
         if mark_kind == self.stop_mark:
             return
         self.stop_mark = mark_kind
-        if mark_kind is None:
+        self._draw_marks()
+
+    def set_energized(self, flag):
+        """O6: `Controller.state()["energized"]` names this model."""
+        flag = bool(flag)
+        if flag == self.is_energized:
+            return
+        self.is_energized = flag
+        self._draw_marks()
+
+    def _draw_marks(self):
+        if self.stop_mark is None and not self.is_energized:
             self.setIcon(QIcon())
         else:
             side = theme.SPACE[4] - theme.SPACE[1]
-            ink = theme.SIGNAL if mark_kind == "unconfirmed" else theme.TEXT
-            self.setIcon(square_icon(ink, side))
-            self.setIconSize(QSize(side, side))
+            count = bool(self.stop_mark) + self.is_energized
+            self.setIcon(rail_mark_icon(self.stop_mark, self.is_energized, side))
+            self.setIconSize(QSize(side * count + theme.GAP * (count - 1), side))
         self.setAccessibleName(self._spoken())
         self._fit()
 
+    def _has_marks(self):
+        return bool(self.stop_mark) or self.is_energized
+
     def _spoken(self):
-        words = RAIL_STOP_WORDS.get(self.stop_mark)
-        return f"{self.name}, {words}" if words else self.name
+        words = [RAIL_STOP_WORDS.get(self.stop_mark)] if self.stop_mark else []
+        words += [ENERGIZED_WORD] if self.is_energized else []
+        return ", ".join([self.name] + words)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit()
 
     def _fit(self):
-        icon = self.iconSize().width() + theme.GAP if self.stop_mark else 0
+        icon = self.iconSize().width() + theme.GAP if self._has_marks() else 0
         room = max(1, self.width() - 2 * theme.INSET - theme.GAP - icon)
         shown = self.fontMetrics().elidedText(self.name, Qt.TextElideMode.ElideRight, room)
         if shown != self.text():
             self.setText(shown)
-        tip = self._spoken() if (shown != self.name or self.stop_mark) else ""
+        tip = self._spoken() if (shown != self.name or self._has_marks()) else ""
         if self.toolTip() != tip:
             self.setToolTip(tip)
 
@@ -3850,7 +3971,18 @@ class QtPanelView(PanelView, QWidget):
         elif kind == "image":
             self._redraw_image(element, data)
 
+    def _fault_gated(self, element):
+        """O4: while the model is faulted its mode toggles are drawn disabled
+        - entering a mode energizes a probe whose last disable failed. The
+        schema does not gate them on "fault" (a CORE CHANGE REQUEST); the
+        view draws what the brief asks meanwhile."""
+        state = self._last_state or {}
+        return (bool(state.get("is_faulted")) and element.get("type") == "toggle"
+                and element.get("command") == "set_mode")
+
     def _set_enabled(self, element, is_enabled):
+        if is_enabled and self._fault_gated(element):
+            is_enabled = False
         for widget in (self._widget_for(element),
                        self._companions.get(id(element))):
             if widget is not None and widget.isEnabled() != is_enabled:
@@ -3865,8 +3997,8 @@ class QtPanelView(PanelView, QWidget):
         if not isinstance(widget, QAbstractButton):
             return
         state = self._last_state or {}
-        reason = "" if is_enabled else gate_reason(
-            element, state.get("mode"), state.get("values") or {}, self._caption_of)
+        reason = "" if is_enabled else (FAULT_GATE if self._fault_gated(element) else gate_reason(
+            element, state.get("mode"), state.get("values") or {}, self._caption_of))
         if self._reasons.get(id(element)) == reason:
             return
         self._reasons[id(element)] = reason
@@ -4621,13 +4753,15 @@ class QtDashboard(Dashboard, QMainWindow):
             self.subline.setText(words["subline"])
             self.subline.setVisible(bool(words["subline"]))
             self.headline_row.setVisible(bool(words["headline"]))
-        latched, unconfirmed = set(stop["latched"]), set(stop["unconfirmed"])
+        latched = set(stop["latched"])
+        faulted = {n for n, state in states.items() if state.get("is_faulted")}
         for name, item in self._rail_items.items():
-            item.set_stop("unconfirmed" if name in unconfirmed
-                          else "stopped" if name in latched else None)
+            item.set_stop(rail_mark(name, stop, faulted))
         for name, entry in self._entries.items():
+            state = states.get(name) or {}
             # The model's own word (L1): its stop did not confirm while latched.
-            entry.set_unconfirmed((states.get(name) or {}).get("stop_confirmed") is False)
+            entry.set_unconfirmed(state.get("stop_confirmed") is False)
+            entry.set_faulted(name in faulted, state.get("fault") or "")
         if not latched:
             self._drop_unconfirmed_alerts()
         self.rail_status.set_full_text(self._rail_status_text(names, states))
@@ -5211,6 +5345,7 @@ class QtDashboard(Dashboard, QMainWindow):
         panel = QtPanelView(self.controller, name)
         entry = SheetEntry(name, panel, self.sheet)
         entry.closed.connect(lambda: self._on_entry_closed(name))
+        entry.close_requested.connect(lambda: self._on_entry_close_requested(name))
         entry.open_requested.connect(lambda: self.open_entry(name))
         entry.set_page(True)
         self._entries[name] = entry
@@ -5255,6 +5390,16 @@ class QtDashboard(Dashboard, QMainWindow):
         if self._closing or name not in self._entries:
             return
         self.close_model(name)
+
+    def _on_entry_close_requested(self, name):
+        """O9 (PM8-5, IMP8-10): the head's × stops and disconnects the model,
+        so it asks first, in the Tk and Web words; "Keep it open" is the
+        default and Escape."""
+        if self._closing or name not in self._entries:
+            return
+        if ask(self, *close_model_words(name)):
+            events.debug("Close Model Confirmed", name, source="QtView")
+            self.close_model(name)
 
     # -- the global stop ---------------------------------------------------
     def _on_stop_clicked(self):
