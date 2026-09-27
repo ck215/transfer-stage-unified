@@ -1194,3 +1194,21 @@ def test_a_faulted_probes_mode_toggles_are_greyed_from_the_schema(probe):
     toggles = [e for e in sch.elements(probe.schema) if e.get("command") == "set_mode"]
     assert toggles and all("fault" in e["disabled_when"] for e in toggles)
     assert not sch.is_enabled(toggles[0], "fault")
+
+
+@pytest.mark.parametrize("cls", [StepperProbe, DCProbe, ChuckPositioner])
+def test_a_probe_opens_its_port_at_the_firmwares_500000_baud(cls, monkeypatch):
+    """All three probe sketches run `Serial.begin(500000)`. The rebuild opened
+    them at SerialPort's 115200 default: the scan (which tries 500000 first)
+    found the boards, then the session port read garbage, went unverified,
+    and every enable and jog frame arrived unreadable (bench, 2026-09-26)."""
+    built = []
+
+    class _Port:
+        def __init__(self, port, baud_rate=None, **kwargs):
+            built.append((port, baud_rate))
+
+    monkeypatch.setattr("model.probe.serial_device.SerialPort", _Port)
+    cls(port="/dev/ttyACM0", gamepad=object())
+    cls(port=None, gamepad=object(), sim=True)
+    assert built == [("/dev/ttyACM0", 500000), ("SIM", 500000)]

@@ -91,6 +91,10 @@ class Probe(Model):
     NEEDS_PORT = True
     NEEDS_GAMEPAD = True
 
+    #: All three probe sketches run `Serial.begin(500000)`; SerialPort's
+    #: default is the heater's 115200, which the boards read as garbage.
+    BAUD_RATE = 500000
+
     PARAMS = {p.name: p for p in (
         Param("x_step", "int", default=16, minimum=1, label="X Step Size"),
         Param("y_step", "int", default=16, minimum=1, label="Y Step Size"),
@@ -194,7 +198,7 @@ class Probe(Model):
         """
         if port is None or isinstance(port, str):
             name = "SIM" if sim else port
-            return serial_device.SerialPort(name)
+            return serial_device.SerialPort(name, baud_rate=self.BAUD_RATE)
         return port
 
     def _build_gamepad(self, gamepad):
