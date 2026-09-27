@@ -212,13 +212,23 @@ def test_speed_follows_the_probes_mode(station):
     assert model.speed_now == 812
 
 
-def test_tilt_falls_back_to_red_percents_typed_angle(red):
+def test_tilt_is_none_until_a_rotator_reads_or_the_operator_types_one(red):
+    """A SIM Rotator reads None; the trial records no tilt rather than a
+    default 0 degrees (found in the headless launch, 2026-09-27)."""
     model = TransferMap()
     model.on_model_added("Red Percent", red)
-    red.probe_tilt_angle = 17.0
-    assert model.tilt_now == 17.0
-    model.on_model_added("Rotator", FakeRotator(30.0))
+    model.on_model_added("Rotator", Rotator(sim=True))
+    assert model.tilt_now is None
+    model.typed_tilt = "17"
+    assert model._read_tilt() == (17.0, "typed")
+    model.on_model_added("Rotator 2", FakeRotator(30.0))
     assert model.tilt_now == 30.0
+
+
+def test_arm_refuses_a_typed_tilt_that_is_not_a_number(station):
+    model = station[0]
+    result = model.run("arm_trial", {"tip_id": "t", "typed_tilt": "steep"})
+    assert result.is_refused and "Tilt" in result.reason
 
 
 # -- recording -------------------------------------------------------------------

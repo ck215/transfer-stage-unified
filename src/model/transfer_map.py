@@ -26,8 +26,8 @@ created until a trial or an import is written, so building the model (the
 contract test does, for every registered class) leaves no file behind.
 
 Live sources are duck-typed from `on_model_added`, never a class name: tilt
-from a model with `position_deg` (the Rotator), falling back to Red
-Percent's typed `probe_tilt_angle`; speed and Z from a model with
+from a model with `position_deg` (the Rotator), else the operator's typed
+"Tilt without a rotator" (blank = no tilt, never a default 0); speed and Z from a model with
 `position`, `position_time` and `mode_name` (a probe: `live_speed` if it has
 one, else the manual or autonomous speed for the mode it is in); samples
 from a model with `subscribe` and `grab_frame` (Red Percent).
@@ -248,6 +248,9 @@ class TransferMap(Model):
 
     PARAMS = {p.name: p for p in (
         Param("tip_id", "text", default="", label="Tip ID"),
+        # Text, so blank means "no tilt" rather than a default of 0 degrees.
+        Param("typed_tilt", "text", default="",
+              label="Tilt without a rotator (deg)"),
         Param("note", "text", default="", label="Note"),
         Param("afm_trial_id", "int", default=0, minimum=0, label="Trial"),
         Param("width_um", "float", default=0.0, minimum=0, decimals=3,
@@ -374,11 +377,9 @@ class TransferMap(Model):
                 continue
             if value is not None:
                 return float(value), name
-        red = self._red
-        if red is not None:
-            value = getattr(red, "probe_tilt_angle", None)
-            if value is not None:
-                return float(value), f"{self._red_name} (typed tilt)"
+        typed = _number(self.typed_tilt)
+        if typed is not None:
+            return typed, "typed"
         return None, None
 
     def _probe(self):
@@ -459,6 +460,9 @@ class TransferMap(Model):
         if not getattr(red, "is_running", False):
             raise Refused("Start a Red Percent run first: the trial records its samples.")
         tip = (self.tip_id or "").strip()
+        if (self.typed_tilt or "").strip() and _number(self.typed_tilt) is None:
+            raise Refused("Tilt without a rotator must be a number of degrees, "
+                          "or left blank.")
         if not tip:
             raise Refused("Type a tip ID before arming, so the trial can be "
                           "traced to its tip.")
@@ -961,7 +965,8 @@ class TransferMap(Model):
                 sch.readonly("Speed", "speed_now", rail=True, param=P["speed_now"]),
                 sch.readonly("Red", "red_now", param=P["red_now"], format=".2f"),
                 sch.entry("Tip ID", "tip_id", P["tip_id"]),
-                sch.button("Arm trial", "arm_trial", inputs=("tip_id",),
+                sch.button("Arm trial", "arm_trial",
+                           inputs=("tip_id", "typed_tilt"),
                            role="go", disabled_when=("armed", "latched")),
                 sch.button("Mark force", "mark_force", enabled_when=("armed",)),
                 sch.entry("Note", "note", P["note"]),
@@ -989,6 +994,8 @@ class TransferMap(Model):
                              "force_band_options"),
                 sch.entry("Trial to show (0 = latest)", "trial_pick",
                           P["trial_pick"]),
+                sch.entry("Tilt without a rotator (deg)", "typed_tilt",
+                          P["typed_tilt"]),
                 tier=2, disclosure=configure,
             ),
             sch.section(
