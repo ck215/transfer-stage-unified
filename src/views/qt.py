@@ -389,10 +389,15 @@ def simulation_line(states):
     """The rail's line under the title: the simulation sentence when the open
     models' ports are simulated and none is verified hardware, the simulated
     models' names when only some are, and nothing when the hardware is real
-    (the brief: nothing when connected). A gamepad or a screen is neither."""
+    (the brief: nothing when connected). A gamepad or a screen is neither.
+
+    Only the model's declared hardware links count (`hardware_devices`,
+    MOD-5, through `views.base.hardware_links`); a state without that list
+    reads every device, as before it existed."""
     simulated, real = [], []
     for name, state in (states or {}).items():
-        statuses = {str(s).lower() for s in ((state or {}).get("devices") or {}).values()}
+        links = view_base.hardware_links(state, fallback=None)
+        statuses = {str(s).lower() for s in links.values()}
         if "simulated" in statuses:
             simulated.append(name)
         elif "verified" in statuses:

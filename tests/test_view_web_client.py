@@ -1134,3 +1134,43 @@ def test_a_warning_mark_is_not_a_box_and_an_entry_shows_where_focus_went():
                         STYLES)
     assert warning and "clip-path: polygon(" in warning.group(1), "the warning mark is a box"
     assert re.search(r"\.card:focus-visible\s*\{[^}]*outline:", STYLES)
+
+
+# --------------------------------------------------------------------------
+# MOD-5 / CON-6: the rail's simulation line counts the hardware links a model
+# DECLARES (`hardware_devices`), not the class names SerialPort and SMC100.
+# --------------------------------------------------------------------------
+SIM_LINE = "Simulation, no hardware attached"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_mod5_a_declared_link_of_a_new_class_is_hardware():
+    models = {
+        "Probe": {"devices": {"SerialPort": "simulated"}, "hardware_devices": ["SerialPort"]},
+        "Piezo": {"devices": {"PiezoLink": "verified"}, "hardware_devices": ["PiezoLink"]},
+    }
+    assert _node_value(f"hardwareLinks({json.dumps(models['Piezo'])})") == ["PiezoLink"]
+    assert _node_value(f"simLineText({json.dumps(models)})") == "Simulated: Probe"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_mod5_an_empty_hardware_list_is_no_links_not_the_old_class_names():
+    model = {"devices": {"SerialPort": "verified", "SMC100": "verified"},
+             "hardware_devices": []}
+    assert _node_value(f"hardwareLinks({json.dumps(model)})") == []
+    sim = {"devices": {"SerialPort": "simulated"}, "hardware_devices": ["SerialPort"]}
+    models = {"Probe": sim, "Rotator": model}
+    assert _node_value(f"simLineText({json.dumps(models)})") == SIM_LINE
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_mod5_a_state_without_the_list_falls_back_to_the_class_names():
+    piezo = {"devices": {"PiezoLink": "verified"}}
+    rotator = {"devices": {"SMC100": "verified", "Gamepad": "bound"}}
+    sim = {"devices": {"SerialPort": "simulated"}}
+    assert _node_value(f"hardwareLinks({json.dumps(piezo)})") == []
+    assert _node_value(f"hardwareLinks({json.dumps(rotator)})") == ["SMC100"]
+    assert _node_value(f"simLineText({json.dumps({'Probe': sim, 'Piezo': piezo})})") == SIM_LINE
+    assert _node_value(
+        f"simLineText({json.dumps({'Probe': sim, 'Rotator': rotator})})") == "Simulated: Probe"
+    assert _node_value("simLineText({})") == ""

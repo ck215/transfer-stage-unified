@@ -38,6 +38,34 @@ def event_line(event):
     return f"{line} (x{count})" if count > 1 else line
 
 
+#: The device class names the views treated as hardware links before a
+#: model published `hardware_devices` (MOD-5). Read ONLY for a state that
+#: lacks the key; never when the key is there, even as an empty list.
+LEGACY_LINK_DEVICES = ("SerialPort", "SMC100")
+
+
+def hardware_links(state, fallback=LEGACY_LINK_DEVICES):
+    """`{device: status}` for the hardware links in one model's state.
+
+    `state["hardware_devices"]` names them: the class names of the model's
+    devices whose `Device.is_hardware` is True (MOD-5 / CON-6), so a new
+    link (a `PiezoLink`) counts without a view learning its name. A state
+    WITHOUT the key comes from a model older than that list and falls back
+    to `fallback` class names, or to every device when `fallback` is None
+    (Qt's rule before MOD-5, which keyed on status words). A present but
+    empty list means "no hardware links" and never falls back.
+    """
+    state = state or {}
+    devices = state.get("devices") or {}
+    if "hardware_devices" in state:
+        names = set(state.get("hardware_devices") or ())
+    elif fallback is None:
+        return dict(devices)
+    else:
+        names = set(fallback)
+    return {device: status for device, status in devices.items() if device in names}
+
+
 #: Why a control is greyed, by the mode word that greys it, in two
 #: directions (round 8, IMP8-1: Web and Tk said "Not in manual mode" while the
 #: probe WAS in manual mode). Index 0: the mode is in the element's

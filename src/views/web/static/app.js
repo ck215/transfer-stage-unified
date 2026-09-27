@@ -592,6 +592,39 @@ function lostDevices(state) {
   return Object.keys(devices).filter((kind) => devices[kind] === 'lost').map(deviceWord);
 }
 
+/** MOD-5 / CON-6: the device class names that were hardware links before a
+ *  model published `hardware_devices`; read ONLY for a state without the
+ *  key, never when the key is there as an empty list
+ *  (`views.base.LEGACY_LINK_DEVICES`). */
+const LEGACY_LINK_DEVICES = ['SerialPort', 'SMC100'];
+
+/** The hardware links in one model's state, as device class names:
+ *  `state.hardware_devices` names them (`Device.is_hardware`), so a new
+ *  link counts without this file learning its name
+ *  (`views.base.hardware_links`). */
+function hardwareLinks(state) {
+  const devices = (state && state.devices) || {};
+  const declared = Boolean(state) && Object.prototype.hasOwnProperty.call(state, 'hardware_devices');
+  const names = declared ? (state.hardware_devices || []) : LEGACY_LINK_DEVICES;
+  return Object.keys(devices).filter((kind) => names.indexOf(kind) !== -1);
+}
+
+/** The rail's line, said only when there is no hardware: "Simulation, no
+ *  hardware attached"; a mix names the simulated models; real hardware,
+ *  nothing. */
+function simLineText(models) {
+  const simulated = [];
+  let hardware = 0;
+  for (const name of Object.keys(models || {})) {
+    const devices = (models[name] && models[name].devices) || {};
+    if (Object.keys(devices).some((k) => devices[k] === 'simulated')) simulated.push(sentence(name));
+    else if (hardwareLinks(models[name]).length) hardware += 1;
+  }
+  if (simulated.length && !hardware) return 'Simulation, no hardware attached';
+  if (simulated.length) return 'Simulated: ' + simulated.join(', ');
+  return '';
+}
+
 /** What went wrong with a request, as the end of a sentence. */
 function failureReason(err) {
   if (err && err.name === 'AbortError') {
@@ -3294,20 +3327,9 @@ class Dashboard {
     this.tierMemory.set(name, memory);
   }
 
-  /** Said only when there is no hardware: "Simulation, no hardware
-   *  attached"; a mix names the simulated models; real hardware, nothing. */
+  /** The rail's simulation line (`simLineText`). */
   renderSimLine(models) {
-    const simulated = [];
-    let hardware = 0;
-    for (const name of Object.keys(models)) {
-      const devices = (models[name] && models[name].devices) || {};
-      const kinds = Object.keys(devices);
-      if (kinds.some((k) => devices[k] === 'simulated')) simulated.push(sentence(name));
-      else if (kinds.some((k) => k === 'SerialPort' || k === 'SMC100')) hardware += 1;
-    }
-    let text = '';
-    if (simulated.length && !hardware) text = 'Simulation, no hardware attached';
-    else if (simulated.length) text = 'Simulated: ' + simulated.join(', ');
+    const text = simLineText(models);
     putText(this.dom.simLine, text);
     if (this.dom.simLine.hidden !== !text) this.dom.simLine.hidden = !text;
   }

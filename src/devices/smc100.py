@@ -128,6 +128,9 @@ class SMC100(Device):
     `abort_if`: a latched stop is the one write that must still go.
     """
 
+    #: A hardware link (MOD-5): losing it loses the stage.
+    is_hardware = True
+
     #: `lib/smc100.py` opened exactly these. Copied, not re-derived.
     #: 8 data bits, no parity and 1 stop bit are fixed in `SerialPort.
     #: _open_handle` and already match what this device needs.

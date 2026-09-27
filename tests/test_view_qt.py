@@ -778,6 +778,19 @@ def test_e_the_rail_says_simulation_only_when_nothing_is_real_hardware():
     assert qt.simulation_line({}) == ""
 
 
+def test_mod5_the_rail_reads_only_the_declared_hardware_links():
+    """MOD-5: with `hardware_devices` in the state, only those devices count;
+    an empty list means none; a state without it reads every device."""
+    declared = {"devices": {"PiezoLink": "verified", "Screen": "simulated"},
+                "hardware_devices": ["PiezoLink"]}
+    sim = {"devices": {"SerialPort": "simulated"}, "hardware_devices": ["SerialPort"]}
+    none = {"devices": {"SerialPort": "simulated"}, "hardware_devices": []}
+    assert qt.simulation_line({"A": declared}) == ""
+    assert qt.simulation_line({"A": sim, "B": declared}) == "Simulated: A"
+    assert qt.simulation_line({"A": none}) == ""
+    assert qt.simulation_line({"A": {"devices": {"SerialPort": "simulated"}}}) == qt.SIM_LINE
+
+
 def test_e_the_well_the_strip_and_the_slider_are_drawn_from_the_theme():
     sheet = qt.stylesheet()
     well = sheet.split("QFrame#well {")[1].split("}")[0]

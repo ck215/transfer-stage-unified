@@ -12,7 +12,7 @@ import pytest
 import schema as sch
 from controller.controller import Controller
 from events import events
-from views.base import Dashboard, PanelView
+from views.base import Dashboard, PanelView, hardware_links
 
 from test_core_fakes import (EventRecorder, FakeDashboard, FakeModel,
                              FakePanelView, FakeSetupPanel)
@@ -635,3 +635,27 @@ def test_gate_reason_reads_the_direction_from_the_element():
     start = {"disabled_when": ["running", "latched", "no_region"]}
     assert gate_reason(start, "no_region") == "Set a capture region first"
     assert gate_reason({"disabled_when": ["odd"]}, "odd") == "In odd mode"
+
+
+# -- MOD-5 / CON-6: hardware links are declared, not matched by class name ---
+
+def test_mod5_a_state_names_its_hardware_links_and_a_new_class_counts():
+    state = {"devices": {"PiezoLink": "verified", "Gamepad": "bound",
+                         "SerialPort": "simulated"},
+             "hardware_devices": ["PiezoLink", "SerialPort"]}
+    assert hardware_links(state) == {"PiezoLink": "verified", "SerialPort": "simulated"}
+
+
+def test_mod5_an_empty_hardware_list_means_none_and_never_falls_back():
+    state = {"devices": {"SerialPort": "simulated", "SMC100": "verified"},
+             "hardware_devices": []}
+    assert hardware_links(state) == {}
+    assert hardware_links(state, fallback=None) == {}
+
+
+def test_mod5_a_state_without_the_key_falls_back_to_the_old_class_names():
+    state = {"devices": {"PiezoLink": "verified", "SerialPort": "simulated",
+                         "SMC100": "verified", "Screen": "capturing"}}
+    assert hardware_links(state) == {"SerialPort": "simulated", "SMC100": "verified"}
+    assert hardware_links(state, fallback=None) == state["devices"]
+    assert hardware_links({}) == {} and hardware_links(None) == {}

@@ -6096,17 +6096,16 @@ class TkDashboard(Dashboard):
             events.debug("Station Line Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
 
-    #: Devices that are hardware links; a gamepad or the screen is not.
-    LINK_DEVICES = ("SerialPort", "SMC100")
-
     def _sync_sim_line(self):
+        """The links are the ones each model's state declares
+        (`hardware_devices`, MOD-5), through `views.base.hardware_links`; a
+        gamepad or the screen is not one."""
         statuses = []
         for name, view in self._panels.items():
             if name == self.SETUP_TAB:
                 continue
-            devices = (getattr(view, "_last_state", None) or {}).get("devices") or {}
-            statuses += [str(status) for device, status in devices.items()
-                         if device in self.LINK_DEVICES]
+            links = view_base.hardware_links(getattr(view, "_last_state", None))
+            statuses += [str(status) for status in links.values()]
         text = (SIMULATION_LINE if statuses and all(status == "simulated"
                                                     for status in statuses) else "")
         if text == self._sim_text:

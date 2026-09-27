@@ -3885,6 +3885,42 @@ def test_the_rail_says_simulation_while_every_link_is_simulated(dashboard,
     assert dashboard._sim_line.cget("text") == ""
 
 
+def test_mod5_the_rail_counts_the_hardware_links_the_model_declares(dashboard,
+                                                                    controller):
+    """MOD-5 / CON-6: a verified link of a class the view has never heard of
+    (PiezoLink) is hardware, because the model's state says so."""
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    view._last_state = {"devices": {"SerialPort": "simulated", "PiezoLink": "verified"},
+                        "hardware_devices": ["SerialPort", "PiezoLink"]}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == ""
+    view._last_state = {"devices": {"SerialPort": "simulated", "PiezoLink": "simulated"},
+                        "hardware_devices": ["SerialPort", "PiezoLink"]}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == "Simulation, no hardware attached"
+
+
+def test_mod5_an_empty_hardware_list_is_no_links_not_the_old_class_names(dashboard,
+                                                                         controller):
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    view._last_state = {"devices": {"SerialPort": "simulated"}, "hardware_devices": []}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == ""
+
+
+def test_mod5_a_state_without_the_list_falls_back_to_the_class_names(dashboard,
+                                                                     controller):
+    """Until every model publishes `hardware_devices`, a state without it
+    reads as before: SerialPort and SMC100 are the links."""
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    view._last_state = {"devices": {"SerialPort": "simulated", "PiezoLink": "verified"}}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == "Simulation, no hardware attached"
+
+
 def test_quit_asks_first_and_then_closes(dashboard, controller, tk_harness):
     dashboard.open()
     tk_harness.confirm_answer = False
