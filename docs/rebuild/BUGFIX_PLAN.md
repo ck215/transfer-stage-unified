@@ -81,9 +81,25 @@ bench runs. The lab ran `legacy/src` from 2026-08-26, which already speaks
 the new `'e'`/`'d'` + 42-byte protocol, so the boards were presumably
 reflashed before then (unverified, see D13).
 
+
+> **Reconciled against the code 2026-09-26** (`handoff/audit-tier-d-2026-09-26.md`,
+> after the owner hit D1 at the bench): the status column below was stale.
+> Done with a test: D1, D3, D15. Done without one: D16. **Still in the code:
+> D2, D4, D5, D6, D7, D8, D9, D10 (values), D11, D12, D14.** Owner calls: D13,
+> D17, D8's field naming, D10's direction. The lead re-ran the D4, D5 and D14
+> repros. Bench-visible, in order: **D4** a gamepad swap in Manual keeps the
+> coils live and jogs on from the new pad with no stop (`main`'s hotfix stopped
+> first); **D5** one failed jog write goes to FAULT with no stop sent and the
+> port handle already closed, so the next FULL STOP cannot land either (the
+> stage can drift at the last jog speed; recovery is close-and-reopen in the
+> rail or Relaunch); **D2** rotator Move/Home can report done mid-motion;
+> **D6** Refresh after Launch re-identifies the running boards' ports at both
+> bauds; **D14** Manual Speed and step sizes refuse in Manual; **D11** rotator
+> Step defaults to 0. Next batch: D4 and D5 first (stop path), lead, core.
+
 | # | Where | Defect | Fix | Route |
 |---|---|---|---|---|
-| D1 | `src/model/probe.py` `_build_port` (`SerialPort(name)`, no rate) | **Probes open at 115200; the stepper and chuck firmware and `legacy/src` run at 500000.** SIM ignores baud and the golden gate compares bytes only, so nothing caught it. No probe will talk to a real board. **verified** | Pass `baud_rate=500000` from the probe; test that a probe built with a port *name* records 500000 (and the heater 115200). Prove against pre-fix. | `agy` (safety: first in the batch) |
+| D1 | `src/model/probe.py` `_build_port` (`SerialPort(name)`, no rate) | **Probes open at 115200; the stepper and chuck firmware and `legacy/src` run at 500000.** SIM ignores baud and the golden gate compares bytes only, so nothing caught it. No probe will talk to a real board. **verified** | **Done 2026-09-26 at the bench** (owner, `b3c69cd`): the scan found the boards at 500000, the session port opened at 115200, the handshake failed, the ports went "unverified / operating blind", enable and jog frames never arrived (manual mode dead, coils cold). `Probe.BAUD_RATE = 500000` passed to `SerialPort`; `test_a_probe_opens_its_port_at_the_firmwares_500000_baud` pins all three classes, real port and SIM. The row sat unflipped and unfixed for three days: trap 2, on the plan itself. | done |
 | D2 | `src/devices/smc100.py` `sendcmd` | **Move/Home can report done while the stage is still turning.** `legacy/src` held the serial lock from write to reply and cleared the input first; the rebuild does neither, so the 4 Hz position poll and the move's status loop read each other's replies. **verified**: lead's rerun of the auditor's repro, 4/10 early returns at 20 ms reply latency (0/10 at 5, 10, 40, 60 ms). | Hold one lock across write+read in `sendcmd`, discard stale input before the write; regression test with a latency-injecting fake at 20 ms, ≥25 trials. Bytes unchanged. | direct decision on lock scope → `agy` |
 | D3 | `src/devices/gamepad.py` `drain_edges`, `src/model/probe.py` | **D-pad and bumper steps do nothing.** Edges are parked for `drain_edges()`, which nothing calls. **verified** (grep: only its own docstring). Tests miss it because the fakes put D-pad values straight into the stick readings. **Re-confirmed 2026-09-25 by a SIM run** (`handoff/audit-gamepad-steps.md`): dead on every layout for the Stepper Probe and the Chuck; the DC board never had it; `legacy/src` had it (rebuild regression). Triggers are NOT mapped to Z steps anywhere. | Consume edges in the probe's poll: extract `_jog_tick()` from `_jog_loop`, `drain_edges()` every tick in every mode; when manual, gate open and not latched, merge the four edge keys into the levels before `_send_jog`, else discard (a tap made while idle must not fire on entering manual). Bytes unchanged (golden `stepper.jog.dpad_*`/`bumper_*`). Tests: the fakes report edges the way the device does; 6–8 real-Gamepad + real-probe tests per layout. | **done 2026-09-25** (`rb-d3`, lead-verified by SIM rerun: one packet per press on every layout; 77 tests; bytes unchanged). B1 remains: T.16000M buttons 7/9 do nothing (the layout row uses 4/5), D-pad sign vs `main`. |
 | D4 | `src/model/probe.py` gamepad swap | **Swapping the gamepad during manual mode no longer stops the stage** — undoes `main`'s last hotfix (`68e412f`). Auditor confirmed in SIM. | On swap while manual: stop packet on the still-open port, leave manual. Test first. | `agy` (safety) |

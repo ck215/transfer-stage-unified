@@ -125,7 +125,10 @@ the bench questions below are its Tier B. **Tier D** (same day) is the
 `main`-vs-rebuild audit: 17 operator-facing regressions, the first five
 safety-adjacent (probes open at the wrong baud rate; the rotator can report a
 move done mid-motion; D-pad steps are dead; gamepad swap no longer stops the
-stage). Nothing in the rebuild has touched real hardware yet.
+stage). **First hardware contact 2026-09-26** (owner, bench): the probes
+opened at the wrong baud (D1, the one Tier D row marked safety-first and
+never routed) and were fixed at the bench (`b3c69cd`); the other Tier D
+rows are being reconciled against the code (`handoff/audit-tier-d-2026-09-26.md`).
 
 1. **Bench**: region-picker display scaling (all views), the four gamepad
    layouts (`Gamepad.LAYOUTS`, marked UNVERIFIED), achieved Red Percent
