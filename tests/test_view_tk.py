@@ -2096,12 +2096,14 @@ def test_a_models_own_stop_is_a_small_switch(controller, monkeypatch):
     assert "mushroom" not in entry
     fills = {item[2].get("fill") for item in switch.canvas.items if item[0] == "oval"}
     assert theme.SIGNAL not in fills, "off: no red"
-    assert entry["words"].cget("text") == "Full stop"
+    # Updated for O16 (PM8-8): the switch's words are the view's, one word
+    # per thing, whatever the schema's state words ("FULL STOP"/"LATCHED").
+    assert entry["words"].cget("text") == "Stop this model"
     safe.is_estopped = True
     built._refresh()
     fills = {item[2].get("fill") for item in switch.canvas.items if item[0] == "oval"}
     assert theme.SWITCH["on_fill"] in fills and theme.SWITCH["knob_on"] in fills
-    assert entry["words"].cget("text") == "Latched"
+    assert entry["words"].cget("text") == "Stopped"
     switch.canvas.fire("<Button-1>")
     assert [call[1] for call in own.calls if call[1] == "set_running"], "a press runs it"
     built.close()
@@ -5131,3 +5133,166 @@ def test_o3_the_view_keeps_no_gate_table_of_its_own(tk_harness):
     """One table, in `views.base` (three copies disagreed)."""
     assert not hasattr(tkmod, "GATE_WORDS")
     assert not hasattr(tkmod, "_gate_word")
+
+
+def test_o6_an_energized_model_wears_an_ink_ring_after_its_stop_mark(tk_harness,
+                                                                     setup_panel):
+    """PM8-2 / IMP8-4: nothing said which models hold hardware. A ring in
+    ink (not red) after the stop mark; the words are the line's tooltip."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.energized = ["Stepper Probe"]
+    built._on_refresh_tick()
+    ring = built._energy_marks["Stepper Probe"]
+    ovals = [item[2] for item in ring.items if item[0] == "oval"]
+    assert len(ovals) == 1
+    assert ovals[0]["outline"] == theme.TEXT and ovals[0]["fill"] == ""
+    assert built._rail_marks["Stepper Probe"][1].text == "Energized"
+    assert built._energy_marks["DC Probe"].items == []
+    order = [widget for widget, _kw in PACK_ORDER]
+    assert order.index(built._rail_marks["Stepper Probe"][0]) < order.index(ring)
+    built.show_model("Stepper Probe")
+    assert ring.cget("background") == \
+        built._rail_items["Stepper Probe"][1].cget("background")
+    controller.energized = []
+    built._on_refresh_tick()
+    assert ring.items == [] and built._rail_marks["Stepper Probe"][1].text == ""
+    built.close()
+
+
+def test_o6_a_stopped_mark_and_the_energized_ring_share_the_tooltip(tk_harness,
+                                                                    setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    controller.stop = {"latched": ["DC Probe"], "unconfirmed": ["DC Probe"],
+                       "every": False}
+    controller.energized = ["DC Probe"]
+    built._sync_stop_button()
+    built._on_refresh_tick()
+    assert built._rail_marks["DC Probe"][1].text == "Did not confirm the stop; energized"
+    built.close()
+
+
+def test_o9_the_window_close_asks_the_quit_question(tk_harness, setup_panel):
+    """PM8-6 / ARCH-6: the window's close button quit without asking."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.energized = ["Rotator"]
+    tk_harness.confirm_answer = False
+    built.root.protocols["WM_DELETE_WINDOW"]()
+    assert tk_harness.asked[-1] == ("confirm", (
+        "Quit the station? Rotator is energized; quitting stops and "
+        "disconnects it."))
+    assert tk_harness.words[-1] == tkmod.QUIT_DIALOG
+    assert not built._closing and not controller.is_closed, "declined: still running"
+    tk_harness.confirm_answer = True
+    built.root.protocols["WM_DELETE_WINDOW"]()
+    assert controller.is_closed
+    built.close()
+
+
+def test_o9_the_os_quit_hook_is_left_as_it_is(tk_harness, setup_panel):
+    """P3 is the owner's call: the forced `::tk::mac::Quit` still takes the
+    close path without a question (an unanswered question there can end in
+    Tcl_Exit)."""
+    built, controller = _stop_dashboard(setup_panel)
+    tk_harness.confirm_answer = False
+    built.root.commands["::tk::mac::Quit"]()
+    assert controller.is_closed and tk_harness.asked == []
+
+
+def test_o9_the_rails_middle_click_asks_before_closing_a_model(tk_harness,
+                                                              setup_panel):
+    """PM8-5: the middle button on a rail line closed the model on one
+    press; "Close this model..." asked. Both ask the same question now."""
+    built, controller = _stop_dashboard(setup_panel)
+    tk_harness.confirm_answer = False
+    label = built._rail_items["Rotator"][1]
+    label.fire(tkmod._close_tab_button(label))
+    assert controller.removed == []
+    assert tk_harness.asked[-1][1].startswith("Close Rotator?")
+    assert tk_harness.words[-1] == {"title": "Close Rotator",
+                                    "yes_text": "Close Rotator",
+                                    "no_text": "Keep it open"}
+    tk_harness.confirm_answer = True
+    label.fire(tkmod._close_tab_button(label))
+    assert controller.removed == ["Rotator"]
+    built.close()
+
+
+def test_o9_unticking_a_model_in_the_models_menu_asks_too(tk_harness, setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    tk_harness.confirm_answer = False
+    variable = built._menu_vars["Rotator"]
+    variable.set(False)
+    built._on_model_toggled("Rotator")
+    assert controller.removed == [] and variable.get() is True, "declined: ticked"
+    tk_harness.confirm_answer = True
+    variable.set(False)
+    built._on_model_toggled("Rotator")
+    assert controller.removed == ["Rotator"]
+    built.close()
+
+
+class _SafetyPanel(DemoPanel):
+    """A model's Safety section as `Model._safety_section` builds it."""
+
+    def __init__(self):
+        super().__init__()
+        self.is_estopped = False
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section("Safety", sch.toggle(
+            "Stop", "is_estopped", "set_running", "Stopped", "Stop",
+            on_role="danger", off_role="danger", tooltip="Stop the Safe",
+            tooltip_on="The Safe is stopped. Press to clear the stop.")))
+
+
+def test_o16_the_per_model_switch_says_stop_this_model_and_stopped(tk_harness):
+    """PM8-8: "Stop" named five things. The disc is "Stop"/"Clear"; the
+    model's own switch is "Stop this model"/"Stopped"."""
+    safe = _SafetyPanel()
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Safe=safe), "Safe")
+    entry = built._widgets[id(built._elements[0])]
+    assert entry["words"].cget("text") == "Stop this model"
+    safe.is_estopped = True
+    built._refresh()
+    assert entry["words"].cget("text") == "Stopped"
+    built.close()
+
+
+def test_o16_the_rail_marks_differ_in_shape_not_colour_alone(tk_harness,
+                                                            setup_panel):
+    """A11Y-6: a square for stopped, a bigger filled square with "!" for an
+    unconfirmed stop, a ring for energized."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.stop = {"latched": ["DC Probe", "Rotator"], "unconfirmed": ["Rotator"],
+                       "every": False}
+    controller.energized = ["Stepper Probe"]
+    built._sync_stop_button()
+    built._on_refresh_tick()
+
+    def shapes(name):
+        canvas = built._rail_marks[name][0]
+        return sorted(item[0] for item in canvas.items)
+
+    assert shapes("DC Probe") == ["rect"]
+    assert shapes("Rotator") == ["rect", "text"]
+    assert [i[0] for i in built._energy_marks["Stepper Probe"].items] == ["oval"]
+    built.close()
+
+
+def test_o16_a_log_window_opens_with_its_feed_focused_in_a_ring(view, panel):
+    """The log window took focus with no visible ring."""
+    element = side_log(view)
+    click(view, element)
+    entry = view._widgets[id(element)]
+    assert Focus.current is entry["feed"]
+    assert entry["feed_ring"].is_focused
+    assert entry["feed_ring"].outer.cget("background") == tkmod.FOCUS_INK
+    entry["feed"].fire("<FocusOut>")
+    assert not entry["feed_ring"].is_focused
+    entry["feed"].fire("<FocusIn>")
+    assert entry["feed_ring"].is_focused
+    entry["feed"].fire("<FocusOut>")
+    Focus.current = None
+    click(view, element)                 # pressed again: raised, focused again
+    assert Focus.current is entry["feed"] and entry["feed_ring"].is_focused

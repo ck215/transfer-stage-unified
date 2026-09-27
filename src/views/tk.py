@@ -150,8 +150,12 @@ FAULTED_LINE = "Disable failed. Treat as live."
 #: not confirm or whose disable failed; the words are the line's tooltip, so
 #: colour never carries it alone.
 RAIL_MARK_WORDS = {"latched": "Stopped", "unconfirmed": "Did not confirm the stop",
-                   "faulted": "Disable failed"}
+                   "faulted": "Disable failed", "energized": "Energized"}
 RAIL_ALARM_GLYPH = "!"
+#: A model's own stop, the small switch in its Diagnostics (O16, PM8-8): one
+#: word per thing. The disc is "Stop" / "Clear"; this switch is "Stop this
+#: model" / "Stopped", whatever the schema's state words.
+SWITCH_WORDS = {False: "Stop this model", True: "Stopped"}
 #: The event title the views key on for a stop that did not confirm; its
 #: line leaves the band and the tray when the latch opens (L2).
 STOP_NOT_CONFIRMED = "Stop Not Confirmed"
@@ -3468,7 +3472,7 @@ class TkPanelView(PanelView):
             switch = _Switch(parent, lambda el=element: self._on_switch_pressed(el),
                              background=_bg(parent))
             place(switch.canvas, "mark")
-            words = tk.Label(parent, text=_label(element.get("false_text", "")),
+            words = tk.Label(parent, text=SWITCH_WORDS[False],
                              font=_font(), background=_bg(parent),
                              foreground=theme.TEXT)
             place(words, "mark")
@@ -3762,7 +3766,9 @@ class TkPanelView(PanelView):
                 if window.winfo_exists():
                     window.deiconify()
                     window.lift()
-                    window.focus_set()
+                    (entry.get("feed") or window).focus_set()
+                    if entry.get("feed_ring") is not None:
+                        entry["feed_ring"].paint(True)
                     return window
             except Exception:
                 pass
@@ -3786,8 +3792,18 @@ class TkPanelView(PanelView):
         body.pack(fill="both", expand=True, padx=SPACE[4], pady=SPACE[4])
         scrollbar = ttk.Scrollbar(body, orient="vertical")
         scrollbar.pack(side="right", fill="y")
-        feed = self._log_text(body, lines=12)
-        feed.pack(side="left", fill="both", expand=True)
+        # The feed takes the focus on open, in the ring every focusable
+        # control wears (O16): the window used to take it with no mark.
+        feed_ring = _Ring(body, _page(), border=_page())
+        feed_ring.outer.pack(side="left", fill="both", expand=True)
+        feed = self._log_text(feed_ring.inner, lines=12)
+        feed.pack(fill="both", expand=True)
+        try:
+            feed.configure(takefocus=1)
+        except Exception:
+            pass
+        feed.bind("<FocusIn>", lambda _e, r=feed_ring: r.paint(True))
+        feed.bind("<FocusOut>", lambda _e, r=feed_ring: r.paint(False))
         try:
             feed.configure(yscrollcommand=scrollbar.set)
             scrollbar.configure(command=feed.yview)
@@ -3800,7 +3816,8 @@ class TkPanelView(PanelView):
         except Exception:
             pass
         self._place_log_window(window, element)
-        entry.update(window=window, feed=feed, last_text=None, closer=closer)
+        entry.update(window=window, feed=feed, last_text=None, closer=closer,
+                     feed_ring=feed_ring)
         self._refresh_log(element, [])
         events.debug("Log Window Opened", f"{self.name}/{label}", source=SOURCE)
         # Filled now rather than on the next tick.
@@ -3808,9 +3825,10 @@ class TkPanelView(PanelView):
         if data.is_ok:
             self._refresh_log(element, data.value)
         try:
-            window.focus_set()
+            feed.focus_set()
         except Exception:
             pass
+        feed_ring.paint(True)       # Tk sends FocusIn only once it is mapped
         return window
 
     def _log_title(self, element):
@@ -4123,7 +4141,7 @@ class TkPanelView(PanelView):
         if entry.get("switch") is not None:
             entry["switch"].set_on(is_on)
             words = entry.get("words")
-            text = _label(element["true_text"] if is_on else element["false_text"])
+            text = SWITCH_WORDS[bool(is_on)]
             tooltip = entry.get("tooltip")
             if tooltip is not None:
                 tooltip.text = str(element.get("tooltip_on" if is_on else "tooltip")
@@ -4772,6 +4790,8 @@ class TkDashboard(Dashboard):
         self._rail_marks = {}        # name -> (Canvas, _Tooltip) before its line
         self._faulted = ()           # models whose disable failed (O4), station order
         self._idle_lines = {}        # name -> the countdown line's widgets (Tier N)
+        self._energized = ()         # `state()["energized"]` (O6), station order
+        self._energy_marks = {}      # name -> the Canvas for its energized ring
         self._confirm_words = None   # the dialog words for the next `_confirm`
         self._tray_events = []       # the tray's warnings and errors, oldest first
         self._is_tray_open = False
@@ -4834,7 +4854,10 @@ class TkDashboard(Dashboard):
         self.root.bind("<FocusIn>", self._on_window_focus)
         self.root.bind("<FocusOut>", self._on_window_focus)
         self.root.bind("<Configure>", self._on_window_resized, add="+")
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        # The window's close button asks the Quit question (O9, PM8-6). The
+        # OS's forced Quit (`::tk::mac::Quit`) is left as it is: P3 is the
+        # owner's call.
+        self.root.protocol("WM_DELETE_WINDOW", self._on_quit_clicked)
         self._hook_os_quit()
 
     # -- construction ------------------------------------------------------
@@ -5149,6 +5172,11 @@ class TkDashboard(Dashboard):
                              background=theme.SURFACE, highlightthickness=0)
             mark.pack(side="left", padx=(SPACE[3], 0))
             self._rail_marks[mark_name] = (mark, _Tooltip(label))
+            # The energized ring (O6) sits after the stop mark, in ink.
+            energy = tk.Canvas(ring.inner, width=size, height=size,
+                               background=theme.SURFACE, highlightthickness=0)
+            energy.pack(side="left", padx=(SPACE[1], 0))
+            self._energy_marks[mark_name] = energy
         label.pack(fill="x")
         for sequence in ("<Button-1>", "<Return>", "<space>"):
             label.bind(sequence, lambda _e: on_press())
@@ -5171,6 +5199,7 @@ class TkDashboard(Dashboard):
                 pass
         self._rail_items = {}
         self._rail_marks = {}
+        self._energy_marks = {}
         self._overview_item = None
         names = [n for n in self._panels if n != self.SETUP_TAB]
         if names:
@@ -5202,9 +5231,10 @@ class TkDashboard(Dashboard):
                 label.configure(background=ground, font=_font(bold=is_current))
                 mark = self._rail_marks.get(name) if name else None
                 if mark is not None:
-                    # The mark sits in the line's own ground, lit or not.
+                    # The marks sit in the line's own ground, lit or not.
                     mark[0].configure(background=ground)
                     mark[0].master.configure(background=ground)
+                    self._energy_marks[name].configure(background=ground)
             except Exception:
                 pass
         self._setup_press.set_active(not on_sheet)
@@ -5219,21 +5249,27 @@ class TkDashboard(Dashboard):
 
     def _on_rail_close(self, name):
         """The middle button on a model's line closes it (the tab gesture,
-        VIEW-TKINTER-18): `Controller.remove` stops and destructs it; the
-        Models menu reopens it."""
+        VIEW-TKINTER-18), after the same question "Close this model…" asks
+        (O9, PM8-5): `Controller.remove` stops and destructs it; the Models
+        menu reopens it."""
         events.debug("Rail Close Requested", name, source=SOURCE)
-        self.close_model(name)
+        self._confirm_close_model(name)
         return "break"
 
     def _confirm_close_model(self, name):
-        """"Close this model…" (L13): it stops and disconnects the model, so
-        it asks first, in words that say so; the Models menu reopens it."""
+        """Every close gesture on a model - "Close this model…" (L13), the
+        rail's middle button, the Models menu (O9): it stops and disconnects
+        the model, so it asks first, in words that say so; the Models menu
+        reopens it. -> True when the model was closed."""
         prompt = (f"Close {name}?\n\nIt stops and disconnects. You can reopen "
                   "it from the Models menu.")
         if _confirm(self.root, prompt, title=f"Close {name}",
                     yes_text=f"Close {name}", no_text="Keep it open"):
             events.debug("Close Model Confirmed", name, source=SOURCE)
             self.close_model(name)
+            return True
+        events.debug("Close Model Declined", name, source=SOURCE)
+        return False
 
     def _quit_prompt(self):
         """The Quit question, naming what is energized now (N4): "Quit the
@@ -5253,9 +5289,13 @@ class TkDashboard(Dashboard):
 
     def _on_quit_clicked(self):
         """Quit asks first (it stops every model and exits), naming what is
-        energized; the window's close button asks the same question."""
+        energized; the window's close button asks the same question (O9)."""
+        if self._closing:
+            return
         if _confirm(self.root, self._quit_prompt(), **QUIT_DIALOG):
             self.close()
+        else:
+            events.debug("Quit Declined", "the station stays up", source=SOURCE)
 
     # -- the sheet -----------------------------------------------------------
     def _build_headline(self):
@@ -5892,10 +5932,11 @@ class TkDashboard(Dashboard):
         models = station.get("models") or {}
         faulted = tuple(name for name, state in models.items()
                         if isinstance(state, dict) and state.get("is_faulted"))
-        if faulted != self._faulted:
-            events.debug("Faulted Models Changed", ", ".join(faulted) or "none",
-                         source=SOURCE)
-            self._faulted = faulted
+        energized = tuple(station.get("energized") or ())
+        if (faulted, energized) != (self._faulted, self._energized):
+            events.debug("Rail Marks Changed", f"faulted={list(faulted)} "
+                         f"energized={list(energized)}", source=SOURCE)
+            self._faulted, self._energized = faulted, energized
             self._paint_rail_marks()
         due = {}
         for name, state in models.items():
@@ -5983,7 +6024,21 @@ class TkDashboard(Dashboard):
                 fill, words = theme.TEXT, RAIL_MARK_WORDS["latched"]
             else:
                 fill, words = None, ""
+            energy = self._energy_marks.get(name)
+            is_energized = name in self._energized
+            if is_energized:
+                words = (f"{words}; {RAIL_MARK_WORDS['energized'].lower()}" if words
+                         else RAIL_MARK_WORDS["energized"])
             tooltip.text = words
+            try:
+                if energy is not None:
+                    energy.delete("all")
+                    if is_energized:
+                        inset = max(3, size // 4)
+                        energy.create_oval(inset, inset, size - inset, size - inset,
+                                           outline=theme.TEXT, fill="", width=2)
+            except Exception:
+                pass
             try:
                 canvas.delete("all")
                 if fill == theme.SIGNAL:
@@ -6243,8 +6298,8 @@ class TkDashboard(Dashboard):
             except Exception:
                 self._bring_forward = None
                 raise
-        else:
-            self.close_model(name)
+        elif not self._confirm_close_model(name) and variable is not None:
+            variable.set(True)      # declined: the model is still open
 
     # -- events ------------------------------------------------------------
     def _marshal(self, fn):
