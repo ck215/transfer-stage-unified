@@ -2154,7 +2154,9 @@ def test_events_reach_the_log_panel_coloured_by_severity(dashboard):
     body = dashboard._event_text.body
     # Updated for L11: the severity word, the title in sentence case, then
     # the message; no bracketed source.
-    assert "Error: Error-event. something happened" in body and "Warning: " in body
+    # Updated for ARCH-3: the line after the severity word is
+    # `views.base.event_line` ("Title: message"), as Qt words it.
+    assert "Error: Error-event: something happened" in body and "Warning: " in body
     assert "[Demo]" not in body
     assert "Info" not in body
     # A warning's mark is a hollow square, an error's a solid one.
@@ -4321,10 +4323,11 @@ def test_l11_band_and_tray_lines_are_sentences_without_a_source(tk_harness,
                           "The DC board has no coil kill.", None, False, 0.0))
     SCHEDULER.pump()
     band = built._band_text.cget("text")
-    assert band.startswith("Error: Stop not confirmed. Rotator did not confirm")
+    # Updated for ARCH-3: "Title: message" is `views.base.event_line`'s.
+    assert band.startswith("Error: Stop not confirmed: Rotator did not confirm")
     assert "[" not in band and "Stop Not Confirmed" not in band
     assert built._latest_text.cget("text") == (
-        "Warning: Power down not supported. The DC board has no coil kill.")
+        "Warning: Power down not supported: The DC board has no coil kill.")
     # One mark shape in both places: a drawn square, not a text glyph.
     assert [item[0] for item in built._latest_mark.items] == ["rect"]
     assert built._latest_mark.items[0][2]["fill"] == ""       # hollow: a warning
@@ -5097,7 +5100,7 @@ def test_o13_the_idle_warning_is_history_not_the_trays_live_line(tk_harness,
     SCHEDULER.pump()
     assert "powers its motors down in 60 s" in built._event_text.body, "history"
     assert built._latest_text.cget("text") == (
-        "Warning: Power down not supported. The DC board has no coil kill.")
+        "Warning: Power down not supported: The DC board has no coil kill.")
     built.close()
 
 

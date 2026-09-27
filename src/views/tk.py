@@ -49,7 +49,7 @@ import schema as sch
 from events import events
 from views import theme
 from views import base as view_base
-from views.base import Dashboard, PanelView, join_names, stop_words
+from views.base import Dashboard, PanelView, event_line, join_names, stop_words
 
 SOURCE = "TkView"
 
@@ -252,15 +252,12 @@ TRAY_HISTORY = 200
 
 def _event_line(event):
     """One event as the band and the tray say it (L11): the severity word,
-    the title in sentence case, then the message - no bracketed source, no
-    Title Case, no SHOUTING. The message is the model's own sentence."""
+    then `views.base.event_line` - the title in sentence case, a colon, the
+    message, the repeat count - so the three views word an event alike
+    (ARCH-3). No bracketed source, no Title Case, no SHOUTING. The word stays
+    because the mark's colour must not carry the severity alone (F14)."""
     word = SEVERITY_WORD.get(getattr(event, "severity", ""), "")
-    title = _label(getattr(event, "title", "") or "")
-    message = str(getattr(event, "message", "") or "").strip()
-    count = getattr(event, "count", 1) or 1
-    line = f"{title}. {message}" if message else f"{title}."
-    if count > 1:
-        line += f" (x{count})"
+    line = event_line(event)
     return f"{word}: {line}" if word else line
 
 #: True once the dashboard has found itself on Aqua. Tk there assumes 96 dpi
