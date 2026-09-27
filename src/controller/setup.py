@@ -86,66 +86,126 @@ PROBE_SLICE = 0.1
 #: measured a 1 s freeze when Refresh joined here).
 
 
-class _Stub:
-    """Class attributes for a model class that has not declared its own yet.
-
-    The six model classes are being written in parallel with this file and
-    most are still skeletons, so `cls.NAME` currently inherits `Panel.NAME`
-    ("Panel") for all six and `MODEL_TYPES` would collapse to one entry. Any
-    attribute a class declares for itself wins; this table only fills the
-    gaps, and it is deleted once the six classes carry their own. The values
-    are the old registry's, unchanged (`legacy/src/model/devices.py`).
-    """
-
-    TABLE = {
-        StepperProbe: ("Stepper Probe", "s", True, True),
-        DCProbe: ("DC Probe", "d", True, True),
-        ChuckPositioner: ("Chuck Positioner", "c", True, True),
-        Heater: ("Temperature Controller", "t", True, False),
-        # The SMC100 answers an ASCII protocol at 57600 rather than the
-        # custom firmware's DEV: reply, so it has no identity byte.
-        Rotator: ("Rotator", None, True, False),
-        # Screen capture, not hardware: no port, no gamepad.
-        RedMonitor: ("Red Percent", None, False, False),
-    }
-    FIELDS = ("NAME", "IDENTITY", "NEEDS_PORT", "NEEDS_GAMEPAD")
-
-
 def _declared(model_class, attribute):
-    """`model_class`'s own value for `attribute`, or the stub table's.
+    """`model_class`'s own value for `attribute`, else whatever it inherits.
 
     "Its own" means declared by the class or one of its bases *below* the
-    contract base classes, so inheriting `Panel.NAME` does not count as
-    declaring a name.
+    contract base classes; `_declares` asks only that question, so inheriting
+    `Panel.NAME` does not count as naming a model.
     """
     for base in model_class.__mro__:
         if base in (Model, Panel, object):
             break
         if attribute in base.__dict__:
             return base.__dict__[attribute]
-    stub = _Stub.TABLE.get(model_class)
-    if stub is not None:
-        return stub[_Stub.FIELDS.index(attribute)]
     return getattr(model_class, attribute, None)
 
 
-def _model_types():
-    types = {}
-    for model_class in (StepperProbe, DCProbe, ChuckPositioner, Heater,
-                        Rotator, RedMonitor):
-        types[_declared(model_class, "NAME")] = model_class
-    return types
+def _declares(model_class, attribute):
+    for base in model_class.__mro__:
+        if base in (Model, Panel, object):
+            return False
+        if attribute in base.__dict__:
+            return True
+    return False
+
+
+#: What Setup can fill in for a model, by the resource name's prefix: a
+#: `port*` resource is a serial-port dropdown (SIM or a scanned port), a
+#: `gamepad*` resource a gamepad dropdown. A class declares its own as
+#: `RESOURCES = ("port", "gamepad")`, the keyword names its constructor takes.
+RESOURCE_KINDS = ("port", "gamepad")
+
+
+def _kind(resource):
+    for kind in RESOURCE_KINDS:
+        if str(resource).startswith(kind):
+            return kind
+    return None
+
+
+def resources_of(model_class):
+    """The keyword arguments Setup fills in when it constructs `model_class`,
+    besides `sim`. A class's own `RESOURCES` wins; without one they follow
+    from `NEEDS_PORT` / `NEEDS_GAMEPAD`, so a class written before resources
+    existed needs no edit."""
+    declared = _declared(model_class, "RESOURCES")
+    if declared is not None:
+        return (declared,) if isinstance(declared, str) else tuple(declared)
+    resources = []
+    if _declared(model_class, "NEEDS_PORT"):
+        resources.append("port")
+    if _declared(model_class, "NEEDS_GAMEPAD"):
+        resources.append("gamepad")
+    return tuple(resources)
 
 
 #: Registration order is display order, as it was in the old registry: the
 #: wizard rows, the sidebar and the tab strip all iterate this, so the model
-#: list cannot differ between frontends.
-MODEL_TYPES = _model_types()
+#: list cannot differ between frontends. Filled by `register` only; mutated
+#: in place, so every `from controller.setup import MODEL_TYPES` sees it.
+MODEL_TYPES = {}
+
+
+def register(model_class):
+    """Add `model_class` to the station: a Setup row, identification by its
+    `IDENTITY` byte or its `identify_port` hook, construction, and reopen.
+    Returns the class, so it also works as a decorator.
+
+    A module function rather than a Setup classmethod because the registry is
+    module state that exists before any Setup is built (app.py and the tests
+    read `MODEL_TYPES` straight from the module); `Setup.register` is the same
+    function. Register before the `Setup` is constructed: the panel's rows are
+    built once, from the registry as it stands then.
+
+    Refused with ValueError, before anything is added: a class that names no
+    model of its own, a name already taken by another class, a name whose row
+    key is taken, an identity byte another model already answers with, and a
+    resource Setup has no dropdown for. Registering the same class again is a
+    no-op.
+    """
+    types = MODEL_TYPES
+    if not _declares(model_class, "NAME"):
+        raise ValueError(f"{model_class.__name__} declares no NAME of its own")
+    name = model_class.NAME
+    if types.get(name) is model_class:
+        return model_class
+    if name in types:
+        raise ValueError(f"{name!r} is already registered to "
+                         f"{types[name].__name__}")
+    key = _key_for(name)
+    for other in types:
+        if _key_for(other) == key:
+            raise ValueError(f"{name!r} would share the Setup row {key!r} "
+                             f"with {other!r}")
+    identity = _declared(model_class, "IDENTITY")
+    if identity:
+        for other, other_class in types.items():
+            theirs = _declared(other_class, "IDENTITY")
+            if theirs and str(theirs).lower() == str(identity).lower():
+                raise ValueError(f"{name!r} answers with identity "
+                                 f"{identity!r}, which {other!r} already does")
+    resources = resources_of(model_class)
+    for resource in resources:
+        if _kind(resource) is None or resource in ("model", "sim"):
+            raise ValueError(f"{name!r} declares resource {resource!r}; Setup "
+                             "fills only port* and gamepad* resources")
+    if len(set(resources)) != len(resources):
+        raise ValueError(f"{name!r} declares a resource twice: {resources}")
+    types[name] = model_class
+    return model_class
 
 
 def _key_for(name):
     """A schema-safe attribute prefix for a model name ("DC Probe" -> dc_probe)."""
     return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_") or "model"
+
+
+# The six built-ins, in today's display order.
+for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
+                  RedMonitor):
+    register(_built_in)
+del _built_in
 
 
 class Setup(Panel):
@@ -167,6 +227,8 @@ class Setup(Panel):
     """
 
     NAME = "Setup"
+    #: `Setup.register(cls)`: the module's `register`, see there.
+    register = staticmethod(register)
     #: `mode_name`, which is what `enabled_when` / `disabled_when` match.
     READY, SCANNING, LAUNCHED = "ready", "scanning", "launched"
     #: `state["scan"]["phase"]`: what the worker is doing right now, for a
@@ -205,15 +267,26 @@ class Setup(Panel):
             setattr(self, f"{key}_enabled", False)
             setattr(self, f"{key}_port", SIM if row["needs_port"] else ON)
             setattr(self, f"{key}_gamepad", "None")
+            for field, kind, _, _ in row["columns"]:
+                if field != "gamepad":
+                    setattr(self, f"{key}_{field}",
+                            SIM if kind == "port" else "None")
             setattr(self, f"{key}_status", "off")
         # The selection commands are per row, because a view sends a dropdown
         # choice as the command's only argument and nothing else identifies
         # the row. Binding them here keeps one implementation.
-        for key in self._rows:
-            for field in ("port", "gamepad"):
+        for key, row in self._rows.items():
+            fields = ["port", "gamepad"] + [
+                field for field, _, _, _ in row["columns"] if field != "gamepad"]
+            for field in fields:
                 setattr(self, f"set_{key}_{field}",
                         _Selector(self, key, field))
             setattr(self, f"set_{key}_enabled", _Enabler(self, key))
+        # Reopen goes through the registry from the start, not only after a
+        # build: a model added with `controller.add(NAME, model, config)`
+        # comes back from its remembered config like one Setup built.
+        if controller is not None:
+            controller.factory = self.model_from_config
         self._refresh_rows()
 
     # -- what a view reads -------------------------------------------------
@@ -348,7 +421,7 @@ class Setup(Panel):
             else:
                 port = choice
             gamepad = getattr(self, f"{key}_gamepad") if row["needs_gamepad"] else "None"
-            configs.append({
+            config = {
                 "model": row["name"],
                 "port": port,
                 "gamepad": None if gamepad in ("None", "", None) else gamepad,
@@ -357,7 +430,23 @@ class Setup(Panel):
                 # desktop ones did not, so two launchers produced different
                 # configs for one system.
                 "sim": bool(is_sim),
-            })
+            }
+            # Every resource under its own name as well, so the config is
+            # `{"model", ...resources, "sim"}` whatever the class calls them.
+            # For the six built-ins these are `port` / `gamepad` themselves.
+            if row["port_resource"] not in (None, "port"):
+                config[row["port_resource"]] = port
+            for field, kind, _, resource in row["columns"]:
+                if field == "gamepad":
+                    if resource != "gamepad":
+                        config[resource] = config["gamepad"]
+                    continue
+                value = getattr(self, f"{key}_{field}")
+                if kind == "port":
+                    config[resource] = SIM if is_sim else value
+                else:
+                    config[resource] = None if value in ("None", "", None) else value
+            configs.append(config)
         return configs
 
     # -- options (one list per row shape) ----------------------------------
@@ -634,10 +723,11 @@ class Setup(Panel):
             return None
 
         started = time.monotonic()
-        # 1. 57600 baud, SMC100-specific and cheap - tried first so the
+        # 1. The classes' own checks, for devices without a `DEV:` byte (the
+        # SMC100 at 57600): tried first because they are cheap, so the
         # rotator does not have to burn through both firmware handshake
         # timeouts before reaching the check that identifies it.
-        name = self._identify_rotator(port)
+        name = self._identify_by_class(port, aborted)
         if name or aborted():
             self._log_probe(port, name, started)
             return name
@@ -652,15 +742,37 @@ class Setup(Panel):
         self._log_probe(port, name, started)
         return name
 
-    def _identify_rotator(self, port):
+    def _identify_by_class(self, port, aborted):
+        """Ask each registered class that can identify its own board, in
+        registration order; which check is cheap is the class's business.
+
+        A class opts in with a classmethod `identify_port(port, should_abort)
+        -> bool`. The SMC100 query below is the one hard-coded check left: it
+        runs only for a registered `Rotator` that has no hook of its own, so
+        it goes quiet by itself once the hook is on the class.
+        """
+        for name, model_class in list(MODEL_TYPES.items()):
+            if aborted():
+                return None
+            hook = getattr(model_class, "identify_port", None)
+            if callable(hook):
+                try:
+                    if hook(port, aborted):
+                        return name
+                except Exception as exc:
+                    self._warn_probe(port, exc)
+            elif model_class is Rotator and self._identify_smc100(port):
+                return name
+        return None
+
+    def _identify_smc100(self, port):
+        """The fallback for a `Rotator` without `identify_port`. The bytes are
+        pinned: `1ID?`, then `1TS?`, at 57600 with XON/XOFF."""
         query = getattr(serial_port_module, "query", None)
         if query is None:
             self._warn_missing("query", "serial_port.query() is not available; "
                                "the SMC100 handshake is skipped")
-            return None
-        name = _declared(Rotator, "NAME")
-        if name not in MODEL_TYPES:
-            return None
+            return False
         try:
             reply = query(port, 57600, b"1ID?\r\n", xonxoff=True)
             if not self._text(reply):
@@ -668,8 +780,8 @@ class Setup(Panel):
             text = self._text(reply)
         except Exception as exc:
             self._warn_probe(port, exc)
-            return None
-        return name if text.startswith(("1ID", "1TS")) else None
+            return False
+        return text.startswith(("1ID", "1TS"))
 
     def _identify_firmware(self, port, baud, aborted):
         device = None
@@ -852,8 +964,18 @@ class Setup(Panel):
         row = self._rows[key]
         if field == "gamepad" and not row["needs_gamepad"]:
             self._refuse(f"{row['name']} does not use a gamepad")
-        choices = (self._port_choices(key) if field == "port"
-                   else self.gamepad_options())
+        if field in ("port", "gamepad"):
+            kind = field
+        else:
+            kind = next((k for f, k, _, _ in row["columns"] if f == field), None)
+            if kind is None:
+                self._refuse(f"{row['name']} has no {field} to choose")
+        if field == "port":
+            choices = self._port_choices(key)
+        elif kind == "port":
+            choices = self.port_options()
+        else:
+            choices = self.gamepad_options()
         if choice not in choices:
             self._refuse(f"{choice!r} is not one of {row['name']}'s "
                          f"{field} options")
@@ -906,20 +1028,30 @@ class Setup(Panel):
             model_class = MODEL_TYPES.get(name)
             if model_class is None:
                 self._refuse(f"{name!r} is not a known model")
-            port, gamepad = config.get("port"), config.get("gamepad")
-            if _declared(model_class, "NEEDS_PORT") and not config.get("sim"):
-                if not port or port in ("None", "Off"):
-                    self._refuse(f"{name} port: choose a port, or set the "
+            port_resources, gamepad_resources = _split(resources_of(model_class))
+            for index, resource in enumerate(port_resources):
+                if config.get("sim"):
+                    break
+                port = _resource_value(config, model_class, resource)
+                label = "port" if index == 0 else resource
+                # A second port has no row-level SIM of its own: the row's
+                # Port dropdown decides, so SIM there on a live row is unset.
+                unset = ("None", "Off") if index == 0 else ("None", "Off", SIM)
+                if not port or port in unset:
+                    self._refuse(f"{name} {label}: choose a port, or set the "
                                  "row to SIM")
                 if port in ports:
-                    self._refuse(f"{name} port: {port} is already assigned "
+                    self._refuse(f"{name} {label}: {port} is already assigned "
                                  f"to {ports[port]}")
                 ports[port] = name
-            if gamepad:
-                if gamepad in gamepads:
-                    self._refuse(f"{name} gamepad: {gamepad} is already "
-                                 f"claimed by {gamepads[gamepad]}")
-                gamepads[gamepad] = name
+            for index, resource in enumerate(gamepad_resources):
+                gamepad = _resource_value(config, model_class, resource)
+                label = "gamepad" if index == 0 else resource
+                if gamepad:
+                    if gamepad in gamepads:
+                        self._refuse(f"{name} {label}: {gamepad} is already "
+                                     f"claimed by {gamepads[gamepad]}")
+                    gamepads[gamepad] = name
         events.debug("Validate", f"{len(configs)} row(s) ok", source=self.NAME)
         return True
 
@@ -1013,15 +1145,15 @@ class Setup(Panel):
         if model_class is None:
             raise Refused(f"{config.get('model')!r} is not a known model")
         is_sim = bool(config.get("sim"))
-        needs_port = _declared(model_class, "NEEDS_PORT")
-        port = config.get("port")
-        if not needs_port:
-            port = None
-        elif is_sim:
-            port = SIM
-        gamepad = config.get("gamepad") if _declared(
-            model_class, "NEEDS_GAMEPAD") else None
-        return model_class(port=port, gamepad=gamepad, sim=is_sim)
+        # Only what the class declares: a class without a gamepad does not
+        # have to accept `gamepad=None`, and one with a second port gets it.
+        resources = {}
+        for resource in resources_of(model_class):
+            value = _resource_value(config, model_class, resource)
+            if _kind(resource) == "port" and is_sim:
+                value = SIM
+            resources[resource] = value
+        return model_class(sim=is_sim, **resources)
 
     def _check_identities(self, configs):
         """A row pointed at a port that answered as something else is a wiring
@@ -1053,12 +1185,30 @@ class Setup(Panel):
     def _build_rows(self):
         rows = {}
         for name, model_class in MODEL_TYPES.items():
-            needs_port = bool(_declared(model_class, "NEEDS_PORT"))
+            resources = resources_of(model_class)
+            ports, gamepads = _split(resources)
+            port_resource = ports[0] if ports else None
+            gamepad_resource = gamepads[0] if gamepads else None
+            # The row's Port dropdown holds the first port resource (or On /
+            # SIM when there is none) and its Gamepad dropdown the first
+            # gamepad; any further resource gets a dropdown of its own kind,
+            # in declared order: (field, kind, label, resource).
+            columns = []
+            for resource in resources:
+                if resource == port_resource:
+                    continue
+                if resource == gamepad_resource:
+                    columns.append(("gamepad", "gamepad", "Gamepad", resource))
+                else:
+                    columns.append((resource, _kind(resource),
+                                    resource.replace("_", " ").title(), resource))
             rows[_key_for(name)] = {
                 "name": name,
-                "needs_port": needs_port,
-                "needs_gamepad": bool(_declared(model_class, "NEEDS_GAMEPAD")),
-                "options_command": "port_options" if needs_port else "device_options",
+                "needs_port": bool(ports),
+                "needs_gamepad": bool(gamepads),
+                "options_command": "port_options" if ports else "device_options",
+                "port_resource": port_resource,
+                "columns": columns,
             }
         return rows
 
@@ -1086,11 +1236,13 @@ class Setup(Panel):
                              row["options_command"],
                              enabled_by=f"{key}_enabled"),
             ]
-            if row["needs_gamepad"]:
-                elements.append(sch.dropdown("Gamepad", f"{key}_gamepad",
-                                             f"set_{key}_gamepad",
-                                             "gamepad_options",
-                                             enabled_by=f"{key}_enabled"))
+            # Built from the class's resources; for the six built-ins that is
+            # a Gamepad dropdown where one is declared, and nothing else.
+            for field, kind, label, _ in row["columns"]:
+                elements.append(sch.dropdown(
+                    label, f"{key}_{field}", f"set_{key}_{field}",
+                    "port_options" if kind == "port" else "gamepad_options",
+                    enabled_by=f"{key}_enabled"))
             elements.append(sch.readonly("Status:", f"{key}_status"))
             sections.append(sch.section(row["name"], *elements, layout="row"))
         sections.append(sch.section(
@@ -1161,6 +1313,13 @@ class Setup(Panel):
                     self._chosen.discard(key)
             if row["needs_gamepad"] and getattr(self, f"{key}_gamepad") not in gamepads:
                 setattr(self, f"{key}_gamepad", "None")
+            for field, kind, _, _ in row["columns"]:
+                if field == "gamepad":
+                    continue
+                if kind == "port" and getattr(self, f"{key}_{field}") not in self.port_options():
+                    setattr(self, f"{key}_{field}", SIM)
+                elif kind == "gamepad" and getattr(self, f"{key}_{field}") not in gamepads:
+                    setattr(self, f"{key}_{field}", "None")
 
     def _refresh_summary(self):
         """A count, not a list (G3): the rows already say which model is on
@@ -1171,6 +1330,25 @@ class Setup(Panel):
         else:
             self._selected = (f"{count} device{'s' if count != 1 else ''} "
                               "ticked to launch.")
+
+
+def _split(resources):
+    """(port resources, gamepad resources), each in declared order."""
+    return ([r for r in resources if _kind(r) == "port"],
+            [r for r in resources if _kind(r) == "gamepad"])
+
+
+def _resource_value(config, model_class, resource):
+    """`resource`'s value in a build config. A config names each resource;
+    the first of each kind may also go by the kind's own key (`port`,
+    `gamepad`), which is what Setup's rows have always written."""
+    if resource in config:
+        return config[resource]
+    ports, gamepads = _split(resources_of(model_class))
+    for kind, group in (("port", ports), ("gamepad", gamepads)):
+        if group and group[0] == resource:
+            return config.get(kind)
+    return None
 
 
 class _Selector:

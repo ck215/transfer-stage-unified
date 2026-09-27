@@ -87,9 +87,8 @@ def types(monkeypatch):
         "SMC100 Rotator": make_model_class("SMC100 Rotator"),
     }
     monkeypatch.setattr(station_setup, "MODEL_TYPES", types)
-    # `identify` asks the Rotator class for the name the SMC100 step reports.
-    monkeypatch.setitem(station_setup._Stub.TABLE, station_setup.Rotator,
-                        ("SMC100 Rotator", None, True, False))
+    # The SMC100 fallback runs for the registered class that *is* `Rotator`
+    # and has no `identify_port` hook; the fake stands in for it by name.
     monkeypatch.setattr(station_setup, "Rotator",
                         types["SMC100 Rotator"], raising=True)
     return types
