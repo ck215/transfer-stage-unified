@@ -955,13 +955,3 @@ def test_o9_closing_a_model_asks_in_the_tk_and_web_words():
 
 def test_o13_the_idle_warning_is_history_in_the_log_not_the_tray_line():
     assert qt.HISTORY_ONLY_TITLES == frozenset({"Idle Timeout Soon"})
-
-
-def test_o16_the_models_own_switch_says_stop_this_model():
-    assert qt.switch_face({"command": "toggle_estop", "false_text": "Stop",
-                           "true_text": "Stopped"}, False) == "Stop this model"
-    assert qt.switch_face({"command": "toggle_estop", "false_text": "Stop",
-                           "true_text": "Stopped"}, True) == "Stopped"
-    # Anything else keeps the schema's own words.
-    assert qt.switch_face({"command": "toggle_estop", "false_text": "Full stop",
-                           "true_text": "Latched"}, False) == "Full stop"

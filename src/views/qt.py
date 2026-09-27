@@ -244,8 +244,9 @@ EMPTY_HINT = "Choose ports in Setup and press Launch."
 SIM_LINE = "Simulation, no hardware attached"
 UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
 #: O4 (IMP8-2): a probe whose disable failed is said like a stop that did
-#: not confirm - the red rule, these words and the fault's reason - and its
-#: mode toggles are greyed with the gate's words for a fault.
+#: not confirm - the red rule, these words and the fault's reason. Its mode
+#: toggles are greyed by the schema (`disabled_when` "fault"), with the gate's
+#: words for a fault.
 FAULT_LINE = "Disable failed. Treat as live."
 FAULT_GATE = view_base.GATE_WORDS["fault"][0]
 #: L1: a model's state on the rail, beside its name. The words go in its
@@ -261,7 +262,7 @@ RING_INSET = 0.22
 #: L2: the Controller's event title for a stop that did not confirm. The
 #: band drops it once the latch opens; while latched it waits for its
 #: acknowledgement like any error.
-UNCONFIRMED_TITLE = "Stop Not Confirmed"
+UNCONFIRMED_TITLE = events.STOP_NOT_CONFIRMED
 #: L9 / L14: the questions, titled, answered by verbs - the Tk and Web words.
 QUIT_PROMPT = ("Quit the station? This stops every model, closes every port "
                "and exits.")
@@ -287,7 +288,7 @@ IDLE_WARN_SECONDS = 60
 EXTEND_WORD = "Extend"
 #: O13: events that are history only - they go to the log, never the tray's
 #: latest line, because a live line says the same thing from state.
-HISTORY_ONLY_TITLES = frozenset({"Idle Timeout Soon"})
+HISTORY_ONLY_TITLES = frozenset({events.IDLE_TIMEOUT_SOON})
 
 
 def idle_countdowns(names, states):
@@ -4048,18 +4049,7 @@ class QtPanelView(PanelView, QWidget):
         elif kind == "image":
             self._redraw_image(element, data)
 
-    def _fault_gated(self, element):
-        """O4: while the model is faulted its mode toggles are drawn disabled
-        - entering a mode energizes a probe whose last disable failed. The
-        schema does not gate them on "fault" (a CORE CHANGE REQUEST); the
-        view draws what the brief asks meanwhile."""
-        state = self._last_state or {}
-        return (bool(state.get("is_faulted")) and element.get("type") == "toggle"
-                and element.get("command") == "set_mode")
-
     def _set_enabled(self, element, is_enabled):
-        if is_enabled and self._fault_gated(element):
-            is_enabled = False
         for widget in (self._widget_for(element),
                        self._companions.get(id(element))):
             if widget is not None and widget.isEnabled() != is_enabled:
@@ -4074,8 +4064,8 @@ class QtPanelView(PanelView, QWidget):
         if not isinstance(widget, QAbstractButton):
             return
         state = self._last_state or {}
-        reason = "" if is_enabled else (FAULT_GATE if self._fault_gated(element) else gate_reason(
-            element, state.get("mode"), state.get("values") or {}, self._caption_of))
+        reason = "" if is_enabled else gate_reason(
+            element, state.get("mode"), state.get("values") or {}, self._caption_of)
         if self._reasons.get(id(element)) == reason:
             return
         self._reasons[id(element)] = reason
@@ -4863,8 +4853,10 @@ class QtDashboard(Dashboard, QMainWindow):
             if name in faulted and name not in self._faulted_said:
                 announce(self.stop_button, f"{name}: {FAULT_LINE}")
         self._faulted_said = faulted
+        energized = set(self._energized)
         for name, item in self._rail_items.items():
             item.set_stop(rail_mark(name, stop, faulted))
+            item.set_energized(name in energized)       # O6: the ink ring
         for name, entry in self._entries.items():
             state = states.get(name) or {}
             # The model's own word (L1): its stop did not confirm while latched.

@@ -2498,8 +2498,10 @@ class TieredPanel(Panel):
                         sch.plot("Series", "series"), tier=2, disclosure="Configure"),
             sch.section("Diagnostics", sch.readonly("Fault:", "fault"),
                         tier=3, disclosure="Diagnostics"),
+            # Updated (O16, core 48b2c97): the per-model switch's off face is
+            # "Stop this model" in `Model._safety_section`; the fake follows.
             sch.section("Safety", sch.toggle("Stop", "is_estopped", "toggle_estop",
-                                             "Stopped", "Stop", on_role="danger",
+                                             "Stopped", "Stop this model", on_role="danger",
                                              off_role="danger", tooltip="Stop Tiered"),
                         tier=3, disclosure="Diagnostics"))
 
@@ -3735,7 +3737,7 @@ class FaultPanel(Panel):
             sch.toggle("Autonomous:", "is_auto", "set_mode",
                        "Autonomous mode (press to stop)", "Enter Autonomous Mode",
                        on_args=["autonomous"], off_args=["disabled"],
-                       disabled_when=("latched",)),
+                       disabled_when=("latched", "fault")),     # the probe's gates
             sch.button("Home", "home")))
 
     def set_mode(self, target):
@@ -3876,6 +3878,8 @@ def test_o16_the_rail_marks_differ_by_shape_not_colour_alone(six, qapp):
 
 
 def test_o16_the_models_own_switch_reads_stop_this_model(six, qapp):
+    """The words are the schema's (core 48b2c97, "Stop this model"); the view
+    draws them as they come, like every other face."""
     panel = six._panels["Stepper Probe"]
     switch = next(panel._widget_for(e) for e in panel._elements
                   if e.get("command") == "toggle_estop")
