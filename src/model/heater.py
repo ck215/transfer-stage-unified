@@ -229,6 +229,14 @@ class Heater(Model):
             return {"x": list(self._times), "y": list(self._temperatures)}
 
     @property
+    def heating_to(self):
+        """The setpoint the board is holding, as text with its unit; "" while
+        the heater is off (status by exception)."""
+        if not self._commanded_setpoint:
+            return ""
+        return f"{float(self._commanded_setpoint):.1f} °C"
+
+    @property
     def is_active(self):
         """Heating: a non-zero setpoint has been SENT and not since stopped.
 
@@ -248,6 +256,10 @@ class Heater(Model):
             sch.section(
                 "Temperature",
                 sch.readonly("Current Temperature:", "temperature", rail=True, unit="°C"),
+                # Round 8 (PM8-2, IMP8-4): a typed setpoint and a SENT one looked
+                # the same. This line says what the board is holding; empty
+                # (quiet) while the heater is off.
+                sch.readonly("Heating to:", "heating_to", role="info"),
                 sch.entry(params["setpoint"].label + ":", "setpoint", params["setpoint"]),
                 # Every field of the frame travels with the command and is
                 # validated as a set before it runs (D-5). Without this the

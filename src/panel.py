@@ -14,6 +14,13 @@ from result import Result, Refused, NeedsConfirm
 class Panel:
     NAME = "Panel"
     _QUIET = frozenset({"_commit"})   # plus every data/source command, see run()
+    #: Commands that take hardware DOWN: they carry no inputs of their own and
+    #: must never be refused because some other box on the entry holds bad
+    #: text (audit round 8, A11Y-1 / PM8-1: "Stop heater" was refused with
+    #: "Setpoint must be at most 300"). `set_mode("disabled")` is in the set
+    #: by rule below: leaving a mode is a stop.
+    UNGATED_COMMANDS = frozenset({"toggle_estop", "estop", "clear_estop", "halt",
+                                  "stop_run", "extend_idle"})
     PARAMS = {}     # {name: Param}; subclasses: PARAMS = {**Base.PARAMS, ...}
 
     def __init__(self):
@@ -93,7 +100,8 @@ class Panel:
         source = self.NAME
         try:
             self._allows(command, args)
-            self._apply_inputs(inputs)
+            if not self._takes_hardware_down(command, args):
+                self._apply_inputs(inputs)
             started = time.monotonic()
             found = getattr(self, command)
             # A data source (`series`, `figure`, `log`) may be a property.
@@ -179,6 +187,14 @@ class Panel:
                 raise Refused(f"{label} is not available until the row's "
                               "Launch box is ticked.")
             raise Refused(f"{label} is not available: {self._gate_reason()}")
+
+    def _takes_hardware_down(self, command, args=()):
+        """A stop-class command: inputs travelling with it are ignored, not
+        validated, so a stray bad entry cannot stand between the operator
+        and a stop."""
+        if command in self.UNGATED_COMMANDS:
+            return True
+        return command == "set_mode" and list(args)[:1] == ["disabled"]
 
     def _apply_inputs(self, inputs):
         """All or nothing. Refusal names the field."""

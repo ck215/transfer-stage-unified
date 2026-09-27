@@ -698,3 +698,27 @@ def test_the_heaters_plot_and_params_speak_in_their_own_units(heater):
     plot = next(e for e in _elements(heater) if e["type"] == "plot")
     assert "red" not in plot["empty"].lower()
     assert heater.PARAMS["setpoint"].unit == "°C"
+
+
+def test_stop_heater_is_never_refused_by_a_bad_setpoint_in_the_box(heater):
+    """Round 8 (A11Y-1 / PM8-1): every entry travels with every command, and
+    "Stop heater" with 9999 in the setpoint box was refused with "Setpoint
+    must be at most 300". A stop ignores the boxes."""
+    inputs = {name: getattr(heater, name) for name in Heater.FRAME_FIELDS}
+    inputs["setpoint"] = 30.0
+    assert heater.run("apply_settings", inputs=inputs).is_ok
+    assert heater.is_active and heater.heating_to == "30.0 °C"
+    bad = dict(inputs, setpoint="9999")
+    assert heater.run("apply_settings", inputs=bad).is_refused, "the real command still validates"
+    result = heater.run("halt", inputs=bad)
+    assert result.is_ok, result.reason
+    assert heater.is_active is False and heater.heating_to == ""
+
+
+def test_heating_to_is_quiet_until_a_setpoint_is_sent(heater):
+    assert heater.heating_to == ""
+    heater.setpoint = 50.0                    # typed, not sent
+    assert heater.heating_to == ""
+    line = next(e for e in _elements(heater) if e.get("model_attr") == "heating_to")
+    section = next(s for s in heater.schema["sections"] if line in s["elements"])
+    assert section.get("tier", 1) == 1

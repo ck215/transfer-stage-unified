@@ -1170,3 +1170,17 @@ def test_a_probe_in_a_mode_is_energized_even_when_it_is_not_moving(probe):
     assert probe.is_energized is True and probe.is_active is False
     probe.set_mode("disabled")
     assert probe.is_energized is False
+
+
+def test_the_probes_own_stop_is_never_refused_by_a_bad_step_size(probe):
+    """Round 8 (A11Y-1): the per-model stop switch with X step size 0 in the
+    box was refused and nothing latched. Stops ignore the boxes; leaving a
+    mode does too."""
+    probe.set_mode("autonomous")
+    bad = {"x_step": "0"}
+    assert probe.run("step", inputs=bad).is_refused
+    assert probe.run("set_mode", inputs=bad, args=("disabled",)).is_ok
+    probe.set_mode("autonomous")
+    result = probe.run("toggle_estop", inputs=bad)
+    assert result.is_ok and probe.is_estopped
+    assert probe.run("extend_idle", inputs=bad).is_refused, "refused for being latched, not for the box"

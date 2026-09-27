@@ -910,3 +910,39 @@ def test_state_rows_carry_the_tick(panel):
 def test_launch_refusal_names_the_launch_box(panel):
     result = panel.run("launch")
     assert result.is_refused and "Launch box" in result.reason
+
+
+def _launch_alpha(panel):
+    select(panel, "alpha", "port", SIM)
+    assert panel.run("launch").is_ok
+
+
+def _energize_first_model(panel):
+    name = panel.controller.model_names[0]
+    panel.controller._model(name).is_energized = True   # this file's fake is a plain class
+    return name
+
+
+def test_close_every_model_asks_first_while_something_is_energized(panel):
+    """Round 8 (PM8-6): one press took a heating heater down with no question."""
+    _launch_alpha(panel)
+    name = _energize_first_model(panel)
+    result = panel.run("stop_system")
+    assert result.needs_confirm, result
+    assert name in result.reason and "energized" in result.reason
+    assert panel.controller.model_names, "nothing was closed by the question"
+    assert panel.run("stop_system", args=(True,)).is_ok
+    assert panel.controller.model_names == []
+
+
+def test_relaunch_asks_first_while_something_is_energized(panel):
+    _launch_alpha(panel)
+    _energize_first_model(panel)
+    result = panel.run("launch")
+    assert result.needs_confirm and "Relaunch?" in result.reason
+    assert panel.run("launch", args=(True,)).is_ok
+
+
+def test_close_every_model_does_not_ask_when_nothing_is_energized(panel):
+    _launch_alpha(panel)
+    assert panel.run("stop_system").is_ok

@@ -218,6 +218,14 @@ class Controller:
         with self._lock:
             return any(m.is_active for m in self._models.values())
 
+    @property
+    def is_energized(self):
+        """Any model holding hardware an operator should undo before leaving
+        (wider than `is_active`: a probe in a mode but not moving counts).
+        The Web watchdog keys on this (round 8, IMP8-7)."""
+        with self._lock:
+            return any(getattr(m, "is_energized", False) for m in self._models.values())
+
     def estop_all(self):
         """Every model's estop, wired together. {name: confirmed}. Never hangs."""
         with self._lock:

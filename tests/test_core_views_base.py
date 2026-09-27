@@ -618,3 +618,20 @@ def test_event_line_is_a_sentence_without_the_source_prefix():
     e.count = 3
     assert event_line(e).endswith(" (x3)")
     assert event_line({"title": "Port Unverified", "message": "x", "count": 1}) == "Port unverified: x"
+
+
+def test_gate_reason_reads_the_direction_from_the_element():
+    """Round 8 (IMP8-1): "Not in manual mode" was shown while the probe WAS in
+    manual mode. The direction comes from the element's own gate list."""
+    from views.base import gate_reason
+    step = {"disabled_when": ["manual", "latched"]}
+    assert gate_reason(step, "manual") == "In manual mode"
+    assert gate_reason(step, "latched") == "Stopped: clear the stop first"
+    assert gate_reason(step, "autonomous") == ""
+    launch = {"enabled_when": ["ready"]}
+    assert gate_reason(launch, "launched") == "Nothing to launch yet"
+    relaunch = {"enabled_when": ["launched"]}
+    assert gate_reason(relaunch, "ready") == "Nothing launched yet"
+    start = {"disabled_when": ["running", "latched", "no_region"]}
+    assert gate_reason(start, "no_region") == "Set a capture region first"
+    assert gate_reason({"disabled_when": ["odd"]}, "odd") == "In odd mode"

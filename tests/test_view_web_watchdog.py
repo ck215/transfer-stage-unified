@@ -361,7 +361,8 @@ def _post_quit(view, method="POST"):
     request = urllib.request.Request(
         f"http://127.0.0.1:{view.port}/api/quit",
         data=b"{}" if method == "POST" else None, method=method,
-        headers={"Content-Type": "application/json"} if method == "POST" else {})
+        headers={"Content-Type": "application/json",
+                 "Origin": f"http://127.0.0.1:{view.port}"} if method == "POST" else {})
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
@@ -422,3 +423,15 @@ def test_quit_is_a_post_not_a_get():
     finally:
         view.close()
         waiter.join(timeout=2.0)
+
+
+def test_silence_while_energized_but_not_active_still_stops(watched, captured):
+    """Round 8 (IMP8-7): a probe held in autonomous mode is energized but not
+    active; a closed tab left it powered. The watchdog keys on energized."""
+    view, controller, clock = watched
+    controller.is_active = False
+    controller.is_energized = True
+    view.beat()
+    clock.now += view.STOP_SECONDS + 0.1
+    view._check_heartbeat()
+    assert controller.estop_calls == 1

@@ -48,7 +48,7 @@ from model.probe import ChuckPositioner, DCProbe, StepperProbe
 from model.red_monitor import RedMonitor
 from model.rotator import Rotator
 from panel import Panel
-from result import Refused
+from result import NeedsConfirm, Refused
 
 #: The Port dropdown's one fixed entry. Everything else in the list is a
 #: real port name. A row is switched off by its Launch checkbox (G3), never
@@ -924,22 +924,37 @@ class Setup(Panel):
         return True
 
     # -- building ----------------------------------------------------------
-    def launch(self):
+    def launch(self, confirmed=False):
         """Validate the current choices and build them. The Launch button,
         and the Relaunch button once the system is up (a build resets the
-        Controller first, so relaunching is the same call)."""
+        Controller first, so relaunching is the same call). A relaunch over
+        energized models asks first (round 8, PM8-6)."""
         configs = self.configs
         if not configs:
             self._refuse("Select at least one device: tick its Launch box.")
         self.validate(configs)
+        self._ask_before_taking_down("Relaunch", "launch", confirmed)
         return self.build(configs)
 
-    def stop_system(self):
+    def _ask_before_taking_down(self, verb, command, confirmed):
+        energized = [n for n in self.controller.model_names
+                     if getattr(self.controller._model_or_none(n), "is_energized", False)]
+        if energized and not confirmed:
+            names = (", ".join(energized[:-1]) + " and " + energized[-1]
+                     if len(energized) > 1 else energized[0])
+            plural = len(energized) > 1
+            raise NeedsConfirm(
+                f"{verb}? {names} {'are' if plural else 'is'} energized; this stops "
+                f"and disconnects {'them' if plural else 'it'} first.", command)
+
+    def stop_system(self, confirmed=False):
         """Take the whole system down without leaving the panel. Every model
-        is estopped and closed by `Controller.reset()`; Launch comes back."""
+        is estopped and closed by `Controller.reset()`; Launch comes back.
+        Asks first while anything is energized (round 8, PM8-6)."""
         running = self.controller.model_names
         if not running and not self._is_launched:
             self._refuse("Nothing is running.")
+        self._ask_before_taking_down("Close every model", "stop_system", confirmed)
         self.controller.reset()
         self._is_launched = False
         self._refresh_rows()

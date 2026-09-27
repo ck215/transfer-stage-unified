@@ -38,6 +38,45 @@ def event_line(event):
     return f"{line} (x{count})" if count > 1 else line
 
 
+#: Why a control is greyed, by the mode word that greys it, in two
+#: directions (round 8, IMP8-1: Web and Tk said "Not in manual mode" while the
+#: probe WAS in manual mode). Index 0: the mode is in the element's
+#: `disabled_when`; index 1: the mode is missing from its `enabled_when`.
+GATE_WORDS = {
+    "latched": ("Stopped: clear the stop first", None),
+    "manual": ("In manual mode", "Not in manual mode"),
+    "autonomous": ("In autonomous mode", "Not in autonomous mode"),
+    "idle": ("Idle", "Enter a mode first"),
+    "disabled": ("Not in a mode", "Enter a mode first"),
+    "fault": ("Faulted: clear the fault first", None),
+    "moving": ("Moving", None),
+    "running": ("A run is in progress", "No run in progress"),
+    "no_region": ("Set a capture region first", None),
+    "disconnected": ("Not connected", None),
+    "stale": ("Readings are stale", None),
+    "scanning": ("Scanning ports", None),
+    "ready": (None, "Nothing to launch yet"),
+    "launched": (None, "Nothing launched yet"),
+}
+
+
+def gate_reason(element, mode_name):
+    """The sentence a view puts on a disabled control, or "" when `element`
+    is not gated by `mode_name`. Reads the element's own gate lists, so the
+    direction is never guessed from the word alone."""
+    mode = str(mode_name or "")
+    disabled_when = list(element.get("disabled_when") or ())
+    enabled_when = list(element.get("enabled_when") or ())
+    if mode in disabled_when:
+        words = GATE_WORDS.get(mode, (None, None))[0]
+        return words or f"In {mode} mode"
+    if enabled_when and mode not in enabled_when:
+        wanted = str(enabled_when[0])
+        words = GATE_WORDS.get(wanted, (None, None))[1]
+        return words or f"Not in {wanted} mode"
+    return ""
+
+
 def stop_words(stop_state):
     """What every view says about the stop, from `Controller.stop_state`
     (round 7: IMP7-1/2, TK7-1, QT7-1). One function, three views, so the

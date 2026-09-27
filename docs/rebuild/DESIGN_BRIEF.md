@@ -17,7 +17,8 @@ files differ, the artboards win.
 - **Trace is for changing numbers and plot lines only.** Never a lamp, a
   tick, a card bar, a status word or a button.
 - The stop is reachable and unmistakable on every screen: A's disc in the
-  rail, always red (it does not go quiet), reads `Clear` when latched with
+  rail, always red (it does not go quiet), reads `Clear` only while EVERY
+  model is latched (a partial stop keeps it a working Stop; `views.base.stop_words`), with
   a thicker ring; Ctrl+. is its one chord; no pop-up may cover it.
 - Sentence case; copy says what happens; no platform-specific UI.
 - Every `schema.ELEMENT_TYPES` entry renders in every view; every entry
@@ -74,8 +75,8 @@ rule and the words "Stop not confirmed. Treat as live."
   "Stop: Ctrl+." under it; the page list: Overview first, then the models (the shown
   page highlighted; a press switches to it); Setup and Quit at the bottom.
 - **Sheet**: entries, not cards. An entry is a 2 px ink rule, the model
-  name, then its tier-1 body; entries are separated by whitespace. The
-  opened model's readings are `focal`, a closed probe's `compact`, a
+  name, then its tier-1 body; entries are separated by whitespace. On the device page the
+  shown model's readings are `focal`; on the Overview a probe's are `compact`, a
   single-value model's `primary`, a change `secondary` (`theme.READING_SIZES`).
   Captions are `theme.CAPTION_SIZE`, axis letters inline ("Position, steps"
   once per probe, then X Y Z).

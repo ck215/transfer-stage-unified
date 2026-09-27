@@ -161,9 +161,15 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             # values are "normal" and so not drawn in tier 1 (status by
             # exception), and the default disclosure texts. Served rather
             # than copied into app.js, so the three views read one list.
+            from views.base import GATE_WORDS
             return self._send_json(200, {
                 "quiet_values": sorted(theme.QUIET_VALUES),
-                "tier_labels": {str(k): v for k, v in theme.TIER_LABELS.items()}})
+                "tier_labels": {str(k): v for k, v in theme.TIER_LABELS.items()},
+                # Why a control is greyed, in both directions (views.base.GATE_WORDS):
+                # [when the mode is in disabled_when, when it is missing from enabled_when].
+                "gate_words": {k: list(v) for k, v in GATE_WORDS.items()},
+                "watchdog": {"warn_seconds": WebView.WARN_SECONDS,
+                             "stop_seconds": WebView.STOP_SECONDS}})
 
         if route == "/api/data":
             return self._send_data(self._one(query, "name"),
@@ -314,6 +320,14 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         `<img>`. The element type is not needed here: the value's own shape
         says which it is.
         """
+        # WDG8-1: this is a GET, which any page can make with an <img>, so it
+        # may run ONLY a command the schema declares as a data source (plot,
+        # image, log stream). Everything else is a refusal, never a run.
+        if not self._is_data_command(name, command):
+            events.warn("Refused Data Request",
+                        f"{command!r} is not a data command of {name!r}", source=SOURCE)
+            return self._send_json(403, {"status": "refused",
+                                         "reason": f"{command} is not a data source"})
         result = self._run(name, command)
         if not result.is_ok:
             return self._send_json(200, self._result_dict(result))
@@ -323,6 +337,18 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value):
             return self._send_json(200, {"status": "ok", "lines": list(value)})
         return self._send_json(200, {"status": "ok", "data": value})
+
+    def _is_data_command(self, name, command):
+        """True when `command` is a `data_command`/`source_command` of an
+        element in `name`'s schema (Setup's included)."""
+        try:
+            schema = (self.view.setup.schema if name == SETUP_NAME
+                      else self.controller.schema(name))
+        except Exception:
+            return False
+        import schema as sch
+        return any(command in (e.get("data_command"), e.get("source_command"))
+                   for e in sch.elements(schema or {}))
 
     def _send_file(self, name, command, inputs=None):
         """Download the file a save command wrote.
@@ -524,23 +550,31 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                     "status": "refused",
                     "reason": "Content-Type: application/json is required"})
                 return False
+        hosts = self._bound_hosts()
+        host = (self.headers.get("Host") or "").strip()
+        if host and host not in hosts:
+            # Every route (WDG8-1): a DNS-rebound name must not reach even a GET.
+            events.warn("Refused Foreign Host",
+                        f"{self.command} {self.path} sent Host {host}", source=SOURCE)
+            self._send_json(403, {"status": "refused",
+                                  "reason": "unrecognised Host header"})
+            return False
         if require_json or require_origin:
-            hosts = self._bound_hosts()
             origin = self.headers.get("Origin") or self.headers.get("Referer")
+            if origin is None and require_json:
+                # A browser always names its origin on a JSON POST; a request
+                # with neither header is a script, not the console (WDG8-1).
+                events.warn("Refused Anonymous Request",
+                            f"{self.command} {self.path} sent no Origin", source=SOURCE)
+                self._send_json(403, {"status": "refused",
+                                      "reason": "an Origin header naming this station is required"})
+                return False
             if origin is not None and urlparse(origin).netloc not in hosts:
                 events.warn("Refused Cross-Origin Request",
                             f"{self.command} {self.path} from origin {origin}",
                             source=SOURCE)
                 self._send_json(403, {"status": "refused",
                                       "reason": "cross-origin request refused"})
-                return False
-            host = (self.headers.get("Host") or "").strip()
-            if host and host not in hosts:
-                events.warn("Refused Foreign Host",
-                            f"{self.command} {self.path} sent Host {host}",
-                            source=SOURCE)
-                self._send_json(403, {"status": "refused",
-                                      "reason": "unrecognised Host header"})
                 return False
         return True
 
@@ -563,7 +597,12 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         # No CORS header: the dashboard is same-origin, served by this same
         # process. A wildcard here would let any site the operator's browser
-        # visits drive physical hardware.
+        # visits drive physical hardware. Nor may another origin FRAME the
+        # console: a framed copy keeps heart-beating after the real tab is
+        # gone and its clicks could be steered (WDG8-1).
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        self.send_header("X-Content-Type-Options", "nosniff")
         for key, value in (headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -854,8 +893,9 @@ class WebView:
 
         * **no gate until a client has checked in** - a Tk or Qt session
           never calls `beat()`, so it can never be stopped by this;
-        * **never while idle** - silence only matters while the station is
-          moving, heating or recording (`Controller.is_active`);
+        * **never while idle** - silence only matters while something is
+          energized: a probe in a mode, a heating heater, a recording run
+          (`Controller.is_energized`);
         * **once per silence** - a heater whose stop frame could not be
           written still reads as heating, and without the flag this would
           re-stop and re-report every tick.
@@ -864,7 +904,9 @@ class WebView:
             seen, warned, stopped = self._last_beat, self._warned, self._stopped
         if seen is None or stopped:
             return
-        if not self.controller.is_active:
+        # Energized, not merely active (round 8, IMP8-7): a probe held in a
+        # mode but not moving stayed powered through a closed tab.
+        if not getattr(self.controller, "is_energized", self.controller.is_active):
             return
         silence = self._clock() - seen
         if silence > self.STOP_SECONDS:
@@ -877,12 +919,12 @@ class WebView:
             self.controller.estop_all()
             events.error("Browser Gone - FULL STOP",
                          f"No browser has checked in for {silence:.1f}s while "
-                         f"the station was active. Every model is latched.",
+                         f"devices were energized. Every model is latched.",
                          source=SOURCE)
         elif silence > self.WARN_SECONDS and not warned:
             with self._lock:
                 self._warned = True
             events.warn("Browser Silent",
                         f"No browser has checked in for {silence:.1f}s while "
-                        f"the station is active. FULL STOP at "
+                        f"devices are energized. FULL STOP at "
                         f"{self.STOP_SECONDS:.0f}s.", source=SOURCE)

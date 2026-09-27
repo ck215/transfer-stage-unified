@@ -291,7 +291,10 @@ def _get(view, path):
 
 
 def _post(view, path, body, headers=None):
-    sent = {"Content-Type": "application/json"}
+    # A browser names its origin on every JSON POST; since round 8 (WDG8-1)
+    # the server requires it, so the helper sends what a browser would.
+    sent = {"Content-Type": "application/json",
+            "Origin": f"http://127.0.0.1:{view.port}"}
     sent.update(headers or {})
     status, _, raw = _request(view, path, "POST", body, sent)
     return status, json.loads(raw.decode("utf-8"))
@@ -704,12 +707,12 @@ def test_a_route_that_raises_answers_with_json_not_a_dropped_connection(station)
 def test_an_unparseable_body_is_a_400(station):
     view, _, _ = station
     status, _, _ = _request(view, "/api/run", "POST", None,
-                            {"Content-Type": "application/json"})
+                            {"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{view.port}"})
     # an empty body is read as {} and rejected as a missing command, not a 400
     assert status == 200
     url = f"http://127.0.0.1:{view.port}/api/run"
     request = urllib.request.Request(url, data=b"{not json", method="POST",
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{view.port}"})
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             status = response.status
@@ -722,7 +725,7 @@ def test_a_body_larger_than_the_cap_is_refused_before_it_is_read(station):
     view, _, _ = station
     status, _, _ = _request(view, "/api/run", "POST",
                             {"name": "x", "pad": "y" * (ApiHandler.MAX_BODY_BYTES + 10)},
-                            {"Content-Type": "application/json"})
+                            {"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{view.port}"})
     assert status == 413
 
 
@@ -2908,3 +2911,49 @@ def test_after_quit_the_tray_stays_opaque_and_boot_warnings_stay_in_the_log(stat
     assert out["tray"] == "", out
     assert any("Operating blind" in line for line in out["log"]), out
     assert out["opacity"] == "1", out
+
+
+# -- round 8, WDG8-1: the data route and the request guard -------------------
+
+def test_the_data_route_runs_only_declared_data_commands(station):
+    """`GET /api/data?command=step` ran a Step from any page's <img>. Only a
+    plot / image / log source may be reached this way."""
+    view, controller, probe = station
+    name = probe.NAME.replace(" ", "%20")
+    status, body = _get(view, f"/api/data?name={name}&command=toggle_estop")
+    assert status == 403 and body["status"] == "refused"
+    assert controller.state()["stop"]["latched"] == [], "nothing ran"
+
+
+def test_a_json_post_without_an_origin_is_refused(station):
+    view, controller, probe = station
+    body = {"name": probe.NAME, "command": "toggle_estop", "inputs": {}, "args": []}
+    status, _, raw = _request(view, "/api/run", "POST", body,
+                              {"Content-Type": "application/json"})
+    assert status == 403 and b"Origin" in raw
+    assert controller.state()["stop"]["latched"] == []
+    status, data = _post(view, "/api/run", body)      # the helper sends Origin
+    assert status == 200 and data["status"] in ("ok", "needs_confirm"), data
+
+
+def test_a_foreign_host_header_is_refused_on_a_plain_get(station):
+    view, _, _ = station
+    status, _, _ = _request(view, "/api/state", headers={"Host": "evil.example"})
+    assert status == 403
+
+
+def test_every_response_forbids_framing_and_sniffing(station):
+    view, _, _ = station
+    status, headers, _ = _request(view, "/")
+    assert status == 200
+    assert headers.get("X-Frame-Options") == "DENY"
+    assert "frame-ancestors 'none'" in (headers.get("Content-Security-Policy") or "")
+    assert headers.get("X-Content-Type-Options") == "nosniff"
+
+
+def test_theme_json_serves_the_gate_words_and_the_watchdog_seconds(station):
+    view, _, _ = station
+    status, body = _get(view, "/api/theme.json")
+    assert status == 200
+    assert body["gate_words"]["manual"] == ["In manual mode", "Not in manual mode"]
+    assert body["watchdog"] == {"warn_seconds": 5.0, "stop_seconds": 15.0}
