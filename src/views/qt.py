@@ -389,10 +389,15 @@ def simulation_line(states):
     """The rail's line under the title: the simulation sentence when the open
     models' ports are simulated and none is verified hardware, the simulated
     models' names when only some are, and nothing when the hardware is real
-    (the brief: nothing when connected). A gamepad or a screen is neither."""
+    (the brief: nothing when connected). A gamepad or a screen is neither.
+
+    Only the model's declared hardware links count (`hardware_devices`,
+    MOD-5, through `views.base.hardware_links`); a state without that list
+    reads every device, as before it existed."""
     simulated, real = [], []
     for name, state in (states or {}).items():
-        statuses = {str(s).lower() for s in ((state or {}).get("devices") or {}).values()}
+        links = view_base.hardware_links(state, fallback=None)
+        statuses = {str(s).lower() for s in links.values()}
         if "simulated" in statuses:
             simulated.append(name)
         elif "verified" in statuses:
@@ -3495,8 +3500,8 @@ class QtPanelView(PanelView, QWidget):
         """A slider BESIDE the entry, never instead of it (the brief): the
         slider writes the entry, the entry writes the slider, and a release
         commits the value to the model (`_commit`, the Param validates) so the
-        next refresh does not snap it back. Every command still carries the
-        entry's text (`_gather_inputs`)."""
+        next refresh does not snap it back. A command still carries the
+        entry's text while it is edited or declared (`_gather_inputs`)."""
         low, high = (int(math.floor(travel[0])), int(math.ceil(travel[1])))
         slider = KeySlider(Qt.Orientation.Horizontal)
         slider.setRange(low, high)
@@ -3587,7 +3592,8 @@ class QtPanelView(PanelView, QWidget):
     def _make_button(self, container, element):
         button = QPushButton(sentence_case(element.get("text", "")))
         button.setProperty("role", element.get("role", "neutral"))
-        # Values travel with the command (`_gather_inputs` reads the widgets),
+        # Values travel with the command (`_gather_inputs` reads the widgets:
+        # the button's declared inputs plus every edited box, MOD-6),
         # so PYSIDE-5's "the click read the previous value" cannot recur and
         # no focus is forced anywhere - the named Tk anti-fix.
         button.clicked.connect(lambda: self._run(element))
@@ -3895,6 +3901,16 @@ class QtPanelView(PanelView, QWidget):
         if not self._is_focused(widget):
             return False
         return changed
+
+    def _entry_is_edited(self, element):
+        """Typed and not committed (MOD-6): the text differs from what we
+        last wrote, focused or not. `_entry_is_dirty` requires focus, and a
+        click on a button can take it (platform-dependent), so it cannot
+        decide what travels with the command."""
+        widget = self._widget_for(element)
+        if widget is None:
+            return False
+        return widget.text() != self._clean_text.get(id(element), "")
 
     @staticmethod
     def _is_focused(widget):

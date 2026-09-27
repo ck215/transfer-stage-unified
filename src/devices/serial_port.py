@@ -214,6 +214,9 @@ class SerialPort(Device):
     SERIAL-7/SERIAL-17 (honest, non-flooding handshake).
     """
 
+    #: A hardware link (MOD-5): losing it loses the instrument.
+    is_hardware = True
+
     #: How long a priority write waits for the transaction lock before
     #: forcing itself through. Short enough that FULL STOP is not held up by
     #: a transaction in flight, long enough that the ordinary case still

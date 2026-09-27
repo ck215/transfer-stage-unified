@@ -1451,6 +1451,52 @@ def test_every_entry_travels_with_a_command(view, panel, controller):
     assert inputs["speed"] == "7.5"
 
 
+def _var(view, text):
+    return view._widgets[id(element_of(view, "entry", text))]["var"]
+
+
+def test_mod6_a_declared_input_travels_even_when_clean(view, panel, controller):
+    """(a) "Go" declares speed: it goes with the command untouched."""
+    view._refresh()
+    click(view, element_of(view, "button", "Go"))
+    _name, _command, inputs, _args = last_call(controller, "go")
+    assert "speed" in inputs
+
+
+def test_mod6_an_undeclared_clean_entry_does_not_travel(view, panel, controller):
+    """(b) CON-8: Steps and Note are not Go's inputs and nobody typed in them."""
+    view._refresh()
+    click(view, element_of(view, "button", "Go"))
+    _name, _command, inputs, _args = last_call(controller, "go")
+    assert set(inputs) == {"speed"}
+
+
+def test_mod6_an_undeclared_dirty_entry_travels(view, panel, controller):
+    """(c) What the operator just typed is never lost: an edited box goes
+    with any command, declared or not."""
+    view._refresh()
+    _var(view, "Note").set("typed a moment ago")
+    click(view, element_of(view, "button", "Go"))
+    _name, _command, inputs, _args = last_call(controller, "go")
+    assert inputs.get("note") == "typed a moment ago"
+    assert "steps" not in inputs
+
+
+def test_mod6_a_focused_box_nobody_edited_does_not_travel(view, panel, controller):
+    """Focus alone is not an edit: a box the operator clicked into and left
+    unchanged may hold a value one refresh behind (refresh skips a focused
+    box), and sending it would put that stale value back."""
+    view._refresh()
+    steps = element_of(view, "entry", "Steps")
+    Focus.current = view._widgets[id(steps)]["widget"]
+    try:
+        click(view, element_of(view, "button", "Go"))
+    finally:
+        Focus.current = None
+    _name, _command, inputs, _args = last_call(controller, "go")
+    assert "steps" not in inputs
+
+
 def test_refused_reaches_the_panel_and_not_a_popup(view, tk_harness):
     click(view, element_of(view, "button", "Refuse"))
     assert "the bench is busy" in refusal(view)
@@ -3883,6 +3929,42 @@ def test_the_rail_says_simulation_while_every_link_is_simulated(dashboard,
     view._last_state = {"devices": {"SerialPort": "verified"}}
     dashboard._on_refresh_tick()
     assert dashboard._sim_line.cget("text") == ""
+
+
+def test_mod5_the_rail_counts_the_hardware_links_the_model_declares(dashboard,
+                                                                    controller):
+    """MOD-5 / CON-6: a verified link of a class the view has never heard of
+    (PiezoLink) is hardware, because the model's state says so."""
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    view._last_state = {"devices": {"SerialPort": "simulated", "PiezoLink": "verified"},
+                        "hardware_devices": ["SerialPort", "PiezoLink"]}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == ""
+    view._last_state = {"devices": {"SerialPort": "simulated", "PiezoLink": "simulated"},
+                        "hardware_devices": ["SerialPort", "PiezoLink"]}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == "Simulation, no hardware attached"
+
+
+def test_mod5_an_empty_hardware_list_is_no_links_not_the_old_class_names(dashboard,
+                                                                         controller):
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    view._last_state = {"devices": {"SerialPort": "simulated"}, "hardware_devices": []}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == ""
+
+
+def test_mod5_a_state_without_the_list_falls_back_to_the_class_names(dashboard,
+                                                                     controller):
+    """Until every model publishes `hardware_devices`, a state without it
+    reads as before: SerialPort and SMC100 are the links."""
+    dashboard.open()
+    view = dashboard._panels["Demo"]
+    view._last_state = {"devices": {"SerialPort": "simulated", "PiezoLink": "verified"}}
+    dashboard._on_refresh_tick()
+    assert dashboard._sim_line.cget("text") == "Simulation, no hardware attached"
 
 
 def test_quit_asks_first_and_then_closes(dashboard, controller, tk_harness):

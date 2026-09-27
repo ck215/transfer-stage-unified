@@ -1476,8 +1476,8 @@ class TkPanelView(PanelView):
     An entry is a 2 px ink rule, the model's name, then its tier-1 body; its
     tier-2 sections sit in ONE panel-toned well behind a disclosure, and its
     tier-3 sections in a second disclosure ("Diagnostics") inside the well
-    (E, 2026-09-25). Every tier is BUILT at once - every entry travels with
-    every command whatever is shown - and a closed tier is simply not
+    (E, 2026-09-25). Every tier is BUILT at once - a command's inputs travel
+    whatever is shown (MOD-6) - and a closed tier is simply not
     mapped, nor polled for data.
 
     `sheet` is the dashboard's scrolling sheet when the entry lives on it;
@@ -3019,8 +3019,8 @@ class TkPanelView(PanelView):
         instead: the entry keeps the precision, the slider is the common
         adjustment. Moving the slider writes the entry's text; releasing it
         commits that text through the Controller like Return does; typing
-        or a refresh moves the slider. Every command still carries the
-        entry's text (D-5)."""
+        or a refresh moves the slider. A command carries the entry's text
+        while it is edited or declared (D-5, MOD-6)."""
         parent, place = self._field(container, element)
         background = _bg(parent)
         var = tk.StringVar(value="")
@@ -3223,8 +3223,8 @@ class TkPanelView(PanelView):
         callback, which wrote unvalidated text straight onto the model. A
         commit is a `_commit` command now: `Panel._apply_inputs` validates it
         and refuses by name. Only this field is sent, so a half-typed value in
-        another box cannot refuse this edit; every writable field travels with
-        a *command* through `_gather_inputs` regardless (D-5).
+        another box cannot refuse this edit; a *command* carries its declared
+        inputs plus every edited box through `_gather_inputs` (D-5, MOD-6).
         """
         attr = element.get("model_attr")
         result = self._call("_commit", {attr: self._read_entry(element)})
@@ -3984,6 +3984,17 @@ class TkPanelView(PanelView):
                 return True
         except Exception:
             pass
+        return var.get() != entry.get("last_text", "")
+
+    def _entry_is_edited(self, element):
+        """Typed and not committed (MOD-6): the text differs from what the
+        last refresh put there. Focus alone is not an edit - a focused box
+        is not refreshed, so its unchanged text may be a value behind, and
+        sending it would put that stale value back."""
+        entry = self._entry_for(element)
+        var = entry.get("var")
+        if entry.get("widget") is None or var is None:
+            return False
         return var.get() != entry.get("last_text", "")
 
     def _display_text(self, element, text):
@@ -6096,17 +6107,16 @@ class TkDashboard(Dashboard):
             events.debug("Station Line Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
 
-    #: Devices that are hardware links; a gamepad or the screen is not.
-    LINK_DEVICES = ("SerialPort", "SMC100")
-
     def _sync_sim_line(self):
+        """The links are the ones each model's state declares
+        (`hardware_devices`, MOD-5), through `views.base.hardware_links`; a
+        gamepad or the screen is not one."""
         statuses = []
         for name, view in self._panels.items():
             if name == self.SETUP_TAB:
                 continue
-            devices = (getattr(view, "_last_state", None) or {}).get("devices") or {}
-            statuses += [str(status) for device, status in devices.items()
-                         if device in self.LINK_DEVICES]
+            links = view_base.hardware_links(getattr(view, "_last_state", None))
+            statuses += [str(status) for status in links.values()]
         text = (SIMULATION_LINE if statuses and all(status == "simulated"
                                                     for status in statuses) else "")
         if text == self._sim_text:

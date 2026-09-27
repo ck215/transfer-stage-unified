@@ -12,7 +12,7 @@ import pytest
 import schema as sch
 from controller.controller import Controller
 from events import events
-from views.base import Dashboard, PanelView
+from views.base import Dashboard, PanelView, hardware_links
 
 from test_core_fakes import (EventRecorder, FakeDashboard, FakeModel,
                              FakePanelView, FakeSetupPanel)
@@ -90,18 +90,46 @@ def test_a_panel_the_controller_does_not_own_is_driven_directly(station):
     assert built._call("build").is_ok
 
 
-# -- every entry travels with every command (D-5) ---------------------------
+# -- a command carries its declared inputs plus every dirty entry (MOD-6) ---
 
-def test_every_writable_entry_is_sent_with_every_command(view, station):
+def test_mod6_a_declared_input_travels_even_when_clean(view, station):
+    """(a) "Move" declares speed and steps: they go with it and are
+    validated as a set (D-5), typed or not."""
     _, model = station
-    view.entry_text.update({"speed": "42.5", "steps": "9", "note": "hello"})
+    view.entry_text.update({"speed": "42.5", "steps": "9"})
+    assert not view.dirty_entries
     result = view._run(_element(view, "Move"))
     assert result.is_ok
-    assert (model.speed, model.steps, model.note) == (42.5, 9, "hello")
+    assert (model.speed, model.steps) == (42.5, 9)
+
+
+def test_mod6_an_undeclared_clean_entry_does_not_travel(view, station):
+    """(b) CON-8: a clean field the command does not use stays home, so a
+    stale or bad box elsewhere cannot refuse an unrelated command."""
+    _, model = station
+    view.entry_text["note"] = "stale words"
+    gathered = view._gather_inputs(_element(view, "Move"))
+    assert set(gathered) == {"speed", "steps"}
+    view._run(_element(view, "Move"))
+    assert model.note != "stale words"
+    assert view._gather_inputs(_element(view, "Boom")) == {}
+
+
+def test_mod6_an_undeclared_dirty_entry_travels(view, station):
+    """(c) Nothing the operator just typed is lost: an edited, uncommitted
+    box goes with any command, declared or not."""
+    _, model = station
+    view.entry_text["note"] = "hello"
+    view.dirty_entries.add("note")
+    assert view._gather_inputs(_element(view, "Boom")) == {"note": "hello"}
+    result = view._run(_element(view, "Move"))
+    assert result.is_ok
+    assert model.note == "hello"
 
 
 def test_a_read_only_element_is_not_sent_as_an_input(view):
-    gathered = view._gather_inputs()
+    view.dirty_entries.update({"note", "mode", "is_auto"})
+    gathered = view._gather_inputs(_element(view, "Move"))
     assert set(gathered) == {"speed", "steps", "note"}
     assert "mode" not in gathered and "is_auto" not in gathered
 
@@ -635,3 +663,27 @@ def test_gate_reason_reads_the_direction_from_the_element():
     start = {"disabled_when": ["running", "latched", "no_region"]}
     assert gate_reason(start, "no_region") == "Set a capture region first"
     assert gate_reason({"disabled_when": ["odd"]}, "odd") == "In odd mode"
+
+
+# -- MOD-5 / CON-6: hardware links are declared, not matched by class name ---
+
+def test_mod5_a_state_names_its_hardware_links_and_a_new_class_counts():
+    state = {"devices": {"PiezoLink": "verified", "Gamepad": "bound",
+                         "SerialPort": "simulated"},
+             "hardware_devices": ["PiezoLink", "SerialPort"]}
+    assert hardware_links(state) == {"PiezoLink": "verified", "SerialPort": "simulated"}
+
+
+def test_mod5_an_empty_hardware_list_means_none_and_never_falls_back():
+    state = {"devices": {"SerialPort": "simulated", "SMC100": "verified"},
+             "hardware_devices": []}
+    assert hardware_links(state) == {}
+    assert hardware_links(state, fallback=None) == {}
+
+
+def test_mod5_a_state_without_the_key_falls_back_to_the_old_class_names():
+    state = {"devices": {"PiezoLink": "verified", "SerialPort": "simulated",
+                         "SMC100": "verified", "Screen": "capturing"}}
+    assert hardware_links(state) == {"SerialPort": "simulated", "SMC100": "verified"}
+    assert hardware_links(state, fallback=None) == state["devices"]
+    assert hardware_links({}) == {} and hardware_links(None) == {}

@@ -592,6 +592,60 @@ function lostDevices(state) {
   return Object.keys(devices).filter((kind) => devices[kind] === 'lost').map(deviceWord);
 }
 
+/** MOD-5 / CON-6: the device class names that were hardware links before a
+ *  model published `hardware_devices`; read ONLY for a state without the
+ *  key, never when the key is there as an empty list
+ *  (`views.base.LEGACY_LINK_DEVICES`). */
+const LEGACY_LINK_DEVICES = ['SerialPort', 'SMC100'];
+
+/** The hardware links in one model's state, as device class names:
+ *  `state.hardware_devices` names them (`Device.is_hardware`), so a new
+ *  link counts without this file learning its name
+ *  (`views.base.hardware_links`). */
+function hardwareLinks(state) {
+  const devices = (state && state.devices) || {};
+  const declared = Boolean(state) && Object.prototype.hasOwnProperty.call(state, 'hardware_devices');
+  const names = declared ? (state.hardware_devices || []) : LEGACY_LINK_DEVICES;
+  return Object.keys(devices).filter((kind) => names.indexOf(kind) !== -1);
+}
+
+/** The rail's line, said only when there is no hardware: "Simulation, no
+ *  hardware attached"; a mix names the simulated models; real hardware,
+ *  nothing. */
+function simLineText(models) {
+  const simulated = [];
+  let hardware = 0;
+  for (const name of Object.keys(models || {})) {
+    const devices = (models[name] && models[name].devices) || {};
+    if (Object.keys(devices).some((k) => devices[k] === 'simulated')) simulated.push(sentence(name));
+    else if (hardwareLinks(models[name]).length) hardware += 1;
+  }
+  if (simulated.length && !hardware) return 'Simulation, no hardware attached';
+  if (simulated.length) return 'Simulated: ' + simulated.join(', ');
+  return '';
+}
+
+/** What travels with `element`'s command (MOD-6 / CON-8,
+ *  `views.base.PanelView._gather_inputs`): the entries it declares in
+ *  `inputs`, edited or not, validated as a set (D-5); plus every writable
+ *  entry the operator edited and has not committed, so nothing just typed is
+ *  lost. A clean entry the command does not declare stays home, so a bad or
+ *  stale box elsewhere cannot refuse an unrelated command. */
+function gatherInputsFor(element, widgets) {
+  const declared = (element && element.inputs) || [];
+  const inputs = {};
+  for (const widget of widgets || []) {
+    const entry = widget.element;
+    if (!entry || entry.type !== 'entry' || !entry.writable || !widget.readValue) continue;
+    const edited = widget.isEdited ? widget.isEdited()
+      : Boolean(widget.isDirty && widget.isDirty());
+    if (declared.indexOf(entry.model_attr) !== -1 || edited) {
+      inputs[entry.model_attr] = widget.readValue();
+    }
+  }
+  return inputs;
+}
+
 /** What went wrong with a request, as the end of a sentence. */
 function failureReason(err) {
   if (err && err.name === 'AbortError') {
@@ -611,7 +665,7 @@ function clockTime(date) {
 // The renderers: one per entry in schema.ELEMENT_TYPES.
 //
 // Each returns a widget: { node, setText?, setOn?, setData?, setEnabled,
-// readValue?, isDirty? }. This is the seam a toolkit subclass fills in
+// readValue?, isDirty?, isEdited? }. This is the seam a toolkit subclass fills in
 // base.py - here the toolkit is the DOM.
 // ==========================================================================
 /** A readonly value: a caption over a value. Numbers are set in the numeral
@@ -711,7 +765,7 @@ function renderEntry(panel, element) {
   if (element.max !== undefined && element.max !== null) input.max = String(element.max);
   // `slider: [low, high]` (E, 2026-09-25): a range BESIDE the entry, never
   // instead of it. The range writes the entry and the entry writes the
-  // range; a command still reads the ENTRY (gatherInputs), so what travels
+  // range; a command still reads the ENTRY (gatherInputsFor), so what travels
   // is exactly what the box says and the wire is unchanged.
   const slider = numeric && Array.isArray(element.slider)
     ? renderSlider(input, element, isInt, panel) : null;
@@ -768,6 +822,10 @@ function renderEntry(panel, element) {
     // Never overwrite what the operator is typing: focused, or edited away
     // from the last value the server sent - by the box or by its slider.
     isDirty: () => document.activeElement === input || input.value !== served,
+    // Typed and not committed (MOD-6): what travels with a command. Focus
+    // alone is not an edit - a focused box is not refreshed, so its
+    // unchanged text may be a value behind.
+    isEdited: () => input.value !== served,
     readValue: () => input.value,
     /** A commit landed: what the box says is what the station holds. */
     accept: (value) => { served = String(value); },
@@ -1981,17 +2039,10 @@ class PanelCard {
     });
   }
 
-  /** Every writable entry's current text travels with every command, so a
-   *  value typed a moment ago is never one edit behind. */
-  gatherInputs() {
-    const inputs = {};
-    for (const widget of this.widgets) {
-      const element = widget.element;
-      if (element.type === 'entry' && element.writable && widget.readValue) {
-        inputs[element.model_attr] = widget.readValue();
-      }
-    }
-    return inputs;
+  /** The declared inputs of `element` plus every edited entry
+   *  (`gatherInputsFor`, MOD-6). */
+  gatherInputs(element) {
+    return gatherInputsFor(element, this.widgets);
   }
 
   async run(element, args) {
@@ -2010,7 +2061,7 @@ class PanelCard {
     }
     let result;
     try {
-      result = await this.call(element.command, this.gatherInputs(), sent);
+      result = await this.call(element.command, this.gatherInputs(element), sent);
       // The page's own confirmation, not window.confirm: it defaults to
       // Cancel, and it never blocks the page's stop the way a native
       // dialog blocks every script on it (F17, HC-2).
@@ -2157,7 +2208,7 @@ class PanelCard {
     // wrote. The browser never names a path - it names the command.
     const url = '/api/file?name=' + encodeURIComponent(this.name)
       + '&command=' + encodeURIComponent(element.command)
-      + '&inputs=' + encodeURIComponent(JSON.stringify(this.gatherInputs()));
+      + '&inputs=' + encodeURIComponent(JSON.stringify(this.gatherInputs(element)));
     let response;
     try {
       response = await api(url, { method: 'GET' });
@@ -3294,20 +3345,9 @@ class Dashboard {
     this.tierMemory.set(name, memory);
   }
 
-  /** Said only when there is no hardware: "Simulation, no hardware
-   *  attached"; a mix names the simulated models; real hardware, nothing. */
+  /** The rail's simulation line (`simLineText`). */
   renderSimLine(models) {
-    const simulated = [];
-    let hardware = 0;
-    for (const name of Object.keys(models)) {
-      const devices = (models[name] && models[name].devices) || {};
-      const kinds = Object.keys(devices);
-      if (kinds.some((k) => devices[k] === 'simulated')) simulated.push(sentence(name));
-      else if (kinds.some((k) => k === 'SerialPort' || k === 'SMC100')) hardware += 1;
-    }
-    let text = '';
-    if (simulated.length && !hardware) text = 'Simulation, no hardware attached';
-    else if (simulated.length) text = 'Simulated: ' + simulated.join(', ');
+    const text = simLineText(models);
     putText(this.dom.simLine, text);
     if (this.dom.simLine.hidden !== !text) this.dom.simLine.hidden = !text;
   }

@@ -39,11 +39,44 @@ def test_status_is_derived_from_is_open_unless_a_subclass_says_otherwise():
     assert device.status == "open"
 
 
-def test_the_surface_is_only_open_close_is_open_status():
+def test_the_surface_is_open_close_is_open_status_and_the_two_declared_defaults():
     """"Nothing else is shared, on purpose." A Model that reaches past this
-    is a Model whose hardware cannot be swapped for a simulator."""
+    is a Model whose hardware cannot be swapped for a simulator. MOD-5 adds
+    the two things callers used to duck-type: `is_hardware` (the views'
+    hardware-link count) and `set_gate` / `is_gate_open` (window focus)."""
     public = {n for n in vars(Device) if not n.startswith("_")}
-    assert public == {"open", "close", "is_open", "status"}
+    assert public == {"open", "close", "is_open", "status",
+                      "is_hardware", "set_gate", "is_gate_open"}
+
+
+# -- MOD-5 / CON-6: declared, not duck-typed --------------------------------
+
+def test_a_device_is_not_a_hardware_link_unless_it_says_so():
+    assert Device.is_hardware is False
+    assert FakeDevice().is_hardware is False
+
+
+def test_the_serial_port_and_the_smc100_are_hardware_links_and_the_screen_is_not():
+    from devices.serial_port import SerialPort
+    from devices.smc100 import SMC100
+    from devices.screen import Screen
+    assert SerialPort.is_hardware is True
+    assert SMC100.is_hardware is True
+    assert Screen.is_hardware is False
+
+
+def test_every_device_answers_set_gate_and_only_remembers_it():
+    """The base gate is inert: a device that reads no manual input has
+    nothing to hold, but a caller (Controller.set_input_focus) may tell every
+    device without asking first, and can read back what it said."""
+    device = FakeDevice()
+    assert device.is_gate_open is True
+    assert device.set_gate(False) is None
+    assert device.is_gate_open is False
+    device.open()
+    assert device.status == "verified"          # nothing else moved
+    device.set_gate(True)
+    assert device.is_gate_open is True
 
 
 def test_a_subclass_may_report_a_richer_status_word():
