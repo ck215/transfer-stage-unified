@@ -4835,7 +4835,11 @@ class ModePanel(DemoPanel):
                        on_args=["manual"], off_args=["disabled"],
                        disabled_when=("latched",)),
             sch.button("Step", "step", role="go", disabled_when=("manual", "latched")),
+            sch.button("Hold", "hold", enabled_when=("autonomous",)),
             _internal("extend_idle")))
+
+    def hold(self):
+        return "held"
 
     def set_mode(self, target):
         self.commands.append(("set_mode", target))
@@ -5093,3 +5097,37 @@ def test_o13_the_idle_warning_is_history_not_the_trays_live_line(tk_harness,
     assert built._latest_text.cget("text") == (
         "Warning: Power down not supported. The DC board has no coil kill.")
     built.close()
+
+
+def test_o3_step_in_manual_mode_says_in_manual_mode(tk_harness):
+    """IMP8-1: the reason was inverted - "Not in manual mode" while the probe
+    WAS in manual mode. The words are `views.base.gate_reason`'s."""
+    view, panel, _controller = _mode_view()
+    panel.mode = "manual"
+    view._refresh()
+    step = view._widgets[id(element_of(view, "button", "Step"))]
+    assert not step["is_enabled"]
+    assert step["gate_tip"].text == "In manual mode"
+    assert [label.cget("text") for label in view._why_labels.values()] == [
+        "In manual mode"], "a go command says it under its row"
+    view.close()
+
+
+def test_o3_a_command_missing_its_mode_names_the_mode_it_needs(tk_harness):
+    """The other direction: Hold needs autonomous mode; in manual mode it says
+    what it needs, not the mode it is in."""
+    view, panel, _controller = _mode_view()
+    panel.mode = "manual"
+    view._refresh()
+    hold = view._widgets[id(element_of(view, "button", "Hold"))]
+    assert hold["gate_tip"].text == "Not in autonomous mode"
+    panel.mode = "autonomous"
+    view._refresh()
+    assert hold["is_enabled"] and hold["gate_tip"].text == ""
+    view.close()
+
+
+def test_o3_the_view_keeps_no_gate_table_of_its_own(tk_harness):
+    """One table, in `views.base` (three copies disagreed)."""
+    assert not hasattr(tkmod, "GATE_WORDS")
+    assert not hasattr(tkmod, "_gate_word")

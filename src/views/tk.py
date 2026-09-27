@@ -206,15 +206,11 @@ WELL_COMBO_STYLE = "Well.TCombobox"
 MIN_TARGET_PX = 24
 COMMAND_PX = 36
 
-#: Why a command is greyed out (L3): the gate word a schema names in
-#: `disabled_when` / `enabled_when`, said as what the operator can do about
-#: it. Any other word is said as itself, in sentence case.
-GATE_WORDS = {"latched": "Stopped: clear the stop first",
-              "manual": "Not in manual mode",
-              "running": "A run is in progress",
-              "no_region": "Set a capture region first",
-              "disconnected": "Not connected",
-              "moving": "Moving"}
+#: Why a command is greyed out (L3) is `views.base.gate_reason` (O3): one
+#: table for three views, read in both directions from the element's own
+#: gate lists, so Step in manual mode says "In manual mode".
+LATCHED_REASON = view_base.GATE_WORDS["latched"][0]
+FAULT_REASON = view_base.GATE_WORDS["fault"][0]
 
 #: A slider's keyboard (L6): an arrow moves 1 % of the travel (at least
 #: one unit), Page Up / Page Down 10 %; Home and End do nothing - one stray
@@ -478,11 +474,6 @@ def _field_pady():
     ring and its underline at least `MIN_TARGET_PX` tall (L4, TK7-6)."""
     chrome = 2 * FOCUS_PX + UNDERLINE_PX
     return max(1, math.ceil((MIN_TARGET_PX - _line_px() - chrome) / 2))
-
-
-def _gate_word(word):
-    word = str(word or "")
-    return GATE_WORDS.get(word) or _label(word.replace("_", " "))
 
 
 def _lamp_px():
@@ -4247,28 +4238,22 @@ class TkPanelView(PanelView):
 
     def _gate_reason(self, element):
         """Why `element` is greyed out now (L3), from the gate it failed:
-        the stop latch first, then an `enabled_by` value that is off, then
-        the mode word the schema names. "" when nothing says."""
+        the stop latch first, a fault holding the mode toggles (O4), an
+        `enabled_by` value that is off, then the mode, in
+        `views.base.gate_reason`'s words (O3). "" when nothing says."""
         state = self._last_state or {}
         mode = state.get("mode") or ""
         values = state.get("values") or {}
         if mode == "latched":
-            return GATE_WORDS["latched"]
+            return LATCHED_REASON
         if self._held_by_fault(element):
-            return view_base.GATE_WORDS["fault"][0]
+            return FAULT_REASON
         by = element.get("enabled_by")
         if by and not values.get(by):
             names = [e.get("text") for e in self._elements
                      if e.get("model_attr") == by and e is not element]
-            return f"{_label(names[0])} is off" if names else _gate_word(by)
-        if mode in (element.get("disabled_when") or ()):
-            return _gate_word(mode)
-        enabled = element.get("enabled_when") or ()
-        if enabled and mode not in enabled:
-            if "manual" in enabled:
-                return GATE_WORDS["manual"]
-            return _gate_word(mode) if mode else ""
-        return ""
+            return f"{_label(names[0])} is off" if names else _label(by.replace("_", " "))
+        return view_base.gate_reason(element, mode)
 
     def _say_why(self, element, entry, is_enabled):
         """A disabled command carries its reason as hover text; a `go`
