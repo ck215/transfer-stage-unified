@@ -74,6 +74,13 @@ wire is pinned by `tests/golden/`.
   annotations dropped; velocity only between distinct 10 Hz position samples.
 - Probe distances/speeds/brake fields are ints to the operator (floats on
   the wire, unchanged).
+- Manual Speed is live in manual mode (2026-09-26): adjusting it on the fly
+  while jogging is a feature; the next 50 Hz jog frame carries the new value.
+  Its entry is `disabled_when=("autonomous",)`; Autonomous Speed, step sizes,
+  distances and the DC brake fields stay locked in autonomous and manual. A
+  value written while the motors are live is parsed strictly (finite, ≥ 1); a
+  refused one leaves the previous speed in effect. The stop latch still blocks
+  every frame. Overrides DC-6 for this one field (`e2f60c7`).
 - Setup: auto-scan at boot + Refresh; a **Launch checkbox** and one Port
   dropdown (SIM / port) per row (2026-09-25, replaces the "Off" entry), no
   Mode; one table, one row per model; minimises on launch, reopenable.

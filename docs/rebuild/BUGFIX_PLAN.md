@@ -447,6 +447,23 @@ Tier N/O core commit; view rows ride in the Tier N worktrees (same files).
 
 Tk CCR 1, 2, 4 and 5 (the `fault` gate on the mode toggles, "Stop this model" from the base schema, no number in the idle warning, `events` title constants) landed in the Tier N/O core commit.
 
+## Tier P — temperature controller PID (owner, 2026-09-26)
+
+Owner: tune the heater's PID. Heating from idle to 30 °C overshoots, and
+there is **no active cooling**: every overshoot costs a long passive cool-down.
+Anyone running the station, an agent included, must be able to see the live
+temperature graph of the run in progress. The owner delegated the bench
+iteration (heat idle → 30 °C, analyse, retune) to an agent: an exception to
+Tier B's "never delegated", for this item only. The firmware's PID
+(`firmware/temp_controller/temp_controller.ino` loop) is unchanged by this
+tier; the gains, ramp and offset are tuned over the wire. A firmware change
+(e.g. anti-windup on the unbounded `sum`) is proposed, not flashed.
+
+| # | Sev | Where | Item | Fix | Route |
+|---|---|---|---|---|---|
+| P1 | S2 | heater (core) + a plot tool | The temperature graph is only visible inside whichever view is running; an agent, or a second person, cannot watch a run. | Every reading (time, temperature, setpoint, endpoint, gains) appended live to a per-session CSV under `~/transfer-stage-runs/`; a CLI that renders it (PNG snapshot, `--follow` to redraw). | agent (worktree) |
+| P2 | S2 | bench | Overshoot from idle to 30 °C with the defaults (Kp 2.0, Ki 0.5, Kd 0.1, ramp 10 s/°C). | Iterate at the bench: step to 30 °C, wait out passive cooling to ambient between trials, fit rise/overshoot/settling, retune. Result: proposed defaults for `src/model/heater.py` (owner approves), with the plotted trials. | agent (bench, owner-delegated) |
+
 ## Model contract (audit 2026-09-26, `handoff/audit-model-contract-2026-09-26.md`)
 
 A `PiezoStage` model written from `MODEL_CONTRACT.md` alone was driven through all three views unedited. `tests/test_model_contract.py` (160 cases over every registered class plus a minimal one) pins the contract.
