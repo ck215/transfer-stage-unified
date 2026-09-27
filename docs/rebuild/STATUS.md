@@ -115,6 +115,20 @@ lands as `palette.py` / `theme.py` tokens.
 
 ### Resume here (handoff written 2026-09-26, late)
 
+- **Later the same night (Linux bench PC)**: swap launchers validated at the
+  bench by the owner. Desktop shortcuts "Transfer Stage Launcher" (`run_swap.sh
+  new`) and "Transfer Stage Classic" (`run_swap.sh main`); `main` is a sibling
+  worktree `../transfer-stage-unified-main`, never modified. Flash state per
+  board in `~/transfer-stage-runs/flashed.json` (only a swap reflashes the
+  stepper and chuck; the Teensy keeps this tree's sketch). Speed ceiling 3200;
+  Manual Speed live in manual. **Tier P (heater PID)**: P1 (live CSV + 
+  `tools/heater_plot.py`) is committed but NOT merged, on branch
+  `worktree-agent-a620f8f275b8607b4` (`b602f68`, worktree under
+  `.claude/worktrees/`); verify and merge. P2 stopped by the owner after
+  trial 0 (no overnight heating): defaults overshoot 30 C to 34.75 C, rise
+  ~40 s, heat keeps climbing ~40 s after the controller cuts; data and
+  scripts in `~/transfer-stage-runs/heater/`. Resume in daytime only.
+
 - **Tree**: `mvc-refactor` at the commit after `e58fd3b`, clean, in step
   with origin apart from the lead's last docs commits (push is the owner's
   call). Gates on this tree: fast 2293 (+11 `window` skipped, 1 xfail =
