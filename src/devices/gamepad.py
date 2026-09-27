@@ -333,7 +333,7 @@ hub = GamepadHub()
 #     which names the bench actually reports on each OS.
 #
 #   GAMEPAD-12 -- T16000M Z direction and bumpers. main bound
-#     [X, Y, Z+(R), Z-(L), LBumper, RBumper] per *name*: "T.16000M" -> [0, 1,
+#     [X, Y, Z+(R), Z-(L), LBumper, RBumper] per *name* (main's names): "T.16000M" -> [0, 1,
 #     9, 10, 7, 9] and "Thrustmaster T.16000M" -> [0, 1, 10, 9, 7, 9], i.e.
 #     the two names disagree about which button is Z up, and bumpers came from
 #     buttons 7 and 9. One row covers both names here, with z_left = virtual
@@ -365,17 +365,49 @@ hub = GamepadHub()
 # ("button", n) reads a digital trigger as -1.0/+1.0; ("axis2x", n) reads a
 # virtual axis holding a 0/1 button value and remaps it to [-1, 1].
 
-#: What a pad with no live mapping reads as. Was `BaseGamepad.get_mapped_state`.
+#: THE gamepad contract (MOD-1): every channel a pad publishes, at neutral.
+#: Generic, not probe-shaped: a model maps channels to its own axes.
+#:
+#:   levels  axis_x, axis_y           stick, [-1, 1], idle 0
+#:           trigger_left/_right      [-1, 1], idle -1
+#:   edges   hat_x, hat_y             D-pad, -1/0/1, one per press
+#:           bumper_left/_right       0/1, one per press
+#:
+#: Edges are latched at poll time and handed out by `drain_edges()`; in
+#: `levels` they always read 0. `LAYOUTS` maps each physical pad onto these
+#: names. Was `BaseGamepad.get_mapped_state`.
 NEUTRAL = {
-    "x_axisStatus": 0.0,
-    "y_axisStatus": 0.0,
-    "z_axisStatusL": -1.0,
-    "z_axisStatusR": -1.0,
-    "dpad_LR": 0,
-    "dpad_UD": 0,
-    "LBumper": 0,
-    "RBumper": 0,
+    "axis_x": 0.0,
+    "axis_y": 0.0,
+    "trigger_left": -1.0,
+    "trigger_right": -1.0,
+    "hat_x": 0,
+    "hat_y": 0,
+    "bumper_left": 0,
+    "bumper_right": 0,
 }
+
+#: The same channels under the names `legacy/src` (and `main`) used, which
+#: the golden wire captures record as their jog inputs. Only for reading a
+#: levels dict written in that vocabulary (`to_channels`); nothing publishes
+#: these names any more.
+LEGACY_CHANNELS = {
+    "x_axisStatus": "axis_x",
+    "y_axisStatus": "axis_y",
+    "z_axisStatusL": "trigger_left",
+    "z_axisStatusR": "trigger_right",
+    "dpad_LR": "hat_x",
+    "dpad_UD": "hat_y",
+    "LBumper": "bumper_left",
+    "RBumper": "bumper_right",
+}
+
+
+def to_channels(levels):
+    """`levels` with any legacy channel name translated to the contract's."""
+    return {LEGACY_CHANNELS.get(key, key): value
+            for key, value in dict(levels or {}).items()}
+
 
 _XBOX_LINUX = {
     "x": 0, "y": (4, 1), "z_left": 2, "z_right": 5,
@@ -491,7 +523,7 @@ class Gamepad(Device):
     POLL_INTERVAL = 5          # ms -> ~200 Hz  (D-12: ruled, do not change)
 
     #: Discrete inputs. Latched at poll time, drained by exactly one consumer.
-    EDGE_KEYS = ("dpad_LR", "dpad_UD", "LBumper", "RBumper")
+    EDGE_KEYS = ("hat_x", "hat_y", "bumper_left", "bumper_right")
 
     DEADZONE = 0.12            # x/y, applied once, on the way out (GAMEPAD-14)
     TRIGGER_SNAP = -0.9        # below this a trigger reads fully idle
@@ -1037,15 +1069,15 @@ class Gamepad(Device):
             self._override(axes, buttons)
         hat = hats.get(spec["hat"], (0, 0))
         return {
-            "x_axisStatus": _source_value(axes, spec["x"], 0.0),
-            "y_axisStatus": _source_value(axes, spec["y"], 0.0),
-            "z_axisStatusL": self._trigger_value(spec["z_left"], axes, buttons),
-            "z_axisStatusR": self._trigger_value(spec["z_right"], axes, buttons),
+            "axis_x": _source_value(axes, spec["x"], 0.0),
+            "axis_y": _source_value(axes, spec["y"], 0.0),
+            "trigger_left": self._trigger_value(spec["z_left"], axes, buttons),
+            "trigger_right": self._trigger_value(spec["z_right"], axes, buttons),
             # D-pad sign is passed through unnegated; see GAMEPAD-13 above.
-            "dpad_LR": hat[0],
-            "dpad_UD": hat[1],
-            "LBumper": _source_value(buttons, spec["bumper_left"], 0),
-            "RBumper": _source_value(buttons, spec["bumper_right"], 0),
+            "hat_x": hat[0],
+            "hat_y": hat[1],
+            "bumper_left": _source_value(buttons, spec["bumper_left"], 0),
+            "bumper_right": _source_value(buttons, spec["bumper_right"], 0),
         }
 
     @staticmethod
@@ -1083,10 +1115,10 @@ class Gamepad(Device):
     @staticmethod
     def _apply_deadzones(state):
         """The one place a deadzone is applied (GAMEPAD-14)."""
-        for key in ("x_axisStatus", "y_axisStatus"):
+        for key in ("axis_x", "axis_y"):
             if abs(state.get(key, 0.0)) < Gamepad.DEADZONE:
                 state[key] = 0.0
-        for key in ("z_axisStatusL", "z_axisStatusR"):
+        for key in ("trigger_left", "trigger_right"):
             if state.get(key, 0.0) < Gamepad.TRIGGER_SNAP:
                 state[key] = -1.0
         return state

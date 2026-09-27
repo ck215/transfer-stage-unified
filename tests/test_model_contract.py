@@ -350,3 +350,66 @@ def test_window_focus_gates_every_manual_input_device(model):
                 assert gate is False, f"{type(device).__name__} still open while unfocused"
     finally:
         station.close()
+
+
+# -- MOD-2: loops go through the base -----------------------------------------
+
+#: Classes that still override `_stop_threads`, and why a join cannot do it.
+STOP_THREADS_OVERRIDES = {
+    # A run is a one-shot per-command worker with its own stop (`run.end()`):
+    # ending it is something the base join cannot do.
+    "RedMonitor": "ends the in-flight run before the base join",
+}
+
+
+def test_loops_are_stopped_by_the_base_join(model):
+    cls = type(model)
+    if cls._stop_threads is Model._stop_threads:
+        return
+    assert cls.__name__ in STOP_THREADS_OVERRIDES, (
+        f"{cls.__name__} overrides _stop_threads; spawn its loops with "
+        "Model._spawn and let the base join them")
+
+
+def test_close_leaves_no_spawned_loop_running(model):
+    cls = type(model)
+    fresh = cls() if cls is MinimalModel else cls(port="SIM", gamepad=None, sim=True)
+    fresh.open()
+    spawned = list(fresh._spawned_threads())
+    fresh.close()
+    alive = [t.name for t in spawned if t.is_alive()]
+    assert not alive, f"still running after close: {alive}"
+
+
+# -- MOD-3: the idle clock is one mixin ---------------------------------------
+
+def test_a_model_with_an_idle_clock_takes_it_from_the_mixin(model):
+    from model.idle import IdleInterlock
+    commands = {e.get("command") for e in _elements(model)}
+    if "extend_idle" in commands or "idle_remaining" in model.state:
+        assert isinstance(model, IdleInterlock), (
+            f"{type(model).__name__} runs its own idle clock; mix in "
+            "model.idle.IdleInterlock")
+
+
+# -- MOD-1: the gamepad contract ------------------------------------------------
+
+from test_gamepad_input import JoystickStage              # noqa: E402
+
+#: A gamepad-driven device that is not a probe, run through every check above.
+CLASSES["Joystick Stage"] = JoystickStage
+
+
+def test_a_gamepad_model_takes_its_input_from_the_mixin(model):
+    from model.gamepad_input import GamepadInput
+    if not type(model).NEEDS_GAMEPAD:
+        assert not isinstance(model, GamepadInput) or type(model) is JoystickStage
+        return
+    assert isinstance(model, GamepadInput), (
+        f"{type(model).__name__} needs a gamepad but does not mix in "
+        "model.gamepad_input.GamepadInput")
+    dropdowns = [e for e in _elements(model) if e["type"] == "dropdown"
+                 and e["command"] == "set_gamepad"]
+    assert dropdowns, f"{type(model).__name__} declares no Gamepad: dropdown"
+    assert dropdowns[0]["options_command"] == "gamepad_options"
+    assert dropdowns[0]["model_attr"] == "gamepad_name"

@@ -262,9 +262,6 @@ class RedMonitor(Model):
     AXES = ("X", "Y", "Z")
     _AXIS_INDEX = {"X": 0, "Y": 1, "Z": 2}
 
-    #: How long the run thread gets to leave before close() gives up on it.
-    JOIN_BUDGET = 2.0
-
     #: What the operator INTENDED, as data rather than as attributes
     #: (REDPERCENT-23). Adding a field for the next experiment is a line here;
     #: the schema, the snapshot and the sidecar all follow from it. These never
@@ -698,10 +695,20 @@ class RedMonitor(Model):
         self.end_run()
         return True
 
-    def _start_threads(self):
-        """A run is started by the operator, not by opening the model."""
-
     def _stop_threads(self):
+        """End the in-flight run, then join it; then the base join (MOD-2).
+
+        The one override of `_stop_threads` left (MOD-2): a run is a one-shot
+        per-command worker with its own stop, and ending it is something a
+        join cannot do. Opening this model starts no loop; a run is started by
+        the operator.
+        """
+        try:
+            self._end_run_thread()
+        finally:
+            super()._stop_threads()
+
+    def _end_run_thread(self):
         run = self._run
         if run is None:
             return
@@ -710,13 +717,13 @@ class RedMonitor(Model):
         if thread is None or not thread.is_alive():
             return
         started = time.monotonic()
-        thread.join(timeout=self.JOIN_BUDGET)
+        thread.join(timeout=self.THREAD_JOIN_TIMEOUT)
         events.debug("Run Thread", f"join took "
                      f"{(time.monotonic() - started) * 1000:.0f} ms",
                      source=self.NAME)
         if thread.is_alive():
             events.warn("Run Thread Still Running",
-                        f"the run thread did not stop within {self.JOIN_BUDGET}s; "
+                        f"the run thread did not stop within {self.THREAD_JOIN_TIMEOUT}s; "
                         "it may still be capturing and writing to this run's log",
                         source=self.NAME)
 

@@ -82,28 +82,28 @@ def test_xbox_layout_off_linux_reads_axes_zero_three_four_five():
                 axes={0: 0.8, 3: -0.5, 4: -0.5},
                 buttons={4: 1}, hats={0: (1, -1)})
     state = pad._read_layout()
-    assert state["x_axisStatus"] == 0.8
-    assert state["y_axisStatus"] == -0.5      # axis 3 is present, so axis 3
-    assert state["z_axisStatusL"] == -0.5     # LT is axis 4 off Linux
-    assert state["LBumper"] == 1
-    assert state["dpad_LR"] == 1
-    assert state["dpad_UD"] == -1
+    assert state["axis_x"] == 0.8
+    assert state["axis_y"] == -0.5      # axis 3 is present, so axis 3
+    assert state["trigger_left"] == -0.5     # LT is axis 4 off Linux
+    assert state["bumper_left"] == 1
+    assert state["hat_x"] == 1
+    assert state["hat_y"] == -1
 
 
 def test_xbox_layout_on_linux_moves_the_trigger_and_stick_axes():
     pad = bound("xbox", platform="linux",
                 axes={0: 0.8, 4: -0.5, 2: 0.3, 5: 0.9}, buttons={5: 1})
     state = pad._read_layout()
-    assert state["x_axisStatus"] == 0.8
-    assert state["y_axisStatus"] == -0.5      # Linux xpad: right stick Y is 4
-    assert state["z_axisStatusL"] == 0.3      # LT is axis 2 on Linux
-    assert state["z_axisStatusR"] == 0.9
-    assert state["RBumper"] == 1
+    assert state["axis_x"] == 0.8
+    assert state["axis_y"] == -0.5      # Linux xpad: right stick Y is 4
+    assert state["trigger_left"] == 0.3      # LT is axis 2 on Linux
+    assert state["trigger_right"] == 0.9
+    assert state["bumper_right"] == 1
 
 
 def test_xbox_layout_falls_back_to_axis_one_when_the_pad_has_no_axis_three():
     pad = bound("xbox", platform="darwin", numaxes=2, axes={0: 0.4, 1: -0.2})
-    assert pad._read_layout()["y_axisStatus"] == -0.2
+    assert pad._read_layout()["axis_y"] == -0.2
 
 
 def test_xbox_triggers_idle_at_minus_one_before_anything_is_read():
@@ -112,8 +112,8 @@ def test_xbox_triggers_idle_at_minus_one_before_anything_is_read():
         for index in idle:
             assert pad._axis_values[index] == -1.0
         state = pad._read_layout()
-        assert state["z_axisStatusL"] == -1.0
-        assert state["z_axisStatusR"] == -1.0
+        assert state["trigger_left"] == -1.0
+        assert state["trigger_right"] == -1.0
 
 
 # ----------------------------------------------------------------------
@@ -125,13 +125,13 @@ def test_bluetooth_xbox_layout_on_linux_uses_the_generic_hid_mapping():
                 axes={0: 0.5, 3: -0.2, 5: 0.8, 4: -1.0},
                 buttons={6: 1}, hats={0: (-1, 1)})
     state = pad._read_layout()
-    assert state["x_axisStatus"] == 0.5
-    assert state["y_axisStatus"] == -0.2
-    assert state["z_axisStatusL"] == 0.8      # LT is axis 5 on BT Linux
-    assert state["z_axisStatusR"] == -1.0     # RT is axis 4
-    assert state["LBumper"] == 1              # bumpers are buttons 6 and 7
-    assert state["dpad_LR"] == -1
-    assert state["dpad_UD"] == 1
+    assert state["axis_x"] == 0.5
+    assert state["axis_y"] == -0.2
+    assert state["trigger_left"] == 0.8      # LT is axis 5 on BT Linux
+    assert state["trigger_right"] == -1.0     # RT is axis 4
+    assert state["bumper_left"] == 1              # bumpers are buttons 6 and 7
+    assert state["hat_x"] == -1
+    assert state["hat_y"] == 1
 
 
 def test_bluetooth_xbox_layout_off_linux_is_the_wired_xbox_layout():
@@ -158,17 +158,17 @@ def test_f310_dinput_reads_the_triggers_as_digital_buttons():
     pad = bound("logitech_f310", mode="dinput", numaxes=4,
                 axes={0: 0.4, 3: -0.6}, buttons={6: 1, 7: 0, 4: 1})
     state = pad._read_layout()
-    assert state["x_axisStatus"] == 0.4
-    assert state["y_axisStatus"] == -0.6      # axis 3 exists on a 4-axis pad
-    assert state["z_axisStatusL"] == 1.0      # button 6 pressed
-    assert state["z_axisStatusR"] == -1.0     # button 7 idle
-    assert state["LBumper"] == 1
+    assert state["axis_x"] == 0.4
+    assert state["axis_y"] == -0.6      # axis 3 exists on a 4-axis pad
+    assert state["trigger_left"] == 1.0      # button 6 pressed
+    assert state["trigger_right"] == -1.0     # button 7 idle
+    assert state["bumper_left"] == 1
 
 
 def test_f310_dinput_falls_back_to_axis_one_on_a_two_axis_pad():
     pad = bound("logitech_f310", mode="dinput", numaxes=2,
                 axes={0: 0.4, 1: -0.6})
-    assert pad._read_layout()["y_axisStatus"] == -0.6
+    assert pad._read_layout()["axis_y"] == -0.6
 
 
 def test_f310_xinput_is_the_xbox_layout_on_both_platform_branches():
@@ -177,7 +177,7 @@ def test_f310_xinput_is_the_xbox_layout_on_both_platform_branches():
     assert f310["linux"] is xbox["linux"] and f310["default"] is xbox["default"]
 
     pad = bound("logitech_f310", mode="xinput", axes={0: 0.7})
-    assert pad._read_layout()["x_axisStatus"] == 0.7
+    assert pad._read_layout()["axis_x"] == 0.7
 
 
 # ----------------------------------------------------------------------
@@ -189,16 +189,16 @@ def test_t16000m_button_two_drives_z_down():
     state = pad._read_layout()
     # The override writes the buttons into virtual axes 9 and 10 first.
     assert pad._axis_values[9] == 1 and pad._axis_values[10] == 0
-    assert state["z_axisStatusR"] == 1.0
-    assert state["z_axisStatusL"] == -1.0
+    assert state["trigger_right"] == 1.0
+    assert state["trigger_left"] == -1.0
 
 
 def test_t16000m_button_three_drives_z_up():
     pad = bound("t16000m", numaxes=11, numbuttons=16, buttons={3: 1})
     state = pad._read_layout()
     assert pad._axis_values[10] == 1 and pad._axis_values[9] == 0
-    assert state["z_axisStatusL"] == 1.0
-    assert state["z_axisStatusR"] == -1.0
+    assert state["trigger_left"] == 1.0
+    assert state["trigger_right"] == -1.0
 
 
 def test_t16000m_bumpers_read_buttons_four_and_five_today():
@@ -210,15 +210,15 @@ def test_t16000m_bumpers_read_buttons_four_and_five_today():
     """
     pad = bound("t16000m", numaxes=11, numbuttons=16, buttons={4: 1, 5: 0, 7: 0, 9: 1})
     state = pad._read_layout()
-    assert state["LBumper"] == 1
-    assert state["RBumper"] == 0
+    assert state["bumper_left"] == 1
+    assert state["bumper_right"] == 0
 
 
 def test_t16000m_sticks_are_axes_zero_and_one():
     pad = bound("t16000m", numaxes=11, numbuttons=16, axes={0: -0.75, 1: 0.25})
     state = pad._read_layout()
-    assert state["x_axisStatus"] == -0.75
-    assert state["y_axisStatus"] == 0.25
+    assert state["axis_x"] == -0.75
+    assert state["axis_y"] == 0.25
 
 
 # ----------------------------------------------------------------------
@@ -264,7 +264,7 @@ def test_the_dpad_sign_is_passed_through_unnegated():
     """GAMEPAD-13, pinned UNVERIFIED: main negated both hat axes."""
     pad = bound("xbox", hats={0: (1, 1)})
     state = pad._read_layout()
-    assert (state["dpad_LR"], state["dpad_UD"]) == (1, 1)
+    assert (state["hat_x"], state["hat_y"]) == (1, 1)
 
 
 def test_the_deadzone_is_applied_exactly_once_on_the_way_out():
@@ -273,27 +273,27 @@ def test_the_deadzone_is_applied_exactly_once_on_the_way_out():
     """
     pad = bound("xbox", axes={0: 0.11, 3: -0.11, 4: -0.95, 5: -0.85})
     raw = pad._read_layout()
-    assert raw["x_axisStatus"] == 0.11, "the raw reading was deadzoned on the way in"
+    assert raw["axis_x"] == 0.11, "the raw reading was deadzoned on the way in"
 
     state = Gamepad._apply_deadzones(dict(raw))
-    assert state["x_axisStatus"] == 0.0
-    assert state["y_axisStatus"] == 0.0
-    assert state["z_axisStatusL"] == -1.0     # snapped, it was below -0.9
-    assert state["z_axisStatusR"] == -0.85    # left alone
+    assert state["axis_x"] == 0.0
+    assert state["axis_y"] == 0.0
+    assert state["trigger_left"] == -1.0     # snapped, it was below -0.9
+    assert state["trigger_right"] == -0.85    # left alone
 
-    over = Gamepad._apply_deadzones({"x_axisStatus": 0.13, "y_axisStatus": -0.13,
-                                     "z_axisStatusL": -1.0, "z_axisStatusR": 0.5})
-    assert over["x_axisStatus"] == 0.13
-    assert over["y_axisStatus"] == -0.13
-    assert over["z_axisStatusR"] == 0.5
+    over = Gamepad._apply_deadzones({"axis_x": 0.13, "axis_y": -0.13,
+                                     "trigger_left": -1.0, "trigger_right": 0.5})
+    assert over["axis_x"] == 0.13
+    assert over["axis_y"] == -0.13
+    assert over["trigger_right"] == 0.5
 
 
 def test_applying_the_deadzone_twice_would_not_change_the_answer():
     """The property that makes "exactly once" checkable: it is idempotent, so
     a second application anywhere in the chain would be silent. It is called
     in one place, `_capture_state`, and this is the guard on that."""
-    once = Gamepad._apply_deadzones({"x_axisStatus": 0.11, "y_axisStatus": 0.5,
-                                     "z_axisStatusL": -0.95, "z_axisStatusR": 0.2})
+    once = Gamepad._apply_deadzones({"axis_x": 0.11, "axis_y": 0.5,
+                                     "trigger_left": -0.95, "trigger_right": 0.2})
     twice = Gamepad._apply_deadzones(dict(once))
     assert once == twice
 
@@ -311,13 +311,13 @@ def test_flush_neutral_never_writes_minus_one_into_a_stick_axis():
     """
     pad = bound("xbox", platform="linux", axes={4: 0.7, 0: 0.7})
     pad._last_raw = pad._read_layout()
-    assert pad._last_raw["y_axisStatus"] == 0.7
+    assert pad._last_raw["axis_y"] == 0.7
 
     pad.flush_neutral()
 
     assert pad._axis_values[4] == 0.7, "the flush rewrote a raw axis cache"
-    assert pad.levels["y_axisStatus"] == 0.0
-    assert pad.levels["x_axisStatus"] == 0.0
+    assert pad.levels["axis_y"] == 0.0
+    assert pad.levels["axis_x"] == 0.0
     assert pad.levels == dict(NEUTRAL, **{k: 0 for k in Gamepad.EDGE_KEYS})
 
 
@@ -326,12 +326,12 @@ def test_flush_neutral_holds_while_the_stick_is_still_held():
     because the loop read the hardware again and refilled the cache."""
     pad = bound("xbox", axes={0: 0.9})
     pad._capture_state()
-    assert pad.levels["x_axisStatus"] == 0.9
+    assert pad.levels["axis_x"] == 0.9
 
     pad.flush_neutral()
     for _ in range(10):                       # ten poll ticks, stick still held
         pad._capture_state()
-    assert pad.levels["x_axisStatus"] == 0.0, "a held stick came back after the flush"
+    assert pad.levels["axis_x"] == 0.0, "a held stick came back after the flush"
 
 
 def test_flush_neutral_releases_as_soon_as_the_pad_actually_moves():
@@ -339,17 +339,17 @@ def test_flush_neutral_releases_as_soon_as_the_pad_actually_moves():
     pad._capture_state()
     pad.flush_neutral()
     pad._capture_state()
-    assert pad.levels["x_axisStatus"] == 0.0
+    assert pad.levels["axis_x"] == 0.0
 
     pad._axis_values[0] = 0.4                 # the operator moved it
     pad._capture_state()
-    assert pad.levels["x_axisStatus"] == 0.4
+    assert pad.levels["axis_x"] == 0.4
 
 
 def test_flush_neutral_latches_no_edges_while_it_holds():
     pad = bound("xbox", buttons={4: 1})
     pad._capture_state()
-    assert pad.drain_edges().get("LBumper") == 1
+    assert pad.drain_edges().get("bumper_left") == 1
 
     pad.flush_neutral()
     for _ in range(5):

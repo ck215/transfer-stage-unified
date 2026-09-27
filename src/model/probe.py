@@ -37,6 +37,8 @@ from devices import gamepad as gamepad_device
 from devices import serial_port as serial_device
 from events import events
 from model.base import Model
+from model.gamepad_input import GamepadInput
+from model.idle import IdleInterlock
 from param import Param
 from result import Refused
 
@@ -69,10 +71,6 @@ _ENERGIZED = frozenset({ProbeMode.IDLE, ProbeMode.AUTO, ProbeMode.MANUAL,
 #: Modes reached only through a *confirmed* enable (invariant I-3.1).
 _ARMED = frozenset({ProbeMode.IDLE, ProbeMode.AUTO, ProbeMode.MANUAL})
 
-#: The discrete gamepad keys that carry a step in the jog packet (D3). They
-#: come from `Gamepad.drain_edges()`, never from `levels`.
-_STEP_KEYS = gamepad_device.Gamepad.EDGE_KEYS
-
 #: The modes in which a motion parameter may not be edited. One tuple, read by
 #: the schema entries and by the property setters, so what a view greys out and
 #: what the model refuses cannot drift apart (DC-6).
@@ -97,7 +95,7 @@ PACKET_FORMAT = "<BBffffffffff"
 START_MARKER = 0xAA
 
 
-class Probe(Model):
+class Probe(GamepadInput, IdleInterlock, Model):
     """A three-axis probe: one SerialPort, one Gamepad, one mode."""
 
     NAME = "Probe"
@@ -136,7 +134,7 @@ class Probe(Model):
     PACKET_FORMAT = PACKET_FORMAT
 
     #: The one documented rate for each model-owned loop (RC-4).
-    JOG_INTERVAL = 0.02       # s -> 50 Hz, the manual jog stream
+    GAMEPAD_RATE_HZ = 50.0    # the manual jog stream (GamepadInput's pump)
     SAMPLE_INTERVAL = 0.01    # s -> ~100 Hz drain of a 10 Hz POS stream
     #: How many lines one drain pass will take before yielding. The firmware
     #: prints one POS line per 100 ms (PRINT_INTERVAL); a cap keeps a flooded
@@ -148,13 +146,8 @@ class Probe(Model):
     #: considered arrived.
     STEP_SETTLE = 1.0
 
-    #: Idle interlock. Overridable by tests to avoid a five-minute wait.
-    INTERLOCK_POLL_INTERVAL = 5.0
-    INTERLOCK_TIMEOUT = 300.0
-    #: How long before the interlock fires the views are told it is coming
-    #: (Tier N, owner 2026-09-26): one "Idle Timeout Soon" warning per idle
-    #: period, and `extend_idle` restarts the clock.
-    IDLE_WARN_SECONDS = 60.0
+    # The idle interlock's INTERLOCK_TIMEOUT (300 s), INTERLOCK_POLL_INTERVAL
+    # and IDLE_WARN_SECONDS (60 s) come from `model.idle.IdleInterlock`.
 
     def __init__(self, port=None, gamepad=None, sim=False):
         # Mode and the gated parameter store come first: `Panel.__init__`
@@ -168,8 +161,7 @@ class Probe(Model):
         super().__init__()
 
         self.port = self._build_port(port, sim)
-        self.gamepad = self._build_gamepad(gamepad)
-        self._gamepad_name = gamepad if isinstance(gamepad, str) else None
+        self._attach_gamepad(gamepad)
 
         # Position, sampled from the stream the firmware sends unasked.
         self._position = (0, 0, 0)
@@ -183,22 +175,6 @@ class Probe(Model):
         # forever -- and the interlock deferred on it, which is how an
         # energized probe sat idle indefinitely (STEPPER-6, DC-1).
         self._moving_deadline = None
-
-        # Idle interlock. A fresh Event and generation per arming (STEPPER-7):
-        # one reused Event meant a watchdog stopped by one disable stayed
-        # stopped for the next enable.
-        self._activity_time = time.monotonic()
-        self._idle_warned = False
-        self._interlock_stop = threading.Event()
-        self._interlock_stop.set()
-        self._interlock_thread = None
-        self._interlock_generation = 0
-
-        self._threads_stop = threading.Event()
-        self._threads_stop.set()
-        self._jog_thread = None
-        self._was_pumping = False     # the jog tick's previous pumping state
-        self._sample_thread = None
         self._coil_kill_reported = False
 
     # -- devices ----------------------------------------------------------
@@ -215,57 +191,22 @@ class Probe(Model):
             return serial_device.SerialPort(name, baud_rate=self.BAUD_RATE)
         return port
 
-    def _build_gamepad(self, gamepad):
-        if gamepad is None or isinstance(gamepad, str):
-            hub = getattr(gamepad_device, "hub", None)
-            if hub is None:
-                return gamepad_device.Gamepad(self.NAME)
-            return gamepad_device.Gamepad(self.NAME, hub=hub)
-        return gamepad
-
     @property
     def devices(self):
         return [d for d in (self.port, self.gamepad) if d is not None]
 
     def open(self):
-        super().open()
-        if self._gamepad_name and self._gamepad_name != "None":
-            try:
-                self.gamepad.bind(self._gamepad_name)
-            except Exception as exc:
-                events.debug("Gamepad Bind Failed",
-                             f"{self._gamepad_name!r}: {exc!r}",
-                             source=self.NAME, exception=exc)
-                events.warn("Gamepad Bind Failed",
-                            f"Could not connect to the gamepad "
-                            f"{self._gamepad_name}. Check it is plugged in, "
-                            "then choose it again.", source=self.NAME,
-                            exception=exc)
+        super().open()      # GamepadInput binds the chosen pad after this
         events.debug("Devices Open", f"port={getattr(self.port, 'status', '?')} "
                      f"gamepad={self.gamepad_name}", source=self.NAME)
 
     # -- threads ----------------------------------------------------------
     def _start_threads(self):
-        self._threads_stop.clear()
-        if self._sample_thread is None or not self._sample_thread.is_alive():
-            self._sample_thread = threading.Thread(
-                target=self._sample_loop, daemon=True,
-                name=f"sample-{self.NAME}")
-            self._sample_thread.start()
-        if self._jog_thread is None or not self._jog_thread.is_alive():
-            self._jog_thread = threading.Thread(
-                target=self._jog_loop, daemon=True, name=f"jog-{self.NAME}")
-            self._jog_thread.start()
+        """The sampler here, the gamepad pump in GamepadInput, both through
+        the base (MOD-2), which stops and joins them at close."""
+        self._spawn("sample", self._sample_loop)
+        super()._start_threads()
         events.debug("Threads Started", "sample ~100 Hz, jog 50 Hz",
-                     source=self.NAME)
-
-    def _stop_threads(self):
-        self._threads_stop.set()
-        self._stop_interlock()
-        for thread in (self._jog_thread, self._sample_thread):
-            if thread is not None and thread.is_alive():
-                thread.join(timeout=1.0)
-        events.debug("Threads Stopped", "sample and jog loops joined",
                      source=self.NAME)
 
     # -- mode -------------------------------------------------------------
@@ -645,28 +586,15 @@ class Probe(Model):
     def _send_jog(self, levels):
         """One 42-byte jog packet built from gamepad levels.
 
-        Losing the pad while MANUAL leaves the mode through the one transition,
-        which sends the stop frame and de-energizes (STEPPER-5). The old code
-        cleared `manual_flag` alone and left `system_enabled` True, so the
-        coils stayed energized in a mode nothing was driving.
+        `levels` is in the gamepad contract's channels
+        (`devices.gamepad.NEUTRAL`); a dict in the legacy vocabulary the
+        golden captures record is read through `to_channels`.
         """
-        levels = dict(levels or {})
-        if self.is_manual and not self._is_gamepad_bound:
-            events.warn("Manual Mode Stopped",
-                        "The gamepad disconnected, so manual mode stopped and "
-                        "the motors were disabled.", source=self.NAME)
-            self._set_mode(ProbeMode.DISABLED, "gamepad lost")
-            levels = {}
+        levels = gamepad_device.to_channels(levels)
         if self.port is None:
             return False
-
-        if any(levels.get(key, default) != default for key, default in (
-                ("x_axisStatus", 0.0), ("y_axisStatus", 0.0),
-                ("z_axisStatusR", -1.0), ("z_axisStatusL", -1.0),
-                ("dpad_LR", 0), ("dpad_UD", 0),
-                ("LBumper", 0), ("RBumper", 0))):
+        if self._is_off_neutral(levels):
             self._touch_activity()
-
         payload = self._jog_bytes(levels)
         written = bool(self.port.write(payload, abort_if=self._estop.is_set))
         events.debug("Jog", f"50 Hz stream; last frame written={written}",
@@ -676,24 +604,24 @@ class Probe(Model):
     def _jog_bytes(self, levels):
         # Triggers idle at -1; remap [-1, 1] -> [0, 1]. UP (L) is positive,
         # DOWN (R) negative.
-        z_up = (self._level(levels, "z_axisStatusL", -1.0) + 1.0) / 2.0
-        z_down = (self._level(levels, "z_axisStatusR", -1.0) + 1.0) / 2.0
-        bumpers = (int(self._level(levels, "LBumper", 0))
-                   - int(self._level(levels, "RBumper", 0)))
+        z_up = (self._level(levels, "trigger_left", -1.0) + 1.0) / 2.0
+        z_down = (self._level(levels, "trigger_right", -1.0) + 1.0) / 2.0
+        bumpers = (int(self._level(levels, "bumper_left", 0))
+                   - int(self._level(levels, "bumper_right", 0)))
         fmt = self.PACKET_FORMAT
         cast = float if "f" in fmt[5:] else int
         return struct.pack(
             fmt,
             START_MARKER,
             1,
-            float(self._level(levels, "x_axisStatus", 0.0)),
-            float(self._level(levels, "y_axisStatus", 0.0)),
+            float(self._level(levels, "axis_x", 0.0)),
+            float(self._level(levels, "axis_y", 0.0)),
             float(z_up - z_down),
             cast(self._number("x_step")),
             cast(self._number("y_step")),
             cast(self._number("z_step")),
-            cast(self._level(levels, "dpad_LR", 0)),
-            cast(self._level(levels, "dpad_UD", 0)),
+            cast(self._level(levels, "hat_x", 0)),
+            cast(self._level(levels, "hat_y", 0)),
             cast(bumpers),
             cast(self._number("man_full_speed")),
         )
@@ -704,63 +632,8 @@ class Probe(Model):
         return default if value is None else value
 
     # -- loops ------------------------------------------------------------
-    def _jog_loop(self):
-        """Pump gamepad input to the hardware at 50 Hz while MANUAL.
-
-        The gate is checked here, in the one place that writes motion from
-        gamepad input. `flush_neutral` used to be the answer and could not
-        work: the poll loop simply read the physical stick again and refilled
-        the cache before the next send. Gating the *send* is what holds the
-        axis.
-        """
-        self._was_pumping = False
-        while not self._threads_stop.wait(self.JOG_INTERVAL):
-            if not self._jog_tick():
-                return
-
-    def _jog_tick(self):
-        """One jog tick: the body of `_jog_loop`, driven directly by tests.
-
-        Returns False only when the pump has faulted and must stop.
-
-        D-pad and bumper steps (D3) travel in this packet, one per press: the
-        Gamepad parks each press as an edge and zeroes those keys in
-        `levels`, so the levels alone never carry a step. The edges are
-        drained on **every** tick in **every** mode and used only when this
-        tick sends a jog; otherwise they are discarded. Draining only while
-        pumping would leave a tap made while idle, gated or latched parked in
-        the pad, to fire on the first packet after entering manual.
-        """
-        try:
-            edges = self._drain_edges()
-            pumping = self.is_manual and self._is_gate_open
-            if pumping and not self._estop.is_set():
-                levels = self._axis_state()
-                if levels:
-                    # A pad whose levels could not be read is held at
-                    # neutral, so it does not step either.
-                    for key in _STEP_KEYS:
-                        levels[key] = edges.get(key, 0)
-                self._send_jog(levels)
-            elif self._was_pumping:
-                # Neutral on exit (I-4.2): leaving manual mode, or having
-                # the gate close under it, sends one zeroed frame or the
-                # last non-zero command stands. One frame, not a stream --
-                # the gate is not a stop.
-                self._send_jog({})
-            self._was_pumping = pumping
-        except Refused as refusal:
-            events.debug("Jog Refused", refusal.reason, source=self.NAME,
-                         every=1.0)
-            self._was_pumping = False
-        except Exception as exc:
-            events.debug("Jog Pump Failed", repr(exc), source=self.NAME,
-                         exception=exc)
-            self._enter_fault("Manual control stopped working. Treat the "
-                              "probe as live, stop it, and check the "
-                              "gamepad and the connection.")
-            return False
-        return True
+    # The jog pump is GamepadInput's (`_gamepad_loop` / `_gamepad_tick`); the
+    # probe's part is the four hooks under "gamepad" below.
 
     def _sample_loop(self):
         """Drain the position stream the firmware sends unasked.
@@ -877,209 +750,56 @@ class Probe(Model):
     def velocity_text(self):
         return ", ".join(f"{v:.1f}" for v in self._velocity)
 
-    # -- gamepad ----------------------------------------------------------
+    # -- gamepad (MOD-1: GamepadInput owns bind, gate, pump; these are hooks) -
     @property
-    def _is_gamepad_bound(self):
-        return bool(self.gamepad is not None and self.gamepad.is_bound)
+    def _pumps_gamepad(self):
+        return self.is_manual
 
+    def _on_gamepad(self, levels, edges):
+        """D-pad and bumper steps (D3) travel in this packet, one per press:
+        `levels` arrives with the drained edges already merged in."""
+        self._send_jog(levels)
+
+    def _on_gamepad_lost(self, reason):
+        """Leave MANUAL through the one transition, which sends the stop frame
+        and de-energizes (STEPPER-5)."""
+        if reason == self.GAMEPAD_LOST:
+            events.warn("Manual Mode Stopped",
+                        "The gamepad disconnected, so manual mode stopped and "
+                        "the motors were disabled.", source=self.NAME)
+        self._set_mode(ProbeMode.DISABLED, reason)
+
+    def _on_gamepad_fault(self, reason):
+        self._enter_fault("Manual control stopped working. Treat the "
+                          "probe as live, stop it, and check the "
+                          "gamepad and the connection.")
+
+    # -- idle interlock (MOD-3: the mixin owns the clock and the loop) ------
     @property
-    def _is_gate_open(self):
-        return bool(self.gamepad is not None and self.gamepad.is_gate_open)
+    def _idle_is_armed(self):
+        return self.is_enabled
 
-    @property
-    def gamepad_name(self):
-        """What the Gamepad says it is bound to, not a mirror this model keeps
-        in step by hand."""
-        if self.gamepad is None:
-            return "None"
-        name = getattr(self.gamepad, "name", None)
-        if name is None:
-            name = self._gamepad_name if self._is_gamepad_bound else None
-        return name or "None"
+    def _on_idle_expired(self, idle):
+        """Leave the mode through the one transition, which quiesces and
+        de-energizes. **No flag deferral**: motion extends the clock through
+        `_note_position`, off-neutral gamepad input through `_send_jog`, and
+        D-3 (owner) is that manual mode does idle-time-out."""
+        self._set_mode(ProbeMode.DISABLED, "idle interlock")
 
-    def gamepad_options(self):
-        if self.gamepad is None:
-            return ["None"]
-        return list(self.gamepad.options)
+    def _idle_soon_text(self):
+        return (f"{self.NAME} powers its motors down soon unless it moves or "
+                "you extend.")
 
-    def gamepad_log(self):
-        if self.gamepad is None:
-            return []
-        return list(self.gamepad.log)
+    def _idle_expired_text(self, idle):
+        return (f"{self.NAME} was idle for {idle:.0f} s, so its motors were "
+                "disabled. Enter a mode again to continue.")
 
-    def set_gamepad(self, name):
-        """Bind a gamepad. A failed bind reverts the selection and stops.
+    def _idle_extended_text(self):
+        return (f"{self.NAME} stays energized for another "
+                f"{self.INTERLOCK_TIMEOUT:.0f} s.")
 
-        The selection used to be assigned *before* the bind was attempted, so
-        a failed swap left the UI naming a pad that was never bound and the
-        mode flipping lazily on some later tick (GAMEPAD-3, GAMEPAD-4).
-        """
-        previous = self._gamepad_name
-        wanted = None if name in (None, "", "None") else str(name)
-        bound = False
-        try:
-            bound = bool(self.gamepad.bind(wanted))
-        except Exception as exc:
-            events.debug("Gamepad Bind Failed", f"{name!r}: {exc!r}",
-                         source=self.NAME, exception=exc)
-            events.warn("Gamepad Bind Failed", f"Could not connect to the "
-                        f"gamepad {name}. Check it is plugged in, then choose "
-                        "it again.", source=self.NAME, exception=exc)
-        if wanted is None:
-            self._gamepad_name = None
-            events.debug("Gamepad", "unbound by operator", source=self.NAME)
-            if self.is_manual:
-                self._set_mode(ProbeMode.DISABLED, "gamepad released")
-            return "None"
-        if not bound:
-            self._gamepad_name = previous
-            if self.is_manual:
-                # Manual mode without a bound pad is exactly the state I-3.2
-                # forbids.
-                self._set_mode(ProbeMode.DISABLED, "gamepad bind failed")
-            events.debug("Gamepad", f"bind to {name!r} failed; selection "
-                         f"reverted to {previous!r}", source=self.NAME)
-            self._refuse(f"Could not connect to the gamepad {name}. Check it "
-                         "is plugged in, then choose it again.")
-        self._gamepad_name = wanted
-        events.debug("Gamepad", f"bound to {wanted!r}", source=self.NAME)
-        return wanted
-
-    def _drain_edges(self):
-        """Discrete presses (D-pad, bumpers) since the last tick, or `{}`.
-
-        The one consumer of `Gamepad.drain_edges()`. A failed drain holds the
-        step fields at 0 and is logged; the levels read beside it reports a
-        broken pad to the operator.
-        """
-        if self.gamepad is None:
-            return {}
-        try:
-            return dict(self.gamepad.drain_edges() or {})
-        except Exception as exc:
-            events.debug("Gamepad Drain Failed", repr(exc), source=self.NAME,
-                         exception=exc, every=1.0)
-            return {}
-
-    def _axis_state(self):
-        """The gamepad's mapped levels, or `{}` if they could not be read.
-
-        The read itself is guarded, not just the float cast (REDPERCENT-4): a
-        pad unplugged mid-session is the ordinary case. Reported rather than
-        swallowed -- the event log folds repeats of one event into a single
-        counted entry, so a failure at 50 Hz is one warning, not a storm.
-        """
-        if self.gamepad is None:
-            return {}
-        try:
-            return dict(self.gamepad.levels or {})
-        except Exception as exc:
-            events.debug("Gamepad Read Failed", repr(exc), source=self.NAME,
-                         exception=exc)
-            events.warn("Gamepad Read Failed",
-                        "The gamepad could not be read. Every axis is held at "
-                        "neutral until it recovers.",
-                        source=self.NAME, exception=exc)
-            return {}
-
-    # -- idle interlock ---------------------------------------------------
-    def _touch_activity(self):
-        self._activity_time = time.monotonic()
-        self._idle_warned = False       # a fresh period gets its own warning
-
-    @property
-    def idle_remaining(self):
-        """Seconds until the idle interlock powers the motors down, or None
-        while nothing is energized (Tier N: what a view counts down from)."""
-        if not self.is_enabled:
-            return None
-        return max(0.0, round(self.INTERLOCK_TIMEOUT - (time.monotonic() - self._activity_time), 1))
-
-    def extend_idle(self):
-        """The operator's answer to the warning: restart the idle clock. Not a
-        motion command, so no guard; refused when nothing is energized, since
-        there is nothing to keep awake."""
-        if not self.is_enabled:
-            self._refuse(f"Nothing to extend: {self.NAME} is not in a mode.")
-        self._touch_activity()
-        # A new idle period is a new episode: its warning must not fold into
-        # the last one's repeat count inside the log's dedupe window.
-        events.forget(events.IDLE_TIMEOUT_SOON)
-        events.info("Idle Timeout Extended", f"{self.NAME} stays energized for "
-                    f"another {self.INTERLOCK_TIMEOUT:.0f} s.", source=self.NAME)
-        return True
-
-    def _stop_interlock(self):
-        self._interlock_stop.set()
-
-    def _start_interlock(self):
-        """Arm the idle interlock for this arming (STEPPER-7, RC-3 item 5).
-
-        **Each arming gets its own Event and generation.** The old code reused
-        one Event for the model's lifetime, so a disable that set it left it
-        set: the next enable started a thread that returned on its first tick,
-        and the probe ran energized with no interlock at all. The generation
-        lets a stale thread from a previous arming retire itself rather than
-        fight the current one -- `is_alive()` alone is not enough, because a
-        thread told to stop stays alive until its next tick.
-        """
-        if (self._interlock_thread is not None
-                and self._interlock_thread.is_alive()
-                and not self._interlock_stop.is_set()):
-            return
-        self._interlock_stop = threading.Event()
-        self._interlock_generation += 1
-        generation = self._interlock_generation
-        stop_event = self._interlock_stop
-        self._touch_activity()
-
-        def _watch():
-            events.debug("Interlock", f"armed, generation {generation}, "
-                         f"{self.INTERLOCK_TIMEOUT:.0f} s", source=self.NAME)
-            while not stop_event.wait(self.INTERLOCK_POLL_INTERVAL):
-                if generation != self._interlock_generation:
-                    return
-                if not self.is_enabled:
-                    return
-                # **No flag deferral.** This used to `continue` while stepping
-                # or manual, which suppressed the interlock in exactly the two
-                # modes that energize coils. The clock is real inactivity
-                # instead: motion extends it through `_note_position`, and
-                # off-neutral gamepad input through `_send_jog`. D-3 (owner):
-                # manual mode does idle-time-out.
-                idle = time.monotonic() - self._activity_time
-                remaining = self.INTERLOCK_TIMEOUT - idle
-                if 0 < remaining <= self.IDLE_WARN_SECONDS and not self._idle_warned:
-                    # Once per idle period, before the power-down, so a view
-                    # can offer Extend (Tier N). `_touch_activity` re-arms it.
-                    self._idle_warned = True
-                    # No seconds in the words (PM8-4): the tray line is
-                    # history, the views' countdown is the live number.
-                    events.warn(events.IDLE_TIMEOUT_SOON,
-                                f"{self.NAME} powers its motors down soon unless "
-                                "it moves or you extend.", source=self.NAME)
-                if idle > self.INTERLOCK_TIMEOUT:
-                    events.debug("Interlock", f"fired after {idle:.1f} s idle "
-                                 f"in {self._mode.value}", source=self.NAME)
-                    events.warn("Idle Timeout", f"{self.NAME} was idle for "
-                                f"{idle:.0f} s, so its motors were disabled. "
-                                "Enter a mode again to continue.",
-                                source=self.NAME)
-                    try:
-                        self._set_mode(ProbeMode.DISABLED, "idle interlock")
-                    except Exception as exc:
-                        events.debug("Idle Disable Failed", repr(exc),
-                                     source=self.NAME, exception=exc)
-                        events.warn("Idle Disable Failed", "The idle timeout "
-                                    f"could not disable {self.NAME}. Treat it "
-                                    "as live and stop it.", source=self.NAME,
-                                    exception=exc)
-                    return
-
-        self._interlock_thread = threading.Thread(
-            target=_watch, daemon=True,
-            name=f"interlock-{self.NAME}-{generation}")
-        self._interlock_thread.start()
+    def _idle_nothing_text(self):
+        return f"Nothing to extend: {self.NAME} is not in a mode."
 
     # -- params -----------------------------------------------------------
     def _number(self, name):
@@ -1145,6 +865,7 @@ class Probe(Model):
     @property
     def schema(self):
         P = self.PARAMS
+        gamepad_choice, gamepad_log = self._gamepad_elements()
         # Tiers (owner ruling 2026-09-25, canvas row E): position and speed
         # are what an operator adjusts every session, so they are always
         # drawn; step sizes, targets and brakes sit one disclosure away;
@@ -1178,8 +899,7 @@ class Probe(Model):
                 # F11: greyed out while latched. A latched probe is never in
                 # AUTO or MANUAL (the halt leaves both), so the toggle's "off"
                 # direction is not what this takes away.
-                sch.dropdown("Gamepad:", "gamepad_name", "set_gamepad",
-                             "gamepad_options"),
+                gamepad_choice,
                 # Round 8 (IMP8-2, Tk CCR 1): a probe whose disable FAILED is
                 # in FAULT with its motors possibly powered; the toggles are
                 # greyed from the schema in every view, and the stop is the
@@ -1222,8 +942,7 @@ class Probe(Model):
                 "Diagnostics",
                 sch.readonly("Velocity (x, y, z):", "velocity_text"),
                 sch.readonly("Position age (s):", "position_age", role="info"),
-                # G4: behind a button, in its own window, not on the card.
-                sch.log_stream("Gamepad Log:", "gamepad_log", detached=True),
+                gamepad_log,
                 tier=3, disclosure="Diagnostics",
             ),
             self._safety_section(),
@@ -1249,8 +968,6 @@ class Probe(Model):
             "position": list(self._position),
             "position_time": self._position_time,
             "position_age": self.position_age,
-            "idle_remaining": self.idle_remaining,
-            "idle_warn_seconds": self.IDLE_WARN_SECONDS,
             "velocity": list(self._velocity),
             "is_moving": self.is_moving,
             "is_enabled": self.is_enabled,

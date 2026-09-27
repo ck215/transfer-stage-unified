@@ -535,3 +535,136 @@ def test_a_faulted_model_gates_as_fault_from_the_base():
         assert model.gate_mode == "fault"
     model.estop()
     assert model.gate_mode == "latched", "the latch outranks the fault"
+
+
+# -- MOD-2: one loop helper ---------------------------------------------------
+#
+# `Model._spawn(name, target)` starts a daemon thread and records it;
+# `Model._threads_stop` is the one stop flag; the base `_stop_threads` sets it
+# and joins every spawned thread within `THREAD_JOIN_TIMEOUT`. No subclass
+# builds its own stop Event or its own join any more.
+
+class _Looping(Model):
+    NAME = "Looping"
+
+    def __init__(self):
+        super().__init__()
+        self.ticks = 0
+
+    @property
+    def schema(self):
+        return sch.schema(self._safety_section())
+
+    def _start_threads(self):
+        self._spawn("tick", self._loop)
+
+    def _loop(self):
+        while not self._threads_stop.wait(0.005):
+            self.ticks += 1
+
+
+def test_spawn_starts_a_named_daemon_thread_and_records_it():
+    model = _Looping()
+    model.open()
+    try:
+        thread = model._thread("tick")
+        assert thread is not None and thread.is_alive() and thread.daemon
+        assert "tick" in thread.name and model.NAME in thread.name
+    finally:
+        model.close()
+
+
+def test_the_base_stop_threads_sets_the_flag_and_joins_every_spawned_thread():
+    model = _Looping()
+    model.open()
+    deadline = time.monotonic() + 1.0
+    while model.ticks == 0 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    thread = model._thread("tick")
+    model.close()
+    assert model._threads_stop.is_set()
+    assert not thread.is_alive(), "close() returned with the loop still running"
+
+
+def test_spawning_again_after_a_stop_restarts_the_loop():
+    model = _Looping()
+    model._start_threads()
+    model._stop_threads()
+    first = model._thread("tick")
+    model._start_threads()
+    try:
+        second = model._thread("tick")
+        assert second is not first and second.is_alive()
+        assert not model._threads_stop.is_set()
+    finally:
+        model._stop_threads()
+
+
+def test_a_live_loop_is_not_spawned_twice():
+    model = _Looping()
+    model._start_threads()
+    try:
+        first = model._thread("tick")
+        model._start_threads()
+        assert model._thread("tick") is first
+        assert sum(t.is_alive() for t in model._spawned_threads()) == 1
+    finally:
+        model._stop_threads()
+
+
+def test_the_join_is_bounded_by_one_timeout_and_a_stuck_loop_is_reported(monkeypatch):
+    release = threading.Event()
+
+    class Stuck(_Looping):
+        def _loop(self):
+            release.wait(5.0)          # ignores the stop flag
+
+    model = Stuck()
+    monkeypatch.setattr(Stuck, "THREAD_JOIN_TIMEOUT", 0.05)
+    model._start_threads()
+    try:
+        with EventRecorder() as log:
+            started = time.monotonic()
+            model._stop_threads()
+            elapsed = time.monotonic() - started
+        assert elapsed < 1.0, f"the join waited {elapsed:.2f} s"
+        assert log.titled("Thread Still Running"), "a stuck loop went unreported"
+    finally:
+        release.set()
+
+
+def test_a_loop_with_its_own_stop_event_is_stopped_by_the_base_too():
+    """A per-arming Event (the idle interlock's) is set by `_stop_threads` as
+    well, so a loop parked on it leaves at close instead of outliving the
+    join by a whole poll interval."""
+    model = _Looping()
+    own = threading.Event()
+
+    def _park():
+        own.wait(30.0)
+
+    model._spawn("parked", _park, stop=own)
+    model._stop_threads()
+    assert own.is_set()
+    assert not model._thread("parked").is_alive()
+
+
+def test_the_join_timeout_is_one_constant_on_the_base():
+    assert Model.THREAD_JOIN_TIMEOUT == 2.0
+
+
+# -- MOD-5 (model half): which devices are hardware, from the devices ---------
+
+def test_state_names_the_hardware_devices_the_model_owns():
+    """CON-6: a view counts hardware links from `hardware_devices`, not by
+    matching device class names. A device says so with `is_hardware`."""
+    class Link(FakeDevice):
+        is_hardware = True
+
+    model = FakeModel(devices=[Link("port"), FakeDevice("pad")])
+    assert model.state["hardware_devices"] == ["Link"]
+
+
+def test_a_device_that_does_not_say_is_not_hardware():
+    model = FakeModel(devices=[FakeDevice("a")])
+    assert model.state["hardware_devices"] == []

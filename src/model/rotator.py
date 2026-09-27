@@ -52,10 +52,6 @@ class Rotator(Model):
     #: `main` polled at 2 Hz. This only refreshes two read-only fields.
     SAMPLE_INTERVAL = 0.25
 
-    #: Long enough to let an in-flight poll return, short enough that closing
-    #: a tab never feels hung. Never used on the stop path.
-    THREAD_JOIN_TIMEOUT = 1.0
-
     SMC_ID = 1
 
     #: What a command says when there is no stage behind it (ROTATOR-13).
@@ -90,8 +86,6 @@ class Rotator(Model):
         # device cannot pile a second poll on the first. A queue of stacked
         # polls only makes the display more stale.
         self._poll_busy = threading.Lock()
-        self._loops_stop = threading.Event()
-        self._sample_thread = None
         self._poll_count = 0
         self._poll_ok = None
 
@@ -120,21 +114,7 @@ class Rotator(Model):
         """
         if self.smc is None:
             return
-        self._loops_stop.clear()
-        if self._sample_thread is None or not self._sample_thread.is_alive():
-            self._sample_thread = threading.Thread(
-                target=self._sample_loop, daemon=True, name=f"sample-{self.NAME}")
-            self._sample_thread.start()
-            events.debug("Thread", "sampler started", source=self.NAME)
-
-    def _stop_threads(self):
-        self._loops_stop.set()
-        thread, self._sample_thread = self._sample_thread, None
-        if thread is not None and thread.is_alive():
-            thread.join(self.THREAD_JOIN_TIMEOUT)
-            events.debug("Thread", f"sampler stopped "
-                         f"({'joined' if not thread.is_alive() else 'still running'})",
-                         source=self.NAME)
+        self._spawn("sample", self._sample_loop)
 
     def disable(self):
         """A stage has nothing to de-energize.
@@ -454,7 +434,7 @@ class Rotator(Model):
         `_poll_busy` is a non-blocking acquire, so a tick that arrives while
         the previous poll is still out is skipped rather than queued.
         """
-        while not self._loops_stop.wait(self.SAMPLE_INTERVAL):
+        while not self._threads_stop.wait(self.SAMPLE_INTERVAL):
             self._touch()   # the loop is alive
             if not self._poll_busy.acquire(blocking=False):
                 events.debug("Poll", "tick skipped: the previous poll is still "

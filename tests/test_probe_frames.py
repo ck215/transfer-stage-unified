@@ -30,11 +30,14 @@ import sys
 
 import pytest
 
+from devices.gamepad import NEUTRAL, to_channels
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
 
 pytestmark = pytest.mark.transport
 
 #: Deliberately asymmetric, and off-neutral on every axis the packet carries.
+#: In the old vocabulary, because the old side reads it; the new side gets
+#: the same values in the gamepad contract's channels (MOD-1).
 LEVELS = {
     "x_axisStatus": 0.5, "y_axisStatus": -0.25,
     "z_axisStatusL": 0.75, "z_axisStatusR": -1.0,
@@ -44,6 +47,8 @@ LEVELS = {
 #: Strings on both sides: the old store held whatever the view typed, and the
 #: coercion that turns it into a number is part of what must not change.
 DISTANCES = {"x_dist": "5", "y_dist": "-3", "z_dist": "2"}
+
+NEW_LEVELS = to_channels(LEVELS)
 
 PAIRS = [("StepperProbe", StepperProbe), ("DCProbe", DCProbe),
          ("ChuckPositioner", ChuckPositioner)]
@@ -127,7 +132,7 @@ class _NewGamepad:
 
 def _new_sequences(cls):
     port = _NewPort()
-    probe = cls(port=port, gamepad=_NewGamepad(LEVELS))
+    probe = cls(port=port, gamepad=_NewGamepad(NEW_LEVELS))
 
     def capture(fn):
         port.writes.clear()
@@ -144,7 +149,7 @@ def _new_sequences(cls):
     out["step"] = capture(probe._send_move)
 
     probe.set_mode("manual")
-    out["jog"] = capture(lambda: probe._send_jog(LEVELS))
+    out["jog"] = capture(lambda: probe._send_jog(NEW_LEVELS))
 
     out["zero"] = capture(lambda: probe._send_zero_frame("golden"))
     out["disable"] = capture(lambda: probe._deenergize("golden"))
@@ -215,3 +220,9 @@ def test_the_dc_probe_jogs_at_its_own_declared_speed(sequences):
     stepper = struct.unpack("<BBffffffffff", sequences["StepperProbe"][1]["jog"][0])
     assert dc[-1] == 120.0
     assert stepper[-1] == 400.0
+
+
+def test_the_new_side_levels_are_the_gamepad_contracts_channels():
+    """MOD-1: the new probe is driven in the contract's vocabulary, not a
+    translation the probe does for it."""
+    assert set(NEW_LEVELS) == set(NEUTRAL)
