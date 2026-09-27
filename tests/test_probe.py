@@ -1184,3 +1184,13 @@ def test_the_probes_own_stop_is_never_refused_by_a_bad_step_size(probe):
     result = probe.run("toggle_estop", inputs=bad)
     assert result.is_ok and probe.is_estopped
     assert probe.run("extend_idle", inputs=bad).is_refused, "refused for being latched, not for the box"
+
+
+@pytest.mark.schema
+def test_a_faulted_probes_mode_toggles_are_greyed_from_the_schema(probe):
+    """Round 8 (IMP8-2): a probe whose disable failed looked like a safely
+    disabled one. Every view greys the toggles from this list."""
+    import schema as sch
+    toggles = [e for e in sch.elements(probe.schema) if e.get("command") == "set_mode"]
+    assert toggles and all("fault" in e["disabled_when"] for e in toggles)
+    assert not sch.is_enabled(toggles[0], "fault")

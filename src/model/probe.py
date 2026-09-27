@@ -986,7 +986,7 @@ class Probe(Model):
         self._touch_activity()
         # A new idle period is a new episode: its warning must not fold into
         # the last one's repeat count inside the log's dedupe window.
-        events.forget("Idle Timeout Soon")
+        events.forget(events.IDLE_TIMEOUT_SOON)
         events.info("Idle Timeout Extended", f"{self.NAME} stays energized for "
                     f"another {self.INTERLOCK_TIMEOUT:.0f} s.", source=self.NAME)
         return True
@@ -1035,10 +1035,11 @@ class Probe(Model):
                     # Once per idle period, before the power-down, so a view
                     # can offer Extend (Tier N). `_touch_activity` re-arms it.
                     self._idle_warned = True
-                    events.warn("Idle Timeout Soon",
-                                f"{self.NAME} powers its motors down in "
-                                f"{remaining:.0f} s unless it moves or you extend.",
-                                source=self.NAME)
+                    # No seconds in the words (PM8-4): the tray line is
+                    # history, the views' countdown is the live number.
+                    events.warn(events.IDLE_TIMEOUT_SOON,
+                                f"{self.NAME} powers its motors down soon unless "
+                                "it moves or you extend.", source=self.NAME)
                 if idle > self.INTERLOCK_TIMEOUT:
                     events.debug("Interlock", f"fired after {idle:.1f} s idle "
                                  f"in {self._mode.value}", source=self.NAME)
@@ -1152,17 +1153,21 @@ class Probe(Model):
                 # direction is not what this takes away.
                 sch.dropdown("Gamepad:", "gamepad_name", "set_gamepad",
                              "gamepad_options"),
+                # Round 8 (IMP8-2, Tk CCR 1): a probe whose disable FAILED is
+                # in FAULT with its motors possibly powered; the toggles are
+                # greyed from the schema in every view, and the stop is the
+                # way out (a confirmed disable clears the fault).
                 sch.toggle("Autonomous:", "is_auto", "set_mode",
                            "Autonomous mode (press to stop)",
                            "Enter Autonomous Mode",
                            on_args=[ProbeMode.AUTO.value],
                            off_args=[ProbeMode.DISABLED.value],
-                           disabled_when=("latched",)),
+                           disabled_when=("latched", "fault")),
                 sch.toggle("Manual / Gamepad:", "is_manual", "set_mode",
                            "Manual mode (press to stop)", "Enter Manual Mode",
                            on_args=[ProbeMode.MANUAL.value],
                            off_args=[ProbeMode.DISABLED.value],
-                           disabled_when=("latched",)),
+                           disabled_when=("latched", "fault")),
                 # D-5: the distances and the speed travel with the command and
                 # are validated as a set. **Not** gated on "autonomous": a
                 # second step while already AUTO is the normal way to work
