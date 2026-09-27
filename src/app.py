@@ -167,6 +167,9 @@ Examples:
                         help="do not open a browser for the web dashboard")
     parser.add_argument("--font-size", type=int,
                         help="base font size, in points (8-28)")
+    parser.add_argument("--map-db", metavar="PATH",
+                        help="the Transfer Map's SQLite file (default: data/transfer_map.sqlite "
+                             "in this checkout; same as STATION_MAP_DB)")
 
     # parse_args, not parse_known_args: an unrecognized flag must be an error.
     # Under parse_known_args a typo like `--pyside6` was silently dropped and
@@ -176,6 +179,8 @@ Examples:
     args = parser.parse_args(argv)
     if args.no_motion:
         os.environ["STATION_NO_MOTION"] = "1"
+    if args.map_db:
+        os.environ["STATION_MAP_DB"] = args.map_db
 
     view_name = pick_view(args.view)
     if args.view is None:

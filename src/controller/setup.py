@@ -47,6 +47,7 @@ from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
 from model.red_monitor import RedMonitor
 from model.rotator import Rotator
+from model.transfer_map import TransferMap
 from panel import Panel
 from result import NeedsConfirm, Refused
 
@@ -203,7 +204,7 @@ def _key_for(name):
 
 # The six built-ins, in today's display order.
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  RedMonitor):
+                  RedMonitor, TransferMap):
     register(_built_in)
 del _built_in
 

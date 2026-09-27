@@ -36,10 +36,11 @@ BASE="http://127.0.0.1:$PORT"
 LOGDIR="${TRANSFER_STAGE_DATA_ROOT:-$HOME/transfer-stage-runs}/logs"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/station-smoke.XXXXXX")"
 QT_PLATFORM="${SMOKE_QT_PLATFORM-offscreen}"
-# The six Setup rows, in display order. Red Percent is screen capture: it has
-# no port (its choice is "On"), so it is only ticked.
+# The seven Setup rows, in display order. Red Percent is screen capture and
+# the Transfer Map is a store: neither has a port (their choice is "On"), so
+# they are only ticked.
 PORT_ROWS="stepper_probe dc_probe chuck_positioner temperature_controller rotator"
-ALL_ROWS="$PORT_ROWS red_percent"
+ALL_ROWS="$PORT_ROWS red_percent transfer_map"
 
 FAILED=0
 pass() { echo "PASS $*"; }

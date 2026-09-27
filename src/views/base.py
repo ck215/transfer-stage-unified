@@ -83,6 +83,8 @@ GATE_WORDS = {
     "disconnected": ("Not connected", None),
     "stale": ("Readings are stale", None),
     "scanning": ("Scanning ports", None),
+    # The Transfer Map (Tier S): a trial is armed until Finish or Abort.
+    "armed": ("A trial is armed: finish or abort it first", "Arm a trial first"),
     "ready": (None, "Nothing to launch yet"),
     "launched": (None, "Nothing launched yet"),
 }

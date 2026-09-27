@@ -132,7 +132,10 @@ lands as `palette.py` / `theme.py` tokens.
   call; Close and rescan icons are outside the nine-glyph set; the Web
   tray-open motion is not built (it clipped clicks). The four
   "Needs the lead" lists are in `handoff/fix-signature-{tk,web,qt}.md`.
-- **2026-09-27: the Transfer Map (Tier S)** is being built in `rb-map`
+- **2026-09-27: the Transfer Map (Tier S) landed** (`rb-map`, merged by the
+  lead, registered as the seventh row; operator page
+  `RECORDING_A_TRIAL.md`). Unverified: the profile path on real footage,
+  since a SIM screen never changes; Tk/Qt rendering of its schema. It was built
   from `handoff/brief-transfer-map.md`: the project's end-goal heatmap
   (tilt, speed, force from the red-percent lowering profile, channel
   width), a local git-ignored SQLite store under `data/`, footage,

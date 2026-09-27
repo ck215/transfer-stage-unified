@@ -8,8 +8,12 @@ A device becomes a first-class member of the station when it is a `Model`
 subclass that declares its controls in a schema. The three views, the
 Controller, the stop and the watchdog then handle it without being edited.
 `tests/test_model_contract.py` checks every rule below against every
-registered class. Worked example: the audit's `PiezoStage`
-(`handoff/audit-model-contract-2026-09-26.md`).
+registered class. Worked examples: the audit's `PiezoStage`
+(`handoff/audit-model-contract-2026-09-26.md`) and, in the tree, the
+Transfer Map (`src/model/transfer_map.py`, Tier S, 2026-09-27): a model
+with no hardware that owns a local store, reads other models by duck type
+(`subscribe`, `grab_frame`, `position_deg`) and draws its figures through
+`plot_data`; it needed no view change.
 
 ## Recipe
 

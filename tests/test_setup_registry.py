@@ -20,6 +20,7 @@ from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
 from model.red_monitor import RedMonitor
 from model.rotator import Rotator
+from model.transfer_map import TransferMap
 from result import Refused
 
 from tests.test_setup import RecordingController
@@ -91,13 +92,15 @@ def warnings():
 # -- 1. register ------------------------------------------------------------
 
 BUILT_INS = ["Stepper Probe", "DC Probe", "Chuck Positioner",
-             "Temperature Controller", "Rotator", "Red Percent"]
+             "Temperature Controller", "Rotator", "Red Percent",
+             "Transfer Map"]   # Tier S (2026-09-27)
 
 
 def test_the_six_built_ins_are_registered_in_todays_display_order():
     assert list(station_setup.MODEL_TYPES) == BUILT_INS
     assert list(station_setup.MODEL_TYPES.values()) == [
-        StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, RedMonitor]
+        StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, RedMonitor,
+        TransferMap]   # Tier S
 
 
 def test_register_is_reachable_as_setup_register():

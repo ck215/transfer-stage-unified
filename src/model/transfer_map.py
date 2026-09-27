@@ -37,6 +37,7 @@ import json
 import math
 import os
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -301,6 +302,11 @@ class TransferMap(Model):
         configured = os.environ.get("STATION_MAP_DB")
         if configured:
             return Path(configured).expanduser().resolve()
+        if getattr(sys, "frozen", False):
+            # A PyInstaller bundle: `__file__` points inside the bundle, so
+            # "local" means beside the executable (owner ruling 2026-09-27:
+            # the store is local to the installation, never global).
+            return Path(sys.executable).resolve().parent / "data" / "transfer_map.sqlite"
         return Path(__file__).resolve().parents[2] / "data" / "transfer_map.sqlite"
 
     # -- the Model contract ------------------------------------------------

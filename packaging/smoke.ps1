@@ -26,7 +26,7 @@ $LogDir = Join-Path $DataRoot "logs"
 $Out = Join-Path ([IO.Path]::GetTempPath()) ("station-smoke-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $Out, $LogDir | Out-Null
 $PortRows = @("stepper_probe", "dc_probe", "chuck_positioner", "temperature_controller", "rotator")
-$AllRows = $PortRows + @("red_percent")
+$AllRows = $PortRows + @("red_percent", "transfer_map")
 $script:Failed = 0
 
 function Pass($what) { Write-Host "PASS $what" }

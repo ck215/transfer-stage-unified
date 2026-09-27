@@ -540,15 +540,15 @@ per trial by its own min and max; several definitions are kept and cross
 compared; both a detector and an operator Mark key. Brief:
 `handoff/brief-transfer-map.md`. A model-only job by the Tier R contract.
 
-| # | Sev | Where | Item | Fix | Route |
-|---|---|---|---|---|---|
-| MAP-1 | feature | model (new) | `TransferMap` model, registered; SQLite store (`trials`, raw `profile` samples); CSV export/import. | as the brief, §1–2 | agent (rb-map) |
-| MAP-2 | feature | model (red_monitor, rotator, additive) | Live sources: Red Percent `subscribe`/`grab_frame`, Rotator `position_deg`, probe speed, duck-typed. | brief §3 | agent (rb-map) |
-| MAP-3 | feature | model (new) | The guided trial: arm (before frame), Mark force, finish (after frame, detector), abort, broke, attach AFM. | brief §4 | agent (rb-map) |
-| MAP-4 | feature | model (analysis) | Force definitions as pure functions over the stored profile, an open registry; the extrema detector. | brief §5 | agent (rb-map) |
-| MAP-5 | feature | plot_data | Figures: `map3d`, `slice`, `compare` (one panel per definition), `profile`. | brief §6 | agent (rb-map) |
-| MAP-6 | feature, phase 2 | plot_data | numpy Gaussian process for the slice: mean, variance, confidence contour, gradient variance. | brief §6 phase 2 | agent (rb-map), after MAP-1..5 are green |
-| MAP-7 | docs | docs | STATUS, MODEL_CONTRACT (a worked non-hardware model), an operator page "Recording a trial". | from the handoff | lead |
+| # | Sev | Where | Item | Fix | Route | Status |
+|---|---|---|---|---|---|---|
+| MAP-1 | feature | model (new) | `TransferMap` model, registered; SQLite store (`trials`, raw `profile` samples); CSV export/import. | as the brief, §1–2 | agent (rb-map) | **done `dfe437f` (`transfer_map_analysis.py`, 23 tests; the GP is in, ~60 lines numpy)** |
+| MAP-2 | feature | model (red_monitor, rotator, additive) | Live sources: Red Percent `subscribe`/`grab_frame`, Rotator `position_deg`, probe speed, duck-typed. | brief §3 | agent (rb-map) | **done `b18c361`+`9498b70` (Red Percent `subscribe`/`grab_frame`, `Rotator.position_deg`; estop path proven unchanged)** |
+| MAP-3 | feature | model (new) | The guided trial: arm (before frame), Mark force, finish (after frame, detector), abort, broke, attach AFM. | brief §4 | agent (rb-map) | **done `fb44af7`+`2205e83` (38 tests incl. the stop path; no default tilt without a rotator)** |
+| MAP-4 | feature | model (analysis) | Force definitions as pure functions over the stored profile, an open registry; the extrema detector. | brief §5 | agent (rb-map) | **done `dfe437f` (registry `FORCE_DEFINITIONS`: shadow_vs_baseline, shadow_vs_peak, at_operator_mark, dip_area, fall_slope, z_past_peak)** |
+| MAP-5 | feature | plot_data | Figures: `map3d`, `slice`, `compare` (one panel per definition), `profile`. | brief §6 | agent (rb-map) | **done `2fc7f82` + lead registration (`setup.py`; seven rows in tests and smokes)** |
+| MAP-6 | feature, phase 2 | plot_data | numpy Gaussian process for the slice: mean, variance, confidence contour, gradient variance. | brief §6 phase 2 | agent (rb-map), after MAP-1..5 are green | **done with MAP-1/3 (`slice` draws the GP mean with sigma contours)** |
+| MAP-7 | docs | docs | STATUS, MODEL_CONTRACT (a worked non-hardware model), an operator page "Recording a trial". | from the handoff | lead | **done: `RECORDING_A_TRIAL.md`, STATUS, contract note; UNVERIFIED: the profile path on real footage (SIM never changes the screen), Tk/Qt rendering of the new schema** |
 
 ## Out of scope here
 
