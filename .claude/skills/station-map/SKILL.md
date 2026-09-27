@@ -21,7 +21,7 @@ Three generations of the app exist:
 |---|---|---|---|
 | Original | `main/src/` | flat Tk files: `mainGUI.py`, `stepper_frame.py`, `DC_frame.py`, `chuck_frame.py`, `controllerDrive.py`, `serialDrive.py`, `temp_control.py`, `rotator.py`, `lib/{smc100,redpercent,toupcam}.py` | The behaviour the lab knows. Reference for "what the app is supposed to do". |
 | MVC repair | `mvc-refactor/legacy/src/` (+ `legacy/tests/`) | `controller/ model/ views/{tkinter,pyside,web} lib/` | Ran in the lab 2026-08-26 → 09-22. Frozen. Reference for the golden wire captures only; deleted once `tests/TEST_PORTING.md` is worked off. |
-| Rebuild | `mvc-refactor/src/` (+ `tests/`) | `app.py`, `events panel param schema result palette`, `controller/{controller,setup}.py`, `model/{base,probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/{tk,qt,web/}` | **The app.** 13.7k lines; 2290 fast tests (+11 window, 1 xfail), 212 Qt, 78 golden wire scenarios byte-identical to `legacy/src`. Has never touched real hardware (see BUGFIX_PLAN Tier D). |
+| Rebuild | `mvc-refactor/src/` (+ `tests/`) | `app.py`, `events panel param schema result palette`, `controller/{controller,setup}.py`, `model/{base,probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/{tk,qt,web/}` | **The app.** 13.7k lines; 2290 fast tests (+11 window, 1 xfail), 212 Qt, 78 golden wire scenarios byte-identical to `legacy/src`. First bench contact 2026-09-26: D1 (probe baud) hit and fixed there; the rest of Tier D is being reconciled against the code. |
 
 Firmware (`firmware/`) is untouched by the rebuild, but it is **not** the
 same as `main`'s: the stepper, chuck and temperature sketches changed on

@@ -64,7 +64,7 @@ To begin using the system in any operational mode, the **Enable System** button 
 This mode is used to move the probe by fixed, precise step amounts. Ensure **Enable System** has been clicked prior to attempting stepping.
 
 - **Step Sizes**: This applies a multiplier to the input. The minimum verified step size for each system is as follows:
-  > - **Stepper**: `4` (approximately 1.25 micrometers). For example, with a step size of 5, an input of 100 steps will move the probe 500 counts. (A full step of 16 *microsteps* corresponds to exactly 5 microns).
+  > - **Stepper**: `4` (approximately 2.5 micrometers). For example, with a step size of 5, an input of 100 steps will move the probe 500 counts. (The firmware runs 8 *microsteps* per full step, and a full step is 5 microns, so one count is 0.625 microns.)
   > - **DC**: UNVERIFIED
   > - **Chuck**: UNVERIFIED
 - **Relative Step Counts**: Enter the desired X, Y, and Z step increments. The probe will move to the resulting coordinate. 
