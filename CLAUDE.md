@@ -41,6 +41,9 @@ The import rules between these layers are a test (`tests/test_architecture.py`).
 5. `docs/rebuild/MODEL_CONTRACT.md` — how to add a device: what a `Model`
    subclass must provide and what the views do for free;
    `tests/test_model_contract.py` asserts it against every registered class.
+6. `docs/rebuild/RECORDING_A_TRIAL.md` — the Transfer Map (the project's
+   end goal): how a trial is recorded, where the local store lives, the
+   force definitions.
 
 Inputs that open work still reads, kept with a banner: the finding ledger
 `docs/implementation/progress.md` (`docs/rebuild/carry.json` cites its IDs),
@@ -114,15 +117,6 @@ lookups only; its design-system generator is off-target for this product).
    a 2026-09-20 reconciliation found 28 of 66 such rows already fixed.
    Check the code, never the ledger, before calling a finding open.
 
-## History
-
-- Aug–Sep 2026: `src/` was a staged MVC repair (S0–S16) of 13 root causes
-  across 213 audited findings. Plan and test policy are in `docs/archive/`.
-- 2026-09-23: the refactor redone from scratch as `station/` on a `rebuild`
-  branch was fast-forwarded here; `rebuild` retired. The same day `station/`
-  became `src/`, the old tree became `legacy/`, and stale docs were archived.
-- 2026-09-23: `verify` and `parallel-stage` rewritten for the new tree;
-  `stage-close`, `reconcile-ledger` and `fix-a-finding` retired with the
-  ledger process (in git history before `beb7b94`).
-- `legacy/` is deleted once every file in `tests/TEST_PORTING.md` has a
-  ported equivalent; then `mvc-refactor` merges to `main`.
+The tree's history (the staged repair, the from-scratch rebuild, the
+2026-09-23 relayout, the retirement of `legacy/`) is in
+`docs/rebuild/STATUS.md` under "History".

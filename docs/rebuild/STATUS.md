@@ -115,6 +115,26 @@ lands as `palette.py` / `theme.py` tokens.
 
 ### Resume here (handoff written 2026-09-26, late; Tier R added 2026-09-27)
 
+- **2026-09-27, late: pushed at the owner's word for a data-collection
+  session at the station.** Tree `54bb213` + this note; gates fast 2638,
+  Qt 227, golden 78, seven-row launch. What the bench should know:
+  1. **The Tk view (the default) has never been seen on a real display in
+     its Signature form.** Its tests pass, its ten `window` tests are
+     unrun. If anything looks wrong, launch `--web` (fully captured and
+     verified headless) and keep working; report what Tk did.
+  2. **Fonts:** install Figtree and Rubik (SemiBold, Medium) on the station
+     PC, or the desktop views fall back to the platform sans.
+  3. **Transfer Map:** the seventh Setup row ("On", no port). The store is
+     `data/transfer_map.sqlite` in the checkout (git-ignored), created on
+     the first Arm; `--map-db PATH` or `STATION_MAP_DB` overrides it. Red
+     Percent must be recording for a trial to collect a profile. Read
+     `RECORDING_A_TRIAL.md` before the first trial. The detector has only
+     seen synthetic profiles: keep the Mark key as the reference and export
+     the CSV at the end of the session.
+  4. **Open owner questions** (the organisation audit,
+     `handoff/audit-organisation-2026-09-27.md`, and the eight questions the
+     lead put to the owner) are unanswered; nothing from it was applied.
+
 - **2026-09-27, evening: the Signature aesthetic is in all three views.**
   Owner ruling: "Signature looks great, I'd love to have that be our
   layout" (round 3 on Tactile; canvas
