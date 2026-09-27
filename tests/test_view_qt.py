@@ -851,6 +851,10 @@ def _qt_source():
 
 
 def test_l3_a_gate_says_why_in_the_operators_words():
+    """Updated (O3): the words are `views.base.gate_reason`'s, which reads the
+    element's own gate lists. Stop run while latched is waiting for a run
+    ("No run in progress": latched is not in its `disabled_when`), and an
+    unknown token reads "In <token> mode" as in Tk and Web."""
     start = sch.button("Start run", "start", role="go",
                        disabled_when=("running", "latched", "no_region"))
     stop = sch.button("Stop run", "end", enabled_when=("running",))
@@ -860,7 +864,7 @@ def test_l3_a_gate_says_why_in_the_operators_words():
     assert qt.gate_reason(start, "running") == "A run is in progress"
     assert qt.gate_reason(start, "idle") == ""
     assert qt.gate_reason(stop, "idle") == "No run in progress"
-    assert qt.gate_reason(stop, "latched") == "Stopped: clear the stop first"
+    assert qt.gate_reason(stop, "latched") == "No run in progress"
     assert qt.gate_reason(step, "manual") == "In manual mode"
     port = sch.dropdown("Port", "port", "set_port", "ports", enabled_by="on")
     assert qt.gate_reason(port, "idle", {"on": False}, lambda _: "Launch") == (
@@ -868,4 +872,96 @@ def test_l3_a_gate_says_why_in_the_operators_words():
     relaunch = sch.button("Relaunch", "relaunch", role="go", enabled_when=("launched",))
     assert qt.gate_reason(relaunch, "idle") == "Nothing launched yet"
     odd = sch.button("Odd", "odd", disabled_when=("warming_up",))
-    assert qt.gate_reason(odd, "warming_up") == "Warming up"
+    assert qt.gate_reason(odd, "warming_up") == "In warming_up mode"
+
+
+# ---------------------------------------------------------------------------
+# N and O (2026-09-26): the idle countdown, the quit prompt, round 8.
+# ---------------------------------------------------------------------------
+
+def test_o3_the_gate_words_are_views_bases_and_the_local_table_is_gone():
+    """IMP8-1 / ARCH: three copies of the gate table, and Web and Tk said "Not
+    in manual mode" while the probe WAS in manual mode. Qt reads
+    `views.base.gate_reason`; its own table is deleted."""
+    from views import base
+    assert not hasattr(qt, "GATE_WORDS") and not hasattr(qt, "WAITING_WORDS")
+    step = sch.button("Step", "step", disabled_when=("manual", "latched"))
+    assert qt.gate_reason(step, "manual") == "In manual mode"
+    assert qt.gate_reason(step, "manual") == base.gate_reason(step, "manual")
+    jog = sch.button("Jog", "jog", enabled_when=("manual",))
+    assert qt.gate_reason(jog, "idle") == "Not in manual mode"
+    auto = sch.button("Auto only", "auto", disabled_when=("autonomous",))
+    assert qt.gate_reason(auto, "autonomous") == "In autonomous mode"
+    # The one rule base has no word for stays the view's: a control live
+    # only while a tick box is ticked names the box.
+    port = sch.dropdown("Port", "port", "set_port", "ports", enabled_by="on")
+    assert qt.gate_reason(port, "idle", {"on": False}, lambda _: "Launch") == (
+        "Tick Launch first")
+
+
+def test_n2_the_countdown_lists_the_probes_inside_the_window_in_station_order():
+    states = {
+        "Stepper Probe": {"idle_remaining": 42.0, "idle_warn_seconds": 60},
+        "DC Probe": {"idle_remaining": 12.3},                 # no threshold: 60
+        "Chuck Positioner": {"idle_remaining": 200.0, "idle_warn_seconds": 60},
+        "Temperature Controller": {"mode": "idle"},           # not a probe
+        "Rotator": {"idle_remaining": None, "idle_warn_seconds": 60},
+    }
+    names = ["Chuck Positioner", "DC Probe", "Temperature Controller",
+             "Stepper Probe", "Rotator"]
+    assert qt.idle_countdowns(names, states) == [("DC Probe", 13),
+                                                 ("Stepper Probe", 42)]
+    assert qt.countdown_text("Stepper Probe", 42) == "Stepper Probe powers down in 42 s."
+    assert qt.EXTEND_WORD == "Extend"
+
+
+def test_n4_the_quit_prompt_names_what_is_energized():
+    assert qt.quit_prompt([]) == qt.QUIT_PROMPT
+    assert qt.quit_prompt(["Stepper Probe", "Temperature Controller"]) == (
+        "Quit the station? Stepper Probe and Temperature Controller are "
+        "energized; quitting stops and disconnects them.")
+    assert qt.quit_prompt(["Rotator"]) == (
+        "Quit the station? Rotator is energized; quitting stops and "
+        "disconnects it.")
+
+
+def test_o4_o6_o16_the_rail_mark_is_one_state_per_model_with_its_words():
+    """A model that did not confirm outranks a fault, a fault outranks a plain
+    latch; the words ride with the mark (never colour alone)."""
+    stop = {"latched": ["Rotator", "DC Probe"], "unconfirmed": ["Rotator"]}
+    assert qt.rail_mark("Rotator", stop, faulted=set()) == "unconfirmed"
+    assert qt.rail_mark("DC Probe", stop, faulted={"DC Probe"}) == "faulted"
+    assert qt.rail_mark("DC Probe", stop, faulted=set()) == "stopped"
+    assert qt.rail_mark("Stepper Probe", stop, faulted={"Stepper Probe"}) == "faulted"
+    assert qt.rail_mark("Stepper Probe", stop, faulted=set()) is None
+    assert qt.RAIL_STOP_WORDS == {"stopped": "stopped",
+                                  "unconfirmed": "did not confirm",
+                                  "faulted": "faulted"}
+    assert qt.ENERGIZED_WORD == "energized"
+
+
+def test_o4_a_fault_is_said_like_an_unconfirmed_stop():
+    from views import base
+    assert qt.FAULT_LINE == "Disable failed. Treat as live."
+    assert qt.FAULT_GATE == base.GATE_WORDS["fault"][0] == (
+        "Faulted: clear the fault first")
+
+
+def test_o9_closing_a_model_asks_in_the_tk_and_web_words():
+    assert qt.close_model_words("Rotator") == (
+        "It stops and disconnects Rotator. You can reopen it from the rail.",
+        "Close Rotator?", "Close Rotator", "Keep it open")
+
+
+def test_o13_the_idle_warning_is_history_in_the_log_not_the_tray_line():
+    assert qt.HISTORY_ONLY_TITLES == frozenset({"Idle Timeout Soon"})
+
+
+def test_o16_the_models_own_switch_says_stop_this_model():
+    assert qt.switch_face({"command": "toggle_estop", "false_text": "Stop",
+                           "true_text": "Stopped"}, False) == "Stop this model"
+    assert qt.switch_face({"command": "toggle_estop", "false_text": "Stop",
+                           "true_text": "Stopped"}, True) == "Stopped"
+    # Anything else keeps the schema's own words.
+    assert qt.switch_face({"command": "toggle_estop", "false_text": "Full stop",
+                           "true_text": "Latched"}, False) == "Full stop"
