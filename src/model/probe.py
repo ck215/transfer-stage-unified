@@ -37,6 +37,7 @@ from devices import gamepad as gamepad_device
 from devices import serial_port as serial_device
 from events import events
 from model.base import Model
+from model.idle import IdleInterlock
 from param import Param
 from result import Refused
 
@@ -97,7 +98,7 @@ PACKET_FORMAT = "<BBffffffffff"
 START_MARKER = 0xAA
 
 
-class Probe(Model):
+class Probe(IdleInterlock, Model):
     """A three-axis probe: one SerialPort, one Gamepad, one mode."""
 
     NAME = "Probe"
@@ -148,13 +149,8 @@ class Probe(Model):
     #: considered arrived.
     STEP_SETTLE = 1.0
 
-    #: Idle interlock. Overridable by tests to avoid a five-minute wait.
-    INTERLOCK_POLL_INTERVAL = 5.0
-    INTERLOCK_TIMEOUT = 300.0
-    #: How long before the interlock fires the views are told it is coming
-    #: (Tier N, owner 2026-09-26): one "Idle Timeout Soon" warning per idle
-    #: period, and `extend_idle` restarts the clock.
-    IDLE_WARN_SECONDS = 60.0
+    # The idle interlock's INTERLOCK_TIMEOUT (300 s), INTERLOCK_POLL_INTERVAL
+    # and IDLE_WARN_SECONDS (60 s) come from `model.idle.IdleInterlock`.
 
     def __init__(self, port=None, gamepad=None, sim=False):
         # Mode and the gated parameter store come first: `Panel.__init__`
@@ -183,15 +179,6 @@ class Probe(Model):
         # forever -- and the interlock deferred on it, which is how an
         # energized probe sat idle indefinitely (STEPPER-6, DC-1).
         self._moving_deadline = None
-
-        # Idle interlock. A fresh Event and generation per arming (STEPPER-7):
-        # one reused Event meant a watchdog stopped by one disable stayed
-        # stopped for the next enable.
-        self._activity_time = time.monotonic()
-        self._idle_warned = False
-        self._interlock_stop = threading.Event()
-        self._interlock_stop.set()
-        self._interlock_generation = 0
 
         self._was_pumping = False     # the jog tick's previous pumping state
         self._coil_kill_reported = False
@@ -962,101 +949,32 @@ class Probe(Model):
                         source=self.NAME, exception=exc)
             return {}
 
-    # -- idle interlock ---------------------------------------------------
-    def _touch_activity(self):
-        self._activity_time = time.monotonic()
-        self._idle_warned = False       # a fresh period gets its own warning
-
+    # -- idle interlock (MOD-3: the mixin owns the clock and the loop) ------
     @property
-    def idle_remaining(self):
-        """Seconds until the idle interlock powers the motors down, or None
-        while nothing is energized (Tier N: what a view counts down from)."""
-        if not self.is_enabled:
-            return None
-        return max(0.0, round(self.INTERLOCK_TIMEOUT - (time.monotonic() - self._activity_time), 1))
+    def _idle_is_armed(self):
+        return self.is_enabled
 
-    def extend_idle(self):
-        """The operator's answer to the warning: restart the idle clock. Not a
-        motion command, so no guard; refused when nothing is energized, since
-        there is nothing to keep awake."""
-        if not self.is_enabled:
-            self._refuse(f"Nothing to extend: {self.NAME} is not in a mode.")
-        self._touch_activity()
-        # A new idle period is a new episode: its warning must not fold into
-        # the last one's repeat count inside the log's dedupe window.
-        events.forget(events.IDLE_TIMEOUT_SOON)
-        events.info("Idle Timeout Extended", f"{self.NAME} stays energized for "
-                    f"another {self.INTERLOCK_TIMEOUT:.0f} s.", source=self.NAME)
-        return True
+    def _on_idle_expired(self, idle):
+        """Leave the mode through the one transition, which quiesces and
+        de-energizes. **No flag deferral**: motion extends the clock through
+        `_note_position`, off-neutral gamepad input through `_send_jog`, and
+        D-3 (owner) is that manual mode does idle-time-out."""
+        self._set_mode(ProbeMode.DISABLED, "idle interlock")
 
-    def _stop_interlock(self):
-        self._interlock_stop.set()
+    def _idle_soon_text(self):
+        return (f"{self.NAME} powers its motors down soon unless it moves or "
+                "you extend.")
 
-    def _start_interlock(self):
-        """Arm the idle interlock for this arming (STEPPER-7, RC-3 item 5).
+    def _idle_expired_text(self, idle):
+        return (f"{self.NAME} was idle for {idle:.0f} s, so its motors were "
+                "disabled. Enter a mode again to continue.")
 
-        **Each arming gets its own Event and generation.** The old code reused
-        one Event for the model's lifetime, so a disable that set it left it
-        set: the next enable started a thread that returned on its first tick,
-        and the probe ran energized with no interlock at all. The generation
-        lets a stale thread from a previous arming retire itself rather than
-        fight the current one -- `is_alive()` alone is not enough, because a
-        thread told to stop stays alive until its next tick.
-        """
-        running = self._thread("interlock")
-        if (running is not None and running.is_alive()
-                and not self._interlock_stop.is_set()):
-            return
-        self._interlock_stop = threading.Event()
-        self._interlock_generation += 1
-        generation = self._interlock_generation
-        stop_event = self._interlock_stop
-        self._touch_activity()
+    def _idle_extended_text(self):
+        return (f"{self.NAME} stays energized for another "
+                f"{self.INTERLOCK_TIMEOUT:.0f} s.")
 
-        def _watch():
-            events.debug("Interlock", f"armed, generation {generation}, "
-                         f"{self.INTERLOCK_TIMEOUT:.0f} s", source=self.NAME)
-            while not stop_event.wait(self.INTERLOCK_POLL_INTERVAL):
-                if generation != self._interlock_generation:
-                    return
-                if not self.is_enabled:
-                    return
-                # **No flag deferral.** This used to `continue` while stepping
-                # or manual, which suppressed the interlock in exactly the two
-                # modes that energize coils. The clock is real inactivity
-                # instead: motion extends it through `_note_position`, and
-                # off-neutral gamepad input through `_send_jog`. D-3 (owner):
-                # manual mode does idle-time-out.
-                idle = time.monotonic() - self._activity_time
-                remaining = self.INTERLOCK_TIMEOUT - idle
-                if 0 < remaining <= self.IDLE_WARN_SECONDS and not self._idle_warned:
-                    # Once per idle period, before the power-down, so a view
-                    # can offer Extend (Tier N). `_touch_activity` re-arms it.
-                    self._idle_warned = True
-                    # No seconds in the words (PM8-4): the tray line is
-                    # history, the views' countdown is the live number.
-                    events.warn(events.IDLE_TIMEOUT_SOON,
-                                f"{self.NAME} powers its motors down soon unless "
-                                "it moves or you extend.", source=self.NAME)
-                if idle > self.INTERLOCK_TIMEOUT:
-                    events.debug("Interlock", f"fired after {idle:.1f} s idle "
-                                 f"in {self._mode.value}", source=self.NAME)
-                    events.warn("Idle Timeout", f"{self.NAME} was idle for "
-                                f"{idle:.0f} s, so its motors were disabled. "
-                                "Enter a mode again to continue.",
-                                source=self.NAME)
-                    try:
-                        self._set_mode(ProbeMode.DISABLED, "idle interlock")
-                    except Exception as exc:
-                        events.debug("Idle Disable Failed", repr(exc),
-                                     source=self.NAME, exception=exc)
-                        events.warn("Idle Disable Failed", "The idle timeout "
-                                    f"could not disable {self.NAME}. Treat it "
-                                    "as live and stop it.", source=self.NAME,
-                                    exception=exc)
-                    return
-
-        self._spawn("interlock", _watch, stop=stop_event)
+    def _idle_nothing_text(self):
+        return f"Nothing to extend: {self.NAME} is not in a mode."
 
     # -- params -----------------------------------------------------------
     def _number(self, name):
@@ -1226,8 +1144,6 @@ class Probe(Model):
             "position": list(self._position),
             "position_time": self._position_time,
             "position_age": self.position_age,
-            "idle_remaining": self.idle_remaining,
-            "idle_warn_seconds": self.IDLE_WARN_SECONDS,
             "velocity": list(self._velocity),
             "is_moving": self.is_moving,
             "is_enabled": self.is_enabled,

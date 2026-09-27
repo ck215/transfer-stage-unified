@@ -379,3 +379,14 @@ def test_close_leaves_no_spawned_loop_running(model):
     fresh.close()
     alive = [t.name for t in spawned if t.is_alive()]
     assert not alive, f"still running after close: {alive}"
+
+
+# -- MOD-3: the idle clock is one mixin ---------------------------------------
+
+def test_a_model_with_an_idle_clock_takes_it_from_the_mixin(model):
+    from model.idle import IdleInterlock
+    commands = {e.get("command") for e in _elements(model)}
+    if "extend_idle" in commands or "idle_remaining" in model.state:
+        assert isinstance(model, IdleInterlock), (
+            f"{type(model).__name__} runs its own idle clock; mix in "
+            "model.idle.IdleInterlock")
