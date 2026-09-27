@@ -49,7 +49,7 @@ import schema as sch
 from events import events
 from views import theme
 from views import base as view_base
-from views.base import Dashboard, PanelView, stop_words
+from views.base import Dashboard, PanelView, join_names, stop_words
 
 SOURCE = "TkView"
 
@@ -156,6 +156,16 @@ RAIL_ALARM_GLYPH = "!"
 #: line leaves the band and the tray when the latch opens (L2).
 STOP_NOT_CONFIRMED = "Stop Not Confirmed"
 STATION_TITLE = "Transfer stage"
+#: The idle countdown (Tier N): one line per probe under the disc while its
+#: `idle_remaining` is inside the warning window, rendered from state every
+#: tick (no local timer that can drift), with Extend. The window is the
+#: model's `idle_warn_seconds`; this is the fallback when a state has none.
+IDLE_WARN_SECONDS = 60.0
+IDLE_LINE = "{name} powers down in {seconds} s."
+EXTEND_WORD = "Extend"
+#: The event the countdown line replaces as the live word (O13): its tray
+#: line is history only, never the folded latest line.
+IDLE_SOON_TITLE = "Idle Timeout Soon"
 #: Titled confirmations whose buttons name what they do (L14, TK7-10). The
 #: Clear question's words are core's and name any model that did not
 #: confirm; the answer that keeps things as they are is the default.
@@ -4776,6 +4786,7 @@ class TkDashboard(Dashboard):
         self._stop_seen = None       # (latched, unconfirmed, every) last drawn
         self._rail_marks = {}        # name -> (Canvas, _Tooltip) before its line
         self._faulted = ()           # models whose disable failed (O4), station order
+        self._idle_lines = {}        # name -> the countdown line's widgets (Tier N)
         self._confirm_words = None   # the dialog words for the next `_confirm`
         self._tray_events = []       # the tray's warnings and errors, oldest first
         self._is_tray_open = False
@@ -5099,6 +5110,10 @@ class TkDashboard(Dashboard):
                                       wraplength=RAIL_PX - 3 * SPACE[5],
                                       background=theme.SURFACE, foreground=theme.TEXT)
         self._station_line.pack(side="left", fill="x")
+        # The idle countdown (Tier N): one line per probe about to power
+        # down, with Extend; packed under the disc's lines, above the model
+        # list, only while there is one. Never a modal, never over the disc.
+        self._idle_box = tk.Frame(rail, background=theme.SURFACE)
         # The model list is CREATED before the foot, so Tab reaches the
         # models before Setup and Quit, as the eye does (TK7-7); the foot is
         # PACKED first, so a long list at 28 pt gives way before it does.
@@ -5126,7 +5141,9 @@ class TkDashboard(Dashboard):
             self._rail.pack_propagate(False)
         except Exception:
             pass
-        for label in (self._sim_line, self._latched_line, self._station_line):
+        labels = [self._sim_line, self._latched_line, self._station_line]
+        labels += [line["text"] for line in self._idle_lines.values()]
+        for label in labels:
             try:
                 label.configure(wraplength=width - 3 * SPACE[5])
             except Exception:
@@ -5233,10 +5250,26 @@ class TkDashboard(Dashboard):
             events.debug("Close Model Confirmed", name, source=SOURCE)
             self.close_model(name)
 
+    def _quit_prompt(self):
+        """The Quit question, naming what is energized now (N4): "Quit the
+        station? Stepper Probe and Rotator are energized; quitting stops and
+        disconnects them." With nothing energized, the plain sentence."""
+        try:
+            energized = list((self.controller.state() or {}).get("energized") or ())
+        except Exception as exc:
+            events.debug("Energized Unread", str(exc), source=SOURCE, exception=exc)
+            energized = []
+        if not energized:
+            return self.QUIT_PROMPT
+        many = len(energized) > 1
+        return (f"Quit the station? {join_names(energized)} "
+                f"{'are' if many else 'is'} energized; quitting stops and "
+                f"disconnects {'them' if many else 'it'}.")
+
     def _on_quit_clicked(self):
-        """Quit asks first (it stops every model and exits); the window's
-        close button and the OS's Quit take the same close path."""
-        if _confirm(self.root, self.QUIT_PROMPT, **QUIT_DIALOG):
+        """Quit asks first (it stops every model and exits), naming what is
+        energized; the window's close button asks the same question."""
+        if _confirm(self.root, self._quit_prompt(), **QUIT_DIALOG):
             self.close()
 
     # -- the sheet -----------------------------------------------------------
@@ -5879,6 +5912,72 @@ class TkDashboard(Dashboard):
                          source=SOURCE)
             self._faulted = faulted
             self._paint_rail_marks()
+        due = {}
+        for name, state in models.items():
+            if not isinstance(state, dict):
+                continue
+            remaining = state.get("idle_remaining")
+            window = state.get("idle_warn_seconds") or IDLE_WARN_SECONDS
+            if remaining is not None and remaining <= window:
+                due[name] = remaining
+        self._sync_idle_lines(due)
+
+    def _sync_idle_lines(self, due):
+        """One countdown line per probe inside its warning window, in
+        station order (Tier N). The seconds are the state's, redrawn each
+        tick; a line goes when its probe leaves the window or its mode."""
+        if list(due) != list(self._idle_lines):
+            for line in self._idle_lines.values():
+                line["tooltip"].close()
+                try:
+                    line["row"].destroy()
+                except Exception:
+                    pass
+            self._idle_lines = {name: self._idle_line(name) for name in due}
+            events.debug("Idle Lines Changed", ", ".join(due) or "none",
+                         source=SOURCE)
+            try:
+                if due:
+                    self._idle_box.pack(side="top", fill="x", before=self._model_list,
+                                        pady=(0, SPACE[4]))
+                else:
+                    self._idle_box.pack_forget()
+            except Exception as exc:
+                events.debug("Idle Lines Not Placed", str(exc), source=SOURCE,
+                             exception=exc)
+        for name, remaining in due.items():
+            seconds = max(0, int(math.ceil(float(remaining))))
+            text = IDLE_LINE.format(name=name, seconds=seconds)
+            label = self._idle_lines[name]["text"]
+            try:
+                if label.cget("text") != text:
+                    label.configure(text=text)
+            except Exception:
+                pass
+
+    def _idle_line(self, name):
+        """"Stepper Probe powers down in 42 s." in ink, and Extend under it."""
+        row = tk.Frame(self._idle_box, background=theme.SURFACE)
+        row.pack(side="top", fill="x", pady=(0, SPACE[3]))
+        text = tk.Label(row, text="", font=_font(), anchor="w", justify="left",
+                        wraplength=self._rail_width(bool(self._is_narrow)) - 3 * SPACE[5],
+                        background=theme.SURFACE, foreground=theme.TEXT)
+        text.pack(side="top", fill="x")
+        extend = _Press(row, EXTEND_WORD, lambda n=name: self._on_extend(n),
+                        theme.SURFACE)
+        extend.frame.pack(side="top", anchor="w", pady=(SPACE[1], 0))
+        tooltip = _Tooltip(extend.widget)
+        tooltip.text = f"{EXTEND_WORD} {name}"
+        return {"row": row, "text": text, "extend": extend, "tooltip": tooltip}
+
+    def _on_extend(self, name):
+        """Extend: the probe's idle clock starts again (`extend_idle`). The
+        line goes as soon as the state says so."""
+        result = self.controller.run(name, "extend_idle")
+        events.debug("Idle Extended", f"{name}: {getattr(result, 'status', result)}"
+                     f" {getattr(result, 'reason', '') or ''}".rstrip(), source=SOURCE)
+        self._sync_station_state()
+        return result
 
     def _paint_rail_marks(self, latched=None, unconfirmed=None):
         """A latched model's rail line: an ink square before its name and
@@ -6188,7 +6287,11 @@ class TkDashboard(Dashboard):
         """The folded line is the latest event; the history is every kept
         one, the latest tagged. Redrawn whole, so a line can also leave
         (L2)."""
-        latest = self._tray_events[-1] if self._tray_events else None
+        # The idle warning is history only (O13): the countdown line under
+        # the disc is its live word, so its frozen "in 60 s" never becomes
+        # the folded line.
+        latest = next((event for event in reversed(self._tray_events)
+                       if event.title != IDLE_SOON_TITLE), None)
         size = _lamp_px()
         try:
             self._latest_mark.delete("all")

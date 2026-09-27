@@ -4982,3 +4982,114 @@ def test_o4_a_faulted_model_wears_the_signal_mark_in_the_rail(tk_harness,
     canvas, tip = built._rail_marks["DC Probe"]
     assert canvas.items == [] and tip.text == ""
     built.close()
+
+
+def _idle_texts(built):
+    return [line["text"].cget("text") for line in built._idle_lines.values()]
+
+
+def test_n2_the_countdown_line_names_the_model_and_the_seconds_from_state(
+        tk_harness, setup_panel):
+    """Tier N: inside the warning window, one line per probe under the disc:
+    "Stepper Probe powers down in 42 s." with Extend; outside it, nothing."""
+    built, controller = _stop_dashboard(setup_panel)
+    probe = controller.panels["Stepper Probe"]
+    probe.idle_remaining = 120.0
+    built._on_refresh_tick()
+    assert _idle_texts(built) == [] and not built._idle_box.is_packed
+    probe.idle_remaining = 42.0
+    built._on_refresh_tick()
+    assert _idle_texts(built) == ["Stepper Probe powers down in 42 s."]
+    assert built._idle_box.is_packed
+    line = built._idle_lines["Stepper Probe"]
+    assert line["extend"].widget.cget("text") == "Extend"
+    assert line["tooltip"].text == "Extend Stepper Probe"
+    probe.idle_remaining = 41.0
+    built._on_refresh_tick()
+    assert _idle_texts(built) == ["Stepper Probe powers down in 41 s."], \
+        "the number is the state's, every tick"
+    probe.idle_remaining = None
+    built._on_refresh_tick()
+    assert _idle_texts(built) == [] and not built._idle_box.is_packed
+    built.close()
+
+
+def test_n2_extend_runs_extend_idle_on_that_model_and_the_line_goes(
+        tk_harness, setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    probe = controller.panels["DC Probe"]
+    probe.idle_remaining = 12.0
+    built._on_refresh_tick()
+    built._idle_lines["DC Probe"]["extend"].widget.fire("<Button-1>")
+    assert last_call(controller, "extend_idle")[0] == "DC Probe"
+    assert probe.extended == 1
+    assert _idle_texts(built) == [], "state says 300 s: the line goes at once"
+    built.close()
+
+
+def test_n2_two_probes_give_two_lines_in_station_order(tk_harness, setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    controller.panels["DC Probe"].idle_remaining = 20.0
+    controller.panels["Stepper Probe"].idle_remaining = 55.0
+    built._on_refresh_tick()
+    assert _idle_texts(built) == ["Stepper Probe powers down in 55 s.",
+                                  "DC Probe powers down in 20 s."]
+    built.close()
+
+
+def test_n2_the_line_never_covers_the_disc_and_is_not_a_modal(tk_harness,
+                                                             setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    Focus.current = built._stop_button
+    toplevels = len([w for w, _kw in PACK_ORDER if isinstance(w, FakeRoot)])
+    controller.panels["Stepper Probe"].idle_remaining = 30.0
+    built._on_refresh_tick()
+    assert built._idle_box.master is built._rail, "a line in the rail"
+    packed = [kw for widget, kw in PACK_ORDER if widget is built._idle_box][-1]
+    assert packed.get("before") is built._model_list
+    order = [w for w, _kw in PACK_ORDER]
+    assert order.index(built._stop_button) < order.index(built._idle_box)
+    assert GRABS == [] and Focus.current is built._stop_button, "never steals focus"
+    assert len([w for w, _kw in PACK_ORDER if isinstance(w, FakeRoot)]) == toplevels
+    built.close()
+
+
+def test_n4_the_quit_question_names_the_energized_models(tk_harness, setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    tk_harness.confirm_answer = False
+    controller.energized = ["Stepper Probe", "Rotator"]
+    built._quit_press.widget.fire("<Button-1>")
+    assert tk_harness.asked[-1] == ("confirm", (
+        "Quit the station? Stepper Probe and Rotator are energized; quitting "
+        "stops and disconnects them."))
+    controller.energized = ["Rotator"]
+    built._quit_press.widget.fire("<Button-1>")
+    assert tk_harness.asked[-1] == ("confirm", (
+        "Quit the station? Rotator is energized; quitting stops and "
+        "disconnects it."))
+    controller.energized = []
+    built._quit_press.widget.fire("<Button-1>")
+    assert tk_harness.asked[-1] == ("confirm", built.QUIT_PROMPT)
+    assert not built._closing
+    built.close()
+
+
+def _idle_soon():
+    return Event(9, "warning", "Stepper Probe", "Idle Timeout Soon",
+                 "Stepper Probe powers its motors down in 60 s unless it moves "
+                 "or you extend.", None, False, 0.0)
+
+
+def test_o13_the_idle_warning_is_history_not_the_trays_live_line(tk_harness,
+                                                                setup_panel):
+    """PM8-4: the tray's line kept "in 39 s" frozen beside the live
+    countdown, and after Extend it still promised a power-down."""
+    built, controller = _stop_dashboard(setup_panel)
+    built._on_event(Event(8, "warning", "DC Probe", "Power Down Not Supported",
+                          "The DC board has no coil kill.", None, False, 0.0))
+    built._on_event(_idle_soon())
+    SCHEDULER.pump()
+    assert "powers its motors down in 60 s" in built._event_text.body, "history"
+    assert built._latest_text.cget("text") == (
+        "Warning: Power down not supported. The DC board has no coil kill.")
+    built.close()
