@@ -523,11 +523,18 @@ class DemoPanel(Panel):
         self.is_armed = False       # a checkbox (G3)
         self.target = None          # a dropdown live only while armed
         self.stop_confirmed = None  # `Model.stop_confirmed` (round 7, L1)
+        self.fault = ""             # `Model.fault` / `is_faulted` (O4)
+        self.idle_remaining = None  # `Probe.idle_remaining` (Tier N)
+        self.extended = 0           # `extend_idle` runs
 
     @property
     def state(self):
         state = super().state
         state["stop_confirmed"] = self.stop_confirmed
+        state["is_faulted"] = bool(self.fault)
+        state["fault"] = self.fault
+        state["idle_remaining"] = self.idle_remaining
+        state["idle_warn_seconds"] = 60.0
         return state
 
     @property
@@ -569,6 +576,7 @@ class DemoPanel(Panel):
                 sch.file_save("Save", "save_run"),
                 sch.file_open("Load", "load_run"),
                 _internal("hidden"),
+                _internal("extend_idle"),
             ),
         )
 
@@ -628,6 +636,12 @@ class DemoPanel(Panel):
     def hidden(self):
         return "hidden"
 
+    def extend_idle(self):
+        """`Probe.extend_idle`: the idle clock starts again (Tier N)."""
+        self.extended += 1
+        self.idle_remaining = 300.0
+        return self.idle_remaining
+
     # -- data commands
     def series(self):
         return {"x": list(range(len(self.samples))), "y": list(self.samples)}
@@ -651,28 +665,50 @@ class FakeController:
         self.focus_calls = []
         self.estop_calls = 0
         self.clear_calls = 0
-        self.is_estopped = False
+        #: The models latched, by name (O17): the stop state is derived per
+        #: model, as `Controller._stop_state` does - one latched model is a
+        #: partial stop, never "every model".
+        self.latched = []
+        #: `Controller.state()["energized"]` (Tier N, O6).
+        self.energized = []
         self.clear_needs_confirm = False
         self.is_closed = False
         self._subscribers = []
-        #: A stop state to serve instead of the one `is_estopped` implies
+        #: A stop state to serve instead of the one `latched` implies
         #: (a partial stop, a model that did not confirm): round 7, L1.
         self.stop = None
 
     @property
+    def is_estopped(self):
+        """Any model latched (`Controller.is_estopped`)."""
+        return bool(self.latched)
+
+    @is_estopped.setter
+    def is_estopped(self, value):
+        """A test's global stop: every open model latched, or none."""
+        self.latched = list(self.panels) if value else []
+
+    @property
     def stop_state(self):
-        """`Controller.stop_state`: every model latched while `is_estopped`,
-        none otherwise, unless a test set `stop`."""
+        """`Controller.stop_state` from the per-model latches, unless a test
+        set `stop`. `every` only when every open model is latched."""
         if self.stop is not None:
             return dict(self.stop)
-        latched = list(self.panels) if self.is_estopped else []
-        return {"latched": latched, "unconfirmed": [], "every": bool(latched)}
+        latched = [name for name in self.panels if name in self.latched]
+        return {"latched": latched, "unconfirmed": [],
+                "every": bool(latched) and len(latched) == len(self.panels)}
 
     # -- what a view reads
     def schema(self, name):
         return self.panels[name].schema
 
     def state(self, name=None):
+        if name is None:
+            # `Controller.state()`: the station at once (Tier N, O4, O6).
+            return {"models": {n: p.state for n, p in self.panels.items()},
+                    "is_estopped": self.is_estopped,
+                    "energized": [n for n in self.panels if n in self.energized],
+                    "stop": self.stop_state, "closed": list(self.closed)}
         return self.panels[name].state
 
     def run(self, name, command, inputs=None, args=()):
@@ -714,7 +750,7 @@ class FakeController:
 
     def estop_all(self):
         self.estop_calls += 1
-        self.is_estopped = True
+        self.latched = list(self.panels)
         if self.stop is not None:
             self.stop = dict(self.stop, latched=list(self.panels), every=True)
         return {name: True for name in self.panels}
@@ -724,7 +760,7 @@ class FakeController:
         if self.clear_needs_confirm and not confirmed:
             return Result(Result.CONFIRM, reason="Release the latch?",
                           command="clear_estop_all")
-        self.is_estopped = False
+        self.latched = []
         self.stop = None
         return Result(Result.OK)
 
@@ -4770,3 +4806,179 @@ def test_l5_the_well_is_embedded_only_once_it_is_first_shown(setup_panel):
 def test_l22_the_window_is_titled_as_the_rail_names_the_station(dashboard):
     """TK7-18: the window said "Transfer Station", the rail "Transfer stage"."""
     assert dashboard.root.titles == [tkmod.STATION_TITLE] == ["Transfer stage"]
+
+
+# ---------------------------------------------------------------------------
+# Tier N and O (audit round 8, 2026-09-26)
+# ---------------------------------------------------------------------------
+
+class ModePanel(DemoPanel):
+    """A probe's go half: the two mode toggles, Step (greyed in manual
+    mode), and the internal `extend_idle` the countdown's Extend runs."""
+    NAME = "Stepper Probe"
+
+    def __init__(self):
+        super().__init__()
+        self.is_auto = False
+        self.is_manual = False
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "System Control",
+            sch.toggle("Autonomous:", "is_auto", "set_mode",
+                       "Autonomous mode (press to stop)", "Enter Autonomous Mode",
+                       on_args=["autonomous"], off_args=["disabled"],
+                       disabled_when=("latched",)),
+            sch.toggle("Manual / Gamepad:", "is_manual", "set_mode",
+                       "Manual mode (press to stop)", "Enter Manual Mode",
+                       on_args=["manual"], off_args=["disabled"],
+                       disabled_when=("latched",)),
+            sch.button("Step", "step", role="go", disabled_when=("manual", "latched")),
+            _internal("extend_idle")))
+
+    def set_mode(self, target):
+        self.commands.append(("set_mode", target))
+        self.mode = target
+        return target
+
+    def step(self):
+        self.commands.append(("step",))
+        return "stepped"
+
+
+def _mode_view(name="Stepper Probe"):
+    panel = ModePanel()
+    controller = FakeController(**{name: panel})
+    return tkmod.TkPanelView(FakeWidget(), controller, name), panel, controller
+
+
+FAULT = ("The disable did not reach the board, so the motors may still be "
+         "powered. Treat it as live.")
+
+
+def test_o17_the_disc_defers_to_the_dashboards_toggle_estop_all(tk_harness,
+                                                                 setup_panel,
+                                                                 monkeypatch):
+    """ARCH-5: Tk kept its own copy of the disc's rule. The press is the
+    base's `Dashboard.toggle_estop_all`, as in Qt."""
+    pressed = []
+    monkeypatch.setattr(tkmod.TkDashboard, "toggle_estop_all",
+                        lambda self: pressed.append(True) or {})
+    built, controller = _stop_dashboard(setup_panel)
+    built._stop_button.fire("<Button-1>")
+    assert pressed == [True]
+    assert controller.estop_calls == 0 and controller.clear_calls == 0
+    built.close()
+
+
+def test_o17_the_clear_through_the_base_still_asks_in_the_clear_words(
+        tk_harness, setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    controller.is_estopped = True
+    controller.clear_needs_confirm = True
+    built._stop_button.fire("<Button-1>")
+    assert tk_harness.words[-1] == tkmod.CLEAR_DIALOG
+    assert controller.clear_calls == 2 and not controller.is_estopped
+    built.close()
+
+
+class _NoStopState(FakeController):
+    """A controller that serves no stop state: the old fallback read
+    `is_estopped` (ANY model latched) as "every model is stopped"."""
+    stop_state = None
+
+
+def test_o17_no_fallback_reads_one_latch_as_every_model(tk_harness, setup_panel):
+    controller = _NoStopState(**{name: DemoPanel() for name in L_NAMES})
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    controller.latched = ["Rotator"]
+    built._sync_stop_button()
+    assert _faces(built) == ["Stop"], "never Clear from a guess"
+    assert not built._headline.is_packed
+    built.close()
+
+
+def test_o17_the_stand_in_derives_the_stop_per_model(tk_harness, setup_panel):
+    """The test file's FakeController lost the any-latched rule: one latched
+    model is a partial stop here too, so an L1 regression in Tk shows."""
+    built, controller = _stop_dashboard(setup_panel)
+    controller.latched = ["Rotator"]
+    assert controller.stop_state == {"latched": ["Rotator"], "unconfirmed": [],
+                                     "every": False}
+    built._sync_stop_button()
+    assert _faces(built) == ["Stop"]
+    assert built._latched_line.cget("text") == "Stopped: Rotator"
+    built._stop_button.fire("<Button-1>")
+    assert controller.estop_calls == 1 and controller.clear_calls == 0
+    assert _faces(built) == ["Clear"]
+    built.close()
+
+
+def test_o4_a_faulted_model_is_marked_like_an_unconfirmed_stop(tk_harness,
+                                                              setup_panel):
+    """IMP8-2: a probe whose disable failed looked like a safe one."""
+    built, controller = _stop_dashboard(setup_panel)
+    view = built._panels["DC Probe"]
+    controller.panels["DC Probe"].fault = FAULT
+    view._refresh()
+    assert view._mark_row.is_packed
+    assert view._mark_text.cget("text") == "Disable failed. Treat as live."
+    assert view._mark_reason.cget("text") == FAULT
+    assert view._rule.cget("background") == theme.SIGNAL
+    assert not built._panels["Rotator"]._mark_row.is_packed
+    controller.panels["DC Probe"].fault = ""
+    view._refresh()
+    assert not view._mark_row.is_packed
+    assert view._rule.cget("background") == theme.RULE_STRONG
+    built.close()
+
+
+def test_o4_an_unconfirmed_stop_keeps_its_own_words_over_a_fault(tk_harness,
+                                                                setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    view = built._panels["DC Probe"]
+    controller.panels["DC Probe"].fault = FAULT
+    controller.panels["DC Probe"].stop_confirmed = False
+    view._refresh()
+    assert view._mark_text.cget("text") == "Stop not confirmed. Treat as live."
+    assert view._mark_reason.cget("text") == FAULT, "the reason still shows"
+    built.close()
+
+
+def test_o4_a_faulted_probes_mode_toggles_are_greyed_with_the_reason(tk_harness):
+    view, panel, _controller = _mode_view()
+    toggles = [element_of(view, "toggle", "Autonomous:"),
+               element_of(view, "toggle", "Manual / Gamepad:")]
+    entries = [view._widgets[id(element)] for element in toggles]
+    assert all(entry["is_enabled"] for entry in entries)
+    panel.fault = FAULT
+    view._refresh()
+    for entry in entries:
+        assert not entry["is_enabled"]
+        assert entry["gate_tip"].text == "Faulted: clear the fault first"
+    widget_of(view, toggles[0]).fire("<Button-1>")
+    assert panel.commands == [], "a greyed toggle sends nothing"
+    step = view._widgets[id(element_of(view, "button", "Step"))]
+    assert step["is_enabled"], "only the mode toggles are held"
+    panel.fault = ""
+    view._refresh()
+    assert all(entry["is_enabled"] for entry in entries)
+    view.close()
+
+
+def test_o4_a_faulted_model_wears_the_signal_mark_in_the_rail(tk_harness,
+                                                             setup_panel):
+    built, controller = _stop_dashboard(setup_panel)
+    controller.panels["DC Probe"].fault = FAULT
+    built._on_refresh_tick()
+    canvas, tip = built._rail_marks["DC Probe"]
+    assert [i[2]["fill"] for i in canvas.items if i[0] == "rect"] == [theme.SIGNAL]
+    assert [i[2]["text"] for i in canvas.items if i[0] == "text"] == ["!"]
+    assert tip.text == "Disable failed"
+    controller.panels["DC Probe"].fault = ""
+    built._on_refresh_tick()
+    canvas, tip = built._rail_marks["DC Probe"]
+    assert canvas.items == [] and tip.text == ""
+    built.close()
