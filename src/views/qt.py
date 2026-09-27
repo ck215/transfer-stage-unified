@@ -86,20 +86,23 @@ import time
 import schema as sch
 from events import events
 from views import theme
-from views.base import Dashboard, PanelView, event_line, stop_words
+from views import base as view_base
+from views.base import Dashboard, PanelView, event_line, join_names, stop_words
 
 try:                                    # the module imports without PySide6
     from PySide6.QtCore import (QEasingCurve, QEvent, QEventLoop, QLocale,
                                 QPoint, QPointF, QRect, QRectF, QSize, Qt,
                                 QTimer, QUrl, QVariantAnimation, Signal)
-    from PySide6.QtGui import (QColor, QDoubleValidator, QFont,
+    from PySide6.QtGui import (QAccessible, QAccessibleActionInterface,
+                               QAccessibleAnnouncementEvent,
+                               QColor, QDoubleValidator, QFont,
                                QFontDatabase, QFontMetrics, QGuiApplication,
                                QIcon, QImage,
                                QIntValidator, QKeySequence, QPainter,
                                QPainterPath, QPen, QPixmap, QShortcut,
                                QTextCursor, QTextDocument)
     from PySide6.QtWidgets import (
-        QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog,
+        QAbstractButton, QAccessibleWidget, QApplication, QCheckBox, QComboBox, QDialog,
         QDockWidget, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
         QLayout, QLineEdit, QMainWindow, QMessageBox, QPushButton,
         QScrollArea, QSizePolicy, QSlider, QStyle, QStyleOptionButton,
@@ -240,20 +243,91 @@ EMPTY_HINT = "Choose ports in Setup and press Launch."
 #: artboards' copy).
 SIM_LINE = "Simulation, no hardware attached"
 UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
+#: O4 (IMP8-2): a probe whose disable failed is said like a stop that did
+#: not confirm - the red rule, these words and the fault's reason. Its mode
+#: toggles are greyed by the schema (`disabled_when` "fault"), with the gate's
+#: words for a fault.
+FAULT_LINE = "Disable failed. Treat as live."
+FAULT_GATE = view_base.GATE_WORDS["fault"][0]
 #: L1: a model's state on the rail, beside its name. The words go in its
-#: tooltip and accessible name (never colour alone); the square's colour is
-#: ink for a latched model, the signal for one that did not confirm.
-RAIL_STOP_WORDS = {"stopped": "stopped", "unconfirmed": "did not confirm"}
+#: tooltip and accessible name (never colour alone); the square is ink for a
+#: latched model, the signal with a "!" knocked out for one that did not
+#: confirm or whose disable failed (O16: shape, not colour alone).
+RAIL_STOP_WORDS = {"stopped": "stopped", "unconfirmed": "did not confirm",
+                   "faulted": "faulted"}
+#: O6: an energized model's rail mark is an ink ring after the stop mark.
+ENERGIZED_WORD = "energized"
+#: Where the ring's stroke runs, as a fraction of the mark's side.
+RING_INSET = 0.22
 #: L2: the Controller's event title for a stop that did not confirm. The
 #: band drops it once the latch opens; while latched it waits for its
 #: acknowledgement like any error.
-UNCONFIRMED_TITLE = "Stop Not Confirmed"
+UNCONFIRMED_TITLE = events.STOP_NOT_CONFIRMED
 #: L9 / L14: the questions, titled, answered by verbs - the Tk and Web words.
 QUIT_PROMPT = ("Quit the station? This stops every model, closes every port "
                "and exits.")
 QUIT_WORDS = ("Quit the station?", "Quit", "Stay")
 CLEAR_WORDS = ("Clear the stop?", "Clear the stop", "Keep it stopped")
 CONFIRM_WORDS = ("Confirm", "Continue", "Cancel")
+
+
+def quit_prompt(energized):
+    """N4 (brief-n-views.md N3): the quit question names what is energized,
+    since quitting stops and disconnects it; else the L9 sentence."""
+    names = list(energized or ())
+    if not names:
+        return QUIT_PROMPT
+    many = len(names) > 1
+    return (f"Quit the station? {join_names(names)} {'are' if many else 'is'} "
+            f"energized; quitting stops and disconnects {'them' if many else 'it'}.")
+
+
+#: N2 (brief-n-views.md N1): the idle countdown. The window is the model's
+#: `idle_warn_seconds` when its state carries it, else this.
+IDLE_WARN_SECONDS = 60
+EXTEND_WORD = "Extend"
+#: O13: events that are history only - they go to the log, never the tray's
+#: latest line, because a live line says the same thing from state.
+HISTORY_ONLY_TITLES = frozenset({events.IDLE_TIMEOUT_SOON})
+
+
+def idle_countdowns(names, states):
+    """[(name, whole seconds)] for every model inside its idle warning
+    window, in station order: `idle_remaining` from state, rounded up so the
+    line never says 0 while there is time left."""
+    lines = []
+    for name in names:
+        state = states.get(name) or {}
+        remaining = state.get("idle_remaining")
+        if remaining is None:
+            continue
+        window = state.get("idle_warn_seconds") or IDLE_WARN_SECONDS
+        if float(remaining) <= float(window):
+            lines.append((name, int(math.ceil(float(remaining)))))
+    return lines
+
+
+def countdown_text(name, seconds):
+    return f"{name} powers down in {seconds} s."
+
+
+def close_model_words(name):
+    """O9: the entry's × asks the Tk and Web question - (prompt, title, yes,
+    no) for `ask`: closing stops and disconnects the model."""
+    return (f"It stops and disconnects {name}. You can reopen it from the rail.",
+            f"Close {name}?", f"Close {name}", "Keep it open")
+
+
+def rail_mark(name, stop_state, faulted):
+    """The one stop mark a model carries on the rail: a stop that did not
+    confirm outranks a fault, a fault outranks a plain latch."""
+    if name in (stop_state.get("unconfirmed") or ()):
+        return "unconfirmed"
+    if name in faulted:
+        return "faulted"
+    if name in (stop_state.get("latched") or ()):
+        return "stopped"
+    return None
 #: The sheet's two pages (K4): the rail's first item, and the word at the
 #: right of an overview entry's head (a press opens the device alone).
 OVERVIEW = "Overview"
@@ -367,39 +441,17 @@ def sentence_case(text):
                     else word for index, word in enumerate(words))
 
 
-#: L3: why a command is greyed out, in the operator's words: the gate token
-#: that refused it (`disabled_when`), or what an `enabled_when` command is
-#: waiting for. One map, three views (brief-l-views.md).
-GATE_WORDS = {"latched": "Stopped: clear the stop first",
-              "manual": "In manual mode",
-              "running": "A run is in progress",
-              "no_region": "Set a capture region first",
-              "disconnected": "Not connected",
-              "moving": "Moving"}
-WAITING_WORDS = {"launched": "Nothing launched yet",
-                 "running": "No run in progress",
-                 "manual": "Not in manual mode",
-                 "connected": "Not connected"}
-
-
 def gate_reason(element, mode, values=None, caption_of=None):
     """Why `schema.is_enabled` refuses `element` in `mode`, or "" when it
-    does not. `caption_of(attr)` names an `enabled_by` switch."""
-    mode = str(mode or "")
+    does not. O3: the words are `views.base.gate_reason`'s - one table, both
+    directions, three views. The one rule it has no word for is the view's:
+    a control live only while a tick box is ticked (`enabled_by`) names the
+    box, `caption_of(attr)`."""
     by = element.get("enabled_by")
     if by and values is not None and not values.get(by):
         name = caption_of(by) if caption_of else ""
         return f"Tick {name} first" if name else "Not selected"
-    if mode in (element.get("disabled_when") or ()):
-        return GATE_WORDS.get(mode) or sentence(mode.replace("_", " "))
-    enabled = element.get("enabled_when")
-    if enabled and mode not in enabled:
-        if mode in GATE_WORDS and mode in ("latched", "disconnected"):
-            return GATE_WORDS[mode]
-        if len(enabled) == 1 and enabled[0] in WAITING_WORDS:
-            return WAITING_WORDS[enabled[0]]
-        return "Only while " + " or ".join(str(m).replace("_", " ") for m in enabled)
-    return ""
+    return view_base.gate_reason(element, mode)
 
 
 def split_unit(text, unit=None):
@@ -927,6 +979,52 @@ def allow_tab_to_every_control():
     hints = QGuiApplication.styleHints() if QGuiApplication.instance() else None
     if hints is not None and hints.tabFocusBehavior() != Qt.TabFocusBehavior.TabFocusAllControls:
         hints.setTabFocusBehavior(Qt.TabFocusBehavior.TabFocusAllControls)
+
+
+def announce(widget, text, assertive=True):
+    """O7 (A11Y-2): say `text` to a screen reader - a stop, a clear, a stop
+    that did not confirm, a fault - in the words on screen. Assertive: these
+    interrupt. Qt 6.8+; a failure is a debug line, never a dialog."""
+    if not text:
+        return
+    try:
+        event = QAccessibleAnnouncementEvent(widget, text)
+        event.setPoliteness(QAccessible.AnnouncementPoliteness.Assertive if assertive
+                            else QAccessible.AnnouncementPoliteness.Polite)
+        QAccessible.updateAccessibility(event)
+    except Exception as exc:
+        events.debug("Announce Failed", str(exc), source="QtView", exception=exc,
+                     every=1.0)
+
+
+_ACCESSIBLE_FACTORY = []
+
+
+def install_accessibility():
+    """O11 (A11Y-5): an overview entry's head is a press target drawn as a
+    frame; to assistive tech it is a button named "Open <model>" whose press
+    opens the device page. Installed once per process."""
+    if _ACCESSIBLE_FACTORY or not HAS_QT:
+        return
+
+    class HeadAccessible(QAccessibleWidget):
+        def __init__(self, head):
+            QAccessibleWidget.__init__(self, head, QAccessible.Role.Button)
+
+        def actionNames(self):          # noqa: N802 - Qt's name
+            return [QAccessibleActionInterface.pressAction()]
+
+        def doAction(self, name):       # noqa: N802 - Qt's name
+            head = self.object()
+            if (name == QAccessibleActionInterface.pressAction()
+                    and isinstance(head, EntryHead) and head.is_pressable):
+                head.pressed.emit()
+
+    def factory(_key, obj):
+        return HeadAccessible(obj) if isinstance(obj, EntryHead) else None
+
+    QAccessible.installFactory(factory)
+    _ACCESSIBLE_FACTORY.append(factory)     # kept alive with the process
 
 
 def install_font_fallbacks():
@@ -2277,6 +2375,50 @@ def square_icon(ink, size=10):
         QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Selected)])
 
 
+def rail_mark_icon(stop_kind, energized, side):
+    """A rail item's marks, left to right: the stop mark, then the energized
+    ring (O6). Shapes, not colours alone (O16, A11Y-6): a solid ink square
+    for a latched model; a signal square with a "!" knocked out in the
+    sheet's colour for one that did not confirm or whose disable failed; an
+    open ink ring for an energized one. Never a hover effect."""
+    kinds = ([stop_kind] if stop_kind else []) + (["energized"] if energized else [])
+    gap = theme.GAP
+    width = side * len(kinds) + gap * max(0, len(kinds) - 1)
+    pixmap = QPixmap(width * 2, side * 2)
+    pixmap.setDevicePixelRatio(2.0)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    for index, kind in enumerate(kinds):
+        left = index * (side + gap)
+        if kind == "energized":
+            pen = QPen(QColor(theme.TEXT))
+            pen.setWidthF(max(1.6, side * 0.16))
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            inset = side * RING_INSET
+            painter.drawEllipse(QRectF(left + inset, inset,
+                                       side - 2 * inset, side - 2 * inset))
+            continue
+        loud = kind in ("unconfirmed", "faulted")
+        # The loud square fills its cell, so its "!" is laid on an eighths
+        # grid: a bar three eighths tall, a gap, a dot two eighths square.
+        inset = 0 if loud else side * 0.2
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme.SIGNAL if loud else theme.TEXT))
+        painter.drawRect(QRectF(left + inset, inset, side - 2 * inset, side - 2 * inset))
+        if loud:
+            unit = side / 8.0
+            painter.setBrush(QColor(theme.BACKGROUND))
+            painter.drawRect(QRectF(left + 3 * unit, unit, 2 * unit, 3 * unit))
+            painter.drawRect(QRectF(left + 3 * unit, 5 * unit, 2 * unit, 2 * unit))
+    painter.end()
+    icon = QIcon()
+    for mode in (QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Selected):
+        icon.addPixmap(pixmap, mode)
+    return icon
+
+
 def disclosure_icon(is_open, size=10):
     """The disclosure's small ink triangle: pointing right when closed, down
     when open; the platform arrow is a heavy chevron on macOS."""
@@ -2587,6 +2729,8 @@ class SheetEntry(QFrame):
     """
 
     closed = Signal()
+    #: The head's ×: the dashboard asks before it closes the model (O9).
+    close_requested = Signal()
     #: The head was pressed on the overview: show this device alone.
     open_requested = Signal()
 
@@ -2595,6 +2739,7 @@ class SheetEntry(QFrame):
         self.name = name or ""
         self.panel = panel
         self.is_unconfirmed = False
+        self.is_faulted = False
         self.is_overview = False
         self.setObjectName("entry")
         layout = QVBoxLayout(self)
@@ -2641,11 +2786,16 @@ class SheetEntry(QFrame):
         self.unconfirmed_mark = mark(theme.SIGNAL)
         self.unconfirmed_label = QLabel(UNCONFIRMED_LINE)
         self.unconfirmed_label.setObjectName("entryNote")
+        # O4: a disable that failed, with the fault's own reason.
+        self.fault_mark = mark(theme.SIGNAL)
+        self.fault_label = QLabel(FAULT_LINE)
+        self.fault_label.setObjectName("entryNote")
         notes = QVBoxLayout()
         notes.setContentsMargins(0, 0, 0, theme.SPACE[3])
         notes.setSpacing(theme.GAP)
         for marker, label in ((self.lost_mark, self.lost_label),
-                              (self.unconfirmed_mark, self.unconfirmed_label)):
+                              (self.unconfirmed_mark, self.unconfirmed_label),
+                              (self.fault_mark, self.fault_label)):
             label.setWordWrap(True)
             line = _bare_row(marker, label, spacing=theme.PAD)
             line.layout().setAlignment(marker, Qt.AlignmentFlag.AlignVCenter)
@@ -2654,6 +2804,7 @@ class SheetEntry(QFrame):
             notes.addWidget(line)
         self._lost_line = notes.itemAt(0).widget()
         self._unconfirmed_line = notes.itemAt(1).widget()
+        self._fault_line = notes.itemAt(2).widget()
         side = target_px()
         self.close_button = QToolButton()
         self.close_button.setObjectName("iconButton")
@@ -2663,7 +2814,7 @@ class SheetEntry(QFrame):
         self.close_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.close_button.setToolTip(f"Close {self.name} (stops and disconnects it)")
         self.close_button.setAccessibleName(f"Close {self.name}")
-        self.close_button.clicked.connect(self.close)
+        self.close_button.clicked.connect(self.close_requested.emit)
         head.addWidget(self.close_button)
         layout.addWidget(self.head)
         body = QVBoxLayout()
@@ -2711,9 +2862,30 @@ class SheetEntry(QFrame):
         if flag == self.is_unconfirmed:
             return
         self.is_unconfirmed = flag
-        self.rule.setStyleSheet(
-            f"QFrame#entryRule {{ background-color: {theme.SIGNAL}; }}" if flag else "")
+        self._sync_rule()
         self._unconfirmed_line.setVisible(flag)
+
+    def set_faulted(self, flag, reason=""):
+        """O4: a disable that failed is drawn like a stop that did not
+        confirm - the red rule and "Disable failed. Treat as live." - with
+        the fault's reason after it, so it is read in tier 1, not two
+        disclosures down."""
+        flag = bool(flag)
+        text = FAULT_LINE + (f" {sentence(str(reason).strip())}"
+                             if flag and str(reason or "").strip() else "")
+        if self.fault_label.text() != text:
+            self.fault_label.setText(text)
+        if flag == self.is_faulted:
+            return
+        self.is_faulted = flag
+        self._sync_rule()
+        self._fault_line.setVisible(flag)
+
+    def _sync_rule(self):
+        red = self.is_unconfirmed or self.is_faulted
+        sheet = f"QFrame#entryRule {{ background-color: {theme.SIGNAL}; }}" if red else ""
+        if self.rule.styleSheet() != sheet:
+            self.rule.setStyleSheet(sheet)
 
     def closeEvent(self, event):
         self.closed.emit()
@@ -2729,7 +2901,8 @@ class RailItem(QPushButton):
     def __init__(self, name, parent=None):
         QPushButton.__init__(self, name, parent)
         self.name = name
-        self.stop_mark = None       # None, "stopped" or "unconfirmed"
+        self.stop_mark = None       # None, "stopped", "unconfirmed" or "faulted"
+        self.is_energized = False   # O6: an ink ring after the stop mark
         self.setObjectName("railModel")
         self.setCheckable(True)
         self.setAccessibleName(name)
@@ -2737,35 +2910,50 @@ class RailItem(QPushButton):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
     def set_stop(self, mark_kind):
-        """`None`, "stopped" or "unconfirmed", from `Controller.stop_state`."""
+        """`None`, "stopped", "unconfirmed" or "faulted" (`rail_mark`)."""
         if mark_kind == self.stop_mark:
             return
         self.stop_mark = mark_kind
-        if mark_kind is None:
+        self._draw_marks()
+
+    def set_energized(self, flag):
+        """O6: `Controller.state()["energized"]` names this model."""
+        flag = bool(flag)
+        if flag == self.is_energized:
+            return
+        self.is_energized = flag
+        self._draw_marks()
+
+    def _draw_marks(self):
+        if self.stop_mark is None and not self.is_energized:
             self.setIcon(QIcon())
         else:
             side = theme.SPACE[4] - theme.SPACE[1]
-            ink = theme.SIGNAL if mark_kind == "unconfirmed" else theme.TEXT
-            self.setIcon(square_icon(ink, side))
-            self.setIconSize(QSize(side, side))
+            count = bool(self.stop_mark) + self.is_energized
+            self.setIcon(rail_mark_icon(self.stop_mark, self.is_energized, side))
+            self.setIconSize(QSize(side * count + theme.GAP * (count - 1), side))
         self.setAccessibleName(self._spoken())
         self._fit()
 
+    def _has_marks(self):
+        return bool(self.stop_mark) or self.is_energized
+
     def _spoken(self):
-        words = RAIL_STOP_WORDS.get(self.stop_mark)
-        return f"{self.name}, {words}" if words else self.name
+        words = [RAIL_STOP_WORDS.get(self.stop_mark)] if self.stop_mark else []
+        words += [ENERGIZED_WORD] if self.is_energized else []
+        return ", ".join([self.name] + words)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit()
 
     def _fit(self):
-        icon = self.iconSize().width() + theme.GAP if self.stop_mark else 0
+        icon = self.iconSize().width() + theme.GAP if self._has_marks() else 0
         room = max(1, self.width() - 2 * theme.INSET - theme.GAP - icon)
         shown = self.fontMetrics().elidedText(self.name, Qt.TextElideMode.ElideRight, room)
         if shown != self.text():
             self.setText(shown)
-        tip = self._spoken() if (shown != self.name or self.stop_mark) else ""
+        tip = self._spoken() if (shown != self.name or self._has_marks()) else ""
         if self.toolTip() != tip:
             self.setToolTip(tip)
 
@@ -3474,7 +3662,17 @@ class QtPanelView(PanelView, QWidget):
         combo.setSizePolicy(QSizePolicy.Policy.Expanding,
                             QSizePolicy.Policy.Fixed)
         caption, _ = self._label_for(container, element)
-        combo.setAccessibleName(sentence_case(caption))
+        owner = self._building_title if container.is_row else self.name
+        words = caption if container.is_row else sentence_case(caption)
+        # O11 (A11Y-5): macOS and Linux name a combo box by its value ("SIM");
+        # its label reaches a screen reader through a Label relation - a
+        # buddy, hidden, that says the caption and whose row it is.
+        spoken = f"{words}, {owner}" if owner else words
+        combo.setAccessibleName(spoken)
+        buddy = QLabel(spoken)
+        buddy.setObjectName("buddy")
+        buddy.setBuddy(combo)
+        buddy.setVisible(False)
         self._remember(element, combo)
         self._reload_options(element, combo)
         combo.currentTextChanged.connect(
@@ -3496,6 +3694,7 @@ class QtPanelView(PanelView, QWidget):
         # Greyed with its dropdown: an unticked row offers nothing to press.
         self._companions[id(element)] = refresh
         cell = _bare_row(combo, refresh)
+        cell.layout().addWidget(buddy)
         if container.control_width:
             cell.setMinimumWidth(container.control_width)
         container.add(caption, cell)
@@ -4223,6 +4422,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._words = None          # the stop's words last drawn (`stop_words`)
         self._narrow = None
         self._quit_asked = False    # a Quit already answered yes
+        self._energized = []        # the station's `energized` (O6)
 
         self.setWindowTitle("Transfer stage")
         self.resize(1400, 900)
@@ -4233,6 +4433,8 @@ class QtDashboard(Dashboard, QMainWindow):
         self._marshalled.connect(self._on_marshalled, Qt.QueuedConnection)
         install_font_fallbacks()
         allow_tab_to_every_control()
+        install_accessibility()
+        self._faulted_said = set()  # faults already announced (O7)
 
         self._build_rail()
         self._build_sheet()
@@ -4286,6 +4488,7 @@ class QtDashboard(Dashboard, QMainWindow):
         # sheet off the window.
         self._setup_scroll = QScrollArea()
         self._setup_scroll.setObjectName("setupScroll")
+        self._setup_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._setup_scroll.setWidgetResizable(True)
         self._setup_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._setup_scroll.setWidget(self.setup_view)
@@ -4320,6 +4523,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._sync_states()
         self._sync_empty_state()
         self._set_tray_open(False)
+        self._order_tab()
         self.show()
         # Nothing is handed focus at boot: a ring on the first control in the
         # tab order before anything has happened is noise.
@@ -4342,8 +4546,16 @@ class QtDashboard(Dashboard, QMainWindow):
         the station running."""
         if self._closing or self._quit_asked:
             return True
-        self._quit_asked = ask(self, QUIT_PROMPT, *QUIT_WORDS)
+        self._quit_asked = ask(self, quit_prompt(self._energized_now()), *QUIT_WORDS)
         return self._quit_asked
+
+    def _energized_now(self):
+        """`Controller.state()["energized"]`, read at the moment of asking."""
+        try:
+            station = self.controller.state()
+        except Exception:
+            return []
+        return list((station or {}).get("energized") or []) if isinstance(station, dict) else []
 
     def _on_quit_clicked(self):
         if self._ask_quit():
@@ -4384,6 +4596,8 @@ class QtDashboard(Dashboard, QMainWindow):
         placed over it (F1)."""
         self.rail = QFrame()
         self.rail.setObjectName("rail")
+        # It holds the keyboard at launch (no ring on anything yet): named.
+        self.rail.setAccessibleName("Transfer stage")
         column = QVBoxLayout(self.rail)
         column.setContentsMargins(theme.SPACE[6], theme.SPACE[7],
                                   theme.SPACE[6], theme.SPACE[6])
@@ -4422,6 +4636,16 @@ class QtDashboard(Dashboard, QMainWindow):
         self.latched_row.setVisible(False)
         column.addSpacing(theme.SPACE[3])
         column.addWidget(self.latched_row)
+        # N2: the idle countdown, one line per probe with its Extend, under
+        # the disc and its stop line - never over them, never a window.
+        self.countdown_box = QWidget()
+        self.countdown_box.setObjectName("bare")
+        self._countdown_layout = QVBoxLayout(self.countdown_box)
+        self._countdown_layout.setContentsMargins(0, theme.SPACE[3], 0, 0)
+        self._countdown_layout.setSpacing(theme.PAD)
+        self.countdown_box.setVisible(False)
+        self.countdowns = {}        # name -> (line, Extend), station order
+        column.addWidget(self.countdown_box)
         column.addSpacing(theme.SPACE[5])
 
         # The model list scrolls within the rail, so at 28 pt with eight
@@ -4448,6 +4672,9 @@ class QtDashboard(Dashboard, QMainWindow):
         stack.addStretch(1)
         scroll = QScrollArea()
         scroll.setObjectName("railScroll")
+        # O11: a scroll area is not a Tab stop; focusing a control inside it
+        # scrolls it into view.
+        scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -4576,6 +4803,7 @@ class QtDashboard(Dashboard, QMainWindow):
                 item.clicked.connect(lambda _=False, n=name: self.open_entry(n))
                 self._rail_list.addWidget(item)
                 self._rail_items[name] = item
+            self._order_tab()
         for name, item in self._rail_items.items():
             if item.isChecked() != (name == self._shown):
                 item.setChecked(name == self._shown)
@@ -4585,6 +4813,7 @@ class QtDashboard(Dashboard, QMainWindow):
         if closed != self._closed_shown:
             self._closed_shown = closed
             self._build_reopen(closed)
+            self._order_tab()
 
     def _rail_status_text(self, names, states):
         lost = [lost_sentence(n, self._lost.get(n)) for n in names
@@ -4603,17 +4832,14 @@ class QtDashboard(Dashboard, QMainWindow):
         """What the models' states say, on the rail and the sheet: a lost
         device, the latch, a stop that did not confirm, the simulation line."""
         names = list(self.controller.model_names)
-        states = {}
-        for name in names:
-            try:
-                states[name] = self.controller.state(name)
-            except Exception:
-                continue
+        states = self._model_states(names)
         for name, state in states.items():
             self._show_lost(name, lost_devices(state))
+        self._sync_countdowns(names, states)
         stop = self._stop_state()
         words = stop_words(stop)
         if words != self._words:
+            self._announce_stop(self._words, words)
             self._words = words
             self.latched_label.setText(words["rail"])
             self.latched_row.setVisible(bool(words["rail"]))
@@ -4621,13 +4847,21 @@ class QtDashboard(Dashboard, QMainWindow):
             self.subline.setText(words["subline"])
             self.subline.setVisible(bool(words["subline"]))
             self.headline_row.setVisible(bool(words["headline"]))
-        latched, unconfirmed = set(stop["latched"]), set(stop["unconfirmed"])
+        latched = set(stop["latched"])
+        faulted = {n for n, state in states.items() if state.get("is_faulted")}
+        for name in names:
+            if name in faulted and name not in self._faulted_said:
+                announce(self.stop_button, f"{name}: {FAULT_LINE}")
+        self._faulted_said = faulted
+        energized = set(self._energized)
         for name, item in self._rail_items.items():
-            item.set_stop("unconfirmed" if name in unconfirmed
-                          else "stopped" if name in latched else None)
+            item.set_stop(rail_mark(name, stop, faulted))
+            item.set_energized(name in energized)       # O6: the ink ring
         for name, entry in self._entries.items():
+            state = states.get(name) or {}
             # The model's own word (L1): its stop did not confirm while latched.
-            entry.set_unconfirmed((states.get(name) or {}).get("stop_confirmed") is False)
+            entry.set_unconfirmed(state.get("stop_confirmed") is False)
+            entry.set_faulted(name in faulted, state.get("fault") or "")
         if not latched:
             self._drop_unconfirmed_alerts()
         self.rail_status.set_full_text(self._rail_status_text(names, states))
@@ -4636,6 +4870,141 @@ class QtDashboard(Dashboard, QMainWindow):
         """`Controller.stop_state`: what is latched, what did not confirm,
         and whether that is every model (L1)."""
         return self.controller.stop_state
+
+    def _announce_stop(self, was, now):
+        """O7: each edge of the stop is said once, in the words on screen - a
+        stop, a stop that did not confirm, a clear. Not at the first draw."""
+        if was is None:
+            return
+        said = now["headline"] or now["rail"]
+        if said:
+            announce(self.stop_button, said)
+        elif was["headline"] or was["rail"]:
+            announce(self.stop_button, "Stop cleared")
+
+    def _model_states(self, names):
+        """Every open model's state from one `Controller.state()` read, with
+        the station's `energized` list kept beside them (O6, N4); a model
+        missing from it is asked for by name."""
+        try:
+            station = self.controller.state()
+        except Exception:
+            station = {}
+        station = station if isinstance(station, dict) else {}
+        models = station.get("models") if isinstance(station.get("models"), dict) else {}
+        self._energized = [n for n in (station.get("energized") or []) if n in names]
+        states = {}
+        for name in names:
+            if name in models:
+                states[name] = models[name]
+                continue
+            try:
+                states[name] = self.controller.state(name)
+            except Exception:
+                continue
+        return states
+
+    def _order_tab(self):
+        """O11 (A11Y-4): Tab walks the rail whole - the disc, the countdown's
+        Extends, Overview, the models, the closed ones, Setup, Quit - then
+        Setup's dock, then the sheet in station order (each entry's head and
+        close, then its body in its own order), then the band and the tray.
+        Rebuilt whenever one of those lists changes."""
+        if self._closing:
+            return
+        chain, widget = [], self.nextInFocusChain()
+        start = widget
+        for _ in range(20000):
+            if widget is None:
+                break
+            if widget.focusPolicy() & Qt.FocusPolicy.TabFocus:
+                chain.append(widget)
+            widget = widget.nextInFocusChain()
+            if widget is start:
+                break
+
+        def within(root):
+            return [w for w in chain if root is not None and root.isAncestorOf(w)]
+
+        order = [self.stop_button]
+        order += [button for _, button in self.countdowns.values()]
+        order += [self.overview_item] + list(self._rail_items.values())
+        order += list(self.reopen_buttons.values())
+        order += [self.setup_button, self.quit_button]
+        order += within(self._setup_dock)
+        for name in self.controller.model_names:
+            entry = self._entries.get(name)
+            if entry is not None:
+                order += [entry.head, entry.close_button] + within(entry)
+        order += within(self.alert_band) + within(self.tray)
+        seen, final = set(), []
+        for widget in order:
+            if id(widget) not in seen and qt_alive(widget):
+                seen.add(id(widget))
+                final.append(widget)
+        for first, second in zip(final, final[1:]):
+            QWidget.setTabOrder(first, second)
+
+    # -- N2: the idle countdown ----------------------------------------------
+    def countdown_names(self):
+        return list(self.countdowns)
+
+    def _sync_countdowns(self, names, states):
+        """One line per probe inside its idle warning window, rendered from
+        the polled `idle_remaining` (no local timer that can drift). The line
+        goes when state climbs back out of the window or says None."""
+        lines = idle_countdowns(names, states)
+        wanted = [name for name, _ in lines]
+        if wanted != list(self.countdowns):
+            refocus = any(button.hasFocus() for _, button in self.countdowns.values())
+            while self._countdown_layout.count():
+                item = self._countdown_layout.takeAt(0)
+                if item.widget() is not None:
+                    item.widget().hide()
+                    item.widget().deleteLater()
+            self.countdowns = {}
+            for name in wanted:
+                self.countdowns[name] = self._countdown_row(name)
+            if refocus:
+                # The line that held the keyboard left: the disc takes it,
+                # never a place off the rail.
+                self.stop_button.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._order_tab()
+        for name, seconds in lines:
+            label, _ = self.countdowns[name]
+            text = countdown_text(name, seconds)
+            if label.text() != text:
+                label.setText(text)
+        if self.countdown_box.isHidden() == bool(lines):
+            self.countdown_box.setVisible(bool(lines))
+
+    def _countdown_row(self, name):
+        row = QWidget()
+        row.setObjectName("bare")
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.GAP)
+        label = QLabel("")
+        label.setObjectName("railCountdown")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        button = QPushButton(EXTEND_WORD)
+        button.setObjectName("ghost")
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        button.setAccessibleName(f"{EXTEND_WORD} {name}")
+        button.setToolTip(f"Restart the idle timeout for {name}")
+        button.clicked.connect(lambda _=False, n=name: self._extend_idle(n))
+        layout.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
+        self._countdown_layout.addWidget(row)
+        return label, button
+
+    def _extend_idle(self, name):
+        """Extend: the model restarts its idle clock; the line leaves when
+        its state says so, on the next tick."""
+        result = self.controller.run(name, "extend_idle")
+        if getattr(result, "is_refused", False):
+            events.debug("Extend Refused", f"{name}: {result.reason}", source="QtView")
+        self._sync_states()
 
     def _show_lost(self, name, lost):
         """A lost device, said on the rail and in the entry's own head."""
@@ -4755,6 +5124,7 @@ class QtDashboard(Dashboard, QMainWindow):
         column.setSpacing(0)
         self.sheet_scroll = QScrollArea()
         self.sheet_scroll.setObjectName("sheetScroll")
+        self.sheet_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.sheet_scroll.setWidgetResizable(True)
         self.sheet_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.sheet = QWidget()
@@ -5069,9 +5439,11 @@ class QtDashboard(Dashboard, QMainWindow):
         if severity not in self.TRAY_SEVERITIES:
             return
         text = event_line(event)
-        key = (severity, text)
+        # One event, once - keyed on the event, not its words (PM8-10): a
+        # second episode with the same words is a new line.
+        key = (severity, getattr(event, "id", None), text)
         if key == self._last_event:
-            return                      # one event, once
+            return
         self._last_event = key
         ink = self._severity_colour(severity)
         label = sentence(severity.upper())
@@ -5091,6 +5463,8 @@ class QtDashboard(Dashboard, QMainWindow):
             f"{html.escape(text)}</span>")
         self._hang_last_line(hollow)
         self.event_view.moveCursor(QTextCursor.MoveOperation.End)
+        if getattr(event, "title", None) in HISTORY_ONLY_TITLES:
+            return      # O13: history in the log; the live line is the rail's
         self.event_latest.set_full_text(f"{label}  {text}")
         self._latest_title = getattr(event, "title", None)
         if self.event_latest.property("severity") != severity:
@@ -5211,6 +5585,7 @@ class QtDashboard(Dashboard, QMainWindow):
         panel = QtPanelView(self.controller, name)
         entry = SheetEntry(name, panel, self.sheet)
         entry.closed.connect(lambda: self._on_entry_closed(name))
+        entry.close_requested.connect(lambda: self._on_entry_close_requested(name))
         entry.open_requested.connect(lambda: self.open_entry(name))
         entry.set_page(True)
         self._entries[name] = entry
@@ -5226,6 +5601,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._arrange_entries()
         self._schedule_arrange()
         self._sync_rail()
+        self._order_tab()
         if reopened:
             self._raise_on_add = None
             self._bring_forward(entry)
@@ -5248,6 +5624,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._sync_empty_state()
         self._arrange_entries()
         self._sync_rail()
+        self._order_tab()
         events.debug("Entry Closed", name, source="QtView")
 
     def _on_entry_closed(self, name):
@@ -5255,6 +5632,16 @@ class QtDashboard(Dashboard, QMainWindow):
         if self._closing or name not in self._entries:
             return
         self.close_model(name)
+
+    def _on_entry_close_requested(self, name):
+        """O9 (PM8-5, IMP8-10): the head's × stops and disconnects the model,
+        so it asks first, in the Tk and Web words; "Keep it open" is the
+        default and Escape."""
+        if self._closing or name not in self._entries:
+            return
+        if ask(self, *close_model_words(name)):
+            events.debug("Close Model Confirmed", name, source="QtView")
+            self.close_model(name)
 
     # -- the global stop ---------------------------------------------------
     def _on_stop_clicked(self):

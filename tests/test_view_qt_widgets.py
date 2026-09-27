@@ -269,6 +269,12 @@ class FakeController:
         # stop did not confirm (their state's `stop_confirmed` is False).
         self.latched = None
         self.unconfirmed = set()
+        # N/O: top-level state a model adds over the panel's (a fault, the
+        # idle countdown), by name; the station's `energized` list; and every
+        # command the view ran, in order.
+        self.overrides = {}
+        self.energized = []
+        self.runs = []
 
     @property
     def model_names(self):
@@ -282,11 +288,16 @@ class FakeController:
         return self.panel.schema
 
     def state(self, name=None):
+        if name is None:
+            # The station's own state, as `Controller.state()` serves it.
+            return {"models": {n: self.state(n) for n in self.open_names},
+                    "energized": [n for n in self.energized if n in self.open_names]}
         snapshot = dict(self.panel.state)
         snapshot["age"] = 0.0
         latched = self.stop_state["latched"]
         snapshot["stop_confirmed"] = (None if name not in latched
                                       else name not in self.unconfirmed)
+        snapshot.update(self.overrides.get(name, {}))
         return snapshot
 
     @property
@@ -301,6 +312,7 @@ class FakeController:
                 "every": bool(latched) and len(latched) == len(names)}
 
     def run(self, name, command, inputs=None, args=()):
+        self.runs.append((name, command, tuple(args)))
         return self.panel.run(command, inputs, args)
 
     def options(self, name, command):
@@ -756,9 +768,10 @@ def test_escape_cancels_without_reporting_anything(qapp):
 # SheetEntry and the dashboard's panels (E: entries on the sheet, not docks)
 # ---------------------------------------------------------------------------
 
-def test_closing_an_entry_closes_the_model(dashboard, controller):
+def test_closing_an_entry_closes_the_model(dashboard, controller, monkeypatch):
     """Updated (E): a model is an entry on the sheet, not a dock; its close
-    still closes the model."""
+    still closes the model. Updated (O9): it asks first; answered yes here."""
+    monkeypatch.setattr(qt, "ask", lambda *a, **k: True)
     dashboard._add_panel("Fake")
     entry = dashboard._entries["Fake"]
     entry.close_button.click()
@@ -2485,8 +2498,10 @@ class TieredPanel(Panel):
                         sch.plot("Series", "series"), tier=2, disclosure="Configure"),
             sch.section("Diagnostics", sch.readonly("Fault:", "fault"),
                         tier=3, disclosure="Diagnostics"),
+            # Updated (O16, core 48b2c97): the per-model switch's off face is
+            # "Stop this model" in `Model._safety_section`; the fake follows.
             sch.section("Safety", sch.toggle("Stop", "is_estopped", "toggle_estop",
-                                             "Stopped", "Stop", on_role="danger",
+                                             "Stopped", "Stop this model", on_role="danger",
                                              off_role="danger", tooltip="Stop Tiered"),
                         tier=3, disclosure="Diagnostics"))
 
@@ -2944,7 +2959,9 @@ def test_k4_pressing_an_overview_head_opens_the_device_by_mouse_and_by_key(six, 
         assert window.page == "Rotator"
 
 
-def test_k4_the_close_in_an_overview_head_does_not_open_the_device(six, qapp):
+def test_k4_the_close_in_an_overview_head_does_not_open_the_device(six, qapp, monkeypatch):
+    """Updated (O9): the close asks first; answered yes here."""
+    monkeypatch.setattr(qt, "ask", lambda *a, **k: True)
     window = six
     window._entries["Rotator"].close_button.click()
     _pump(qapp)
@@ -2963,7 +2980,9 @@ def test_k4_pressing_overview_returns(six, qapp):
     assert not panel.tier_button.isVisible() and panel._opened is False
 
 
-def test_k4_closing_the_shown_device_returns_to_the_overview(six, qapp):
+def test_k4_closing_the_shown_device_returns_to_the_overview(six, qapp, monkeypatch):
+    """Updated (O9): the close asks first; answered yes here."""
+    monkeypatch.setattr(qt, "ask", lambda *a, **k: True)
     window = six
     window.open_entry("Rotator")
     window._entries["Rotator"].close_button.click()
@@ -3070,8 +3089,9 @@ def test_l1_the_rail_marks_each_model_latched_or_unconfirmed(six, qapp):
     assert probe.accessibleName() == "DC Probe, stopped"
     assert "did not confirm" in rotator.toolTip() and "stopped" in probe.toolTip()
     size = rotator.iconSize().width()
-    ink = rotator.icon().pixmap(size, size).toImage().pixelColor(size // 2, size // 2)
-    assert _near(ink, theme.SIGNAL)
+    # Updated (O16): the unconfirmed square carries a "!" knocked out of its
+    # centre (shape, not colour alone), so its colour is read near a corner.
+    assert _near(_mark_pixel(rotator, 0.3, 0.3), theme.SIGNAL)
     ink = probe.icon().pixmap(size, size).toImage().pixelColor(size // 2, size // 2)
     assert _near(ink, theme.TEXT)
     controller = six.controller
@@ -3250,8 +3270,11 @@ def test_l3_a_disabled_command_says_why_and_a_go_row_says_it_under_the_row(gated
     start, stop, step = _button(view, "start"), _button(view, "end"), _button(view, "step")
     for mode, start_why, stop_why, step_why in (
             ("no_region", "Set a capture region first", "No run in progress", ""),
+            # Updated (O3): `views.base.gate_reason` reads the element's own
+            # lists; latched is not in Stop run's `disabled_when`, so it is
+            # waiting for a run, as Tk and Web say.
             ("latched", "Stopped: clear the stop first",
-             "Stopped: clear the stop first", "Stopped: clear the stop first"),
+             "No run in progress", "Stopped: clear the stop first"),
             ("manual", "", "No run in progress", "In manual mode"),
             ("running", "A run is in progress", "", "")):
         panel.mode = mode
@@ -3618,3 +3641,388 @@ def test_l22_setups_status_words_start_with_a_capital(qapp):
         assert status.text() == "Not scanned yet"
     finally:
         view.close()
+
+
+# ---------------------------------------------------------------------------
+# N and O (2026-09-26): the idle countdown, the quit prompt, audit round 8.
+# Written by rb-o-qt, run by the lead.
+# ---------------------------------------------------------------------------
+
+def _mark_pixel(item, fx, fy):
+    """The colour of a rail item's mark at a fraction of its icon."""
+    image = item.icon().pixmap(item.iconSize()).toImage()
+    return image.pixelColor(min(image.width() - 1, int(image.width() * fx)),
+                            min(image.height() - 1, int(image.height() * fy)))
+
+
+def _tick(window, qapp):
+    window._on_rail_tick()
+    _pump(qapp)
+
+
+def test_o9_the_entry_close_asks_first_and_no_keeps_the_model(dashboard, controller,
+                                                              monkeypatch):
+    """PM8-5 / IMP8-10: one press on the head's × stopped and disconnected the
+    model. It asks the Tk and Web question; "Keep it open" keeps everything."""
+    asked, answer = [], [False]
+
+    def ask(parent, prompt, title="", yes="", no=""):
+        asked.append((prompt, title, yes, no))
+        return answer[0]
+
+    monkeypatch.setattr(qt, "ask", ask)
+    dashboard._add_panel("Fake")
+    entry = dashboard._entries["Fake"]
+    entry.close_button.click()
+    assert asked == [("It stops and disconnects Fake. You can reopen it from the rail.",
+                      "Close Fake?", "Close Fake", "Keep it open")]
+    assert controller.removed == [] and "Fake" in dashboard._entries
+    assert not entry.isHidden()                  # a No leaves it drawn
+    answer[0] = True
+    entry.close_button.click()
+    assert controller.removed == ["Fake"]
+
+
+def test_o4_a_faulted_model_is_marked_like_an_unconfirmed_stop(six, qapp):
+    """IMP8-2: a probe whose disable failed looked like a safely disabled
+    one. Its entry takes the red rule and "Disable failed. Treat as live."
+    with the reason; the rail marks it; the words ride in its name."""
+    six.controller.overrides["Stepper Probe"] = {
+        "is_faulted": True, "mode": "fault",
+        "fault": "Disable not confirmed: motors may still be powered"}
+    _tick(six, qapp)
+    entry = six._entries["Stepper Probe"]
+    assert entry.is_faulted is True
+    assert theme.SIGNAL in entry.rule.styleSheet()
+    assert entry.fault_label.text() == ("Disable failed. Treat as live. Disable "
+                                        "not confirmed: motors may still be powered")
+    assert entry.fault_label.isVisibleTo(entry)
+    item = six._rail_items["Stepper Probe"]
+    assert item.stop_mark == "faulted"
+    assert item.accessibleName() == "Stepper Probe, faulted"
+    assert _near(_mark_pixel(item, 0.3, 0.3), theme.SIGNAL)
+    other = six._entries["DC Probe"]
+    assert other.is_faulted is False and not other.fault_label.isVisibleTo(other)
+    six.controller.overrides.clear()
+    _tick(six, qapp)
+    assert entry.is_faulted is False and entry.rule.styleSheet() == ""
+    assert item.stop_mark is None
+
+
+class FaultPanel(Panel):
+    """A probe's two mode toggles, and a fault the test sets."""
+
+    NAME = "Faulty"
+
+    def __init__(self):
+        super().__init__()
+        self.is_auto = False
+        self.is_faulted = False
+        self.fault = ""
+
+    @property
+    def mode_name(self):
+        return "fault" if self.is_faulted else "disabled"
+
+    @property
+    def state(self):
+        snapshot = Panel.state.fget(self)
+        snapshot.update(is_faulted=self.is_faulted, fault=self.fault)
+        return snapshot
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "Modes",
+            sch.toggle("Autonomous:", "is_auto", "set_mode",
+                       "Autonomous mode (press to stop)", "Enter Autonomous Mode",
+                       on_args=["autonomous"], off_args=["disabled"],
+                       disabled_when=("latched", "fault")),     # the probe's gates
+            sch.button("Home", "home")))
+
+    def set_mode(self, target):
+        self.is_auto = target == "autonomous"
+
+    def home(self):
+        return None
+
+
+def test_o4_a_faulted_probes_mode_toggles_are_greyed_with_the_reason(qapp):
+    panel = FaultPanel()
+    view = qt.QtPanelView(FakeController(panel), "Faulty")
+    try:
+        toggle = next(view._widget_for(e) for e in view._elements
+                      if e.get("command") == "set_mode")
+        home = next(view._widget_for(e) for e in view._elements
+                    if e.get("command") == "home")
+        view._refresh()
+        assert toggle.isEnabled() and toggle.toolTip() == ""
+        panel.is_faulted, panel.fault = True, "Disable not confirmed"
+        view._refresh()
+        assert not toggle.isEnabled()
+        assert toggle.toolTip() == "Faulted: clear the fault first"
+        assert home.isEnabled()                  # only the mode toggles
+        panel.is_faulted = False
+        view._refresh()
+        assert toggle.isEnabled() and toggle.toolTip() == ""
+    finally:
+        view.close()
+
+
+def _idle(window, **remaining):
+    window.controller.overrides = {
+        name.replace("_", " "): {"idle_remaining": value, "idle_warn_seconds": 60}
+        for name, value in remaining.items()}
+
+
+def test_n2_the_countdown_counts_down_from_state_under_the_disc(six, qapp):
+    """N1 (brief-n-views.md): one line per probe inside the warning window,
+    in station order, from `idle_remaining`; under the disc, never over it,
+    never a window, never taking focus."""
+    six.stop_button.setFocus()
+    focused = QApplication.focusWidget()
+    _idle(six, Stepper_Probe=200.0)
+    _tick(six, qapp)
+    assert six.countdown_names() == []
+    assert not six.countdown_box.isVisibleTo(six.rail)
+    _idle(six, DC_Probe=12.3, Stepper_Probe=42.0)
+    _tick(six, qapp)
+    assert six.countdown_names() == ["Stepper Probe", "DC Probe"]
+    label, button = six.countdowns["Stepper Probe"]
+    assert label.text() == "Stepper Probe powers down in 42 s."
+    assert six.countdowns["DC Probe"][0].text() == "DC Probe powers down in 13 s."
+    assert button.text() == "Extend"
+    assert button.accessibleName() == "Extend Stepper Probe"
+    _idle(six, DC_Probe=11.0, Stepper_Probe=41.0)
+    _tick(six, qapp)
+    assert label.text() == "Stepper Probe powers down in 41 s."
+    # Under the disc, in the rail; not a window of its own.
+    stop = six.stop_button
+    disc_bottom = stop.mapTo(six.rail, QPoint(0, stop.height())).y()
+    assert six.countdown_box.mapTo(six.rail, QPoint(0, 0)).y() >= disc_bottom
+    assert six.rail.isAncestorOf(button) and not button.window().isModal()
+    assert button.window() is six
+    assert QApplication.focusWidget() is focused
+
+
+def test_n2_extend_runs_extend_idle_and_the_line_leaves_when_state_says(six, qapp):
+    _idle(six, Stepper_Probe=30.0)
+    _tick(six, qapp)
+    six.countdowns["Stepper Probe"][1].click()
+    assert ("Stepper Probe", "extend_idle", ()) in six.controller.runs
+    assert "Stepper Probe" in six.countdowns   # until state says otherwise
+    _idle(six, Stepper_Probe=300.0)
+    _tick(six, qapp)
+    assert six.countdown_names() == []
+    _idle(six, Stepper_Probe=None)
+    _tick(six, qapp)
+    assert six.countdown_names() == []
+
+
+def test_n4_quit_names_the_energized_models(dashboard, controller, monkeypatch, qapp):
+    asked = []
+
+    def ask(parent, prompt, title="", yes="", no=""):
+        asked.append((prompt, title))
+        return False
+
+    monkeypatch.setattr(qt, "ask", ask)
+    dashboard.open()
+    controller.energized = ["Fake"]
+    dashboard.quit_button.click()
+    from PySide6.QtWidgets import QMainWindow
+    QMainWindow.close(dashboard)
+    _pump(qapp)
+    said = ("Quit the station? Fake is energized; quitting stops and "
+            "disconnects it.")
+    assert asked == [(said, "Quit the station?"), (said, "Quit the station?")]
+    controller.energized = []
+    dashboard.quit_button.click()
+    assert asked[-1][0] == qt.QUIT_PROMPT
+
+
+def test_o6_an_energized_model_carries_an_ink_ring_after_its_name_words(six, qapp):
+    """PM8-2 / IMP8-9: off its own entry nothing said a device was powered.
+    An energized model carries a small ink ring in the rail (not red), and
+    the word rides in its name and tooltip."""
+    six.controller.energized = ["Temperature Controller"]
+    _tick(six, qapp)
+    item = six._rail_items["Temperature Controller"]
+    assert item.is_energized is True
+    assert item.accessibleName() == "Temperature Controller, energized"
+    assert "energized" in item.toolTip()
+    assert _mark_pixel(item, 0.5, 0.5).alpha() == 0          # a ring: open
+    ring = _mark_pixel(item, 0.5, qt.RING_INSET)
+    assert _near(ring, theme.TEXT) and not _near(ring, theme.SIGNAL)
+    # With a stop mark too, the ring comes after it.
+    six.controller.is_estopped, six.controller.latched = True, {"Temperature Controller"}
+    _tick(six, qapp)
+    assert item.accessibleName() == "Temperature Controller, stopped, energized"
+    assert item.iconSize().width() > item.iconSize().height()
+    assert _near(_mark_pixel(item, 0.25, 0.5), theme.TEXT)   # the square first
+    six.controller.energized = []
+    six.controller.is_estopped, six.controller.latched = False, set()
+    _tick(six, qapp)
+    assert item.is_energized is False and item.icon().isNull()
+
+
+def test_o16_the_rail_marks_differ_by_shape_not_colour_alone(six, qapp):
+    """A11Y-6: stopped and did-not-confirm were the same square in two
+    colours 2.86:1 apart. The unconfirmed square carries a "!" knocked out
+    in the sheet's colour; a stopped one is solid."""
+    _stop_window(six, qapp, latched={"Rotator", "DC Probe"}, unconfirmed={"Rotator"})
+    rotator, probe = six._rail_items["Rotator"], six._rail_items["DC Probe"]
+    assert _near(_mark_pixel(probe, 0.5, 0.45), theme.TEXT)
+    assert _near(_mark_pixel(rotator, 0.3, 0.3), theme.SIGNAL)
+    assert _near(_mark_pixel(rotator, 0.5, 0.45), theme.BACKGROUND)
+
+
+def test_o16_the_models_own_switch_reads_stop_this_model(six, qapp):
+    """The words are the schema's (core 48b2c97, "Stop this model"); the view
+    draws them as they come, like every other face."""
+    panel = six._panels["Stepper Probe"]
+    switch = next(panel._widget_for(e) for e in panel._elements
+                  if e.get("command") == "toggle_estop")
+    panel._refresh()
+    assert switch.text() == "Stop this model"
+
+
+class _Warn:
+    severity, needs_ack, count, source = "warning", False, 1, "Stepper Probe"
+
+    def __init__(self, id, title, message):
+        self.id, self.title, self.message = id, title, message
+        self.text = f"[{self.source}] {title}: {message}"
+
+
+def test_o13_the_idle_warning_is_log_history_not_the_tray_line(dashboard, qapp):
+    """PM8-4: the tray kept "powers its motors down in 60 s" frozen after
+    Extend. The countdown line is the live one; the event is history."""
+    dashboard._show_event(_Warn(1, "Port Silent", "no answer"))
+    dashboard._show_event(_Warn(2, "Idle Timeout Soon",
+                                "Stepper Probe powers its motors down in 60 s"))
+    assert "Idle timeout soon" in dashboard.event_view.toPlainText()
+    assert "Port silent" in dashboard.event_latest.full_text()
+    assert "Idle" not in dashboard.event_latest.full_text()
+
+
+def test_o16_two_episodes_with_the_same_words_are_both_logged(dashboard, qapp):
+    """PM8-10: the tray keyed on the text, so a second episode with the same
+    words vanished; it keys on the event."""
+    dashboard._show_event(_Warn(7, "Browser Silent", "no heartbeat"))
+    dashboard._show_event(_Warn(8, "Browser Silent", "no heartbeat"))
+    assert dashboard.event_view.toPlainText().count("Browser silent") == 2
+
+
+def test_o16_a_log_window_opens_with_its_feed_focused_and_ringed(view, qapp):
+    element = next(e for e in view._elements
+                   if e["type"] == "log_stream" and e.get("detached"))
+    dialog = view.open_detached(element)
+    try:
+        _pump(qapp)
+        feed = view._detached[id(element)][1]
+        assert dialog.focusWidget() is feed
+        assert "QTextEdit:focus" in qt.stylesheet()
+    finally:
+        dialog.reject()
+
+
+def test_o7_stop_clear_unconfirmed_and_fault_are_announced(six, qapp, monkeypatch):
+    """A11Y-2: Qt announced nothing. Each edge is one assertive announcement
+    in the words on screen."""
+    said = []
+    monkeypatch.setattr(qt, "announce", lambda widget, text, assertive=True:
+                        said.append((text, assertive)))
+    _tick(six, qapp)
+    assert said == []                                   # nothing at rest
+    _stop_window(six, qapp, latched={"Rotator"})
+    _stop_window(six, qapp, every=True, unconfirmed={"Rotator"})
+    _stop_window(six, qapp)
+    six.controller.overrides["DC Probe"] = {"is_faulted": True, "fault": "no answer"}
+    _tick(six, qapp)
+    _tick(six, qapp)                                    # said once, not per tick
+    assert said == [("Stopped: Rotator", True),
+                    ("Stopped. Rotator did not confirm.", True),
+                    ("Stop cleared", True),
+                    ("DC Probe: Disable failed. Treat as live.", True)]
+
+
+def test_o7_announce_posts_an_announcement_event(qapp, monkeypatch):
+    from PySide6.QtGui import QAccessible
+    posted = []
+
+    class Stub:
+        AnnouncementPoliteness = QAccessible.AnnouncementPoliteness
+
+        @staticmethod
+        def updateAccessibility(event):
+            posted.append((event.message(), event.politeness()))
+
+    monkeypatch.setattr(qt, "QAccessible", Stub)
+    label = QLabel("x")
+    qt.announce(label, "Every model is stopped.")
+    qt.announce(label, "")
+    assert posted == [("Every model is stopped.",
+                       QAccessible.AnnouncementPoliteness.Assertive)]
+
+
+def _tab_chain(window):
+    """What Tab visits from the disc, once round: shown, enabled widgets that
+    take Tab focus."""
+    chain, widget = [], window.stop_button
+    for _ in range(5000):
+        if (widget.isVisibleTo(window) and widget.isEnabled()
+                and widget.focusPolicy() & Qt.FocusPolicy.TabFocus):
+            chain.append(widget)
+        widget = widget.nextInFocusChain()
+        if widget is window.stop_button:
+            break
+    return chain
+
+
+def test_o11_tab_walks_the_rail_whole_then_the_sheet(six, qapp):
+    """A11Y-4: the rail was split around the first entry. Now the disc, the
+    rail's items, Setup and Quit, then the sheet, then the tray."""
+    from PySide6.QtWidgets import QScrollArea
+    _idle(six, Stepper_Probe=30.0)
+    _tick(six, qapp)
+    chain = _tab_chain(six)
+    assert chain[0] is six.stop_button
+    in_rail = [six.rail.isAncestorOf(w) for w in chain]
+    first_out = in_rail.index(False)
+    assert not any(in_rail[first_out:]), "the rail is one run"
+    rail = chain[:first_out]
+    assert rail.index(six.countdowns["Stepper Probe"][1]) < rail.index(six.overview_item)
+    for item in six._rail_items.values():
+        assert item in rail and rail.index(six.overview_item) < rail.index(item)
+    assert rail[-1] is six.quit_button
+    rest = chain[first_out:]
+    assert six._entries["Stepper Probe"].head in rest
+    assert rest.index(six._entries["Stepper Probe"].head) < rest.index(
+        six._entries["DC Probe"].head)
+    assert rest.index(six._entries["Red Percent"].head) < rest.index(six.tray_toggle)
+    assert not any(isinstance(w, QScrollArea) for w in chain)
+
+
+def test_o11_the_overview_head_is_a_button_to_assistive_tech(six, qapp):
+    """A11Y-5: the Overview's press target was a "Border"."""
+    from PySide6.QtGui import QAccessible, QAccessibleActionInterface
+    head = six._entries["DC Probe"].head
+    iface = QAccessible.queryAccessibleInterface(head)
+    assert iface.role() == QAccessible.Role.Button
+    assert iface.text(QAccessible.Text.Name) == "Open DC Probe"
+    iface.actionInterface().doAction(QAccessibleActionInterface.pressAction())
+    _pump(qapp)
+    assert six.page == "DC Probe"
+
+
+def test_o11_a_dropdown_is_announced_by_its_label_and_row(table_view):
+    """A11Y-5: macOS and Linux name a combo box by its value ("SIM"); the
+    label comes from a Label relation, so each carries one."""
+    from PySide6.QtGui import QAccessible
+    combo = table_view._widget_for(element_named(table_view, "stepper_port"))
+    iface = QAccessible.queryAccessibleInterface(combo)
+    labels = [r[0].text(QAccessible.Text.Name)
+              for r in iface.relations(QAccessible.RelationFlag.Label)]
+    assert labels == ["Port, Stepper Probe"]
+    assert combo.accessibleName() == "Port, Stepper Probe"
