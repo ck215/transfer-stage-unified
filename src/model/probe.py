@@ -78,6 +78,15 @@ _STEP_KEYS = gamepad_device.Gamepad.EDGE_KEYS
 #: what the model refuses cannot drift apart (DC-6).
 _MOTION_GATE = ("autonomous", "manual")
 
+#: Manual Speed's gate (owner ruling 2026-09-26): adjusting the jog speed on
+#: the fly while jogging is a feature, so the field is live in MANUAL and the
+#: 50 Hz jog stream picks the new value up on its next frame. It stays locked
+#: during an autonomous run, and every other motion field keeps
+#: `_MOTION_GATE`. A write that gets past a gate while the motors are live is
+#: parsed strictly by the setter, so a bad value is refused and the previous
+#: speed stays in effect.
+_MANUAL_SPEED_GATE = ("autonomous",)
+
 #: 42-byte jog packet: start marker, packet type, then ten floats.
 PACKET_FORMAT = "<BBffffffffff"
 START_MARKER = 0xAA
@@ -1114,6 +1123,15 @@ class Probe(Model):
                 label = element.get("text", name).rstrip(":")
                 self._refuse(f"{label} cannot be changed in {self.mode_name} "
                              f"mode. Leave {self.mode_name} mode to edit it.")
+            if self.mode_name in _MOTION_GATE:
+                # Live while the motors are (Manual Speed in MANUAL): the
+                # lenient store-now-substitute-later rule would hand the
+                # next jog frame the class default in place of a bad value.
+                # Strict here, so a refused write leaves the previous value.
+                ok, parsed = self.PARAMS[name].parse(value)
+                if not ok:
+                    self._refuse(parsed)
+                value = parsed
             self._param_store[name] = value
 
         return property(getter, setter)
@@ -1143,7 +1161,7 @@ class Probe(Model):
                 sch.entry(P["full_speed"].label + ":", "full_speed", P["full_speed"],
                           disabled_when=_MOTION_GATE, slider=self.SPEED_SLIDER),
                 sch.entry(P["man_full_speed"].label + ":", "man_full_speed",
-                          P["man_full_speed"], disabled_when=_MOTION_GATE,
+                          P["man_full_speed"], disabled_when=_MANUAL_SPEED_GATE,
                           slider=self.SPEED_SLIDER),
             ),
             sch.section(

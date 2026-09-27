@@ -819,8 +819,13 @@ def test_motion_entries_are_gated_while_a_run_is_engaged(probe):
     import schema as sch
     entries = [e for e in sch.elements(probe.schema) if e["type"] == "entry"]
     assert entries
+    # Updated (owner ruling 2026-09-26): Manual Speed is live while jogging,
+    # so its entry is locked in autonomous only; every other entry keeps both
+    # motion modes (tests/test_manual_speed_live.py).
     for element in entries:
-        assert element["disabled_when"] == ["autonomous", "manual"]
+        expected = (["autonomous"] if element["model_attr"] == "man_full_speed"
+                    else ["autonomous", "manual"])
+        assert element["disabled_when"] == expected
         assert element["writable"] is True
     probe.set_mode("autonomous")
     assert probe.run("_commit", inputs={"x_dist": "9"}).is_refused
