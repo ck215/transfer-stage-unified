@@ -248,7 +248,10 @@ def _fit(x, y, length, noise, amplitude):
         amplitude = float(y.var()) if y.size > 1 and y.var() > 0 else 1.0
     if not y.size:
         return x, None, None, mean, amplitude
-    k = _rbf(x, x, length, amplitude) + (noise + 1e-9) * numpy.eye(len(x))
+    # `noise` is one variance for every point, or one per point (an AFM
+    # width's own sigma squared: the data's uncertainty enters the fit).
+    jitter = numpy.broadcast_to(numpy.asarray(noise, dtype=float), (len(x),))
+    k = _rbf(x, x, length, amplitude) + numpy.diag(jitter + 1e-9)
     chol = numpy.linalg.cholesky(k)
     alpha = numpy.linalg.solve(chol.T, numpy.linalg.solve(chol, y - mean))
     return x, chol, alpha, mean, amplitude

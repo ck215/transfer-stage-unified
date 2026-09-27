@@ -404,3 +404,276 @@ def _number(row, index):
         return float(text)
     except ValueError:
         return None
+
+
+# -- the Transfer Map's figures (MAP-3, 2026-09-27) -------------------------
+#
+# Same split as the analysis plot: `transfer_request` decides what to draw
+# from plain rows, without matplotlib, and `render_transfer_figure` draws it.
+# A trial row is `{"id", "tilt", "speed", "force": {definition: value|None},
+# "width", "width_sigma"}`; the model builds the rows from its store and
+# computes the force indices from each trial's raw profile.
+
+#: The figure types, in dropdown order.
+TRANSFER_FIGURES = ("map3d", "slice", "compare", "profile")
+#: The force bands a slice can be drawn at: terciles of the chosen index
+#: over the trials that have it, so the band is scale-free for every
+#: definition.
+FORCE_BANDS = ("All forces", "Low third", "Middle third", "High third")
+#: Grid resolution of the slice's surfaces.
+SLICE_GRID = 25
+#: The slice's Gaussian process, in coordinates scaled to [0, 1] per axis.
+SLICE_LENGTH = 0.35
+TILT_LABEL, SPEED_LABEL = "tilt (deg)", "speed (steps/s)"
+WIDTH_LABEL = "channel width (um)"
+
+
+def transfer_request(kind, trials, definition, *, band="All forces",
+                     profile=None, marks=None, definitions=None):
+    """What a Transfer Map figure of `kind` asks for, or why it cannot be
+    drawn. Pure; `kind` is one of `TRANSFER_FIGURES`."""
+    trials = list(trials or ())
+    if kind == "profile":
+        return _profile_request(profile, marks or {})
+    if kind == "compare":
+        return _compare_request(trials, definitions or (definition,))
+    if not trials:
+        return _message("No trials yet. Arm a trial, lower the tip, then "
+                        "Finish; or import trials.")
+    placed = [row for row in trials
+              if row.get("tilt") is not None and row.get("speed") is not None
+              and (row.get("force") or {}).get(definition) is not None]
+    if not placed:
+        return _message(f"No trial has a tilt, a speed and a {definition} "
+                        "value yet.")
+    if kind == "map3d":
+        return {"kind": "map3d",
+                "x": [row["tilt"] for row in placed],
+                "y": [row["speed"] for row in placed],
+                "z": [row["force"][definition] for row in placed],
+                "c": [row.get("width") for row in placed],
+                "measured": [row.get("width") is not None for row in placed],
+                "x_label": TILT_LABEL, "y_label": SPEED_LABEL,
+                "z_label": f"force index ({definition})",
+                "c_label": WIDTH_LABEL,
+                "title": "Transfer map (hollow: no AFM width yet)"}
+    if kind == "slice":
+        return _slice_request(placed, definition, band)
+    return _message(f"Unknown figure type: {kind!r}.")
+
+
+def _in_band(rows, definition, band):
+    """The rows whose index falls in `band` (terciles over `rows`)."""
+    if band in (None, "", FORCE_BANDS[0]):
+        return list(rows)
+    import numpy
+    values = numpy.array([row["force"][definition] for row in rows], dtype=float)
+    low, high = numpy.quantile(values, [1 / 3, 2 / 3])
+    keep = {FORCE_BANDS[1]: values <= low,
+            FORCE_BANDS[2]: (values > low) & (values <= high),
+            FORCE_BANDS[3]: values > high}.get(band)
+    if keep is None:
+        return list(rows)
+    return [row for row, flag in zip(rows, keep) if flag]
+
+
+def _span(values):
+    low, high = min(values), max(values)
+    if high - low <= 0:
+        return low - 0.5, high + 0.5
+    margin = 0.05 * (high - low)
+    return low - margin, high + margin
+
+
+def _slice_request(placed, definition, band):
+    """Width over tilt x speed at a force band: the Gaussian process mean,
+    its sigma (drawn as the confidence contours), and the measured trials."""
+    import numpy
+    from model import transfer_map_analysis as tma
+    measured = [row for row in _in_band(placed, definition, band)
+                if row.get("width") is not None]
+    if len(measured) < 2:
+        return _message(f"Measure the width of at least two trials in "
+                        f"{band.lower()} to draw a slice.")
+    (x0, x1) = _span([row["tilt"] for row in placed])
+    (y0, y1) = _span([row["speed"] for row in placed])
+    grid_x = numpy.linspace(x0, x1, SLICE_GRID)
+    grid_y = numpy.linspace(y0, y1, SLICE_GRID)
+    unit = lambda v, a, b: (numpy.asarray(v, dtype=float) - a) / (b - a)  # noqa: E731
+    points = numpy.column_stack([unit([r["tilt"] for r in measured], x0, x1),
+                                 unit([r["speed"] for r in measured], y0, y1)])
+    widths = numpy.array([r["width"] for r in measured], dtype=float)
+    spread = float(widths.std()) or 1.0
+    noise = numpy.array([(r.get("width_sigma") or 0.05 * spread) ** 2
+                         for r in measured])
+    gx, gy = numpy.meshgrid(unit(grid_x, x0, x1), unit(grid_y, y0, y1))
+    query = numpy.column_stack([gx.ravel(), gy.ravel()])
+    mean, variance = tma.gp_predict(points, widths, query, length=SLICE_LENGTH,
+                                    noise=noise)
+    shape = (SLICE_GRID, SLICE_GRID)
+    return {"kind": "slice",
+            "grid_x": grid_x.tolist(), "grid_y": grid_y.tolist(),
+            "mean": mean.reshape(shape).tolist(),
+            "sigma": numpy.sqrt(variance).reshape(shape).tolist(),
+            "points_x": [r["tilt"] for r in measured],
+            "points_y": [r["speed"] for r in measured],
+            "points_c": [r["width"] for r in measured],
+            "x_label": TILT_LABEL, "y_label": SPEED_LABEL,
+            "c_label": WIDTH_LABEL,
+            "title": f"Width, {definition}: {band.lower()} "
+                     f"({len(measured)} trials; contours: sigma)"}
+
+
+def _compare_request(trials, definitions):
+    """One panel per definition: force index against width, same trials.
+    Before any AFM width exists, against the trial number instead."""
+    if not trials:
+        return _message("No trials to compare yet.")
+    any_width = any(row.get("width") is not None for row in trials)
+    panels = []
+    for name in definitions:
+        rows = [row for row in trials
+                if (row.get("force") or {}).get(name) is not None
+                and (row.get("width") is not None or not any_width)]
+        panels.append({
+            "name": name,
+            "x": [row["force"][name] for row in rows],
+            "y": [row["width"] if any_width else row.get("id") for row in rows],
+            "yerr": [row.get("width_sigma") or 0.0 for row in rows]
+                    if any_width else None})
+    return {"kind": "compare", "panels": panels,
+            "y_label": WIDTH_LABEL if any_width else "trial",
+            "title": "Force definitions compared"}
+
+
+def _profile_request(profile, marks):
+    profile = profile or {}
+    t, red = list(profile.get("t") or ()), list(profile.get("red") or ())
+    if not red:
+        return _message("No profile to show. Record a trial first.")
+    trial = marks.get("trial_id")
+    return {"kind": "profile", "t": t, "red": red,
+            "baseline": marks.get("baseline"),
+            "operator_t": marks.get("operator_t"),
+            "max_t": marks.get("max_t"), "min_t": marks.get("min_t"),
+            "red_max": marks.get("red_max"), "red_min": marks.get("red_min"),
+            "x_label": "time since Arm (s)", "y_label": "red (%)",
+            "title": f"Trial {trial} profile" if trial is not None
+                     else "Trial profile"}
+
+
+def render_transfer_figure(kind, trials, definition, *, band="All forces",
+                           profile=None, marks=None, definitions=None,
+                           size=None, dpi=None):
+    """PNG bytes of a Transfer Map figure, drawn once for all three views."""
+    request = transfer_request(kind, trials, definition, band=band,
+                               profile=profile, marks=marks,
+                               definitions=definitions)
+    if request["kind"] == "message":
+        return _draw(request, size=size, dpi=dpi)
+    return _draw_transfer(request, size=size, dpi=dpi)
+
+
+def _draw_transfer(request, size=None, dpi=None):
+    from matplotlib.figure import Figure
+    figure = Figure(figsize=tuple(size or FIGURE_SIZE), dpi=dpi or FIGURE_DPI,
+                    facecolor=palette.SURFACE)
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        FigureCanvasAgg(figure)
+    except ImportError:
+        pass
+    kind = request["kind"]
+    if kind == "map3d":
+        axes = figure.add_subplot(111, projection="3d")
+        done = [i for i, m in enumerate(request["measured"]) if m]
+        pending = [i for i, m in enumerate(request["measured"]) if not m]
+        pick = lambda key, idx: [request[key][i] for i in idx]  # noqa: E731
+        if done:
+            drawn = axes.scatter(pick("x", done), pick("y", done),
+                                 pick("z", done), c=pick("c", done),
+                                 cmap=_colormap(), marker="o", s=30)
+            _colorbar(figure, drawn, axes, request["c_label"], pad=0.14)
+        if pending:
+            axes.scatter(pick("x", pending), pick("y", pending),
+                         pick("z", pending), facecolors="none",
+                         edgecolors=palette.MUTED, marker="o", s=30)
+        axes.set_zlabel(request["z_label"])
+        panels = [axes]
+    elif kind == "slice":
+        axes = figure.add_subplot(111)
+        drawn = axes.pcolormesh(request["grid_x"], request["grid_y"],
+                                request["mean"], cmap=_colormap(),
+                                shading="auto")
+        _colorbar(figure, drawn, axes, request["c_label"])
+        lines = axes.contour(request["grid_x"], request["grid_y"],
+                             request["sigma"], colors=palette.TEXT,
+                             linewidths=0.6, levels=4)
+        axes.clabel(lines, fontsize=TICK_SIZE - 2, fmt="%.2g")
+        axes.scatter(request["points_x"], request["points_y"],
+                     c=request["points_c"], cmap=_colormap(),
+                     edgecolors=palette.TEXT, s=30)
+        panels = [axes]
+    elif kind == "compare":
+        count = max(1, len(request["panels"]))
+        cols = min(3, count)
+        rows = (count + cols - 1) // cols
+        panels = []
+        for index, panel in enumerate(request["panels"]):
+            axes = figure.add_subplot(rows, cols, index + 1)
+            if panel["x"]:
+                axes.errorbar(panel["x"], panel["y"], yerr=panel["yerr"],
+                              fmt="o", color=palette.ACCENT, markersize=3,
+                              elinewidth=0.8)
+            else:
+                axes.text(0.5, 0.5, "no values", ha="center", va="center",
+                          transform=axes.transAxes, fontsize=TICK_SIZE)
+            axes.set_title(panel["name"], fontsize=TICK_SIZE)
+            axes.tick_params(labelsize=TICK_SIZE - 2)
+            if index % cols == 0:
+                axes.set_ylabel(request["y_label"], fontsize=TICK_SIZE - 1)
+            panels.append(axes)
+        figure.suptitle(request["title"], color=palette.TEXT,
+                        fontsize=TITLE_SIZE)
+    else:   # profile
+        axes = figure.add_subplot(111)
+        axes.plot(request["t"], request["red"], **_line_style(len(request["red"])))
+        if request.get("baseline") is not None:
+            axes.axhline(request["baseline"], color=palette.MUTED,
+                         linestyle=":", linewidth=1, label="baseline")
+        if request.get("operator_t") is not None:
+            axes.axvline(request["operator_t"], color=palette.TEXT,
+                         linestyle="--", linewidth=1, label="Mark (operator)")
+        for key, level, marker, label in (
+                ("max_t", "red_max", "^", "peak (auto)"),
+                ("min_t", "red_min", "v", "dip (auto)")):
+            if request.get(key) is not None and request.get(level) is not None:
+                axes.plot([request[key]], [request[level]], marker=marker,
+                          color=palette.TEXT, linestyle="none", markersize=7,
+                          label=label)
+        legend = axes.legend(fontsize=TICK_SIZE - 2, frameon=False)
+        for text in legend.get_texts():
+            text.set_color(palette.TEXT)
+        panels = [axes]
+    for axes in panels:
+        _style_axes(axes)
+    if kind != "compare":
+        panels[0].set_xlabel(request["x_label"])
+        panels[0].set_ylabel(request["y_label"])
+        panels[0].set_title(request["title"])
+    try:
+        figure.tight_layout()
+    except Exception:
+        pass
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format="png", facecolor=figure.get_facecolor())
+    return buffer.getvalue()
+
+
+def _colorbar(figure, drawn, axes, label, pad=0.05):
+    bar = figure.colorbar(drawn, ax=axes, label=label, pad=pad, shrink=0.9)
+    bar.ax.tick_params(colors=palette.TEXT, labelcolor=palette.TEXT,
+                       labelsize=TICK_SIZE)
+    bar.ax.yaxis.label.set_color(palette.TEXT)
+    bar.outline.set_edgecolor(palette.MUTED)
+    return bar
