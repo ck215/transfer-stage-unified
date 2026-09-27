@@ -747,41 +747,22 @@ class Setup(Panel):
         registration order; which check is cheap is the class's business.
 
         A class opts in with a classmethod `identify_port(port, should_abort)
-        -> bool`. The SMC100 query below is the one hard-coded check left: it
-        runs only for a registered `Rotator` that has no hook of its own, so
-        it goes quiet by itself once the hook is on the class.
+        -> bool` (the Rotator's SMC100 query is the one built-in that does).
+        A hook that raises is one "Probe Failed" for that port; the scan
+        goes on.
         """
         for name, model_class in list(MODEL_TYPES.items()):
             if aborted():
                 return None
             hook = getattr(model_class, "identify_port", None)
-            if callable(hook):
-                try:
-                    if hook(port, aborted):
-                        return name
-                except Exception as exc:
-                    self._warn_probe(port, exc)
-            elif model_class is Rotator and self._identify_smc100(port):
-                return name
+            if not callable(hook):
+                continue
+            try:
+                if hook(port, aborted):
+                    return name
+            except Exception as exc:
+                self._warn_probe(port, exc)
         return None
-
-    def _identify_smc100(self, port):
-        """The fallback for a `Rotator` without `identify_port`. The bytes are
-        pinned: `1ID?`, then `1TS?`, at 57600 with XON/XOFF."""
-        query = getattr(serial_port_module, "query", None)
-        if query is None:
-            self._warn_missing("query", "serial_port.query() is not available; "
-                               "the SMC100 handshake is skipped")
-            return False
-        try:
-            reply = query(port, 57600, b"1ID?\r\n", xonxoff=True)
-            if not self._text(reply):
-                reply = query(port, 57600, b"1TS?\r\n", xonxoff=True)
-            text = self._text(reply)
-        except Exception as exc:
-            self._warn_probe(port, exc)
-            return False
-        return text.startswith(("1ID", "1TS"))
 
     def _identify_firmware(self, port, baud, aborted):
         device = None
@@ -908,8 +889,6 @@ class Setup(Panel):
                       "placeholder list is offered. Choose ports by hand.",
         "hub": "Gamepads cannot be listed on this computer, so none can be "
                "assigned.",
-        "query": "The rotator cannot be detected automatically. Choose its "
-                 "port by hand.",
     }
 
     # -- assignment --------------------------------------------------------

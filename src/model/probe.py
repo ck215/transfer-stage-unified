@@ -587,10 +587,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """One 42-byte jog packet built from gamepad levels.
 
         `levels` is in the gamepad contract's channels
-        (`devices.gamepad.NEUTRAL`); a dict in the legacy vocabulary the
-        golden captures record is read through `to_channels`.
+        (`devices.gamepad.NEUTRAL`). The golden captures record their jog
+        inputs in the legacy names; the golden test translates them.
         """
-        levels = gamepad_device.to_channels(levels)
         if self.port is None:
             return False
         if self._is_off_neutral(levels):

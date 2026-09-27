@@ -27,6 +27,10 @@ command and are validated as a set before it runs. Without this a view sends
 a command and the model reads whatever it happens to hold, which is one edit
 behind whatever was just typed. Tk hid that by forcing focus away before
 every command — a named anti-fix, because it only ever worked in Tk.
+What a view sends (MOD-6, 2026-09-27): the command's declared `inputs`,
+edited or not, plus every writable entry the operator has edited and not
+committed. A clean entry the command does not declare stays home, so a
+stale or bad box elsewhere cannot refuse an unrelated command.
 
 Every builder here returns a plain dict. The schema stays serialisable, which
 is what lets the Web client receive the same description the desktop views

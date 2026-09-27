@@ -17,6 +17,7 @@ from controller import setup as station_setup
 from controller.controller import Controller
 from devices import serial_port as serial_port_module
 from events import events
+from model.rotator import Rotator
 from result import Refused
 from controller.setup import SIM, Setup
 
@@ -87,10 +88,9 @@ def types(monkeypatch):
         "SMC100 Rotator": make_model_class("SMC100 Rotator"),
     }
     monkeypatch.setattr(station_setup, "MODEL_TYPES", types)
-    # The SMC100 fallback runs for the registered class that *is* `Rotator`
-    # and has no `identify_port` hook; the fake stands in for it by name.
-    monkeypatch.setattr(station_setup, "Rotator",
-                        types["SMC100 Rotator"], raising=True)
+    # The SMC100 step is the Rotator's own `identify_port` hook (MOD-4); the
+    # fake carries the real one so the bytes under test are the real bytes.
+    types["SMC100 Rotator"].identify_port = staticmethod(Rotator.identify_port)
     return types
 
 

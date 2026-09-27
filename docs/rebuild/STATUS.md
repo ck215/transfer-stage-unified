@@ -113,7 +113,16 @@ lands as `palette.py` / `theme.py` tokens.
 
 ## Open items
 
-### Resume here (handoff written 2026-09-26, late)
+### Resume here (handoff written 2026-09-26, late; Tier R added 2026-09-27)
+
+- **2026-09-27, Tier R (modularity) landed**: MOD-1..6 via three worktrees
+  (`rb-mod-input`, `rb-mod-setup`, `rb-mod-views`), merged `3ebc269`,
+  `e340a05`, `33f638e`, then the lead's relocation of the SMC100 query onto
+  `Rotator.identify_port`. `MODEL_CONTRACT.md` rewritten for the mixins and
+  the registry. The gates after the merge are in the commit that follows.
+  Same day: the aesthetics round (four directions on the fixed Tiered
+  layout) is on the Design canvas and in `handoff/aesthetic-proposal.md`,
+  awaiting the owner's ruling; nothing under `src/` changed for it.
 
 - **Later the same night (Linux bench PC)**: swap launchers validated at the
   bench by the owner. Desktop shortcuts "Transfer Stage Launcher" (`run_swap.sh
@@ -197,6 +206,19 @@ rows are being reconciled against the code (`handoff/audit-tier-d-2026-09-26.md`
    `COLUMN_SPLIT_CARDS = 6` Qt rule is a judgement, not a measurement.
 6. Heater refusals new vs old: 300 °C ceiling, PID/ramp bounds, 31-char
    frame limit — confirm at the bench.
+
+## History
+
+- Aug–Sep 2026: `src/` was a staged MVC repair (S0–S16) of 13 root causes
+  across 213 audited findings. Plan and test policy are in `docs/archive/`.
+- 2026-09-23: the refactor redone from scratch as `station/` on a `rebuild`
+  branch was fast-forwarded here; `rebuild` retired. The same day `station/`
+  became `src/`, the old tree became `legacy/`, and stale docs were archived.
+- 2026-09-23: `verify` and `parallel-stage` rewritten for the new tree;
+  `stage-close`, `reconcile-ledger` and `fix-a-finding` retired with the
+  ledger process (in git history before `beb7b94`).
+- `legacy/` is deleted once every file in `tests/TEST_PORTING.md` has a
+  ported equivalent; then `mvc-refactor` merges to `main`.
 
 ## Process notes
 

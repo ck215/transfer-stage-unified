@@ -15,10 +15,18 @@ registered class. Worked example: the audit's `PiezoStage`
 
 1. **Subclass and declare.** `class Piezo(Model)` in `src/model/piezo.py`.
    Set `NAME` (the operator's name, which is also the Setup row and the rail
-   line), `IDENTITY` (a one-letter `DEV:` byte, or `None`), `NEEDS_PORT`
-   and `NEEDS_GAMEPAD`. Write `__init__(self, port=None, gamepad=None,
-   sim=False)`: this is the signature Setup calls. With `sim=True` or
-   `port="SIM"` the model must build a simulated device.
+   line), `IDENTITY` (a one-letter `DEV:` byte, or `None`) and `RESOURCES`:
+   the keyword arguments Setup fills in, each named `port*` (a serial-port
+   dropdown) or `gamepad*` (a gamepad dropdown), for example `("port",
+   "gamepad")`. A class that sets `NEEDS_PORT` / `NEEDS_GAMEPAD` instead
+   gets its resources derived from them. Write `__init__(self, sim=False,
+   **resources)` with one keyword per resource: Setup constructs
+   `cls(sim=..., port=..., gamepad=...)` and passes only what the class
+   declares. With `sim=True` or `port="SIM"` the model must build a
+   simulated device. A device with no `DEV:` byte identifies its own port
+   with a classmethod `identify_port(port, should_abort) -> bool`, which the
+   scan asks before the firmware handshake (the Rotator's SMC100 query is
+   the example).
 2. **Own your devices.** Each device is a `devices.device.Device`
    (`open`, `close`, `is_open`, `status`). Return them from `devices`. Use
    one of these `status` words: `verified`, `unverified`, `simulated`,
@@ -65,23 +73,47 @@ registered class. Worked example: the audit's `PiezoStage`
    `is_energized` is true while it holds something an operator must undo
    before leaving, which is a wider condition. Call `_fault(reason)` when a
    disable fails: the base then gates every control that lists `"fault"`.
-   A manual input Device exposes `set_gate(bool)`; the Controller calls it
-   on every device of every model when the window loses focus (D-4). Call `_touch()` from your loop, or return `False` from
+   Every Device answers `set_gate(bool)` (the base remembers it as
+   `is_gate_open`; an input device such as the Gamepad acts on it); the
+   Controller calls it on every device of every model when the window
+   loses focus (D-4). A Device whose loss means the instrument is
+   unreachable (a serial board, a motion controller) sets `is_hardware =
+   True`; `state["hardware_devices"]` lists those and the views' simulation
+   line counts them. Call `_touch()` from your loop, or return `False` from
    `_expects_heartbeat()` if the device has no loop.
-8. **Threads.** Start them in `_start_threads` and join them with a timeout
-   in `_stop_threads`. `disable()` de-energizes. `close()` calls
-   `_stop_threads`, then `halt`, then `disable`, then closes the devices.
+8. **Threads.** Start each loop in `_start_threads` with
+   `self._spawn(name, target)`; the loop waits on `self._threads_stop`.
+   The base `_stop_threads` sets the flag and joins every spawned loop
+   within `THREAD_JOIN_TIMEOUT` (2 s); override it only to end something a
+   join cannot (Red Percent's in-flight run), then call the base.
+   `disable()` de-energizes. `close()` calls `_stop_threads`, then `halt`,
+   then `disable`, then closes the devices.
 9. **Optional capabilities.**
-   - Idle clock: publish `idle_remaining` and `idle_warn_seconds` in
-     `state` and declare `extend_idle`.
+   - Idle clock: mix in `model.idle.IdleInterlock`; set
+     `INTERLOCK_TIMEOUT` and `IDLE_WARN_SECONDS`, write `_idle_is_armed()`
+     and `_on_idle_expired(idle)`, call `_touch_activity()` on operator
+     input. It publishes `idle_remaining` and `idle_warn_seconds` and
+     answers `extend_idle` (declare the internal element).
+   - Gamepad: mix in `model.gamepad_input.GamepadInput` (before `Model`);
+     set `GAMEPAD_RATE_HZ`, write `_pumps_gamepad()`, `_on_gamepad(levels,
+     edges)`, `_on_gamepad_lost(reason)` and `_on_gamepad_fault(reason)`,
+     and put `*self._gamepad_elements()` in the schema. The mixin owns
+     building, binding, the dropdown and log commands, the pump and the
+     focus gate. Channels are the generic contract in
+     `devices.gamepad.NEUTRAL` (`axis_x`, `axis_y`, `trigger_left`,
+     `trigger_right`; edges `hat_x`, `hat_y`, `bumper_left`,
+     `bumper_right`); the model maps them to its own axes.
    - Position source for Red Percent: `position` as `(x, y, z)`,
      `position_time` and `position_age`.
    - Downloads: a `file_save` command returns the path it wrote, under
      `output_root`.
-10. **Register the device.** For runtime use, call
-    `controller.add(NAME, model, config)`. For Setup (scan, auto-assign,
-    Launch checkbox, reopen), add the class to `MODEL_TYPES` in
-    `controller/setup.py`.
+10. **Register the device.** `Setup.register(cls)` (also a decorator) adds
+    the class to the station: a Setup row in registration order, the scan,
+    construction and reopen. Register before `Setup` is built. It refuses a
+    class with no `NAME` of its own, a taken name or row key, an identity
+    byte another class answers with, or a resource Setup cannot fill. For a
+    model added at runtime, `controller.add(NAME, model, {"model": NAME,
+    ...resources, "sim": bool})` reopens through the same registry.
 
 ## What you get for free
 
@@ -99,20 +131,20 @@ registered class. Worked example: the audit's `PiezoStage`
 - The Web watchdog.
 - Clean shutdown on exit and on signals.
 
-## Still probe-shaped (open, see the audit)
+## Still open
 
-- **Hardware links in the simulation line.** Web and Tk count only
-  `SerialPort` and `SMC100` as hardware (CON-6).
-- **Setup.** There is no registration call; `MODEL_TYPES` is a tuple and the
-  SMC100 handshake is hard-coded; a model added at runtime cannot be
-  reopened after its entry closes (CON-7).
-- **The idle clock is per-model code** (CON-11): copy the probe's shape.
 - **A SIM Rotator's stop never confirms** (CON-13): every simulated FULL
   STOP reads "Rotator did not confirm" - an owner call.
+- **Per-view status rules and `device_word`** are still three copies, and
+  Tk's lost-device sentence prints the raw class name (the remainder of
+  CON-6).
 
 Fixed on 2026-09-26: a button's own `args` travel in the Web (CON-1); the
 Web's gate words come from the core (CON-2); the window-focus gate reaches
 every device with `set_gate` (CON-3); stop-class commands are a schema
 property (CON-4); Web downloads read `output_root` (CON-5); a fault gates
-from the base (CON-9). The open rows are tracked under "Model contract" in
-`BUGFIX_PLAN.md`.
+from the base (CON-9). Fixed on 2026-09-27 (Tier R, MOD-1..6): the gamepad
+contract and mixin, one loop helper on the base, the idle mixin, the open
+Setup registry with class resources and the `identify_port` hook, `Device`
+defaults with `hardware_devices`, and the `inputs` rule. The open rows are
+tracked in `BUGFIX_PLAN.md`.

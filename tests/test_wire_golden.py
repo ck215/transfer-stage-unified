@@ -33,6 +33,7 @@ import sys
 
 import pytest
 
+from devices import gamepad as gamepad_device
 from result import Refused
 
 from tests.golden import capture as golden_capture
@@ -366,8 +367,10 @@ def _drive_probe(scenario, probe, module, port):
         _apply(probe, inputs)
         probe.set_mode(mode.MANUAL)
         port.writes.clear()
+        # The captures record jog inputs in `legacy/src`'s channel names;
+        # the rebuild's gamepad contract (MOD-1) is generic, so translate.
         levels = ({} if kind.endswith("zero_frame_on_exit")
-                  else dict(scenario["inputs"]))
+                  else gamepad_device.to_channels(scenario["inputs"]))
         probe._send_jog(levels)
         return
 

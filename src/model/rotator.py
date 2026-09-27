@@ -31,6 +31,7 @@ import threading
 import time
 
 import schema as sch
+from devices import serial_port
 from devices.smc100 import SMC100, STATE_NAMES
 from events import events
 from model.base import Model
@@ -53,6 +54,34 @@ class Rotator(Model):
     SAMPLE_INTERVAL = 0.25
 
     SMC_ID = 1
+
+    @classmethod
+    def identify_port(cls, port, should_abort):
+        """Is `port` an SMC100? It has no `DEV:` byte: it answers `1ID?` (or,
+        silent to that, `1TS?`) at 57600 with XON/XOFF. Setup asks every
+        registered class this before the firmware handshake (MOD-4), so the
+        bytes here are the ones the golden captures pin, in the same order.
+        A missing `serial_port.query` (a packaging defect, F19) is one
+        operator sentence, not a "Probe Failed" per port."""
+        query = getattr(serial_port, "query", None)
+        if query is None:
+            events.debug("Not Available", "serial_port.query() is not available; "
+                         "the SMC100 handshake is skipped", source=cls.NAME)
+            events.warn("Not Available", "The rotator cannot be detected "
+                        "automatically. Choose its port by hand.", source=cls.NAME)
+            return False
+        reply = query(port, 57600, b"1ID?\r\n", xonxoff=True)
+        text = cls._reply_text(reply)
+        if not text:
+            reply = query(port, 57600, b"1TS?\r\n", xonxoff=True)
+            text = cls._reply_text(reply)
+        return text.startswith(("1ID", "1TS"))
+
+    @staticmethod
+    def _reply_text(reply):
+        if isinstance(reply, (bytes, bytearray)):
+            reply = reply.decode("ascii", "replace")
+        return str(reply or "").strip()
 
     #: What a command says when there is no stage behind it (ROTATOR-13).
     #: There is no rotator simulator, so "simulated" would claim a capability
