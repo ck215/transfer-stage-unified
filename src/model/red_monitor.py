@@ -311,6 +311,10 @@ class RedMonitor(Model):
         self._red_state = (0.0, 0.0)
 
         self._run = None
+        #: MAP-2: callables fed `(t_s, red, positions)` for every row the run
+        #: log appends. A tuple, replaced whole, so the run thread reads it
+        #: without a lock and never sees a list change under it.
+        self._subscribers = ()
         self._sources = {}
         self._source = None
         self.source_name = None
@@ -792,6 +796,10 @@ class RedMonitor(Model):
                     run.log.add(now - run.started_monotonic, red, positions,
                                 velocities, age)
                     run.rows += 1
+                    subscribers = self._subscribers
+                    if subscribers:
+                        self._notify(subscribers, now - run.started_monotonic,
+                                     red, positions)
 
                 events.debug("Rate", f"{run.frames} frames, {run.rows} rows, "
                              f"{run.frame_rate:.1f} Hz, "
@@ -813,6 +821,52 @@ class RedMonitor(Model):
             events.debug("Run Loop", f"exited after {run.frames} frame(s), "
                          f"{run.rows} row(s), {run.grab_failures} grab "
                          f"failure(s)", source=self.NAME)
+
+    # -- MAP-2: what another model may read (additive; nothing above changes)
+    def subscribe(self, fn):
+        """Call `fn(t_s, red, positions)` for every row the run log appends
+        from now on, on the run thread. `positions` is the subscriber's own
+        copy. `fn` must return at once; one that raises is logged and skipped,
+        never allowed to end the run."""
+        if fn not in self._subscribers:
+            self._subscribers = self._subscribers + (fn,)
+
+    def unsubscribe(self, fn):
+        self._subscribers = tuple(s for s in self._subscribers if s != fn)
+
+    def _notify(self, subscribers, t_s, red, positions):
+        for fn in subscribers:
+            try:
+                fn(t_s, red, dict(positions))
+            except Exception as exc:
+                events.debug("Subscriber Failed", repr(exc), source=self.NAME,
+                             exception=exc, every=1.0)
+
+    def grab_frame(self):
+        """The capture region as it looks now, as PNG bytes, or None when
+        there is no region, the screen is not open, or the grab failed. Its
+        own grab through the Screen device: the run loop is not touched."""
+        region = self.region
+        if not region or not self.screen.is_open or numpy is None:
+            return None
+        frame = self.screen.grab(region)
+        if frame is None:
+            return None
+        try:
+            import io
+            from PIL import Image
+            blue, green, red = self._channels(frame)
+            if red is None:
+                return None
+            rgb = numpy.ascontiguousarray(numpy.stack([red, green, blue], axis=2),
+                                          dtype=numpy.uint8)
+            buffer = io.BytesIO()
+            Image.fromarray(rgb, "RGB").save(buffer, format="PNG")
+            return buffer.getvalue()
+        except Exception as exc:
+            events.debug("Frame Grab Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            return None
 
     def _wants_row(self, run, red):
         if run.sample_mode == "change":

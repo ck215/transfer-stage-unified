@@ -169,6 +169,12 @@ class Rotator(Model):
             return self._position
 
     @property
+    def position_deg(self):
+        """The angle in degrees, or None: `position` under the name another
+        model reads a tilt by (MAP-2, the Transfer Map). Read-only."""
+        return self.position
+
+    @property
     def motion_state(self):
         """'Ready', 'Moving', 'Homing', 'Communication lost'... Written only
         by `_poll`. (`state` is the Model snapshot every view renders.)"""

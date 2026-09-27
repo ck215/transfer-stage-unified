@@ -1210,3 +1210,88 @@ def test_stop_run_is_never_refused_by_a_bad_box(monitor):
     assert monitor._takes_hardware_down("end_run")
     result = monitor.run("end_run", inputs={"red_min": "abc"})
     assert not result.is_refused or "not a number" not in (result.reason or "")
+
+
+# ---------------------------------------------------------------------
+# MAP-2 (2026-09-27): the additive hooks the Transfer Map reads through
+# ---------------------------------------------------------------------
+
+def test_a_subscriber_receives_every_logged_row(monitor):
+    """`subscribe(fn)`: fn(t_s, red, positions) once per row the run log
+    appends, in order, from the run thread."""
+    seen = []
+    monitor.subscribe(lambda t, red, positions: seen.append((t, red, dict(positions))))
+    _started(monitor, sync_axes="Z")
+    assert _wait_for(lambda: monitor.rows_written >= 5)
+    monitor.end_run()
+    monitor._run.thread.join(2)
+    log = monitor._run.log
+    assert len(seen) == len(log) == monitor.rows_written
+    assert [s[1] for s in seen] == log.red_values
+    assert [s[0] for s in seen] == log.times
+    assert all(set(s[2]) == {"Z"} for s in seen)
+
+
+def test_a_subscriber_gets_its_own_copy_of_the_positions(monitor):
+    """The loop reuses one dict per run; a subscriber that keeps it must not
+    see it change under it."""
+    kept = []
+    monitor.subscribe(lambda t, red, positions: kept.append(positions))
+    _started(monitor, sync_axes="X")
+    assert _wait_for(lambda: len(kept) >= 2)
+    monitor.end_run()
+    assert kept[0] is not kept[1]
+
+
+def test_a_failing_subscriber_never_ends_the_run(monitor):
+    def broken(t, red, positions):
+        raise RuntimeError("subscriber bug")
+    monitor.subscribe(broken)
+    _started(monitor)
+    assert _wait_for(lambda: monitor.rows_written >= 10)
+    assert monitor.is_running and monitor._run.failure is None
+    monitor.end_run()
+
+
+def test_unsubscribe_stops_the_calls_and_is_idempotent(monitor):
+    seen = []
+    fn = lambda t, red, positions: seen.append(red)   # noqa: E731
+    monitor.subscribe(fn)
+    monitor.subscribe(fn)                  # once, not twice
+    monitor.unsubscribe(fn)
+    monitor.unsubscribe(fn)
+    _started(monitor)
+    assert _wait_for(lambda: monitor.rows_written >= 5)
+    monitor.end_run()
+    assert seen == []
+
+
+def test_the_estop_path_is_unchanged_with_a_subscriber_attached(monitor):
+    """A subscriber is on the run thread, never on the stop path: estop ends
+    the run and confirms inside its budget."""
+    import threading
+    gate = threading.Event()
+    monitor.subscribe(lambda t, red, positions: gate.wait(0.5))   # a slow one
+    _started(monitor)
+    assert _wait_for(lambda: monitor.rows_written >= 1)
+    assert monitor.estop() is True
+    assert not monitor.is_running
+    gate.set()
+
+
+def test_grab_frame_returns_the_capture_region_as_png(monitor):
+    monitor.set_region(0, 0, 10, 10)
+    png = monitor.grab_frame()
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    from PIL import Image
+    import io
+    image = Image.open(io.BytesIO(png))
+    assert image.size == (10, 10)
+    assert image.getpixel((0, 0))[:3] == (200, 0, 0)     # the red rows, RGB
+
+
+def test_grab_frame_is_none_without_a_region_or_a_frame(monitor):
+    assert monitor.grab_frame() is None
+    closed = RedMonitor(screen=fake_screen())
+    closed.region = {"top": 0, "left": 0, "width": 10, "height": 10}
+    assert closed.grab_frame() is None                   # screen never opened

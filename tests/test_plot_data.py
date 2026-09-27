@@ -320,3 +320,101 @@ def test_the_3d_panes_are_dark():
     from matplotlib.colors import to_hex
     for axis in (axes.xaxis, axes.yaxis, axes.zaxis):
         assert to_hex(axis.pane.get_facecolor()) == palette.SURFACE.lower()
+
+
+# -- MAP-3 (2026-09-27): the Transfer Map's figures --------------------------
+
+def _trials():
+    """Four trials: three measured by AFM, one pending."""
+    rows = []
+    for i, (tilt, speed, force, width) in enumerate((
+            (10.0, 100.0, 0.2, 5.0), (20.0, 200.0, 0.5, 7.0),
+            (30.0, 300.0, 0.8, 9.0), (25.0, 150.0, 0.6, None))):
+        rows.append({"id": i + 1, "tilt": tilt, "speed": speed,
+                     "force": {"shadow_vs_peak": force, "dip_area": force * 2,
+                               "at_operator_mark": None},
+                     "width": width, "width_sigma": 0.5 if width else None})
+    return rows
+
+
+def test_the_map3d_request_splits_measured_from_pending():
+    request = plot_data.transfer_request("map3d", _trials(), "shadow_vs_peak")
+    assert request["kind"] == "map3d"
+    assert request["x"] == [10.0, 20.0, 30.0, 25.0]
+    assert request["z"] == [0.2, 0.5, 0.8, 0.6]
+    assert request["measured"] == [True, True, True, False]
+    assert request["c"][:3] == [5.0, 7.0, 9.0]
+
+
+def test_a_trial_without_the_chosen_index_is_left_off_the_map():
+    request = plot_data.transfer_request("map3d", _trials(), "at_operator_mark")
+    assert request["kind"] == "message"
+    assert "at_operator_mark" in request["reason"] or "force" in request["reason"]
+
+
+def test_no_trials_explains_itself_for_every_figure():
+    for kind in plot_data.TRANSFER_FIGURES:
+        request = plot_data.transfer_request(kind, [], "shadow_vs_peak")
+        assert request["kind"] == "message", kind
+
+
+def test_the_slice_uses_measured_trials_in_the_force_band():
+    everything = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak")
+    assert everything["kind"] == "slice"
+    assert sorted(everything["points_c"]) == [5.0, 7.0, 9.0]
+    low = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak",
+                                     band="Low third")
+    assert low["kind"] in ("slice", "message")
+    if low["kind"] == "slice":
+        assert 9.0 not in low["points_c"] and 5.0 in low["points_c"]
+
+
+def test_the_slice_carries_a_gp_mean_and_sigma_surface_with_enough_trials():
+    request = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak")
+    mean, sigma = request["mean"], request["sigma"]
+    assert len(mean) == len(sigma) == len(request["grid_y"])
+    assert len(mean[0]) == len(request["grid_x"])
+    assert all(s >= 0 for row in sigma for s in row)
+
+
+def test_the_compare_request_has_one_panel_per_definition():
+    request = plot_data.transfer_request(
+        "compare", _trials(), "shadow_vs_peak",
+        definitions=("shadow_vs_peak", "dip_area", "at_operator_mark"))
+    names = [p["name"] for p in request["panels"]]
+    assert names == ["shadow_vs_peak", "dip_area", "at_operator_mark"]
+    dip = request["panels"][1]
+    assert dip["x"] == [0.4, 1.0, 1.6] and dip["y"] == [5.0, 7.0, 9.0]
+    assert request["panels"][2]["x"] == []            # nothing to compare
+
+
+def test_the_profile_request_carries_the_marks():
+    profile = {"t": [0.0, 0.1, 0.2], "red": [1.0, 3.0, 2.0]}
+    marks = {"operator_t": 0.15, "max_t": 0.1, "min_t": 0.2, "baseline": 1.0,
+             "red_max": 3.0, "red_min": 2.0, "trial_id": 7}
+    request = plot_data.transfer_request("profile", [], "shadow_vs_peak",
+                                         profile=profile, marks=marks)
+    assert request["kind"] == "profile"
+    assert request["operator_t"] == 0.15 and request["max_t"] == 0.1
+    assert "7" in request["title"]
+
+
+def test_every_transfer_figure_renders_to_a_png():
+    profile = {"t": [0.0, 0.1, 0.2, 0.3], "red": [1.0, 3.0, 2.0, 1.5]}
+    marks = {"operator_t": 0.15, "max_t": 0.1, "min_t": 0.2, "baseline": 1.0,
+             "trial_id": 1}
+    for kind in plot_data.TRANSFER_FIGURES:
+        png = plot_data.render_transfer_figure(
+            kind, _trials(), "shadow_vs_peak", profile=profile, marks=marks,
+            definitions=("shadow_vs_peak", "dip_area"), size=(4.0, 3.0), dpi=50)
+        assert png[:8] == b"\x89PNG\r\n\x1a\n", kind
+    assert plot_data.render_transfer_figure("map3d", [], "x")[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_transfer_figures_never_draw_in_the_stop_red():
+    """SIGNAL is spent on the stop only (palette ruling)."""
+    import palette
+    import inspect
+    source = inspect.getsource(plot_data._draw_transfer)
+    assert "SIGNAL" not in source
+    assert palette.SIGNAL.lower() not in source.lower()
