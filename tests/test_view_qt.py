@@ -127,9 +127,11 @@ def test_a_readout_and_an_entry_do_not_look_the_same():
     """The owner's "readouts distinct from entries". Updated (E): an entry is
     a panel-toned well (`theme.WELL`) with a muted underline and no box; a
     readout is the numeral face straight on the surface, no well and no
-    border, ink at rest and the trace only while it changes (`live`)."""
+    border, ink at rest and the trace only while it changes (`live`).
+    Signature (2026-09-27): the field has its own rule - the select is now a
+    key (`QComboBox`), no longer dressed as a field."""
     sheet = qt.stylesheet()
-    entries = sheet.split("QLineEdit, QComboBox {")[1].split("}")[0]
+    entries = sheet.split("QLineEdit {")[1].split("}")[0]
     readouts = sheet.split("QLabel#valueLabel {")[1].split("}")[0]
     live = sheet.split('QLabel#valueLabel[live="true"] {')[1].split("}")[0]
     assert f"background-color: {theme.WELL};" in entries
@@ -287,12 +289,15 @@ def test_the_view_mixes_colours_with_the_themes_one_mix():
 def test_an_input_border_is_at_least_3_to_1_on_the_card():
     """WCAG 1.4.11 (AUD-11): the well's border was 1.67:1 on the card.
     Updated (E): the edge is `theme.INPUT_BORDER` (muted), an underline only,
-    and it clears 3:1 on both grounds an input sits on."""
+    and it clears 3:1 on both grounds an input sits on. Signature: it is the
+    field's 1.5 px floor lip (`KEY_RIM_PX`), and it clears 3:1 on DEEP too,
+    the field's ground inside a tray."""
     assert _contrast(theme.INPUT_BORDER, theme.SURFACE) >= 3.0
     assert _contrast(theme.INPUT_BORDER, theme.BACKGROUND) >= 3.0
+    assert _contrast(theme.INPUT_BORDER, theme.DEEP) >= 3.0
     sheet = qt.stylesheet()
-    entries = sheet.split("QLineEdit, QComboBox {")[1].split("}")[0]
-    assert f"border-bottom: 2px solid {theme.INPUT_BORDER}" in entries
+    entries = sheet.split("QLineEdit {")[1].split("}")[0]
+    assert f"border-bottom: {theme.KEY_RIM_PX:g}px solid {theme.INPUT_BORDER}" in entries
 
 
 def test_every_focusable_has_an_ink_ring_including_tabs_and_scroll_areas():
@@ -792,29 +797,46 @@ def test_mod5_the_rail_reads_only_the_declared_hardware_links():
 
 
 def test_e_the_well_the_strip_and_the_slider_are_drawn_from_the_theme():
+    """Signature (2026-09-27): the tier-3 strip is the DEEP pocket (radius
+    `pocket`), not a muted left rule; the slider's handle is the fader cap -
+    CAP face, KEY_RIM rim, a 3 px KEY_LIP lip, radius `fader` - on a
+    `FADER["groove"]` (6 px) sunk groove, not an ink knob on a 4 px one."""
     sheet = qt.stylesheet()
     well = sheet.split("QFrame#well {")[1].split("}")[0]
     assert f"background-color: {theme.SURFACE}" in well
-    assert f"border-radius: {theme.RADIUS['well']}px" in well
+    assert f"border-radius: {theme.RADIUS['tray']}px" in well
     strip = sheet.split("QFrame#diagnostics {")[1].split("}")[0]
-    assert f"border-left: 2px solid {theme.MUTED}" in strip
+    assert f"background-color: {theme.DEEP}" in strip
+    assert f"border-radius: {theme.RADIUS['pocket']}px" in strip
+    assert "border-left" not in strip
     handle = sheet.split("QSlider::handle:horizontal {")[1].split("}")[0]
-    assert f"background: {theme.TEXT}" in handle
-    assert f"border: 2px solid {theme.BACKGROUND}" in handle
+    assert f"background: {theme.CAP}" in handle
+    assert f"solid {theme.KEY_RIM}" in handle
+    assert f"border-bottom: {theme.KEY_LIP_PX['small']}px solid {theme.KEY_LIP}" in handle
+    assert f"border-radius: {theme.RADIUS['fader']}px" in handle
     fill = sheet.split("QSlider::sub-page:horizontal {")[1].split("}")[0]
     assert f"background: {theme.TEXT}" in fill
     groove = sheet.split("QSlider::groove:horizontal {")[1].split("}")[0]
-    assert "height: 4px" in groove and f"background: {theme.SURFACE}" in groove
+    assert f"height: {theme.FADER['groove']}px" in groove
+    assert f"background: {theme.SURFACE}" in groove
 
 
 def test_e_go_is_ink_filled_and_disabled_is_a_dashed_muted_edge():
+    """Signature (2026-09-27): `go` is the ink key with a CAP legend (was
+    the sheet's tone) and a GO_LIP; a disabled key keeps its silhouette in
+    ghost tones - a 1.5 px dashed EDGE rim, a 4 px EDGE_SOFT lip and the
+    DISABLED legend (was a 1 px dashed muted edge, flat)."""
     sheet = qt.stylesheet()
     go = sheet.split('QPushButton[role="go"] {')[1].split("}")[0]
     assert f"background-color: {theme.TEXT}" in go
-    assert f"color: {theme.BACKGROUND}" in go
+    assert f"color: {theme.CAP}" in go
+    go_edge = sheet.split('QPushButton[role="go"] {')[2].split("}")[0]
+    assert f"border-bottom-color: {theme.GO_LIP}" in go_edge
     disabled = sheet.split("QPushButton:disabled {")[1].split("}")[0]
     assert f"color: {theme.DISABLED[1]}" in disabled
-    assert f"border: 1px dashed {theme.MUTED}" in disabled
+    assert f"border: {theme.KEY_RIM_PX:g}px dashed {theme.EDGE}" in disabled
+    assert f"border-bottom: {theme.KEY_LIP_PX['key']}px solid {theme.EDGE_SOFT}" in disabled
+    assert "background-color: transparent" in disabled
 
 
 def test_e_a_lamp_is_ink_never_the_trace():
@@ -1000,3 +1022,127 @@ def test_mod6_qt_sends_the_declared_inputs_and_every_edited_box_only():
     assert PanelView._gather_inputs(stub, go) == {"speed": "5", "note": "typed"}
     assert PanelView._gather_inputs(stub, {"type": "button", "command": "halt"}) \
         == {"note": "typed"}
+
+
+# ---------------------------------------------------------------------------
+# Signature (owner ruling 2026-09-27): the key family, the fields, the stop's
+# geometry, the glyphs. `handoff/tactile3-Signature.md`, "Controls", "The
+# stop", "Per toolkit"; the tokens in `views.theme`.
+# ---------------------------------------------------------------------------
+
+def _block(sheet, selector, index=1):
+    return sheet.split(f"{selector} {{")[index].split("}")[0]
+
+
+def test_signature_a_key_is_a_face_a_rim_and_a_lip():
+    """Every raised part is one family (rule 2): a CAP face, a 1.5 px
+    KEY_RIM outline, a 4 px KEY_LIP bottom edge, radius 8, legend 600."""
+    key = _block(qt.stylesheet(), "QPushButton")
+    assert f"background-color: {theme.CAP}" in key
+    assert f"border: {theme.KEY_RIM_PX:g}px solid {theme.KEY_RIM}" in key
+    assert f"border-bottom: {theme.KEY_LIP_PX['key']}px solid {theme.KEY_LIP}" in key
+    assert f"border-radius: {theme.RADIUS['key']}px" in key
+    assert "font-weight: 600" in key
+
+
+def test_signature_a_pressed_key_folds_its_lip_and_drops_onto_its_ground():
+    """Pressed or checked: the lip folds to 1 px and the top edge becomes
+    3 px of the ground, so the face drops and the height holds; inside a
+    tray the ground is SURFACE, in the pocket DEEP, on the rail RAIL."""
+    sheet = qt.stylesheet()
+    down = _block(sheet, "QPushButton:pressed, QPushButton:checked")
+    drop = theme.KEY_LIP_PX["key"] - theme.KEY_LIP_PX["pressed"]
+    assert drop == 3 == qt.key_drop()
+    assert f"border-top: {drop}px solid {theme.BACKGROUND}" in down
+    assert f"border-bottom: {theme.KEY_LIP_PX['pressed']}px solid {theme.KEY_LIP}" in down
+    for container, ground in (("QFrame#well", theme.SURFACE),
+                              ("QFrame#diagnostics", theme.DEEP),
+                              ("QFrame#rail", theme.RAIL)):
+        rule = sheet.split(f"{container} QPushButton:pressed")[1].split("}")[0]
+        assert f"border-top-color: {ground}" in rule, container
+
+
+def test_signature_focus_rings_the_key_and_keeps_its_lip():
+    focus = _block(qt.stylesheet(), "QPushButton:focus")
+    assert qt.FOCUS_RING in focus
+    assert f"border-bottom: {theme.KEY_LIP_PX['key']}px solid {theme.KEY_LIP}" in focus
+
+
+def test_signature_the_mode_key_latched_is_the_ink_key_down():
+    """The latching mode key: off, a neutral key; on, the ink face DOWN (lip
+    folded to 1 px, 3 px drop) - told from `go` by its missing lip and its
+    lit lamp slot. The drop is drawn in the ground the key sits on."""
+    element = sch.toggle("Manual", "is_manual", "toggle_manual",
+                         true_text="Leave manual mode", false_text="Enter manual mode")
+    off = qt.toggle_sheet(element, False)
+    rest = off.split("QPushButton {")[1].split("}")[0]
+    assert f"background-color: {theme.CAP}" in rest
+    assert f"border-bottom: {theme.KEY_LIP_PX['key']}px solid {theme.KEY_LIP}" in rest
+    on = qt.toggle_sheet(element, True, theme.SURFACE)
+    rest = on.split("QPushButton {")[1].split("}")[0]
+    assert f"background-color: {theme.TEXT}" in rest and f"color: {theme.CAP}" in rest
+    assert f"border-top: 3px solid {theme.SURFACE}" in rest
+    assert f"border-bottom: 1px solid {theme.GO_LIP}" in rest
+    disabled = on.split("QPushButton:disabled {")[1].split("}")[0]
+    assert f"dashed {theme.EDGE}" in disabled and f"solid {theme.EDGE_SOFT}" in disabled
+    assert theme.SIGNAL not in off + on and theme.TRACE not in off + on
+
+
+def test_signature_a_field_is_a_sunk_window_and_the_select_is_a_key():
+    sheet = qt.stylesheet()
+    field = _block(sheet, "QLineEdit")
+    assert f"background-color: {theme.WELL}" in field
+    assert f"border-radius: {theme.RADIUS['input']}px" in field
+    assert f"font-family: {qt.numeral_family()}" in field
+    assert f"background-color: {theme.DEEP}" in _block(sheet, "QFrame#well QLineEdit")
+    assert qt.FOCUS_RING in sheet.split("QLineEdit:focus")[1].split("}")[0]
+    select = _block(sheet, "QComboBox")
+    assert f"background-color: {theme.CAP}" in select
+    assert f"border-bottom: {theme.KEY_LIP_PX['key']}px solid {theme.KEY_LIP}" in select
+    assert "image: none" in _block(sheet, "QComboBox::down-arrow")
+
+
+def test_signature_the_rail_is_its_own_face_and_the_shown_page_is_a_sunk_pad():
+    sheet = qt.stylesheet()
+    assert f"background-color: {theme.RAIL}" in _block(sheet, "QFrame#rail")
+    shown = _block(sheet, "QPushButton#railModel:checked")
+    assert f"background: {theme.SURFACE}" in shown
+    item = _block(sheet, "QPushButton#railModel")
+    assert f"padding-left: {qt.rail_text_left()}px" in item
+    assert qt.rail_text_left() > theme.INSET + theme.LAMP["size_rail"][0]
+
+
+def test_signature_the_stop_geometry_follows_the_theme():
+    """172 / 10 / 124 with a 6 px skirt, 4 px lift and 6 px latched drop;
+    150 / 9 / 106 narrow; a squeezed rail scales the nearer set."""
+    full = qt.stop_geometry(theme.STOP["diameter"])
+    assert (full["collar"], full["key"], full["skirt"], full["lift"], full["drop"]) == (
+        theme.STOP["collar"], theme.STOP["key"], theme.STOP["skirt"],
+        theme.STOP["lift"], theme.STOP["drop_latched"])
+    assert full["legend_px"] == theme.STOP["face_pt"]
+    narrow = qt.stop_geometry(theme.STOP["diameter_narrow"])
+    assert (narrow["collar"], narrow["key"]) == (theme.STOP["collar_narrow"],
+                                                 theme.STOP["key_narrow"])
+    squeezed = qt.stop_geometry(theme.STOP["diameter_narrow"] // 2)
+    assert squeezed["key"] == theme.STOP["key_narrow"] / 2
+
+
+def test_signature_keys_carry_the_specs_glyphs_before_their_legend():
+    assert qt.key_glyph("Home") == "home"
+    assert qt.key_glyph("Start run") == "run"
+    assert qt.key_glyph("Save run…") == "download"
+    assert qt.key_glyph("Gamepad log…") == "gamepad"
+    assert qt.key_glyph("3D analysis plot…") == "link"
+    assert qt.key_glyph("Move +") is None and qt.key_glyph("") is None
+    assert {name for _, name in qt.KEY_GLYPHS} <= set(theme.ICON_NAMES)
+
+
+def test_signature_the_numerals_are_rubik_semibold():
+    assert qt.numeral_family() == f"{theme.NUMERAL_FAMILY} SemiBold"
+    assert f"font-weight: {theme.NUMERAL_WEIGHT}" in _block(qt.stylesheet(), "QLabel#reading")
+
+
+def test_signature_axis_letters_are_14_px_700_muted():
+    rule = _block(qt.stylesheet(), "QLabel#axisLetter")
+    assert "font-weight: 700" in rule and f"color: {theme.MUTED}" in rule
+    assert f"font-size: {qt.axis_pt()}pt" in rule
