@@ -64,6 +64,10 @@ wire is pinned by `tests/golden/`.
 
 ## Owner rulings (all applied)
 
+- 2026-09-26: **no zeroing / homing function for now** (stall detection is
+  StealthChop-only and unreliable at homing speeds; no switches; collision
+  risk). The firmware's microstep count is truth: stepper 8, chuck 2.
+
 - Close a tab = destruct the model; reopen = construct again. No hide/show.
 - Autonomous mode stays; repeated Step works inside it. Distances are locked
   while autonomous (as on main); leave the mode to edit them.
@@ -99,14 +103,35 @@ lands as `palette.py` / `theme.py` tokens.
 
 ## Open items
 
+### Resume here (handoff written 2026-09-26, late)
+
+- **Tree**: `mvc-refactor` at the commit after `e58fd3b`, clean, in step
+  with origin apart from the lead's last docs commits (push is the owner's
+  call). Gates on this tree: fast 2293 (+11 `window` skipped, 1 xfail =
+  CON-13), golden 78, Qt 212 offscreen. Only `main/` and `mvc-refactor/`
+  exist on disk; no agent, server or worktree is running.
+- **First bench contact happened** (owner, 2026-09-26): D1 (probe baud)
+  hit and fixed at the bench (`b3c69cd`). Tier D then reconciled against
+  the code: 11 rows still present (`handoff/audit-tier-d-2026-09-26.md`,
+  banner under Tier D). **Next work, in order: D4 and D5** (a gamepad swap
+  in Manual sends no stop; a failed jog write goes to FAULT with no stop
+  and a closed handle), lead, core, test first; then D2, D6, D14, D11.
+- **Owner rulings tonight**: no zeroing / homing function for now (K5
+  shelved; the proposal stays in `handoff/` for later); the firmware's
+  microstep count is truth (stepper 8, chuck 2, identical to `main` since
+  2026-07-15; the README line is corrected).
+- **Still deferred until the display is free**: the 11 `window` tests and
+  the Tk/Qt captures of the Tier N/O states (list below).
+- **Open code rows**: O17 (lead part), O19, O20–O23, CON-6/7/11. Owner
+  calls: below.
+
+
 Owner calls from 2026-09-26 (Tier K/L): 44 px targets everywhere vs the
 artboards' compact commands (24/36 shipped); the slider track / entry well
 at 1.11:1 against the sheet (WCAG 1.4.11) vs the brief; whether a partial
 latch should ever be clearable from the disc (shipped: no, a single model
 clears at its own switch); the overview keeps each device's whole tier-1
-body (assumption stated in Tier K); the zeroing proposal's eight bench
-decisions (`handoff/proposal-probe-zeroing.md` §8, starting with 8 vs 16
-microsteps per full step); Tk's `tk::mac::Quit` hook P3 (the OS Quit still
+body (assumption stated in Tier K); Tk's `tk::mac::Quit` hook P3 (the OS Quit still
 exits without the question); push.
 
 Owner calls from 2026-09-26 (Tier N/O, contract): a hidden Web tab stops
