@@ -10,10 +10,15 @@
 #                                  of `main`): python3 src/mainGUI.py (Tk only)
 #
 # Before launching, firmware/flash_firmware.py (this checkout's copy) flashes
-# the chosen tree's firmware/ onto every board whose recorded sketch hash
-# (~/transfer-stage-runs/flashed.json) differs; when all are current it opens
-# no port. Both branches ship the same Mega sketches, so in steady state a
-# swap flashes nothing. If a flash fails the app is not launched.
+# every board whose recorded sketch hash (~/transfer-stage-runs/flashed.json)
+# differs from the sketch this branch needs; when all are current it opens no
+# port. `main` is the stable branch and is never modified: its Mega sketches
+# (stepper, chuck, DC) speak a different protocol from mvc-refactor's, so
+# swapping branches reflashes the Megas. The Temperature Controller always
+# gets THIS checkout's sketch: its serial protocol is identical on both
+# branches, and main's sketch does not build against the LCD/MAX6675
+# libraries installed on the bench PC. If a flash fails the app is not
+# launched.
 #
 #   --no-flash       skip the flash step
 #   --force-flash    flash every connected board even if already current
@@ -70,27 +75,52 @@ elif [ -z "${VIRTUAL_ENV:-}" ]; then
     exit 1
 fi
 
-FLASH_CMD=(python3 "$HERE/firmware/flash_firmware.py" --sketch-root "$TREE/firmware" --yes)
-[ -n "$FORCE" ] && FLASH_CMD+=("$FORCE")
+# Which boards to consider (STATION_FLASH_ONLY narrows the default set).
+WANT=("Stepper Probe" "Chuck Positioner" "DC Probe" "Temperature Controller")
 if [ -n "${STATION_FLASH_ONLY:-}" ]; then
-    IFS=',' read -r -a ONLY <<< "$STATION_FLASH_ONLY"
-    FLASH_CMD+=(--only "${ONLY[@]}")
+    IFS=',' read -r -a WANT <<< "$STATION_FLASH_ONLY"
 fi
+MEGAS=()
+TEENSY=()
+for dev in "${WANT[@]}"; do
+    dev="$(echo "$dev" | sed 's/^ *//; s/ *$//')"
+    case "$dev" in
+        "Temperature Controller") TEENSY+=("$dev") ;;
+        "") ;;
+        *) MEGAS+=("$dev") ;;
+    esac
+done
+
+# One flash pass per sketch tree: the Megas from the chosen branch, the
+# Teensy always from this checkout.
+FLASH_CMDS=()
+flash_cmd() {   # flash_cmd <sketch root> <device>...
+    local root="$1"; shift
+    local cmd=(python3 "$HERE/firmware/flash_firmware.py" --sketch-root "$root" --yes)
+    [ -n "$FORCE" ] && cmd+=("$FORCE")
+    cmd+=(--only "$@")
+    printf '%q ' "${cmd[@]}"
+}
+[ ${#MEGAS[@]} -gt 0 ] && FLASH_CMDS+=("$(flash_cmd "$TREE/firmware" "${MEGAS[@]}")")
+[ ${#TEENSY[@]} -gt 0 ] && FLASH_CMDS+=("$(flash_cmd "$HERE/firmware" "${TEENSY[@]}")")
 
 show() { printf '%q ' "$@"; echo; }
 
 echo "[run_swap] branch: $BRANCH  tree: $TREE"
 if [ "$FLASH" = 1 ]; then
     if [ "$DRY" = 1 ]; then
-        echo "[run_swap] would flash:"; printf '    '; show "${FLASH_CMD[@]}"
+        echo "[run_swap] would flash:"
+        for c in "${FLASH_CMDS[@]}"; do echo "    $c"; done
     else
         echo "[run_swap] checking firmware (flashes only boards that are out of date)..."
-        if ! "${FLASH_CMD[@]}"; then
-            echo "[run_swap] Flashing failed, so the app was NOT launched." >&2
-            echo "[run_swap] The boards may be half-flashed or running the other tree's firmware." >&2
-            echo "[run_swap] Fix the error above and rerun, or pass --no-flash to launch anyway." >&2
-            exit 1
-        fi
+        for c in "${FLASH_CMDS[@]}"; do
+            if ! eval "$c"; then
+                echo "[run_swap] Flashing failed, so the app was NOT launched." >&2
+                echo "[run_swap] The boards may be half-flashed or running the other branch's firmware." >&2
+                echo "[run_swap] Fix the error above and rerun, or pass --no-flash to launch anyway." >&2
+                exit 1
+            fi
+        done
     fi
 else
     echo "[run_swap] --no-flash: firmware left as it is"
