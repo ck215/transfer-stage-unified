@@ -113,6 +113,7 @@ class FakeWidget:
     def pack(self, **kwargs):
         self.grid_info = self.grid_info or {}
         self.is_packed = True
+        self.pack_options = kwargs          # the last pack: a key's pads
         PACK_ORDER.append((self, kwargs))
 
     def grid(self, **kwargs):
@@ -900,13 +901,19 @@ def test_readonly_shows_the_formatted_value(view, panel):
 
 
 def test_indicator_and_toggle_take_their_colours_from_the_theme(view, panel):
+    """Signature (2026-09-27): a toggle is a latching key. OFF it is a CAP-
+    faced key (`theme.toggle_colors` now gives CAP, where the Bench sheet
+    drew it on the ground) standing on its lip, its lamp slot hollow; ON it
+    is down (the lip folded) in its on colour with the slot lit."""
     toggle = element_of(view, "toggle")
     panel.is_running = True
     view._refresh()
     widget = widget_of(view, toggle)
+    entry = view._widgets[id(toggle)]
     expected = theme.toggle_colors(toggle, True)
     assert widget.cget("background") == expected["background"]
     assert widget.cget("foreground") == expected["foreground"]
+    assert entry["ring"].is_down and entry["lamp_state"] == "lit"
     # Sentence case, as the Web view renders it: "RUNNING" is the schema's
     # word, "Running" is how every frontend shows it.
     assert widget.cget("text") == "Running"
@@ -916,22 +923,27 @@ def test_indicator_and_toggle_take_their_colours_from_the_theme(view, panel):
     panel.is_running = False
     view._refresh()
     off = theme.toggle_colors(toggle, False)
-    assert widget.cget("background") == off["background"]
+    assert widget.cget("background") == off["background"] == theme.CAP
     assert widget.cget("text") == "Stopped"
+    assert not entry["ring"].is_down and entry["lamp_state"] == "off"
 
 
 def test_a_command_is_outlined_by_a_frame_so_aqua_draws_it(view, panel):
     """Aqua does not draw a Label's highlight ring, so an OFF toggle (its
     role outlined on the panel) rendered as bare text. The outline is a
     one-pixel frame around the label inside a one-pixel ring; keyboard
-    focus turns BOTH ink - a 2 px ink ring, not a 1 px trace one (F25)."""
+    focus turns BOTH ink - a 2 px ink ring, not a 1 px trace one (F25).
+    Signature: the outline (the KEY_RIM rim) stands on a lip frame, which
+    sits in a seat in the ground, inside the ring."""
     toggle = element_of(view, "toggle")
     panel.is_running = False
     view._refresh()
     entry = view._widgets[id(toggle)]
     outline, ring = entry["outline"], entry["ring"]
     assert widget_of(view, toggle).master is outline
-    assert outline.master is ring.outer
+    assert outline.master is ring.lip
+    assert ring.lip.master is ring.seat and ring.seat.master is ring.outer
+    assert ring.lip.cget("background") == theme.KEY_LIP
     resting = outline.cget("background")
     assert resting == entry["border"]
     assert resting not in (tkmod._page(), theme.TRACE), "an outline you can see"
@@ -951,23 +963,26 @@ def test_a_danger_command_renders_neutral_like_qt_and_web(view):
     outlined in signal in Tk alone; it renders neutral, as in Qt and Web."""
     go = element_of(view, "button", "Go")
     entry = view._widgets[id(go)]
-    # Updated for the Bench sheet (E): a non-`go` command is outlined (the
-    # muted input border) on the ground it sits on, not filled with the old
-    # neutral panel tone.
-    assert widget_of(view, go).cget("background") == tkmod._page()
-    assert entry["outline"].cget("background") == theme.INPUT_BORDER
+    # Signature: a non-`go` command is a CAP key with the KEY_RIM rim and
+    # the KEY_LIP lip (it was outlined in the input border on its ground).
+    assert widget_of(view, go).cget("background") == theme.CAP
+    assert entry["outline"].cget("background") == theme.KEY_RIM
+    assert entry["ring"].lip.cget("background") == theme.KEY_LIP
     assert theme.SIGNAL not in (widget_of(view, go).cget("background"),
                                 entry["outline"].cget("background"))
 
 
 def test_a_command_has_hover_and_disabled_states(view, panel):
+    """Signature: under the pointer a CAP key's rim turns ink (its face
+    keeps its tone); it used to step the face to the other ground."""
     go = element_of(view, "button", "Go")
     widget = widget_of(view, go)
-    resting = widget.cget("background")
+    rim = view._widgets[id(go)]["outline"]
+    resting = rim.cget("background")
     widget.fire("<Enter>")
-    assert widget.cget("background") != resting
+    assert rim.cget("background") == theme.TEXT != resting
     widget.fire("<Leave>")
-    assert widget.cget("background") == resting
+    assert rim.cget("background") == resting
     speed = element_of(view, "entry", "Speed")
     panel.mode = "running"
     view._refresh()
@@ -2053,8 +2068,12 @@ def test_the_stop_and_the_event_tray_cannot_be_pushed_off_the_window(
     assert PACK_ORDER[rail][1]["side"] == "left"
     assert rail < packed.index(built._main) < notebook
     # In the rail the disc is packed before the model list, which gives way.
-    assert built._stop_button.master is built._rail
+    # Signature: the disc sits on the nameplate, which is the rail's first
+    # child and is packed before the list.
+    assert built._stop_button.master is built._plate
+    assert built._plate.master.master is built._rail
     assert packed.index(built._stop_button) < packed.index(built._model_list)
+    assert packed.index(built._plate_edge) < packed.index(built._model_list)
     # The tray is docked at the bottom of the main column before the notebook.
     assert packed.index(built._tray) < notebook
     assert PACK_ORDER[packed.index(built._tray)][1]["side"] == "bottom"
@@ -2063,38 +2082,84 @@ def test_the_stop_and_the_event_tray_cannot_be_pushed_off_the_window(
 
 def test_the_stop_button_label_follows_the_controller(dashboard, controller):
     """The Web view's mushroom, in Tk: `Stop`, then `Clear` once latched; the
-    disc stays signal red (it is never dimmed) and its ring turns trace."""
+    key stays signal red (it is never dimmed).
+    Signature (2026-09-27): the old red ring that thickened is gone. Idle,
+    the collar is ink with a KEY_RIM edge around a SURFACE socket band;
+    latched, the socket floods SKIRT and the collar turns SIGNAL."""
     def faces():
         return [item[2]["text"] for item in dashboard._stop_button.items
                 if item[0] == "text"]
 
-    def disc():
+    def part(tag):
         return [item[2] for item in dashboard._stop_button.items
-                if item[0] == "oval" and item[2].get("fill")][-1]
-
-    def ring():
-        return [item[2] for item in dashboard._stop_button.items
-                if item[0] == "oval" and not item[2].get("fill")][-1]
+                if tag in (item[2].get("tags") or ())][-1]
 
     dashboard.open()
     dashboard._sync_stop_button()
     assert faces() == ["Stop"]
-    assert disc()["fill"] == theme.SIGNAL
-    # Updated for E: A's disc - a red ring, 3 px, thickening to 6 px latched
-    # (never the trace colour); "Stop: Ctrl+." under it in both states, the
-    # press's action in its tooltip.
-    assert ring()["outline"] == theme.SIGNAL
-    assert ring()["width"] == theme.STOP["ring"]
-    assert dashboard._stop_hint.cget("text") == "Stop: Ctrl+."
+    assert part("face")["fill"] == theme.SIGNAL
+    assert part("collar")["fill"] == theme.STOP["collar_fill"] == theme.TEXT
+    assert part("collar")["outline"] == theme.STOP["collar_edge"]
+    assert part("socket")["fill"] == theme.STOP["socket"] == theme.SURFACE
+    assert dashboard.chord_text == "Stop: Ctrl+."
     assert dashboard._stop.tooltip.text.startswith(tkmod.STOP_HINT)
 
     controller.is_estopped = True
     dashboard._sync_stop_button()
     assert faces() == ["Clear"]
-    assert disc()["fill"] == theme.SIGNAL
-    assert ring()["outline"] == theme.SIGNAL
-    assert ring()["width"] == theme.STOP["ring_latched"]
+    assert part("face")["fill"] == theme.SIGNAL
+    assert part("collar")["fill"] == theme.STOP["collar_latched"] == theme.SIGNAL
+    assert part("socket")["fill"] == theme.STOP["socket_latched"] == theme.SKIRT
     assert dashboard._stop.tooltip.text == tkmod.CLEAR_HINT
+
+
+def _stop_parts(canvas, tag):
+    return [item for item in canvas.items if tag in (item[2].get("tags") or ())]
+
+
+def test_signature_the_stop_idle_stands_on_its_skirt(controller, setup_panel):
+    """Signature: idle, the key stands `lift` px above centre with its SKIRT
+    oval showing `skirt` px below the face, and the face reads "Stop" with
+    no glyph."""
+    disc = tkmod._Mushroom(FakeWidget(), lambda: None, background=theme.CAP)
+    disc.set_latched(False)
+    centre, _radius, _socket, key, face_y = disc.geometry()
+    assert face_y == centre - tkmod._design_px(theme.STOP["lift"])
+    (face,) = _stop_parts(disc.canvas, "face")
+    (skirt,) = _stop_parts(disc.canvas, "skirt")
+    assert skirt[2]["fill"] == theme.STOP["skirt_fill"] == theme.SKIRT
+    assert skirt[1][1] - face[1][1] == tkmod._design_px(theme.STOP["skirt"])
+    assert face[1][2] - face[1][0] == pytest.approx(2 * key)
+    assert not _stop_parts(disc.canvas, "release")
+    assert not _stop_parts(disc.canvas, "crescent")
+
+
+def test_signature_the_stop_latched_drops_floods_and_shows_the_release(
+        controller, setup_panel):
+    """Signature: latched, the key is down `drop_latched` px with no skirt,
+    a SKIRT crescent across the top of its face, and the release glyph over
+    "Clear"; the socket floods SKIRT, the collar turns SIGNAL."""
+    disc = tkmod._Mushroom(FakeWidget(), lambda: None, background=theme.CAP)
+    disc.set_latched(False)
+    idle_y = disc.geometry()[4]
+    disc.set_latched(True)
+    SCHEDULER.pending.clear()           # the pulse is not under test here
+    centre, _radius, _socket, key, face_y = disc.geometry()
+    assert face_y - idle_y == tkmod._design_px(theme.STOP["drop_latched"])
+    assert not _stop_parts(disc.canvas, "skirt")
+    (crescent,) = _stop_parts(disc.canvas, "crescent")
+    (face,) = _stop_parts(disc.canvas, "face")
+    assert crescent[2]["fill"] == theme.SKIRT
+    assert face[1][1] > crescent[1][1] and face[1][3] == crescent[1][3]
+    release = _stop_parts(disc.canvas, "release")
+    assert release and all(item[0] == "line" and item[2]["fill"] == theme.WHITE
+                           for item in release)
+    (legend,) = _stop_parts(disc.canvas, "legend")
+    assert legend[2]["text"] == "Clear"
+    assert max(p for item in release for p in item[1][1::2]) < legend[1][1]
+    (collar,) = _stop_parts(disc.canvas, "collar")
+    (socket,) = _stop_parts(disc.canvas, "socket")
+    assert collar[2]["fill"] == theme.SIGNAL and socket[2]["fill"] == theme.SKIRT
 
 
 def test_the_stop_pulses_once_on_the_edge_and_not_while_latched(dashboard,
@@ -2140,15 +2205,26 @@ def test_a_models_own_stop_is_a_small_switch(controller, monkeypatch):
     entry = built._widgets[id(element)]
     switch = entry["switch"]
     assert "mushroom" not in entry
-    fills = {item[2].get("fill") for item in switch.canvas.items if item[0] == "oval"}
+    # Signature: the track is a sunk rectangle with a KEY_RIM edge and the
+    # knob a key cap (a face on its lip); they were ovals.
+    def part(tag):
+        return [item[2] for item in switch.canvas.items
+                if tag in (item[2].get("tags") or ())][-1]
+
+    fills = {item[2].get("fill") for item in switch.canvas.items}
     assert theme.SIGNAL not in fills, "off: no red"
+    assert part("track")["outline"] == theme.SWITCH["off_edge"] == theme.KEY_RIM
+    assert part("knob")["fill"] == theme.SWITCH["knob_off"]
+    assert part("knob-lip")["fill"] == theme.SWITCH["knob_lip"]
     # Updated for O16 (PM8-8): the switch's words are the view's, one word
     # per thing, whatever the schema's state words ("FULL STOP"/"LATCHED").
     assert entry["words"].cget("text") == "Stop this model"
     safe.is_estopped = True
     built._refresh()
-    fills = {item[2].get("fill") for item in switch.canvas.items if item[0] == "oval"}
-    assert theme.SWITCH["on_fill"] in fills and theme.SWITCH["knob_on"] in fills
+    assert part("track")["fill"] == theme.SWITCH["on_fill"]
+    assert part("knob")["fill"] == theme.SWITCH["knob_on"]
+    assert part("knob-lip")["fill"] == theme.SWITCH["knob_lip_on"]
+    assert part("knob")["outline"] == theme.SKIRT
     assert entry["words"].cget("text") == "Stopped"
     switch.canvas.fire("<Button-1>")
     assert [call[1] for call in own.calls if call[1] == "set_running"], "a press runs it"
@@ -2514,7 +2590,7 @@ def test_the_stop_shortcut_is_written_where_the_operator_looks(any_platform,
     """G5: one chord on every platform, and the copy names it and only it."""
     dashboard = tkmod.TkDashboard(controller, setup_panel)
     dashboard.open()
-    hint = dashboard._stop_hint.cget("text")
+    hint = dashboard.chord_text
     assert tkmod.STOP_KEY_NAME == "Ctrl+."
     assert "Ctrl+." in hint and "Ctrl+." in dashboard._stop.tooltip.text
     for text in (hint, dashboard._stop.tooltip.text):
@@ -3666,12 +3742,15 @@ def test_tier_two_is_not_mapped_until_its_disclosure_is_pressed(tiered):
     view, _panel = tiered
     well, opener = view._well, view._disclosures[2]
     assert not _mapped(view, well), "tier 2 is one press away"
-    assert opener.widget.cget("text") == "\u25b8 Configure"
+    # Signature: the chevron is a glyph on the disclosure key, not a
+    # character in the words; the key is up, the glyph points right.
+    assert opener.widget.cget("text") == "Configure"
+    assert not opener.is_open
     size = element_of(view, "entry", "Step size:")
     assert view._widgets[id(size)]["tier"] == 2, "built all the same, in the well"
     opener.widget.fire("<Button-1>")
     assert _mapped(view, well) and view.is_disclosed(2)
-    assert opener.widget.cget("text") == "\u25be Configure"
+    assert opener.widget.cget("text") == "Configure" and opener.is_open
     opener.widget.fire("<Return>")
     assert not _mapped(view, well) and not view.is_disclosed(2)
 
@@ -3690,13 +3769,17 @@ def test_the_open_tiers_are_remembered_per_model_for_the_session(tiered):
     other.close()
 
 
-def test_tier_three_sits_inside_tier_two_with_a_muted_rule(tiered):
+def test_tier_three_sits_inside_tier_two_in_a_deep_pocket(tiered):
+    """Signature: tier 3 is a DEEP pocket sunk in the tray, under a 1 px
+    top line (it was a strip with a 2 px muted rule down its left)."""
     view, _panel = tiered
     holder = view._diagnostics
     assert holder.master is view._well
     assert view._disclosures[3].frame.master is view._well
-    rule = holder.children[0]
-    assert rule.cget("background") == theme.MUTED and rule.cget("width") == 2
+    line, pocket = holder.children[0], holder.children[1]
+    assert line.cget("background") == tkmod.TRAY_LINE and line.cget("height") == 1
+    assert pocket.cget("background") == theme.DEEP
+    assert view._tiers[3].master is pocket
     view.set_disclosure(3, True)
     assert not view.is_disclosed(3), "tier 3 shows only inside an open tier 2"
     view.set_disclosure(2, True)
@@ -3895,8 +3978,8 @@ def test_the_rail_lists_every_model_and_a_press_leads_the_sheet_with_it(
     assert built._panels["Red Percent"]._is_opened
     assert not built._panels["Rotator"]._is_opened
     label = built._rail_items["Red Percent"][1]
-    assert label.cget("background") == theme.BACKGROUND, "the opened one is lit"
-    assert built._rail_items["Rotator"][1].cget("background") == theme.SURFACE
+    assert label.cget("background") == theme.SURFACE, "the opened one is lit"  # Signature
+    assert built._rail_items["Rotator"][1].cget("background") == tkmod.RAIL_FACE  # Signature
     built.close()
 
 
@@ -4024,7 +4107,8 @@ def test_k3_the_disclosure_says_the_schemas_words(tiered):
     view, panel = tiered
     words = next(section["disclosure"] for section in panel.schema["sections"]
                  if section.get("tier") == 2)
-    assert view._disclosures[2].widget.cget("text") == f"\u25b8 {words}"
+    # Signature: the words alone; the chevron is the key's glyph.
+    assert view._disclosures[2].widget.cget("text") == words
 
 
 def _two_page_dashboard(setup_panel, *names):
@@ -4061,9 +4145,9 @@ def test_k4_the_rails_first_item_is_overview_and_it_is_current_at_launch(
     assert label.cget("text") == "Overview"
     assert built._opened is None, "the overview is the page shown"
     assert built._is_setup_collapsed
-    assert label.cget("background") == theme.BACKGROUND, "and the rail says so"
+    assert label.cget("background") == theme.SURFACE, "and the rail says so"  # Signature
     for name in K_NAMES:
-        assert built._rail_items[name][1].cget("background") == theme.SURFACE
+        assert built._rail_items[name][1].cget("background") == tkmod.RAIL_FACE  # Signature
     tkmod._DISCLOSED.clear()
     built.close()
 
@@ -4115,8 +4199,8 @@ def test_k4_a_press_shows_that_model_alone_with_its_disclosures(setup_panel, how
     assert view._disclosures[2].frame.is_packed
     assert not view._open_label.is_packed, "no Open on its own page"
     assert view._head.cget("takefocus") == 0
-    assert built._rail_items["Rotator"][1].cget("background") == theme.BACKGROUND
-    assert built._overview_item[1].cget("background") == theme.SURFACE
+    assert built._rail_items["Rotator"][1].cget("background") == theme.SURFACE  # Signature
+    assert built._overview_item[1].cget("background") == tkmod.RAIL_FACE  # Signature
     tkmod._DISCLOSED.clear()
     built.close()
 
@@ -4155,7 +4239,7 @@ def test_k4_closing_the_shown_device_returns_to_the_overview(setup_panel):
     assert "Red Percent" in controller.removed
     assert built._opened is None
     assert sorted(_shown(built)) == sorted(set(K_NAMES) - {"Red Percent"})
-    assert built._overview_item[1].cget("background") == theme.BACKGROUND
+    assert built._overview_item[1].cget("background") == theme.SURFACE  # Signature
     tkmod._DISCLOSED.clear()
     built.close()
 
@@ -4173,7 +4257,7 @@ def test_k4_the_open_tiers_survive_overview_device_overview_device(setup_panel):
     built.show_model("Stepper Probe")
     assert probe._well_holder.is_packed and probe._diagnostics.is_packed
     assert probe.is_disclosed(3)
-    assert probe._disclosures[2].widget.cget("text").startswith("\u25be")
+    assert probe._disclosures[2].is_open    # Signature: the key is down
     tkmod._DISCLOSED.clear()
     built.close()
 
@@ -4186,7 +4270,7 @@ def test_k4_the_stop_and_the_latched_headline_are_the_same_on_both_pages(
     assert built._headline.is_packed and built._stop_button.is_packed
     built.show_model("Rotator")
     assert built._headline.is_packed and built._stop_button.is_packed
-    assert built._stop_hint.cget("text") == "Stop: Ctrl+."
+    assert built.chord_text == "Stop: Ctrl+."
     tkmod._DISCLOSED.clear()
     built.close()
 
@@ -4312,14 +4396,17 @@ def test_l1_stop_ctrl_period_is_shown_in_every_state(tk_harness, setup_panel):
         controller.is_estopped = stop is not None
         built._sync_stop_button()
         assert built._stop_hint.is_packed
-        assert built._stop_hint.cget("text") == "Stop: Ctrl+."
+        assert built.chord_text == "Stop: Ctrl+."
     built.close()
 
 
 def test_l1_the_rail_marks_each_latched_and_unconfirmed_model(tk_harness,
                                                               setup_panel):
     """A latched model: an ink square and "stopped"; one that did not
-    confirm: a signal square and "did not confirm". Never colour alone."""
+    confirm: "did not confirm". Never colour alone.
+    Signature: the unconfirmed model's mark is the warning glyph in SIGNAL
+    (rule 6) where a signal square was, and its lamp slot turns SIGNAL
+    (rule 4); a model that is merely latched keeps its lamp hidden."""
     built, controller = _stop_dashboard(setup_panel)
     controller.is_estopped = True
     controller.stop = {"latched": ["DC Probe", "Rotator"], "unconfirmed": ["Rotator"],
@@ -4332,7 +4419,12 @@ def test_l1_the_rail_marks_each_latched_and_unconfirmed_model(tk_harness,
 
     assert squares("Stepper Probe") == []
     assert squares("DC Probe") == [theme.TEXT]
-    assert squares("Rotator") == [theme.SIGNAL]
+    assert squares("Rotator") == []
+    glyph = built._rail_marks["Rotator"][0].items
+    assert glyph and {item[2]["fill"] for item in glyph} == {theme.SIGNAL}
+    assert {tuple(item[2]["tags"]) for item in glyph} == {("warning",)}
+    assert built._rail_lamp_state("Rotator") == "unconfirmed"
+    assert built._rail_lamp_state("DC Probe") == "hidden"
     assert built._rail_marks["DC Probe"][1].text == "Stopped"
     assert built._rail_marks["Rotator"][1].text == "Did not confirm the stop"
     assert built._rail_marks["Stepper Probe"][1].text == ""
@@ -4410,9 +4502,12 @@ def test_l11_band_and_tray_lines_are_sentences_without_a_source(tk_harness,
     assert "[" not in band and "Stop Not Confirmed" not in band
     assert built._latest_text.cget("text") == (
         "Warning: Power down not supported: The DC board has no coil kill.")
-    # One mark shape in both places: a drawn square, not a text glyph.
-    assert [item[0] for item in built._latest_mark.items] == ["rect"]
-    assert built._latest_mark.items[0][2]["fill"] == ""       # hollow: a warning
+    # One mark in both places, drawn, not a text glyph. Signature: the
+    # folded line is led by the warning glyph (rule 6) - ink for a
+    # warning, where it was a hollow square.
+    marks = built._latest_mark.items
+    assert marks and {item[0] for item in marks} == {"line"}
+    assert {item[2]["fill"] for item in marks} == {theme.SEVERITY_MARK["warning"]}
     built.close()
 
 
@@ -4707,11 +4802,13 @@ def test_l4_commands_are_36_px_and_fields_24_px_with_their_rings(gated):
     line = tkmod._line_px()
     command = view._widgets[id(element_of(view, "button", "Start run"))]["widget"]
     ring = 2 * tkmod.FOCUS_PX
-    assert line + 2 * command.cget("pady") + ring >= tkmod.COMMAND_PX
+    # Signature: a command is a key; its lip is part of its height.
+    lip = tkmod._lip_px("key")
+    assert line + 2 * command.cget("pady") + ring + lip >= tkmod.COMMAND_PX
     field = tkmod._line_px() + 2 * tkmod._field_pady() + ring + tkmod.UNDERLINE_PX
     assert field >= tkmod.MIN_TARGET_PX
     press = tkmod._Press(FakeWidget(), "Quit", lambda: None, theme.SURFACE)
-    assert line + 2 * press.widget.cget("pady") + ring >= tkmod.COMMAND_PX
+    assert line + 2 * press.widget.cget("pady") + ring + lip >= tkmod.COMMAND_PX
 
 
 def test_l4_a_press_anywhere_in_an_entrys_well_focuses_it(gated):
@@ -5065,8 +5162,11 @@ def test_o4_a_faulted_model_wears_the_signal_mark_in_the_rail(tk_harness,
     controller.panels["DC Probe"].fault = FAULT
     built._on_refresh_tick()
     canvas, tip = built._rail_marks["DC Probe"]
-    assert [i[2]["fill"] for i in canvas.items if i[0] == "rect"] == [theme.SIGNAL]
-    assert [i[2]["text"] for i in canvas.items if i[0] == "text"] == ["!"]
+    # Signature: the warning glyph in SIGNAL (was a signal square with a
+    # "!"), and the lamp slot in SIGNAL.
+    assert {i[2]["fill"] for i in canvas.items} == {theme.SIGNAL}
+    assert {tuple(i[2]["tags"]) for i in canvas.items} == {("warning",)}
+    assert built._rail_lamp_state("DC Probe") == "unconfirmed"
     assert tip.text == "Disable failed"
     controller.panels["DC Probe"].fault = ""
     built._on_refresh_tick()
@@ -5346,8 +5446,9 @@ def test_o16_the_per_model_switch_says_stop_this_model_and_stopped(tk_harness):
 
 def test_o16_the_rail_marks_differ_in_shape_not_colour_alone(tk_harness,
                                                             setup_panel):
-    """A11Y-6: a square for stopped, a bigger filled square with "!" for an
-    unconfirmed stop, a ring for energized."""
+    """A11Y-6: a square for stopped, a ring for energized, and for an
+    unconfirmed stop (Signature, rule 6) the warning glyph - a triangle of
+    lines, where a bigger filled square with "!" was."""
     built, controller = _stop_dashboard(setup_panel)
     controller.stop = {"latched": ["DC Probe", "Rotator"], "unconfirmed": ["Rotator"],
                        "every": False}
@@ -5360,7 +5461,7 @@ def test_o16_the_rail_marks_differ_in_shape_not_colour_alone(tk_harness,
         return sorted(item[0] for item in canvas.items)
 
     assert shapes("DC Probe") == ["rect"]
-    assert shapes("Rotator") == ["rect", "text"]
+    assert set(shapes("Rotator")) == {"line"}
     assert [i[0] for i in built._energy_marks["Stepper Probe"].items] == ["oval"]
     built.close()
 
@@ -5381,3 +5482,323 @@ def test_o16_a_log_window_opens_with_its_feed_focused_in_a_ring(view, panel):
     Focus.current = None
     click(view, element)                 # pressed again: raised, focused again
     assert Focus.current is entry["feed"] and entry["feed_ring"].is_focused
+
+
+# ---------------------------------------------------------------------------
+# Signature (owner ruling 2026-09-27): the key family, the lamp slot, the
+# flag window, the nameplate, the glyphs
+# ---------------------------------------------------------------------------
+
+def _pads(ring):
+    """(drop, lip) as packed: the lip frame's top pad in its seat and the
+    rim's bottom pad on the lip."""
+    return ring.lip.pack_options["pady"][0], ring.inner.pack_options["pady"][1]
+
+
+def test_signature_the_key_pads_fold_the_lip_and_keep_the_height():
+    """Up, a key's face stands on its whole lip; down (pressed or latched)
+    the lip folds to `KEY_LIP_PX["pressed"]` and the face drops by what the
+    lip lost, so drop + lip - the key's height - never changes."""
+    lip, folded = tkmod._lip_px("key"), tkmod._lip_px("pressed")
+    assert tkmod._key_pads("key", False) == (0, lip) == (0, 4)
+    assert tkmod._key_pads("key", True) == (lip - folded, folded) == (3, 1)
+    for kind in theme.KEY_LIP_PX:
+        up, down = tkmod._key_pads(kind, False), tkmod._key_pads(kind, True)
+        assert sum(up) == sum(down), kind
+
+
+def test_signature_a_command_key_up_pressed_latched_and_disabled(view, panel):
+    """The one helper's key in each state: up (lip 4, no drop), pressed by
+    the pointer (folded until the release), latched (a toggle that is on:
+    down in its on face), disabled (up, the silhouette in ghost tones - EDGE
+    rim, EDGE_SOFT lip, DISABLED legend, the ground for a face)."""
+    ask = element_of(view, "button", "Ask")
+    entry = view._widgets[id(ask)]
+    ring = entry["ring"]
+    assert _pads(ring) == tkmod._key_pads("key", False)
+    assert ring.lip.cget("background") == theme.KEY_LIP
+    entry["widget"].fire("<Button-1>")
+    assert ring.is_down and _pads(ring) == tkmod._key_pads("key", True)
+    entry["widget"].fire("<ButtonRelease-1>")
+    assert not ring.is_down and _pads(ring) == tkmod._key_pads("key", False)
+
+    toggle = element_of(view, "toggle")
+    toggle_ring = view._widgets[id(toggle)]["ring"]
+    panel.is_running = True
+    view._refresh()
+    assert _pads(toggle_ring) == tkmod._key_pads("key", True), "latched is down"
+    panel.is_running = False
+    view._refresh()
+    assert _pads(toggle_ring) == tkmod._key_pads("key", False)
+
+    view._set_enabled(ask, False)
+    assert _pads(ring) == tkmod._key_pads("key", False), "disabled keys stay up"
+    assert entry["outline"].cget("background") == theme.EDGE
+    assert ring.lip.cget("background") == theme.EDGE_SOFT
+    assert entry["widget"].cget("foreground") == theme.DISABLED[1]
+    assert entry["widget"].cget("background") == entry["ground"]
+    entry["widget"].fire("<Button-1>")
+    assert not ring.is_down, "a disabled key does not press"
+
+
+def test_signature_the_go_key_is_ink_on_its_go_lip(controller):
+    """`go` is the ink key with a CAP legend on the GO_LIP."""
+    class Going(DemoPanel):
+        @property
+        def schema(self):
+            return sch.schema(sch.section("Go", sch.button("Home", "go", role="go")))
+
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Going=Going()), "Going")
+    home = built._elements[0]
+    entry = built._widgets[id(home)]
+    assert entry["widget"].cget("background") == theme.TEXT
+    assert entry["widget"].cget("foreground") == theme.CAP
+    assert entry["ring"].lip.cget("background") == theme.GO_LIP
+    built.close()
+
+
+def test_signature_the_lamp_slot_is_hollow_off_lit_on_and_ghost_disabled(view,
+                                                                          panel):
+    """Rule 5: the latching key's lamp slot - hollow off (SURFACE, KEY_RIM
+    edge), lit CAP in the ink key when on, EDGE-edged on its ground when
+    disabled. Never trace."""
+    toggle = element_of(view, "toggle")
+    entry = view._widgets[id(toggle)]
+    slot = entry["lamp_slot"]
+
+    def lamp():
+        (item,) = [i for i in slot.items if i[0] == "rect"]
+        return item[2]["fill"], item[2]["outline"]
+
+    panel.is_running = False
+    view._refresh()
+    assert lamp() == (theme.LAMP["off"], theme.LAMP["edge"])
+    panel.is_running = True
+    view._refresh()
+    assert lamp() == (theme.CAP, theme.CAP)
+    view._set_enabled(toggle, False)
+    assert lamp()[1] == theme.EDGE
+    assert theme.TRACE not in {c for i in slot.items for c in (i[2]["fill"],
+                                                               i[2]["outline"])}
+    assert tkmod._lamp_colours("hidden", theme.RAIL) is None
+    assert tkmod._lamp_colours("unconfirmed", theme.RAIL)[0] == theme.SIGNAL
+
+
+def test_signature_the_shown_page_lights_its_rail_lamp(setup_panel):
+    """The rail: the shown page is a sunk SURFACE pad with its lamp lit ink;
+    the other lines keep their lamp's space, hidden."""
+    built, _controller = _stop_dashboard(setup_panel)
+    built.show_model("DC Probe")
+    assert built._rail_lamp_state("DC Probe") == "on"
+    assert built._rail_lamp_state("Rotator") == "hidden"
+    lit = built._rail_lamps["DC Probe"].items
+    assert [i[2]["fill"] for i in lit] == [theme.LAMP["on"]]
+    assert built._rail_lamps["Rotator"].items == []
+    assert built._rail_lamps["Rotator"].cget("width") == tkmod._lamp_size(True)[0]
+    built.close()
+
+
+def test_signature_the_flag_window_is_drawn_once_per_episode(tiered):
+    """Rule 4: an unconfirmed (or faulted) model's entry carries the tripped
+    flag - an ink frame, a SIGNAL flag, an ink hatch - drawn when the
+    episode begins, not again while it lasts, and gone with it."""
+    view, _panel = tiered
+    assert view._flag_draws == 0 and view._mark.items == []
+    view.set_hazard(True)
+    assert view._flag_draws == 1
+    tags = {tuple(i[2].get("tags") or ()) for i in view._mark.items}
+    assert {("frame",), ("flag",), ("hatch",)} <= tags
+    frame = [i for i in view._mark.items if i[2].get("tags") == ("frame",)][0]
+    flag = [i for i in view._mark.items if i[2].get("tags") == ("flag",)][0]
+    hatch = [i for i in view._mark.items if i[2].get("tags") == ("hatch",)]
+    assert frame[2]["fill"] == theme.FLAG["frame"]
+    assert flag[2]["fill"] == theme.FLAG["fill"] == theme.SIGNAL
+    assert hatch and all(i[2]["fill"] == theme.FLAG["hatch"] for i in hatch)
+    x0, y0, x1, y1 = flag[1]
+    for item in hatch:                  # the hatch is cut to the window
+        xs, ys = item[1][0::2], item[1][1::2]
+        assert all(x0 - 0.01 <= x <= x1 + 0.01 for x in xs)
+        assert all(y0 - 0.01 <= y <= y1 + 0.01 for y in ys)
+    view.set_hazard(True, "disable failed")          # same episode
+    assert view._flag_draws == 1
+    view.set_hazard(False)
+    assert view._mark.items == [] and not view._mark_row.is_packed
+    view.set_hazard(True)
+    assert view._flag_draws == 2, "a new episode trips it again"
+
+
+def test_signature_the_nameplate_holds_the_title_the_stop_and_the_chord(dashboard):
+    """The nameplate: one CAP plate in a 1 px KEY_RIM edge on the RAIL; the
+    stop sits on it; the chord is "Stop:" then two keycaps (CAP, KEY_RIM,
+    the 2 px kbd lip) joined by "+", and reads "Stop: Ctrl+."."""
+    assert dashboard._rail.cget("background") == theme.RAIL
+    assert dashboard._plate_edge.cget("background") == theme.KEY_RIM
+    assert dashboard._plate_edge.cget("padx") == dashboard._plate_edge.cget("pady") == 1
+    assert dashboard._plate.cget("background") == theme.CAP
+    assert dashboard._stop_button.master is dashboard._plate
+    assert dashboard._stop_button.cget("background") == theme.CAP
+    assert dashboard.chord_text == "Stop: Ctrl+."
+    caps = [part for part in dashboard._chord_parts
+            if part.master is not dashboard._stop_hint]
+    assert [cap.cget("text") for cap in caps] == ["Ctrl", "."]
+    for cap in caps:
+        rim, lip = cap.master, cap.master.master
+        assert rim.cget("background") == theme.KEY_RIM
+        assert lip.cget("background") == theme.KEY_LIP
+        assert rim.pack_options["pady"] == (0, tkmod._lip_px("kbd"))
+    assert dashboard._rail_width(False) == tkmod.RAIL_PX, "the plate fits 248 px"
+
+
+def test_signature_the_latched_line_is_led_by_the_warning_glyph(dashboard,
+                                                                controller):
+    """"Stopped: every model latched" under the chord, on the plate, led by
+    the warning glyph in SIGNAL (it was a signal square)."""
+    dashboard.open()
+    controller.is_estopped = True
+    dashboard._sync_stop_button()
+    assert dashboard._latched_row.is_packed
+    assert dashboard._latched_row.master is dashboard._plate
+    marks = dashboard._latched_mark.items
+    assert marks and {i[0] for i in marks} == {"line"}
+    assert {i[2]["fill"] for i in marks} == {theme.SIGNAL}
+
+
+def test_signature_glyphs_come_from_the_theme_table():
+    """Rule 6: every glyph is `theme.ICONS`, read, never redrawn here: each
+    parses into strokes on the 20 px grid, and the disclosure turned 90 deg
+    points down."""
+    for name in theme.ICON_NAMES:
+        strokes = tkmod._glyph_strokes(name)
+        assert strokes, name
+        assert all(0 <= v <= 20 for line in strokes for p in line for v in p), name
+    (chevron,) = tkmod._glyph_strokes("disclosure")
+    assert chevron == [(8.0, 5.25), (12.75, 10.0), (8.0, 14.75)]
+    canvas = FakeCanvas()
+    tkmod._draw_glyph(canvas, "disclosure", 0, 0, 20, theme.TEXT, turn=90)
+    points = canvas.items[0][1]
+    assert points[1] < points[3] and points[5] < points[3], "the tip is lowest"
+
+
+def test_signature_a_key_carries_its_glyph_from_tk_8_7(monkeypatch, controller):
+    """A key's glyph is a PhotoImage of `theme.icon_svg` in the legend's
+    colour, from Tk 8.7 (its SVG photo format); below, none - no PNG
+    pipeline, the legend alone."""
+    class Homing(DemoPanel):
+        @property
+        def schema(self):
+            return sch.schema(sch.section("Go", sch.button("Home", "home", role="go"),
+                                          sch.button("Ask", "ask_me")))
+
+    tkmod._ICON_IMAGES.clear()
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Homing=Homing()), "Homing")
+    home, ask = built._elements
+    widget = built._widgets[id(home)]["widget"]
+    image = widget.cget("image")
+    assert isinstance(image, FakePhotoImage) and widget.cget("compound") == "left"
+    assert image.data == theme.icon_svg("home", tkmod._design_px(tkmod.GLYPH_PX),
+                                        theme.CAP)
+    assert built._widgets[id(ask)]["widget"].cget("image") is None, "one per key, only some"
+    built.close()
+    monkeypatch.setattr(tkmod.tk, "TkVersion", 8.6, raising=False)
+    tkmod._ICON_IMAGES.clear()
+    assert tkmod._icon_image("home", theme.TEXT) is None
+    tkmod._ICON_IMAGES.clear()
+
+
+def test_signature_the_disclosure_is_a_small_key_that_sinks_open(tiered):
+    """The disclosure: a 24 px key of the family (CAP face on its 3 px lip,
+    KEY_RIM rim) holding the disclosure glyph, then the schema's words.
+    Open, the key sinks (a SURFACE face, the lip folded) and the glyph
+    turns down."""
+    view, _panel = tiered
+    opener = view._disclosures[2]
+
+    def face():
+        return [i for i in opener.key.items if i[2].get("tags") == ("face",)][0]
+
+    assert opener.key.cget("width") == tkmod._design_px(theme.SPACE[7])
+    assert face()[2]["fill"] == theme.CAP and face()[2]["outline"] == theme.KEY_RIM
+    closed_top = face()[1][1]
+    opener.widget.fire("<Button-1>")
+    assert face()[2]["fill"] == theme.SURFACE
+    drop, _lip = tkmod._key_pads("small", True)
+    assert face()[1][1] == closed_top + drop
+
+
+def test_signature_fields_are_sunk_windows_deep_in_the_tray(tiered):
+    """A field is a sunk window: SURFACE on the sheet, DEEP inside the tray,
+    with the MUTED floor lip; the tray and the pocket carry a 1 px top line."""
+    view, _panel = tiered
+    speed = view._widgets[id(element_of(view, "entry", "Speed:"))]
+    size = view._widgets[id(element_of(view, "entry", "Step size:"))]
+    assert speed["widget"].cget("background") == theme.SURFACE
+    assert size["widget"].cget("background") == theme.DEEP
+    assert speed["ring"].line.cget("background") == theme.MUTED
+    assert tkmod._field_ground(theme.DEEP) == theme.SURFACE
+
+
+def test_signature_a_select_is_a_key(view):
+    """A dropdown is a select: a neutral key (KEY_RIM rim, KEY_LIP lip),
+    ghost-toned while disabled."""
+    source = element_of(view, "dropdown", "Source")
+    entry = view._widgets[id(source)]
+    ring = entry["ring"]
+    assert ring.lip.cget("background") == theme.KEY_LIP
+    assert ring.inner.cget("background") == theme.KEY_RIM
+    view._set_enabled(source, False)
+    assert ring.lip.cget("background") == theme.EDGE_SOFT
+    assert ring.inner.cget("background") == theme.EDGE
+
+
+def test_signature_the_view_names_no_colour_or_font_of_its_own():
+    """Every colour and font in the Tk view comes from `theme`: no hex
+    literal, no named colour, no named font family in `views/tk.py`."""
+    import inspect
+    tree = ast.parse(inspect.getsource(tkmod))
+    named = {"white", "black", "red", "green", "blue", "gray", "grey", "yellow",
+             "orange", "darkgreen", "helvetica", "arial", "courier", "times",
+             "menlo", "monaco", "figtree", "rubik", "archivo"}
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            value = node.value.strip().lower()
+            if re.fullmatch(r"#[0-9a-f]{3,12}", value) or value in named:
+                found.append((node.lineno, node.value))
+    assert found == []
+
+
+def test_signature_the_slider_is_a_fader_cap(dashboard, monkeypatch):
+    """The slider's thumb is a fader cap of the key family - CAP face,
+    KEY_RIM rim, KEY_LIP lip, an ink index line (`theme.FADER`) - and a
+    ghost cap while disabled (BACKGROUND, EDGE, EDGE_SOFT), over a sunk
+    groove in the field ground with a KEY_RIM edge. It was a round ink
+    thumb on a flat track."""
+    class Image:
+        def __init__(self, width=0, height=0, **_kw):
+            self.size, self.colours = (width, height), []
+
+        def put(self, colour, to=None):
+            self.colours.append(colour)
+
+    class Style:
+        def __init__(self):
+            self.elements = {}
+
+        def element_create(self, name, _kind, image, *states, **_kw):
+            self.elements[name] = (image, dict((s[0], s[1]) for s in states))
+
+        def layout(self, *_args):
+            pass
+
+    monkeypatch.setattr(tkmod.tk, "PhotoImage", Image)
+    style = Style()
+    dashboard._style_slider(style)
+    live, states = style.elements["Station.Scale.slider"]
+    ghost = states["disabled"]
+    assert live.size == tuple(tkmod._design_px(v) for v in theme.FADER["cap"])
+    assert {theme.CAP, theme.KEY_RIM, theme.KEY_LIP, theme.TEXT} <= set(live.colours)
+    assert {theme.BACKGROUND, theme.EDGE, theme.EDGE_SOFT} <= set(ghost.colours)
+    trough = style.elements["Station.Scale.trough"][0]
+    assert trough.colours == [theme.KEY_RIM, theme.SURFACE]
+    well = style.elements["StationWell.Scale.trough"][0]
+    assert well.colours == [theme.KEY_RIM, theme.DEEP]
