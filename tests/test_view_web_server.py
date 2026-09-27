@@ -1306,8 +1306,9 @@ def test_quit_asks_first_then_the_page_says_the_station_is_down(station, tmp_pat
         };
       }, quit, asked, afterCancel, quiet, seen);
     """, tmp_path)
+    # Signature (spec "Controls"): Quit is a text key - no face, no lip.
     assert out["quit"] == {"text": "Quit", "name": "Quit the station program",
-                           "cls": "ghost rail-control", "beside": True}, out["quit"]
+                           "cls": "ghost rail-control text-key", "beside": True}, out["quit"]
     assert out["asked"]["text"] == ("Quit the station? This stops every model, closes "
                                     "every port and exits the program."), out["asked"]
     assert out["asked"]["yes"] == "Quit" and out["asked"]["focused"] == "confirm-no"
@@ -2218,20 +2219,34 @@ def test_a_quiet_value_is_not_drawn_in_tier_one_but_is_in_diagnostics(tiered_sta
 
 @needs_browser
 def test_the_disc_reads_stop_and_clear_with_its_ring(tiered_station, tmp_path):
-    """E: A's disc in the rail, always signal red; "Stop" with a 3 px band,
-    "Clear" with a 6 px band once latched, with the rail's sentence and the
-    sheet's headline; back to "Stop" and 3 px when cleared."""
+    """E: A's disc in the rail, always signal red; "Stop" live, "Clear" once
+    latched, with the rail's sentence and the sheet's headline; back to
+    "Stop" when cleared.
+
+    Signature (owner ruling 2026-09-27; theme.STOP): the ring is now an ink
+    COLLAR, 10 px in both states, holding a pale SURFACE socket band;
+    latched, the collar turns SIGNAL, the band floods SKIRT (7.11:1 against
+    the idle band), the key drops `drop_latched` px and the release glyph
+    shows above "Clear". It was a signal band that thickened 3 -> 6 px."""
     view, controller, probe = tiered_station
     out = _browse(view, _TIERED + r"""
       const readDisc = () => page.evaluate(() => {
+        const css = getComputedStyle(document.documentElement);
+        const swatch = (name) => { const s = document.createElement('span');
+          s.style.color = css.getPropertyValue(name).trim(); document.body.appendChild(s);
+          const c = getComputedStyle(s).color; s.remove(); return c; };
         const ring = getComputedStyle(document.getElementById('stop-ring'));
         const disc = getComputedStyle(document.getElementById('full-stop'));
-        const s = document.createElement('span');
-        s.style.color = getComputedStyle(document.documentElement).getPropertyValue('--signal').trim();
-        document.body.appendChild(s);
+        const glyph = document.querySelector('#full-stop .mushroom-glyph');
+        const collar = ring.borderTopColor;
         return { face: document.querySelector('#full-stop .mushroom-face').textContent,
-                 ring: ring.borderTopWidth, ringRed: ring.borderTopColor === getComputedStyle(s).color,
-                 discRed: disc.backgroundColor === getComputedStyle(s).color,
+                 ring: ring.borderTopWidth,
+                 collar: collar === swatch('--text') ? 'ink' : (collar === swatch('--signal') ? 'signal' : collar),
+                 band: ring.backgroundColor === swatch('--surface') ? 'surface'
+                   : (ring.backgroundColor === swatch('--skirt') ? 'skirt' : ring.backgroundColor),
+                 discRed: disc.backgroundColor === swatch('--signal'),
+                 top: parseFloat(disc.top),
+                 glyph: Boolean(glyph.getClientRects().length),
                  latched: !document.getElementById('rail-latched').hidden,
                  headline: !document.getElementById('sheet-headline').hidden };
       });
@@ -2240,18 +2255,21 @@ def test_the_disc_reads_stop_and_clear_with_its_ring(tiered_station, tmp_path):
       await page.click('#full-stop');
       await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Clear');
       await page.mouse.move(5, 5);           // off the disc: its hover tone is not its colour
-      await sleep(300);
+      await sleep(400);
       r.latched = await readDisc();
       await api('/api/clear_estop_all', { confirmed: true });
       await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Stop');
-      await sleep(300);
+      await sleep(400);
       r.cleared = await readDisc();
       return r;
     """, tmp_path)
-    assert out["live"] == {"face": "Stop", "ring": "3px", "ringRed": True, "discRed": True,
-                           "latched": False, "headline": False}, out
-    assert out["latched"] == {"face": "Clear", "ring": "6px", "ringRed": True, "discRed": True,
-                              "latched": True, "headline": True}, out
+    live, latched = dict(out["live"]), dict(out["latched"])
+    drop = latched.pop("top") - live.pop("top")
+    assert live == {"face": "Stop", "ring": "10px", "collar": "ink", "band": "surface",
+                    "discRed": True, "glyph": False, "latched": False, "headline": False}, out
+    assert latched == {"face": "Clear", "ring": "10px", "collar": "signal", "band": "skirt",
+                       "discRed": True, "glyph": True, "latched": True, "headline": True}, out
+    assert drop == 6, out
     assert out["cleared"] == out["live"], out
 
 
@@ -2332,7 +2350,11 @@ _PAGES = r"""
 def test_the_tier_two_disclosure_sits_at_the_foot_of_the_body_above_its_well(tiered_station, tmp_path):
     """K3: the disclosure is not in the entry's head; it is the last thing
     after the tier-1 body, left-aligned with it, it says the schema's
-    phrase, and the well it opens follows it with no gap."""
+    phrase, and the well it opens follows it with no gap.
+
+    Signature (spec "Disclosure"): the tray follows its disclosure key 6 px
+    below, not flush - the key is now a raised part with a lip, and the
+    tray a sunk well; the gap is the one step between them."""
     view, controller, probe = tiered_station
     out = _browse(view, _TIERED + _PAGES + r"""
       await press('Tiered Probe');
@@ -2362,7 +2384,7 @@ def test_the_tier_two_disclosure_sits_at_the_foot_of_the_body_above_its_well(tie
     assert closed["text"] == "Configure", closed
     assert "card-body" in closed["before"] and closed["after"], closed
     assert closed["belowBody"] and abs(closed["leftGap"]) <= 4, closed
-    assert opened["gap"] is not None and abs(opened["gap"]) <= 1, opened
+    assert opened["gap"] is not None and abs(opened["gap"] - 6) <= 1, opened
 
 
 @needs_browser
@@ -3759,7 +3781,7 @@ def test_o16_one_word_per_stop_and_marks_that_differ_by_shape(two_probes, tmp_pa
         const s = document.createElement('p'); s.className = 'status';
         document.querySelector('.card.is-opened').appendChild(s);
         const b = getComputedStyle(s, '::before');
-        const out = { border: b.borderTopWidth, clip: b.clipPath };
+        const out = { border: b.borderTopWidth, clip: b.clipPath, mask: b.maskImage || b.webkitMaskImage };
         s.remove();
         return out;
       });
@@ -3771,7 +3793,10 @@ def test_o16_one_word_per_stop_and_marks_that_differ_by_shape(two_probes, tmp_pa
     assert marks["stopped"]["glyph"] in ("none", "normal", '""'), marks
     assert marks["unconfirmed"]["glyph"] == '"!"', marks
     mark = out["refusalMark"]
-    assert mark["border"] in ("0px", "") and mark["clip"] not in ("none", ""), mark
+    # Signature (rule 6): the refusal's mark is the station's warning glyph,
+    # a mask of the served --icon-warning, where it was a clip-path triangle;
+    # still not a box.
+    assert mark["border"] in ("0px", "") and "data:image/svg+xml" in mark["mask"], mark
 
 
 @needs_browser
@@ -3828,3 +3853,186 @@ def test_con1_a_buttons_own_args_travel_before_the_press_args(mode_station, tmp_
       return true;
     """, tmp_path)
     assert first.nudges == [-1, 1], first.nudges
+
+
+# --------------------------------------------------------------------------
+# Signature (owner ruling 2026-09-27, handoff/tactile3-Signature.md): the key
+# family, the lamp slot, the tripped flag, reduced motion. Drawn and read in
+# a real browser.
+# --------------------------------------------------------------------------
+#: Colours by token name, for comparing computed styles.
+_SWATCH = r"""
+  const swatch = (name) => page.evaluate((n) => {
+    const s = document.createElement('span');
+    s.style.color = getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    document.body.appendChild(s); const c = getComputedStyle(s).color; s.remove(); return c; }, name);
+"""
+
+
+@needs_browser
+def test_signature_a_latching_key_folds_its_lip_and_lights_its_lamp(mode_station, tmp_path):
+    """Spec "Controls": the latching mode key off is a neutral key (4 px
+    lip) with a hollow lamp slot; on ([aria-pressed="true"]) it is the ink
+    key DOWN - the lip folds to 1 px, the face drops 3 px (a top border) -
+    with its slot lit CAP; its height never changes. A neutral key pressed
+    (:active, held with the mouse) folds the same way."""
+    view, controller, first, second = mode_station
+    out = _browse(view, _RAIL + _SWATCH + r"""
+      await page.click('#model-nav [data-model="Stepper Probe"]');
+      await sleep(300);
+      const read = () => page.evaluate(() => {
+        const b = document.querySelector('.card.is-opened .toggle');
+        const s = getComputedStyle(b);
+        const lamp = getComputedStyle(b.querySelector('.toggle-lamp'));
+        return { pressed: b.getAttribute('aria-pressed'), lip: s.borderBottomWidth,
+                 drop: s.borderTopWidth, h: b.getBoundingClientRect().height,
+                 face: s.backgroundColor, lamp: lamp.backgroundColor,
+                 lampW: lamp.width, lampH: lamp.height };
+      });
+      const r = { off: await read() };
+      await page.click('.card.is-opened .toggle');
+      await until(() => document.querySelector('.card.is-opened .toggle').getAttribute('aria-pressed') === 'true');
+      await page.mouse.move(5, 5);
+      await sleep(400);
+      r.on = await read();
+      r.ink = await swatch('--text'); r.cap = await swatch('--cap'); r.lampOff = await swatch('--lamp-off');
+      // A neutral key held down: find one that is enabled and not a toggle.
+      const box = await page.evaluate(() => {
+        const b = document.getElementById('log-toggle');
+        const q = b.getBoundingClientRect();
+        return [q.left + q.width / 2, q.top + q.height / 2, q.height,
+                getComputedStyle(b).borderBottomWidth];
+      });
+      await page.mouse.move(box[0], box[1]);
+      await page.mouse.down();
+      await sleep(400);
+      r.held = await page.evaluate(() => { const b = document.getElementById('log-toggle');
+        const s = getComputedStyle(b);
+        return { lip: s.borderBottomWidth, drop: s.borderTopWidth, h: b.getBoundingClientRect().height }; });
+      await page.mouse.up();
+      r.up = { h: box[2], lip: box[3] };
+      return r;
+    """, tmp_path)
+    off, on = out["off"], out["on"]
+    assert off["pressed"] == "false" and off["lip"] == "4px" and off["drop"] == "0px", out
+    assert off["lamp"] == out["lampOff"] and (off["lampW"], off["lampH"]) == ("6px", "13px"), out
+    assert on["pressed"] == "true" and on["lip"] == "1px" and on["drop"] == "3px", out
+    assert on["face"] == out["ink"] and on["lamp"] == out["cap"], out
+    assert on["h"] == off["h"], "the key's height changed when it went down"
+    assert out["up"]["lip"] == "4px", out
+    assert out["held"] == {"lip": "1px", "drop": "3px", "h": out["up"]["h"]}, out
+
+
+@needs_browser
+def test_signature_the_rail_lamp_marks_the_shown_page_and_an_unconfirmed_model(station, tmp_path):
+    """Spec "Rail" and rule 5: every rail item keeps a lamp slot's room; the
+    shown page's lamp is lit ink (the others hidden); a model whose stop did
+    not confirm has its lamp lit SIGNAL - never trace."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, _SWATCH + r"""
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      const lamps = () => page.evaluate(() => Array.from(document.querySelectorAll('#model-nav .model-link'))
+        .map((l) => { const b = getComputedStyle(l, '::before'); const m = l.querySelector('.nav-mark');
+          const shown = m && !m.hidden && m.getClientRects().length;
+          return { name: l.textContent.replace(/stopped|did not confirm|energized/g, '').trim(),
+                   lamp: b.visibility === 'visible' ? b.backgroundColor : '',
+                   w: b.width, mark: shown ? getComputedStyle(m).backgroundColor : '' }; }));
+      const r = { idle: await lamps() };
+      await page.click('#full-stop');
+      await until(() => document.querySelector('.card.is-unconfirmed'));
+      await sleep(300);
+      r.unconfirmed = await lamps();
+      r.ink = await swatch('--lamp-on'); r.signal = await swatch('--lamp-unconfirmed');
+      r.trace = await swatch('--trace');
+      return r;
+    """, tmp_path)
+    overview, model = out["idle"]
+    assert overview["name"] == "Overview" and overview["lamp"] == out["ink"], out
+    assert model["lamp"] == "" and model["w"] == "6px" and model["mark"] == "", out
+    model = out["unconfirmed"][1]
+    assert model["mark"] == out["signal"], out
+    assert out["trace"] not in {x["lamp"] for x in out["unconfirmed"]} | {x["mark"] for x in out["unconfirmed"]}
+
+
+@needs_browser
+def test_signature_the_flag_drops_once_per_unconfirmed_episode(station, tmp_path):
+    """Spec "Unconfirmed" and "Motion": the tripped-flag window drops into
+    its frame once, when the mark appears - not again when the entry is
+    shown again on another page (display none -> shown restarts a CSS
+    animation, which is why the client keys it on .is-dropping) - and once
+    more for the next episode, after a clear."""
+    view, controller, probe = station
+    probe.stop_confirms = False
+    out = _browse(view, r"""
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      await page.evaluate(() => { window.drops = 0;
+        document.addEventListener('animationstart', (e) => {
+          if (e.animationName === 'flag-drop') window.drops += 1; }, true); });
+      const drops = () => page.evaluate(() => window.drops);
+      const r = {};
+      await page.click('#full-stop');
+      await until(() => document.querySelector('.card.is-unconfirmed'));
+      await sleep(600);
+      r.first = await drops();
+      r.flag = await page.evaluate(() => { const f = document.querySelector('.card.is-unconfirmed .flag-window');
+        const b = f.getBoundingClientRect(); return [Math.round(b.width), Math.round(b.height),
+          f.classList.contains('is-dropping')]; });
+      await page.click('#model-nav [data-model="Fake Probe"]');
+      await sleep(400);
+      await page.click('#model-nav .overview-link');
+      await sleep(400);
+      await page.click('#model-nav [data-model="Fake Probe"]');
+      await sleep(600);
+      r.reshown = await drops();
+      await api('/api/clear_estop_all', { confirmed: true });
+      await until(() => !document.querySelector('.card.is-unconfirmed'));
+      await sleep(300);
+      await page.click('#full-stop');
+      await until(() => document.querySelector('.card.is-unconfirmed'));
+      await sleep(600);
+      r.second = await drops();
+      return r;
+    """, tmp_path)
+    assert out["first"] == 1 and out["flag"] == [30, 20, False], out
+    assert out["reshown"] == 1, out
+    assert out["second"] == 2, out
+
+
+@needs_browser
+def test_signature_reduced_motion_zeroes_every_duration_and_keeps_the_states(tiered_station, tmp_path):
+    """Spec "Motion": with prefers-reduced-motion every transition and
+    animation is 0 s, and the latched stop is still latched - the collar
+    red, the key down - because those are states, not motion."""
+    view, controller, probe = tiered_station
+    out = _browse(view, r"""
+      await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+      await sleep(200);
+      await page.click('#full-stop');
+      await until(() => document.querySelector('#full-stop .mushroom-face').textContent === 'Clear');
+      await page.mouse.move(5, 5);
+      return page.evaluate(() => {
+        const moving = [];
+        for (const el of document.querySelectorAll('body *')) {
+          for (const pseudo of [null, '::before', '::after']) {
+            const s = getComputedStyle(el, pseudo);
+            const d = (s.transitionDuration + ',' + s.animationDuration).split(',')
+              .map((x) => parseFloat(x)).filter((x) => x > 0);
+            if (d.length) moving.push(el.tagName + '.' + el.className + (pseudo || ''));
+          }
+        }
+        const ring = getComputedStyle(document.getElementById('stop-ring'));
+        const sig = document.createElement('span');
+        sig.style.color = getComputedStyle(document.documentElement).getPropertyValue('--signal').trim();
+        document.body.appendChild(sig);
+        return { moving: moving.slice(0, 10),
+                 collarRed: ring.borderTopColor === getComputedStyle(sig).color,
+                 down: document.getElementById('full-stop').classList.contains('is-latched') };
+      });
+    """, tmp_path)
+    assert out["moving"] == [], out
+    assert out["collarRed"] and out["down"], out

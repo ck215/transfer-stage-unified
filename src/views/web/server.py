@@ -37,7 +37,7 @@ import sys
 import threading
 import time
 import webbrowser
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import schema as sch
 from events import events
@@ -52,6 +52,20 @@ SOURCE = "Web"
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 _LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"})
+
+
+def icon_css():
+    """The station's glyph set as CSS (Signature rule 6): one custom
+    property per glyph, `--icon-<name>`, holding the glyph as an SVG
+    mask image, built from `theme.icon_svg` - so `theme.ICONS` stays the
+    one path table for all three views. The page paints a glyph by masking
+    a box whose background is the glyph's colour (`.glyph`), which works
+    for a pseudo-element as well as a span. The stroke is black only
+    because a mask reads alpha; it is never a colour on the page."""
+    lines = [f'--icon-{name}: url("data:image/svg+xml,'
+             f'{quote(theme.icon_svg(name, 20, "black"), safe="")}");'
+             for name in theme.ICON_NAMES]
+    return ":root {\n  " + "\n  ".join(lines) + "\n}\n"
 
 
 class ApiHandler(http.server.BaseHTTPRequestHandler):
@@ -154,7 +168,7 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
 
         if route == "/api/theme.css":
             return self._send_bytes(200, "text/css; charset=utf-8",
-                                    theme.css_variables().encode("utf-8"))
+                                    (theme.css_variables() + icon_css()).encode("utf-8"))
 
         if route == "/api/theme.json":
             # The two theme rules that are words, not colours: which readonly
