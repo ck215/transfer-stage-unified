@@ -135,9 +135,12 @@ class FakeProbe(Panel):
         snapshot.update({"age": 0.0, "is_estopped": self.is_estopped,
                          "stop_confirmed": self.stop_confirmed if self.is_estopped else None,
                          "is_active": self.is_active,
-                         "devices": dict(self.devices_state),
-                         "values": dict(snapshot["values"],
-                                        output_root=self.output_root or "")})
+                         "devices": dict(self.devices_state)})
+        # CON-5: where every real model publishes it (`Model.state`): at the
+        # top level of its state, not among the values. The fake used to put
+        # it in `values`, which hid a 409 on the real Red Percent's Save.
+        if self.output_root:
+            snapshot["output_root"] = str(self.output_root)
         return snapshot
 
     # -- commands --------------------------------------------------------
@@ -3015,6 +3018,7 @@ class ModeProbe(Panel):
         self.is_active = False
         self.fault = ""
         self.extended = 0
+        self.nudges = []
         self.steps = 0
         self.step_seconds = 0.0
         self.position_x = "0"
@@ -3063,6 +3067,9 @@ class ModeProbe(Panel):
                            disabled_when=("latched", "fault")),
                 sch.button("Step", "step", inputs=("x_dist", "full_speed"), role="go",
                            disabled_when=("manual", "latched")),
+                # CON-1: two buttons, one command, told apart by fixed args.
+                sch.button("Nudge -", "nudge", args=(-1,)),
+                sch.button("Nudge +", "nudge", args=(1,)),
                 {"type": "internal", "command": "extend_idle", "writable": False,
                  "role": "neutral"}),
             sch.section("Configuration",
@@ -3096,6 +3103,10 @@ class ModeProbe(Panel):
         self.steps += 1
         time.sleep(self.step_seconds)
         return "stepped"
+
+    def nudge(self, direction):
+        self.nudges.append(direction)
+        return direction
 
     def extend_idle(self):
         self.extended += 1
@@ -3797,3 +3808,23 @@ def test_theme_json_serves_the_event_titles_the_page_keys_on(station):
     assert body["event_titles"] == {"stop_not_confirmed": events.STOP_NOT_CONFIRMED,
                                     "idle_timeout_soon": events.IDLE_TIMEOUT_SOON,
                                     "browser_silent": events.BROWSER_SILENT}
+
+
+@needs_browser
+def test_con1_a_buttons_own_args_travel_before_the_press_args(mode_station, tmp_path):
+    """CON-1 (contract audit, S1): the page dropped a button's schema `args`,
+    so the real Rotator's "Move -" moved +5. `views.base` sends
+    `element.args + args`; so does the page now."""
+    view, controller, first, second = mode_station
+    _browse(view, _RAIL + r"""
+      await sleep(400);
+      const press = (words) => page.evaluate((w) => Array.from(document.querySelectorAll('#cards .card'))
+        .find((c) => c.querySelector('.card-title').textContent === 'Stepper Probe')
+        .querySelectorAll('button').forEach((b) => { if (b.textContent === w) b.click(); }), words);
+      await press('Nudge -');
+      await sleep(500);
+      await press('Nudge +');
+      await sleep(500);
+      return true;
+    """, tmp_path)
+    assert first.nudges == [-1, 1], first.nudges

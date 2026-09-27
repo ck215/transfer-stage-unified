@@ -509,12 +509,16 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         return None
 
     def _output_root(self, name):
+        # CON-5: every model publishes `output_root` at the top level of its
+        # state (`Model.state`); `values` and the launch config are the
+        # older places, still read after it.
         try:
-            values = self.controller.state(name).get("values", {})
+            state = self.controller.state(name) or {}
         except KeyError:
-            values = {}
+            state = {}
+        values = state.get("values", {}) or {}
         config = self.controller.config(name) or {}
-        for source in (values, config):
+        for source in (state, values, config):
             for key in ("output_root", "run_dir"):
                 if source.get(key):
                     return str(source[key])

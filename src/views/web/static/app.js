@@ -1995,9 +1995,13 @@ class PanelCard {
   }
 
   async run(element, args) {
+    // CON-1: the element's own fixed `args` go first, then the press's -
+    // `views.base.PanelView._run`. Two buttons that share a command ("Move -"
+    // and "Move +") differ only by these; dropping them moved the wrong way.
+    const sent = [...(element.args || []), ...(args || [])];
     // O10 (WDG8-2): one press, one command. A stop-class command is never
     // held back (a second stop is harmless and must never wait).
-    const guarded = !isStopCommand(element, args);
+    const guarded = !isStopCommand(element, sent);
     if (guarded && this.inFlight.has(element)) return { status: 'busy' };
     const widget = this.widgetFor(element);
     if (guarded) {
@@ -2006,7 +2010,7 @@ class PanelCard {
     }
     let result;
     try {
-      result = await this.call(element.command, this.gatherInputs(), args || []);
+      result = await this.call(element.command, this.gatherInputs(), sent);
       // The page's own confirmation, not window.confirm: it defaults to
       // Cancel, and it never blocks the page's stop the way a native
       // dialog blocks every script on it (F17, HC-2).
