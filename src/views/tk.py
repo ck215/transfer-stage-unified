@@ -48,7 +48,8 @@ from tkinter import font as tkfont
 import schema as sch
 from events import events
 from views import theme
-from views.base import Dashboard, PanelView, stop_words
+from views import base as view_base
+from views.base import Dashboard, PanelView, event_line, join_names, stop_words
 
 SOURCE = "TkView"
 
@@ -140,14 +141,35 @@ LATCHED_LINE = "Stopped: every model latched"
 STOPPED_HEADLINE = "Every model is stopped."
 STOPPED_NEXT = "Clear the stop on the rail to continue."
 UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
-#: The rail's per-model marks (round 7, L1): an ink square before a latched
-#: model's name, a signal square before one that did not confirm; the
-#: words are the mark's tooltip, so colour never carries it alone.
-RAIL_MARK_WORDS = {"latched": "Stopped", "unconfirmed": "Did not confirm the stop"}
+#: A model whose disable failed (`is_faulted`, O4): the same hazard as a
+#: stop that did not confirm, marked the same way at its entry, with the
+#: model's own fault reason under the words.
+FAULTED_LINE = "Disable failed. Treat as live."
+#: The rail's per-model marks (round 7, L1; O4, O16): an ink square before
+#: a latched model's name; a signal square with a "!" before one that did
+#: not confirm or whose disable failed; the words are the line's tooltip, so
+#: colour never carries it alone.
+RAIL_MARK_WORDS = {"latched": "Stopped", "unconfirmed": "Did not confirm the stop",
+                   "faulted": "Disable failed", "energized": "Energized"}
+RAIL_ALARM_GLYPH = "!"
+#: A model's own stop, the small switch in its Diagnostics (O16, PM8-8): one
+#: word per thing. The disc is "Stop" / "Clear"; this switch is "Stop this
+#: model" / "Stopped", whatever the schema's state words.
+SWITCH_WORDS = {False: "Stop this model", True: "Stopped"}
 #: The event title the views key on for a stop that did not confirm; its
 #: line leaves the band and the tray when the latch opens (L2).
 STOP_NOT_CONFIRMED = "Stop Not Confirmed"
 STATION_TITLE = "Transfer stage"
+#: The idle countdown (Tier N): one line per probe under the disc while its
+#: `idle_remaining` is inside the warning window, rendered from state every
+#: tick (no local timer that can drift), with Extend. The window is the
+#: model's `idle_warn_seconds`; this is the fallback when a state has none.
+IDLE_WARN_SECONDS = 60.0
+IDLE_LINE = "{name} powers down in {seconds} s."
+EXTEND_WORD = "Extend"
+#: The event the countdown line replaces as the live word (O13): its tray
+#: line is history only, never the folded latest line.
+IDLE_SOON_TITLE = "Idle Timeout Soon"
 #: Titled confirmations whose buttons name what they do (L14, TK7-10). The
 #: Clear question's words are core's and name any model that did not
 #: confirm; the answer that keeps things as they are is the default.
@@ -188,15 +210,11 @@ WELL_COMBO_STYLE = "Well.TCombobox"
 MIN_TARGET_PX = 24
 COMMAND_PX = 36
 
-#: Why a command is greyed out (L3): the gate word a schema names in
-#: `disabled_when` / `enabled_when`, said as what the operator can do about
-#: it. Any other word is said as itself, in sentence case.
-GATE_WORDS = {"latched": "Stopped: clear the stop first",
-              "manual": "Not in manual mode",
-              "running": "A run is in progress",
-              "no_region": "Set a capture region first",
-              "disconnected": "Not connected",
-              "moving": "Moving"}
+#: Why a command is greyed out (L3) is `views.base.gate_reason` (O3): one
+#: table for three views, read in both directions from the element's own
+#: gate lists, so Step in manual mode says "In manual mode".
+LATCHED_REASON = view_base.GATE_WORDS["latched"][0]
+FAULT_REASON = view_base.GATE_WORDS["fault"][0]
 
 #: A slider's keyboard (L6): an arrow moves 1 % of the travel (at least
 #: one unit), Page Up / Page Down 10 %; Home and End do nothing - one stray
@@ -234,15 +252,12 @@ TRAY_HISTORY = 200
 
 def _event_line(event):
     """One event as the band and the tray say it (L11): the severity word,
-    the title in sentence case, then the message - no bracketed source, no
-    Title Case, no SHOUTING. The message is the model's own sentence."""
+    then `views.base.event_line` - the title in sentence case, a colon, the
+    message, the repeat count - so the three views word an event alike
+    (ARCH-3). No bracketed source, no Title Case, no SHOUTING. The word stays
+    because the mark's colour must not carry the severity alone (F14)."""
     word = SEVERITY_WORD.get(getattr(event, "severity", ""), "")
-    title = _label(getattr(event, "title", "") or "")
-    message = str(getattr(event, "message", "") or "").strip()
-    count = getattr(event, "count", 1) or 1
-    line = f"{title}. {message}" if message else f"{title}."
-    if count > 1:
-        line += f" (x{count})"
+    line = event_line(event)
     return f"{word}: {line}" if word else line
 
 #: True once the dashboard has found itself on Aqua. Tk there assumes 96 dpi
@@ -460,11 +475,6 @@ def _field_pady():
     ring and its underline at least `MIN_TARGET_PX` tall (L4, TK7-6)."""
     chrome = 2 * FOCUS_PX + UNDERLINE_PX
     return max(1, math.ceil((MIN_TARGET_PX - _line_px() - chrome) / 2))
-
-
-def _gate_word(word):
-    word = str(word or "")
-    return GATE_WORDS.get(word) or _label(word.replace("_", " "))
 
 
 def _lamp_px():
@@ -1510,6 +1520,7 @@ class TkPanelView(PanelView):
         self._sheet = sheet
         self._is_opened = sheet is None     # a page of its own is the one opened
         self._is_unconfirmed = False
+        self._fault = ""                # the model's fault reason (O4)
         self._tiers = {}                # tier -> the frame its sections go in
         self._tier_text = {}            # tier -> its disclosure's words
         self._tier_count = {}           # tier -> how many sections it holds
@@ -1556,17 +1567,24 @@ class TkPanelView(PanelView):
             self._head.bind(sequence, self._on_head_pressed)
         self._head.bind("<FocusIn>", lambda _e: self._paint_head_ring(True))
         self._head.bind("<FocusOut>", lambda _e: self._paint_head_ring(False))
-        # "Stop not confirmed. Treat as live." - on its own line under the
-        # head, packed only while it is so (never squeezed beside the name).
+        # "Stop not confirmed. Treat as live." (or, for a failed disable,
+        # "Disable failed. Treat as live." and the fault's reason under it,
+        # O4) - on its own line under the head, packed only while it is so
+        # (never squeezed beside the name).
         self._mark_row = tk.Frame(self.frame, background=_page())
         size = _lamp_px()
         self._mark = tk.Canvas(self._mark_row, width=size, height=size,
                                background=_page(), highlightthickness=0)
-        self._mark.pack(side="left", padx=(0, SPACE[2]))
-        self._mark_text = tk.Label(self._mark_row, text=UNCONFIRMED_LINE,
-                                   font=_font(bold=True), background=_page(),
-                                   foreground=theme.TEXT)
-        self._mark_text.pack(side="left")
+        self._mark.pack(side="left", anchor="n", padx=(0, SPACE[2]))
+        mark_words = tk.Frame(self._mark_row, background=_page())
+        mark_words.pack(side="left", fill="x", expand=True)
+        self._mark_text = tk.Label(mark_words, text=UNCONFIRMED_LINE,
+                                   font=_font(bold=True), anchor="w",
+                                   background=_page(), foreground=theme.TEXT)
+        self._mark_text.pack(side="top", anchor="w")
+        self._mark_reason = tk.Label(mark_words, text="", font=_font(), anchor="w",
+                                     justify="left", wraplength=640,
+                                     background=_page(), foreground=theme.TEXT)
         # What is wrong with the entry as a whole (a lost link), in ink under
         # the head; packed only while there is something to say.
         self._health = tk.Label(self.frame, text="", anchor="w", justify="left",
@@ -3451,7 +3469,7 @@ class TkPanelView(PanelView):
             switch = _Switch(parent, lambda el=element: self._on_switch_pressed(el),
                              background=_bg(parent))
             place(switch.canvas, "mark")
-            words = tk.Label(parent, text=_label(element.get("false_text", "")),
+            words = tk.Label(parent, text=SWITCH_WORDS[False],
                              font=_font(), background=_bg(parent),
                              foreground=theme.TEXT)
             place(words, "mark")
@@ -3745,7 +3763,9 @@ class TkPanelView(PanelView):
                 if window.winfo_exists():
                     window.deiconify()
                     window.lift()
-                    window.focus_set()
+                    (entry.get("feed") or window).focus_set()
+                    if entry.get("feed_ring") is not None:
+                        entry["feed_ring"].paint(True)
                     return window
             except Exception:
                 pass
@@ -3769,8 +3789,18 @@ class TkPanelView(PanelView):
         body.pack(fill="both", expand=True, padx=SPACE[4], pady=SPACE[4])
         scrollbar = ttk.Scrollbar(body, orient="vertical")
         scrollbar.pack(side="right", fill="y")
-        feed = self._log_text(body, lines=12)
-        feed.pack(side="left", fill="both", expand=True)
+        # The feed takes the focus on open, in the ring every focusable
+        # control wears (O16): the window used to take it with no mark.
+        feed_ring = _Ring(body, _page(), border=_page())
+        feed_ring.outer.pack(side="left", fill="both", expand=True)
+        feed = self._log_text(feed_ring.inner, lines=12)
+        feed.pack(fill="both", expand=True)
+        try:
+            feed.configure(takefocus=1)
+        except Exception:
+            pass
+        feed.bind("<FocusIn>", lambda _e, r=feed_ring: r.paint(True))
+        feed.bind("<FocusOut>", lambda _e, r=feed_ring: r.paint(False))
         try:
             feed.configure(yscrollcommand=scrollbar.set)
             scrollbar.configure(command=feed.yview)
@@ -3783,7 +3813,8 @@ class TkPanelView(PanelView):
         except Exception:
             pass
         self._place_log_window(window, element)
-        entry.update(window=window, feed=feed, last_text=None, closer=closer)
+        entry.update(window=window, feed=feed, last_text=None, closer=closer,
+                     feed_ring=feed_ring)
         self._refresh_log(element, [])
         events.debug("Log Window Opened", f"{self.name}/{label}", source=SOURCE)
         # Filled now rather than on the next tick.
@@ -3791,9 +3822,10 @@ class TkPanelView(PanelView):
         if data.is_ok:
             self._refresh_log(element, data.value)
         try:
-            window.focus_set()
+            feed.focus_set()
         except Exception:
             pass
+        feed_ring.paint(True)       # Tk sends FocusIn only once it is mapped
         return window
 
     def _log_title(self, element):
@@ -4106,7 +4138,7 @@ class TkPanelView(PanelView):
         if entry.get("switch") is not None:
             entry["switch"].set_on(is_on)
             words = entry.get("words")
-            text = _label(element["true_text"] if is_on else element["false_text"])
+            text = SWITCH_WORDS[bool(is_on)]
             tooltip = entry.get("tooltip")
             if tooltip is not None:
                 tooltip.text = str(element.get("tooltip_on" if is_on else "tooltip")
@@ -4172,6 +4204,8 @@ class TkPanelView(PanelView):
         entry = self._entry_for(element)
         if not entry:
             return
+        if is_enabled and self._held_by_fault(element):
+            is_enabled = False
         was_enabled = entry.get("is_enabled", True)
         entry["is_enabled"] = bool(is_enabled)
         widget = entry.get("widget")
@@ -4205,28 +4239,36 @@ class TkPanelView(PanelView):
                          f" -> {'enabled' if is_enabled else 'disabled'}",
                          source=SOURCE)
 
+    @staticmethod
+    def _is_mode_toggle(element):
+        return element.get("type") == "toggle" and element.get("command") == "set_mode"
+
+    def _held_by_fault(self, element):
+        """A faulted model's mode toggles are drawn disabled (O4): in FAULT
+        both read "Enter ... mode", the face of a safe, unpowered probe, and
+        a press would energize coils whose last disable never landed. The
+        stop disc and the model's own stop are never held."""
+        return (self._is_mode_toggle(element)
+                and bool((self._last_state or {}).get("is_faulted")))
+
     def _gate_reason(self, element):
         """Why `element` is greyed out now (L3), from the gate it failed:
-        the stop latch first, then an `enabled_by` value that is off, then
-        the mode word the schema names. "" when nothing says."""
+        the stop latch first, a fault holding the mode toggles (O4), an
+        `enabled_by` value that is off, then the mode, in
+        `views.base.gate_reason`'s words (O3). "" when nothing says."""
         state = self._last_state or {}
         mode = state.get("mode") or ""
         values = state.get("values") or {}
         if mode == "latched":
-            return GATE_WORDS["latched"]
+            return LATCHED_REASON
+        if self._held_by_fault(element):
+            return FAULT_REASON
         by = element.get("enabled_by")
         if by and not values.get(by):
             names = [e.get("text") for e in self._elements
                      if e.get("model_attr") == by and e is not element]
-            return f"{_label(names[0])} is off" if names else _gate_word(by)
-        if mode in (element.get("disabled_when") or ()):
-            return _gate_word(mode)
-        enabled = element.get("enabled_when") or ()
-        if enabled and mode not in enabled:
-            if "manual" in enabled:
-                return GATE_WORDS["manual"]
-            return _gate_word(mode) if mode else ""
-        return ""
+            return f"{_label(names[0])} is off" if names else _label(by.replace("_", " "))
+        return view_base.gate_reason(element, mode)
 
     def _say_why(self, element, entry, is_enabled):
         """A disabled command carries its reason as hover text; a `go`
@@ -4301,7 +4343,7 @@ class TkPanelView(PanelView):
         else:
             title = self.name
         heading = theme.MUTED if is_stale and not lost else theme.TEXT
-        is_alarm = bool(lost) or self._is_unconfirmed
+        is_alarm = bool(lost) or self._is_unconfirmed or bool(self._fault)
         try:
             self._title.configure(foreground=heading, text=title)
             self._rule.configure(background=theme.SIGNAL if is_alarm
@@ -4332,13 +4374,29 @@ class TkPanelView(PanelView):
         """This model's stop did not confirm (E): a signal head rule and the
         words "Stop not confirmed. Treat as live." at its own entry, for as
         long as the latch it describes."""
-        is_unconfirmed = bool(is_unconfirmed)
-        if is_unconfirmed == self._is_unconfirmed:
+        self.set_hazard(is_unconfirmed, self._fault)
+
+    def set_hazard(self, is_unconfirmed, fault=""):
+        """The two ways a model can be live while it looks safe, marked the
+        same way at its own entry (E, O4): a stop that did not confirm, and
+        a disable that failed (`is_faulted`). A signal head rule, the words,
+        and for a fault the model's own reason under them. A stop that did
+        not confirm keeps its words; the reason still shows."""
+        is_unconfirmed, fault = bool(is_unconfirmed), str(fault or "").strip()
+        if (is_unconfirmed, fault) == (self._is_unconfirmed, self._fault):
             return
-        self._is_unconfirmed = is_unconfirmed
+        self._is_unconfirmed, self._fault = is_unconfirmed, fault
+        is_marked = is_unconfirmed or bool(fault)
         try:
             self._mark.delete("all")
-            if is_unconfirmed:
+            self._mark_text.configure(text=UNCONFIRMED_LINE if is_unconfirmed
+                                      else FAULTED_LINE)
+            self._mark_reason.configure(text=fault)
+            if fault:
+                self._mark_reason.pack(side="top", anchor="w", fill="x")
+            else:
+                self._mark_reason.pack_forget()
+            if is_marked:
                 size = _lamp_px()
                 self._mark.create_rectangle(2, 2, size - 2, size - 2,
                                             fill=theme.SIGNAL, outline=theme.SIGNAL)
@@ -4349,6 +4407,8 @@ class TkPanelView(PanelView):
         except Exception as exc:
             events.debug("Unconfirmed Mark Failed", str(exc), source=SOURCE,
                          exception=exc)
+        events.debug("Entry Hazard Changed", f"{self.name} unconfirmed="
+                     f"{is_unconfirmed} faulted={bool(fault)}", source=SOURCE)
         self._paint_health()
 
     def _confirm(self, prompt):
@@ -4491,8 +4551,11 @@ class TkPanelView(PanelView):
         if self._panel is None:
             # The model's own word on its stop (L1): a latch whose hardware
             # did not confirm is marked here however it was set - the disc,
-            # the chord, the gamepad or the model's own switch.
-            self.set_unconfirmed(self._last_state.get("stop_confirmed") is False)
+            # the chord, the gamepad or the model's own switch. A failed
+            # disable is marked the same way (O4).
+            state = self._last_state
+            self.set_hazard(state.get("stop_confirmed") is False,
+                            state.get("fault") if state.get("is_faulted") else "")
         devices = self._last_state.get("devices") or {}
         self._set_lost([name for name, status in sorted(devices.items())
                         if str(status) == "lost"])
@@ -4722,6 +4785,11 @@ class TkDashboard(Dashboard):
         self._rail_items = {}        # name -> (ring, label)
         self._stop_seen = None       # (latched, unconfirmed, every) last drawn
         self._rail_marks = {}        # name -> (Canvas, _Tooltip) before its line
+        self._faulted = ()           # models whose disable failed (O4), station order
+        self._idle_lines = {}        # name -> the countdown line's widgets (Tier N)
+        self._energized = ()         # `state()["energized"]` (O6), station order
+        self._energy_marks = {}      # name -> the Canvas for its energized ring
+        self._confirm_words = None   # the dialog words for the next `_confirm`
         self._tray_events = []       # the tray's warnings and errors, oldest first
         self._is_tray_open = False
         self._tray_count = 0         # lines in the tray's history
@@ -4783,7 +4851,10 @@ class TkDashboard(Dashboard):
         self.root.bind("<FocusIn>", self._on_window_focus)
         self.root.bind("<FocusOut>", self._on_window_focus)
         self.root.bind("<Configure>", self._on_window_resized, add="+")
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        # The window's close button asks the Quit question (O9, PM8-6). The
+        # OS's forced Quit (`::tk::mac::Quit`) is left as it is: P3 is the
+        # owner's call.
+        self.root.protocol("WM_DELETE_WINDOW", self._on_quit_clicked)
         self._hook_os_quit()
 
     # -- construction ------------------------------------------------------
@@ -5044,6 +5115,10 @@ class TkDashboard(Dashboard):
                                       wraplength=RAIL_PX - 3 * SPACE[5],
                                       background=theme.SURFACE, foreground=theme.TEXT)
         self._station_line.pack(side="left", fill="x")
+        # The idle countdown (Tier N): one line per probe about to power
+        # down, with Extend; packed under the disc's lines, above the model
+        # list, only while there is one. Never a modal, never over the disc.
+        self._idle_box = tk.Frame(rail, background=theme.SURFACE)
         # The model list is CREATED before the foot, so Tab reaches the
         # models before Setup and Quit, as the eye does (TK7-7); the foot is
         # PACKED first, so a long list at 28 pt gives way before it does.
@@ -5071,7 +5146,9 @@ class TkDashboard(Dashboard):
             self._rail.pack_propagate(False)
         except Exception:
             pass
-        for label in (self._sim_line, self._latched_line, self._station_line):
+        labels = [self._sim_line, self._latched_line, self._station_line]
+        labels += [line["text"] for line in self._idle_lines.values()]
+        for label in labels:
             try:
                 label.configure(wraplength=width - 3 * SPACE[5])
             except Exception:
@@ -5092,6 +5169,11 @@ class TkDashboard(Dashboard):
                              background=theme.SURFACE, highlightthickness=0)
             mark.pack(side="left", padx=(SPACE[3], 0))
             self._rail_marks[mark_name] = (mark, _Tooltip(label))
+            # The energized ring (O6) sits after the stop mark, in ink.
+            energy = tk.Canvas(ring.inner, width=size, height=size,
+                               background=theme.SURFACE, highlightthickness=0)
+            energy.pack(side="left", padx=(SPACE[1], 0))
+            self._energy_marks[mark_name] = energy
         label.pack(fill="x")
         for sequence in ("<Button-1>", "<Return>", "<space>"):
             label.bind(sequence, lambda _e: on_press())
@@ -5114,6 +5196,7 @@ class TkDashboard(Dashboard):
                 pass
         self._rail_items = {}
         self._rail_marks = {}
+        self._energy_marks = {}
         self._overview_item = None
         names = [n for n in self._panels if n != self.SETUP_TAB]
         if names:
@@ -5145,9 +5228,10 @@ class TkDashboard(Dashboard):
                 label.configure(background=ground, font=_font(bold=is_current))
                 mark = self._rail_marks.get(name) if name else None
                 if mark is not None:
-                    # The mark sits in the line's own ground, lit or not.
+                    # The marks sit in the line's own ground, lit or not.
                     mark[0].configure(background=ground)
                     mark[0].master.configure(background=ground)
+                    self._energy_marks[name].configure(background=ground)
             except Exception:
                 pass
         self._setup_press.set_active(not on_sheet)
@@ -5162,27 +5246,53 @@ class TkDashboard(Dashboard):
 
     def _on_rail_close(self, name):
         """The middle button on a model's line closes it (the tab gesture,
-        VIEW-TKINTER-18): `Controller.remove` stops and destructs it; the
-        Models menu reopens it."""
+        VIEW-TKINTER-18), after the same question "Close this model…" asks
+        (O9, PM8-5): `Controller.remove` stops and destructs it; the Models
+        menu reopens it."""
         events.debug("Rail Close Requested", name, source=SOURCE)
-        self.close_model(name)
+        self._confirm_close_model(name)
         return "break"
 
     def _confirm_close_model(self, name):
-        """"Close this model…" (L13): it stops and disconnects the model, so
-        it asks first, in words that say so; the Models menu reopens it."""
+        """Every close gesture on a model - "Close this model…" (L13), the
+        rail's middle button, the Models menu (O9): it stops and disconnects
+        the model, so it asks first, in words that say so; the Models menu
+        reopens it. -> True when the model was closed."""
         prompt = (f"Close {name}?\n\nIt stops and disconnects. You can reopen "
                   "it from the Models menu.")
         if _confirm(self.root, prompt, title=f"Close {name}",
                     yes_text=f"Close {name}", no_text="Keep it open"):
             events.debug("Close Model Confirmed", name, source=SOURCE)
             self.close_model(name)
+            return True
+        events.debug("Close Model Declined", name, source=SOURCE)
+        return False
+
+    def _quit_prompt(self):
+        """The Quit question, naming what is energized now (N4): "Quit the
+        station? Stepper Probe and Rotator are energized; quitting stops and
+        disconnects them." With nothing energized, the plain sentence."""
+        try:
+            energized = list((self.controller.state() or {}).get("energized") or ())
+        except Exception as exc:
+            events.debug("Energized Unread", str(exc), source=SOURCE, exception=exc)
+            energized = []
+        if not energized:
+            return self.QUIT_PROMPT
+        many = len(energized) > 1
+        return (f"Quit the station? {join_names(energized)} "
+                f"{'are' if many else 'is'} energized; quitting stops and "
+                f"disconnects {'them' if many else 'it'}.")
 
     def _on_quit_clicked(self):
-        """Quit asks first (it stops every model and exits); the window's
-        close button and the OS's Quit take the same close path."""
-        if _confirm(self.root, self.QUIT_PROMPT, **QUIT_DIALOG):
+        """Quit asks first (it stops every model and exits), naming what is
+        energized; the window's close button asks the same question (O9)."""
+        if self._closing:
+            return
+        if _confirm(self.root, self._quit_prompt(), **QUIT_DIALOG):
             self.close()
+        else:
+            events.debug("Quit Declined", "the station stays up", source=SOURCE)
 
     # -- the sheet -----------------------------------------------------------
     def _build_headline(self):
@@ -5394,6 +5504,12 @@ class TkDashboard(Dashboard):
         self._sync_stop_button()
         return "break"
 
+    #: What the view draws when the controller serves no stop state: nothing
+    #: latched, so the disc stays a working Stop (the safe press). There is
+    #: no guess from `is_estopped` (O17): that fallback read ONE latched
+    #: model as "every model is stopped", the pre-L1 rule.
+    NO_STOP_STATE = {"latched": [], "unconfirmed": [], "every": False}
+
     def _stop_state(self):
         """`Controller.stop_state`: which models are latched, which of them
         did not confirm, and whether that is every model."""
@@ -5404,9 +5520,8 @@ class TkDashboard(Dashboard):
                          exception=exc, every=5.0)
             state = None
         if not isinstance(state, dict):
-            latched = [n for n in self._panels if n != self.SETUP_TAB] \
-                if self.controller.is_estopped else []
-            state = {"latched": latched, "unconfirmed": [], "every": bool(latched)}
+            events.debug("Stop State Missing", repr(state), source=SOURCE, every=5.0)
+            state = dict(self.NO_STOP_STATE)
         return state
 
     def _stop_words(self, state=None):
@@ -5737,6 +5852,7 @@ class TkDashboard(Dashboard):
         if self._closing:
             return
         self._sync_stop_button()
+        self._sync_station_state()
         self._sync_station_line()
         self._sheet.refit()
         self._schedule_refresh()
@@ -5799,11 +5915,99 @@ class TkDashboard(Dashboard):
                          exception=exc, every=5.0)
         self._paint_rail_marks(latched, unconfirmed)
 
+    def _sync_station_state(self):
+        """The station at once (`Controller.state()`), read once a tick: which
+        models are faulted (O4). Drawn only when it changes (F21)."""
+        try:
+            station = self.controller.state()
+        except Exception as exc:
+            events.debug("Station State Unread", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+            return
+        if not isinstance(station, dict):
+            return
+        models = station.get("models") or {}
+        faulted = tuple(name for name, state in models.items()
+                        if isinstance(state, dict) and state.get("is_faulted"))
+        energized = tuple(station.get("energized") or ())
+        if (faulted, energized) != (self._faulted, self._energized):
+            events.debug("Rail Marks Changed", f"faulted={list(faulted)} "
+                         f"energized={list(energized)}", source=SOURCE)
+            self._faulted, self._energized = faulted, energized
+            self._paint_rail_marks()
+        due = {}
+        for name, state in models.items():
+            if not isinstance(state, dict):
+                continue
+            remaining = state.get("idle_remaining")
+            window = state.get("idle_warn_seconds") or IDLE_WARN_SECONDS
+            if remaining is not None and remaining <= window:
+                due[name] = remaining
+        self._sync_idle_lines(due)
+
+    def _sync_idle_lines(self, due):
+        """One countdown line per probe inside its warning window, in
+        station order (Tier N). The seconds are the state's, redrawn each
+        tick; a line goes when its probe leaves the window or its mode."""
+        if list(due) != list(self._idle_lines):
+            for line in self._idle_lines.values():
+                line["tooltip"].close()
+                try:
+                    line["row"].destroy()
+                except Exception:
+                    pass
+            self._idle_lines = {name: self._idle_line(name) for name in due}
+            events.debug("Idle Lines Changed", ", ".join(due) or "none",
+                         source=SOURCE)
+            try:
+                if due:
+                    self._idle_box.pack(side="top", fill="x", before=self._model_list,
+                                        pady=(0, SPACE[4]))
+                else:
+                    self._idle_box.pack_forget()
+            except Exception as exc:
+                events.debug("Idle Lines Not Placed", str(exc), source=SOURCE,
+                             exception=exc)
+        for name, remaining in due.items():
+            seconds = max(0, int(math.ceil(float(remaining))))
+            text = IDLE_LINE.format(name=name, seconds=seconds)
+            label = self._idle_lines[name]["text"]
+            try:
+                if label.cget("text") != text:
+                    label.configure(text=text)
+            except Exception:
+                pass
+
+    def _idle_line(self, name):
+        """"Stepper Probe powers down in 42 s." in ink, and Extend under it."""
+        row = tk.Frame(self._idle_box, background=theme.SURFACE)
+        row.pack(side="top", fill="x", pady=(0, SPACE[3]))
+        text = tk.Label(row, text="", font=_font(), anchor="w", justify="left",
+                        wraplength=self._rail_width(bool(self._is_narrow)) - 3 * SPACE[5],
+                        background=theme.SURFACE, foreground=theme.TEXT)
+        text.pack(side="top", fill="x")
+        extend = _Press(row, EXTEND_WORD, lambda n=name: self._on_extend(n),
+                        theme.SURFACE)
+        extend.frame.pack(side="top", anchor="w", pady=(SPACE[1], 0))
+        tooltip = _Tooltip(extend.widget)
+        tooltip.text = f"{EXTEND_WORD} {name}"
+        return {"row": row, "text": text, "extend": extend, "tooltip": tooltip}
+
+    def _on_extend(self, name):
+        """Extend: the probe's idle clock starts again (`extend_idle`). The
+        line goes as soon as the state says so."""
+        result = self.controller.run(name, "extend_idle")
+        events.debug("Idle Extended", f"{name}: {getattr(result, 'status', result)}"
+                     f" {getattr(result, 'reason', '') or ''}".rstrip(), source=SOURCE)
+        self._sync_station_state()
+        return result
+
     def _paint_rail_marks(self, latched=None, unconfirmed=None):
         """A latched model's rail line: an ink square before its name and
-        the tooltip "Stopped"; one whose stop did not confirm: a signal
-        square and "Did not confirm the stop" (L1). Shape and words, never
-        colour alone."""
+        the tooltip "Stopped"; one whose stop did not confirm, or whose
+        disable failed (O4): a signal square with a "!" in it (O16) and
+        "Did not confirm the stop" / "Disable failed" (L1). Shape and words,
+        never colour alone."""
         if latched is None:
             seen = self._stop_seen or ((), (), False)
             latched, unconfirmed = seen[0], seen[1]
@@ -5811,14 +6015,38 @@ class TkDashboard(Dashboard):
         for name, (canvas, tooltip) in self._rail_marks.items():
             if name in (unconfirmed or ()):
                 fill, words = theme.SIGNAL, RAIL_MARK_WORDS["unconfirmed"]
+            elif name in self._faulted:
+                fill, words = theme.SIGNAL, RAIL_MARK_WORDS["faulted"]
             elif name in latched:
                 fill, words = theme.TEXT, RAIL_MARK_WORDS["latched"]
             else:
                 fill, words = None, ""
+            energy = self._energy_marks.get(name)
+            is_energized = name in self._energized
+            if is_energized:
+                words = (f"{words}; {RAIL_MARK_WORDS['energized'].lower()}" if words
+                         else RAIL_MARK_WORDS["energized"])
             tooltip.text = words
             try:
+                if energy is not None:
+                    energy.delete("all")
+                    if is_energized:
+                        inset = max(3, size // 4)
+                        energy.create_oval(inset, inset, size - inset, size - inset,
+                                           outline=theme.TEXT, fill="", width=2)
+            except Exception:
+                pass
+            try:
                 canvas.delete("all")
-                if fill is not None:
+                if fill == theme.SIGNAL:
+                    # The alarm is bigger than a stop's square and carries a
+                    # glyph: told apart from "stopped" without colour (A11Y-6).
+                    canvas.create_rectangle(1, 1, size - 1, size - 1,
+                                            fill=fill, outline=fill)
+                    canvas.create_text(size / 2, size / 2, text=RAIL_ALARM_GLYPH,
+                                       fill=theme.colors("danger")[1],
+                                       font=_font(SMALL, bold=True))
+                elif fill is not None:
                     inset = max(3, size // 4)
                     canvas.create_rectangle(inset, inset, size - inset, size - inset,
                                             fill=fill, outline=fill)
@@ -5894,16 +6122,16 @@ class TkDashboard(Dashboard):
             pass
 
     def _on_stop_clicked(self, _event=None):
-        """The disc (L1): it clears only while it reads Clear - every model
-        latched - and asks first; otherwise a press is `estop_all`, so one
-        model's own switch never takes the stop away from the rest."""
-        if self._stop_words()["action"] == "clear":
-            result = self.controller.clear_estop_all()
-            if getattr(result, "needs_confirm", False) and _confirm(
-                    self.root, result.reason, **CLEAR_DIALOG):
-                result = self.controller.clear_estop_all(confirmed=True)
-        else:
-            result = self.controller.estop_all()
+        """The disc is `Dashboard.toggle_estop_all` (O17, as Qt): it clears
+        only while every model is latched, and asks first in the Clear
+        words; otherwise a press is `estop_all`. The rule lives once, in the
+        base."""
+        events.debug("Stop Pressed", "the disc", source=SOURCE)
+        self._confirm_words = CLEAR_DIALOG
+        try:
+            result = self.toggle_estop_all()
+        finally:
+            self._confirm_words = None
         self._sync_stop_button()
         return result
 
@@ -6067,8 +6295,8 @@ class TkDashboard(Dashboard):
             except Exception:
                 self._bring_forward = None
                 raise
-        else:
-            self.close_model(name)
+        elif not self._confirm_close_model(name) and variable is not None:
+            variable.set(True)      # declined: the model is still open
 
     # -- events ------------------------------------------------------------
     def _marshal(self, fn):
@@ -6096,7 +6324,11 @@ class TkDashboard(Dashboard):
         """The folded line is the latest event; the history is every kept
         one, the latest tagged. Redrawn whole, so a line can also leave
         (L2)."""
-        latest = self._tray_events[-1] if self._tray_events else None
+        # The idle warning is history only (O13): the countdown line under
+        # the disc is its live word, so its frozen "in 60 s" never becomes
+        # the folded line.
+        latest = next((event for event in reversed(self._tray_events)
+                       if event.title != IDLE_SOON_TITLE), None)
         size = _lamp_px()
         try:
             self._latest_mark.delete("all")
@@ -6145,7 +6377,9 @@ class TkDashboard(Dashboard):
         self._render_alerts()
 
     def _confirm(self, prompt):
-        return _confirm(self.root, prompt)
+        """The base's question (the disc's Clear), in the words the caller
+        set for it: "Clear the stop" / "Keep it stopped" (L14)."""
+        return _confirm(self.root, prompt, **(self._confirm_words or {}))
 
     # -- focus -------------------------------------------------------------
     def _on_window_focus(self, event=None):
