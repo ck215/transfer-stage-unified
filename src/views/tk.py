@@ -79,6 +79,11 @@ VALUE_PX, FIELD_WIDTH, DROPDOWN_WIDTH = 168, 8, 22
 #: rows of up to `SHEET_COLUMNS`, each column at least `COLUMN_PX` of the
 #: design size (so 28 pt text gets fewer, wider columns).
 RAIL_PX, RAIL_NARROW_PX, NARROW_WINDOW_PX = 248, 200, 1000
+#: The rail's face and the nameplate's (Signature): the raised rail in
+#: RAIL, the one CAP plate on it. The rail's side margin and the plate's
+#: are steps of `theme.SPACE`, so the stop's plate fits 248 px.
+RAIL_FACE, PLATE_FACE = theme.RAIL, theme.CAP
+RAIL_PADX, PLATE_PADX = SPACE[5], SPACE[1]
 SHEET_COLUMNS, COLUMN_PX = 3, 300
 
 #: The type sizes the theme gives in pixels (readings, captions, the stop's
@@ -120,14 +125,13 @@ EMPTY_READOUT = "--"
 #: tooltip, so nothing is ever cut off silently.
 ELLIPSIS = "…"
 
-#: The stop object: A's disc in the rail (`theme.STOP`), always signal red.
-#: `STOP_DIAMETER` is its floor at the design size; the disc grows from its
+#: The stop object (Signature): a red key in an ink collar, in the rail's
+#: nameplate (`theme.STOP`), always signal red. `STOP_DIAMETER` is the
+#: collar's floor at the design size; the object grows from its
 #: face font (`_Mushroom.diameter_for`), so "Clear" fits at every
 #: `--font-size` (F7). The pulse is one breath (up 7 %, back) when the latch
 #: closes, about 400 ms, and none at all with `STATION_NO_MOTION=1`.
 STOP_DIAMETER, STOP_DIAMETER_NARROW = theme.STOP["diameter"], theme.STOP["diameter_narrow"]
-#: The face is a quarter of the disc, in the numeral face (A's disc).
-STOP_FACE_RATIO = 0.25
 PULSE_FRAMES, PULSE_FRAME_MS = (1.03, 1.06, 1.07, 1.05, 1.025, 1.0), 65
 NO_MOTION_ENV = "STATION_NO_MOTION"
 
@@ -146,12 +150,11 @@ UNCONFIRMED_LINE = "Stop not confirmed. Treat as live."
 #: model's own fault reason under the words.
 FAULTED_LINE = "Disable failed. Treat as live."
 #: The rail's per-model marks (round 7, L1; O4, O16): an ink square before
-#: a latched model's name; a signal square with a "!" before one that did
-#: not confirm or whose disable failed; the words are the line's tooltip, so
-#: colour never carries it alone.
+#: a latched model's name; the warning glyph in signal (and the lamp slot in
+#: signal, Signature) before one that did not confirm or whose disable
+#: failed; the words are the line's tooltip, so colour never carries it alone.
 RAIL_MARK_WORDS = {"latched": "Stopped", "unconfirmed": "Did not confirm the stop",
                    "faulted": "Disable failed", "energized": "Energized"}
-RAIL_ALARM_GLYPH = "!"
 #: A model's own stop, the small switch in its Diagnostics (O16, PM8-8): one
 #: word per thing. The disc is "Stop" / "Clear"; this switch is "Stop this
 #: model" / "Stopped", whatever the schema's state words.
@@ -268,17 +271,21 @@ def _event_line(event):
 _PIXEL_FONTS = False
 
 #: The faces Tk found installed (`_resolve_families`, once the root exists):
-#: the text face, else its fallback; the static "Archivo SemiExpanded"
-#: numeral face, else the numeral family, else the text face (bold either
-#: way). Tk has no OpenType feature switch, so tabular figures are the
-#: face's own (Helvetica's digits are tabular).
+#: the text face, else its fallback; the static "Rubik SemiBold" numeral
+#: face (`theme.NUMERAL_WEIGHT` 600 is that face, so it is drawn at Tk's
+#: normal weight), else the numeral family in bold, else the text face in
+#: bold. Tk has no OpenType feature switch, so tabular figures are the
+#: face's own (Rubik's and Helvetica's digits are tabular).
 _TEXT_FAMILY = theme.FONT_FAMILY
 _NUMERAL_FAMILY = theme.FONT_FAMILY
+_NUMERAL_WEIGHT = "bold"
+#: The static face Tk and Qt install for `NUMERAL_WEIGHT` 600.
+NUMERAL_STATIC = f"{theme.NUMERAL_FAMILY} SemiBold"
 
 
 def _resolve_families(root):
     """Pick the installed faces once, from the theme's names."""
-    global _TEXT_FAMILY, _NUMERAL_FAMILY
+    global _TEXT_FAMILY, _NUMERAL_FAMILY, _NUMERAL_WEIGHT
     try:
         installed = set(str(name) for name in tkfont.families(root))
     except Exception:
@@ -286,9 +293,10 @@ def _resolve_families(root):
     if not installed:
         return
     text = theme.FONT_FAMILY if theme.FONT_FAMILY in installed else theme.FONT_FALLBACK
-    numeral = next((name for name in (f"{theme.NUMERAL_FAMILY} SemiExpanded",
-                                      theme.NUMERAL_FAMILY) if name in installed), text)
+    numeral = next((name for name in (NUMERAL_STATIC, theme.NUMERAL_FAMILY)
+                    if name in installed), text)
     _TEXT_FAMILY, _NUMERAL_FAMILY = text, numeral
+    _NUMERAL_WEIGHT = "normal" if numeral == NUMERAL_STATIC else "bold"
     events.debug("Faces", f"text={text!r} numerals={numeral!r}", source=SOURCE)
 
 
@@ -305,9 +313,10 @@ def _design_px(px):
 
 
 def _numeral_font(px):
-    """A reading, the stop's face or a headline: the numeral face, bold, at
-    `px` design pixels (Tk takes a negative size as pixels)."""
-    return (_NUMERAL_FAMILY, -_design_px(px), "bold")
+    """A reading, the stop's face or a headline: the numeral face at 600
+    (`_NUMERAL_WEIGHT`), at `px` design pixels (Tk takes a negative size as
+    pixels)."""
+    return (_NUMERAL_FAMILY, -_design_px(px), _NUMERAL_WEIGHT)
 
 
 def _reading_font(kind):
@@ -318,12 +327,17 @@ def _value_font():
     """A readout that is not a rail reading (a statistic, a status): the
     numeral face, bold, one step over the text."""
     size = theme.size(STEP_1)
-    return (_NUMERAL_FAMILY, -size if _PIXEL_FONTS else size, "bold")
+    return (_NUMERAL_FAMILY, -size if _PIXEL_FONTS else size, _NUMERAL_WEIGHT)
 
 
 def _caption_font():
     """A caption, a unit, an axis letter: `theme.CAPTION_SIZE`, muted."""
     return (_TEXT_FAMILY, -_design_px(theme.CAPTION_SIZE), "normal")
+
+
+def _axis_font():
+    """An axis letter (Signature): `theme.AXIS_LETTER_SIZE`, bold, muted."""
+    return (_TEXT_FAMILY, -_design_px(theme.AXIS_LETTER_SIZE), "bold")
 
 
 def _counter(background):
@@ -333,13 +347,37 @@ def _counter(background):
     return theme.SURFACE if background == theme.BACKGROUND else theme.BACKGROUND
 
 
+#: The tray's and the pocket's 1 px top line: a sunk part's upper edge
+#: (the Web draws it as `SHADOW_INSET`).
+TRAY_LINE = theme.EDGE_SOFT
+
+
+def _tray_line(holder):
+    """The 1 px line across the top of a tray or a pocket."""
+    line = tk.Frame(holder, height=1, background=TRAY_LINE)
+    line.pack(side="top", fill="x")
+    return line
+
+
+def _field_ground(background):
+    """Where typed text sits (Signature): a sunk window one step down from
+    its ground - SURFACE on the sheet or the rail, DEEP inside a tray, and
+    SURFACE again inside a DEEP pocket."""
+    return theme.DEEP if background == theme.SURFACE else theme.SURFACE
+
+
+#: The grounds a child may take from its parent: the sheet, the tray, the
+#: pocket, the rail, and a raised plate.
+GROUNDS = (theme.BACKGROUND, theme.SURFACE, theme.DEEP, theme.RAIL, theme.CAP)
+
+
 def _bg(widget):
     """The ground a widget is drawn on, so a child matches it."""
     try:
         colour = widget.cget("background")
     except Exception:
         colour = None
-    return colour if colour in (theme.BACKGROUND, theme.SURFACE) else _page()
+    return colour if colour in GROUNDS else _page()
 
 
 def _page():
@@ -464,10 +502,16 @@ def _target_pady(step=BASE):
     return max(GAP, math.ceil((MIN_TARGET_PX - _line_px(step) - 2 * FOCUS_PX) / 2))
 
 
-def _command_pady(step=BASE):
+def _command_pady(step=BASE, lip=0):
     """Vertical padding that makes a command `COMMAND_PX` tall with its ring
-    (L4), at this font size."""
-    return max(GAP, math.ceil((COMMAND_PX - _line_px(step) - 2 * FOCUS_PX) / 2))
+    (L4), at this font size - its lip included, when it is a key."""
+    return max(GAP, math.ceil((COMMAND_PX - _line_px(step) - 2 * FOCUS_PX - lip) / 2))
+
+
+def _key_font():
+    """A key's legend (Signature: 14/600): the text face, bold - Tk has no
+    600 weight."""
+    return _font(bold=True)
 
 
 def _field_pady():
@@ -480,6 +524,235 @@ def _field_pady():
 def _lamp_px():
     """A lamp scales with the caption beside it, from a 16 px floor."""
     return max(LAMP_PX, round(0.8 * _line_px()))
+
+
+# -- Signature: the key family, the lamp slot, the glyphs ---------------------
+#
+# Every raised part is one family (Signature, 2026-09-27): a face, a rim and
+# a lip below it. ttk `clam` cannot draw a thick bottom edge on one side, so
+# a key here is frames: a seat in the ground, a lip frame in `KEY_LIP` under
+# the rim frame, the face inside. Pressed or latched, the lip folds and the
+# face drops by the difference - the pads move, the height does not. Rims
+# are 1 px and corners square: the accepted fallback (tone and lip carry
+# the part).
+
+def _lip_px(kind):
+    """The lip under a raised part of `kind` (`theme.KEY_LIP_PX`), in whole
+    pixels: Tk draws no half pixel (the switch knob's 2.5 is 2)."""
+    return max(1, int(theme.KEY_LIP_PX[kind]))
+
+
+def _key_pads(kind, is_down):
+    """(drop, lip) for a key: up, the face stands on its whole lip; down
+    (pressed or latched), the lip folds to `KEY_LIP_PX["pressed"]` and the
+    face drops by what the lip lost, so the key's height never changes."""
+    lip = _lip_px(kind)
+    if not is_down:
+        return 0, lip
+    folded = min(lip, _lip_px("pressed"))
+    return lip - folded, folded
+
+
+def _key_look(kind, ground):
+    """(face, legend, rim, lip) of a key of `kind`: `neutral` a CAP face
+    with the KEY_RIM rim and KEY_LIP lip; `go` (and a latched key) the ink
+    face with its GO_LIP; `danger` the stop's red, its lip the SKIRT;
+    `disabled` the key's silhouette in ghost tones on its ground (EDGE rim,
+    EDGE_SOFT lip, DISABLED legend); `ghost` a text key, no rim, no lip."""
+    if kind == "go":
+        face, legend = theme.colors("go")
+        return face, legend, face, theme.GO_LIP
+    if kind == "danger":
+        face, legend = theme.colors("danger")
+        return face, legend, face, theme.SKIRT
+    if kind == "disabled":
+        return ground, theme.DISABLED[1], theme.EDGE, theme.EDGE_SOFT
+    if kind == "ghost":
+        return ground, theme.TEXT, ground, ground
+    face, legend = theme.colors("neutral")
+    return face, legend, theme.KEY_RIM, theme.KEY_LIP
+
+
+#: Which glyph of the station's set (`theme.ICONS`) a key carries before its
+#: legend, by the element's command (or a log's attribute): Home, Start run,
+#: Save run..., Gamepad log... (rule 6). A key carries at most one.
+KEY_GLYPHS = {"home": "home", "start_run": "run", "save": "download",
+              "gamepad_log": "gamepad"}
+#: A key's glyph and a canvas mark, in design pixels.
+GLYPH_PX = 16
+
+
+def _lamp_size(rail=False):
+    """The lamp slot (rule 5), (w, h) at the current font size."""
+    width, height = theme.LAMP["size_rail" if rail else "size"]
+    return _design_px(width), _design_px(height)
+
+
+#: What a lamp slot shows: hidden (the space kept), hollow (off), ink (on
+#: or shown), lit (on, in an ink key), unconfirmed (a stop that did not
+#: confirm), ghost (a disabled key's).
+LAMP_STATES = ("hidden", "off", "on", "lit", "unconfirmed", "ghost")
+
+
+def _lamp_colours(state, face):
+    """(fill, edge) of a lamp slot in `state` on a key `face`, or None when
+    it is hidden. Ink or SIGNAL, never trace."""
+    if state == "hidden":
+        return None
+    if state == "on":
+        return theme.LAMP["on"], theme.LAMP["on"]
+    if state == "lit":
+        return theme.CAP, theme.CAP
+    if state == "unconfirmed":
+        return theme.LAMP["unconfirmed"], theme.LAMP["unconfirmed"]
+    if state == "ghost":
+        return face, theme.EDGE
+    return theme.LAMP["off"], theme.LAMP["edge"]
+
+
+def _draw_lamp(canvas, state, face, rail=False):
+    """Redraw a lamp slot's Canvas: one rectangle, filled and edged."""
+    width, height = _lamp_size(rail)
+    colours = _lamp_colours(state, face)
+    try:
+        canvas.delete("all")
+        canvas.configure(background=face)
+        if colours is not None:
+            canvas.create_rectangle(0, 0, width - 1, height - 1, fill=colours[0],
+                                    outline=colours[1], tags=("lamp",))
+    except Exception as exc:
+        events.debug("Lamp Slot Draw Failed", str(exc), source=SOURCE,
+                     exception=exc, every=5.0)
+
+
+_PATH_TOKEN = re.compile(r"[A-Za-z]|-?\d*\.?\d+")
+_STROKES = {}
+
+
+def _glyph_strokes(name):
+    """`theme.ICONS[name]` as polylines on its 20 px grid: M, L, H, V and Z
+    exactly, a curve (C) by its end point - at 16 px a 2 px corner reads the
+    same. The glyphs are the theme's; this only reads them."""
+    strokes = _STROKES.get(name)
+    if strokes is not None:
+        return strokes
+    strokes = []
+    for path in re.findall(r'd="([^"]+)"', theme.ICONS[name]):
+        tokens = _PATH_TOKEN.findall(path)
+        command, x, y, start, line = "M", 0.0, 0.0, (0.0, 0.0), None
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token.isalpha():
+                command = token.upper()
+                index += 1
+                if command == "Z" and line is not None:
+                    line.append(start)
+                    x, y = start
+                continue
+            take = {"M": 2, "L": 2, "H": 1, "V": 1, "C": 6}.get(command, 2)
+            values = [float(v) for v in tokens[index:index + take]]
+            index += take
+            if command == "H":
+                x = values[0]
+            elif command == "V":
+                y = values[0]
+            else:
+                x, y = values[-2], values[-1]
+            if command == "M":
+                line = [(x, y)]
+                strokes.append(line)
+                start = (x, y)
+                command = "L"           # further pairs after M are lines
+            elif line is not None:
+                line.append((x, y))
+    _STROKES[name] = strokes
+    return strokes
+
+
+def _draw_glyph(canvas, name, x, y, size, colour, turn=0, tags=("glyph",)):
+    """Draw glyph `name` into `size` px square at (x, y), in the set's one
+    stroke (`theme.ICON_STROKE` on the 20 px grid), round caps and joins.
+    `turn=90` turns it clockwise (an open disclosure points down)."""
+    scale = size / 20.0
+    width = max(1.0, theme.ICON_STROKE * scale)
+    for stroke in _glyph_strokes(name):
+        points = []
+        for px, py in stroke:
+            if turn == 90:
+                px, py = 20.0 - py, px
+            points += [x + px * scale, y + py * scale]
+        if len(points) == 2:
+            points += points
+        canvas.create_line(*points, fill=colour, width=width, capstyle="round",
+                           joinstyle="round", tags=tags)
+
+
+def _clip_line(start, end, box):
+    """The part of the segment start-end inside `box` (x0, y0, x1, y1), as
+    four coordinates, or None (Liang-Barsky)."""
+    (x0, y0), (x1, y1) = start, end
+    dx, dy = x1 - x0, y1 - y0
+    low, high = 0.0, 1.0
+    for p, q in ((-dx, x0 - box[0]), (dx, box[2] - x0),
+                 (-dy, y0 - box[1]), (dy, box[3] - y0)):
+        if p == 0:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            low = max(low, t)
+        else:
+            high = min(high, t)
+    if low > high:
+        return None
+    return (x0 + low * dx, y0 + low * dy, x0 + high * dx, y0 + high * dy)
+
+
+def _mark_canvas(parent, background):
+    """A canvas for a warning mark: the glyph, `GLYPH_PX` square."""
+    size = _design_px(GLYPH_PX)
+    return tk.Canvas(parent, width=size, height=size, background=background,
+                     highlightthickness=0)
+
+
+def _draw_warning(canvas, colour):
+    """The error mark (rule 6): the warning glyph, where a red square was."""
+    try:
+        canvas.delete("all")
+        if colour:
+            _draw_glyph(canvas, "warning", 0, 0, _design_px(GLYPH_PX), colour,
+                        tags=("warning",))
+    except Exception as exc:
+        events.debug("Mark Draw Failed", str(exc), source=SOURCE, exception=exc,
+                     every=5.0)
+
+
+_ICON_IMAGES = {}
+
+
+def _icon_image(name, colour, size=None):
+    """A key's glyph as a PhotoImage of `theme.icon_svg`, from Tk 8.7 on (its
+    SVG photo format). Below 8.7 there is none and the legend stands alone:
+    no PNG pipeline. Cached, so every image stays alive."""
+    if not name or _tk_version() < 8.7:
+        return None
+    size = size or _design_px(GLYPH_PX)
+    key = (name, size, colour)
+    if key in _ICON_IMAGES:
+        return _ICON_IMAGES[key]
+    svg = theme.icon_svg(name, size, colour)
+    image = None
+    for options in ({"format": "svg"}, {}):
+        try:
+            image = tk.PhotoImage(data=svg, **options)
+            break
+        except Exception as exc:
+            events.debug("Glyph Not Loaded", f"{name}: {exc}", source=SOURCE,
+                         exception=exc, every=30.0)
+    _ICON_IMAGES[key] = image
+    return image
 
 
 #: Where the operator last dragged each detached log window, for the
@@ -971,19 +1244,66 @@ class _Ring:
     focused, the same 2 px ink ring and an ink underline.
     """
 
-    def __init__(self, parent, background, border=INPUT_BORDER, underline=False):
+    def __init__(self, parent, background, border=INPUT_BORDER, underline=False,
+                 lip=None):
         self.background, self.border = background, border
         self.underline = underline
         self.outer = tk.Frame(parent, background=background,
                               padx=FOCUS_PX - 1, pady=FOCUS_PX - 1)
-        self.inner = tk.Frame(self.outer, background=background if underline
+        # A key (Signature): `lip` names its kind in `theme.KEY_LIP_PX`. The
+        # seat is the ground the face drops into; the lip frame shows its
+        # colour under the rim (`inner`) by the rim's bottom pad.
+        self.lip_kind = lip
+        self.seat = self.lip = None
+        self.is_down = False
+        self.pads = None
+        holder = self.outer
+        if lip is not None:
+            self.seat = tk.Frame(self.outer, background=background)
+            self.seat.pack(fill="both", expand=True)
+            self.lip = tk.Frame(self.seat, background=theme.KEY_LIP)
+            holder = self.lip
+        self.inner = tk.Frame(holder, background=background if underline
                               else border, padx=1, pady=1)
-        self.inner.pack(fill="both", expand=True)
+        if lip is None:
+            self.inner.pack(fill="both", expand=True)
+        else:
+            self._seat_key()
         self.line = None
         if underline:
             self.line = tk.Frame(self.inner, height=UNDERLINE_PX, background=border)
             self.line.pack(side="bottom", fill="x")
         self.is_focused = False
+
+    def _seat_key(self):
+        """Pack the lip and the face at this state's pads."""
+        pads = _key_pads(self.lip_kind, self.is_down)
+        if pads == self.pads:
+            return
+        self.pads = pads
+        drop, lip = pads
+        try:
+            self.lip.pack(fill="both", expand=True, pady=(drop, 0))
+            self.inner.pack(fill="both", expand=True, pady=(0, lip))
+        except Exception as exc:
+            events.debug("Key Not Seated", str(exc), source=SOURCE, exception=exc,
+                         every=5.0)
+
+    def set_down(self, is_down):
+        """Pressed or latched: the lip folds and the face drops (the pads
+        move; the key's height does not)."""
+        self.is_down = bool(is_down)
+        if self.lip is not None:
+            self._seat_key()
+
+    def set_lip(self, colour):
+        if self.lip is None:
+            return
+        try:
+            if self.lip.cget("background") != colour:
+                self.lip.configure(background=colour)
+        except Exception:
+            pass
 
     def paint(self, is_focused=None, border=None):
         if is_focused is not None:
@@ -1008,39 +1328,57 @@ class _Press:
     a button (`tk.Button` ignores its colours on Aqua), in the ring, with
     hover, focus and Return/Space.
 
-    Outlined in ink on its ground by default; `ghost` is text only (the
-    rail's Quit); `set_active(True)` fills it with ink (the rail's Setup
-    while Setup is the page shown)."""
+    A key of the family by default (Signature): a CAP face, the KEY_RIM rim
+    and the KEY_LIP lip; `ghost` is a text key, no face and no lip (the
+    rail's Quit); `set_active(True)` is the key latched down in ink (the
+    rail's Setup while Setup is the page shown). Under the pointer the rim
+    turns ink; pressed by the pointer, the lip folds until the release."""
 
     def __init__(self, parent, text, on_press, background, ghost=False):
         self.on_press = on_press
         self.background = background
         self.ghost = ghost
         self.is_active = False
+        self.is_pressed = False
         self.ring = _Ring(parent, background,
-                          border=background if ghost else INPUT_BORDER)
-        self.fill, self.ink = background, theme.TEXT
-        self.widget = tk.Label(self.ring.inner, text=text, font=_font(),
+                          border=background if ghost else theme.KEY_RIM,
+                          lip=None if ghost else "key")
+        self.fill, self.ink = _key_look("ghost" if ghost else "neutral", background)[:2]
+        self.widget = tk.Label(self.ring.inner, text=text, font=_key_font(),
                                background=self.fill, foreground=self.ink,
-                               relief="flat", padx=SPACE[4], pady=_command_pady(),
+                               relief="flat", padx=SPACE[4],
+                               pady=_command_pady(lip=0 if ghost else _lip_px("key")),
                                borderwidth=0, cursor="hand2", takefocus=1,
                                highlightthickness=0)
         self.widget.pack(fill="both", expand=True)
         self.is_hovered = False
-        for sequence in ("<Button-1>", "<Return>", "<space>"):
+        self.widget.bind("<Button-1>", self._on_pointer_press)
+        for sequence in ("<Return>", "<space>"):
             self.widget.bind(sequence, self._on_press)
+        self.widget.bind("<ButtonRelease-1>", lambda _e: self._set_pressed(False))
         self.widget.bind("<Enter>", lambda _e: self._hover(True))
         self.widget.bind("<Leave>", lambda _e: self._hover(False))
         self.widget.bind("<FocusIn>", lambda _e: self.ring.paint(True))
         self.widget.bind("<FocusOut>", lambda _e: self.ring.paint(False))
+        self._hover(False)
 
     @property
     def frame(self):
         return self.ring.outer
 
+    def _on_pointer_press(self, event=None):
+        self._set_pressed(True)
+        return self._on_press(event)
+
     def _on_press(self, _event=None):
         self.on_press()
         return "break"
+
+    def _set_pressed(self, is_pressed):
+        if is_pressed == self.is_pressed:
+            return
+        self.is_pressed = is_pressed
+        self._hover(self.is_hovered)
 
     def set_active(self, is_active):
         if is_active == self.is_active:
@@ -1050,16 +1388,22 @@ class _Press:
 
     def _hover(self, is_hovered):
         self.is_hovered = is_hovered
-        if self.is_active:
-            fill, ink = theme.colors("go")
-        elif is_hovered:
-            fill, ink = _counter(self.background), theme.TEXT
+        if self.ghost:
+            fill, ink, rim, lip = _key_look("ghost", self.background)
+            if is_hovered:
+                fill = _counter(self.background)
         else:
-            fill, ink = self.fill, self.ink
+            fill, ink, rim, lip = _key_look("go" if self.is_active else "neutral",
+                                            self.background)
+            if is_hovered and not self.is_active:
+                rim = theme.TEXT
         try:
             self.widget.configure(background=fill, foreground=ink)
         except Exception:
             pass
+        self.ring.set_lip(lip)
+        self.ring.set_down(self.is_active or self.is_pressed)
+        self.ring.paint(border=rim)
 
     def set_text(self, text):
         try:
@@ -1071,10 +1415,12 @@ class _Press:
 
 class _Switch:
     """The per-model stop (E, tier 3): a small switch, not a second red disc.
-    Off, a muted track edge and a muted knob at the left; on (latched), a
-    signal track and a white knob at the right - the one other place the
-    signal colour is spent, because it IS the latch. A Canvas: Tk has no
-    switch. Keyboard: focus ring in ink, Return and Space press it."""
+    Signature: a sunk track with a KEY_RIM edge and a key-cap knob (a face
+    on a lip). Off, the track is the field ground and the knob a CAP cap at
+    the left; on (latched), a SIGNAL track and a white knob with a SKIRT rim
+    and lip at the right - the one other place the signal colour is spent,
+    because it IS the latch. A Canvas: Tk has no switch. Keyboard: focus
+    ring in ink, Return and Space press it."""
 
     def __init__(self, master, on_press, background):
         self.on_press = on_press
@@ -1117,70 +1463,104 @@ class _Switch:
         width, height = self.track
         pad = FOCUS_PX + SPACE[0]
         x0, y0, x1, y1 = pad, pad, pad + width, pad + height
-        radius = height / 2
         on = bool(self.is_on)
-        fill = theme.SWITCH["on_fill"] if on else self.background
-        edge = theme.SWITCH["on_fill"] if on else theme.SWITCH["off_edge"]
-        knob_fill = theme.SWITCH["knob_on"] if on else theme.SWITCH["knob_off"]
+        fill = theme.SWITCH["on_fill"] if on else _field_ground(self.background)
+        edge = theme.SKIRT if on else theme.SWITCH["off_edge"]
         knob = _design_px(theme.SWITCH["knob"])
+        inset = max(1, (height - knob) // 2)
+        face = theme.SWITCH["knob_on"] if on else theme.SWITCH["knob_off"]
+        rim = theme.SKIRT if on else theme.KEY_RIM
+        lip_colour = theme.SWITCH["knob_lip_on"] if on else theme.SWITCH["knob_lip"]
+        lip = _lip_px("knob")
         try:
             if self.is_focused:
                 canvas.create_rectangle(x0 - FOCUS_PX, y0 - FOCUS_PX, x1 + FOCUS_PX,
                                         y1 + FOCUS_PX, outline=FOCUS_INK,
-                                        width=FOCUS_PX)
-            # A pill: two discs and the rectangle between them.
-            for x in (x0, x1 - height):
-                canvas.create_oval(x, y0, x + height, y1, fill=fill, outline=edge)
-            canvas.create_rectangle(x0 + radius, y0, x1 - radius, y1, fill=fill,
-                                    outline=fill)
-            canvas.create_line(x0 + radius, y0, x1 - radius, y0, fill=edge)
-            canvas.create_line(x0 + radius, y1, x1 - radius, y1, fill=edge)
-            centre = x1 - radius if on else x0 + radius
-            canvas.create_oval(centre - knob / 2, y0 + radius - knob / 2,
-                               centre + knob / 2, y0 + radius + knob / 2,
-                               fill=knob_fill, outline=knob_fill)
+                                        width=FOCUS_PX, tags=("focus",))
+            canvas.create_rectangle(x0, y0, x1 - 1, y1 - 1, fill=fill, outline=edge,
+                                    tags=("track",))
+            kx0 = x1 - inset - knob if on else x0 + inset
+            ky0 = y0 + inset
+            # The knob is a key cap: its lip, then its face on it.
+            canvas.create_rectangle(kx0, ky0, kx0 + knob - 1, ky0 + knob - 1,
+                                    fill=lip_colour, outline=rim, tags=("knob-lip",))
+            canvas.create_rectangle(kx0, ky0, kx0 + knob - 1, ky0 + knob - 1 - lip,
+                                    fill=face, outline=rim, tags=("knob",))
         except Exception as exc:
             events.debug("Switch Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
 
 
 class _Disclosure:
-    """The one press that shows a model's next tier (E): a chevron and the
-    section's `disclosure` text, in ink, no box. Open, the chevron points
-    down. Keyboard: the 2 px ink ring, Return and Space."""
+    """The one press that shows a model's next tier (E): a small key of the
+    family holding the disclosure glyph, then the section's `disclosure`
+    words in ink (Signature). Open, the key sinks (a SURFACE face on a
+    folded lip) and the glyph turns down. Keyboard: the 2 px ink ring,
+    Return and Space."""
 
     def __init__(self, parent, text, on_toggle, background):
         self.text = text
         self.on_toggle = on_toggle
         self.is_open = False
+        self.background = background
+        self.draws = 0
         self.ring = _Ring(parent, background, border=background)
+        size = self.size = _design_px(SPACE[7])      # the 24 px disclosure key
+        self.key = tk.Canvas(self.ring.inner, width=size, height=size,
+                             background=background, highlightthickness=0,
+                             cursor="hand2")
+        self.key.pack(side="left", padx=(SPACE[1], 0))
         self.widget = tk.Label(self.ring.inner, text=self._face(), font=_font(bold=True),
                                background=background, foreground=theme.TEXT,
-                               relief="flat", padx=SPACE[2], pady=_target_pady(),
+                               relief="flat", padx=SPACE[3], pady=_target_pady(),
                                cursor="hand2", takefocus=1, highlightthickness=0)
-        self.widget.pack(fill="both", expand=True)
+        self.widget.pack(side="left", fill="both", expand=True)
         for sequence in ("<Button-1>", "<Return>", "<space>"):
             self.widget.bind(sequence, self._on_press)
+        self.key.bind("<Button-1>", self._on_press)
         self.widget.bind("<FocusIn>", lambda _e: self.ring.paint(True))
         self.widget.bind("<FocusOut>", lambda _e: self.ring.paint(False))
+        self.draw()
 
     @property
     def frame(self):
         return self.ring.outer
 
     def _face(self):
-        return f"{CHEVRON[self.is_open]} {self.text}"
+        return self.text
 
     def _on_press(self, _event=None):
         self.on_toggle(not self.is_open)
         return "break"
 
     def set_open(self, is_open):
-        self.is_open = bool(is_open)
+        is_open = bool(is_open)
+        if is_open == self.is_open:
+            return
+        self.is_open = is_open
+        self.draw()
+
+    def draw(self):
+        """The 24 px key: its lip, its face on it (up: CAP on the 3 px lip;
+        open: SURFACE, sunk onto a 1 px lip), the glyph (turned down when
+        open)."""
+        canvas, size = self.key, self.size
+        drop, lip = _key_pads("small", self.is_open)
+        face = theme.SURFACE if self.is_open else theme.CAP
+        glyph = _design_px(GLYPH_PX)
+        self.draws += 1
         try:
-            self.widget.configure(text=self._face())
-        except Exception:
-            pass
+            canvas.delete("all")
+            canvas.create_rectangle(0, drop, size - 1, size - 1, fill=theme.KEY_LIP,
+                                    outline=theme.KEY_RIM, tags=("lip",))
+            canvas.create_rectangle(0, drop, size - 1, size - 1 - lip, fill=face,
+                                    outline=theme.KEY_RIM, tags=("face",))
+            top = drop + (size - lip - drop - glyph) / 2
+            _draw_glyph(canvas, "disclosure", (size - glyph) / 2, top, glyph,
+                        theme.TEXT, turn=90 if self.is_open else 0)
+        except Exception as exc:
+            events.debug("Disclosure Draw Failed", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
 
 
 class _ConfirmDialog:
@@ -1285,27 +1665,33 @@ def _confirm(master, prompt, title=CONFIRM_TITLE, yes_text="Yes", no_text="No"):
 
 
 class _Mushroom:
-    """The stop object: A's disc (E, 2026-09-25) - a signal-red face with a
-    red ring around it and a gap of the rail between, reading `Stop`, or
-    `Clear` once latched, in white.
+    """The stop object (Signature, 2026-09-27): a red key in an ink guard
+    collar, with a pale socket band between them - from across a room, a
+    bullseye. The legend is white numerals: `Stop`, or the release glyph
+    over `Clear` once EVERY model is latched.
 
     ALWAYS red: it does not go quiet while nothing moves, and it is never
-    dimmed. Latched, the face reads `Clear` and the ring thickens (theme
-    `STOP["ring"]` -> `["ring_latched"]`); it breathes ONCE, on the edge,
-    not for as long as the latch stays closed. A Canvas, because a round
-    control is the one shape Tk's widgets do not have, and because
-    `tk.Button` ignores its colours on Aqua anyway.
+    dimmed. Idle, the key stands `STOP["lift"]` px above centre with its
+    SKIRT showing `STOP["skirt"]` px below it. Latched, the key is down
+    (`drop_latched` px lower, no skirt, a darker crescent across the top of
+    its face), the socket band floods SKIRT and the collar turns SIGNAL:
+    one solid red coin. It breathes ONCE, on the edge, not for as long as
+    the latch stays closed. A Canvas, because a round control is the one
+    shape Tk's widgets do not have, and because `tk.Button` ignores its
+    colours on Aqua anyway.
 
-    Its diameter comes from its face font (F7): the face is the numeral face
-    at a quarter of the design diameter, scaled with `--font-size`, and the
-    disc grows until "Clear" fits inside the ring. It is redrawn only when
-    something it shows changes (F21).
+    Its diameter comes from its face font (F7): the face is the numeral
+    face at `STOP["face_pt"]` design px, scaled with `--font-size`, and the
+    object grows until "Clear" and its glyph fit on the key. It is redrawn
+    only when something it shows changes (F21).
     """
 
     def __init__(self, master, on_press, background, narrow=False):
         floor = STOP_DIAMETER_NARROW if narrow else STOP_DIAMETER
-        self.face_font = _numeral_font(round(STOP_DIAMETER * STOP_FACE_RATIO))
-        self.diameter = self.diameter_for(self.face_font, floor)
+        self.narrow = bool(narrow)
+        self.face_font = _numeral_font(
+            theme.STOP["face_pt_narrow" if narrow else "face_pt"])
+        self.diameter = self.diameter_for(self.face_font, floor, narrow)
         self.on_press = on_press
         self.background = background
         self.face = STOP_FACE
@@ -1314,7 +1700,7 @@ class _Mushroom:
         self.is_hovered = self.is_focused = False
         self._pulse_ids = []
         self.draws = 0
-        # Room around the disc for the pulse (7 %) and the focus ring
+        # Room around the object for the pulse (7 %) and the focus ring
         # (SPACE[1] out, FOCUS_PX wide) on every side.
         self.size = int(self.diameter * 1.08) + 2 * (SPACE[1] + FOCUS_PX + 1)
         self.canvas = tk.Canvas(master, width=self.size, height=self.size,
@@ -1333,20 +1719,34 @@ class _Mushroom:
 
     # -- size --------------------------------------------------------------
     @staticmethod
-    def ring_width(diameter=None):
-        """How far the face sits inside the disc's edge at its widest ring:
-        the latched ring and the gap, at the current font size."""
-        return _design_px(theme.STOP["ring_latched"]) + _design_px(theme.STOP["gap"])
+    def key_ratio(narrow=False):
+        """The key's share of the whole object (124 of 172; 106 of 150)."""
+        if narrow:
+            return theme.STOP["key_narrow"] / theme.STOP["diameter_narrow"]
+        return theme.STOP["key"] / theme.STOP["diameter"]
 
     @classmethod
-    def diameter_for(cls, font, floor):
-        """The smallest disc, from `floor` up, whose face - both words, with
-        their line height - sits inside the ring with room to spare."""
+    def ring_width(cls, diameter=None, narrow=False):
+        """How far the key's face sits inside the object's edge: the
+        collar and the socket band."""
+        diameter = STOP_DIAMETER if diameter is None else diameter
+        return (diameter - diameter * cls.key_ratio(narrow)) / 2
+
+    @staticmethod
+    def glyph_px(font):
+        """The release glyph over "Clear": a little smaller than the word."""
+        return max(8, round(abs(font[1]) * 0.8))
+
+    @classmethod
+    def diameter_for(cls, font, floor, narrow=False):
+        """The smallest object, from `floor` up, whose key holds its face -
+        "Clear" and the glyph over it, with their line height - with room
+        to spare."""
         half_width = max(_width_px(font, CLEAR_FACE), _width_px(font, STOP_FACE)) / 2
-        half_height = abs(font[1]) * 0.45
+        half_height = (abs(font[1]) * 0.9 + cls.glyph_px(font)) / 2
         corner = math.hypot(half_width, half_height) + SPACE[0]
         diameter = int(floor)
-        while corner > diameter / 2 - cls.ring_width(diameter) - SPACE[0]:
+        while corner > diameter * cls.key_ratio(narrow) / 2 - SPACE[0]:
             diameter += 1
         return diameter
 
@@ -1361,7 +1761,7 @@ class _Mushroom:
         return "break"
 
     def _set_flag(self, name, value):
-        """Hover and keyboard focus: the ring steps out a pixel under the
+        """Hover and keyboard focus: the collar thickens a pixel under the
         pointer and a focus ring in ink shows where Return / Space land."""
         if name == "is_hovered":
             (self.tooltip.enter if value else self.tooltip.leave)()
@@ -1372,8 +1772,8 @@ class _Mushroom:
 
     # -- state -------------------------------------------------------------
     def set_latched(self, is_latched):
-        """Face and ring follow the latch; the pulse answers its closing.
-        Nothing is drawn when nothing changed."""
+        """Face, key and collar follow the latch; the pulse answers its
+        closing. Nothing is drawn when nothing changed."""
         is_latched = bool(is_latched)
         was = self.is_latched
         if was == is_latched:
@@ -1389,8 +1789,10 @@ class _Mushroom:
 
     @property
     def ring(self):
-        """The ring's width now: thicker once latched."""
-        key = "ring_latched" if self.is_latched else "ring"
+        """The collar's width now (a pixel more under the pointer). Latched
+        it is the same width in SIGNAL: the "thicker ring" of the rule is
+        now the collar turning red."""
+        key = "collar_narrow" if self.narrow else "collar"
         return _design_px(theme.STOP[key]) + (1 if self.is_hovered else 0)
 
     def pulse(self):
@@ -1420,6 +1822,19 @@ class _Mushroom:
         self._pulse_ids = []
 
     # -- drawing -----------------------------------------------------------
+    def geometry(self):
+        """Where the parts go now: centre, the collar's outer radius, the
+        socket's radius, the key's radius and the face's centre height."""
+        stop = theme.STOP
+        centre = self.size / 2
+        radius = self.diameter / 2 * self.scale
+        socket = radius - self.ring
+        key = radius * self.key_ratio(self.narrow)
+        face_y = centre - _design_px(stop["lift"])
+        if self.is_latched:
+            face_y += _design_px(stop["drop_latched"])
+        return centre, radius, socket, key, face_y
+
     def draw(self):
         canvas = self.canvas
         try:
@@ -1427,24 +1842,54 @@ class _Mushroom:
         except Exception:
             return
         self.draws += 1
-        centre = self.size / 2
-        radius = self.diameter / 2 * self.scale
-        ring = self.ring
-        face = radius - ring - _design_px(theme.STOP["gap"])
+        stop = theme.STOP
+        latched = bool(self.is_latched)
+        centre, radius, socket, key, face_y = self.geometry()
+        legend = stop["legend"]
         try:
             if self.is_focused:
                 reach = radius + SPACE[1]
                 canvas.create_oval(centre - reach, centre - reach,
                                    centre + reach, centre + reach,
-                                   outline=theme.STOP_FOCUS, width=FOCUS_PX)
-            edge = radius - ring / 2
-            canvas.create_oval(centre - edge, centre - edge, centre + edge,
-                               centre + edge, outline=theme.SIGNAL, width=ring)
-            canvas.create_oval(centre - face, centre - face, centre + face,
-                               centre + face, fill=theme.SIGNAL,
-                               outline=theme.SIGNAL)
-            canvas.create_text(centre, centre, text=self.face,
-                               fill=theme.colors("danger")[1], font=self.face_font)
+                                   outline=theme.STOP_FOCUS, width=FOCUS_PX,
+                                   tags=("focus",))
+            collar = stop["collar_latched"] if latched else stop["collar_fill"]
+            canvas.create_oval(centre - radius, centre - radius, centre + radius,
+                               centre + radius, fill=collar,
+                               outline=stop["collar_edge"], tags=("collar",))
+            band = stop["socket_latched"] if latched else stop["socket"]
+            canvas.create_oval(centre - socket, centre - socket, centre + socket,
+                               centre + socket, fill=band, outline=band,
+                               tags=("socket",))
+            left, right = centre - key, centre + key
+            if latched:
+                # Down: no skirt; a darker crescent across the top of the
+                # face (the face's own oval, the red drawn a fold lower).
+                fold = _lip_px("key") - _lip_px("pressed")
+                canvas.create_oval(left, face_y - key, right, face_y + key,
+                                   fill=stop["skirt_fill"],
+                                   outline=stop["skirt_fill"], tags=("crescent",))
+                canvas.create_oval(left, face_y - key + fold, right, face_y + key,
+                                   fill=stop["face"], outline=stop["face"],
+                                   tags=("face",))
+                glyph = self.glyph_px(self.face_font)
+                word_px = abs(self.face_font[1])
+                top = face_y - (glyph + word_px * 0.9) / 2
+                _draw_glyph(canvas, "clear", centre - glyph / 2, top, glyph, legend,
+                            tags=("release",))
+                canvas.create_text(centre, top + glyph + word_px * 0.45,
+                                   text=self.face, fill=legend, font=self.face_font,
+                                   tags=("legend",))
+            else:
+                skirt = _design_px(stop["skirt"])
+                canvas.create_oval(left, face_y - key + skirt, right, face_y + key + skirt,
+                                   fill=stop["skirt_fill"],
+                                   outline=stop["skirt_fill"], tags=("skirt",))
+                canvas.create_oval(left, face_y - key, right, face_y + key,
+                                   fill=stop["face"], outline=stop["face"],
+                                   tags=("face",))
+                canvas.create_text(centre, face_y, text=self.face, fill=legend,
+                                   font=self.face_font, tags=("legend",))
         except Exception as exc:
             events.debug("Stop Draw Failed", str(exc), source=SOURCE,
                          exception=exc, every=5.0)
@@ -1572,10 +2017,13 @@ class TkPanelView(PanelView):
         # O4) - on its own line under the head, packed only while it is so
         # (never squeezed beside the name).
         self._mark_row = tk.Frame(self.frame, background=_page())
-        size = _lamp_px()
-        self._mark = tk.Canvas(self._mark_row, width=size, height=size,
+        # The tripped-flag window (Signature, rule 4): drawn once per
+        # episode, when the hazard begins.
+        flag_w, flag_h = (_design_px(v) for v in theme.FLAG["size"])
+        self._mark = tk.Canvas(self._mark_row, width=flag_w, height=flag_h,
                                background=_page(), highlightthickness=0)
-        self._mark.pack(side="left", anchor="n", padx=(0, SPACE[2]))
+        self._mark.pack(side="left", anchor="n", padx=(0, SPACE[3]), pady=SPACE[0])
+        self._flag_draws = 0
         mark_words = tk.Frame(self._mark_row, background=_page())
         mark_words.pack(side="left", fill="x", expand=True)
         self._mark_text = tk.Label(mark_words, text=UNCONFIRMED_LINE,
@@ -1944,6 +2392,8 @@ class TkPanelView(PanelView):
             if self._sheet is not None:
                 well = self._well = self._build_well_scroller()
             else:
+                # A page of its own (Setup, a test): the tray without the
+                # sheet's scroller, so without its top line.
                 well = self._well = self._well_holder = tk.Frame(
                     self._body, background=theme.SURFACE, padx=SPACE[5],
                     pady=SPACE[4])
@@ -1955,10 +2405,14 @@ class TkPanelView(PanelView):
                 theme.SURFACE)
             opener.frame.pack(side="top", anchor="w", pady=(SPACE[3], 0))
             self._disclosures[3] = opener
+            # The pocket (Signature): a DEEP window sunk in the tray, under
+            # its 1 px top line.
             holder = self._diagnostics = tk.Frame(self._well, background=theme.SURFACE)
-            tk.Frame(holder, width=UNDERLINE_PX, background=theme.MUTED).pack(
-                side="left", fill="y", padx=(SPACE[2], SPACE[4]))
-            self._tiers[3] = tk.Frame(holder, background=theme.SURFACE)
+            _tray_line(holder)
+            pocket = tk.Frame(holder, background=theme.DEEP, padx=SPACE[4],
+                              pady=SPACE[2])
+            pocket.pack(side="top", fill="x", expand=True)
+            self._tiers[3] = tk.Frame(pocket, background=theme.DEEP)
             self._tiers[3].pack(side="left", fill="x", expand=True)
         return self._tiers[min(tier, 3)]
 
@@ -1975,6 +2429,7 @@ class TkPanelView(PanelView):
         asks for no height, so the entry's natural height is its head and
         tier 1. -> the well frame"""
         area = self._well_holder = tk.Frame(self._body, background=_page())
+        _tray_line(area)
         self._well_bar = ttk.Scrollbar(area, orient="vertical")
         canvas = self._well_canvas = tk.Canvas(area, height=1, background=_page(),
                                                highlightthickness=0,
@@ -2521,7 +2976,7 @@ class TkPanelView(PanelView):
             line = tk.Frame(cell, background=background)
             line.pack(side="left" if state.get("inline") else "top", anchor="sw")
             if axis:
-                tk.Label(line, text=axis, font=_caption_font(), background=background,
+                tk.Label(line, text=axis, font=_axis_font(), background=background,
                          foreground=theme.MUTED).pack(side="left", anchor="s",
                                                       padx=(0, SPACE[1]), pady=SPACE[2])
             self._register(element, box=cell, caption=label, strip=strip)
@@ -2780,31 +3235,46 @@ class TkPanelView(PanelView):
     def _entry_for(self, element):
         return self._widgets.get(id(element), {})
 
-    # -- commands: a label drawn as a button -------------------------------------
+    # -- commands: keys of one family --------------------------------------------
     def _button_label(self, parent, element, on_click, text=None):
-        """A `tk.Label` styled as a button: `tk.Button` ignores bg/fg on Aqua.
-        -> the frame to place.
+        """A command as a key (Signature): a `tk.Label` face (`tk.Button`
+        ignores bg/fg on Aqua) inside a rim frame on a lip frame - the ONE
+        helper that builds every command key. -> the frame to place.
 
-        It sits in a `_Ring`: Aqua does not draw a Label's highlight ring, so
-        an outlined command (an OFF toggle) rendered as bare text. It has
-        every state a control needs: hover (a tone step), keyboard focus (a
-        2 px ink ring; Return and Space press it), disabled (the theme's
-        disabled pair and a muted edge, and a click does nothing). It is at
-        least `MIN_TARGET_PX` tall at every font size.
+        It sits in a `_Ring` with a lip: Aqua does not draw a Label's
+        highlight ring, and ttk `clam` cannot draw a thick edge on one side.
+        It has every state a control needs: hover (the rim turns ink, a
+        filled face steps to muted), pressed (the lip folds and the face
+        drops, until the release), keyboard focus (a 2 px ink ring; Return
+        and Space press it), disabled (the key's silhouette in ghost tones,
+        and a click does nothing). A toggle is a latching key: down in ink
+        while on, with its lamp slot lit. A key carries at most one glyph
+        of the set, before its legend (`KEY_GLYPHS`). It is at least
+        `MIN_TARGET_PX` tall at every font size.
         """
         background = _bg(parent)
-        ring = _Ring(parent, background)
+        ring = _Ring(parent, background, border=theme.KEY_RIM, lip="key")
+        lamp = None
+        if element.get("type") == "toggle":
+            width, height = _lamp_size()
+            lamp = tk.Canvas(ring.inner, width=width, height=height,
+                             background=theme.CAP, highlightthickness=0,
+                             cursor="hand2")
+            lamp.pack(side="left", padx=(SPACE[3], 0))
         widget = tk.Label(ring.inner, text=_label(element.get("text", "") if text is None
                                                  else text),
-                          font=_font(), relief="flat", padx=SPACE[4],
-                          pady=_command_pady(), borderwidth=0, cursor="hand2",
-                          takefocus=1, highlightthickness=0)
-        widget.pack(fill="both", expand=True)
+                          font=_key_font(), relief="flat", padx=SPACE[4],
+                          pady=_command_pady(lip=_lip_px("key")), borderwidth=0,
+                          cursor="hand2", takefocus=1, highlightthickness=0)
+        widget.pack(side="left", fill="both", expand=True)
+        glyph = (KEY_GLYPHS.get(element.get("command"))
+                 or KEY_GLYPHS.get(element.get("model_attr")))
         # Why it is greyed out, when it is (L3): its own hover text, shown
         # by the command's own Enter/Leave so no handler is replaced.
         gate_tip = _Tooltip(widget, bind=False)
         self._register(element, widget=widget, outline=ring.inner, ring=ring,
-                       ground=background, gate_tip=gate_tip)
+                       ground=background, gate_tip=gate_tip, lamp_slot=lamp,
+                       glyph=glyph)
 
         def _on_widget_click(_event=None, element=element):
             if not self._entry_for(element).get("is_enabled", True):
@@ -2812,13 +3282,22 @@ class TkPanelView(PanelView):
             on_click(element)
             return "break"
 
+        def _on_pointer_press(event=None, element=element):
+            if self._entry_for(element).get("is_enabled", True):
+                _on_flag("is_pressed", True)
+            return _on_widget_click(event)
+
         def _on_flag(name, value, element=element):
             self._entry_for(element)[name] = value
             if name == "is_hovered":
                 (gate_tip.enter if value else gate_tip.leave)()
             self._paint_command(element)
 
-        widget.bind("<Button-1>", _on_widget_click)
+        for part in (widget, lamp):
+            if part is None:
+                continue
+            part.bind("<Button-1>", _on_pointer_press)
+            part.bind("<ButtonRelease-1>", lambda _e: _on_flag("is_pressed", False))
         widget.bind("<Return>", _on_widget_click)
         widget.bind("<space>", _on_widget_click)
         widget.bind("<Enter>", lambda _e: _on_flag("is_hovered", True))
@@ -2830,61 +3309,77 @@ class TkPanelView(PanelView):
 
     @staticmethod
     def _command_colors(role, ground=None):
-        """(background, foreground, border) of a command, from its role.
+        """(face, legend, rim) of a command key, from its role.
 
-        Bench sheet (E): `go` is ink-filled - the one you press; every other
-        command is outlined on the ground it sits on. Only the stop
-        object carries the signal colour: a danger command (a model's own
-        "Stop run") renders like any other (DS-9), and a warning is no
-        longer the trace colour, which is reserved for changing numbers.
-        The edge is the input border (muted), as the artboards draw it."""
-        if role == "go":
-            background, foreground = theme.colors("go")
-            return background, foreground, background
-        return ground or _page(), theme.TEXT, INPUT_BORDER
+        Signature: `go` is the ink key - the one you press; every other
+        command is a CAP key with the KEY_RIM rim. Only the stop object
+        carries the signal colour: a danger command (a model's own "Stop
+        run") renders like any other (DS-9), and a warning is a CAP key,
+        never the trace colour, which is reserved for changing numbers."""
+        face, legend, rim, _lip = _key_look("go" if role == "go" else "neutral",
+                                            ground or _page())
+        return face, legend, rim
+
+    def _key_state(self, element):
+        """(kind, is_down, lamp) of a command key now: its look in
+        `_key_look`, whether its lip is folded, and its lamp slot's state."""
+        entry = self._entry_for(element)
+        is_toggle = element["type"] == "toggle"
+        is_on = bool(entry.get("is_on")) if is_toggle else False
+        if not entry.get("is_enabled", True):
+            return "disabled", False, "ghost" if is_toggle else None
+        if is_toggle and is_on:
+            danger = element.get("on_role") == "danger"
+            return ("danger" if danger else "go"), True, "lit"
+        if is_toggle:
+            return "neutral", bool(entry.get("is_pressed")), "off"
+        kind = "go" if element.get("role") == "go" else "neutral"
+        return kind, bool(entry.get("is_pressed")), None
 
     def _paint_command(self, element):
         """Configure only what changed: an unchanged command costs a tuple
-        compare, not four Tk calls (F21)."""
+        compare, not a dozen Tk calls (F21)."""
         entry = self._entry_for(element)
         widget = entry.get("widget")
         if widget is None:
             return
         ground = entry.get("ground") or _page()
-        if not entry.get("is_enabled", True):
-            # Disabled: the sheet with ink at 45 %, and a muted edge (Tk has
-            # no dashed edge on a Label).
-            background, foreground = theme.DISABLED
-            border = INPUT_BORDER
-        elif element["type"] == "toggle":
-            colors = theme.toggle_colors(element, bool(entry.get("is_on")))
-            background, foreground, border = (colors["background"],
-                                              colors["foreground"], colors["border"])
-            if not entry.get("is_on"):
-                background = ground
-        else:
-            background, foreground, border = self._command_colors(
-                element.get("role"), ground)
+        kind, is_down, lamp = self._key_state(element)
+        face, legend, rim, lip = _key_look(kind, ground)
+        if (element["type"] == "toggle" and kind == "neutral"
+                and element.get("off_role") == "danger"):
+            # A danger toggle keeps its red rim when off: the stop must
+            # read as the stop (`theme.toggle_colors`).
+            rim = theme.toggle_colors(element, False)["border"]
         if entry.get("is_hovered") and entry.get("is_enabled", True):
-            # A filled command steps to muted; an outlined one to the other
-            # ground (the panel on the sheet, the sheet in a well).
-            background = (theme.MUTED if background == theme.TEXT
-                          else _counter(ground))
+            # A filled key steps to muted; a CAP key's rim turns ink.
+            if face == theme.TEXT:
+                face = theme.MUTED
+            else:
+                rim = theme.TEXT
         is_focused = bool(entry.get("is_focused"))
         cursor = "hand2" if entry.get("is_enabled", True) else "arrow"
-        key = (background, foreground, border, is_focused, cursor)
-        entry["border"] = border
+        key = (face, legend, rim, lip, is_down, lamp, is_focused, cursor)
+        entry["border"] = rim
         if entry.get("paint") == key:
             return
         entry["paint"] = key
+        options = dict(background=face, foreground=legend, cursor=cursor)
+        image = _icon_image(entry.get("glyph"), legend)
+        if image is not None:
+            options.update(image=image, compound="left")
         try:
-            widget.configure(background=background, foreground=foreground,
-                             cursor=cursor)
+            widget.configure(**options)
         except Exception:
             pass
         ring = entry.get("ring")
         if ring is not None:
-            ring.paint(is_focused, border)
+            ring.set_lip(lip)
+            ring.set_down(is_down)
+            ring.paint(is_focused, rim)
+        if entry.get("lamp_slot") is not None:
+            entry["lamp_state"] = lamp
+            _draw_lamp(entry["lamp_slot"], lamp, face)
 
     def _role_colors(self, role):
         """The schema names the meaning; the theme owns the palette."""
@@ -3057,7 +3552,7 @@ class TkPanelView(PanelView):
         widget = tk.Entry(ring.inner, textvariable=var, font=_font(),
                           width=FIELD_WIDTH, justify="right", relief="flat",
                           borderwidth=0, highlightthickness=0,
-                          background=_counter(background), foreground=theme.TEXT,
+                          background=_field_ground(background), foreground=theme.TEXT,
                           insertbackground=theme.TEXT,
                           disabledbackground=theme.DISABLED[0],
                           disabledforeground=theme.DISABLED[1])
@@ -3568,8 +4063,8 @@ class TkPanelView(PanelView):
         var = tk.StringVar(value="")
         is_table = self._cursor(container)["layout"] == "row"
         background = _bg(parent)
-        # A dropdown is a field: the other ground's well and a muted
-        # underline, as an entry (a panel well's has its own style).
+        # A dropdown is a select (Signature): a neutral key - CAP face,
+        # KEY_RIM rim, KEY_LIP lip - with its arrow at the right.
         # How many characters a name may keep: a table's box is sized in
         # characters; a sheet cell's to a value's room.
         chars = (DROPDOWN_WIDTH - 1 if is_table else
@@ -3580,9 +4075,9 @@ class TkPanelView(PanelView):
                        postcommand=lambda el=element: self._refresh_options(el))
         if background == theme.SURFACE:
             options["style"] = WELL_COMBO_STYLE
-        ring = _Ring(parent, background, underline=True)
+        ring = _Ring(parent, background, border=theme.KEY_RIM, lip="key")
         try:
-            widget = ttk.Combobox(ring.inner, font=_font(), **options)
+            widget = ttk.Combobox(ring.inner, font=_key_font(), **options)
         except Exception:
             # ttk takes `font` on a Combobox on current builds; an older one
             # refuses it, and the style's font is then used.
@@ -3711,7 +4206,7 @@ class TkPanelView(PanelView):
         the other ground (no box, E)."""
         return tk.Text(parent, height=lines, width=48,
                        state="disabled", relief="flat", font=_font(SMALL),
-                       background=_counter(_bg(parent)), foreground=theme.TEXT,
+                       background=_field_ground(_bg(parent)), foreground=theme.TEXT,
                        highlightthickness=0, padx=SPACE[3], pady=SPACE[3],
                        wrap="word")
 
@@ -4231,6 +4726,13 @@ class TkPanelView(PanelView):
                 widget.configure(state=live if is_enabled else "disabled")
             except Exception:
                 pass
+            ring = entry.get("ring")
+            if ring is not None and ring.lip is not None:
+                # A select keeps its silhouette disabled, in ghost tones.
+                kind = "neutral" if is_enabled else "disabled"
+                _face, _legend, rim, lip = _key_look(kind, ring.background)
+                ring.set_lip(lip)
+                ring.paint(border=rim)
         elif element["type"] in self.COMMANDS and entry.get("switch") is None:
             if was_enabled != bool(is_enabled) or "painted" not in entry:
                 entry["painted"] = True
@@ -4396,10 +4898,14 @@ class TkPanelView(PanelView):
         is_unconfirmed, fault = bool(is_unconfirmed), str(fault or "").strip()
         if (is_unconfirmed, fault) == (self._is_unconfirmed, self._fault):
             return
+        was_marked = self._is_unconfirmed or bool(self._fault)
         self._is_unconfirmed, self._fault = is_unconfirmed, fault
         is_marked = is_unconfirmed or bool(fault)
         try:
-            self._mark.delete("all")
+            if not is_marked:
+                self._mark.delete("all")
+            elif not was_marked:
+                self._draw_flag()
             self._mark_text.configure(text=UNCONFIRMED_LINE if is_unconfirmed
                                       else FAULTED_LINE)
             self._mark_reason.configure(text=fault)
@@ -4408,9 +4914,6 @@ class TkPanelView(PanelView):
             else:
                 self._mark_reason.pack_forget()
             if is_marked:
-                size = _lamp_px()
-                self._mark.create_rectangle(2, 2, size - 2, size - 2,
-                                            fill=theme.SIGNAL, outline=theme.SIGNAL)
                 self._mark_row.pack(fill="x", padx=self._inset, pady=(0, GAP),
                                     after=self._head_ring.outer)
             else:
@@ -4421,6 +4924,33 @@ class TkPanelView(PanelView):
         events.debug("Entry Hazard Changed", f"{self.name} unconfirmed="
                      f"{is_unconfirmed} faulted={bool(fault)}", source=SOURCE)
         self._paint_health()
+
+    def _draw_flag(self):
+        """The tripped flag: an ink frame, the SIGNAL flag in its window,
+        an ink hatch across it (`theme.FLAG`). Tk draws it in place; the
+        Web's 200 ms drop is the one authored motion and stays Web-only."""
+        canvas = self._mark
+        width, height = (_design_px(v) for v in theme.FLAG["size"])
+        inset = SPACE[0]
+        window = (inset, inset, width - inset, height - inset)
+        self._flag_draws += 1
+        try:
+            canvas.delete("all")
+            canvas.create_rectangle(0, 0, width - 1, height - 1, fill=theme.FLAG["frame"],
+                                    outline=theme.FLAG["frame"], tags=("frame",))
+            canvas.create_rectangle(*window, fill=theme.FLAG["fill"],
+                                    outline=theme.FLAG["fill"], tags=("flag",))
+            # Three hatch bars at the Web's slope, cut to the window.
+            step = width / 3
+            for index in range(3):
+                x = index * step - inset
+                segment = _clip_line((x, height + inset), (x + height * 2 / 3, -inset),
+                                     window)
+                if segment is not None:
+                    canvas.create_line(*segment, fill=theme.FLAG["hatch"],
+                                       width=_design_px(SPACE[0]), tags=("hatch",))
+        except Exception as exc:
+            events.debug("Flag Draw Failed", str(exc), source=SOURCE, exception=exc)
 
     def _confirm(self, prompt):
         return _confirm(self.frame, prompt)
@@ -4796,6 +5326,7 @@ class TkDashboard(Dashboard):
         self._rail_items = {}        # name -> (ring, label)
         self._stop_seen = None       # (latched, unconfirmed, every) last drawn
         self._rail_marks = {}        # name -> (Canvas, _Tooltip) before its line
+        self._rail_lamps = {}        # name (None: Overview) -> its lamp slot
         self._faulted = ()           # models whose disable failed (O4), station order
         self._idle_lines = {}        # name -> the countdown line's widgets (Tier N)
         self._energized = ()         # `state()["energized"]` (O6), station order
@@ -4888,9 +5419,13 @@ class TkDashboard(Dashboard):
         except Exception as exc:
             events.debug("ttk Theme Not Set", str(exc), source=SOURCE, exception=exc)
             return
-        combo = dict(background=panel, foreground=text, arrowcolor=muted,
-                     lightcolor=panel, darkcolor=panel,
-                     padding=(SPACE[2], _field_pady() + 1),
+        # A select is a key (Signature): its face CAP, its rim and lip drawn
+        # by the frames around it (`_Ring(lip="key")`), so clam's own border
+        # is the face's colour.
+        cap = theme.CAP
+        combo = dict(background=cap, foreground=text, arrowcolor=text,
+                     lightcolor=cap, darkcolor=cap, bordercolor=cap,
+                     fieldbackground=cap, padding=(SPACE[2], _field_pady() + 1),
                      arrowsize=arrow, focuscolor=FOCUS_INK)
         settings = [
             (".", dict(background=base, foreground=text, font=_font(),
@@ -4909,9 +5444,8 @@ class TkDashboard(Dashboard):
                                    borderwidth=0, bordercolor=base, lightcolor=base,
                                    darkcolor=base, focuscolor=FOCUS_INK,
                                    focusthickness=FOCUS_PX)),
-            ("TCombobox", dict(combo, fieldbackground=panel, bordercolor=panel)),
-            (WELL_COMBO_STYLE, dict(combo, fieldbackground=base, bordercolor=base,
-                                    background=base, lightcolor=base, darkcolor=base)),
+            ("TCombobox", dict(combo)),
+            (WELL_COMBO_STYLE, dict(combo)),
             (CHECK_STYLE, dict(background=base, foreground=text,
                                indicatorbackground=base, indicatorforeground=text,
                                upperbordercolor=muted, lowerbordercolor=muted,
@@ -4935,14 +5469,15 @@ class TkDashboard(Dashboard):
             ("TNotebook.Tab", dict(
                 background=[("selected", base), ("active", panel)],
                 foreground=[("selected", text), ("active", text)])),
+            # Disabled, the face is its ground (the ghost silhouette).
             ("TCombobox", dict(combo_map,
-                               fieldbackground=[("disabled", base), ("readonly", panel)],
-                               background=[("disabled", base), ("active", panel)],
-                               selectbackground=[("readonly", panel)])),
+                               fieldbackground=[("disabled", base), ("readonly", cap)],
+                               background=[("disabled", base), ("active", cap)],
+                               selectbackground=[("readonly", cap)])),
             (WELL_COMBO_STYLE, dict(combo_map,
-                                    fieldbackground=[("disabled", panel), ("readonly", base)],
-                                    background=[("disabled", panel), ("active", base)],
-                                    selectbackground=[("readonly", base)])),
+                                    fieldbackground=[("disabled", panel), ("readonly", cap)],
+                                    background=[("disabled", panel), ("active", cap)],
+                                    selectbackground=[("readonly", cap)])),
             (CHECK_STYLE, dict(
                 background=[("active", base)],
                 indicatorbackground=[("disabled", base), ("pressed", panel)],
@@ -5020,132 +5555,180 @@ class TkDashboard(Dashboard):
                          exception=exc)
 
     def _style_slider(self, style):
-        """The slider (E): a 4 px track in the other ground and an 18 px ink
-        thumb - muted while disabled or held. ttk's own scale is a bevelled
-        box, so its trough and slider are images here; the scale positions
-        whatever element is called `slider`."""
-        thumb, track = _design_px(18), _design_px(4)
+        """The slider (Signature): a sunk `FADER["groove"]` px groove in the
+        field ground and a fader cap from the key family - a CAP face, the
+        KEY_RIM rim, a 3 px KEY_LIP lip and an ink index line
+        (`theme.FADER`). Disabled, the cap is flat on the sheet in ghost
+        tones (EDGE rim and index, EDGE_SOFT lip). ttk's own scale is a
+        bevelled box, so its trough and slider are images here; the scale
+        positions whatever element is called `slider`. The ink fill left of
+        the cap is Web-only: a ttk scale has no fill element."""
+        width, height = (_design_px(v) for v in theme.FADER["cap"])
+        index_w, index_h = (max(1, _design_px(v)) for v in theme.FADER["index"])
+        groove = _design_px(theme.FADER["groove"])
+        lip = _lip_px("small")
 
-        def disc(colour):
-            image = tk.PhotoImage(width=thumb, height=thumb)
-            radius = thumb / 2
-            for y in range(thumb):
-                half = (radius ** 2 - (y + 0.5 - radius) ** 2) ** 0.5
-                x0, x1 = round(radius - half), round(radius + half)
-                if x1 > x0:
-                    image.put(colour, to=(x0, y, x1, y + 1))
+        def cap(face, rim, lip_colour, index):
+            image = tk.PhotoImage(width=width, height=height)
+            image.put(rim, to=(0, 0, width, height))
+            image.put(face, to=(1, 1, width - 1, height - 1 - lip))
+            image.put(lip_colour, to=(1, height - 1 - lip, width - 1, height - 1))
+            left = (width - index_w) // 2
+            top = max(1, (height - lip - index_h) // 2)
+            image.put(index, to=(left, top, left + index_w, top + index_h))
             return image
 
         # The trough is as tall as a target (L4): a press anywhere in the
-        # 24 px band moves the slider, not only on the 18 px thumb.
-        band = max(thumb, MIN_TARGET_PX)
+        # band moves the slider, not only on the cap.
+        band = max(height, MIN_TARGET_PX)
 
         def rail(colour):
-            image = tk.PhotoImage(width=3 * track, height=band)
-            top = (band - track) // 2
-            image.put(colour, to=(0, top, 3 * track, top + track))
+            image = tk.PhotoImage(width=3 * groove, height=band)
+            top = (band - groove) // 2
+            image.put(theme.KEY_RIM, to=(0, top, 3 * groove, top + groove))
+            image.put(colour, to=(0, top + 1, 3 * groove, top + groove - 1))
             return image
 
         try:
-            ink, muted = disc(theme.TEXT), disc(theme.MUTED)
+            live = cap(theme.CAP, theme.KEY_RIM, theme.KEY_LIP, theme.TEXT)
+            ghost = cap(theme.BACKGROUND, theme.EDGE, theme.EDGE_SOFT, theme.EDGE)
             for name, ground in ((SCALE_STYLE, theme.BACKGROUND),
                                  (WELL_SCALE_STYLE, theme.SURFACE)):
                 prefix = name.split(".")[0]
-                trough = rail(_counter(ground))
+                trough = rail(_field_ground(ground))
                 self._images += [trough]
                 style.element_create(f"{prefix}.Scale.trough", "image", trough,
-                                     border=(track, 0), sticky="ew")
-                style.element_create(f"{prefix}.Scale.slider", "image", ink,
-                                     ("disabled", muted), ("pressed", muted))
+                                     border=(groove, 0), sticky="ew")
+                style.element_create(f"{prefix}.Scale.slider", "image", live,
+                                     ("disabled", ghost))
                 style.layout(name, [(f"{prefix}.Scale.trough", {
                     "sticky": "ew", "children": [
                         (f"{prefix}.Scale.slider", {"side": "left", "sticky": ""})]})])
-            self._images += [ink, muted]
+            self._images += [live, ghost]
         except Exception as exc:
             events.debug("Slider Not Drawn", str(exc), source=SOURCE, exception=exc)
 
     # -- the rail ----------------------------------------------------------
     def _rail_width(self, is_narrow):
-        """248 px (200 under 1000 px), never narrower than the disc and its
-        focus ring (at 28 pt the disc grows)."""
+        """248 px (200 under 1000 px), never narrower than the nameplate
+        around the stop and its focus ring (at 28 pt the stop grows)."""
         want = RAIL_NARROW_PX if is_narrow else RAIL_PX
-        return max(want, self._stop.size + 2 * SPACE[5])
+        plate = self._stop.size + 2 * (PLATE_PADX + 1)
+        return max(want, plate + 2 * RAIL_PADX)
 
     def _build_rail(self):
-        """The rail: the station's name and, when simulated, the line that
-        says so; the stop disc with "Stop: Ctrl+." under it; the latched
-        line; the lost-link line; the model list; Setup and Quit at the foot.
-        The disc is packed before the list, so a long list at 28 pt can
-        never push it off (the list gives way first)."""
-        rail = self._rail = tk.Frame(self.root, background=theme.SURFACE,
-                                     padx=SPACE[5], pady=SPACE[6])
+        """The rail (Signature): the nameplate - the station's name and,
+        when simulated, the line that says so; the stop; "Stop: Ctrl+."
+        with the chord as two keycaps; the latched line - then the lost-link
+        line, the idle lines, the page list, and Setup and Quit at the foot.
+        The plate is packed before the list, so a long list at 28 pt can
+        never push the stop off (the list gives way first)."""
+        rail = self._rail = tk.Frame(self.root, background=RAIL_FACE,
+                                     padx=RAIL_PADX, pady=SPACE[6])
         rail.pack(side="left", fill="y")
-        head = tk.Frame(rail, background=theme.SURFACE)
+        # The nameplate: one CAP plate with a 1 px KEY_RIM edge (the Web's
+        # engraved double frame and fasteners are dropped in Tk).
+        self._plate_edge = tk.Frame(rail, background=theme.KEY_RIM, padx=1, pady=1)
+        self._plate_edge.pack(side="top", fill="x")
+        plate = self._plate = tk.Frame(self._plate_edge, background=PLATE_FACE,
+                                       padx=PLATE_PADX, pady=SPACE[4])
+        plate.pack(fill="both", expand=True)
+        head = tk.Frame(plate, background=PLATE_FACE, padx=SPACE[2])
         head.pack(side="top", fill="x")
         tk.Label(head, text=STATION_TITLE, font=_font(STEP_1, bold=True), anchor="w",
-                 background=theme.SURFACE, foreground=theme.TEXT).pack(fill="x")
+                 background=PLATE_FACE, foreground=theme.TEXT).pack(fill="x")
         self._sim_line = tk.Label(head, text="", font=_caption_font(), anchor="w",
-                                  justify="left", wraplength=RAIL_PX - 2 * SPACE[5],
-                                  background=theme.SURFACE, foreground=theme.MUTED)
-        self._stop = _Mushroom(rail, self._on_stop_clicked, background=theme.SURFACE)
+                                  justify="left", wraplength=RAIL_PX - 2 * SPACE[6],
+                                  background=PLATE_FACE, foreground=theme.MUTED)
+        tk.Frame(plate, height=1, background=theme.RULE).pack(
+            side="top", fill="x", padx=SPACE[2], pady=(SPACE[3], 0))
+        self._stop = _Mushroom(plate, self._on_stop_clicked, background=PLATE_FACE)
         self._stop_button = self._stop.canvas
-        self._stop_button.pack(side="top", pady=(SPACE[5], 0))
-        self._stop_bar = rail
+        self._stop_button.pack(side="top", pady=(SPACE[2], 0))
+        self._stop_bar = plate
         self._stop_key = STOP_KEY_NAME
-        self._stop_hint = tk.Label(rail, text=f"{STOP_LINE}: {self._stop_key}",
-                                   font=_caption_font(), background=theme.SURFACE,
-                                   foreground=theme.MUTED)
-        self._stop_hint.pack(side="top", pady=(0, SPACE[4]))
+        self._stop_hint = self._build_chord(plate)
+        self._stop_hint.pack(side="top", pady=(0, SPACE[1]))
         self._stop.tooltip.text = self._hint(False)
-        # "Stopped: every model latched", with a signal square: packed only
-        # while the latch holds.
-        size = _lamp_px()
-        self._latched_row = tk.Frame(rail, background=theme.SURFACE)
-        latched_mark = tk.Canvas(self._latched_row, width=size, height=size,
-                                 background=theme.SURFACE, highlightthickness=0)
-        latched_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]), pady=SPACE[0])
-        try:
-            latched_mark.create_rectangle(2, 2, size - 2, size - 2, fill=theme.SIGNAL,
-                                          outline=theme.SIGNAL)
-        except Exception:
-            pass
+        # "Stopped: every model latched", led by the warning glyph: packed
+        # only while the latch holds.
+        self._latched_row = tk.Frame(plate, background=PLATE_FACE)
+        self._latched_mark = _mark_canvas(self._latched_row, PLATE_FACE)
+        self._latched_mark.pack(side="left", anchor="n", padx=(SPACE[1], SPACE[2]),
+                                pady=SPACE[0])
+        _draw_warning(self._latched_mark, theme.SIGNAL)
         self._latched_line = tk.Label(self._latched_row, text=LATCHED_LINE,
                                       font=_font(bold=True), anchor="w", justify="left",
                                       wraplength=RAIL_PX - 3 * SPACE[5],
-                                      background=theme.SURFACE, foreground=theme.TEXT)
+                                      background=PLATE_FACE, foreground=theme.TEXT)
         self._latched_line.pack(side="left", fill="x")
-        # The station line: which model lost which link (F3), in ink with a
-        # signal mark; packed only while a link is lost.
-        self._station_row = tk.Frame(rail, background=theme.SURFACE)
-        self._station_mark = tk.Canvas(self._station_row, width=size, height=size,
-                                       background=theme.SURFACE, highlightthickness=0)
+        # The station line: which model lost which link (F3), in ink led by
+        # the warning glyph in SIGNAL; packed only while a link is lost.
+        self._station_row = tk.Frame(rail, background=RAIL_FACE)
+        self._station_mark = _mark_canvas(self._station_row, RAIL_FACE)
         self._station_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]),
                                 pady=SPACE[0])
         self._station_line = tk.Label(self._station_row, text="", font=_font(),
                                       anchor="w", justify="left",
                                       wraplength=RAIL_PX - 3 * SPACE[5],
-                                      background=theme.SURFACE, foreground=theme.TEXT)
+                                      background=RAIL_FACE, foreground=theme.TEXT)
         self._station_line.pack(side="left", fill="x")
         # The idle countdown (Tier N): one line per probe about to power
-        # down, with Extend; packed under the disc's lines, above the model
-        # list, only while there is one. Never a modal, never over the disc.
-        self._idle_box = tk.Frame(rail, background=theme.SURFACE)
-        # The model list is CREATED before the foot, so Tab reaches the
+        # down, with Extend; packed under the plate, above the page list,
+        # only while there is one. Never a modal, never over the stop.
+        self._idle_box = tk.Frame(rail, background=RAIL_FACE)
+        # The page list is CREATED before the foot, so Tab reaches the
         # models before Setup and Quit, as the eye does (TK7-7); the foot is
         # PACKED first, so a long list at 28 pt gives way before it does.
-        self._model_list = tk.Frame(rail, background=theme.SURFACE)
-        # Setup and Quit, at the foot: packed before the list takes the rest.
-        foot = tk.Frame(rail, background=theme.SURFACE)
+        self._model_list = tk.Frame(rail, background=RAIL_FACE)
+        # Setup (a neutral key) and Quit (a text key), at the foot.
+        foot = tk.Frame(rail, background=RAIL_FACE)
         foot.pack(side="bottom", fill="x")
-        self._setup_press = _Press(foot, "Setup", self._on_setup_clicked,
-                                   theme.SURFACE)
+        self._setup_press = _Press(foot, "Setup", self._on_setup_clicked, RAIL_FACE)
         self._setup_press.frame.pack(side="left")
         self._setup_button = self._setup_press.widget
-        self._quit_press = _Press(foot, "Quit", self._on_quit_clicked,
-                                  theme.SURFACE, ghost=True)
+        self._quit_press = _Press(foot, "Quit", self._on_quit_clicked, RAIL_FACE,
+                                  ghost=True)
         self._quit_press.frame.pack(side="left", padx=(SPACE[4], 0))
-        self._model_list.pack(side="top", fill="x", pady=(SPACE[4], 0))
+        self._model_list.pack(side="top", fill="x", pady=(SPACE[5], 0))
         self._set_rail_width(False)
+
+    def _build_chord(self, parent):
+        """"Stop:" in muted, then the chord as two small keycaps joined by
+        "+" (Signature): each a CAP face, a KEY_RIM rim and a 2 px lip.
+        The words read "Stop: Ctrl+." (`chord_text`). -> the row"""
+        row = tk.Frame(parent, background=PLATE_FACE)
+        self._chord_parts = []
+
+        def words(text, colour, font):
+            label = tk.Label(row, text=text, font=font, background=PLATE_FACE,
+                             foreground=colour, padx=0)
+            label.pack(side="left", padx=(0, SPACE[0]))
+            self._chord_parts.append(label)
+
+        def keycap(text):
+            lip = tk.Frame(row, background=theme.KEY_LIP)
+            lip.pack(side="left", padx=(0, SPACE[0]))
+            rim = tk.Frame(lip, background=theme.KEY_RIM, padx=1, pady=1)
+            rim.pack(pady=(0, _lip_px("kbd")))
+            cap = tk.Label(rim, text=text, font=_font(SMALL, bold=True),
+                           background=theme.CAP, foreground=theme.TEXT,
+                           padx=SPACE[1], pady=0)
+            cap.pack()
+            self._chord_parts.append(cap)
+
+        words(f"{STOP_LINE}:", theme.MUTED, _caption_font())
+        first, second = self._stop_key.split("+", 1)
+        keycap(first)
+        words("+", theme.TEXT, _caption_font())
+        keycap(second)
+        return row
+
+    @property
+    def chord_text(self):
+        """What the chord row says, read off its parts: "Stop: Ctrl+."."""
+        parts = [str(part.cget("text")) for part in getattr(self, "_chord_parts", ())]
+        return f"{parts[0]} {''.join(parts[1:])}" if parts else ""
 
     def _set_rail_width(self, is_narrow):
         if is_narrow == self._is_narrow:
@@ -5166,23 +5749,31 @@ class TkDashboard(Dashboard):
                 pass
 
     def _rail_line(self, text, on_press, mark_name=None):
-        """One line of the rail's page list. A model's line (`mark_name`)
-        carries a small square before its name while that model is latched
-        (L1): the square sits in the line's own ground, left of the words."""
-        ring = _Ring(self._model_list, theme.SURFACE, border=theme.SURFACE)
+        """One line of the rail's page list (Signature): the lamp slot, then
+        the name. The slot is lit ink on the shown page, SIGNAL for a model
+        whose stop did not confirm (or whose disable failed), and hidden
+        otherwise - its space kept, so the names align. A model's line
+        (`mark_name`) also carries its latched square and its energized
+        ring (L1, O6) before the name."""
+        ring = _Ring(self._model_list, RAIL_FACE, border=RAIL_FACE)
+        width, height = _lamp_size(rail=True)
+        lamp = tk.Canvas(ring.inner, width=width, height=height,
+                         background=RAIL_FACE, highlightthickness=0)
+        lamp.pack(side="left", padx=(SPACE[3], 0))
+        self._rail_lamps[mark_name] = lamp
         label = tk.Label(ring.inner, text=text, font=_font(), anchor="w",
-                         background=theme.SURFACE, foreground=theme.TEXT,
+                         background=RAIL_FACE, foreground=theme.TEXT,
                          padx=SPACE[3], pady=_target_pady(), cursor="hand2",
                          takefocus=1, highlightthickness=0)
         if mark_name is not None:
             size = _lamp_px()
             mark = tk.Canvas(ring.inner, width=size, height=size,
-                             background=theme.SURFACE, highlightthickness=0)
-            mark.pack(side="left", padx=(SPACE[3], 0))
+                             background=RAIL_FACE, highlightthickness=0)
+            mark.pack(side="left", padx=(SPACE[1], 0))
             self._rail_marks[mark_name] = (mark, _Tooltip(label))
             # The energized ring (O6) sits after the stop mark, in ink.
             energy = tk.Canvas(ring.inner, width=size, height=size,
-                               background=theme.SURFACE, highlightthickness=0)
+                               background=RAIL_FACE, highlightthickness=0)
             energy.pack(side="left", padx=(SPACE[1], 0))
             self._energy_marks[mark_name] = energy
         label.pack(fill="x")
@@ -5207,6 +5798,7 @@ class TkDashboard(Dashboard):
                 pass
         self._rail_items = {}
         self._rail_marks = {}
+        self._rail_lamps = {}
         self._energy_marks = {}
         self._overview_item = None
         names = [n for n in self._panels if n != self.SETUP_TAB]
@@ -5224,27 +5816,50 @@ class TkDashboard(Dashboard):
         self._paint_rail()
         self._paint_rail_marks()
 
+    def _rail_ground(self, name):
+        """The shown page is a sunk SURFACE pad; every other line the rail."""
+        is_current = self._shown_page != self.SETUP_TAB and name == self._opened
+        return theme.SURFACE if is_current else RAIL_FACE
+
+    def _rail_lamp_state(self, name):
+        """A line's lamp slot: SIGNAL for a model whose stop did not confirm
+        or whose disable failed; ink on the shown page; else hidden."""
+        seen = self._stop_seen or ((), (), False)
+        if name is not None and (name in (seen[1] or ()) or name in self._faulted):
+            return "unconfirmed"
+        if self._rail_ground(name) == theme.SURFACE:
+            return "on"
+        return "hidden"
+
+    def _paint_rail_lamp(self, name):
+        lamp = self._rail_lamps.get(name)
+        if lamp is not None:
+            _draw_lamp(lamp, self._rail_lamp_state(name), self._rail_ground(name),
+                       rail=True)
+
     def _paint_rail(self):
-        """The shown page is highlighted while the sheet is shown - the
-        overview or the device's model; Setup is ink-filled while its page
-        is."""
+        """The shown page is a sunk SURFACE pad with its lamp lit while the
+        sheet is shown - the overview or the device's model; Setup is down
+        in ink while its page is."""
         on_sheet = self._shown_page != self.SETUP_TAB
-        lines = [(name, label) for name, (_ring, label) in self._rail_items.items()]
+        lines = [(name, ring, label) for name, (ring, label) in self._rail_items.items()]
         if self._overview_item is not None:
-            lines.append((None, self._overview_item[1]))
-        for name, label in lines:
-            is_current = on_sheet and name == self._opened
-            ground = theme.BACKGROUND if is_current else theme.SURFACE
+            lines.append((None, *self._overview_item))
+        for name, ring, label in lines:
+            ground = self._rail_ground(name)
+            is_current = ground == theme.SURFACE
             try:
                 label.configure(background=ground, font=_font(bold=is_current))
+                ring.inner.configure(background=ground)
                 mark = self._rail_marks.get(name) if name else None
                 if mark is not None:
                     # The marks sit in the line's own ground, lit or not.
                     mark[0].configure(background=ground)
-                    mark[0].master.configure(background=ground)
                     self._energy_marks[name].configure(background=ground)
             except Exception:
                 pass
+            ring.background = ring.border = ground
+            self._paint_rail_lamp(name)
         self._setup_press.set_active(not on_sheet)
 
     def _on_rail_pressed(self, name):
@@ -5548,9 +6163,7 @@ class TkDashboard(Dashboard):
         one was up."""
         self._band = tk.Frame(self._main, background=theme.BACKGROUND,
                               padx=SPACE[10], pady=SPACE[3])
-        size = _lamp_px()
-        self._band_mark = tk.Canvas(self._band, width=size, height=size,
-                                    background=theme.BACKGROUND, highlightthickness=0)
+        self._band_mark = _mark_canvas(self._band, theme.BACKGROUND)
         self._band_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]),
                              pady=SPACE[1])
         self._band_ack = _Press(self._band, "Acknowledge", self._acknowledge,
@@ -5562,11 +6175,7 @@ class TkDashboard(Dashboard):
                                    foreground=theme.TEXT)
         self._band_text.pack(side="left", fill="x", expand=True)
         self._band.bind("<Configure>", self._on_band_resized)
-        try:
-            self._band_mark.create_rectangle(2, 2, size - 2, size - 2,
-                                             fill=theme.SIGNAL, outline=theme.SIGNAL)
-        except Exception:
-            pass
+        _draw_warning(self._band_mark, theme.SIGNAL)
 
     def _on_band_resized(self, event=None):
         """The band's words wrap in what the mark and Acknowledge leave."""
@@ -5627,9 +6236,10 @@ class TkDashboard(Dashboard):
                 pass
 
     def _build_event_panel(self):
-        """The tray: status by exception (E). Warnings and errors only - a
-        hollow ink square before a warning, a solid signal square before an
-        error, and the severity's word - folded to the latest one line;
+        """The tray: status by exception (E). Warnings and errors only - the
+        folded line led by the warning glyph (ink for a warning, SIGNAL for
+        an error; Signature), the history by a hollow ink square or a solid
+        signal one, and the severity's word - folded to the latest one line;
         "Show events" unfolds `EVENT_LOG_LINES` of them. Info goes to the
         log file, not here: normal is silence."""
         frame = tk.Frame(self._main, background=theme.BACKGROUND)
@@ -5646,10 +6256,7 @@ class TkDashboard(Dashboard):
         # beside it. Unfolded: the history, scrolled to its end.
         self._latest = tk.Frame(body, background=theme.BACKGROUND)
         self._latest.pack(side="left", fill="x", expand=True, padx=(0, SPACE[5]))
-        size = _lamp_px()
-        self._latest_mark = tk.Canvas(self._latest, width=size, height=size,
-                                      background=theme.BACKGROUND,
-                                      highlightthickness=0)
+        self._latest_mark = _mark_canvas(self._latest, theme.BACKGROUND)
         self._latest_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]),
                                pady=SPACE[1])
         self._latest_text = tk.Label(self._latest, text="", font=_font(), anchor="w",
@@ -5991,14 +6598,14 @@ class TkDashboard(Dashboard):
 
     def _idle_line(self, name):
         """"Stepper Probe powers down in 42 s." in ink, and Extend under it."""
-        row = tk.Frame(self._idle_box, background=theme.SURFACE)
+        row = tk.Frame(self._idle_box, background=RAIL_FACE)
         row.pack(side="top", fill="x", pady=(0, SPACE[3]))
         text = tk.Label(row, text="", font=_font(), anchor="w", justify="left",
                         wraplength=self._rail_width(bool(self._is_narrow)) - 3 * SPACE[5],
-                        background=theme.SURFACE, foreground=theme.TEXT)
+                        background=RAIL_FACE, foreground=theme.TEXT)
         text.pack(side="top", fill="x")
         extend = _Press(row, EXTEND_WORD, lambda n=name: self._on_extend(n),
-                        theme.SURFACE)
+                        RAIL_FACE)
         extend.frame.pack(side="top", anchor="w", pady=(SPACE[1], 0))
         tooltip = _Tooltip(extend.widget)
         tooltip.text = f"{EXTEND_WORD} {name}"
@@ -6016,9 +6623,10 @@ class TkDashboard(Dashboard):
     def _paint_rail_marks(self, latched=None, unconfirmed=None):
         """A latched model's rail line: an ink square before its name and
         the tooltip "Stopped"; one whose stop did not confirm, or whose
-        disable failed (O4): a signal square with a "!" in it (O16) and
-        "Did not confirm the stop" / "Disable failed" (L1). Shape and words,
-        never colour alone."""
+        disable failed (O4): its lamp slot in SIGNAL (Signature, rule 4)
+        and the warning glyph in SIGNAL where the "!" square was (O16,
+        rule 6), and "Did not confirm the stop" / "Disable failed" (L1).
+        Shape and words, never colour alone."""
         if latched is None:
             seen = self._stop_seen or ((), (), False)
             latched, unconfirmed = seen[0], seen[1]
@@ -6047,16 +6655,14 @@ class TkDashboard(Dashboard):
                                            outline=theme.TEXT, fill="", width=2)
             except Exception:
                 pass
+            self._paint_rail_lamp(name)
             try:
                 canvas.delete("all")
                 if fill == theme.SIGNAL:
-                    # The alarm is bigger than a stop's square and carries a
+                    # The alarm carries a shape of its own, the warning
                     # glyph: told apart from "stopped" without colour (A11Y-6).
-                    canvas.create_rectangle(1, 1, size - 1, size - 1,
-                                            fill=fill, outline=fill)
-                    canvas.create_text(size / 2, size / 2, text=RAIL_ALARM_GLYPH,
-                                       fill=theme.colors("danger")[1],
-                                       font=_font(SMALL, bold=True))
+                    _draw_glyph(canvas, "warning", 0, 0, size, fill,
+                                tags=("warning",))
                 elif fill is not None:
                     inset = max(3, size // 4)
                     canvas.create_rectangle(inset, inset, size - inset, size - inset,
@@ -6091,14 +6697,10 @@ class TkDashboard(Dashboard):
         if text == self._station_text:
             return
         self._station_text = text
-        size = _lamp_px()
         try:
             self._station_line.configure(text=text)
-            self._station_mark.delete("all")
+            _draw_warning(self._station_mark, theme.SIGNAL if text else None)
             if text:
-                self._station_mark.create_rectangle(2, 2, size - 2, size - 2,
-                                                    fill=theme.SIGNAL,
-                                                    outline=theme.SIGNAL)
                 self._station_row.pack(side="top", fill="x", before=self._model_list,
                                        pady=(0, SPACE[4]))
             else:
@@ -6339,20 +6941,15 @@ class TkDashboard(Dashboard):
         # the folded line.
         latest = next((event for event in reversed(self._tray_events)
                        if event.title != IDLE_SOON_TITLE), None)
-        size = _lamp_px()
         try:
-            self._latest_mark.delete("all")
             if latest is None:
+                _draw_warning(self._latest_mark, None)
                 self._latest_text.configure(text="")
             else:
+                # The tray line is led by the warning glyph (Signature, rule
+                # 6): SIGNAL for an error, ink for a warning.
                 severity = latest.severity
-                color = theme.SEVERITY_MARK[severity]
-                hollow = severity in theme.SEVERITY_MARK_HOLLOW
-                inset = 3
-                self._latest_mark.create_rectangle(
-                    inset, inset, size - inset, size - inset,
-                    fill="" if hollow else color, outline=color,
-                    width=2 if hollow else 1)
+                _draw_warning(self._latest_mark, theme.SEVERITY_MARK[severity])
                 self._latest_text.configure(text=_event_line(latest),
                                             foreground=theme.SEVERITY_INK[severity])
         except Exception:
