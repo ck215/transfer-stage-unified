@@ -1,33 +1,42 @@
-/* The station's Web view: the Bench sheet, tiered (owner ruling 2026-09-25,
-   docs/rebuild/DESIGN_BRIEF.md; canvas row E).
+/* The station's Web view: the Bench sheet, tiered (owner ruling 2026-09-25),
+   drawn in the "Signature" look (owner ruling 2026-09-27;
+   handoff/tactile3-Signature.md, docs/rebuild/DESIGN_BRIEF.md "Signature").
 
-   Every colour is a var() from /api/theme.css (src/views/theme.py): six
-   tokens and white on the stop's face. Signal red is the stop, the latch, a
-   fault and the unconfirmed mark; trace blue is a number that is CHANGING
-   and a plot line, nothing else. Depth is tone steps and rules: no
-   gradients, shadows, blur or textures. A tone between two tokens is mixed
-   from them with color-mix; this file names no colour of its own. */
+   Every colour is a var() from /api/theme.css (src/views/theme.py): the six
+   palette tokens and the faces, rims and lips theme.mix() derives from
+   them. Signal red is the stop, the latch, a fault and the unconfirmed
+   marks; trace blue is a number that is CHANGING and a plot line, nothing
+   else. Depth is tone steps, rules and the key lip: every raised part is
+   one family - a face, a 1.5 px KEY_RIM outline drawn as an inset line,
+   and a KEY_LIP bottom border - and pressed or latched the lip folds to
+   1 px while the face drops by the difference, so a key's height never
+   changes. The two shadow tokens (--shadow-raised, --shadow-inset) and
+   --engrave are garnish: no state is carried by them. No gradients, no
+   textures. A tone between two tokens is mixed from them with color-mix;
+   this file names no colour of its own. The glyphs are the theme's one
+   path table (theme.ICONS), served as --icon-<name> mask images. */
 
 /* -- faces -------------------------------------------------------------- */
-/* Public Sans for text (one variable file, weights 400 to 600) and Archivo
-   at 118 % width, 600, for numerals and the two headlines. Self-hosted from
-   static/fonts (Google Fonts' latin subsets), swapped in when loaded, with
-   the theme's fallback stack underneath (--font-family, --numeral-family). */
+/* Figtree for text (400 to 700) and Rubik 600 for numerals and the two
+   headlines (500 for typed values). Self-hosted from static/fonts: the
+   latin subsets Google Fonts serves for
+   family=Figtree:wght@400;500;600;700&family=Rubik:wght@500;600, which are
+   one variable file per family. The OFL notices sit beside them. The
+   theme's fallback stack is underneath (--font-family, --numeral-family). */
 @font-face {
-  font-family: "Public Sans";
+  font-family: "Figtree";
   font-style: normal;
-  font-weight: 400 600;
+  font-weight: 400 700;
   font-display: swap;
-  src: url("/fonts/public-sans-latin.woff2") format("woff2");
+  src: url("/fonts/figtree-latin.woff2") format("woff2");
 }
 
 @font-face {
-  font-family: "Archivo";
+  font-family: "Rubik";
   font-style: normal;
-  font-weight: 600;
-  font-stretch: 118%;
+  font-weight: 500 600;
   font-display: swap;
-  src: url("/fonts/archivo-semiexpanded-600-latin.woff2") format("woff2");
+  src: url("/fonts/rubik-latin.woff2") format("woff2");
 }
 
 /* -- the page's own measures -------------------------------------------- */
@@ -48,6 +57,13 @@
   --t-readout: 1.375rem;
   --t-face: 1.875rem;
   --t-headline: 2.25rem;
+  /* Signature: the nameplate's name (19 px), the chord's keycaps (11.5 px)
+     and the stop's idle legend (32 px). */
+  --t-plate: 1.1875rem;
+  --t-kbd: 0.71875rem;
+  --t-stop: 2rem;
+  --t-stop-narrow: 1.75rem;
+  --t-field: 1rem;
   /* The rail is a column 248 px wide (200 under 1000 px); on a phone it is
      a bar across the top. What the fixed layers keep clear of is
      --rail-left / --rail-top, which the client MEASURES and overwrites
@@ -56,13 +72,26 @@
   --rail-left: var(--rail-w);
   --rail-top: 0px;
   --stop-d: var(--stop-diameter);
+  --stop-c: var(--stop-collar);
+  --stop-k: var(--stop-key);
   --tray-h: 3.5rem;
   /* Touch targets: a rail or tray control is at least 44 px on its short
      side, a control on the sheet at least 36. */
   --hit: 2.75rem;
   --hit-panel: 2.25rem;
   --sheet-x: 40px;
-  --edge: 1.5px;
+  --line: 1.5px;
+  /* Signature's key family, drawn from the theme's tokens. The rim is an
+     inset line so the lip (a real border-bottom) can fold without the
+     part's height changing; the top highlight is a CAP line inside it. */
+  --rim: inset 0 0 0 var(--key-rim-px) var(--key-rim);
+  --key-top: inset 0 3px 0 calc(-1 * var(--key-rim-px)) var(--cap);
+  --key-down: inset 0 3px 3px color-mix(in srgb, var(--text) 22%, transparent);
+  --key-drop: calc(var(--lip-key) - var(--lip-pressed));
+  --glyph: 1rem;
+  --stop-socket-shade: inset 0 3px 7px color-mix(in srgb, var(--text) 30%, transparent);
+  --stop-socket-shade-latched: inset 0 3px 8px color-mix(in srgb, var(--go-lip) 50%, transparent);
+  --highlight: color-mix(in srgb, var(--cap) 85%, transparent);
 }
 
 * { box-sizing: border-box; }
@@ -155,10 +184,78 @@ button, select, input[type="range"] {
   letter-spacing: -0.02em;
 }
 
+/* -- glyphs ------------------------------------------------------------- */
+/* The station's nine glyphs (theme.ICONS; rule 6), painted in the colour
+   of the text they sit beside: a box of currentColor masked by the glyph
+   the server serves as --icon-<name>. A key carries at most one, before
+   its legend. */
+.glyph {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: var(--glyph);
+  height: var(--glyph);
+  background: currentColor;
+  -webkit-mask: var(--g) center / contain no-repeat;
+  mask: var(--g) center / contain no-repeat;
+}
+
+.glyph-stop {
+  --g: var(--icon-stop);
+}
+.glyph-clear {
+  --g: var(--icon-clear);
+}
+.glyph-disclosure {
+  --g: var(--icon-disclosure);
+}
+.glyph-gamepad {
+  --g: var(--icon-gamepad);
+}
+.glyph-link {
+  --g: var(--icon-link);
+}
+.glyph-run {
+  --g: var(--icon-run);
+}
+.glyph-home {
+  --g: var(--icon-home);
+}
+.glyph-download {
+  --g: var(--icon-download);
+}
+.glyph-warning {
+  --g: var(--icon-warning);
+}
+
+/* The warning glyph as a mark before a line (rule 6: it replaces the red
+   square). A pseudo-element takes it by this one rule; the line says which
+   colour. */
+.rail-latched::before,
+.rail-alert-line::before,
+.card-alert::before,
+.link-state.is-down::before,
+.status::before,
+span.value.role-danger:not(.is-empty)::before,
+.tray-latest.severity-warning::before,
+.tray-latest.severity-error::before,
+.event.severity-warning::before,
+.event.severity-error::before {
+  content: "";
+  flex: 0 0 auto;
+  display: inline-block;
+  width: var(--glyph);
+  height: var(--glyph);
+  border: 0;
+  background: var(--error-mark);
+  -webkit-mask: var(--icon-warning) center / contain no-repeat;
+  mask: var(--icon-warning) center / contain no-repeat;
+}
+
 /* -- the rail ------------------------------------------------------------ */
 /* Fixed down the left, full height, and above everything this page opens:
    the stop is the one control that may never be dimmed, covered or
-   scrolled away, so every layer that opens starts beside it (F1, WDG-1). */
+   scrolled away, so every layer that opens starts beside it (F1, WDG-1).
+   Signature: the raised RAIL face, casting onto the sheet. */
 .rail {
   position: fixed;
   top: 0;
@@ -168,37 +265,88 @@ button, select, input[type="range"] {
   width: var(--rail-w);
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
-  padding: var(--space-7) var(--space-6) var(--space-6);
-  background: var(--surface);
+  gap: var(--space-5);
+  padding: var(--space-6) var(--space-6) var(--space-6);
+  background: var(--rail);
+  box-shadow: 1px 0 0 color-mix(in srgb, var(--text) 10%, transparent),
+              6px 0 18px -8px color-mix(in srgb, var(--text) 22%, transparent);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
+/* The nameplate: one CAP plate with an engraved double frame (a KEY_RIM
+   line, a CAP gap, a 14 % ink hairline) and four drawn fasteners. */
+.plate {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-5);
+  border-radius: var(--radius-plate);
+  background: var(--cap);
+  box-shadow: var(--rim),
+              inset 0 0 0 4px var(--cap),
+              inset 0 0 0 5px color-mix(in srgb, var(--text) 14%, transparent),
+              0 1px 0 var(--highlight);
+}
+
+.screw {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.25px solid var(--edge);
+  background: var(--rail);
+}
+
+.screw::after {
+  content: "";
+  position: absolute;
+  left: 0.5px;
+  right: 0.5px;
+  top: 1.6px;
+  height: 1.25px;
+  background: var(--edge);
+  transform: rotate(-35deg);
+}
+
+.screw-tl { left: var(--space-3); top: var(--space-3); }
+.screw-tr { right: var(--space-3); top: var(--space-3); }
+.screw-bl { left: var(--space-3); bottom: var(--space-3); }
+.screw-br { right: var(--space-3); bottom: var(--space-3); }
+
 .rail-head {
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  padding: var(--space-1) var(--space-3) var(--space-4);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
+  box-shadow: 0 1px 0 var(--highlight);
 }
 
 .station-name {
-  font-size: var(--t-rail);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 1.25;
+  font-size: var(--t-plate);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
 }
 
 .rail-note {
   font-size: var(--t-cap);
+  font-weight: 500;
   color: var(--muted);
   line-height: 1.3;
+  text-shadow: var(--engrave);
 }
 
 .rail-note[hidden] { display: none; }
 
 /* The link line is silent while the station answers (status by exception).
-   When it stops answering it says since when, in ink beside a hollow
-   signal mark, because a station that does not answer is a fault. */
+   When it stops answering it says since when, in ink beside the warning
+   glyph in signal, because a station that does not answer is a fault. */
 .link-state {
   font-size: var(--t-cap);
   line-height: 1.3;
@@ -213,14 +361,7 @@ button, select, input[type="range"] {
   font-weight: 600;
 }
 
-.link-state.is-down::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 0.625rem;
-  height: 0.625rem;
-  margin-top: 0.2rem;
-  border: 2px solid var(--signal);
-}
+.link-state.is-down::before { background: var(--signal); }
 
 /* Quit is deliberate, not a fault: the sentence is the one thing left to
    read on the page, ink at readout size (I5, UXPM5-4); it takes focus only
@@ -237,118 +378,189 @@ button, select, input[type="range"] {
 
 .link-state.is-shut-down:focus { outline: none; }
 
-/* -- the stop: A's disc, set in the rail --------------------------------- */
+/* -- the stop: a red key in an ink collar -------------------------------- */
 .stop-block {
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
-/* The ring is a signal band with a sheet-toned gap inside it; latched, the
-   band thickens and the gap closes up by the same amount, so the disc does
-   not move under the pointer. */
+/* The collar (theme.STOP): a KEY_RIM-edged ink ring holding a sunk
+   SURFACE socket. The socket band shows between the key and the collar.
+   Latched (every model) the band floods SKIRT and the collar turns SIGNAL
+   (7.11:1 between the two bands): from across the room the idle stop is a
+   bullseye, the latched one a solid red coin. The size never changes, so
+   the key does not move under the pointer except by its own drop. */
 .stop-ring {
+  --stop-inset: calc((var(--stop-d) - 2 * var(--stop-c) - var(--stop-k)) / 2);
+  position: relative;
   flex: 0 0 auto;
-  width: calc(var(--stop-d) + 2 * (var(--stop-ring) + var(--stop-gap)));
-  height: calc(var(--stop-d) + 2 * (var(--stop-ring) + var(--stop-gap)));
-  padding: var(--stop-gap);
-  border: var(--stop-ring) solid var(--signal);
+  width: var(--stop-d);
+  height: var(--stop-d);
+  border: var(--stop-c) solid var(--stop-collar-fill);
   border-radius: 50%;
-  background: var(--bg);
-  transition: border-width 150ms ease-out, padding 150ms ease-out;
+  background: var(--stop-socket);
+  box-shadow: var(--stop-socket-shade),
+              0 0 0 var(--key-rim-px) var(--stop-collar-edge),
+              0 2px 0 var(--key-rim-px) var(--highlight);
+  transition: background-color var(--motion-clear) ease-out,
+              border-color var(--motion-clear) ease-out;
 }
 
 .stop-ring.is-latched {
-  border-width: var(--stop-ring-latched);
-  padding: calc(var(--stop-ring) + var(--stop-gap) - var(--stop-ring-latched));
+  border-color: var(--stop-collar-latched);
+  background: var(--stop-socket-latched);
+  box-shadow: var(--stop-socket-shade-latched),
+              0 0 0 var(--key-rim-px) var(--stop-skirt-fill),
+              0 2px 0 var(--key-rim-px) var(--highlight);
+  transition-duration: var(--motion-latch);
 }
 
-/* Always red, in every state: the standing rule that the stop looks the
-   same everywhere is kept (the "quiet while nothing moves" idea is not
-   applied; the owner has not ruled on it). White on it is 5.99:1. */
+/* Signature: the stop's keyboard focus is a 2 px ink ring outside the
+   collar - never the collar itself, which is what "latched" looks like. */
+.stop-ring:has(.mushroom:focus-visible) {
+  outline: 2px solid var(--stop-focus);
+  outline-offset: 3px;
+}
+
+/* The key: always red, in every state (white on it 5.98:1). Idle it stands
+   `--stop-lift` above centre with its SKIRT showing below; latched it is
+   down - `--stop-drop-latched` lower, no skirt, a dark shade across the top
+   of the face - and the release glyph shows above "Clear". */
 .mushroom {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  left: var(--stop-inset);
+  top: calc(var(--stop-inset) - var(--stop-lift));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  width: var(--stop-k);
+  height: var(--stop-k);
   padding: 0;
   border: 0;
   border-radius: 50%;
   background: var(--danger-bg);
   color: var(--danger-fg);
-  font-size: var(--t-face);
+  font-size: var(--t-stop);
   line-height: 1;
   cursor: pointer;
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--stop-legend) 30%, transparent),
+              0 var(--stop-skirt) 0 var(--stop-skirt-fill),
+              0 calc(var(--stop-skirt) + 5px) 14px -3px color-mix(in srgb, var(--text) 45%, transparent);
+  transition: top var(--motion-clear) ease-out, box-shadow var(--motion-clear) ease-out;
 }
 
-.mushroom:hover { background: color-mix(in srgb, var(--signal) 88%, var(--text)); }
+.mushroom:hover { background: color-mix(in srgb, var(--signal) 92%, var(--text)); }
 
-.mushroom:active { background: color-mix(in srgb, var(--signal) 78%, var(--text)); }
-
-/* The stop's keyboard focus: an ink ring in the gap between the disc and
-   its band, never the band itself, which is what "latched" looks like. */
-.mushroom:focus-visible {
-  outline: 3px solid var(--stop-focus);
-  outline-offset: 1px;
+.mushroom.is-latched {
+  top: calc(var(--stop-inset) - var(--stop-lift) + var(--stop-drop-latched));
+  font-size: var(--t-face);
+  box-shadow: inset 0 7px 12px color-mix(in srgb, var(--go-lip) 42%, transparent),
+              inset 0 -1px 0 color-mix(in srgb, var(--stop-legend) 14%, transparent);
+  transition-duration: var(--motion-latch);
 }
 
-/* Latched: it pulses exactly once, when the latch is set. */
-.mushroom.pulse { animation: latch-pulse 400ms ease-out 1; }
+/* The stop's focus is the ring outside the collar (above), not an outline
+   on the key: the key's own outline is drawn in the same ink, at no width. */
+.mushroom:focus-visible { outline: 0 solid var(--stop-focus); }
 
-@keyframes latch-pulse {
-  0% { transform: scale(1); }
-  45% { transform: scale(1.05); }
-  100% { transform: scale(1); }
+/* The release glyph: hidden until the key is down, then shown at the end
+   of the drop. It says which way the key goes. */
+.mushroom-glyph {
+  display: none;
+  width: 1.625rem;
+  height: 1.625rem;
 }
 
-/* The stop's keyboard path, under it. */
+.mushroom.is-latched .mushroom-glyph {
+  display: inline-block;
+  animation: glyph-after-drop var(--motion-latch) step-end both;
+}
+
+@keyframes glyph-after-drop {
+  from { visibility: hidden; }
+  to { visibility: visible; }
+}
+
+/* The stop's keyboard path, under it: "Stop:" in muted, then Ctrl and .
+   as two keycaps (CAP, rim, a 2 px lip) joined by "+". */
+/* Inline, not flex: the words must read "Stop: Ctrl+." as one line of
+   text (a flex item is its own line to innerText and a screen reader). */
 .stop-hint {
+  display: inline-block;
+  line-height: 1.4;
   font-size: var(--t-cap);
-  color: var(--muted);
+  font-weight: 600;
+  color: var(--text);
   white-space: nowrap;
+}
+
+.chord-word { color: var(--muted); font-weight: 500; margin-right: 3px; text-shadow: var(--engrave); }
+
+.stop-hint kbd { margin: 0 2px; }
+
+kbd {
+  display: inline-block;
+  min-width: 13px;
+  padding: 1px 5px 0;
+  border-radius: 4px;
+  border-bottom: var(--lip-kbd) solid var(--key-lip);
+  background: var(--cap);
+  box-shadow: inset 0 0 0 1px var(--key-rim);
+  color: var(--text);
+  font-family: var(--font-family);
+  font-size: var(--t-kbd);
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
 }
 
 /* Shown in every state since L1 (the chord always stops); after Quit it
    keeps its room, so nothing under it shifts. */
-.stop-hint[hidden] { display: inline; visibility: hidden; }
+.stop-hint[hidden] { display: inline-block; visibility: hidden; }
 
 /* The rail's stop line (views.base.stop_words "rail"): "Stopped: every model
    latched", "Stopped: Stepper Probe", "Stopped: Rotator did not confirm",
-   beside a solid signal square. */
+   after the warning glyph in signal. */
 .rail-latched {
   align-self: stretch;
   display: flex;
+  align-items: flex-start;
   gap: var(--space-3);
+  padding: 0 var(--space-2);
   font-size: var(--t-sm);
   font-weight: 600;
-  line-height: 1.3;
+  line-height: 1.25;
 }
 
-.rail-latched::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 0.625rem;
-  height: 0.625rem;
-  margin-top: 0.2rem;
-  background: var(--signal);
-}
+.rail-latched::before { background: var(--signal); }
 
 .rail-latched[hidden] { display: none; }
 
-/* After Quit there is nothing left to stop: the disc and its band go to the
-   sheet's disabled tones, no red and no ring, whatever face it had. */
+/* After Quit there is nothing left to stop: the collar, the band and the
+   key go to the sheet's disabled tones, no red, whatever face it had. */
 .stop-ring.is-off,
-.is-shut-down .stop-ring { border-color: var(--muted); border-width: var(--stop-ring); }
+.is-shut-down .stop-ring {
+  border-color: var(--edge);
+  background: var(--surface);
+}
 
 .mushroom.is-off,
 .is-shut-down .mushroom,
 .is-shut-down .mushroom:hover {
+  top: calc(var(--stop-inset) - var(--stop-lift) + var(--stop-drop-latched));
   background: var(--disabled-bg);
   color: var(--disabled-fg);
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--edge);
   cursor: not-allowed;
   animation: none;
 }
+
+.is-shut-down .mushroom-glyph, .mushroom.is-off .mushroom-glyph { display: none; }
 
 /* -- the rail's alert lines ---------------------------------------------- */
 /* A stop that did not reach the station, a lost device, a Quit that did not
@@ -373,18 +585,9 @@ button, select, input[type="range"] {
   color: var(--error-ink);
 }
 
-.rail-alert-line::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 0.625rem;
-  height: 0.625rem;
-  margin-top: 0.2rem;
-  background: var(--error-mark);
-}
-
 .rail-alert-text { flex: 1 1 0; min-width: 0; }
 
-.rail-alert-dismiss { margin-left: calc(0.625rem + var(--space-3)); }
+.rail-alert-dismiss { margin-left: calc(var(--glyph) + var(--space-3)); }
 
 /* N2: the idle countdown, one line per probe under the disc - ink words and
    the number from state, then Extend. Not red: nothing has stopped yet. */
@@ -435,49 +638,74 @@ button, select, input[type="range"] {
 
 .model-nav:empty { display: none; }
 
+/* Signature: a rail item is 36 px tall with a lamp slot before its name.
+   The shown page is a sunk SURFACE pad with its lamp lit ink; every other
+   lamp is hidden, its room kept so the names align. */
 .model-link {
-  display: block;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
   width: 100%;
   min-height: var(--hit-panel);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-4);
   border: 0;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-key);
   background: transparent;
   color: var(--text);
   font-family: inherit;
   font-size: var(--t-sm);
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
 }
 
-.model-link:hover { background: color-mix(in srgb, var(--bg) 55%, var(--surface)); }
+.model-link:hover { background: color-mix(in srgb, var(--rail) 40%, var(--surface)); }
 
-.model-link[aria-current="page"] { background: var(--bg); font-weight: 600; }
+.model-link[aria-current="page"] {
+  background: var(--surface);
+  box-shadow: var(--shadow-inset);
+  font-weight: 600;
+}
 
-/* L1: a model's stop state before its name - an ink square while it is
-   latched, a signal square when it did not confirm. The word is read to a
-   screen reader and is the square's title; the square is drawn, the word
-   is not, so the list stays a list of names. */
-.model-link { display: flex; align-items: center; gap: var(--space-3); }
+/* The lamp slot (theme.LAMP, rule 5): the one "on" sign. */
+.model-link::before {
+  content: "";
+  flex: 0 0 auto;
+  width: var(--lamp-w);
+  height: var(--lamp-rail-h);
+  border-radius: var(--lamp-radius);
+  background: var(--lamp-on);
+  visibility: hidden;
+}
+
+.model-link[aria-current="page"]::before { visibility: visible; }
 
 .nav-name { min-width: 0; overflow-wrap: anywhere; }
 
+/* L1: a model's stop state is its lamp - lit ink while it is latched, lit
+   signal when it did not confirm (and for a fault, O4: the same hazard).
+   It sits in the lamp's own slot, over the shown-page lamp. The word is
+   read to a screen reader and is the lamp's title; the lamp is drawn, the
+   word is not, so the list stays a list of names. */
 .nav-mark {
-  position: relative;
-  flex: 0 0 auto;
-  width: 0.75rem;
-  height: 0.75rem;
+  position: absolute;
+  left: var(--space-4);
+  top: calc(50% - var(--lamp-rail-h) / 2);
+  width: var(--lamp-w);
+  height: var(--lamp-rail-h);
   overflow: hidden;
+  border-radius: var(--lamp-radius);
   color: transparent;
   font-size: var(--t-xs);
   line-height: 1;
-  background: var(--text);
+  background: var(--lamp-on);
 }
 
 /* O16 (A11Y-6): did-not-confirm and faulted differ from "stopped" by shape
-   as well as colour - the signal square carries a "!" knocked out of it. */
+   as well as colour - the signal lamp carries a "!" knocked out of it. */
 .nav-mark.is-unconfirmed,
-.nav-mark.is-faulted { background: var(--signal); }
+.nav-mark.is-faulted { background: var(--lamp-unconfirmed); }
 
 .nav-mark.is-unconfirmed::before,
 .nav-mark.is-faulted::before {
@@ -494,11 +722,13 @@ button, select, input[type="range"] {
 
 .nav-mark[hidden] { display: none; }
 
-/* O6: energized - a ring, in ink, after the stop mark. Never red. */
+/* O6: energized - a ring, in ink, after the lamp. Never red, never a lamp:
+   the lamp is the stop state's. */
 .nav-energized {
   flex: 0 0 auto;
-  width: 0.75rem;
-  height: 0.75rem;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-left: calc(-1 * var(--space-2));
   overflow: hidden;
   border: 2px solid var(--text);
   border-radius: 50%;
@@ -519,46 +749,112 @@ button, select, input[type="range"] {
 
 .closed:empty { display: none; }
 
-.closed-label { flex: 1 0 100%; font-size: var(--t-cap); color: var(--muted); }
+.closed-label { flex: 1 0 100%; font-size: var(--t-cap); color: var(--muted); text-shadow: var(--engrave); }
 
 .rail-foot {
   margin-top: auto;
   display: flex;
-  gap: var(--space-3);
+  align-items: center;
+  gap: var(--space-4);
 }
 
-/* -- ghost controls: chrome, not instrument controls ---------------------- */
-.ghost {
+/* -- the key family (Signature rule 2) ------------------------------------ */
+/* Every raised part is one family: a CAP face, a 1.5 px KEY_RIM outline
+   (an inset line, so the lip can fold without the height changing), a
+   1.5 px CAP top highlight inside it, and a KEY_LIP bottom edge that is a
+   real border. Legend 14/600 ink, engraved. Pressed (:active) and latched
+   ([aria-pressed="true"]) are one gesture: the lip folds from 4 px to 1 px
+   and the face drops by the difference (a transparent top border), with an
+   inner shade across the top; the part's height is unchanged. Chrome
+   (.ghost: Setup, Close, Show events) and commands (.button) are the same
+   key. */
+.button, .ghost {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 var(--space-5);
-  border: var(--edge) solid var(--muted);
-  border-radius: var(--radius-control);
-  background: var(--bg);
+  gap: var(--space-3);
+  min-height: var(--hit-panel);
+  padding: 0 var(--space-4);
+  border: 0 solid transparent;
+  border-bottom: var(--lip-key) solid var(--key-lip);
+  border-radius: var(--radius-key);
+  background: var(--cap);
+  background-clip: padding-box;
+  box-shadow: var(--rim), var(--key-top), var(--shadow-raised);
   color: var(--text);
   font-family: inherit;
   font-size: var(--t-sm);
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
+  text-shadow: var(--engrave);
   cursor: pointer;
+  transition: border-width var(--motion-release) ease-out,
+              box-shadow var(--motion-release) ease-out;
 }
 
-.ghost:hover:not(:disabled) { border-color: var(--text); }
+.button:hover:not(:disabled), .ghost:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--text), var(--key-top), var(--shadow-raised);
+}
+
+/* Down: pressed, or a latching key that is on. */
+.button:active:not(:disabled),
+.ghost:active:not(:disabled),
+.button[aria-pressed="true"] {
+  border-top-width: var(--key-drop);
+  border-bottom-width: var(--lip-pressed);
+  box-shadow: var(--rim), var(--key-down);
+  transition-duration: var(--motion-press);
+}
+
+/* The glyph before a legend (Home, Start run, Save, Gamepad log): 16 px,
+   in the legend's colour. */
+.button > .glyph, .ghost > .glyph { margin-left: calc(-1 * var(--space-1)); }
 
 /* The rail's and the tray's controls: a real target, 44 px on the short
    side, quiet enough that the stop is still the only thing that shouts. */
 .rail-control, .closed .ghost { min-height: var(--hit); padding: 0 var(--space-5); }
 
-/* Quit is a word, not a box: leaving is not a thing to reach for. */
-#quit-link { border-color: transparent; background: transparent; }
+/* A text key (Quit, Close model): no face and no lip - leaving is not a
+   thing to reach for. */
+.ghost.text-key, .ghost.card-close {
+  border-bottom-width: 0;
+  background: transparent;
+  box-shadow: none;
+  text-shadow: none;
+}
 
-#quit-link:hover:not(:disabled) { border-color: var(--muted); }
+.ghost.text-key:hover:not(:disabled), .ghost.card-close:hover:not(:disabled) {
+  box-shadow: none;
+  text-decoration: underline;
+  text-decoration-thickness: var(--line);
+  text-underline-offset: 4px;
+}
 
-.rail-control:disabled, .ghost:disabled {
+.ghost.text-key:active:not(:disabled), .ghost.card-close:active:not(:disabled) {
+  border-top-width: 0;
+  border-bottom-width: 0;
+  box-shadow: none;
+}
+
+/* Disabled keys stay keys: their silhouette in ghost tones - a dashed EDGE
+   rim, a solid EDGE_SOFT lip, a DISABLED legend and glyph. Unlit, never
+   blank. */
+.button:disabled, .ghost:disabled {
+  padding: 0 calc(var(--space-4) - var(--key-rim-px));
+  border: var(--key-rim-px) dashed var(--edge);
+  border-bottom: var(--lip-key) solid var(--edge-soft);
+  background: transparent;
+  box-shadow: none;
   color: var(--disabled-fg);
-  border-style: dashed;
+  text-shadow: none;
   cursor: not-allowed;
+}
+
+.rail-control:disabled { padding: 0 calc(var(--space-5) - var(--key-rim-px)); }
+
+.ghost.text-key:disabled {
+  padding: 0 var(--space-5);
+  border: 0;
 }
 
 /* -- the sheet ----------------------------------------------------------- */
@@ -579,7 +875,7 @@ button, select, input[type="range"] {
 
 .headline { font-size: var(--t-headline); line-height: 1.1; }
 
-.headline-note { font-size: var(--t-sm); color: var(--muted); }
+.headline-note { font-size: var(--t-sm); font-weight: 500; color: var(--muted); text-shadow: var(--engrave); }
 
 /* Entries, not cards, on two pages (K4). The Overview: every model, rows
    of three, a lone last one never (layoutSheet / sheetAcross write span-2 /
@@ -614,6 +910,8 @@ button, select, input[type="range"] {
   align-content: start;
   padding-top: var(--space-4);
   border-top: var(--rule-strong-px) solid var(--rule-strong);
+  /* An engraved line: a 1 px highlight under the ink rule. */
+  box-shadow: inset 0 1px 0 var(--highlight);
   scroll-margin-top: calc(var(--rail-top) + var(--space-5));
 }
 
@@ -623,7 +921,7 @@ button, select, input[type="range"] {
 
 /* The well follows its disclosure with no gap (the entry's row gap is
    taken back). */
-.card > .disclosure[data-tier="2"] + .tier-well { margin-top: calc(-1 * var(--space-4)); }
+.card > .disclosure[data-tier="2"] + .tier-well { margin-top: calc(var(--space-2) - var(--space-4)); }
 
 .card.span-2 { grid-column: span 2; }
 .card.span-3 { grid-column: span 3; }
@@ -647,7 +945,7 @@ button, select, input[type="range"] {
   z-index: 2;
   margin-top: calc(-1 * var(--space-4));
   padding: var(--space-4) 0;
-  border-bottom: var(--edge) solid var(--muted);
+  border-bottom: var(--line) solid var(--muted);
   background: var(--bg);
 }
 
@@ -681,14 +979,14 @@ button, select, input[type="range"] {
   min-height: var(--hit-panel);
 }
 
+/* Signature: a model's name is 18/600, on the Overview and its own page
+   alike (the Launched artboard). */
 .card-title {
-  font-size: var(--t-lg);
+  font-size: var(--t-rail);
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.2;
 }
-
-.card.is-opened .card-title { font-size: var(--t-xl); }
 
 /* The Overview's press target (K4): "Open" and the disclosure chevron at
    the head's right. It is one button whose hit area is stretched over the
@@ -740,10 +1038,12 @@ button, select, input[type="range"] {
   min-width: 0;
 }
 
-/* What is not normal about the model, in words: muted, never a lamp. */
+/* What is not normal about the model, in words ("Manual mode, gamepad
+   live", "Stopped"): ink, 14/500, never a lamp. */
 .stale-badge, .card-state {
-  font-size: var(--t-cap);
-  color: var(--muted);
+  font-size: var(--t-sm);
+  font-weight: 500;
+  color: var(--text);
   white-space: nowrap;
 }
 
@@ -752,29 +1052,54 @@ button, select, input[type="range"] {
 /* A lost device: a word in ink, and the entry's head rule in signal. */
 .card.is-lost .stale-badge { color: var(--text); font-weight: 600; }
 
+/* Signature: an unconfirmed (or faulted, or lost) entry's rule is 3 px of
+   signal, the entry sliding up by the extra pixel so nothing under it
+   moves. */
 .card.is-lost,
-.card.is-unconfirmed { border-top-color: var(--signal); }
+.card.is-unconfirmed,
+.card.is-faulted {
+  border-top: 3px solid var(--signal);
+  margin-top: calc(var(--rule-strong-px) - 3px);
+}
 
-/* G6 at the model's own entry: "Stop not confirmed. Treat as live." beside a
-   solid signal square. No Dismiss: it stands for as long as the latch. */
+/* G6 at the model's own entry: the tripped-flag window, then "Stop not
+   confirmed. Treat as live." No Dismiss: it stands for as long as the
+   latch. */
 .unconfirmed-mark {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-3);
-  font-size: var(--t-cap);
+  gap: var(--space-4);
+  font-size: var(--t-sm);
   font-weight: 600;
   color: var(--text);
 }
 
-.unconfirmed-mark::before {
-  content: "";
+.unconfirmed-mark[hidden] { display: none; }
+
+/* The tripped flag (theme.FLAG): an ink frame showing SIGNAL with an ink
+   hatch. The flag drops into its frame once per unconfirmed episode, when
+   the client marks it .is-dropping, and never again while it stands - not
+   when the entry is shown again on another page. The hatch is a mark, not
+   a surface texture. */
+.flag-window {
   flex: 0 0 auto;
-  width: 0.625rem;
-  height: 0.625rem;
-  background: var(--signal);
+  display: block;
+  width: var(--flag-w);
+  height: var(--flag-h);
 }
 
-.unconfirmed-mark[hidden] { display: none; }
+.flag-window .flag-frame { fill: var(--flag-frame); }
+.flag-window .flag-fill { fill: var(--flag-fill); }
+.flag-window .flag-hatch { stroke: var(--flag-hatch); stroke-width: 3.2; fill: none; }
+
+.flag-window.is-dropping .flag {
+  animation: flag-drop var(--motion-flag) var(--flag-ease) both;
+}
+
+@keyframes flag-drop {
+  from { transform: translateY(-18px); }
+  to { transform: none; }
+}
 
 /* O4: a fault's own reason, in ink under the head, while it stands. The red
    is the head rule and the mark beside the name. */
@@ -786,10 +1111,8 @@ button, select, input[type="range"] {
 
 .fault-line[hidden] { display: none; }
 
-.card.is-faulted { border-top-color: var(--signal); }
-
-/* A standing condition under the head (a lost device), ink beside a signal
-   square. */
+/* A standing condition under the head (a lost device), ink after the
+   warning glyph in signal. */
 .card-alert {
   display: flex;
   gap: var(--space-3);
@@ -798,22 +1121,19 @@ button, select, input[type="range"] {
   color: var(--error-ink);
 }
 
-.card-alert::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 0.625rem;
-  height: 0.625rem;
-  margin-top: 0.3rem;
-  background: var(--error-mark);
-}
+.card-alert::before { margin-top: 0.1rem; }
 
 .card-alert[hidden] { display: none; }
 
 /* -- a disclosure (tiers 2 and 3) ---------------------------------------- */
+/* Signature: a 24 px member of the key family (a 3 px lip) holding the
+   disclosure glyph, then the schema's own words, 14/600. Open, the key
+   sinks (SURFACE, 1 px lip, inner shade), the glyph turns down, and the
+   tray follows 6 px below. */
 .disclosure {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-4);
   min-height: var(--hit-panel);
   padding: 0 var(--space-0);
   border: 0;
@@ -823,6 +1143,7 @@ button, select, input[type="range"] {
   font-size: var(--t-sm);
   font-weight: 600;
   white-space: nowrap;
+  text-shadow: var(--engrave);
   cursor: pointer;
 }
 
@@ -832,41 +1153,67 @@ button, select, input[type="range"] {
   text-underline-offset: 3px;
 }
 
-.chevron {
-  width: 0.625rem;
-  height: 0.625rem;
+.disc-key {
   flex: 0 0 auto;
-  fill: none;
-  stroke: var(--muted);
-  stroke-width: 1.75;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transition: transform 150ms ease-out;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 0 solid transparent;
+  border-bottom: var(--lip-small) solid var(--key-lip);
+  border-radius: var(--radius-small);
+  background: var(--cap);
+  background-clip: padding-box;
+  box-shadow: var(--rim), var(--shadow-raised);
+  color: var(--text);
+  transition: border-width var(--motion-release) ease-out,
+              box-shadow var(--motion-release) ease-out;
 }
 
-.disclosure[aria-expanded="true"] .chevron { transform: rotate(90deg); }
+.disc-key > .glyph { transition: transform var(--motion-disclosure) ease-out; }
 
-/* Tier 2: one panel-toned well under the entry. */
+.disclosure:active .disc-key,
+.disclosure[aria-expanded="true"] .disc-key {
+  border-top-width: calc(var(--lip-small) - var(--lip-pressed));
+  border-bottom-width: var(--lip-pressed);
+  background: var(--surface);
+  background-clip: padding-box;
+  box-shadow: var(--rim), inset 0 2px 3px color-mix(in srgb, var(--text) 25%, transparent);
+  transition-duration: var(--motion-press);
+}
+
+.disclosure[aria-expanded="true"] .disc-key > .glyph { transform: rotate(90deg); }
+
+/* Tier 2: the tray - one sunk SURFACE well under the entry. It appears at
+   once: the spec's 200 ms opening (a clip-path wipe) was dropped, because a
+   clipped part is not hit-testable, so a press on the tray's first control
+   inside those 200 ms landed on whatever was under it (seen in
+   test_o15_the_device_page_pins_its_head_and_tier_one). The key's sink and
+   the glyph's turn still move. */
 .tier-well {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-4) var(--space-5) var(--space-5);
-  border-radius: var(--radius-well);
+  border-radius: var(--radius-tray);
   background: var(--surface);
+  box-shadow: var(--shadow-inset);
 }
 
 .tier-well[hidden], .tier-deep[hidden] { display: none; }
 
-.tier-well > .disclosure { align-self: flex-start; font-weight: 500; }
+.tier-well > .disclosure { align-self: flex-start; }
 
-/* Tier 3, inside it: a strip marked by a 2 px muted rule. */
+/* Tier 3, inside it: the DEEP pocket. */
 .tier-deep {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-5);
-  border-left: 2px solid var(--muted);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-pocket);
+  background: var(--deep);
+  box-shadow: inset 0 2px 3px color-mix(in srgb, var(--text) 18%, transparent),
+              inset 0 -1px 0 color-mix(in srgb, var(--cap) 60%, transparent);
 }
 
 .well-foot {
@@ -876,16 +1223,14 @@ button, select, input[type="range"] {
 }
 
 /* Closing a model destructs it (owner ruling): the quietest control the
-   entry has, at the foot of its details, and it asks first. */
+   entry has - a text key - at the foot of its details, and it asks first. */
 .card-close {
   min-height: var(--hit-panel);
-  border-color: transparent;
-  background: transparent;
   color: var(--muted);
-  font-weight: 400;
+  font-weight: 500;
 }
 
-.card-close:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+.card-close:hover:not(:disabled) { color: var(--text); }
 
 /* -- sections ------------------------------------------------------------ */
 /* Tier 1: the sections of the body flow across and wrap (a probe's
@@ -945,10 +1290,15 @@ button, select, input[type="range"] {
 /* Hidden beats every layout rule below (a quiet stat is a grid). */
 .row[hidden] { display: none !important; }
 
+/* Captions, units and axis letters share one engraving (ENGRAVE): 13/500
+   muted, +0.005 em, a 1 px light lower edge. */
 .label {
-  font-size: var(--t-xs);
+  font-size: var(--t-cap);
+  font-weight: 500;
   line-height: 1.3;
+  letter-spacing: 0.005em;
   color: var(--muted);
+  text-shadow: var(--engrave);
 }
 
 .row.has-slider > .label, .row.stat > .label, .reading > .label { font-size: var(--caption-size); }
@@ -959,7 +1309,7 @@ button, select, input[type="range"] {
   gap: var(--space-5);
 }
 
-.unit { font-size: var(--caption-size); color: var(--muted); }
+.unit { font-size: var(--caption-size); font-weight: 500; color: var(--muted); text-shadow: var(--engrave); }
 
 /* -- readings and values ------------------------------------------------- */
 /* A value is ink. A number is drawn in trace only while it is CHANGING
@@ -1047,7 +1397,7 @@ span.value.is-word,
   min-width: 0;
 }
 
-.axis-caption { font-size: var(--caption-size); color: var(--muted); }
+.axis-caption { font-size: var(--caption-size); font-weight: 500; color: var(--muted); text-shadow: var(--engrave); }
 
 .axis-line {
   display: flex;
@@ -1065,7 +1415,11 @@ span.value.is-word,
   gap: var(--space-3);
 }
 
-.row.reading-axis > .label { order: 0; }
+/* Axis letters: 14/700 muted, engraved. */
+.row.reading-axis > .label { order: 0; font-size: var(--axis-letter-size); font-weight: 700; }
+
+/* A tier-2 statistic (frame rate, frames, rows): 24 px in the numeral face. */
+.tier-well > .section .row.stat > .value:not(.is-word):not(.is-empty) { font-size: var(--statistic-size); }
 
 /* Frozen: latched, stale, lost, or the station not answering. A frozen
    number must never look like a live one (F3, F4, CRIT-1). */
@@ -1083,12 +1437,7 @@ span.value.role-danger:not(.is-empty) {
   gap: var(--space-2);
 }
 
-span.value.role-danger:not(.is-empty)::before {
-  content: "";
-  width: 0.5rem;
-  height: 0.5rem;
-  background: var(--error-mark);
-}
+span.value.role-danger:not(.is-empty)::before { width: 0.875rem; height: 0.875rem; }
 
 /* In Diagnostics a value sits beside its caption, at body size. */
 .tier-deep .row,
@@ -1110,14 +1459,19 @@ span.value.role-danger:not(.is-empty)::before {
   letter-spacing: 0;
 }
 
-/* -- inputs: a panel-toned well with a muted underline, no box ----------- */
-.input, .select {
-  min-height: 2rem;
-  padding: 0.3125rem var(--space-3);
+/* -- fields: a sunk window, never a key ----------------------------------- */
+/* Signature: SURFACE (DEEP inside a tray), radius 6, 34 px, the MUTED
+   1.5 px floor lip; a number is right-aligned Rubik 500 16. Focus adds a
+   2 px ink ring and an ink floor. Disabled is transparent with a dashed
+   EDGE edge. */
+.input {
+  min-height: 2.125rem;
+  padding: 0 var(--space-3);
   border: 0;
-  border-bottom: var(--edge) solid var(--input-border);
-  border-radius: var(--radius-input) var(--radius-input) 0 0;
+  border-bottom: var(--line) solid var(--input-border);
+  border-radius: var(--radius-input);
   background: var(--well);
+  box-shadow: inset 0 2px 3px color-mix(in srgb, var(--text) 18%, transparent);
   color: var(--text);
   font-family: inherit;
   font-size: var(--t-md);
@@ -1125,17 +1479,20 @@ span.value.role-danger:not(.is-empty)::before {
   min-width: 0;
 }
 
-/* Inside a panel-toned well the input's own well is the sheet's tone. */
-.tier-well .input, .tier-well .select { background: var(--bg); }
+/* Inside the tray the field is the pocket's tone. */
+.tier-well .input { background: var(--deep); }
 
-.input:hover:not(:disabled), .select:hover:not(:disabled) { border-bottom-color: var(--text); }
+.input:hover:not(:disabled) { border-bottom-color: var(--text); }
 
-.input:focus-visible, .select:focus-visible { outline-offset: 0; }
+.input:focus-visible { outline: 2px solid var(--text); outline-offset: 0; border-bottom-color: var(--text); }
 
-/* A number is as wide as a number, right-aligned, tabular. */
+/* A number is as wide as a number, right-aligned, tabular, Rubik 500. */
 .input[type="number"] {
   width: 5.5rem;
   text-align: right;
+  font-family: var(--numeral-family);
+  font-weight: 500;
+  font-size: var(--t-field);
   font-variant-numeric: tabular-nums;
   -moz-appearance: textfield;
 }
@@ -1145,42 +1502,108 @@ span.value.role-danger:not(.is-empty)::before {
 
 .row.has-slider .input[type="number"] { width: 4.75rem; }
 
-/* Every dropdown is the same width, whatever is chosen. */
-.select { width: 10rem; min-width: 10rem; }
-
-.input:disabled, .select:disabled {
-  background: var(--disabled-bg);
+.input:disabled {
+  border: var(--line) dashed var(--edge);
+  background: transparent;
+  box-shadow: none;
   color: var(--disabled-fg);
-  border-bottom-style: dashed;
-  border-bottom-color: var(--muted);
   cursor: not-allowed;
 }
 
+/* The select is a key (a 4 px lip) with the disclosure glyph turned down
+   at its right. */
+.select-key {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+.select {
+  min-height: var(--hit-panel);
+  padding: 0 calc(var(--space-4) + var(--glyph) + var(--space-2)) 0 var(--space-4);
+  border: 0 solid transparent;
+  border-bottom: var(--lip-key) solid var(--key-lip);
+  border-radius: var(--radius-key);
+  background: var(--cap);
+  background-clip: padding-box;
+  box-shadow: var(--rim), var(--key-top), var(--shadow-raised);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  text-shadow: var(--engrave);
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.select-key > .glyph {
+  position: absolute;
+  right: var(--space-4);
+  top: calc((100% - var(--lip-key) - var(--glyph)) / 2);
+  transform: rotate(90deg);
+  color: var(--text);
+  pointer-events: none;
+}
+
+.select:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--text), var(--key-top), var(--shadow-raised);
+}
+
+/* Every dropdown is the same width, whatever is chosen. */
+.select { width: 10rem; min-width: 10rem; }
+
+.select:disabled {
+  border: var(--key-rim-px) dashed var(--edge);
+  border-bottom: var(--lip-key) solid var(--edge-soft);
+  background: transparent;
+  box-shadow: none;
+  color: var(--disabled-fg);
+  text-shadow: none;
+  cursor: not-allowed;
+}
+
+.select-key:has(.select:disabled) > .glyph { color: var(--disabled-fg); }
+
 /* -- the slider: beside its entry, never instead of it ------------------- */
+/* Signature: a 6 px sunk groove with an ink fill; the thumb is a fader cap
+   (a 16 x 30 key cap, a 3 px lip, a 2 x 14 ink index line) drawn over the
+   range's own invisible thumb at the same place. It never moves by
+   animation. Disabled, the fill is EDGE_SOFT and the cap flat BG with an
+   EDGE rim and index. */
 .slider {
   position: relative;
   flex: 1 1 8.75rem;
   width: 15rem;
   min-width: 6rem;
   max-width: 15rem;
-  height: 1.5rem;
+  height: var(--fader-h);
   --fill: 0%;
+  --fill-f: 0;
 }
 
 .slider-track, .slider-fill {
   position: absolute;
   left: 0;
-  top: calc(50% - 2px);
-  height: 4px;
-  border-radius: 2px;
+  top: calc((var(--fader-h) - var(--fader-groove)) / 2);
+  height: var(--fader-groove);
+  border-radius: 3px;
   pointer-events: none;
 }
 
-.slider-track { right: 0; background: var(--surface); }
+.slider-track {
+  right: 0;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 18%, transparent),
+              inset 0 1px 2px color-mix(in srgb, var(--text) 30%, transparent),
+              0 1px 0 var(--highlight);
+}
 
-.slider-fill { width: var(--fill); background: var(--text); }
+/* The fill runs to the cap's index line, the cap's own travel. */
+.slider-fill { width: calc((100% - var(--fader-w)) * var(--fill-f) + var(--fader-w) / 2); background: var(--text); }
 
-.tier-well .slider-track { background: var(--bg); }
+.tier-well .slider-track { background: var(--deep); }
 
 .slider-range {
   position: absolute;
@@ -1197,91 +1620,121 @@ span.value.role-danger:not(.is-empty)::before {
 .slider-range::-webkit-slider-runnable-track { height: 100%; background: transparent; }
 .slider-range::-moz-range-track { height: 100%; background: transparent; }
 
+/* The range's own thumb keeps the hit area and the keyboard; the cap is
+   drawn over it. */
 .slider-range::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 18px;
-  height: 18px;
-  margin-top: 3px;
-  border-radius: 50%;
-  border: 2px solid var(--bg);
-  background: var(--text);
+  width: var(--fader-w);
+  height: var(--fader-h);
+  border: 0;
+  background: transparent;
 }
 
 .slider-range::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
-  box-sizing: border-box;
-  border-radius: 50%;
-  border: 2px solid var(--bg);
+  width: var(--fader-w);
+  height: var(--fader-h);
+  border: 0;
+  background: transparent;
+}
+
+.slider-cap {
+  position: absolute;
+  top: 0;
+  left: calc((100% - var(--fader-w)) * var(--fill-f));
+  width: var(--fader-w);
+  height: var(--fader-h);
+  border: 0 solid transparent;
+  border-bottom: var(--lip-small) solid var(--key-lip);
+  border-radius: var(--radius-fader);
+  background: var(--cap);
+  background-clip: padding-box;
+  box-shadow: var(--rim), var(--shadow-raised);
+  pointer-events: none;
+  transition: border-width var(--motion-release) ease-out;
+}
+
+.slider-cap::after {
+  content: "";
+  position: absolute;
+  left: calc(50% - var(--fader-index-w) / 2);
+  top: calc((var(--fader-h) - var(--lip-small) - var(--fader-index-h)) / 2);
+  width: var(--fader-index-w);
+  height: var(--fader-index-h);
+  border-radius: 1px;
   background: var(--text);
 }
 
-.slider-range:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 12px; }
-
-/* Disabled: muted fill and thumb. */
-.slider.disabled .slider-fill { background: var(--muted); }
-.slider.disabled .slider-range { cursor: not-allowed; }
-.slider.disabled .slider-range::-webkit-slider-thumb { background: var(--muted); }
-.slider.disabled .slider-range::-moz-range-thumb { background: var(--muted); }
-
-.card.is-latched .slider-fill { background: var(--muted); }
-.card.is-latched .slider-range::-webkit-slider-thumb { background: var(--muted); }
-.card.is-latched .slider-range::-moz-range-thumb { background: var(--muted); }
-
-/* -- commands ------------------------------------------------------------ */
-/* One command vocabulary on every entry: `go` is ink-filled, every other
-   command is outlined on the sheet, disabled is the sheet with dashed
-   muted edges. */
-.button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: var(--hit-panel);
-  padding: 0 var(--space-4);
-  border: var(--edge) solid var(--muted);
-  border-radius: var(--radius-control);
-  background: var(--bg);
-  color: var(--text);
-  font-family: inherit;
-  font-size: var(--t-sm);
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
+.slider-range:active:not(:disabled) + .slider-cap {
+  border-top-width: calc(var(--lip-small) - var(--lip-pressed));
+  border-bottom-width: var(--lip-pressed);
+  transition-duration: var(--motion-press);
 }
 
-.button:hover:not(:disabled) { border-color: var(--text); }
+.slider-range:focus-visible { outline: none; }
 
-.button:active:not(:disabled) { background: var(--surface); }
+.slider-range:focus-visible + .slider-cap { outline: 2px solid var(--text); outline-offset: 2px; }
 
+/* Disabled or latched: the fill goes quiet and the cap flat. */
+.slider.disabled .slider-fill,
+.card.is-latched .slider-fill { background: var(--edge-soft); }
+
+.slider.disabled .slider-range { cursor: not-allowed; }
+
+.slider.disabled .slider-cap {
+  border-bottom-color: var(--edge-soft);
+  background: var(--bg);
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--edge);
+}
+
+.slider.disabled .slider-cap::after { background: var(--edge); }
+
+/* -- commands ------------------------------------------------------------ */
+/* One command vocabulary on every entry, the key family above: `go` is the
+   ink key (ink face and rim, GO_LIP, CAP legend); every other command is a
+   neutral key; disabled is the ghost of the key. */
 .button.role-go {
   background: var(--go-bg);
   color: var(--go-fg);
-  border-color: var(--go-bg);
-  font-weight: 600;
+  border-bottom-color: var(--go-lip);
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--go-bg),
+              inset 0 3px 0 calc(-1 * var(--key-rim-px)) color-mix(in srgb, var(--cap) 22%, transparent),
+              var(--shadow-raised);
+  text-shadow: none;
 }
 
 .button.role-go:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--go-bg) 84%, var(--bg));
+  background: color-mix(in srgb, var(--go-bg) 88%, var(--cap));
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--go-bg),
+              inset 0 3px 0 calc(-1 * var(--key-rim-px)) color-mix(in srgb, var(--cap) 22%, transparent),
+              var(--shadow-raised);
 }
 
 .button.role-go:active:not(:disabled) {
-  background: color-mix(in srgb, var(--go-bg) 72%, var(--bg));
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--go-bg),
+              inset 0 3px 4px color-mix(in srgb, var(--go-lip) 60%, transparent);
+}
+
+/* A disabled `go` key is the ghost of the key like any other: the ink face
+   must never outrank the disabled state (a greyed Start run read as live). */
+.button.role-go:disabled,
+.button.role-go:disabled:hover {
+  border: var(--key-rim-px) dashed var(--edge);
+  border-bottom: var(--lip-key) solid var(--edge-soft);
+  background: transparent;
+  box-shadow: none;
+  color: var(--disabled-fg);
 }
 
 /* One red: a danger-role COMMAND (ending a recording, a halt) is a quiet
-   command like any other; the stop is the disc on the rail. */
+   neutral key like any other; the stop is the collared key on the rail. */
 button.button.role-danger {
-  background: var(--bg);
+  background: var(--cap);
   color: var(--text);
-  border-color: var(--muted);
+  border-bottom-color: var(--key-lip);
 }
 
-.button:disabled {
-  background: var(--disabled-bg);
-  color: var(--disabled-fg);
-  border: var(--edge) dashed var(--muted);
-  cursor: not-allowed;
-}
+button.button.role-danger:disabled { background: transparent; color: var(--disabled-fg); border-bottom-color: var(--edge-soft); }
 
 /* Consecutive commands are one group on one line, wrapping when it must. */
 .actions {
@@ -1299,37 +1752,61 @@ button.button.role-danger {
   margin-top: calc(-1 * var(--space-2));
   font-size: var(--t-cap);
   color: var(--muted);
+  text-shadow: var(--engrave);
 }
 
 .gate-note[hidden] { display: none; }
 
-/* -- toggles ------------------------------------------------------------- */
-/* A toggle looks like a toggle: a dot at its leading edge and the action in
-   words. Off, it is outlined with a hollow dot; on, it is ink-filled with a
-   sheet-toned dot (aria-pressed says the same without the dot). */
+/* -- toggles: the latching mode key --------------------------------------- */
+/* Off, a neutral key with a hollow lamp slot (SURFACE, rim outline). On,
+   the ink key pressed DOWN (1 px lip, 3 px drop, inner shade) with its
+   slot lit CAP: told from `go` by its lit slot and its missing lip. */
 button.button.toggle {
-  gap: var(--space-4);
   justify-content: flex-start;
-  padding: 0 var(--space-5);
+  gap: var(--space-3);
+  padding: 0 var(--space-4) 0 var(--space-3);
 }
 
 .toggle-lamp {
   flex: 0 0 auto;
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  border: var(--edge) solid var(--text);
+  width: var(--lamp-w);
+  height: var(--lamp-h);
+  border-radius: var(--lamp-radius);
+  background: var(--lamp-off);
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--lamp-edge);
 }
 
 button.button.toggle.on {
-  background: var(--text);
-  color: var(--bg);
-  border-color: var(--text);
+  background: var(--go-bg);
+  color: var(--go-fg);
+  border-bottom-color: var(--go-lip);
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--go-bg),
+              inset 0 3px 4px color-mix(in srgb, var(--go-lip) 60%, transparent);
+  text-shadow: none;
 }
 
-button.button.toggle.on .toggle-lamp { background: var(--bg); border-color: var(--bg); }
+button.button.toggle.on .toggle-lamp {
+  background: var(--cap);
+  box-shadow: 0 0 0 var(--key-rim-px) color-mix(in srgb, var(--cap) 25%, transparent);
+}
 
-button.button.toggle:disabled .toggle-lamp { border-color: var(--disabled-fg); }
+button.button.toggle:disabled { padding: 0 calc(var(--space-4) - var(--key-rim-px)) 0 calc(var(--space-3) - var(--key-rim-px)); }
+
+button.button.toggle:disabled .toggle-lamp {
+  background: transparent;
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--edge);
+}
+
+/* On but disabled: the ghost key, its lamp still lit - the state stands. */
+button.button.toggle.on:disabled {
+  border-top-width: var(--key-rim-px);
+  border-bottom: var(--lip-key) solid var(--edge-soft);
+  background: transparent;
+  box-shadow: none;
+  color: var(--disabled-fg);
+}
+
+button.button.toggle.on:disabled .toggle-lamp { background: var(--disabled-fg); box-shadow: none; }
 
 .toggle-face { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
@@ -1361,7 +1838,9 @@ button.button.toggle:disabled .toggle-lamp { border-color: var(--disabled-fg); }
 }
 
 /* L4: the switch is one target - the drawn track and its words - at
-   least a command's height. */
+   least a command's height. Signature: a 42 x 24 sunk track with a rim;
+   the knob is an 18 px key cap with a 2.5 px lip. On (latched), the track
+   is SIGNAL and the knob white with a SKIRT lip and rim, to the right. */
 .switch {
   display: inline-flex;
   align-items: center;
@@ -1369,10 +1848,11 @@ button.button.toggle:disabled .toggle-lamp { border-color: var(--disabled-fg); }
   min-height: var(--hit-panel);
   padding: 0 var(--space-2) 0 0;
   border: 0;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-key);
   background: transparent;
   color: var(--text);
   font-family: inherit;
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
 }
@@ -1382,61 +1862,76 @@ button.button.toggle:disabled .toggle-lamp { border-color: var(--disabled-fg); }
   flex: 0 0 auto;
   width: var(--switch-track-w);
   height: var(--switch-track-h);
-  border: var(--edge) solid var(--muted);
   border-radius: var(--radius-switch);
-  background: var(--bg);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--switch-off-edge),
+              inset 0 2px 3px color-mix(in srgb, var(--text) 22%, transparent);
 }
 
 .switch-knob {
   position: absolute;
-  top: calc((var(--switch-track-h) - 2 * var(--edge) - var(--switch-knob)) / 2);
-  left: 2px;
+  top: calc((var(--switch-track-h) - var(--switch-knob)) / 2);
+  left: calc((var(--switch-track-h) - var(--switch-knob)) / 2);
   width: var(--switch-knob);
   height: var(--switch-knob);
-  border-radius: 50%;
-  background: var(--muted);
-  transition: left 150ms ease-out;
+  border-radius: 5px;
+  border-bottom: var(--lip-knob) solid var(--switch-knob-lip);
+  background: var(--switch-knob-off);
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--key-rim);
+  transition: left var(--motion-switch) ease-out;
 }
 
-.switch.is-latched .switch-track { background: var(--signal); border-color: var(--signal); }
+.switch.is-latched .switch-track {
+  background: var(--signal);
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--skirt),
+              inset 0 2px 3px color-mix(in srgb, var(--go-lip) 30%, transparent);
+}
 
 .switch.is-latched .switch-knob {
-  left: calc(var(--switch-track-w) - 2 * var(--edge) - var(--switch-knob) - 2px);
+  left: calc(var(--switch-track-w) - var(--switch-knob) - (var(--switch-track-h) - var(--switch-knob)) / 2);
   background: var(--danger-fg);
+  background-clip: padding-box;
+  border-bottom-color: var(--switch-knob-lip-on);
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--switch-knob-lip-on);
 }
 
 .switch:disabled { cursor: not-allowed; }
 
-.switch:disabled .switch-track { border-style: dashed; }
+.switch:disabled .switch-track { box-shadow: inset 0 0 0 var(--key-rim-px) var(--edge); background: transparent; }
 
 .switch-words { font-size: var(--t-sm); }
 
 /* -- lamps --------------------------------------------------------------- */
+/* An indicator ("Running") is the lamp slot (rule 5): hollow off, ink on,
+   signal only for a fault. Never trace. */
 .row.lamp-row { flex-direction: row; align-items: center; gap: var(--space-3); }
 
-.row.lamp-row > .label { font-size: var(--caption-size); }
+.row.lamp-row > .label { font-size: var(--caption-size); text-shadow: var(--engrave); }
 
 .lamp {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  font-size: var(--t-md);
+  gap: var(--space-3);
+  font-size: var(--t-sm);
+  font-weight: 500;
   color: var(--text);
 }
 
 .lamp::before {
   content: "";
   flex: 0 0 auto;
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  border: var(--edge) solid var(--text);
+  width: var(--lamp-w);
+  height: var(--lamp-rail-h);
+  border-radius: var(--lamp-radius);
+  background: var(--lamp-off);
+  box-shadow: inset 0 0 0 var(--key-rim-px) var(--lamp-edge);
 }
 
-.lamp.on::before { background: var(--text); }
+.lamp.on::before { background: var(--lamp-on); box-shadow: none; }
 
 /* A lamp whose active role is danger is a fault: the signal colour. */
-.lamp.role-danger::before { background: var(--signal); border-color: var(--signal); }
+.lamp.role-danger::before { background: var(--lamp-unconfirmed); box-shadow: none; }
 
 span.lamp { background: none; }
 
@@ -1449,9 +1944,11 @@ span.lamp { background: none; }
   width: 1.5rem;
   height: 1.5rem;
   margin: 0;
-  border: var(--edge) solid var(--text);
+  border: var(--line) solid var(--key-rim);
+  border-bottom-width: var(--lip-kbd);
+  border-bottom-color: var(--key-lip);
   border-radius: var(--radius-input);
-  background: var(--bg);
+  background: var(--cap);
   -webkit-appearance: none;
   appearance: none;
   cursor: pointer;
@@ -1496,7 +1993,7 @@ span.lamp { background: none; }
   text-wrap: balance;
   font-size: var(--t-sm);
   color: var(--muted);
-  border: var(--edge) dashed var(--muted);
+  border: var(--line) dashed var(--muted);
   border-radius: var(--radius-control);
 }
 
@@ -1559,7 +2056,7 @@ span.lamp { background: none; }
 .feed:empty {
   display: grid;
   place-items: center;
-  border: var(--edge) dashed var(--muted);
+  border: var(--line) dashed var(--muted);
 }
 
 .feed:empty::before {
@@ -1614,18 +2111,9 @@ span.lamp { background: none; }
   font-size: var(--t-sm);
 }
 
-/* O16 (WDG8-9): the mark is the tray's warning triangle, not a hollow
+/* O16 (WDG8-9): the mark is the warning glyph in ink, not a hollow
    square - beside a real Launch box a square read as an unticked one. */
-.status::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 0.6875rem;
-  height: 0.625rem;
-  margin-top: 0.3rem;
-  border: 0;
-  background: var(--text);
-  clip-path: polygon(50% 0, 100% 100%, 0 100%);
-}
+.status::before { margin-top: 0.05rem; background: var(--text); }
 
 .status[hidden] { display: none; }
 
@@ -1773,7 +2261,7 @@ label.row-title[for] { cursor: pointer; }
   column-gap: var(--space-3);
 }
 
-.drawer .select { width: 100%; min-width: 0; background: var(--surface); }
+.drawer .select-key, .drawer .select { width: 100%; min-width: 0; }
 
 .drawer .section-row > .row-title { font-size: var(--t-md); padding-right: var(--space-3); }
 
@@ -1840,7 +2328,9 @@ label.row-title[for] { cursor: pointer; }
   bottom: 0;
   z-index: 4;
   background: var(--bg);
-  border-top: 1px solid var(--surface);
+  /* An engraved line. */
+  border-top: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  box-shadow: inset 0 1px 0 var(--highlight);
 }
 
 .tray-head {
@@ -1871,38 +2361,20 @@ label.row-title[for] { cursor: pointer; }
   white-space: nowrap;
 }
 
-/* Severity is a mark's shape as well as its colour (F14, UXPM-10): a
-   warning is a hollow ink square, an error a solid signal one. The theme
-   says which is hollow (--warning-mark-hollow). */
+/* Severity is the mark's colour and a word read to a screen reader (F14,
+   UXPM-10). Signature (rule 6): the mark is the warning glyph - in signal
+   for an error, in the warning mark's ink for a warning - never a square,
+   which beside a line read as an empty tick box (L21, IMP7-11). */
 .tray-latest.severity-warning::before,
 .tray-latest.severity-error::before,
 .event.severity-warning::before,
-.event.severity-error::before {
-  content: "";
-  flex: 0 0 auto;
-  display: inline-block;
-  width: 0.5625rem;
-  height: 0.5625rem;
-  margin-right: var(--space-3);
-  border: var(--edge) solid;
-}
+.event.severity-error::before { margin-right: var(--space-2); vertical-align: -0.15rem; }
 
-/* A warning is a triangle (L21, IMP7-11): a hollow square beside a line
-   read as an empty tick box, a shape Setup uses for real two inches away. */
 .tray-latest.severity-warning::before,
-.event.severity-warning::before {
-  width: 0.6875rem;
-  height: 0.625rem;
-  border: 0;
-  background: var(--warning-mark);
-  clip-path: polygon(50% 0, 100% 100%, 0 100%);
-}
+.event.severity-warning::before { background: var(--warning-mark); }
 
 .tray-latest.severity-error::before,
-.event.severity-error::before {
-  border-color: var(--error-mark);
-  background: var(--error-mark);
-}
+.event.severity-error::before { background: var(--error-mark); }
 
 .tray-log {
   height: 8.6em;
@@ -2074,9 +2546,18 @@ label.row-title[for] { cursor: pointer; }
 /* Under 1000 px the rail narrows to 200 and the disc to its narrow size;
    the Overview's entries go two across (the Narrow artboard). */
 @media (max-width: 62.5rem) {
-  :root { --rail-w: 200px; --stop-d: var(--stop-diameter-narrow); --sheet-x: 24px; }
+  :root {
+    --rail-w: 200px;
+    --stop-d: var(--stop-diameter-narrow);
+    --stop-c: var(--stop-collar-narrow);
+    --stop-k: var(--stop-key-narrow);
+    --sheet-x: 24px;
+  }
   .page { padding-top: calc(var(--rail-top) + var(--space-6)); }
-  .rail { padding: var(--space-7) var(--space-6) var(--space-6); }
+  .rail { padding: var(--space-5) var(--space-5) var(--space-6); }
+  .plate { padding: var(--space-4) var(--space-3); }
+  .station-name { font-size: var(--t-lg); }
+  .mushroom, .mushroom.is-latched { font-size: var(--t-stop-narrow); }
   .card.span-2 { grid-column: span 3; }
   .sheet { column-gap: var(--space-9); }
 }
@@ -2090,7 +2571,7 @@ label.row-title[for] { cursor: pointer; }
    thumb's size, Setup and Quit - and the model list scrolls sideways
    inside it. The stop never leaves the viewport. */
 @media (max-width: 40rem) {
-  :root { --rail-w: 100%; --stop-d: 4rem; --sheet-x: 16px; }
+  :root { --rail-w: 100%; --stop-d: 5rem; --stop-c: 5px; --stop-k: 3.5rem; --sheet-x: 16px; }
   .rail {
     right: 0;
     bottom: auto;
@@ -2102,13 +2583,15 @@ label.row-title[for] { cursor: pointer; }
     gap: var(--space-3) var(--space-4);
     padding: var(--space-4) var(--space-5);
   }
-  .rail-head { flex: 1 1 8rem; min-width: 0; }
-  .stop-block { order: 2; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; }
+  .plate { flex: 1 0 100%; flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .rail-head { flex: 1 1 8rem; min-width: 0; border-bottom: 0; box-shadow: none; }
+  .stop-block { order: 2; flex: 0 1 auto; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; align-self: center; }
   /* O16 (WDG8-10): the chord's hint stays - a narrow desktop window has a
      keyboard - and so do the stop marks: the list wraps, never scrolls
      sideways past the models it marks. */
   .stop-hint[hidden] { display: none; }
-  .mushroom { font-size: var(--t-sm); }
+  .mushroom, .mushroom.is-latched { font-size: var(--t-sm); }
+  .mushroom-glyph { width: var(--glyph); height: var(--glyph); }
   .rail-foot { order: 3; margin-top: 0; flex: 1 0 100%; justify-content: flex-end; }
   .model-nav { order: 4; flex: 1 0 100%; flex-direction: row; flex-wrap: wrap; }
   .model-link { width: auto; white-space: nowrap; }

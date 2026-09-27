@@ -362,19 +362,66 @@ function toggleFace(text, caption) {
   return { text: sentenceCase(face), hint };
 }
 
-/** A disclosure's chevron: a drawn stroke in the text's own colour, turned
- *  a quarter when open (styles.css). Built node by node, no markup. */
-const SVG_NS = 'http://www.w3.org/2000/svg';
+/** One of the station's glyphs (theme.ICONS, rule 6): a span the
+ *  stylesheet masks with the served --icon-<name>, painted in the colour
+ *  of the text beside it. Decorative: the words say it. */
+function glyph(name) {
+  const node = make('span', 'glyph glyph-' + name);
+  node.setAttribute('aria-hidden', 'true');
+  return node;
+}
+
+/** A disclosure's key (Signature): a 24 px member of the key family
+ *  holding the disclosure glyph, which turns a quarter when open and the
+ *  key sinks (styles.css). Built node by node, no markup. */
 function chevron() {
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('class', 'chevron');
-  svg.setAttribute('viewBox', '0 0 10 10');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('focusable', 'false');
-  const path = document.createElementNS(SVG_NS, 'path');
-  path.setAttribute('d', 'M3.5 1.5 L7 5 L3.5 8.5');
-  svg.appendChild(path);
+  const key = make('span', 'disc-key');
+  key.setAttribute('aria-hidden', 'true');
+  key.appendChild(glyph('disclosure'));
+  return key;
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** The tripped-flag window (theme.FLAG): an ink frame showing SIGNAL with
+ *  an ink hatch, which drops into the frame (styles.css). Built node by
+ *  node; the colours are the stylesheet's, by class. */
+let flagSerial = 0;
+function flagWindow() {
+  flagSerial += 1;
+  const clipId = 'flag-clip-' + flagSerial;
+  const part = (tag, attrs) => {
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+    return node;
+  };
+  const svg = part('svg', { class: 'flag-window', viewBox: '0 0 30 20', 'aria-hidden': 'true',
+                            focusable: 'false' });
+  const defs = part('defs', {});
+  const clip = part('clipPath', { id: clipId });
+  clip.appendChild(part('rect', { x: '2', y: '2', width: '26', height: '16', rx: '2' }));
+  defs.appendChild(clip);
+  svg.appendChild(defs);
+  svg.appendChild(part('rect', { class: 'flag-frame', x: '1', y: '1', width: '28', height: '18', rx: '3' }));
+  const window_ = part('g', { 'clip-path': 'url(#' + clipId + ')' });
+  const flag = part('g', { class: 'flag' });
+  flag.appendChild(part('rect', { class: 'flag-fill', x: '2', y: '2', width: '26', height: '16' }));
+  flag.appendChild(part('path', { class: 'flag-hatch', d: 'M-2 22L14 -2M8 22L24 -2M18 22L34 -2' }));
+  window_.appendChild(flag);
+  svg.appendChild(window_);
   return svg;
+}
+
+/** The glyph a command carries before its legend (Signature, "Legends
+ *  with a glyph"): Home, Start run, Save, a gamepad log. By what the
+ *  command does, not by its words, so a reworded legend keeps its glyph;
+ *  at most one per key. */
+const COMMAND_GLYPHS = { home: 'home', start_run: 'run' };
+function commandGlyph(element) {
+  if (!element) return '';
+  if (element.type === 'file_save') return 'download';
+  if (element.type === 'log_stream' && /gamepad/i.test(String(element.text || ''))) return 'gamepad';
+  return COMMAND_GLYPHS[element.command] || '';
 }
 
 /** The Overview's grid (K4): how many entries share the row that entry
@@ -858,8 +905,11 @@ function renderEntry(panel, element) {
   return widget;
 }
 
-/** The slider half of a slider entry: a 4 px panel track, an ink fill to
- *  the value and an 18 px ink thumb (styles.css). Its travel is the
+/** The slider half of a slider entry: a 6 px sunk groove, an ink fill to
+ *  the value and a fader cap (Signature: a 16 x 30 key cap with a lip and
+ *  an ink index line) drawn over the range's own invisible thumb, at the
+ *  thumb's place (styles.css). It never animates: a tweened position is a
+ *  position the probe never held. Its travel is the
  *  schema's display range; the entry's Param still validates what is typed,
  *  so the range clamps only what it can show, never what the box holds. */
 function renderSlider(input, element, isInt, panel) {
@@ -878,6 +928,9 @@ function renderSlider(input, element, isInt, panel) {
   range.setAttribute('aria-label', nameFor(captionText(element) + ' slider', ownerOf(panel)));
   const title = titler(range);
   node.appendChild(range);
+  const cap = make('span', 'slider-cap');
+  cap.setAttribute('aria-hidden', 'true');
+  node.appendChild(cap);
   let filled = null;
   const paint = () => {
     const at = Math.max(low, Math.min(high, Number(range.value)));
@@ -886,6 +939,7 @@ function renderSlider(input, element, isInt, panel) {
     if (next === filled) return;
     filled = next;
     node.style.setProperty('--fill', next);
+    node.style.setProperty('--fill-f', (share / 100).toFixed(4));
   };
   /** The entry's number, shown on the range (clamped to its travel). */
   const follow = () => {
@@ -964,6 +1018,8 @@ function renderButton(panel, element) {
   const button = make('button', 'button ' + roleClass(element.role), words);
   button.type = 'button';
   button.setAttribute('aria-label', nameFor(words, ownerOf(panel)));
+  const mark = commandGlyph(element);
+  if (mark) button.insertBefore(glyph(mark), button.firstChild);
   button.addEventListener('click', () => panel.run(element));
   node.appendChild(button);
   const title = titler(button);
@@ -1132,7 +1188,12 @@ function renderDropdown(panel, element) {
   // Options are re-read on focus, not once at first render: a probe added
   // after the page loaded has to appear in the list (WEB-22).
   select.addEventListener('focus', () => panel.loadOptions(element, select));
-  node.appendChild(select);
+  // Signature: the select is a key with the disclosure glyph turned down
+  // at its right; the glyph is drawn over the key and passes clicks on.
+  const key = make('span', 'select-key');
+  key.appendChild(select);
+  key.appendChild(glyph('disclosure'));
+  node.appendChild(key);
   panel.loadOptions(element, select);
   return {
     node,
@@ -1182,6 +1243,7 @@ function renderFileSave(panel, element) {
                       sentenceCase(element.text || 'Save'));
   button.type = 'button';
   button.setAttribute('aria-label', nameFor(button.textContent, ownerOf(panel)));
+  button.insertBefore(glyph(commandGlyph(element)), button.firstChild);
   button.addEventListener('click', () => panel.download(element));
   node.appendChild(button);
   const title = titler(button);
@@ -1394,6 +1456,8 @@ function renderDetachedLog(panel, element) {
   const button = make('button', 'button role-neutral', caption + '…');
   button.type = 'button';
   button.setAttribute('aria-label', nameFor(caption + '…', ownerOf(panel)));
+  const mark = commandGlyph(element);
+  if (mark) button.insertBefore(glyph(mark), button.firstChild);
   button.setAttribute('aria-haspopup', 'dialog');
   button.setAttribute('aria-expanded', 'false');
   node.appendChild(button);
@@ -1707,7 +1771,14 @@ class PanelCard {
     side.appendChild(this.stateWord);
     // A stop this model did not confirm (G6, I8): marked at its own entry,
     // with no Dismiss - it stands for as long as the latch it describes.
-    this.unconfirmedMark = make('span', 'unconfirmed-mark', 'Stop not confirmed. Treat as live.');
+    // Signature: led by the tripped-flag window, which drops in once.
+    this.unconfirmedMark = make('span', 'unconfirmed-mark');
+    this.flagWindow = flagWindow();
+    this.flagWindow.addEventListener('animationend',
+      () => this.flagWindow.classList.remove('is-dropping'));
+    this.unconfirmedMark.appendChild(this.flagWindow);
+    this.unconfirmedText = make('span', 'unconfirmed-text', 'Stop not confirmed. Treat as live.');
+    this.unconfirmedMark.appendChild(this.unconfirmedText);
     this.unconfirmedMark.hidden = true;
     side.appendChild(this.unconfirmedMark);
     head.appendChild(side);
@@ -2339,8 +2410,18 @@ class PanelCard {
    *  sentence at its own entry; no Dismiss (I8). */
   setUnconfirmed(isUnconfirmed, words) {
     const flag = Boolean(isUnconfirmed);
-    putText(this.unconfirmedMark, words || 'Stop not confirmed. Treat as live.');
+    putText(this.unconfirmedText, words || 'Stop not confirmed. Treat as live.');
     if (this.unconfirmedMark.hidden !== !flag) this.unconfirmedMark.hidden = !flag;
+    // The flag drops into its window once per episode - when the mark
+    // appears - and not again while it stands, whatever re-shows the entry
+    // (the class goes when the drop ends).
+    // (F21: a class is written only when it changes - a remove of an absent
+    // class still rewrites the attribute on every poll.)
+    if (flag && !this.isFlagged) this.flagWindow.classList.add('is-dropping');
+    if (!flag && this.flagWindow.classList.contains('is-dropping')) {
+      this.flagWindow.classList.remove('is-dropping');
+    }
+    this.isFlagged = flag;
     this.node.classList.toggle('is-unconfirmed', flag);
   }
 
@@ -2992,7 +3073,7 @@ class Dashboard {
     clear(this.dom.modalText);
     this.dom.modal.hidden = true;
     const stop = this.dom.stop;
-    stop.classList.remove('is-latched', 'pulse');
+    stop.classList.remove('is-latched');
     stop.classList.add('is-off');
     // The disc says the same as the page: off. So does every model's
     // switch, whatever it last showed.
@@ -3610,16 +3691,17 @@ class Dashboard {
   // The mushroom follows the state, never the click. Its face and what a
   // press does are the server's `stop_words` (L1, round 7): it reads "Clear"
   // - and a press clears, asking first - only while EVERY model is latched.
-  // One model's own switch leaves it a working "Stop" for the rest. It
-  // pulses exactly once, when its face turns to "Clear".
+  // One model's own switch leaves it a working "Stop" for the rest.
+  // Signature: latched, the key drops, the band floods and the collar turns
+  // red in one 120 ms transition (styles.css); there is no pulse.
   renderEstop(words) {
-    const wasClear = this.stopAction === 'clear';
     const isClear = words.action === 'clear';
     this.stopAction = isClear ? 'clear' : 'stop';
     this.isEstopped = isClear;
     putText(this.dom.stopFace, words.face || (isClear ? 'Clear' : 'Stop'));
     this.dom.stop.classList.toggle('is-latched', isClear);
-    // The ring thickens with the "Clear" face (E, the Stopped artboard).
+    // The collar turns red and the socket band floods with the "Clear"
+    // face (Signature, the Stopped artboard).
     this.dom.stopRing.classList.toggle('is-latched', isClear);
     // The rail's line under the disc: a partial stop's names, "every model
     // latched", or the models that did not confirm.
@@ -3644,13 +3726,6 @@ class Dashboard {
     putAttr(this.dom.stop, 'title', isClear
       ? 'Clear the stop on every model (asks first). ' + STOP_KEY_HINT + ' stops again.'
       : 'Stop every model. Keyboard: ' + STOP_KEY_HINT + ', from anywhere on the page.');
-    if (isClear && !wasClear) {
-      this.dom.stop.classList.remove('pulse');
-      void this.dom.stop.offsetWidth;      // restart the animation
-      this.dom.stop.classList.add('pulse');
-    } else if (!isClear) {
-      this.dom.stop.classList.toggle('pulse', false);
-    }
   }
 
   async toggleEstopAll() {

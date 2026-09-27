@@ -497,29 +497,42 @@ def test_a_rendered_figure_sits_on_the_surface_colour_and_is_bounded():
 
 def test_the_stop_is_a_disc_that_rides_with_the_fixed_rail():
     """Updated (E, 2026-09-25): A's disc in a rail that is fixed down the
-    left - round, always signal red, a signal band around a sheet-toned
-    gap that thickens when latched. No inset highlight any more: depth is
-    tone steps, never gradients or shadows."""
+    left, round and always signal red.
+
+    Signature (owner ruling 2026-09-27): the disc is a red KEY in an ink
+    collar (theme.STOP collar_fill, collar width `--stop-c`) holding a pale
+    SURFACE socket band; latched, the collar turns SIGNAL and the band
+    floods SKIRT (`.stop-ring.is-latched`), and the key drops by
+    `--stop-drop-latched`. The key's SKIRT is a solid box-shadow offset -
+    the one shadow rule 1 allows the stop - so "no box-shadow" is gone; no
+    gradient still holds."""
     assert re.search(r"\n\.rail\s*\{[^}]*position:\s*fixed", STYLES), (
         "the stop scrolls off the page with the rail")
     stop = re.search(r"\n\.mushroom\s*\{([^}]*)\}", STYLES)
     assert stop, "styles.css no longer styles the stop"
     body = stop.group(1)
     assert "border-radius: 50%" in body, "the stop is not round"
-    assert "var(--danger-bg)" in body and "gradient" not in body and "box-shadow" not in body
+    assert "var(--danger-bg)" in body and "gradient" not in body
+    assert "0 var(--stop-skirt) 0 var(--stop-skirt-fill)" in body, "the key lost its skirt"
     ring = re.search(r"\n\.stop-ring\s*\{([^}]*)\}", STYLES).group(1)
-    assert "var(--stop-ring) solid var(--signal)" in ring and "var(--stop-gap)" in ring
-    assert re.search(r"\.stop-ring\.is-latched\s*\{[^}]*var\(--stop-ring-latched\)", STYLES)
+    assert "var(--stop-c) solid var(--stop-collar-fill)" in ring
+    assert "background: var(--stop-socket)" in ring
+    latched = re.search(r"\n\.stop-ring\.is-latched\s*\{([^}]*)\}", STYLES).group(1)
+    assert "var(--stop-collar-latched)" in latched and "var(--stop-socket-latched)" in latched
+    key_down = re.search(r"\n\.mushroom\.is-latched\s*\{([^}]*)\}", STYLES).group(1)
+    assert "var(--stop-drop-latched)" in key_down
     assert 'id="full-stop" type="button" class="mushroom"' in INDEX
     # The copy is the action, and it follows the state rather than the click.
     # Updated (L1, round 7): the face and the action are the server's
     # `stop_words`; "Clear" only while every model is latched.
     estop = _body(r"\n  renderEstop\(words\) \{(.*?)\n  \}")
     assert "words.action === 'clear'" in estop and "putText(this.dom.stopFace, words.face" in estop
-    assert "classList.add('pulse')" in estop and "!wasClear" in estop, (
-        "the latch must pulse once when it is SET, not for as long as it is")
+    # Signature (spec "Motion"): the latch's one moment is the key's drop,
+    # the flood and the collar turning red in --motion-latch; the scale
+    # pulse is gone (no motion that is not a state).
+    assert "pulse" not in estop and "latch-pulse" not in STYLES
     assert "this.dom.stopRing.classList.toggle('is-latched', isClear)" in estop
-    assert re.search(r"\.mushroom\.pulse\s*\{[^}]*animation:\s*latch-pulse", STYLES)
+    assert "this.dom.stop.classList.toggle('is-latched', isClear)" in estop
     # The per-model stop is a small switch in Diagnostics, not a second disc.
     switch = _body(r"function renderStopToggle\(panel, element\) \{(.*?)\n\}")
     assert "setAttribute('role', 'switch')" in switch and "aria-checked" in switch
@@ -540,7 +553,11 @@ def test_a_readout_does_not_look_like_a_box_the_operator_can_type_in():
     assert re.search(r"\.value\.is-changing\s*\{\s*color:\s*var\(--trace\)", STYLES)
     face = re.search(r"\n\.value, \.mushroom[^{]*\{([^}]*)\}", STYLES).group(1)
     assert "font-variant-numeric: tabular-nums" in face and "var(--numeral-family)" in face
-    assert re.search(r"\.input, \.select\s*\{[^}]*border-bottom: var\(--edge\) solid "
+    # Signature: a field is a sunk window whose floor lip is the MUTED
+    # underline; the select became a key, so the rule is the field's alone.
+    # The page's 1.5 px line width is --line now: --edge is the theme's
+    # disabled-rim colour.
+    assert re.search(r"\n\.input\s*\{[^}]*border-bottom: var\(--line\) solid "
                      r"var\(--input-border\)", STYLES), "an entry lost its underline"
 
 
@@ -659,7 +676,9 @@ def test_a_danger_role_command_is_a_quiet_command_not_a_second_red():
     rule = re.search(r"button\.button\.role-danger\s*\{([^}]*)\}", STYLES)
     assert rule, "nothing quiets a danger-role command"
     # Updated (E): a quiet command is outlined on the sheet, not panel-filled.
-    assert "var(--bg)" in rule.group(1) and "var(--muted)" in rule.group(1)
+    # Signature: a quiet command is the neutral key - a CAP face over the
+    # KEY_LIP - like any other; still no signal.
+    assert "var(--cap)" in rule.group(1) and "var(--key-lip)" in rule.group(1)
     assert "signal" not in rule.group(1)
 
 
@@ -748,8 +767,10 @@ def test_the_stop_face_stays_legible_and_its_focus_is_not_the_latch():
     # highlight left to wash the word out.
     stop = re.search(r"\n\.mushroom\s*\{([^}]*)\}", STYLES).group(1)
     assert "var(--danger-bg)" in stop and "var(--danger-fg)" in stop
-    ring = re.search(r"\.mushroom:focus-visible\s*\{([^}]*)\}", STYLES)
-    assert ring and "var(--stop-focus)" in ring.group(1) and "trace" not in ring.group(1)
+    # Signature: the focus ring is 2 px of --stop-focus OUTSIDE the collar
+    # (the collar is what "latched" looks like), keyed on the key's focus.
+    ring = re.search(r"\.stop-ring:has\(\.mushroom:focus-visible\)\s*\{([^}]*)\}", STYLES)
+    assert ring and "2px solid var(--stop-focus)" in ring.group(1) and "trace" not in ring.group(1)
     # G5 (owner ruling 2026-09-25): one chord on every platform.
     assert 'aria-keyshortcuts="Control+Period"' in INDEX
     assert "Ctrl+." in INDEX, "the rail does not say the shortcut"
@@ -892,10 +913,14 @@ def test_closing_a_module_is_quiet_says_what_it_does_and_asks_first():
 def test_every_font_size_is_on_the_scale():
     # Updated (E): the sheet's px scale in rem (--t-*), plus the theme's own
     # reading and caption sizes (theme.READING_SIZES, CAPTION_SIZE).
+    # Signature: plus the theme's axis-letter and tier-2 statistic sizes
+    # (AXIS_LETTER_SIZE, STATISTIC_SIZE), and a scale step may be two words
+    # (--t-stop-narrow).
     sizes = re.findall(r"font-size:\s*([^;]+);", STYLES)
     off = [size for size in sizes
-           if not re.fullmatch(r"var\(--(t-[a-z]+|reading-(focal|primary|compact|secondary)"
-                               r"|caption-size|font-size)\)", size.strip())]
+           if not re.fullmatch(r"var\(--(t-[a-z-]+|reading-(focal|primary|compact|secondary)"
+                               r"|caption-size|axis-letter-size|statistic-size|font-size)\)",
+                               size.strip())]
     assert not off, f"font sizes off the type scale: {off}"
 
 
@@ -995,6 +1020,10 @@ def test_every_variable_the_stylesheet_uses_is_defined_somewhere():
     actually for is caught by the test above, which forbids a literal."""
     # Digits too: the theme's spacing steps are --space-0 .. --space-6.
     defined = set(re.findall(r"(--[a-z0-9-]+):", theme.css_variables()))
+    # Signature: the glyphs, which the server serves beside the theme's
+    # variables on the same /api/theme.css (server.icon_css).
+    from views.web.server import icon_css
+    defined |= set(re.findall(r"(--[a-z0-9-]+):", icon_css()))
     defined |= set(re.findall(r"^\s*(--[a-z0-9-]+):", STYLES, re.M))
     # and by the client, for the one value only it knows: a group's place in
     # the launch stagger.
@@ -1131,10 +1160,16 @@ def test_the_empty_plot_default_does_not_talk_about_red():
 def test_a_warning_mark_is_not_a_box_and_an_entry_shows_where_focus_went():
     """L21 (IMP7-11): the warning mark is a triangle, which nothing on the
     sheet that can be ticked looks like; L22 (IMP7-16): an entry focused
-    from the rail shows it."""
+    from the rail shows it.
+
+    Signature (rule 6): the triangle is now the station's warning glyph,
+    masked from the served --icon-warning, in the warning mark's colour."""
     warning = re.search(r"\.tray-latest\.severity-warning::before,\s*\.event\.severity-warning::before\s*\{([^}]*)\}",
                         STYLES)
-    assert warning and "clip-path: polygon(" in warning.group(1), "the warning mark is a box"
+    assert warning and "var(--warning-mark)" in warning.group(1), "the warning mark lost its colour"
+    marks = re.search(r"\n\.rail-latched::before,[^{]*\.tray-latest\.severity-warning::before,"
+                      r"[^{]*\{([^}]*)\}", STYLES)
+    assert marks and "mask: var(--icon-warning)" in marks.group(1), "the warning mark is a box"
     assert re.search(r"\.card:focus-visible\s*\{[^}]*outline:", STYLES)
 
 
@@ -1220,3 +1255,122 @@ def test_mod6_web_every_command_path_gathers_for_its_element():
     """Both callers pass the element: `run` and the file download."""
     assert "this.gatherInputs()" not in CODE
     assert CODE.count("this.gatherInputs(element)") == 2
+
+
+# --------------------------------------------------------------------------
+# Signature (owner ruling 2026-09-27, handoff/tactile3-Signature.md): what a
+# read of the stylesheet, the markup and the served theme can check. The
+# drawn states are driven in a browser in test_view_web_server.py.
+# --------------------------------------------------------------------------
+FONTS = STATIC / "fonts"
+
+
+def test_signature_the_page_self_hosts_figtree_and_rubik_and_names_no_retired_font():
+    """Figtree (400-700) for text and Rubik (500-600) for numerals, the latin
+    woff2 files Google Fonts serves, with their OFL notices; Public Sans and
+    Archivo are gone from the stylesheet, the markup and the folder."""
+    for retired in ("Public Sans", "public-sans", "Archivo", "archivo"):
+        assert retired not in STYLES and retired not in INDEX, retired
+    assert not list(FONTS.glob("public-sans*")) and not list(FONTS.glob("archivo*"))
+    faces = dict(re.findall(r'@font-face\s*\{[^}]*font-family:\s*"([^"]+)";[^}]*'
+                            r'font-weight:\s*([0-9 ]+);', STYLES))
+    assert faces == {"Figtree": "400 700", "Rubik": "500 600"}, faces
+    for name in ("figtree-latin.woff2", "rubik-latin.woff2"):
+        data = (FONTS / name).read_bytes()
+        assert data[:4] == b"wOF2", f"{name} is not a woff2 file"
+        assert f'url("/fonts/{name}")' in STYLES and f'href="/fonts/{name}"' in INDEX
+    for notice in ("FIGTREE-OFL.txt", "RUBIK-OFL.txt"):
+        assert "SIL Open Font License" in (FONTS / notice).read_text()
+    assert theme.FONT_FAMILY == "Figtree" and theme.NUMERAL_FAMILY == "Rubik"
+
+
+def test_signature_the_glyphs_are_served_from_the_themes_one_path_table():
+    """Rule 6: one source, theme.ICONS. The server serves every glyph beside
+    the theme's variables as --icon-<name>, the page masks it."""
+    from urllib.parse import unquote
+    from views.web.server import icon_css
+    css = icon_css()
+    for name in theme.ICON_NAMES:
+        served = re.search(r'--icon-' + name + r': url\("data:image/svg\+xml,([^"]+)"\);', css)
+        assert served, f"--icon-{name} is not served"
+        assert theme.ICONS[name] in unquote(served.group(1)), name
+        assert re.search(r"\.glyph-" + name + r"\s*\{\s*--g: var\(--icon-" + name + r"\);", STYLES)
+    assert re.search(r"\n\.glyph\s*\{[^}]*mask: var\(--g\)", STYLES)
+    for name in theme.ICON_NAMES:
+        for path in re.findall(r'd="([^"]+)"', theme.ICONS[name]):
+            assert path not in APP_JS + STYLES + INDEX, f"{name}'s path is copied out of the theme"
+
+
+def test_signature_every_raised_part_is_one_key_family():
+    """Rule 2: a face, a KEY_RIM inset line and a KEY_LIP bottom border;
+    pressed (:active) and latched ([aria-pressed="true"]) fold the lip to
+    1 px and drop the face by the difference; disabled keeps the
+    silhouette in ghost tones."""
+    key = re.search(r"\n\.button, \.ghost\s*\{([^}]*)\}", STYLES).group(1)
+    assert "border-bottom: var(--lip-key) solid var(--key-lip)" in key
+    assert "var(--rim)" in key and "background: var(--cap)" in key
+    assert re.search(r"--rim:\s*inset 0 0 0 var\(--key-rim-px\) var\(--key-rim\)", STYLES)
+    down = re.search(r"\n\.button:active:not\(:disabled\),\s*\.ghost:active:not\(:disabled\),"
+                     r"\s*\.button\[aria-pressed=\"true\"\]\s*\{([^}]*)\}", STYLES)
+    assert down and "border-top-width: var(--key-drop)" in down.group(1)
+    assert "border-bottom-width: var(--lip-pressed)" in down.group(1)
+    assert re.search(r"--key-drop:\s*calc\(var\(--lip-key\) - var\(--lip-pressed\)\)", STYLES)
+    ghost = re.search(r"\n\.button:disabled, \.ghost:disabled\s*\{([^}]*)\}", STYLES).group(1)
+    assert "dashed var(--edge)" in ghost and "solid var(--edge-soft)" in ghost
+    assert "var(--disabled-fg)" in ghost
+    # ...and a disabled go key too: the ink face came later in the file
+    # and won, so a greyed Start run or Home read as live (seen in the
+    # first after-captures).
+    go = re.search(r"\n\.button\.role-go:disabled,[^{]*\{([^}]*)\}", STYLES)
+    assert go and "dashed var(--edge)" in go.group(1) and "var(--disabled-fg)" in go.group(1)
+    assert STYLES.index(".button.role-go:disabled,") > STYLES.index("\n.button.role-go {")
+    # The small members: the disclosure key (3 px), the fader cap, the
+    # switch knob (2.5 px) and the chord's keycaps (2 px).
+    assert re.search(r"\n\.disc-key\s*\{[^}]*border-bottom: var\(--lip-small\) solid var\(--key-lip\)", STYLES)
+    assert re.search(r"\n\.slider-cap\s*\{[^}]*border-bottom: var\(--lip-small\) solid var\(--key-lip\)", STYLES)
+    assert re.search(r"\n\.switch-knob\s*\{[^}]*border-bottom: var\(--lip-knob\)", STYLES)
+    assert re.search(r"\nkbd\s*\{[^}]*border-bottom: var\(--lip-kbd\) solid var\(--key-lip\)", STYLES)
+    # The chord is two keycaps and still reads "Stop: Ctrl+.".
+    hint = re.search(r'<span class="stop-hint"[^>]*>(.*?)</span>\n', INDEX).group(1)
+    assert re.sub(r"<[^>]+>", "", hint) == "Stop: Ctrl+.", hint
+
+
+def test_signature_every_motion_is_a_theme_duration_and_reduced_motion_zeroes_it():
+    """Spec "Motion": the parts move in the theme's durations (MOTION); the
+    numbers and the fader never animate (no transition on `left` of the
+    fader cap, none on a value); prefers-reduced-motion zeroes every one."""
+    for part in (r"\n\.button, \.ghost", r"\n\.disc-key", r"\n\.switch-knob", r"\n\.stop-ring",
+                 r"\n\.mushroom", r"\n\.slider-cap"):
+        body = re.search(part + r"\s*\{([^}]*)\}", STYLES).group(1)
+        durations = re.findall(r"transition:([^;]*);", body)
+        assert durations, part
+        assert not re.search(r"\d+m?s\b", durations[0]), f"{part} names its own duration"
+    assert "var(--motion-flag) var(--flag-ease)" in STYLES
+    assert "left" not in re.search(r"\n\.slider-cap\s*\{([^}]*)\}", STYLES).group(1).split("transition")[1]
+    assert "transition" not in re.search(r"\n\.value\s*\{([^}]*)\}", STYLES).group(1)
+    reduced = STYLES.split("prefers-reduced-motion: reduce")[1]
+    assert "*, *::before, *::after" in reduced
+    assert "animation-duration: 0s !important" in reduced and "transition-duration: 0s !important" in reduced
+
+
+def test_signature_the_stop_the_flag_and_the_lamp_slot_are_drawn_from_the_theme():
+    """The stop's collar, socket and key sizes, the flag window and the lamp
+    slot are the theme's tokens (STOP, FLAG, LAMP), never numbers here."""
+    ring = re.search(r"\n\.stop-ring\s*\{([^}]*)\}", STYLES).group(1)
+    assert "width: var(--stop-d)" in ring
+    assert re.search(r"--stop-d: var\(--stop-diameter\);", STYLES)
+    narrow = STYLES.split("@media (max-width: 62.5rem)")[1].split("@media")[0]
+    for name in ("diameter-narrow", "collar-narrow", "key-narrow"):
+        assert f"var(--stop-{name})" in narrow, name
+    flag = re.search(r"\n\.flag-window\s*\{([^}]*)\}", STYLES).group(1)
+    assert "var(--flag-w)" in flag and "var(--flag-h)" in flag
+    for part in ("frame", "fill", "hatch"):
+        assert f"var(--flag-{part})" in STYLES
+    lamp = re.search(r"\n\.toggle-lamp\s*\{([^}]*)\}", STYLES).group(1)
+    assert "var(--lamp-w)" in lamp and "var(--lamp-h)" in lamp and "var(--lamp-off)" in lamp
+    assert "trace" not in lamp and "var(--trace)" not in re.search(
+        r"\n\.nav-mark\s*\{([^}]*)\}", STYLES).group(1)
+    # The flag drops only when the client says a new episode began.
+    setter = _body(r"\n  setUnconfirmed\(isUnconfirmed, words\) \{(.*?)\n  \}")
+    assert "if (flag && !this.isFlagged) this.flagWindow.classList.add('is-dropping')" in setter
+    assert re.search(r"\.flag-window\.is-dropping \.flag\s*\{[^}]*animation: flag-drop", STYLES)
