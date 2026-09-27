@@ -114,9 +114,15 @@ STOP_FOCUS = TEXT
 RULE = SURFACE
 RULE_STRONG = TEXT
 RULE_STRONG_PX = 2
+#: The rule that heads an UNCONFIRMED model's entry: SIGNAL, and one step
+#: thicker than the ink rule (Signature: 3 px).
+RULE_ALARM_PX = 3
 WELL = SURFACE
 LIFT = mix(SURFACE, TEXT, 0.06)
 INPUT_BORDER = MUTED
+#: The 1 px line along the top of a tray or pocket (14 % ink on the panel),
+#: the flattened form of SHADOW_INSET's upper edge; Tk and Qt draw this.
+TRAY_LINE = mix(SURFACE, TEXT, 0.14)
 
 #: Spacing steps in pixels (DS-7). PAD/GAP/INSET below stay as the three
 #: names the views already use; anything else is one of these, never a sum.
@@ -297,9 +303,13 @@ def css_variables():
     lines += [f"--reading-focal-narrow: {READING_FOCAL_NARROW}px;",
               f"--caption-size: {CAPTION_SIZE}px;", f"--axis-letter-size: {AXIS_LETTER_SIZE}px;",
               f"--statistic-size: {STATISTIC_SIZE}px;", f"--rule-strong-px: {RULE_STRONG_PX}px;"]
+    # Every STOP length is a CSS px (the spec's sizes at the base font size);
+    # `face_pt` is the legend's size in px on the Web too, its name being
+    # the desktop toolkits' (they take points).
     for name, value in STOP.items():
-        unit = "" if isinstance(value, str) else ("pt" if name.startswith("face_pt") else "px")
+        unit = "" if isinstance(value, str) else "px"
         lines += [f"--stop-{name.replace('_', '-')}: {value}{unit};"]
+    lines += [f"--white: {WHITE};", f"--tray-line: {TRAY_LINE};", f"--rule-alarm-px: {RULE_ALARM_PX}px;"]
     lines += [f"--lamp-w: {LAMP['size'][0]}px;", f"--lamp-h: {LAMP['size'][1]}px;",
               f"--lamp-rail-h: {LAMP['size_rail'][1]}px;", f"--lamp-radius: {LAMP['radius']}px;",
               f"--lamp-off: {LAMP['off']};", f"--lamp-on: {LAMP['on']};",

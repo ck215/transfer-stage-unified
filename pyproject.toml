@@ -54,4 +54,4 @@ packages = ["controller", "devices", "model", "views", "views.web"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-"views.web" = ["static/*.html", "static/*.js", "static/*.css", "static/fonts/*.woff2"]
+"views.web" = ["static/*.html", "static/*.js", "static/*.css", "static/fonts/*.woff2", "static/fonts/*.txt"]

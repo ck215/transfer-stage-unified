@@ -529,6 +529,27 @@ clean one does not.
 | MOD-5 | S3 | devices, views | `Device` base duck-types `set_gate`, `is_hardware`, lost (CON-6). | Defaults on `Device`; `Model.state["hardware_devices"]`; views count that instead of class names. | agent (rb-mod-views) + rb-mod-input (state key) | done `04d9805` + `dbc6dc5` (`views.base.hardware_links`; a state without the key falls back to the old class names) |
 | MOD-6 | S3 | views | Schema `inputs` is declared and not read (= CON-8). | Views send the button's declared `inputs` plus every dirty writable entry. | agent (rb-mod-views) | done `5a6d988` (Tk keeps a refused value in its box, and that box counts as edited, so the CON-8 case persists there until the box is fixed) |
 
+## Tier S — the Transfer Map (owner's end goal, ruled 2026-09-27)
+
+The heatmap the project exists for: a 3D map over tilt angle, speed and
+force whose value is the transferred channel width, built as trials are
+recorded, with footage, a store, later AFM attachment, and confidence on the
+gradients. Force is approximated from the red-percent lowering profile
+(hover baseline, brightening to a maximum, a shadow, the break), normalised
+per trial by its own min and max; several definitions are kept and cross
+compared; both a detector and an operator Mark key. Brief:
+`handoff/brief-transfer-map.md`. A model-only job by the Tier R contract.
+
+| # | Sev | Where | Item | Fix | Route |
+|---|---|---|---|---|---|
+| MAP-1 | feature | model (new) | `TransferMap` model, registered; SQLite store (`trials`, raw `profile` samples); CSV export/import. | as the brief, §1–2 | agent (rb-map) |
+| MAP-2 | feature | model (red_monitor, rotator, additive) | Live sources: Red Percent `subscribe`/`grab_frame`, Rotator `position_deg`, probe speed, duck-typed. | brief §3 | agent (rb-map) |
+| MAP-3 | feature | model (new) | The guided trial: arm (before frame), Mark force, finish (after frame, detector), abort, broke, attach AFM. | brief §4 | agent (rb-map) |
+| MAP-4 | feature | model (analysis) | Force definitions as pure functions over the stored profile, an open registry; the extrema detector. | brief §5 | agent (rb-map) |
+| MAP-5 | feature | plot_data | Figures: `map3d`, `slice`, `compare` (one panel per definition), `profile`. | brief §6 | agent (rb-map) |
+| MAP-6 | feature, phase 2 | plot_data | numpy Gaussian process for the slice: mean, variance, confidence contour, gradient variance. | brief §6 phase 2 | agent (rb-map), after MAP-1..5 are green |
+| MAP-7 | docs | docs | STATUS, MODEL_CONTRACT (a worked non-hardware model), an operator page "Recording a trial". | from the handoff | lead |
+
 ## Out of scope here
 
 - The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.

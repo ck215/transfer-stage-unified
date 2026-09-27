@@ -115,6 +115,29 @@ lands as `palette.py` / `theme.py` tokens.
 
 ### Resume here (handoff written 2026-09-26, late; Tier R added 2026-09-27)
 
+- **2026-09-27, evening: the Signature aesthetic is in all three views.**
+  Owner ruling: "Signature looks great, I'd love to have that be our
+  layout" (round 3 on Tactile; canvas
+  https://claude.ai/artifact/CbDb1WtYKZRJddarJZaU8V, spec
+  `handoff/tactile3-Signature.md`, ratified rules in `DESIGN_BRIEF.md`).
+  Tokens `af7a325`; views by three worktrees (`rb-sig-tk` 43ccd52,
+  `rb-sig-web` a53057f, `rb-sig-qt` 878baad), merged by the lead. Every
+  colour, size, radius, shadow, font and glyph comes from `theme.py`; the
+  views name none of their own (a Tk test enforces it). **Open after the
+  merge:** Tk captures on the real display (no headless Tk on macOS; the
+  10 `window`-marked tests are the risk: keys are taller by their lip);
+  install Figtree and Rubik (SemiBold, Medium) on the station PC; the old
+  rail marks (L1 square, O6 ring, O16 "!") still sit beside the new lamp
+  slot in Tk and Qt, which the Signature renders do not show: an owner
+  call; Close and rescan icons are outside the nine-glyph set; the Web
+  tray-open motion is not built (it clipped clicks). The four
+  "Needs the lead" lists are in `handoff/fix-signature-{tk,web,qt}.md`.
+- **2026-09-27: the Transfer Map (Tier S)** is being built in `rb-map`
+  from `handoff/brief-transfer-map.md`: the project's end-goal heatmap
+  (tilt, speed, force from the red-percent lowering profile, channel
+  width), a local git-ignored SQLite store under `data/`, footage,
+  detector plus Mark key, several force definitions cross-compared, AFM
+  attachment, a numpy Gaussian process for confidence. Model-only.
 - **2026-09-27, Tier R (modularity) landed**: MOD-1..6 via three worktrees
   (`rb-mod-input`, `rb-mod-setup`, `rb-mod-views`), merged `3ebc269`,
   `e340a05`, `33f638e`, then the lead's relocation of the SMC100 query onto
