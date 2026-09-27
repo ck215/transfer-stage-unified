@@ -93,14 +93,16 @@ try:                                    # the module imports without PySide6
     from PySide6.QtCore import (QEasingCurve, QEvent, QEventLoop, QLocale,
                                 QPoint, QPointF, QRect, QRectF, QSize, Qt,
                                 QTimer, QUrl, QVariantAnimation, Signal)
-    from PySide6.QtGui import (QColor, QDoubleValidator, QFont,
+    from PySide6.QtGui import (QAccessible, QAccessibleActionInterface,
+                               QAccessibleAnnouncementEvent,
+                               QColor, QDoubleValidator, QFont,
                                QFontDatabase, QFontMetrics, QGuiApplication,
                                QIcon, QImage,
                                QIntValidator, QKeySequence, QPainter,
                                QPainterPath, QPen, QPixmap, QShortcut,
                                QTextCursor, QTextDocument)
     from PySide6.QtWidgets import (
-        QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog,
+        QAbstractButton, QAccessibleWidget, QApplication, QCheckBox, QComboBox, QDialog,
         QDockWidget, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
         QLayout, QLineEdit, QMainWindow, QMessageBox, QPushButton,
         QScrollArea, QSizePolicy, QSlider, QStyle, QStyleOptionButton,
@@ -976,6 +978,52 @@ def allow_tab_to_every_control():
     hints = QGuiApplication.styleHints() if QGuiApplication.instance() else None
     if hints is not None and hints.tabFocusBehavior() != Qt.TabFocusBehavior.TabFocusAllControls:
         hints.setTabFocusBehavior(Qt.TabFocusBehavior.TabFocusAllControls)
+
+
+def announce(widget, text, assertive=True):
+    """O7 (A11Y-2): say `text` to a screen reader - a stop, a clear, a stop
+    that did not confirm, a fault - in the words on screen. Assertive: these
+    interrupt. Qt 6.8+; a failure is a debug line, never a dialog."""
+    if not text:
+        return
+    try:
+        event = QAccessibleAnnouncementEvent(widget, text)
+        event.setPoliteness(QAccessible.AnnouncementPoliteness.Assertive if assertive
+                            else QAccessible.AnnouncementPoliteness.Polite)
+        QAccessible.updateAccessibility(event)
+    except Exception as exc:
+        events.debug("Announce Failed", str(exc), source="QtView", exception=exc,
+                     every=1.0)
+
+
+_ACCESSIBLE_FACTORY = []
+
+
+def install_accessibility():
+    """O11 (A11Y-5): an overview entry's head is a press target drawn as a
+    frame; to assistive tech it is a button named "Open <model>" whose press
+    opens the device page. Installed once per process."""
+    if _ACCESSIBLE_FACTORY or not HAS_QT:
+        return
+
+    class HeadAccessible(QAccessibleWidget):
+        def __init__(self, head):
+            QAccessibleWidget.__init__(self, head, QAccessible.Role.Button)
+
+        def actionNames(self):          # noqa: N802 - Qt's name
+            return [QAccessibleActionInterface.pressAction()]
+
+        def doAction(self, name):       # noqa: N802 - Qt's name
+            head = self.object()
+            if (name == QAccessibleActionInterface.pressAction()
+                    and isinstance(head, EntryHead) and head.is_pressable):
+                head.pressed.emit()
+
+    def factory(_key, obj):
+        return HeadAccessible(obj) if isinstance(obj, EntryHead) else None
+
+    QAccessible.installFactory(factory)
+    _ACCESSIBLE_FACTORY.append(factory)     # kept alive with the process
 
 
 def install_font_fallbacks():
@@ -3613,7 +3661,17 @@ class QtPanelView(PanelView, QWidget):
         combo.setSizePolicy(QSizePolicy.Policy.Expanding,
                             QSizePolicy.Policy.Fixed)
         caption, _ = self._label_for(container, element)
-        combo.setAccessibleName(sentence_case(caption))
+        owner = self._building_title if container.is_row else self.name
+        words = caption if container.is_row else sentence_case(caption)
+        # O11 (A11Y-5): macOS and Linux name a combo box by its value ("SIM");
+        # its label reaches a screen reader through a Label relation - a
+        # buddy, hidden, that says the caption and whose row it is.
+        spoken = f"{words}, {owner}" if owner else words
+        combo.setAccessibleName(spoken)
+        buddy = QLabel(spoken)
+        buddy.setObjectName("buddy")
+        buddy.setBuddy(combo)
+        buddy.setVisible(False)
         self._remember(element, combo)
         self._reload_options(element, combo)
         combo.currentTextChanged.connect(
@@ -3635,6 +3693,7 @@ class QtPanelView(PanelView, QWidget):
         # Greyed with its dropdown: an unticked row offers nothing to press.
         self._companions[id(element)] = refresh
         cell = _bare_row(combo, refresh)
+        cell.layout().addWidget(buddy)
         if container.control_width:
             cell.setMinimumWidth(container.control_width)
         container.add(caption, cell)
@@ -4384,6 +4443,8 @@ class QtDashboard(Dashboard, QMainWindow):
         self._marshalled.connect(self._on_marshalled, Qt.QueuedConnection)
         install_font_fallbacks()
         allow_tab_to_every_control()
+        install_accessibility()
+        self._faulted_said = set()  # faults already announced (O7)
 
         self._build_rail()
         self._build_sheet()
@@ -4437,6 +4498,7 @@ class QtDashboard(Dashboard, QMainWindow):
         # sheet off the window.
         self._setup_scroll = QScrollArea()
         self._setup_scroll.setObjectName("setupScroll")
+        self._setup_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._setup_scroll.setWidgetResizable(True)
         self._setup_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._setup_scroll.setWidget(self.setup_view)
@@ -4471,6 +4533,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._sync_states()
         self._sync_empty_state()
         self._set_tray_open(False)
+        self._order_tab()
         self.show()
         # Nothing is handed focus at boot: a ring on the first control in the
         # tab order before anything has happened is noise.
@@ -4543,6 +4606,8 @@ class QtDashboard(Dashboard, QMainWindow):
         placed over it (F1)."""
         self.rail = QFrame()
         self.rail.setObjectName("rail")
+        # It holds the keyboard at launch (no ring on anything yet): named.
+        self.rail.setAccessibleName("Transfer stage")
         column = QVBoxLayout(self.rail)
         column.setContentsMargins(theme.SPACE[6], theme.SPACE[7],
                                   theme.SPACE[6], theme.SPACE[6])
@@ -4617,6 +4682,9 @@ class QtDashboard(Dashboard, QMainWindow):
         stack.addStretch(1)
         scroll = QScrollArea()
         scroll.setObjectName("railScroll")
+        # O11: a scroll area is not a Tab stop; focusing a control inside it
+        # scrolls it into view.
+        scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -4745,6 +4813,7 @@ class QtDashboard(Dashboard, QMainWindow):
                 item.clicked.connect(lambda _=False, n=name: self.open_entry(n))
                 self._rail_list.addWidget(item)
                 self._rail_items[name] = item
+            self._order_tab()
         for name, item in self._rail_items.items():
             if item.isChecked() != (name == self._shown):
                 item.setChecked(name == self._shown)
@@ -4754,6 +4823,7 @@ class QtDashboard(Dashboard, QMainWindow):
         if closed != self._closed_shown:
             self._closed_shown = closed
             self._build_reopen(closed)
+            self._order_tab()
 
     def _rail_status_text(self, names, states):
         lost = [lost_sentence(n, self._lost.get(n)) for n in names
@@ -4779,6 +4849,7 @@ class QtDashboard(Dashboard, QMainWindow):
         stop = self._stop_state()
         words = stop_words(stop)
         if words != self._words:
+            self._announce_stop(self._words, words)
             self._words = words
             self.latched_label.setText(words["rail"])
             self.latched_row.setVisible(bool(words["rail"]))
@@ -4788,6 +4859,10 @@ class QtDashboard(Dashboard, QMainWindow):
             self.headline_row.setVisible(bool(words["headline"]))
         latched = set(stop["latched"])
         faulted = {n for n, state in states.items() if state.get("is_faulted")}
+        for name in names:
+            if name in faulted and name not in self._faulted_said:
+                announce(self.stop_button, f"{name}: {FAULT_LINE}")
+        self._faulted_said = faulted
         for name, item in self._rail_items.items():
             item.set_stop(rail_mark(name, stop, faulted))
         for name, entry in self._entries.items():
@@ -4803,6 +4878,17 @@ class QtDashboard(Dashboard, QMainWindow):
         """`Controller.stop_state`: what is latched, what did not confirm,
         and whether that is every model (L1)."""
         return self.controller.stop_state
+
+    def _announce_stop(self, was, now):
+        """O7: each edge of the stop is said once, in the words on screen - a
+        stop, a stop that did not confirm, a clear. Not at the first draw."""
+        if was is None:
+            return
+        said = now["headline"] or now["rail"]
+        if said:
+            announce(self.stop_button, said)
+        elif was["headline"] or was["rail"]:
+            announce(self.stop_button, "Stop cleared")
 
     def _model_states(self, names):
         """Every open model's state from one `Controller.state()` read, with
@@ -4827,7 +4913,45 @@ class QtDashboard(Dashboard, QMainWindow):
         return states
 
     def _order_tab(self):
-        """Tab order after a rebuild (O11 fills this in)."""
+        """O11 (A11Y-4): Tab walks the rail whole - the disc, the countdown's
+        Extends, Overview, the models, the closed ones, Setup, Quit - then
+        Setup's dock, then the sheet in station order (each entry's head and
+        close, then its body in its own order), then the band and the tray.
+        Rebuilt whenever one of those lists changes."""
+        if self._closing:
+            return
+        chain, widget = [], self.nextInFocusChain()
+        start = widget
+        for _ in range(20000):
+            if widget is None:
+                break
+            if widget.focusPolicy() & Qt.FocusPolicy.TabFocus:
+                chain.append(widget)
+            widget = widget.nextInFocusChain()
+            if widget is start:
+                break
+
+        def within(root):
+            return [w for w in chain if root is not None and root.isAncestorOf(w)]
+
+        order = [self.stop_button]
+        order += [button for _, button in self.countdowns.values()]
+        order += [self.overview_item] + list(self._rail_items.values())
+        order += list(self.reopen_buttons.values())
+        order += [self.setup_button, self.quit_button]
+        order += within(self._setup_dock)
+        for name in self.controller.model_names:
+            entry = self._entries.get(name)
+            if entry is not None:
+                order += [entry.head, entry.close_button] + within(entry)
+        order += within(self.alert_band) + within(self.tray)
+        seen, final = set(), []
+        for widget in order:
+            if id(widget) not in seen and qt_alive(widget):
+                seen.add(id(widget))
+                final.append(widget)
+        for first, second in zip(final, final[1:]):
+            QWidget.setTabOrder(first, second)
 
     # -- N2: the idle countdown ----------------------------------------------
     def countdown_names(self):
@@ -5008,6 +5132,7 @@ class QtDashboard(Dashboard, QMainWindow):
         column.setSpacing(0)
         self.sheet_scroll = QScrollArea()
         self.sheet_scroll.setObjectName("sheetScroll")
+        self.sheet_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.sheet_scroll.setWidgetResizable(True)
         self.sheet_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.sheet = QWidget()
@@ -5484,6 +5609,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._arrange_entries()
         self._schedule_arrange()
         self._sync_rail()
+        self._order_tab()
         if reopened:
             self._raise_on_add = None
             self._bring_forward(entry)
@@ -5506,6 +5632,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._sync_empty_state()
         self._arrange_entries()
         self._sync_rail()
+        self._order_tab()
         events.debug("Entry Closed", name, source="QtView")
 
     def _on_entry_closed(self, name):

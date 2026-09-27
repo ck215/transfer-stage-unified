@@ -2957,7 +2957,9 @@ def test_k4_pressing_an_overview_head_opens_the_device_by_mouse_and_by_key(six, 
         assert window.page == "Rotator"
 
 
-def test_k4_the_close_in_an_overview_head_does_not_open_the_device(six, qapp):
+def test_k4_the_close_in_an_overview_head_does_not_open_the_device(six, qapp, monkeypatch):
+    """Updated (O9): the close asks first; answered yes here."""
+    monkeypatch.setattr(qt, "ask", lambda *a, **k: True)
     window = six
     window._entries["Rotator"].close_button.click()
     _pump(qapp)
@@ -2976,7 +2978,9 @@ def test_k4_pressing_overview_returns(six, qapp):
     assert not panel.tier_button.isVisible() and panel._opened is False
 
 
-def test_k4_closing_the_shown_device_returns_to_the_overview(six, qapp):
+def test_k4_closing_the_shown_device_returns_to_the_overview(six, qapp, monkeypatch):
+    """Updated (O9): the close asks first; answered yes here."""
+    monkeypatch.setattr(qt, "ask", lambda *a, **k: True)
     window = six
     window.open_entry("Rotator")
     window._entries["Rotator"].close_button.click()
