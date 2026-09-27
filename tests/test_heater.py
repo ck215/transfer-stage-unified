@@ -40,6 +40,13 @@ def heater(port):
 
 
 @pytest.fixture(autouse=True)
+def reading_log_in_tmp(tmp_path, monkeypatch):
+    """P1: every parsed reading goes to a CSV under the data root. Keep the
+    suite's readings out of the operator's `~/transfer-stage-runs`."""
+    monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
 def quiet_event_log():
     """`events` is a process singleton with a 5 s dedupe window and a
     rate-limit table for `debug(every=)`. Two tests asserting on the same
