@@ -87,6 +87,11 @@ _MOTION_GATE = ("autonomous", "manual")
 #: speed stays in effect.
 _MANUAL_SPEED_GATE = ("autonomous",)
 
+#: Ceiling for both speeds, steps/s, on every probe (owner ruling 2026-09-26).
+#: Arbitrary for now: per-device limits, adapted to each board's steppers,
+#: come out of the architecture audit (BUGFIX_PLAN Q1).
+MAX_SPEED = 3200
+
 #: 42-byte jog packet: start marker, packet type, then ten floats.
 PACKET_FORMAT = "<BBffffffffff"
 START_MARKER = 0xAA
@@ -112,9 +117,9 @@ class Probe(Model):
         Param("y_dist", "int", default=0, label="Target Y Dist"),
         Param("z_dist", "int", default=0, label="Target Z Dist"),
         Param("full_speed", "int", default=400, minimum=1,
-              label="Autonomous Speed", unit="steps/s"),
+              maximum=MAX_SPEED, label="Autonomous Speed", unit="steps/s"),
         Param("man_full_speed", "int", default=400, minimum=1,
-              label="Manual Speed", unit="steps/s"),
+              maximum=MAX_SPEED, label="Manual Speed", unit="steps/s"),
         Param("slow_speed", "int", default=0, label="Brake Speed (Slow)"),
         Param("brake_distance", "int", default=0,
               label="Brake Distance (steps)"),
@@ -1230,8 +1235,8 @@ class Probe(Model):
     ENTRY_PARAMS = ("x_step", "y_step", "z_step", "x_dist", "y_dist", "z_dist",
                     "full_speed", "man_full_speed")
     SPEED_PARAMS = ("full_speed", "man_full_speed")
-    #: The slider's travel in steps/s (a display range; the Param validates).
-    SPEED_SLIDER = (1, 1000)
+    #: The slider's travel in steps/s: the full range the Param accepts.
+    SPEED_SLIDER = (1, MAX_SPEED)
 
     @property
     def CONFIG_PARAMS(self):
@@ -1299,14 +1304,12 @@ class DCProbe(Probe):
         Param("y_step", "int", default=1, minimum=1, label="Y Step Size"),
         Param("z_step", "int", default=1, minimum=1, label="Z Step Size"),
         Param("full_speed", "int", default=120, minimum=1,
-              label="Autonomous Speed", unit="steps/s"),
+              maximum=MAX_SPEED, label="Autonomous Speed", unit="steps/s"),
         Param("man_full_speed", "int", default=120, minimum=1,
-              label="Manual Speed", unit="steps/s"),
+              maximum=MAX_SPEED, label="Manual Speed", unit="steps/s"),
     )}}
 
     ENTRY_PARAMS = Probe.ENTRY_PARAMS + ("slow_speed", "brake_distance")
-    #: The DC board runs slower; its slider travels to 400 steps/s.
-    SPEED_SLIDER = (1, 400)
 
     def _frame(self):
         fields = super()._frame()

@@ -464,6 +464,14 @@ tier; the gains, ramp and offset are tuned over the wire. A firmware change
 | P1 | S2 | heater (core) + a plot tool | The temperature graph is only visible inside whichever view is running; an agent, or a second person, cannot watch a run. | Every reading (time, temperature, setpoint, endpoint, gains) appended live to a per-session CSV under `~/transfer-stage-runs/`; a CLI that renders it (PNG snapshot, `--follow` to redraw). | agent (worktree) |
 | P2 | S2 | bench | Overshoot from idle to 30 °C with the defaults (Kp 2.0, Ki 0.5, Kd 0.1, ramp 10 s/°C). | Iterate at the bench: step to 30 °C, wait out passive cooling to ambient between trials, fit rise/overshoot/settling, retune. Result: proposed defaults for `src/model/heater.py` (owner approves), with the plotted trials. | agent (bench, owner-delegated) |
 
+## Tier Q — owner follow-ups (2026-09-26, evening)
+
+| # | Sev | Where | Item | Fix | Route |
+|---|---|---|---|---|---|
+| Q1 | S2 | core (architecture audit) | Probe speeds share one arbitrary ceiling, `MAX_SPEED = 3200` steps/s (`src/model/probe.py`, owner ruling 2026-09-26), and one slider range. Not every board's steppers behave the same. | Per-device speed limits, then adapted to each device's steppers (bench-measured). Part of the architectural audit, not a quick fix. | audit, then owner (bench values) |
+| Q2 | S3 | tests | `test_core_model.py::test_the_stop_thread_is_a_daemon_so_a_wedged_board_cannot_hold_the_exit` flaked once in a full run (passes alone): it finds the worker by `estop-` name, and a leftover thread of that name from an earlier test is already in `before`. | Identify the worker by the thread object (or the model's own handle), not by name. | direct |
+| Q3 | S2 | launchers / flash tool | `run_swap.sh` scans every port when a board that is never plugged in here (the DC Probe) has no stamp, and the first launch reflashes all three connected boards. Stamps cannot see a flash made from the IDE or the MacBook. | Owner to bench-test the first flash and `teensy_loader_cli -s`; consider stamping per detected board, or `STATION_FLASH_ONLY` per machine. | owner (bench) |
+
 ## Model contract (audit 2026-09-26, `handoff/audit-model-contract-2026-09-26.md`)
 
 A `PiezoStage` model written from `MODEL_CONTRACT.md` alone was driven through all three views unedited. `tests/test_model_contract.py` (160 cases over every registered class plus a minimal one) pins the contract.

@@ -1217,3 +1217,16 @@ def test_a_probe_opens_its_port_at_the_firmwares_500000_baud(cls, monkeypatch):
     cls(port="/dev/ttyACM0", gamepad=object())
     cls(port=None, gamepad=object(), sim=True)
     assert built == [("/dev/ttyACM0", 500000), ("SIM", 500000)]
+
+
+@pytest.mark.parametrize("cls", [StepperProbe, DCProbe, ChuckPositioner])
+@pytest.mark.parametrize("name", ["full_speed", "man_full_speed"])
+def test_every_probe_speed_tops_out_at_3200(cls, name):
+    """Owner ruling 2026-09-26: one arbitrary ceiling, 3200 steps/s, for
+    every device until per-device limits come out of the architecture
+    audit. The slider travels the same range the Param accepts."""
+    param = cls.PARAMS[name]
+    assert param.maximum == 3200
+    assert param.parse(3200) == (True, 3200)
+    assert param.parse(3201)[0] is False
+    assert cls.SPEED_SLIDER == (1, 3200)

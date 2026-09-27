@@ -81,6 +81,9 @@ wire is pinned by `tests/golden/`.
   value written while the motors are live is parsed strictly (finite, ≥ 1); a
   refused one leaves the previous speed in effect. The stop latch still blocks
   every frame. Overrides DC-6 for this one field (`e2f60c7`).
+- Probe speed ceiling (2026-09-26): Autonomous and Manual Speed top out at
+  3200 steps/s on every probe, slider 1–3200 (`MAX_SPEED`). Arbitrary for
+  now; per-device, adapted limits are BUGFIX_PLAN Q1 (architecture audit).
 - Setup: auto-scan at boot + Refresh; a **Launch checkbox** and one Port
   dropdown (SIM / port) per row (2026-09-25, replaces the "Off" entry), no
   Mode; one table, one row per model; minimises on launch, reopenable.
