@@ -208,7 +208,7 @@ class Rotator(Model):
                 self._step_button("Move -", -1, moves),
                 self._step_button("Move +", 1, moves),
                 sch.button("Home", "home", role="go", disabled_when=moves),
-                sch.button("Stop motion", "halt", role="neutral", disabled_when=gated),
+                sch.button("Stop motion", "halt", role="neutral", disabled_when=gated, stop=True),
             ),
             sch.section(
                 "Motion",

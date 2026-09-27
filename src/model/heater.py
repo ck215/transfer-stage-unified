@@ -268,7 +268,7 @@ class Heater(Model):
                 sch.button("Enter Settings", "apply_settings",
                            inputs=self.FRAME_FIELDS, role="go",
                            disabled_when=("latched",)),
-                sch.button("Stop heater", "halt", role="neutral"),
+                sch.button("Stop heater", "halt", role="neutral", stop=True),
             ),
             sch.section(
                 "Control Parameters",

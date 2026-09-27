@@ -173,12 +173,21 @@ class Controller:
         return self.run(name, "_commit", inputs={attr: value})
 
     def set_input_focus(self, is_focused):
-        """Window focus -> every gamepad gate (D-4: gate input, never stop)."""
+        """Window focus -> every manual-input gate (D-4: gate input, never
+        stop). The contract is `Device.set_gate(bool)` on any of a model's
+        `devices`, whatever the attribute is called (CON-3); the `gamepad`
+        attribute is still reached for a model that keeps it off the list."""
         with self._lock:
             models = list(self._models.values())
         for model in models:
+            seen = set()
+            for device in list(getattr(model, "devices", None) or ()):
+                gate = getattr(device, "set_gate", None)
+                if callable(gate):
+                    seen.add(id(device))
+                    gate(is_focused)
             gamepad = getattr(model, "gamepad", None)
-            if gamepad is not None:
+            if gamepad is not None and id(gamepad) not in seen:
                 gamepad.set_gate(is_focused)
 
     # -- stop --------------------------------------------------------------

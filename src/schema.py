@@ -120,10 +120,13 @@ def entry(text, model_attr, param, *, enabled_when=None, disabled_when=None,
 
 
 def button(text, command, *, inputs=(), args=(), role="neutral", confirm=None,
-           enabled_when=None, disabled_when=None):
+           enabled_when=None, disabled_when=None, stop=False):
     """A command. `inputs` names the parameters whose values travel with it;
     `args` are fixed positional arguments the button always passes (two
-    buttons can share one command: `move_by` with args (1,) and (-1,))."""
+    buttons can share one command: `move_by` with args (1,) and (-1,)).
+    `stop=True` marks a command that takes hardware DOWN (halt, end a run):
+    the Panel never refuses it over unrelated entry text (CON-4), whatever
+    the command is called."""
     element = {
         "type": "button", "text": text, "command": command,
         "inputs": list(inputs), "args": list(args), "writable": False,
@@ -131,6 +134,8 @@ def button(text, command, *, inputs=(), args=(), role="neutral", confirm=None,
     }
     if confirm:
         element["confirm"] = confirm
+    if stop:
+        element["stop"] = True
     return _gate(element, enabled_when, disabled_when)
 
 

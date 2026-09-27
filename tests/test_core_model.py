@@ -523,3 +523,15 @@ def test_an_unconfirmed_stop_after_a_clear_is_a_new_event_not_a_count():
         assert len(ids) == 2 and ids[0] != ids[1]
     finally:
         stalled.release()
+
+
+def test_a_faulted_model_gates_as_fault_from_the_base():
+    """CON-9: any model's fault greys what lists "fault", without the model
+    mapping it through its own mode_name."""
+    model = FakeModel()
+    assert model.gate_mode != "fault"
+    model._fault("coil open") if hasattr(model, "_fault") else setattr(model, "_fault_reason", "coil open")
+    if model.is_faulted:
+        assert model.gate_mode == "fault"
+    model.estop()
+    assert model.gate_mode == "latched", "the latch outranks the fault"

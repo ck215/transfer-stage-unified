@@ -1198,3 +1198,15 @@ def test_the_analysis_image_is_empty_until_a_run_is_loaded(monitor):
     assert monitor.figure == b""
     image = next(e for e in sch.elements(monitor.schema) if e["type"] == "image")
     assert image["empty"].startswith("No analysis yet")
+
+
+def test_stop_run_is_never_refused_by_a_bad_box(monitor):
+    """CON-4: the one model whose stop is not called halt. `end_run` is
+    declared `stop=True`, so a bad "Red at least" in the box cannot keep a
+    run recording."""
+    import schema as sch
+    button = next(e for e in sch.elements(monitor.schema) if e.get("command") == "end_run")
+    assert button.get("stop") is True
+    assert monitor._takes_hardware_down("end_run")
+    result = monitor.run("end_run", inputs={"red_min": "abc"})
+    assert not result.is_refused or "not a number" not in (result.reason or "")

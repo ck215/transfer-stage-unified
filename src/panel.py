@@ -191,10 +191,14 @@ class Panel:
     def _takes_hardware_down(self, command, args=()):
         """A stop-class command: inputs travelling with it are ignored, not
         validated, so a stray bad entry cannot stand between the operator
-        and a stop."""
+        and a stop. The schema says which (`button(..., stop=True)`, the
+        Safety toggle); the name list is the belt under that (CON-4)."""
         if command in self.UNGATED_COMMANDS:
             return True
-        return command == "set_mode" and list(args)[:1] == ["disabled"]
+        if command == "set_mode" and list(args)[:1] == ["disabled"]:
+            return True
+        return any(e.get("stop") and e.get("command") == command
+                   for e in sch.elements(self.schema))
 
     def _apply_inputs(self, inputs):
         """All or nothing. Refusal names the field."""

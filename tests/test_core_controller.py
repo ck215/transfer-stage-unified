@@ -723,3 +723,19 @@ def test_the_state_names_the_models_that_are_energized(controller):
     assert controller.state()["energized"] == []
     busy.mode = "running"
     assert controller.state()["energized"] == ["busy"]
+
+
+def test_window_focus_gates_every_device_that_has_a_gate(controller):
+    """CON-3: a manual input source under any attribute name is gated when
+    the window loses focus, not only one called `gamepad`."""
+    class Knob(FakeDevice):
+        def __init__(self):
+            super().__init__("knob")
+            self.gates = []
+        def set_gate(self, on): self.gates.append(bool(on))
+    knob = Knob()
+    model = FakeModel(devices=[knob])
+    controller.add("piezo", model)
+    controller.set_input_focus(False)
+    controller.set_input_focus(True)
+    assert knob.gates == [False, True]

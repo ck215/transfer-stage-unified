@@ -1220,7 +1220,7 @@ class RedMonitor(Model):
                            role="go",
                            disabled_when=("running", "latched", "no_region")),
                 sch.button("Stop run", "end_run", role="neutral",
-                           enabled_when=("running",)),
+                           enabled_when=("running",), stop=True),
             ),
             sch.section(
                 "Run",
