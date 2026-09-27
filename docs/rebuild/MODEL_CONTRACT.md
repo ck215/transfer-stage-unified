@@ -101,9 +101,6 @@ registered class. Worked example: the audit's `PiezoStage`
 
 ## Still probe-shaped (open, see the audit)
 
-- **Web drops a button's `args`** (CON-1, S1): being fixed in the Web
-  worktree. Until it lands, two Web buttons that share one command and
-  differ only by `args` send the wrong one.
 - **Hardware links in the simulation line.** Web and Tk count only
   `SerialPort` and `SMC100` as hardware (CON-6).
 - **Setup.** There is no registration call; `MODEL_TYPES` is a tuple and the
@@ -113,6 +110,9 @@ registered class. Worked example: the audit's `PiezoStage`
 - **A SIM Rotator's stop never confirms** (CON-13): every simulated FULL
   STOP reads "Rotator did not confirm" - an owner call.
 
-Fixed on 2026-09-26: the window-focus gate reaches every device with
-`set_gate` (CON-3); stop-class commands are a schema property (CON-4); a
-fault gates from the base (CON-9).
+Fixed on 2026-09-26: a button's own `args` travel in the Web (CON-1); the
+Web's gate words come from the core (CON-2); the window-focus gate reaches
+every device with `set_gate` (CON-3); stop-class commands are a schema
+property (CON-4); Web downloads read `output_root` (CON-5); a fault gates
+from the base (CON-9). The open rows are tracked under "Model contract" in
+`BUGFIX_PLAN.md`.

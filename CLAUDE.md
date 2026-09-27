@@ -52,8 +52,8 @@ second test wave).
 
 ```
 python3 src/app.py --web --no-browser --port 8080
-STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # 2056 pass (+11 window tests when the display is free)
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 195 pass
+STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # 2290 pass, 1 xfail (+11 window tests when the display is free)
+QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 212 pass
 python3 -m pytest tests/test_wire_golden.py -q                                    # 78 scenarios byte-identical to legacy/src
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
 ```

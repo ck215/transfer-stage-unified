@@ -1,6 +1,6 @@
 # Rebuild status — cold-resume document
 
-Last updated 2026-09-26. Read this first; then `BRIEF.md` (the architecture
+Last updated 2026-09-26 (evening). Read this first; then `BRIEF.md` (the architecture
 contract and its addenda), `WEB_DESIGN_BRIEF.md`, and `BUGFIX_PLAN.md` (the
 ranked defect list with a delegation route per item).
 
@@ -12,6 +12,7 @@ ranked defect list with a delegation route per item).
 | The old app | `legacy/src/` (was `src/`), its suite in `legacy/tests/` (was `tests/` minus `tests/station/`); code untouched, still the reference for the golden wire tests. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
 | Agent worktrees | Removed 2026-09-23: the 12 `rb-*` worktrees and branches were all merged and clean; `../rebuild` retired the same day. Worktrees now: `main`, `mvc-refactor`. |
 | Agent handoffs | `handoff/*.md` (outside every repo). `serial, gamepad, probe, heater, rotator, redmonitor, setup, tk, qt, web, coretests, golden`, then `setup2, tk2, qt2, web2` (polish pass), `web3` (console redesign). Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
+| **Timeouts, audit round 8, the model contract (2026-09-26)** | Owner: warn before closing the tab with devices energized, validate the watchdog and the idle timeout in every view, warn before the timeout with a way to extend. Core (**Tier N/O**): `Probe.idle_remaining` + one "Idle Timeout Soon" warning inside the last 60 s + `extend_idle`; `Controller.is_energized` / `state()["energized"]` (a probe in a mode, a heating heater, a recording run); the Web watchdog keys on it; stop-class commands and `set_mode("disabled")` skip input validation (`Panel.UNGATED_COMMANDS`, schema `stop=True`) so a stop is never refused over bad text in a box; `/api/data` runs only schema-declared sources, JSON POSTs need an Origin, frame-blocking headers; `views.base.GATE_WORDS` / `gate_reason` as the one direction-aware table, served to the Web; Setup's `stop_system` / `launch` ask while anything is energized; the schema's `fault` gate; `Heater.heating_to`. Views (rb-o-{tk,qt,web}, `handoff/fix-o-*.md`): a countdown line per probe under the disc with **Extend**; energized ring and faulted "!" marks; "Disable failed. Treat as live." in tier 1; quit / close questions name what is energized; Web `beforeunload` while energized, `/api/quit` answers after the stop with the unconfirmed named, busy commands, refusal at its field, commit on release, tier 1 pinned; live regions (Web) and announcements (Qt); one Qt Tab order. Audits: round 8 with one skill per auditor (`handoff/audit-ui-round8-*.md`), the architecture audit (intact with debt), and the **model contract** audit (`handoff/audit-model-contract-2026-09-26.md`: a `PiezoStage` written from the new `docs/rebuild/MODEL_CONTRACT.md` drove all three views unedited once CON-1/3/4/5/9 were fixed; `tests/test_model_contract.py`, 160 cases). Headless validation: the watchdog warns at 4.9 s and stops every model at 15.2 s of browser silence; no memory leak. Gates **fast 2290 (+11 window tests deferred, 1 xfail = CON-13), golden 78, Qt 212**. Open: O17 (lead part), O19–O23, CON-6/7/11, CON-13 (owner), the display-dependent captures, owner calls below. |
 | **Owner's Web pass + audit round 7 (2026-09-26)** | Tier K from the owner's look at the merged E views: the gamepad choice is tier 1; every tier-2 disclosure names its device and sits at the foot of the tier-1 body above its well; the sheet has an **Overview** page (rail's first item, every model compact, no wells, pressable heads) and a **device page** (one model alone). Tier L from three real-display auditors (`handoff/audit-ui-round7-{web,tk,qt}.md`): the S1 in every view was that one model's own stop read as "Every model is stopped." and turned the disc to Clear over five live models (`is_estopped` = any). Core: `Controller.stop_state` {latched, unconfirmed, every, since}, `Model.stop_confirmed`, `views.base.stop_words()` / `event_line()`, `events.forget` on clear; views: disc face from the words, per-model rail marks, reasons on disabled commands, 24/36 px targets, slider keys, tier 1 pinned on the device page, Quit asks in Qt, Tab reaches every Qt control. Also: `handoff/proposal-probe-zeroing.md` (K5: TMC2209 on a Mega; host-only set-zero now, optical home switches later); the `window` test marker + `STATION_NO_WINDOWS=1` (owner: strictly background while at the Mac); a memory-leak check (none: 49→23 MB flat under a 10 Hz client). Gates **fast 2056 (+11 window tests deferred), golden 78, Qt 195**. Open: Tier M; owner calls below. |
 | **Bench sheet, tiered (2026-09-26)** | The owner chose canvas row E (C "Control sheet" + A's circular stop + three tiers of prominence) and said "execute on that vision". Lead core (`rb-e-core`): the six light tokens in `palette.py`, `theme.py` (Public Sans text, Archivo numerals, READING_SIZES, STOP, SWITCH, RADIUS, TIER_LABELS, QUIET_VALUES, muted OFF outlines), `schema.section(tier=, disclosure=)`, `entry(slider=)`, `readonly(unit=)`, the four model schemas re-tiered (Red Percent = Red, Change, Start/Stop run in tier 1; everything else behind Details), `docs/rebuild/DESIGN_BRIEF.md`. Three Opus view worktrees rendered it (`rb-e-{web,tk,qt}`, handoffs `handoff/fix-e-{web,tk,qt}.md`): left rail with A's disc, entries not cards, one disclosure per model with Diagnostics inside, a slider beside every speed entry, status by exception, tray = warnings and errors only. Lead-verified: gates **fast 1956, golden 78, Qt 155**; ritual captures `handoff/shots/final_e_{web,tk,qt}_*`. Open follow-ups (Tier J below): fonts not installed on this Mac (Helvetica renders in Tk/Qt), heater shows the word "Simulated" as its reading in SIM, per-model stop switch caption, `theme.SLIDER`, px-vs-pt base unit in Qt. |
 | Owner session round (2026-09-25) | The owner's first list from running the Web console (BUGFIX_PLAN **Tier G**): G1 no stderr tracebacks on tab close (`handle_error` override + handler idle timeout), G2 a Quit control and `POST /api/quit` (closing the tab never quits; the watchdog remains the guard), G3 a **Launch checkbox per Setup row** (new `sch.checkbox` element, `enabled_by` gating in the one `is_enabled` rule, "Off" gone from the Port dropdown, the summary is a count), G4 the **Gamepad log behind a button** in its own non-modal window (`log_stream(detached=True)`, polled only while open), G5 **no platform-specific UI** (owner ruling: Ctrl+. is the one stop chord; ⌘ variants removed in all three views; Tk keeps the `tk::mac::Quit` hook because Aqua's forced Quit would otherwise exit past the shutdown path — owner may overrule), G6 the Web rail's unconfirmed-stop line clears with the latch. Four Opus worktrees on the lead's core commit, lead-verified. Gates: **fast 1759, golden 78, Qt 142**. Real-display audit round 4 (52 captures, `handoff/audit-ui-round4.md`) filed as **Tier H**. Owner decisions open: P3 (the mac Quit hook), P8 (D-9's platform-dependent default view conflicts with the ruling). |
@@ -31,8 +32,8 @@ cd ../mvc-refactor
 ./run_macos.sh --web | --qt | --tk        # uses the already-active venv (main/.venv)
 python3 src/app.py --web --no-browser --port 8080
 
-STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # 2056 pass + 11 window tests skipped, ~180 s; drop the variable when the display is free
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt   # 195 pass
+STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # 2290 pass + 11 window tests skipped + 1 xfail (CON-13), ~240 s; drop the variable when the display is free
+QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt   # 212 pass
 python3 -m pytest tests/test_wire_golden.py -q                         # 78 scenarios byte-identical to legacy/src/
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
 ```
@@ -105,7 +106,19 @@ latch should ever be clearable from the disc (shipped: no, a single model
 clears at its own switch); the overview keeps each device's whole tier-1
 body (assumption stated in Tier K); the zeroing proposal's eight bench
 decisions (`handoff/proposal-probe-zeroing.md` §8, starting with 8 vs 16
-microsteps per full step); Qt's `tk::mac::Quit`-class hook P3; push.
+microsteps per full step); Tk's `tk::mac::Quit` hook P3 (the OS Quit still
+exits without the question); push.
+
+Owner calls from 2026-09-26 (Tier N/O, contract): a hidden Web tab stops
+energized devices 15 s after its last heartbeat, heater included (IMP8-6;
+shipped: yes, nobody is watching); CON-13, the SIM Rotator's stop never
+confirms, so every simulated FULL STOP reads "Rotator did not confirm".
+
+Deferred until the display is free (owner ruling: strictly background while
+anyone is at the Mac): the 11 `window` tests, and Tk/Qt captures of the
+Tier N/O states (countdown with two probes, energized ring beside a stop
+square, a faulted entry and its rail mark, the close and quit questions
+naming an energized model, Step in manual mode reading "In manual mode").
 
 Code defects found by the 2026-09-23 sweep are in `BUGFIX_PLAN.md` (Tier A);
 the bench questions below are its Tier B. **Tier D** (same day) is the
