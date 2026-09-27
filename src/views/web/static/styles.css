@@ -399,7 +399,7 @@ button, select, input[type="range"] {
 
 .idle-line {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
   font-size: var(--t-cap);
@@ -409,7 +409,7 @@ button, select, input[type="range"] {
   font-variant-numeric: tabular-nums;
 }
 
-.idle-text { flex: 1 1 0; min-width: 0; }
+.idle-text { flex: 1 1 9rem; min-width: 0; }
 
 .idle-extend { flex: 0 0 auto; }
 
