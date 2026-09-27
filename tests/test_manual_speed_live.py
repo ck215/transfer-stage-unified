@@ -41,7 +41,7 @@ def _jogs(probe, port):
 
 def _speed_of_next_frame(probe, port):
     port.writes.clear()
-    assert probe._jog_tick() is True
+    assert probe._gamepad_tick() is True
     jogs = _jogs(probe, port)
     assert len(jogs) == 1, "one tick writes one jog frame"
     return jogs[0][-1]
@@ -139,7 +139,7 @@ def test_a_set_latch_writes_no_frame_whatever_the_speed(manual):
     probe._estop.set()
     probe.run("_commit", inputs={"man_full_speed": "999"})
     port.writes.clear()
-    probe._jog_tick()
+    probe._gamepad_tick()
     assert _jogs(probe, port) == []
 
 
@@ -150,7 +150,7 @@ def test_after_full_stop_a_speed_edit_moves_nothing(manual):
     assert probe.run("_commit", inputs={"man_full_speed": "300"}).is_ok
     port.writes.clear()
     for _ in range(3):
-        probe._jog_tick()
+        probe._gamepad_tick()
     assert _jogs(probe, port) == []
     with pytest.raises(Refused):
         probe.set_mode("manual")

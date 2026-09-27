@@ -409,7 +409,7 @@ def test_polling_runs_without_any_event_loop(hub, fake_sdl):
     fake_sdl.joystick.devices[0].axes[0] = 0.9
     pad = make_pad(hub, "WebProbe", bind_to=0, open_it=True)
     try:
-        assert wait_for(lambda: pad.levels.get("x_axisStatus") == 0.9), \
+        assert wait_for(lambda: pad.levels.get("axis_x") == 0.9), \
             "input never reached the reader with no event loop"
         assert pad._thread is not None and pad._thread.is_alive()
     finally:
@@ -424,11 +424,11 @@ def test_a_successful_swap_keeps_input_alive(hub, fake_sdl):
     fake_sdl.joystick.devices[1].axes[0] = 0.5
     pad = make_pad(hub, "WebProbe", bind_to=0, open_it=True)
     try:
-        assert wait_for(lambda: pad.levels.get("x_axisStatus") == 0.9)
+        assert wait_for(lambda: pad.levels.get("axis_x") == 0.9)
 
         assert pad.bind(1) is True
         assert pad._is_polling, "a successful swap left the pad stopped"
-        assert wait_for(lambda: pad.levels.get("x_axisStatus") == 0.5), \
+        assert wait_for(lambda: pad.levels.get("axis_x") == 0.5), \
             "stick deflection stopped reaching the reader after the swap"
     finally:
         pad.close()
@@ -444,7 +444,7 @@ def test_opening_before_anything_is_bound_starts_the_loop_at_the_bind(hub, fake_
         assert pad._thread is None
 
         assert pad.bind(0) is True
-        assert wait_for(lambda: pad.levels.get("x_axisStatus") == 0.3), \
+        assert wait_for(lambda: pad.levels.get("axis_x") == 0.3), \
             "binding after open never started the loop"
     finally:
         pad.close()
@@ -461,9 +461,9 @@ def test_a_closed_gamepad_does_not_take_a_claim_it_will_never_poll(hub):
 def test_levels_carry_exactly_the_standard_keys(hub):
     pad = make_pad(hub, "StepperProbe", bind_to=0)
     pad.poll_once()
-    assert set(pad.levels) == {"x_axisStatus", "y_axisStatus", "z_axisStatusL",
-                               "z_axisStatusR", "dpad_LR", "dpad_UD",
-                               "LBumper", "RBumper"}
+    assert set(pad.levels) == {"axis_x", "axis_y", "trigger_left",
+                               "trigger_right", "hat_x", "hat_y",
+                               "bumper_left", "bumper_right"}
     pad.close()
 
 
@@ -536,14 +536,14 @@ def test_poll_once_adopts_the_current_generation(hub, fake_sdl):
     fake_sdl.joystick.devices[0].axes[0] = 0.6
     pad = make_pad(hub, "StepperProbe", bind_to=0)
     pad.poll_once()
-    assert pad.levels["x_axisStatus"] == 0.6
+    assert pad.levels["axis_x"] == 0.6
     pad.close()
 
 
 def test_a_stopped_loop_stops_answering_with_a_stale_reading(hub, fake_sdl):
     fake_sdl.joystick.devices[0].axes[0] = 0.9
     pad = make_pad(hub, "StepperProbe", bind_to=0, open_it=True)
-    assert wait_for(lambda: pad.levels.get("x_axisStatus") == 0.9)
+    assert wait_for(lambda: pad.levels.get("axis_x") == 0.9)
     pad._stop_poll_loop("test")
     assert pad.levels == {}, "a stale full-deflection reading survived the stop"
     pad.close()
@@ -566,7 +566,7 @@ def test_a_tap_shorter_than_a_read_interval_is_not_lost(hub, fake_sdl):
     pad.poll_once()
     _pressing(pad, fake_sdl, {4: 1})      # down
     _pressing(pad, fake_sdl, {4: 0})      # and up, all between reads
-    assert pad.drain_edges().get("LBumper") == 1, "the tap was dropped"
+    assert pad.drain_edges().get("bumper_left") == 1, "the tap was dropped"
     pad.close()
 
 
@@ -579,16 +579,16 @@ def test_reading_levels_does_not_consume_edges(hub, fake_sdl):
     pad = make_pad(hub, "StepperProbe", bind_to=0)
     pad.poll_once()
 
-    assert pad.levels["x_axisStatus"] == 0.8
-    assert pad.levels["x_axisStatus"] == 0.8
-    assert pad.drain_edges().get("dpad_LR") == 1, "a level read ate the edge"
+    assert pad.levels["axis_x"] == 0.8
+    assert pad.levels["axis_x"] == 0.8
+    assert pad.drain_edges().get("hat_x") == 1, "a level read ate the edge"
     pad.close()
 
 
 def test_edges_drain_exactly_once(hub, fake_sdl):
     pad = make_pad(hub, "StepperProbe", bind_to=0)
     _pressing(pad, fake_sdl, {5: 1})
-    assert pad.drain_edges().get("RBumper") == 1
+    assert pad.drain_edges().get("bumper_right") == 1
     assert pad.drain_edges() == {}
     pad.close()
 
@@ -598,7 +598,7 @@ def test_holding_a_button_produces_one_edge_not_a_stream(hub, fake_sdl):
     fake_sdl.joystick.devices[0].buttons[4] = 1
     for _ in range(5):
         pad.poll_once()
-    assert pad.drain_edges().get("LBumper") == 1
+    assert pad.drain_edges().get("bumper_left") == 1
     for _ in range(5):
         pad.poll_once()
     assert pad.drain_edges() == {}, "a held button kept re-firing"
@@ -609,7 +609,7 @@ def test_levels_never_carry_edge_keys(hub, fake_sdl):
     fake_sdl.joystick.devices[0].hats[0] = (1, 0)
     pad = make_pad(hub, "StepperProbe", bind_to=0)
     pad.poll_once()
-    assert pad.levels["dpad_LR"] == 0
+    assert pad.levels["hat_x"] == 0
     pad.close()
 
 
@@ -620,14 +620,14 @@ def test_levels_are_readable_from_another_thread_without_consuming_edges(hub, fa
     fake_sdl.joystick.devices[0].buttons[4] = 1
     pad = make_pad(hub, "StepperProbe", bind_to=0, open_it=True)
     try:
-        assert wait_for(lambda: pad.levels.get("x_axisStatus") == 0.7)
+        assert wait_for(lambda: pad.levels.get("axis_x") == 0.7)
 
         seen = []
         stop = threading.Event()
 
         def reader():
             while not stop.is_set():
-                seen.append(pad.levels.get("x_axisStatus"))
+                seen.append(pad.levels.get("axis_x"))
 
         thread = threading.Thread(target=reader, name="reader", daemon=True)
         thread.start()
@@ -636,7 +636,7 @@ def test_levels_are_readable_from_another_thread_without_consuming_edges(hub, fa
         thread.join(timeout=2.0)
 
         assert seen and set(seen) == {0.7}
-        assert pad.drain_edges().get("LBumper") == 1, \
+        assert pad.drain_edges().get("bumper_left") == 1, \
             "a background level reader swallowed the edge"
     finally:
         pad.close()
@@ -726,12 +726,12 @@ def test_the_gate_opens_and_closes_and_a_close_flushes_neutral(hub, fake_sdl):
     pad = make_pad(hub, "StepperProbe", bind_to=0)
     pad.poll_once()
     assert pad.is_gate_open is True
-    assert pad.levels["x_axisStatus"] == 0.9
+    assert pad.levels["axis_x"] == 0.9
 
     pad.set_gate(False)
     assert pad.is_gate_open is False
     pad.poll_once()
-    assert pad.levels["x_axisStatus"] == 0.0, "the gate closed but the stick still read"
+    assert pad.levels["axis_x"] == 0.0, "the gate closed but the stick still read"
 
     pad.set_gate(True)
     assert pad.is_gate_open is True
@@ -842,7 +842,7 @@ def test_nothing_in_the_poll_loop_reaches_a_view(hub, fake_sdl):
 # which is where the feature died: the device parks one edge per press and
 # zeroes those keys in `levels`, so a probe that reads `levels` alone sends
 # every jog packet with the step fields at 0. Every tick here is driven by
-# hand -- `pad.poll_once()` is one 200 Hz pad tick, `probe._jog_tick()` one
+# hand -- `pad.poll_once()` is one 200 Hz pad tick, `probe._gamepad_tick()` one
 # 50 Hz jog tick -- so nothing depends on sleeps.
 #
 # The layout numbers are today's LAYOUTS values (B1 / D10 bench items); these
@@ -864,7 +864,7 @@ _GOLDEN_HEX = {s["id"]: s["frames"][0]["hex"] for s in _GOLDEN["scenarios"]
 _MOTION = {"x_step": "4", "y_step": "8", "z_step": "16",
            "man_full_speed": "175"}
 
-_STEP = slice(8, 11)       # dpad_LR, dpad_UD, bumpers in the decoded packet
+_STEP = slice(8, 11)       # hat_x, hat_y, bumpers in the decoded packet
 
 # id, platform, SDL name, axes, buttons, idle triggers, bumpers (LB, RB),
 # trigger sources (L, R) as ("axis"|"button", index, pressed, released)
@@ -950,7 +950,7 @@ class _Rig:
         for _ in range(n):
             for _ in range(4):
                 self.pad.poll_once()
-            self.probe._jog_tick()
+            self.probe._gamepad_tick()
 
     # -- output
     def packets(self):
@@ -1011,7 +1011,7 @@ def test_a_tap_shorter_than_a_jog_tick_still_steps_once(rig):
     rig.pad.poll_once()
     rig.press("bumper_left", down=False)
     rig.pad.poll_once()
-    rig.probe._jog_tick()
+    rig.probe._gamepad_tick()
     rig.tick(3)
     assert [s[_STEP] for s in rig.steps()] == [(0.0, 0.0, 1.0)]
 

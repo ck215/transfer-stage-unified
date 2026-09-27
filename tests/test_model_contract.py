@@ -390,3 +390,26 @@ def test_a_model_with_an_idle_clock_takes_it_from_the_mixin(model):
         assert isinstance(model, IdleInterlock), (
             f"{type(model).__name__} runs its own idle clock; mix in "
             "model.idle.IdleInterlock")
+
+
+# -- MOD-1: the gamepad contract ------------------------------------------------
+
+from test_gamepad_input import JoystickStage              # noqa: E402
+
+#: A gamepad-driven device that is not a probe, run through every check above.
+CLASSES["Joystick Stage"] = JoystickStage
+
+
+def test_a_gamepad_model_takes_its_input_from_the_mixin(model):
+    from model.gamepad_input import GamepadInput
+    if not type(model).NEEDS_GAMEPAD:
+        assert not isinstance(model, GamepadInput) or type(model) is JoystickStage
+        return
+    assert isinstance(model, GamepadInput), (
+        f"{type(model).__name__} needs a gamepad but does not mix in "
+        "model.gamepad_input.GamepadInput")
+    dropdowns = [e for e in _elements(model) if e["type"] == "dropdown"
+                 and e["command"] == "set_gamepad"]
+    assert dropdowns, f"{type(model).__name__} declares no Gamepad: dropdown"
+    assert dropdowns[0]["options_command"] == "gamepad_options"
+    assert dropdowns[0]["model_attr"] == "gamepad_name"

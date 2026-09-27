@@ -76,7 +76,7 @@ class FakeGamepad:
     """
 
     status = "connected"
-    EDGE_KEYS = ("dpad_LR", "dpad_UD", "LBumper", "RBumper")
+    EDGE_KEYS = ("hat_x", "hat_y", "bumper_left", "bumper_right")
 
     def __init__(self, levels=None, bound=True):
         self.levels = {key: (0 if key in self.EDGE_KEYS else value)
@@ -215,7 +215,7 @@ def test_losing_the_gamepad_while_manual_halts_and_disables(probe):
     probe.set_mode("manual")
     probe.gamepad.is_bound = False
     probe.port.writes.clear()
-    probe._send_jog({})
+    probe._gamepad_tick()
     assert probe.mode is ProbeMode.DISABLED
     assert probe.is_enabled is False
     assert ZERO in probe.port.writes and b"d" in probe.port.writes
@@ -581,15 +581,15 @@ def test_the_sample_loop_fills_the_cache_without_being_polled(probe):
 
 # -- the jog loop -----------------------------------------------------------
 
-LEVELS = {"x_axisStatus": 0.5, "y_axisStatus": 0.0, "z_axisStatusL": -1.0,
-          "z_axisStatusR": -1.0, "dpad_LR": 0, "dpad_UD": 0,
-          "LBumper": 0, "RBumper": 0}
+LEVELS = {"axis_x": 0.5, "axis_y": 0.0, "trigger_left": -1.0,
+          "trigger_right": -1.0, "hat_x": 0, "hat_y": 0,
+          "bumper_left": 0, "bumper_right": 0}
 
 
 @pytest.mark.loops
 def test_the_jog_loop_streams_only_while_manual_and_the_gate_is_open():
     probe, port, gamepad = make_probe(levels=LEVELS)
-    probe.JOG_INTERVAL = 0.005
+    probe.GAMEPAD_RATE_HZ = 200
     probe._start_threads()
     try:
         time.sleep(0.05)
@@ -614,7 +614,7 @@ def test_closing_the_gate_sends_one_neutral_frame_not_a_stream():
     """I-4.2: leaving the pumping state zeroes the axis once. The gate is not
     a stop, so it neither leaves the mode nor de-energizes."""
     probe, port, gamepad = make_probe(levels=LEVELS)
-    probe.JOG_INTERVAL = 0.005
+    probe.GAMEPAD_RATE_HZ = 200
     probe.set_mode("manual")
     probe._start_threads()
     try:
@@ -632,7 +632,7 @@ def test_closing_the_gate_sends_one_neutral_frame_not_a_stream():
 def test_off_neutral_input_counts_as_activity(probe):
     probe.set_mode("manual")
     probe._activity_time = 0.0
-    probe._send_jog({"x_axisStatus": 0.9})
+    probe._send_jog({"axis_x": 0.9})
     assert probe._activity_time > 0.0
     probe._activity_time = 0.0
     probe._send_jog({})
@@ -662,7 +662,7 @@ def test_a_gamepad_read_that_raises_is_reported_not_swallowed(probe):
 # built from one drained edge per press. The stop path comes first: a pending
 # edge must never become motion while latched, gated, or outside manual.
 
-STEP_FIELDS = slice(8, 11)         # dpad_LR, dpad_UD, bumpers
+STEP_FIELDS = slice(8, 11)         # hat_x, hat_y, bumpers
 
 
 @pytest.fixture
@@ -691,16 +691,16 @@ def test_a_latched_probe_never_steps_from_a_pending_edge(neutral_probe):
     probe = neutral_probe
     gamepad, port = probe.gamepad, probe.port
     probe.set_mode("manual")
-    gamepad.press("dpad_LR", 1)
+    gamepad.press("hat_x", 1)
     probe.estop()
-    gamepad.press("LBumper", 1)
+    gamepad.press("bumper_left", 1)
     for _ in range(3):
-        probe._jog_tick()
+        probe._gamepad_tick()
     assert gamepad.edges == {}, "the latched tick must still consume the edges"
     probe.clear_estop(confirmed=True)
     probe.set_mode("manual")
     for _ in range(3):
-        probe._jog_tick()
+        probe._gamepad_tick()
     assert _steps(port) == [], "a pending edge stepped across a latch"
 
 
@@ -710,13 +710,13 @@ def test_a_closed_gate_never_steps_from_a_pending_edge(neutral_probe):
     gamepad, port = probe.gamepad, probe.port
     probe.set_mode("manual")
     gamepad.set_gate(False)
-    gamepad.press("dpad_UD", -1)
-    gamepad.press("RBumper", 1)
-    probe._jog_tick()
+    gamepad.press("hat_y", -1)
+    gamepad.press("bumper_right", 1)
+    probe._gamepad_tick()
     assert gamepad.edges == {}, "the gated tick must consume and discard"
     gamepad.set_gate(True)
     for _ in range(3):
-        probe._jog_tick()
+        probe._gamepad_tick()
     assert _steps(port) == [], "a press made behind a closed gate stepped later"
 
 
@@ -727,12 +727,12 @@ def test_a_press_made_while_idle_is_consumed_there_not_deferred(neutral_probe):
     probe = neutral_probe
     gamepad, port = probe.gamepad, probe.port
     probe.set_mode("idle")
-    gamepad.press("dpad_LR", 1)
-    probe._jog_tick()
+    gamepad.press("hat_x", 1)
+    probe._gamepad_tick()
     assert gamepad.edges == {}
     probe.set_mode("manual")
     for _ in range(3):
-        probe._jog_tick()
+        probe._gamepad_tick()
     assert _steps(port) == []
 
 
@@ -741,10 +741,10 @@ def test_entering_manual_discards_a_press_no_tick_has_seen(neutral_probe):
     probe = neutral_probe
     gamepad, port = probe.gamepad, probe.port
     probe.set_mode("idle")
-    gamepad.press("dpad_LR", 1)          # no tick between the press and entry
+    gamepad.press("hat_x", 1)          # no tick between the press and entry
     probe.set_mode("manual")
     for _ in range(3):
-        probe._jog_tick()
+        probe._gamepad_tick()
     assert _steps(port) == []
 
 
@@ -752,10 +752,10 @@ def test_entering_manual_discards_a_press_no_tick_has_seen(neutral_probe):
 def test_a_pending_edge_steps_once_in_manual_then_zeroes():
     probe, port, gamepad = make_probe(levels=LEVELS)
     probe.set_mode("manual")
-    gamepad.press("dpad_LR", -1)
-    gamepad.press("RBumper", 1)
+    gamepad.press("hat_x", -1)
+    gamepad.press("bumper_right", 1)
     for _ in range(4):
-        probe._jog_tick()
+        probe._gamepad_tick()
     jogs = _jogs(port)
     assert len(jogs) == 4
     assert jogs[0][STEP_FIELDS] == (-1.0, 0.0, -1.0)
@@ -771,8 +771,8 @@ def test_a_pad_whose_levels_cannot_be_read_does_not_step():
     """Held at neutral means no step either: an empty read sends no edge."""
     probe, port, gamepad = make_probe(levels={})
     probe.set_mode("manual")
-    gamepad.press("dpad_LR", 1)
-    probe._jog_tick()
+    gamepad.press("hat_x", 1)
+    probe._gamepad_tick()
     probe._stop_threads()
     assert _steps(port) == [] and gamepad.edges == {}
 
@@ -877,11 +877,11 @@ def test_open_opens_the_devices_and_starts_both_loops(probe):
     probe.open()
     try:
         assert probe.port.opened == 1 and probe.gamepad.opened == 1
-        assert probe._thread("sample").is_alive() and probe._thread("jog").is_alive()
+        assert probe._thread("sample").is_alive() and probe._thread("gamepad").is_alive()
     finally:
         probe.close()
     assert not probe._thread("sample").is_alive()
-    assert not probe._thread("jog").is_alive()
+    assert not probe._thread("gamepad").is_alive()
     assert probe.port.closed == 1 and probe.gamepad.closed == 1
 
 
