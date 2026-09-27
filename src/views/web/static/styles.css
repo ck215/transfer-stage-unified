@@ -386,6 +386,46 @@ button, select, input[type="range"] {
 
 .rail-alert-dismiss { margin-left: calc(0.625rem + var(--space-3)); }
 
+/* N2: the idle countdown, one line per probe under the disc - ink words and
+   the number from state, then Extend. Not red: nothing has stopped yet. */
+.idle-lines {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.idle-lines[hidden] { display: none; }
+
+.idle-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  font-size: var(--t-cap);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.idle-text { flex: 1 1 9rem; min-width: 0; }
+
+.idle-extend { flex: 0 0 auto; }
+
+.idle-extend { min-height: var(--hit-panel); }
+
+/* N3: what closing the tab does while anything is energized. Ink, muted
+   weight: a caution the operator reads before reaching for the tab. */
+.rail-energized {
+  align-self: stretch;
+  font-size: var(--t-cap);
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.rail-energized[hidden] { display: none; }
+
 /* -- the model list ------------------------------------------------------ */
 .model-nav {
   display: flex;
@@ -423,9 +463,10 @@ button, select, input[type="range"] {
 .nav-name { min-width: 0; overflow-wrap: anywhere; }
 
 .nav-mark {
+  position: relative;
   flex: 0 0 auto;
-  width: 0.625rem;
-  height: 0.625rem;
+  width: 0.75rem;
+  height: 0.75rem;
   overflow: hidden;
   color: transparent;
   font-size: var(--t-xs);
@@ -433,9 +474,40 @@ button, select, input[type="range"] {
   background: var(--text);
 }
 
-.nav-mark.is-unconfirmed { background: var(--signal); }
+/* O16 (A11Y-6): did-not-confirm and faulted differ from "stopped" by shape
+   as well as colour - the signal square carries a "!" knocked out of it. */
+.nav-mark.is-unconfirmed,
+.nav-mark.is-faulted { background: var(--signal); }
+
+.nav-mark.is-unconfirmed::before,
+.nav-mark.is-faulted::before {
+  content: "!";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--danger-fg);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  line-height: 1;
+}
 
 .nav-mark[hidden] { display: none; }
+
+/* O6: energized - a ring, in ink, after the stop mark. Never red. */
+.nav-energized {
+  flex: 0 0 auto;
+  width: 0.75rem;
+  height: 0.75rem;
+  overflow: hidden;
+  border: 2px solid var(--text);
+  border-radius: 50%;
+  color: transparent;
+  font-size: var(--t-xs);
+  line-height: 1;
+}
+
+.nav-energized[hidden] { display: none; }
 
 /* Models the operator closed: the way back, under the list. */
 .closed {
@@ -557,6 +629,27 @@ button, select, input[type="range"] {
 .card.span-3 { grid-column: span 3; }
 .card.span-6 { grid-column: span 6; }
 .card.is-opened { grid-column: 1 / -1; }
+
+/* O15: the device page pins its entry's head and tier-1 body (Dashboard.
+   pinOpened decides, and measures the head for the body's offset); the
+   details scroll under them. The body keeps the page's tone, so what
+   scrolls under it is hidden, not shown through. */
+.card.is-pinned > .card-head {
+  position: sticky;
+  top: var(--rail-top);
+  z-index: 3;
+  background: var(--bg);
+}
+
+.card.is-pinned > .card-body {
+  position: sticky;
+  top: calc(var(--rail-top) + var(--pin-head, 0px));
+  z-index: 2;
+  margin-top: calc(-1 * var(--space-4));
+  padding: var(--space-4) 0;
+  border-bottom: var(--edge) solid var(--muted);
+  background: var(--bg);
+}
 
 /* The device page shows its model alone; the Overview draws no tiers at
    all - not the disclosures, not the wells, whatever they remember. */
@@ -682,6 +775,18 @@ button, select, input[type="range"] {
 }
 
 .unconfirmed-mark[hidden] { display: none; }
+
+/* O4: a fault's own reason, in ink under the head, while it stands. The red
+   is the head rule and the mark beside the name. */
+.fault-line {
+  font-size: var(--t-sm);
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.fault-line[hidden] { display: none; }
+
+.card.is-faulted { border-top-color: var(--signal); }
 
 /* A standing condition under the head (a lost device), ink beside a signal
    square. */
@@ -1509,13 +1614,17 @@ span.lamp { background: none; }
   font-size: var(--t-sm);
 }
 
+/* O16 (WDG8-9): the mark is the tray's warning triangle, not a hollow
+   square - beside a real Launch box a square read as an unticked one. */
 .status::before {
   content: "";
   flex: 0 0 auto;
-  width: 0.625rem;
+  width: 0.6875rem;
   height: 0.625rem;
   margin-top: 0.3rem;
-  border: var(--edge) solid var(--text);
+  border: 0;
+  background: var(--text);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
 }
 
 .status[hidden] { display: none; }
@@ -1840,7 +1949,12 @@ label.row-title[for] { cursor: pointer; }
 
 .log-window[hidden] { display: none; }
 
-.log-window:focus, .log-window:focus-visible { outline: none; }
+/* O16 (WDG8-7, A11Y-8): the panel takes focus when it opens, so it shows
+   where focus went. */
+.log-window:focus, .log-window:focus-visible {
+  outline: var(--rule-strong-px) solid var(--rule-strong);
+  outline-offset: var(--space-1);
+}
 
 .log-window-head {
   display: flex;
@@ -1891,6 +2005,22 @@ label.row-title[for] { cursor: pointer; }
 
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-3); }
 
+/* O10: the region typed, in screen pixels - four fields in one line. */
+.region-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+}
+
+.region-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--t-sm);
+}
+
+.region-field .input { width: 6.5rem; }
+
 .dialog-count { font-size: var(--t-sm); font-weight: 600; }
 
 .dialog-count[hidden] { display: none; }
@@ -1912,7 +2042,7 @@ label.row-title[for] { cursor: pointer; }
 
 .region-canvas {
   max-width: 80vw;
-  max-height: 70vh;
+  max-height: 58vh;
   cursor: crosshair;
   touch-action: none;
   user-select: none;
@@ -1926,8 +2056,9 @@ label.row-title[for] { cursor: pointer; }
    the sheet never shows through it. */
 .is-shut-down .sheet, .is-shut-down .sheet-headline, .is-shut-down .tray-head > * { opacity: 0.5; }
 
-.is-shut-down .card.is-lost,
-.is-shut-down .card.is-unconfirmed { border-top-color: var(--rule-strong); }
+/* O5: a model whose stop at Quit did not confirm keeps its red rule: the
+   page cannot vouch for it, so it does not stop saying so. */
+.is-shut-down .card.is-lost { border-top-color: var(--rule-strong); }
 
 .is-shut-down .switch .switch-track,
 .is-shut-down .switch.is-latched .switch-track { background: var(--disabled-bg); border-color: var(--muted); }
@@ -1973,14 +2104,16 @@ label.row-title[for] { cursor: pointer; }
   }
   .rail-head { flex: 1 1 8rem; min-width: 0; }
   .stop-block { order: 2; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; }
-  .stop-hint { display: none; }
+  /* O16 (WDG8-10): the chord's hint stays - a narrow desktop window has a
+     keyboard - and so do the stop marks: the list wraps, never scrolls
+     sideways past the models it marks. */
   .stop-hint[hidden] { display: none; }
   .mushroom { font-size: var(--t-sm); }
   .rail-foot { order: 3; margin-top: 0; flex: 1 0 100%; justify-content: flex-end; }
-  .model-nav { order: 4; flex: 1 0 100%; flex-direction: row; overflow-x: auto; }
+  .model-nav { order: 4; flex: 1 0 100%; flex-direction: row; flex-wrap: wrap; }
   .model-link { width: auto; white-space: nowrap; }
   .closed { order: 5; flex: 1 0 100%; }
-  .rail-alert, .rail-latched { flex: 1 0 100%; }
+  .rail-alert, .rail-latched, .idle-lines, .rail-energized { flex: 1 0 100%; }
   .page { margin-left: 0; }
   .drawer-head { padding: var(--space-5) var(--space-5) var(--space-3); }
   .drawer-body { padding: 0 var(--space-5) var(--space-5); }

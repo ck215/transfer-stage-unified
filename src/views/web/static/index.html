@@ -45,6 +45,13 @@
            the next event: a stop that did not reach the station, a lost
            device, a Quit that did not land. -->
       <div id="rail-alert" class="rail-alert" role="alert" hidden></div>
+      <!-- N2: one line per probe inside its idle warning window, counted
+           from state, with Extend. Not a live region: the number changes
+           every second; its first appearance is announced (announce-polite). -->
+      <div id="idle-lines" class="idle-lines" hidden></div>
+      <!-- N3: while anything is energized, what closing this tab does. Ink,
+           not red: it is a caution, not a stop. -->
+      <p id="energized-line" class="rail-energized" hidden></p>
     </div>
     <nav id="model-nav" class="model-nav" aria-label="Pages"></nav>
     <div id="closed-models" class="closed"></div>
@@ -59,15 +66,20 @@
     </div>
   </header>
 
-  <div class="page">
+  <main class="page">
+    <!-- O7 (A11Y-2): what the stop says, spoken. The polite region carries
+         the headline and the rail line when they change; the assertive one
+         the stop, the clear and a latch, once each. Read, not drawn. -->
+    <p id="announce-polite" class="sr-only" role="status" aria-live="polite"></p>
+    <p id="announce-assertive" class="sr-only" role="alert" aria-live="assertive"></p>
     <!-- Said once, at the top of the sheet, while every model is latched:
          views.base.stop_words()["headline"] and its subline (L1). -->
     <div id="sheet-headline" class="sheet-headline" hidden>
       <p class="headline"></p>
       <p class="headline-note"></p>
     </div>
-    <main id="cards" class="sheet" tabindex="-1"></main>
-  </div>
+    <div id="cards" class="sheet" tabindex="-1" role="region" aria-label="Models"></div>
+  </main>
 
   <!-- Setup is a drawer, not an entry: it is where a run begins and where it
        is re-planned, and it withdraws once the station is running. -->
@@ -93,9 +105,12 @@
   </section>
 
   <!-- Only an event that asks to be acknowledged opens this. Every layer
-       starts beside the rail: nothing this page opens covers the stop. -->
+       starts beside the rail: nothing this page opens covers the stop.
+       No aria-modal on any of the three (O7, A11Y-3): the rail stays
+       operable beside them on purpose, and "modal" would tell a screen
+       reader the stop is out of reach. -->
   <div id="ack-modal" class="overlay" hidden>
-    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="ack-text">
+    <div class="dialog" role="alertdialog" aria-labelledby="ack-text">
       <p id="ack-count" class="dialog-count" hidden></p>
       <div id="ack-text" class="dialog-text ack-list"></div>
       <button id="ack-ok" type="button" class="button role-neutral">Acknowledge</button>
@@ -104,7 +119,7 @@
 
   <!-- The page's own confirmation: Cancel is the default, Escape is Cancel. -->
   <div id="confirm-modal" class="overlay" hidden>
-    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-text">
+    <div class="dialog" role="alertdialog" aria-labelledby="confirm-text">
       <p id="confirm-text" class="dialog-text"></p>
       <div class="dialog-actions">
         <button id="confirm-no" type="button" class="button role-neutral">Cancel</button>
@@ -114,12 +129,23 @@
   </div>
 
   <!-- The region picker: drag on the station's own screen grab. -->
+  <!-- O10 (WDG8-5): or type it - four fields in the station's screen
+       pixels are the keyboard path; a drag fills them too. -->
   <div id="region-picker" class="overlay" hidden>
-    <div class="dialog wide-dialog" role="dialog" aria-modal="true" aria-labelledby="region-help">
+    <div class="dialog wide-dialog" role="dialog" aria-labelledby="region-help">
       <p id="region-help" class="dialog-text">Drag a rectangle over the part of the screen to watch.</p>
       <canvas id="region-canvas" class="region-canvas" width="800" height="450"
               aria-label="The station's screen. Drag to choose the capture region."></canvas>
-      <button id="region-close" type="button" class="button role-neutral">Cancel</button>
+      <div class="region-fields" role="group" aria-label="Capture region, in screen pixels">
+        <label class="region-field"><span>X</span><input class="input" name="x" type="number" step="1" inputmode="numeric" autocomplete="off"></label>
+        <label class="region-field"><span>Y</span><input class="input" name="y" type="number" step="1" inputmode="numeric" autocomplete="off"></label>
+        <label class="region-field"><span>Width</span><input class="input" name="width" type="number" step="1" min="1" inputmode="numeric" autocomplete="off"></label>
+        <label class="region-field"><span>Height</span><input class="input" name="height" type="number" step="1" min="1" inputmode="numeric" autocomplete="off"></label>
+      </div>
+      <div class="dialog-actions">
+        <button id="region-close" type="button" class="button role-neutral">Cancel</button>
+        <button id="region-use" type="button" class="button role-neutral">Use this region</button>
+      </div>
     </div>
   </div>
 

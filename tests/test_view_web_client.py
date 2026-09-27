@@ -1043,28 +1043,34 @@ def test_app_js_parses():
 # --------------------------------------------------------------------------
 @pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
 def test_a_disabled_command_says_the_gates_reason():
-    """L3: the reason is read from the same gate `isEnabled` applies - the
-    mode word a `disabled_when` matched, what an `enabled_when` waits for,
-    or the tick an `enabled_by` needs - and is empty when the command is
-    live."""
-    got = _node_value("""[
-      gateReason({disabled_when: ['latched']}, 'latched', {}),
-      gateReason({disabled_when: ['manual', 'latched']}, 'manual', {}),
-      gateReason({disabled_when: ['running']}, 'running', {}),
-      gateReason({disabled_when: ['running', 'no_region']}, 'no_region', {}),
-      gateReason({disabled_when: ['disconnected']}, 'disconnected', {}),
-      gateReason({disabled_when: ['moving']}, 'moving', {}),
-      gateReason({disabled_when: ['warming_up']}, 'warming_up', {}),
-      gateReason({enabled_when: ['running']}, 'no_region', {}),
-      gateReason({enabled_when: ['running']}, 'latched', {}),
-      gateReason({enabled_by: 'probe_enabled'}, 'ready', {probe_enabled: false}),
-      gateReason({disabled_when: ['running']}, 'idle', {}),
-    ]""")
-    assert got == ["Stopped: clear the stop first", "Not in manual mode",
-                   "A run is in progress", "Set a capture region first",
-                   "Not connected", "Moving", "Warming up",
-                   "No run in progress", "Stopped: clear the stop first",
-                   "Tick Launch on this row first", ""]
+    """L3, updated (O3, IMP8-1): the reason is `views.base.gate_reason`,
+    mirrored - the SERVED table (`/api/theme.json` gate_words) read in both
+    directions from the element's own gate lists. The local table that said
+    "Not in manual mode" while in manual mode is gone. An `enabled_by` tick
+    is the one rule the Python function does not cover (Setup's rows)."""
+    from views.base import GATE_WORDS, gate_reason
+    cases = [({"disabled_when": ["latched"]}, "latched"),
+             ({"disabled_when": ["manual", "latched"]}, "manual"),
+             ({"disabled_when": ["autonomous", "manual"]}, "autonomous"),
+             ({"disabled_when": ["running"]}, "running"),
+             ({"disabled_when": ["running", "no_region"]}, "no_region"),
+             ({"disabled_when": ["disconnected"]}, "disconnected"),
+             ({"disabled_when": ["moving"]}, "moving"),
+             ({"disabled_when": ["warming_up"]}, "warming_up"),
+             ({"disabled_when": ["fault"]}, "fault"),
+             ({"enabled_when": ["running"]}, "no_region"),
+             ({"enabled_when": ["running"]}, "latched"),
+             ({"enabled_when": ["manual"]}, "disabled"),
+             ({"disabled_when": ["running"]}, "idle")]
+    table = json.dumps({k: list(v) for k, v in GATE_WORDS.items()})
+    calls = ", ".join(f"gateReason({json.dumps(e)}, {json.dumps(m)}, {{}})" for e, m in cases)
+    got = _node_value(f"(() => {{ GATE_WORDS = {table}; return [{calls}]; }})()")
+    assert got == [gate_reason(e, m) for e, m in cases], got
+    assert got[1] == "In manual mode" and got[2] == "In autonomous mode", got
+    ticked = _node_value("gateReason({enabled_by: 'probe_enabled'}, 'ready', {probe_enabled: false})")
+    assert ticked == "Tick Launch on this row first"
+    assert "MODE_REASONS" not in CODE and "Not in manual mode" not in CODE, (
+        "app.js keeps its own gate table")
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not available in this environment")

@@ -382,7 +382,10 @@ def test_quit_answers_then_releases_wait():
     try:
         time.sleep(0.2)
         assert waiter.is_alive(), "wait() returned before anyone asked to quit"
-        assert _post_quit(view) == (200, {"status": "ok"})
+        # Updated (O5): the answer carries the stop Quit ran first.
+        assert _post_quit(view) == (200, {"status": "ok", "stopped": {"Probe": True},
+                                          "unconfirmed": []})
+        assert controller.estop_calls == 1, "Quit did not stop before answering"
         waiter.join(timeout=1.0)
         assert not waiter.is_alive(), "wait() was not released within 1 s"
         assert controller.closed == 1, "the Controller was not closed"
@@ -396,8 +399,11 @@ def test_a_second_quit_is_ok_not_an_error():
     view = WebView(controller, object(), port=0, open_browser=False)
     assert view.open()
     try:
-        assert _post_quit(view) == (200, {"status": "ok"})
-        assert _post_quit(view) == (200, {"status": "ok"})
+        # Updated (O5): the same answer twice, and one stop, not two.
+        first = _post_quit(view)
+        assert first == (200, {"status": "ok", "stopped": {"Probe": True},
+                               "unconfirmed": []})
+        assert _post_quit(view) == first and controller.estop_calls == 1
         assert controller.closed == 0, "a handler thread closed the Controller"
         waiter = threading.Thread(target=view.wait, daemon=True)
         waiter.start()

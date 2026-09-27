@@ -46,7 +46,18 @@ const STOP_KEY_HINT = 'Ctrl+.';
 const NO_STOP_WORDS = { face: 'Stop', action: 'stop', headline: '', subline: '', rail: '' };
 //: The event title the Controller publishes when a model did not confirm a
 //: stop (controller.py). The views key on the title; its words are core's.
-const UNCONFIRMED_TITLE = 'Stop Not Confirmed';
+let UNCONFIRMED_TITLE = 'Stop Not Confirmed';
+//: O13: the idle warning's event is history in the log; the live number is
+//: the rail's countdown line (N2), never a frozen tray line.
+let IDLE_SOON_TITLE = 'Idle Timeout Soon';
+//: O12: the watchdog's warning, taken back by the next heartbeat that lands.
+let SILENT_TITLE = 'Browser Silent';
+//: The watchdog's seconds as the server serves them (/api/theme.json,
+//: `watchdog`): the close-tab line says the station's own number (N3).
+let WATCHDOG = null;
+//: How long before the idle timeout a probe's countdown line appears, when
+//: its state does not say (`idle_warn_seconds`).
+const IDLE_WARN_DEFAULT_S = 60;
 //: How many characters of a dropdown option are shown before it is elided
 //: from the middle: the tail of a port or gamepad name is what tells two
 //: devices apart, so the middle goes, never the end (F15).
@@ -184,46 +195,64 @@ function titler(control) {
   };
 }
 
-//: L3 (round 7, IMP7-7): what a gate's mode word means to the operator. A
-//: word not here is said as itself, in sentence case.
-const MODE_REASONS = {
-  latched: 'Stopped: clear the stop first',
-  manual: 'Not in manual mode',
-  autonomous: 'Not in autonomous mode',
-  running: 'A run is in progress',
-  no_region: 'Set a capture region first',
-  disconnected: 'Not connected',
-  moving: 'Moving',
-  scanning: 'Wait for the scan to finish',
-  launched: 'Already launched',
-};
-//: What an `enabled_when` command is waiting for, when it is not the latch.
-const WAITS_FOR = {
-  running: 'No run in progress',
-  scanning: 'No scan in progress',
-  launched: 'Nothing launched yet',
-};
+//: Why a control is greyed, in both directions: `views.base.GATE_WORDS`,
+//: served as `gate_words` in /api/theme.json (O3, IMP8-1). Each word maps
+//: to [the words while the mode is in the element's `disabled_when`, the
+//: words while it is missing from its `enabled_when`], so "In manual mode"
+//: and "Not in manual mode" can never be swapped again. One table, three
+//: views: none is kept here (the one this file had said the inverse).
+let GATE_WORDS = {};
 
-function modeWords(mode) {
-  return MODE_REASONS[mode] || sentence(String(mode || '').replace(/_/g, ' '));
+/** One side of a gate word's pair, or '' when the table has none. */
+function gateWords(mode, direction) {
+  const pair = GATE_WORDS[String(mode || '')];
+  return (pair && pair[direction]) || '';
 }
 
-/** Why `isEnabled` says no, read from the same three rules in the same
- *  order; '' when the element is live. */
+/** Why `isEnabled` says no: `views.base.gate_reason`, mirrored - read from
+ *  the element's own gate lists in the same order as the Python - plus the
+ *  one rule it does not cover, a Setup row's Launch tick (`enabled_by`).
+ *  '' when the element is live. */
 function gateReason(element, mode, values) {
   const by = element.enabled_by;
   if (by && values !== null && values !== undefined && !values[by]) {
     return /_enabled$/.test(by) ? 'Tick Launch on this row first' : 'Not available yet';
   }
-  const disabled = element.disabled_when;
-  if (disabled && disabled.indexOf(mode) !== -1) return modeWords(mode);
-  const enabled = element.enabled_when;
-  if (enabled && enabled.indexOf(mode) === -1) {
-    if (mode === 'latched') return MODE_REASONS.latched;
-    for (const want of enabled) if (WAITS_FOR[want]) return WAITS_FOR[want];
-    return modeWords(mode);
+  const word = String(mode || '');
+  const disabled = element.disabled_when || [];
+  if (disabled.indexOf(word) !== -1) return gateWords(word, 0) || 'In ' + word + ' mode';
+  const enabled = element.enabled_when || [];
+  if (enabled.length && enabled.indexOf(word) === -1) {
+    const wanted = String(enabled[0]);
+    return gateWords(wanted, 1) || 'Not in ' + wanted + ' mode';
   }
   return '';
+}
+
+//: The commands that take hardware DOWN (`Panel.UNGATED_COMMANDS` in
+//: src/panel.py, plus `set_mode` to "disabled"): never held back by the
+//: busy guard (O10), because a stop must never wait for an earlier press.
+const STOP_COMMANDS = ['toggle_estop', 'estop', 'clear_estop', 'halt', 'stop_run', 'extend_idle'];
+
+function isStopCommand(element, args) {
+  const command = element && element.command;
+  if (STOP_COMMANDS.indexOf(command) !== -1) return true;
+  return command === 'set_mode' && Array.isArray(args) && args[0] === 'disabled';
+}
+
+/** O4: what a faulted entry says at its head. A probe in FAULT is a
+ *  disable that did not reach the board; any other fault is still a device
+ *  in a state this page cannot vouch for. */
+function faultWords(state) {
+  return state && state.mode === 'fault' ? 'Disable failed. Treat as live.'
+    : 'Faulted. Treat as live.';
+}
+
+/** Names as a sentence says them: "A", "A and B", "A, B and C". */
+function joinNames(names) {
+  const list = (names || []).map((n) => sentence(n));
+  if (list.length < 2) return list.join('');
+  return list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1];
 }
 
 /** L6 (round 7, TK7-5): how far one key moves a slider - 1 % of the travel
@@ -704,12 +733,49 @@ function renderEntry(panel, element) {
   let served = '';
   // A text box narrower than what it holds shows the whole of it on hover.
   if (!numeric) input.addEventListener('input', () => { title.own(input.value); });
-  return {
+  // A new value is a new question: the last refusal's mark goes.
+  input.addEventListener('input', () => {
+    if (input.hasAttribute('aria-invalid')) input.removeAttribute('aria-invalid');
+  });
+  // O10 (WDG8-3): the wheel over a focused number box changed it silently,
+  // and the next command carried it. The wheel scrolls the page instead.
+  if (numeric) {
+    input.addEventListener('wheel', (event) => {
+      if (document.activeElement !== input) return;
+      event.preventDefault();
+      window.scrollBy(0, event.deltaY);
+    }, { passive: false });
+  }
+  // O14 (PM8-7): Return, or leaving the box, commits what it says - only if
+  // it says something the station does not hold. Escape puts back what the
+  // station holds.
+  const commit = () => {
+    if (input.disabled || !element.writable || input.value === served) return;
+    panel.commit(element, input.value);
+  };
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); commit(); }
+    else if (event.key === 'Escape' && input.value !== served) {
+      input.value = served;
+      if (slider) slider.follow();
+    }
+  });
+  input.addEventListener('change', commit);
+  if (slider) slider.onRelease(commit);
+  const widget = {
     node,
+    control: input,
     // Never overwrite what the operator is typing: focused, or edited away
     // from the last value the server sent - by the box or by its slider.
     isDirty: () => document.activeElement === input || input.value !== served,
     readValue: () => input.value,
+    /** A commit landed: what the box says is what the station holds. */
+    accept: (value) => { served = String(value); },
+    /** A commit was refused: the box says what the station holds again. */
+    revert: () => {
+      input.value = served;
+      if (slider) slider.follow();
+    },
     setText: (text) => {
       // An int box never shows "5.000", whatever the state formatted.
       const next = isInt ? intText(text)
@@ -731,6 +797,7 @@ function renderEntry(panel, element) {
       if (slider) slider.setReason(reason);
     },
   };
+  return widget;
 }
 
 /** The slider half of a slider entry: a 4 px panel track, an ink fill to
@@ -791,18 +858,37 @@ function renderSlider(input, element, isInt, panel) {
   });
   input.addEventListener('input', follow);
   input.addEventListener('change', follow);
+  // O14: a released drag, or a released slider key, commits (Tk and Qt
+  // commit on release too). The entry owns the commit; this only says when.
+  let released = null;
+  range.addEventListener('change', () => { if (released) released(); });
+  range.addEventListener('keyup', (event) => {
+    if (released && sliderKeyDelta(low, high, event.key)) released();
+  });
   follow();
   paint();
   return {
     node,
     range,
     follow,
+    onRelease: (fn) => { released = fn; },
     setEnabled: (flag) => {
       if (range.disabled === !flag) return;
       range.disabled = !flag;
       node.classList.toggle('disabled', !flag);
     },
     setReason: (reason) => title.reason(reason),
+  };
+}
+
+/** O10 (WDG8-2): a command whose answer is still out reads busy - to the
+ *  eye (.is-busy) and to a screen reader (aria-busy) - and stays focusable,
+ *  so focus is not thrown off it while it works. */
+function busyMarker(control) {
+  return (flag) => {
+    control.classList.toggle('is-busy', Boolean(flag));
+    if (flag) putAttr(control, 'aria-busy', 'true');
+    else if (control.hasAttribute('aria-busy')) control.removeAttribute('aria-busy');
   };
 }
 
@@ -827,6 +913,7 @@ function renderButton(panel, element) {
     node,
     setEnabled: enabler(button),
     setReason: (reason) => { title.reason(reason); widget.reason = reason; },
+    setBusy: busyMarker(button),
     reason: '',
   };
   if (element.role === 'go') {
@@ -883,6 +970,7 @@ function renderToggle(panel, element) {
     setOn: show,
     setEnabled: enabler(button),
     setReason: (reason) => title.reason(reason),
+    setBusy: busyMarker(button),
   };
 }
 
@@ -902,7 +990,11 @@ function renderStopToggle(panel, element) {
   track.setAttribute('aria-hidden', 'true');
   track.appendChild(make('span', 'switch-knob'));
   button.appendChild(track);
-  const words = make('span', 'switch-words', 'Stop this model only');
+  // O16 (PM8-8): one word for one thing - the switch's words are the
+  // schema's ("Stop this model" / "Stopped"); its tooltip says how it clears.
+  const wordsFor = (on) => sentence((on ? element.true_text : element.false_text)
+    || (on ? 'Stopped' : 'Stop this model'));
+  const words = make('span', 'switch-words', wordsFor(false));
   button.appendChild(words);
   button.addEventListener('click', () => panel.runToggle(element));
   node.appendChild(button);
@@ -912,10 +1004,11 @@ function renderStopToggle(panel, element) {
   const show = (on) => {
     if (last === Boolean(on)) return;
     last = Boolean(on);
-    const said = on ? 'Stopped. Press to clear' : 'Stop this model only';
+    const said = wordsFor(on);
     putText(words, said);
     button.classList.toggle('is-latched', last);
-    title.own(sentence(on ? (element.true_text || '') : (element.false_text || '')));
+    title.own(sentence(on ? (element.tooltip_on || element.tooltip || '')
+                          : (element.tooltip || '')));
     // Named by its words and its model, so a list of switches does not read
     // "Stop, Stop" (WDG-4, L16).
     button.setAttribute('aria-label', nameFor(said, model));
@@ -1538,6 +1631,7 @@ class PanelCard {
     this.node = make('section', 'card');
     this.node.tabIndex = -1;
     const head = make('header', 'card-head');
+    this.head = head;
     const title = make('h2', 'card-title', sentence(this.title));
     title.setAttribute('translate', 'no');
     controlSerial += 1;
@@ -1597,9 +1691,16 @@ class PanelCard {
     this.alert = make('p', 'card-alert');
     this.alert.hidden = true;
     this.node.appendChild(this.alert);
+    // O4 (IMP8-2): a fault's own reason, in tier 1 while it stands - a
+    // failed disable was two disclosures down. Ink; the red is the rule.
+    this.faultLine = make('p', 'fault-line');
+    this.faultLine.hidden = true;
+    this.node.appendChild(this.faultLine);
     // The refusal line. It starts under the header and moves to sit under
     // the control that caused it (showRefused, F10).
     this.status = make('p', 'status');
+    controlSerial += 1;
+    this.status.id = 'status-' + controlSerial;
     this.status.setAttribute('role', 'status');
     this.status.setAttribute('aria-live', 'polite');
     this.status.hidden = true;
@@ -1608,6 +1709,11 @@ class PanelCard {
     this.node.appendChild(this.body);
     this.well = null;
     this.deep = null;
+    //: The commands whose answer is still out (O10): a second press on one
+    //: of them is swallowed, and it reads busy until the answer lands.
+    this.inFlight = new Set();
+    //: The entry a refusal was pinned to (aria-invalid), if any.
+    this.invalid = null;
     this.build();
   }
 
@@ -1889,9 +1995,22 @@ class PanelCard {
   }
 
   async run(element, args) {
+    // CON-1: the element's own fixed `args` go first, then the press's -
+    // `views.base.PanelView._run`. Two buttons that share a command ("Move -"
+    // and "Move +") differ only by these; dropping them moved the wrong way.
+    const sent = [...(element.args || []), ...(args || [])];
+    // O10 (WDG8-2): one press, one command. A stop-class command is never
+    // held back (a second stop is harmless and must never wait).
+    const guarded = !isStopCommand(element, sent);
+    if (guarded && this.inFlight.has(element)) return { status: 'busy' };
+    const widget = this.widgetFor(element);
+    if (guarded) {
+      this.inFlight.add(element);
+      if (widget && widget.setBusy) widget.setBusy(true);
+    }
     let result;
     try {
-      result = await this.call(element.command, this.gatherInputs(), args || []);
+      result = await this.call(element.command, this.gatherInputs(), sent);
       // The page's own confirmation, not window.confirm: it defaults to
       // Cancel, and it never blocks the page's stop the way a native
       // dialog blocks every script on it (F17, HC-2).
@@ -1900,15 +2019,68 @@ class PanelCard {
         const again = (result.args || []).concat([true]);
         result = await this.call(result.command, result.inputs || {}, again);
       }
+      if (result.status === 'ok') this.showRefused('');
+      else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '', element);
+      await this.dashboard.refreshNow();
     } catch (err) {
       this.showRefused('The station did not answer (' + failureReason(err)
         + '). Check that it is running, then try again.', element);
-      return { status: 'failed', reason: String(err) };
+      result = { status: 'failed', reason: String(err) };
+    } finally {
+      if (guarded) {
+        this.inFlight.delete(element);
+        if (widget && widget.setBusy) widget.setBusy(false);
+      }
     }
-    if (result.status === 'ok') this.showRefused('');
-    else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '', element);
+    return result;
+  }
+
+  /** O14 (PM8-7): one entry's value, committed on its own - a released
+   *  slider, Return in the box, or leaving it - through `_commit`, the path
+   *  Tk and Qt take. Only this field is sent. A refusal is said at the field
+   *  and the box goes back to what the station holds. */
+  async commit(element, value) {
+    const widget = this.widgetFor(element);
+    let result;
+    try {
+      result = await this.call('_commit', { [element.model_attr]: value }, []);
+    } catch (err) {
+      this.showRefused('The station did not answer (' + failureReason(err)
+        + '), so ' + captionText(element).toLowerCase() + ' was not changed.', element);
+      return { status: 'failed' };
+    }
+    if (result.status === 'ok') {
+      if (widget && widget.accept) widget.accept(value);
+      this.showRefused('');
+    } else {
+      if (widget && widget.revert) widget.revert();
+      this.showRefused(result.reason || '', element);
+    }
     await this.dashboard.refreshNow();
     return result;
+  }
+
+  widgetFor(element) {
+    return this.widgets.find((w) => w.element === element) || null;
+  }
+
+  /** O10 (WDG8-4): the entry a refusal is about, read from its words - the
+   *  refusal names the field ("X step size must be at least 1"). The
+   *  longest caption that starts the sentence wins; null when none does.
+   *  (Core's Refused does not name the attribute yet: see the handoff.) */
+  fieldFor(reason) {
+    const said = String(reason || '').toLowerCase();
+    let best = null;
+    let length = 0;
+    for (const widget of this.widgets) {
+      if (widget.element.type !== 'entry' || !widget.control) continue;
+      const caption = captionText(widget.element).toLowerCase();
+      if (caption && said.indexOf(caption + ' ') === 0 && caption.length > length) {
+        best = widget;
+        length = caption.length;
+      }
+    }
+    return best;
   }
 
   /** Copy a chosen file to the station; the path it was saved at, or null
@@ -2023,6 +2195,7 @@ class PanelCard {
     this.isOffline = false;
     this.values = (state && state.values) || {};
     const mode = (state && state.mode) || '';
+    const isFaulted = Boolean(state && state.is_faulted);
     const now = Date.now();
     const wantsData = now - this.lastData >= DATA_POLL_MS;
     if (wantsData) this.lastData = now;
@@ -2039,6 +2212,8 @@ class PanelCard {
       } else if (kind === 'plot' || kind === 'image' || kind === 'log_stream') {
         if (wantsData && this.wantsData(widget)) this.loadData(widget);
       }
+      // O4: a faulted probe's mode toggles are greyed by their own schema
+      // (`disabled_when` carries "fault") and say the served reason.
       widget.setEnabled(isEnabled(element, mode, this.values));
       // L3: a disabled control says why, from the same gate.
       if (widget.setReason) widget.setReason(gateReason(element, mode, this.values));
@@ -2049,7 +2224,7 @@ class PanelCard {
       // A number that has held still for CHANGING_MS settles to ink.
       if (widget.tick) widget.tick(now);
     }
-    this.sayWhyNotGo();
+    this.sayWhyNotGo(mode);
     // A lost device freezes the numbers even while the model's own loop
     // keeps ticking, so `age` alone would call them fresh (F3, HC-1).
     this.lost = lostDevices(state);
@@ -2069,8 +2244,15 @@ class PanelCard {
     this.node.classList.toggle('is-latched', isLatched);
     this.setStateWord(isLatched ? 'Stopped' : '');
     // L1: the entry's own "Stop not confirmed. Treat as live." follows the
-    // model's `stop_confirmed` (None unless latched), not an event.
-    this.setUnconfirmed(Boolean(state) && state.stop_confirmed === false);
+    // model's `stop_confirmed` (None unless latched), not an event. O4: a
+    // fault is the same hazard - a disable that did not reach the board - so
+    // it is marked the same way, with the fault's own reason under the head.
+    const isUnconfirmed = Boolean(state) && state.stop_confirmed === false;
+    this.setUnconfirmed(isUnconfirmed || isFaulted, isUnconfirmed ? '' : faultWords(state));
+    this.node.classList.toggle('is-faulted', isFaulted);
+    const reason = isFaulted ? String(state.fault || '') : '';
+    putText(this.faultLine, reason);
+    if (this.faultLine.hidden !== !reason) this.faultLine.hidden = !reason;
   }
 
   /** L3: under a row whose `go` command is disabled, one muted caption says
@@ -2078,7 +2260,8 @@ class PanelCard {
    *  Relaunch take turns), or the model already says what unblocks it in
    *  the row (Red Percent's "Next step"), or the reason is the latch (the
    *  headline and the entry's head say that once). One caption per row. */
-  sayWhyNotGo() {
+  sayWhyNotGo(mode) {
+    const latched = mode === 'latched';
     for (const { goes, block } of this.goRows || []) {
       const canGo = goes.some((w) => !w.reason);
       const said = Array.from(block.querySelectorAll('.row.stat')).some((r) => !r.hidden
@@ -2087,8 +2270,7 @@ class PanelCard {
       for (const widget of goes) {
         // The latch is said once - the headline, the entry's "Stopped" -
         // not under every row of the page; its reason stays in the title.
-        const say = !canGo && !said && !shown && Boolean(widget.reason)
-          && widget.reason !== MODE_REASONS.latched;
+        const say = !canGo && !said && !shown && Boolean(widget.reason) && !latched;
         if (say) shown = true;
         putText(widget.note, say ? widget.reason : '');
         if (widget.note.hidden !== !say) widget.note.hidden = !say;
@@ -2104,8 +2286,9 @@ class PanelCard {
 
   /** G6: this model did not confirm the stop. A signal head rule and the
    *  sentence at its own entry; no Dismiss (I8). */
-  setUnconfirmed(isUnconfirmed) {
+  setUnconfirmed(isUnconfirmed, words) {
     const flag = Boolean(isUnconfirmed);
+    putText(this.unconfirmedMark, words || 'Stop not confirmed. Treat as live.');
     if (this.unconfirmedMark.hidden !== !flag) this.unconfirmedMark.hidden = !flag;
     this.node.classList.toggle('is-unconfirmed', flag);
   }
@@ -2167,18 +2350,25 @@ class PanelCard {
    *  under the control that caused it, is brought into view, and shakes as
    *  it arrives - every time, a repeated refusal included - because a line
    *  that simply appears somewhere on a tall panel is a line the operator
-   *  never sees. The next successful command from this card clears it. */
+   *  never sees. The next successful command from this card clears it.
+   *
+   *  O10 (WDG8-4, A11Y-7): when the sentence names an entry, it goes under
+   *  THAT entry instead - its well opened if it was shut - and the entry is
+   *  marked aria-invalid, described by the sentence, and focused. */
   showRefused(reason, element) {
+    this.markInvalid(null);
     if (!reason) {
       if (!this.status.hidden) this.status.hidden = true;
       putText(this.status, '');
       return;
     }
-    const anchor = this.anchorFor(element);
+    const field = this.reveal(this.fieldFor(reason)
+      || (element && element.type === 'entry' ? this.widgetFor(element) : null));
+    const anchor = field ? field.node : this.anchorFor(element);
     if (anchor && anchor.nextSibling !== this.status) {
       anchor.parentNode.insertBefore(this.status, anchor.nextSibling);
-    } else if (!anchor && this.status.previousSibling !== this.alert) {
-      this.node.insertBefore(this.status, this.alert.nextSibling);
+    } else if (!anchor && this.status.previousSibling !== this.faultLine) {
+      this.node.insertBefore(this.status, this.faultLine.nextSibling);
     }
     putText(this.status, reason);
     this.status.hidden = false;
@@ -2187,6 +2377,37 @@ class PanelCard {
     this.status.classList.add('shake');
     if (this.status.scrollIntoView && !this.node.closest('[hidden]')) {
       this.status.scrollIntoView({ block: 'nearest' });
+    }
+    if (field) {
+      this.markInvalid(field);
+      if (!field.control.disabled) field.control.focus({ preventScroll: true });
+    }
+  }
+
+  /** `field` if it can be shown: its tier opened on the device page. On
+   *  the Overview a tier-2 field is not drawn, so null (the refusal then
+   *  sits where the press was). */
+  reveal(field) {
+    if (!field || !field.node || !this.node.contains(field.node)) return null;
+    const inWell = this.well && this.well.contains(field.node);
+    if (inWell && !this.isOpened()) return null;
+    if (inWell) this.setTierOpen(2, true);
+    if (this.deep && this.deep.contains(field.node)) this.setTierOpen(3, true);
+    return field.node.getClientRects().length ? field : null;
+  }
+
+  /** aria-invalid on the refused entry, described by the refusal; cleared
+   *  from the last one. */
+  markInvalid(field) {
+    const last = this.invalid;
+    if (last && last !== field && last.control) {
+      last.control.removeAttribute('aria-invalid');
+      last.control.removeAttribute('aria-describedby');
+    }
+    this.invalid = field || null;
+    if (field && field.control) {
+      putAttr(field.control, 'aria-invalid', 'true');
+      putAttr(field.control, 'aria-describedby', this.status.id);
     }
   }
 
@@ -2237,6 +2458,18 @@ class Dashboard {
     this.isDrawerOpen = false;
     this.isConnected = null;
     this.isActive = false;
+    //: The models holding hardware an operator should undo before leaving
+    //: (`state.energized`): what the close-tab guard keys on (N3).
+    this.energized = [];
+    //: The rail's idle countdown lines, by model (N2).
+    this.idleLines = new Map();
+    this.idleKey = null;
+    //: The faulted models, name -> the words their mark says (O4).
+    this.faulted = new Map();
+    //: When a heartbeat last landed (O12).
+    this.lastBeatOk = 0;
+    //: What was last said about the stop, for the announcements (O7).
+    this.saidStop = null;
     this.railLines = new Map();
     //: Which page the sheet shows (K4): null is the Overview, else the name
     //: of the model whose device page it is.
@@ -2266,6 +2499,10 @@ class Dashboard {
       stopRing: document.getElementById('stop-ring'),
       railAlert: document.getElementById('rail-alert'),
       railLatched: document.getElementById('rail-latched'),
+      idleLines: document.getElementById('idle-lines'),
+      energizedLine: document.getElementById('energized-line'),
+      announcePolite: document.getElementById('announce-polite'),
+      announceAssertive: document.getElementById('announce-assertive'),
       headline: document.getElementById('sheet-headline'),
       headlineText: document.querySelector('#sheet-headline .headline'),
       headlineNote: document.querySelector('#sheet-headline .headline-note'),
@@ -2285,6 +2522,10 @@ class Dashboard {
       picker: document.getElementById('region-picker'),
       pickerCanvas: document.getElementById('region-canvas'),
       pickerClose: document.getElementById('region-close'),
+      pickerUse: document.getElementById('region-use'),
+      pickerHelp: document.getElementById('region-help'),
+      pickerDialog: document.querySelector('#region-picker .dialog'),
+      pickerFields: Array.from(document.querySelectorAll('#region-picker .region-fields input')),
       connection: document.getElementById('connection'),
       logPanel: document.getElementById('log-panel'),
       logToggle: document.getElementById('log-toggle'),
@@ -2301,6 +2542,12 @@ class Dashboard {
     this.dom.stop.addEventListener('click', () => this.toggleEstopAll());
     this.dom.modalOk.addEventListener('click', () => this.acknowledge());
     this.dom.pickerClose.addEventListener('click', () => this.closeRegionPicker());
+    this.dom.pickerUse.addEventListener('click', () => this.useTypedRegion());
+    for (const field of this.dom.pickerFields) {
+      field.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); this.useTypedRegion(); }
+      });
+    }
     this.dom.confirmYes.addEventListener('click', () => this.answerConfirm(true));
     this.dom.confirmNo.addEventListener('click', () => this.answerConfirm(false));
     this.dom.logToggle.addEventListener('click',
@@ -2330,15 +2577,18 @@ class Dashboard {
           && document.activeElement.closest('.log-window')) return;
       if (this.isDrawerOpen && this.dom.modal.hidden) this.setDrawerOpen(false);
     }, true);
-    // Closing the tab silences the heartbeat, and 15 s later the watchdog
-    // stops the station: while anything is moving, heating or recording,
-    // the browser asks first (F24, WDG-12).
+    // Closing the tab silences the heartbeat, and the watchdog then stops
+    // the station: while anything is ENERGIZED - a probe merely in a mode
+    // included, not only one moving, heating or recording - the browser
+    // asks first (F24, WDG-12; N3 keys it on `state.energized`). After Quit
+    // there is nothing left to guard.
     window.addEventListener('beforeunload', (event) => {
-      if (!this.isActive || this.isShutDown) return;
+      if (!this.energized.length || this.isShutDown) return;
       event.preventDefault();
       event.returnValue = '';
     });
     window.addEventListener('resize', () => this.reserveLogSpace());
+    window.addEventListener('resize', () => this.pinOpened());
     // The rail is a column on the left, or a bar across the top on a phone,
     // and the tray grows when it opens; the drawer, the scrim and every
     // overlay are fixed against both, so both are measured, not assumed.
@@ -2493,6 +2743,13 @@ class Dashboard {
       const rules = await apiGet('/api/theme.json');
       QUIET_VALUES = new Set((rules && rules.quiet_values) || []);
       if (rules && rules.tier_labels) TIER_LABELS = Object.assign({}, TIER_LABELS, rules.tier_labels);
+      if (rules && rules.gate_words) GATE_WORDS = rules.gate_words;
+      if (rules && rules.watchdog) WATCHDOG = rules.watchdog;
+      // The titles the page keys on, as core names them (events.py).
+      const titles = (rules && rules.event_titles) || {};
+      if (titles.stop_not_confirmed) UNCONFIRMED_TITLE = titles.stop_not_confirmed;
+      if (titles.idle_timeout_soon) IDLE_SOON_TITLE = titles.idle_timeout_soon;
+      if (titles.browser_silent) SILENT_TITLE = titles.browser_silent;
     } catch (err) { /* nothing is quiet: every value is drawn */ }
     // Start from the newest event id so a fresh tab does not replay the
     // whole session's log as if it had just happened (ERRORS-3). What has
@@ -2552,7 +2809,13 @@ class Dashboard {
   async sendHeartbeat() {
     if (typeof document !== 'undefined' && document.hidden) return;
     try {
-      await apiPost('/api/heartbeat', {});
+      const answer = await apiPost('/api/heartbeat', {});
+      if (answer && answer.status === 'ok') {
+        this.lastBeatOk = Date.now();
+        // O12 (PM8-3): the browser is back, so the watchdog's warning is
+        // over: the tray takes it back (the log keeps it).
+        if (this.trayEvent && this.trayEvent.title === SILENT_TITLE) this.setTray(null);
+      }
     } catch (err) {
       // Nothing to recover: a missed heartbeat is the signal itself.
     }
@@ -2645,7 +2908,9 @@ class Dashboard {
       this.setRailLine('quit', 'The station did not agree to quit. It is still running.', true);
       return;
     }
-    this.showShutDown();
+    // O5: the server stops every model BEFORE it answers, and says which
+    // did not confirm; the end state names those instead of saying "Off".
+    this.showShutDown(Array.isArray(answer.unconfirmed) ? answer.unconfirmed : []);
   }
 
   /** The end-state after Quit (G2, I5): the page stops asserting anything it
@@ -2653,7 +2918,8 @@ class Dashboard {
    *  size, and focus lands on it; the stop disc is drawn inert (no red, no
    *  ring, not a button any more), whatever face it had; every alert line,
    *  acknowledgement and raw error goes; every control is disabled. */
-  showShutDown() {
+  showShutDown(unconfirmed) {
+    const unsure = (unconfirmed || []).filter((name) => this.cards.has(name));
     this.isShutDown = true;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     this.stopHeartbeat();
@@ -2681,6 +2947,12 @@ class Dashboard {
     // switch, whatever it last showed.
     for (const face of document.querySelectorAll('.mushroom-face')) putText(face, 'Off');
     for (const word of document.querySelectorAll('.switch-words')) putText(word, 'Off');
+    for (const line of this.idleLines.values()) line.node.remove();
+    this.idleLines.clear();
+    this.idleKey = null;
+    this.dom.idleLines.hidden = true;
+    this.renderEnergizedLine();
+    this.setEnergized([]);
     stop.removeAttribute('aria-keyshortcuts');
     stop.setAttribute('aria-disabled', 'true');
     stop.setAttribute('aria-label', 'Stop: the station has shut down');
@@ -2688,6 +2960,22 @@ class Dashboard {
     const hint = document.querySelector('.stop-hint');
     if (hint) hint.hidden = true;
     for (const card of this.cards.values()) card.setUnconfirmed(false);
+    // O5 (IMP8-3): "Off" is said only for what confirmed. A model whose
+    // stop at Quit did not confirm keeps its red rule and its words, its
+    // switch does not read Off, and the rail names it.
+    if (unsure.length) {
+      for (const name of unsure) {
+        const card = this.cards.get(name);
+        card.setUnconfirmed(true);
+        const word = card.node.querySelector('.switch-words');
+        if (word) putText(word, 'Not confirmed');
+      }
+      this.faulted = new Map();
+      this.setUnconfirmed(unsure, unsure);
+      this.setRailLine('quit-unconfirmed', joinNames(unsure)
+        + (unsure.length > 1 ? ' did not confirm their stops. Check them by hand.'
+                             : ' did not confirm its stop. Check it by hand.'));
+    }
     this.setLogCollapsed(true);
     this.setTray({ severity: 'info', text: 'Quit from the Web console' });
     document.body.classList.add('is-offline', 'is-shut-down');
@@ -2761,6 +3049,7 @@ class Dashboard {
   async applyState(state, askedAt) {
     const models = state.models || {};
     this.isActive = Boolean(state.is_active);
+    this.energized = Array.isArray(state.energized) ? state.energized : [];
     for (const name of Object.keys(models)) {
       if (!this.cards.has(name)) await this.addCard(name);
       const card = this.cards.get(name);
@@ -2780,7 +3069,13 @@ class Dashboard {
     // models are latched or did not confirm is `stop`.
     const stop = state.stop || { latched: [], unconfirmed: [], every: false };
     this.renderEstop(state.stop_words || NO_STOP_WORDS);
+    this.announceStop(state.stop_words || NO_STOP_WORDS, stop);
+    this.faulted = new Map(Object.keys(models).filter((n) => models[n] && models[n].is_faulted)
+      .map((n) => [n, models[n].mode === 'fault']));
     this.setUnconfirmed(stop.latched || [], stop.unconfirmed || []);
+    this.setEnergized(this.energized);
+    this.renderEnergizedLine();
+    this.renderIdleLines(models);
     this.forgetStopLine(stop, askedAt);
     let setupState = null;
     if (this.setupCard) {
@@ -2888,6 +3183,32 @@ class Dashboard {
         card.node.classList.toggle(other, other === span);
       }
     });
+    this.pinOpened();
+  }
+
+  /** O15 (L5's parity): on a device page the entry's head and its tier-1
+   *  body stay in view while the details under them scroll - as long as
+   *  they leave most of the window to the details (a tall tier 1 on a short
+   *  window is not pinned: it would cover what it pins over). */
+  pinOpened() {
+    const room = window.innerHeight - (this.dom.logPanel ? this.dom.logPanel.offsetHeight : 0);
+    for (const card of this.cards.values()) {
+      let pin = false;
+      if (card.isOpened() && card.head) {
+        const head = card.head.offsetHeight;
+        const tall = head + card.body.offsetHeight;
+        pin = tall > 0 && tall <= room * 0.6;
+        if (pin) {
+          // The body's own negative margin takes the row gap back (CSS), so
+          // it pins right under the head.
+          const next = Math.round(head) + 'px';
+          if (card.node.style.getPropertyValue('--pin-head') !== next) {
+            card.node.style.setProperty('--pin-head', next);
+          }
+        }
+      }
+      card.node.classList.toggle('is-pinned', pin);
+    }
   }
 
   /** The rail's page list: "Overview" first, then the models by name only
@@ -2913,6 +3234,13 @@ class Dashboard {
         const mark = make('span', 'nav-mark');
         mark.hidden = true;
         link.appendChild(mark);
+        // O6: energized - a probe in a mode, a heating heater, a recording
+        // run - is a small ink ring after the stop mark; never red.
+        // Its word is written only while it shows, so a live link's text is
+        // its name alone.
+        const ring = make('span', 'nav-energized');
+        ring.hidden = true;
+        link.appendChild(ring);
         link.appendChild(make('span', 'nav-name', sentence(name)));
         link.type = 'button';
         link.dataset.model = name;
@@ -2921,6 +3249,7 @@ class Dashboard {
         this.dom.nav.appendChild(link);
       }
       if (this.latched) this.setUnconfirmed(Array.from(this.latched), Array.from(this.unconfirmed));
+      this.setEnergized(this.energized);
     }
     for (const link of this.dom.nav.querySelectorAll('.model-link')) {
       const current = link.dataset.page === 'overview' ? !this.opened
@@ -2985,10 +3314,11 @@ class Dashboard {
 
   /** L1 (round 7, IMP7-3): the rail's page list says which models are
    *  latched and which did not confirm, where the eye already is. A latched
-   *  model gets an ink square, one that did not confirm a signal square;
-   *  the word is read to a screen reader and is the square's title, so the
-   *  colour is never the only carrier. The entry's own "Stop not confirmed.
-   *  Treat as live." follows the model's `stop_confirmed` (PanelCard). */
+   *  model gets an ink square, one that did not confirm a signal square
+   *  with a "!" (O16, A11Y-6: shape as well as colour); the word is read to
+   *  a screen reader and is the square's title. O4: a faulted model gets
+   *  the same signal square - a failed disable is the same hazard. The
+   *  entry's own mark follows the model's state (PanelCard). */
   setUnconfirmed(latched, unconfirmed) {
     this.latched = new Set(latched || []);
     this.unconfirmed = new Set(unconfirmed || []);
@@ -2997,14 +3327,148 @@ class Dashboard {
       const mark = link.querySelector('.nav-mark');
       if (!mark) continue;
       const isUnconfirmed = this.unconfirmed.has(name);
-      const isLatched = !isUnconfirmed && this.latched.has(name);
-      const words = isUnconfirmed ? 'did not confirm' : (isLatched ? 'stopped' : '');
+      const isFaulted = !isUnconfirmed && this.faulted.has(name);
+      const isLatched = !isUnconfirmed && !isFaulted && this.latched.has(name);
+      const words = isUnconfirmed ? 'did not confirm'
+        : (isFaulted ? 'faulted' : (isLatched ? 'stopped' : ''));
+      const title = isUnconfirmed ? 'Did not confirm the stop'
+        : (isFaulted ? (this.faulted.get(name) ? 'Disable failed: treat as live'
+                                               : 'Faulted: treat as live')
+          : (isLatched ? 'Stopped' : ''));
       mark.classList.toggle('is-latched', isLatched);
       mark.classList.toggle('is-unconfirmed', isUnconfirmed);
+      mark.classList.toggle('is-faulted', isFaulted);
       putText(mark, words);
-      putAttr(mark, 'title', isUnconfirmed ? 'Did not confirm the stop' : (isLatched ? 'Stopped' : ''));
+      putAttr(mark, 'title', title);
       if (mark.hidden !== !words) mark.hidden = !words;
     }
+  }
+
+  /** O6: the ring before each energized model's name in the rail. */
+  setEnergized(names) {
+    const on = new Set(names || []);
+    for (const ring of this.dom.nav.querySelectorAll('.model-link[data-model] .nav-energized')) {
+      const hide = this.isShutDown || !on.has(ring.parentNode.dataset.model);
+      putText(ring, hide ? '' : 'energized');
+      putAttr(ring, 'title', hide ? '' : 'Energized');
+      if (ring.hidden !== hide) ring.hidden = hide;
+    }
+  }
+
+  /** N3: while anything is energized, the rail says what closing this tab
+   *  does, with the watchdog's own seconds as the server serves them. */
+  renderEnergizedLine() {
+    let text = '';
+    if (this.energized.length && !this.isShutDown) {
+      const seconds = WATCHDOG && Number(WATCHDOG.stop_seconds);
+      const after = seconds > 0
+        ? ' ' + (Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1)) + ' s after'
+        : ' soon after';
+      text = 'Devices are energized. Disable them before closing this tab; the station '
+        + 'stops them' + after + ' the tab goes.';
+    }
+    const line = this.dom.energizedLine;
+    putText(line, text);
+    if (line.hidden !== !text) line.hidden = !text;
+  }
+
+  /** N2 (brief-n-views N1): one line per probe inside its idle warning
+   *  window - "<name> powers down in 42 s." and Extend - in station order,
+   *  counted from the polled `idle_remaining` (no local timer that could
+   *  drift). A line goes when the number climbs out of the window or the
+   *  probe leaves its mode. Never a modal, never takes focus. */
+  renderIdleLines(models) {
+    const wanted = [];
+    if (!this.isShutDown) {
+      for (const name of Object.keys(models)) {
+        const state = models[name] || {};
+        const left = state.idle_remaining;
+        if (left === null || left === undefined || !isFinite(Number(left))) continue;
+        const warnFor = Number(state.idle_warn_seconds) || IDLE_WARN_DEFAULT_S;
+        if (Number(left) > warnFor) continue;
+        wanted.push([name, Math.max(0, Math.ceil(Number(left)))]);
+      }
+    }
+    const names = wanted.map((w) => w[0]);
+    for (const name of Array.from(this.idleLines.keys())) {
+      if (names.indexOf(name) !== -1) continue;
+      this.idleLines.get(name).node.remove();
+      this.idleLines.delete(name);
+    }
+    for (const [name, seconds] of wanted) {
+      let line = this.idleLines.get(name);
+      // A no-break space: the number and its unit never part at a wrap.
+      const text = sentence(name) + ' powers down in ' + seconds + '\u00a0s.';
+      if (!line) {
+        const node = make('div', 'idle-line');
+        const words = make('span', 'idle-text');
+        const extend = make('button', 'ghost idle-extend', 'Extend');
+        extend.type = 'button';
+        extend.setAttribute('aria-label', 'Extend ' + sentence(name));
+        extend.title = 'Restart the idle timeout of ' + sentence(name)
+          + ': it stays energized for another full period';
+        extend.addEventListener('click', () => this.extendIdle(name, extend));
+        node.appendChild(words);
+        node.appendChild(extend);
+        line = { node, words };
+        this.idleLines.set(name, line);
+        this.announce('polite', text + ' Extend is on the rail.');
+      }
+      putText(line.words, text);
+    }
+    // Station order: re-appended only when the set or its order changed.
+    const key = names.join('\n');
+    if (key !== this.idleKey) {
+      this.idleKey = key;
+      for (const name of names) this.dom.idleLines.appendChild(this.idleLines.get(name).node);
+    }
+    const hide = names.length === 0;
+    if (this.dom.idleLines.hidden !== hide) this.dom.idleLines.hidden = hide;
+  }
+
+  /** Extend: `extend_idle` on that model. Stop-class in core (it carries no
+   *  entries); a refusal ("Nothing to extend") is a tray line. */
+  async extendIdle(name, button) {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      const answer = await apiPost('/api/run', { name, command: 'extend_idle', inputs: {}, args: [] });
+      if (answer && answer.status !== 'ok') {
+        this.notice(sentence(name) + ' was not extended: ' + (answer.reason || 'no reason given'));
+      }
+    } catch (err) {
+      this.notice(sentence(name) + ' was not extended: the station did not answer ('
+        + failureReason(err) + ').');
+    } finally {
+      button.disabled = false;
+    }
+    await this.refreshNow();
+  }
+
+  /** O7: say `text` in the polite or the assertive live region. Emptied
+   *  first, so the same sentence twice is still said twice. */
+  announce(kind, text) {
+    const node = kind === 'assertive' ? this.dom.announceAssertive : this.dom.announcePolite;
+    if (!node || !text) return;
+    node.textContent = '';
+    setTimeout(() => { node.textContent = text; }, 60);
+  }
+
+  /** O7 (A11Y-2): the stop, spoken. Assertive on the edges - a latch, a
+   *  change in what is latched, the clear; polite for the headline and the
+   *  rail line whenever their words change. Nothing is said for the state
+   *  the page opens on. */
+  announceStop(words, stop) {
+    const latched = (stop.latched || []).slice().sort().join('\n');
+    const said = [words.headline, words.rail].filter(Boolean).join(' ');
+    const last = this.saidStop;
+    this.saidStop = { latched, said };
+    if (!last) return;
+    if (latched !== last.latched) {
+      if (!latched) this.announce('assertive', 'The stop is cleared.');
+      else this.announce('assertive', words.headline || words.rail || 'Stopped.');
+    }
+    if (said && said !== last.said) this.announce('polite', said);
   }
 
   async loadSetup() {
@@ -3247,6 +3711,12 @@ class Dashboard {
     // the one that still stands (start()).
     if (event.severity !== 'warning' && event.severity !== 'error') return;
     if (options && options.history) return;
+    // O13 (PM8-4): the idle warning's number froze on the tray; the rail's
+    // countdown line is the live one, so the event is history only.
+    if (event.title === IDLE_SOON_TITLE) return;
+    // O12: a "browser silent" that a landed heartbeat has already answered
+    // is over before it is shown.
+    if (event.title === SILENT_TITLE && this.lastBeatOk / 1000 > Number(event.last_seen || 0)) return;
     this.setTray(event);
   }
 
@@ -3297,9 +3767,16 @@ class Dashboard {
   }
 
   // -- the region picker --------------------------------------------------
+  //
+  // O10 (WDG8-5): the drag is one way; the four fields are the other - the
+  // keyboard's - in the station's own screen pixels. While the grab loads
+  // the dialog says so and is aria-busy.
   async openRegionPicker(card, element) {
     const canvas = this.dom.pickerCanvas;
     this.pickerReturn = document.activeElement;
+    this.pickerFor = { card, element };
+    this.setPickerLoading(true);
+    for (const field of this.dom.pickerFields) field.value = '';
     this.dom.picker.hidden = false;
     this.updateInert();
     this.dom.pickerClose.focus({ preventScroll: true });
@@ -3325,8 +3802,35 @@ class Dashboard {
       canvas.height = picture.height;
       context.drawImage(picture, 0, 0);
       this.bindRegionDrag(card, element, frame, picture);
+      this.setPickerLoading(false);
     };
+    picture.onerror = () => this.setPickerLoading(false);
     picture.src = frame.image;
+  }
+
+  setPickerLoading(isLoading) {
+    putText(this.dom.pickerHelp, isLoading ? 'Loading the station\'s screen…'
+      : 'Drag a rectangle over the part of the screen to watch, or type it below in screen pixels.');
+    if (isLoading) putAttr(this.dom.pickerDialog, 'aria-busy', 'true');
+    else this.dom.pickerDialog.removeAttribute('aria-busy');
+  }
+
+  /** The typed region: four whole numbers, width and height above zero. */
+  useTypedRegion() {
+    const target = this.pickerFor;
+    if (!target || this.dom.picker.hidden) return;
+    const numbers = this.dom.pickerFields.map((f) => f.value.trim());
+    const whole = numbers.every((v) => /^-?\d+$/.test(v));
+    const box = numbers.map(Number);
+    if (!whole || box[2] < 1 || box[3] < 1) {
+      putText(this.dom.pickerHelp, 'Type four whole numbers; width and height must be at least 1.');
+      const first = this.dom.pickerFields.find((f, i) => !/^-?\d+$/.test(f.value.trim())
+        || (i >= 2 && Number(f.value) < 1));
+      if (first) first.focus({ preventScroll: true });
+      return;
+    }
+    this.closeRegionPicker();
+    target.card.run(target.element, box);
   }
 
   /** Drag on the image, scaled back to screen coordinates: the picture may
@@ -3378,13 +3882,15 @@ class Dashboard {
       const box = boxFrom(start, at(event));
       start = null;
       if (box[2] < 4 || box[3] < 4) return;
-      this.closeRegionPicker();
-      card.run(element, [
+      const region = [
         Math.round(box[0] * scaleX) + left,
         Math.round(box[1] * scaleY) + top,
         Math.round(box[2] * scaleX),
         Math.round(box[3] * scaleY),
-      ]);
+      ];
+      this.dom.pickerFields.forEach((field, i) => { field.value = String(region[i]); });
+      this.closeRegionPicker();
+      card.run(element, region);
     };
   }
 
