@@ -1,4 +1,5 @@
 #!/bin/bash
+# To run main or this branch on the same boards (flashing only if needed): run_swap_macos.sh.
 # run_macos.sh — macOS launcher with automatic PySide6 self-heal.
 # Fixes two known macOS issues:
 #   1. PySide6 corruption (missing QtWidgets .so) — reinstalls if needed.

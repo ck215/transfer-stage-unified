@@ -29,12 +29,34 @@ Usage:
     python flash_firmware.py --dry-run                # print commands, run nothing
     python flash_firmware.py --install-deps           # install missing arduino-cli
                                                         # cores/libraries, then exit
+    python flash_firmware.py --sketch-root ../transfer-stage-unified-main/firmware
+                                                      # flash another tree's sketches
+    python flash_firmware.py --force                  # flash even if already current
+    python flash_firmware.py --no-detect --port "Stepper Probe=/dev/ttyACM2"
+                                                      # open no port but the named ones
+
+Flash only if needed: after a board's upload succeeds, a content hash of the
+sketch it got (its .ino and any other source in the sketch directory, plus
+any library under <sketch-root>/libraries that the sketch #includes) is
+recorded in a stamp file outside the repo, by default
+~/transfer-stage-runs/flashed.json (override: --stamp or
+$STATION_FLASH_STAMP). A board whose recorded hash equals the hash of the
+sketch about to be flashed is skipped; --force flashes it anyway. When every
+target board is already current, no port is opened at all. The stamp is this
+machine's record of what *this tool* put on the boards: a board flashed from
+elsewhere (the Arduino IDE, another computer) is not seen, so use --force
+after doing that. A dry run records nothing.
 
 Requires on PATH:
     arduino-cli        https://arduino.github.io/arduino-cli/latest/installation/
     teensy_loader_cli   https://www.pjrc.com/teensy/loader_cli.html
 """
 import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,24 +79,111 @@ TEENSY_MCU = "MK64FX512"
 MEGA_LIBS = ["AccelStepper", "TMCStepper"]
 TEENSY_LIBS = ["LiquidCrystal_I2C"]  # Wire and MAX6675 ship with the Teensy core
 
+DEFAULT_SKETCH_ROOT = REPO_ROOT / "firmware"
+
+# Where "flash only if needed" remembers what went on each board. Outside the
+# repo on purpose: it describes this machine's boards, not a tree, and both
+# branches' checkouts share it.
+DEFAULT_STAMP = Path.home() / "transfer-stage-runs" / "flashed.json"
+
+# Each device's sketch is <sketch-root>/<dir>/<dir>.ino. "sketch" is resolved
+# against the default root; sketch_dir() resolves against any other.
 DEVICES = {
-    "Stepper Probe": {
-        "sketch": REPO_ROOT / "firmware" / "stepper_firmware",
-        "board": "mega",
-    },
-    "DC Probe": {
-        "sketch": REPO_ROOT / "firmware" / "high_polling_rate",
-        "board": "mega",
-    },
-    "Chuck Positioner": {
-        "sketch": REPO_ROOT / "firmware" / "chuck_firmware",
-        "board": "mega",
-    },
-    "Temperature Controller": {
-        "sketch": REPO_ROOT / "firmware" / "temp_controller",
-        "board": "teensy",
-    },
+    "Stepper Probe": {"dir": "stepper_firmware", "board": "mega"},
+    "DC Probe": {"dir": "high_polling_rate", "board": "mega"},
+    "Chuck Positioner": {"dir": "chuck_firmware", "board": "mega"},
+    "Temperature Controller": {"dir": "temp_controller", "board": "teensy"},
 }
+for _cfg in DEVICES.values():
+    _cfg["sketch"] = DEFAULT_SKETCH_ROOT / _cfg["dir"]
+
+# Files that make up a sketch's source for the "already flashed?" hash.
+_SOURCE_SUFFIXES = {".ino", ".pde", ".h", ".hpp", ".c", ".cpp", ".cc", ".s", ".S"}
+_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
+
+
+def sketch_dir(device_name, sketch_root=None):
+    root = Path(sketch_root) if sketch_root else DEFAULT_SKETCH_ROOT
+    return root / DEVICES[device_name]["dir"]
+
+
+def _source_files(directory):
+    """Every source file under `directory`, sorted, skipping build output."""
+    out = []
+    for path in sorted(Path(directory).rglob("*")):
+        rel = path.relative_to(directory)
+        if not path.is_file() or path.suffix not in _SOURCE_SUFFIXES:
+            continue
+        if any(part in ("build", ".git") for part in rel.parts[:-1]):
+            continue
+        out.append(path)
+    return out
+
+
+def _local_libraries(sketch, sketch_root):
+    """Library directories under <sketch-root>/libraries whose header the
+    sketch #includes. Hashed with the sketch so a change to a vendored
+    library counts as a change to the firmware."""
+    lib_root = Path(sketch_root) / "libraries"
+    if not lib_root.is_dir():
+        return []
+    headers = set()
+    for f in _source_files(sketch):
+        headers.update(Path(h).name for h in _INCLUDE_RE.findall(f.read_text(errors="replace")))
+    libs = []
+    for lib in sorted(p for p in lib_root.iterdir() if p.is_dir()):
+        if any((lib / h).is_file() or (lib / "src" / h).is_file() for h in headers):
+            libs.append(lib)
+    return libs
+
+
+def sketch_hash(device_name, sketch_root=None):
+    """sha256 over the sketch's own sources and its vendored libraries, by
+    relative path and content. Independent of where the tree lives and of
+    its line endings, so the same sketch in two checkouts hashes the same."""
+    root = Path(sketch_root) if sketch_root else DEFAULT_SKETCH_ROOT
+    sketch = sketch_dir(device_name, root)
+    h = hashlib.sha256()
+    parts = [("sketch", sketch)] + [("lib", lib) for lib in _local_libraries(sketch, root)]
+    for kind, base in parts:
+        for f in _source_files(base):
+            rel = f"{kind}/{base.name}/{f.relative_to(base).as_posix()}"
+            h.update(rel.encode() + b"\0")
+            # CRLF -> LF: the same commit can check out with either line
+            # ending (git's text=auto), and the compiler does not care.
+            h.update(f.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return h.hexdigest()
+
+
+def load_stamp(path):
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        print(f"[WARN] ignoring unreadable stamp file {path}: {exc}")
+        return {}
+
+
+def record_flash(path, device_name, digest, sketch, port):
+    """Record one successful upload. Read-modify-write, then an atomic
+    replace, so an interrupted write never leaves a half stamp behind."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = load_stamp(path)
+    data[device_name] = {
+        "hash": digest,
+        "sketch": str(sketch),
+        "port": port,
+        "flashed_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, path)
 
 
 def check_tools():
@@ -131,9 +240,9 @@ def detect_devices(only_ports=None):
     return found
 
 
-def compile_and_upload(device_name, port, dry_run=False):
+def compile_and_upload(device_name, port, dry_run=False, sketch_root=None):
     cfg = DEVICES[device_name]
-    sketch = cfg["sketch"]
+    sketch = sketch_dir(device_name, sketch_root)
 
     if cfg["board"] == "mega":
         cmd = [
@@ -165,7 +274,13 @@ def compile_and_upload(device_name, port, dry_run=False):
             return False
 
     hex_path = build_dir / f"{sketch.name}.ino.hex"
-    upload_cmd = ["teensy_loader_cli", f"--mcu={TEENSY_MCU}", "-w", "-v", str(hex_path)]
+    # -s: soft reboot. teensy_loader_cli asks the running sketch to jump into
+    # the HalfKay bootloader over USB, so no one has to press the button.
+    # That only works while a sketch with USB Serial is running and nothing
+    # holds its serial port open (close the app, and any serial monitor,
+    # first). A blank or crashed Teensy still needs the button. -w keeps
+    # waiting for the bootloader to appear, so a button press also works.
+    upload_cmd = ["teensy_loader_cli", f"--mcu={TEENSY_MCU}", "-w", "-s", "-v", str(hex_path)]
     print(f"  $ {' '.join(upload_cmd)}")
     if dry_run:
         return True
@@ -173,7 +288,7 @@ def compile_and_upload(device_name, port, dry_run=False):
     return result.returncode == 0
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--list", action="store_true", help="Detect connected boards and exit, flash nothing.")
     parser.add_argument("--only", nargs="+", metavar="DEVICE", help="Limit to these device names (e.g. \"Stepper Probe\").")
@@ -183,11 +298,33 @@ def main():
     parser.add_argument("--yes", action="store_true", help="Skip the per-board confirmation prompt.")
     parser.add_argument("--dry-run", action="store_true", help="Print the compile/upload commands without running them.")
     parser.add_argument("--install-deps", action="store_true", help="Install/update required arduino-cli cores and libraries, then exit.")
-    args = parser.parse_args()
+    parser.add_argument("--sketch-root", metavar="PATH", default=str(DEFAULT_SKETCH_ROOT),
+                        help="Directory holding the sketch folders (stepper_firmware/, ...). "
+                             "Default: this repo's firmware/. Point it at another checkout's "
+                             "firmware/ to flash that tree's sketches with this tool.")
+    parser.add_argument("--force", action="store_true",
+                        help="Flash even boards whose recorded sketch hash matches.")
+    parser.add_argument("--stamp", metavar="PATH",
+                        default=os.environ.get("STATION_FLASH_STAMP", str(DEFAULT_STAMP)),
+                        help="Where to record what was flashed (default: %(default)s).")
+    parser.add_argument("--no-detect", action="store_true",
+                        help="Skip auto-detect: open no serial port; flash only --port assignments.")
+    args = parser.parse_args(argv)
 
     if args.install_deps:
         ensure_deps(dry_run=args.dry_run)
         return 0
+
+    sketch_root = Path(args.sketch_root).expanduser().resolve()
+    missing_sketches = [
+        f"{name}: {sketch_dir(name, sketch_root) / (cfg['dir'] + '.ino')}"
+        for name, cfg in DEVICES.items()
+        if not (sketch_dir(name, sketch_root) / f"{cfg['dir']}.ino").is_file()
+    ]
+    if missing_sketches:
+        print(f"[ERROR] sketches missing under --sketch-root {sketch_root}:\n  "
+              + "\n  ".join(missing_sketches), file=sys.stderr)
+        return 1
 
     if not args.dry_run:
         missing = check_tools()
@@ -207,16 +344,43 @@ def main():
             return 1
         manual[name] = path
 
-    print("Scanning for connected boards...")
-    found = detect_devices()
-    found.update(manual)  # manual assignments win over auto-detect
-
     if args.only:
         unknown = [d for d in args.only if d not in DEVICES]
         if unknown:
             print(f"[ERROR] Unknown device(s): {', '.join(unknown)}. Known: {', '.join(DEVICES)}", file=sys.stderr)
             return 1
-        found = {k: v for k, v in found.items() if k in args.only}
+    targets = list(args.only) if args.only else list(DEVICES)
+
+    print(f"Sketches: {sketch_root}")
+    digests = {name: sketch_hash(name, sketch_root) for name in targets}
+
+    # Flash only if needed. --list is a detect-only query, so it skips this.
+    current = set()
+    if not args.list:
+        stamp = load_stamp(args.stamp)
+        for name in targets:
+            recorded = (stamp.get(name) or {}).get("hash")
+            if recorded == digests[name] and not args.force:
+                current.add(name)
+                print(f"  {name:<24} already current ({digests[name][:12]}), skipping")
+        needed = [n for n in targets if n not in current]
+        if not needed:
+            print("Every board is already running these sketches; nothing to flash.")
+            return 0
+        print(f"Needs flashing unless absent: {', '.join(needed)}")
+
+    if args.no_detect:
+        found = {}
+    else:
+        print("Scanning for connected boards...")
+        found = detect_devices()
+    found.update(manual)  # manual assignments win over auto-detect
+
+    found = {k: v for k, v in found.items() if k in targets}
+    if not args.list:
+        absent = [n for n in needed if n not in found]
+        if absent:
+            print(f"Not connected (nothing flashed, nothing recorded): {', '.join(absent)}")
 
     if not found:
         print("No flashable boards identified. Use --port DEVICE=PORT to assign one manually.")
@@ -233,6 +397,9 @@ def main():
 
     results = {}
     for name, port in found.items():
+        if name in current:
+            results[name] = "current"
+            continue
         print(f"\n{name} on {port}:")
         if not args.yes:
             reply = input(f"  Flash {name} now? This overwrites its running firmware. [y/N] ").strip().lower()
@@ -240,8 +407,11 @@ def main():
                 print("  skipped")
                 results[name] = "skipped"
                 continue
-        ok = compile_and_upload(name, port, dry_run=args.dry_run)
-        results[name] = "ok" if ok else "FAILED"
+        ok = compile_and_upload(name, port, dry_run=args.dry_run, sketch_root=sketch_root)
+        if ok and not args.dry_run:
+            # Recorded only after the upload reported success.
+            record_flash(args.stamp, name, digests[name], sketch_dir(name, sketch_root), port)
+        results[name] = ("ok (dry run)" if args.dry_run else "ok") if ok else "FAILED"
 
     print("\nSummary:")
     for name, status in results.items():
