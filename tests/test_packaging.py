@@ -296,3 +296,53 @@ def test_smoke_scripts_drive_every_setup_row(script):
         assert name.lower().replace(" ", "_") in text, name
     for route in ("/api/state", "/api/theme.css", "/api/estop_all", "/api/quit"):
         assert route in text, route
+
+
+# -- V1 (2026-09-28): the trial video's encoder -------------------------------
+
+IMAGEIO_FFMPEG = "imageio-ffmpeg==0.6.0"
+
+
+def test_pyproject_pins_the_video_encoder(pyproject):
+    assert IMAGEIO_FFMPEG in pyproject["project"]["dependencies"]
+
+
+def test_requirements_pin_the_video_encoder_as_pyproject_does(pyproject):
+    """`requirements.txt` installs the project (`-e .`), which brings the
+    pin; it names the encoder too, and the two must never drift."""
+    with open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as f:
+        lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+    pinned = [l for l in lines if l.lower().startswith("imageio-ffmpeg")]
+    assert pinned == [IMAGEIO_FFMPEG]
+    assert "-e .[qt]" in lines
+
+
+def test_imageio_ffmpeg_is_imported_lazily_and_only_by_the_video_device():
+    """A native library lives in `devices/`, and this one is imported inside
+    a function, never at module import (a model imports `devices.video`)."""
+    users = []
+    for directory, _, files in os.walk(SRC):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(directory, name)
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            for node in ast.walk(tree):
+                names = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                         else [node.module] if isinstance(node, ast.ImportFrom)
+                         and node.module else [])
+                if any(n.split(".")[0] == "imageio_ffmpeg" for n in names):
+                    users.append(os.path.relpath(path, SRC).replace(os.sep, "/"))
+                    assert node not in tree.body, f"{path}: a module-level import"
+    assert set(users) == {"devices/video.py"}, users
+
+
+def test_spec_collects_the_ffmpeg_binary(spec_source):
+    """`imageio_ffmpeg` ships ffmpeg as package data and is imported
+    lazily: the spec names the package and collects its binaries, so a
+    bundle records MP4 rather than falling back to JPEG frames."""
+    assert '"imageio_ffmpeg"' in spec_source
+    assert '"imageio_ffmpeg.binaries"' in spec_source
+    assert 'collect_data_files("imageio_ffmpeg", subdir="binaries")' in spec_source
+    assert "FFMPEG_BINARIES" in spec_source.split("def analysis", 1)[1]

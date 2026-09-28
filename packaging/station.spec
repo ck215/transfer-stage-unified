@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 HERE = os.path.dirname(os.path.abspath(SPEC))           # packaging/
 ROOT = os.path.dirname(HERE)
@@ -33,6 +33,14 @@ SRC = os.path.abspath(os.environ.get("STATION_SRC") or os.path.join(ROOT, "src")
 # <_internal>/views/web/server.pyc, so the assets go to views/web/static.
 WEB_STATIC = [(os.path.join(SRC, "views", "web", "static"),
                os.path.join("views", "web", "static"))]
+
+# The trial video's encoder: imageio_ffmpeg ships the ffmpeg executable as
+# package data (imageio_ffmpeg/binaries/), found at run time through
+# importlib.resources. pyinstaller-hooks-contrib has a hook that collects it,
+# but only if the package is analysed, and src/devices/video.py imports it
+# lazily; so it is named below and its binaries collected here as well. A
+# bundle without them records JPEG frames instead of an MP4.
+FFMPEG_BINARIES = collect_data_files("imageio_ffmpeg", subdir="binaries")
 
 # -- imports ----------------------------------------------------------------
 # app.launch() imports the view with importlib (by name, so no view imports
@@ -46,7 +54,8 @@ COMMON_HIDDEN = (
       "win32": "serial.tools.list_ports_windows"}.get(
          sys.platform, "serial.tools.list_ports_linux"),
      "PIL.Image", "numpy",
-     "matplotlib.figure", "matplotlib.backends.backend_agg"]
+     "matplotlib.figure", "matplotlib.backends.backend_agg",
+     "imageio_ffmpeg", "imageio_ffmpeg.binaries"]
     # mss picks its backend per OS at run time (mss.darwin / linux / windows).
     + collect_submodules("mss", filter=lambda name: not name.endswith("__main__"))
 )
@@ -108,7 +117,7 @@ def analysis(view):
         [os.path.join(HERE, f"entry_{view}.py")],
         pathex=[SRC],
         binaries=[],
-        datas=WEB_STATIC if view == "web" else [],
+        datas=(WEB_STATIC if view == "web" else []) + FFMPEG_BINARIES,
         hiddenimports=COMMON_HIDDEN + VIEW_HIDDEN[view],
         hookspath=[p for p in [os.path.join(HERE, "hooks")] if os.path.isdir(p)],
         hooksconfig={"matplotlib": {"backends": "Agg"}},
