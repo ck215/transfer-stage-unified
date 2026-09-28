@@ -6520,7 +6520,7 @@ def test_ack_a_repeat_of_the_open_title_counts_and_does_not_reopen(dashboard):
                                    "301 s, so it was powered down."))
     SCHEDULER.pump()
     assert dashboard._ack_dialog is dialog and not dialog.top.is_destroyed
-    assert len(dashboard._alerts) == 1
+    assert len(dashboard._alerts) == 2, "the band still lists both (HC-2)"
     assert dialog.body.cget("text") == ("Stepper Probe was idle for 301 s, so "
                                         "it was powered down. (x2)")
     dialog.key.widget.fire("<Button-1>")

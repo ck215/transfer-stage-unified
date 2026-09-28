@@ -5716,7 +5716,6 @@ class TkDashboard(Dashboard):
         self._setup_menu = None      # the "Show Setup" menu, once built
         self._menubar = None         # the menubar every log window wears too (I7)
         self._alerts = []            # unacknowledged needs_ack events
-        self._alert_repeats = {}     # title -> how often it came while queued
         self._ack_dialog = None      # the one acknowledgement shown (rb-ack)
         self._station_text = None
         self._sim_text = None
@@ -6735,26 +6734,40 @@ class TkDashboard(Dashboard):
             events.debug("Alert Band Failed", str(exc), source=SOURCE,
                          exception=exc)
 
+    def _ack_group(self):
+        """The oldest waiting title and every queued event under it: one
+        dialog per title, so a repeat of the title shown counts in that
+        window instead of queueing a second one (rb-ack A3). The band still
+        lists every event (HC-2: none is overwritten)."""
+        if not self._alerts:
+            return []
+        title = self._alerts[0].title
+        return [event for event in self._alerts if event.title == title]
+
     def _sync_ack_dialog(self):
-        """The dialog shows the oldest waiting event, or nothing: every path
+        """The dialog shows the oldest waiting title, or nothing: every path
         that changes the queue (a new event, Understood, the band's
         Acknowledge, L2's dropped stop lines, close) ends here."""
         dialog = self._ack_dialog
-        head = self._alerts[0] if self._alerts and not self._closing else None
-        if head is None:
+        group = [] if self._closing else self._ack_group()
+        if not group:
             if dialog is not None:
                 self._ack_dialog = None
                 dialog.close()
             return
-        repeats = self._alert_repeats.get(head.title, 1)
-        waiting = len(self._alerts) - 1
-        if dialog is not None and dialog.event.title == head.title:
-            dialog.update(head, repeats, waiting)
+        latest = group[-1]                  # the newest words for the title
+        repeats = sum(max(1, int(getattr(e, "count", 1) or 1)) for e in group)
+        waiting = len({e.title for e in self._alerts}) - 1
+        if dialog is not None and dialog.event.title == latest.title:
+            if dialog.event is not latest:
+                events.debug("Alert Repeated", f"{latest.severity}/"
+                             f"{latest.title} x{repeats}", source=SOURCE)
+            dialog.update(latest, repeats, waiting)
             return
         if dialog is not None:
             dialog.close()
         try:
-            self._ack_dialog = _AckDialog(self.root, head, self._understood,
+            self._ack_dialog = _AckDialog(self.root, latest, self._understood,
                                           repeats=repeats, waiting=waiting)
         except Exception as exc:        # the band still says it
             self._ack_dialog = None
@@ -6762,15 +6775,17 @@ class TkDashboard(Dashboard):
                          exception=exc)
 
     def _understood(self, dialog):
-        """The dialog's one key: the oldest event is read, the next one
-        (if any) takes the window; after the last, focus goes to the stop."""
+        """The dialog's one key: the title shown is read (every repeat of
+        it), the next title (if any) takes the window; after the last, focus
+        goes to the stop."""
         if dialog is not self._ack_dialog or not self._alerts:
             dialog.close()
             return
-        event = self._alerts.pop(0)
-        self._alert_repeats.pop(event.title, None)
-        events.debug("Alert Acknowledged", f"{event.severity}/{event.title}",
-                     source=SOURCE)
+        group = self._ack_group()
+        self._alerts = [e for e in self._alerts if e.title != group[0].title]
+        events.debug("Alert Acknowledged", f"{group[-1].severity}/"
+                     f"{group[-1].title}" + (f" x{len(group)}" if len(group) > 1
+                                              else ""), source=SOURCE)
         self._render_alerts()
         if not self._alerts:
             try:
@@ -6780,7 +6795,6 @@ class TkDashboard(Dashboard):
 
     def _acknowledge(self):
         """One press clears every listed error; focus goes to the stop."""
-        self._alert_repeats.clear()
         count, self._alerts = len(self._alerts), []
         events.debug("Alerts Acknowledged", f"{count} acknowledged", source=SOURCE)
         try:
@@ -7246,7 +7260,6 @@ class TkDashboard(Dashboard):
             return
         events.debug("Stop Lines Dropped", "the latch opened", source=SOURCE)
         self._alerts = kept
-        self._alert_repeats.pop(STOP_NOT_CONFIRMED, None)
         self._render_alerts()
         self._tray_events = tray
         self._render_tray()
@@ -7560,18 +7573,7 @@ class TkDashboard(Dashboard):
         may take the stop away."""
         if self._closing:
             return
-        title = getattr(event, "title", "")
-        for index, queued in enumerate(self._alerts):
-            if queued.title == title:
-                # The same title while it waits: counted, not queued again,
-                # and an open window is redrawn, not reopened (rb-ack A3).
-                self._alerts[index] = event
-                self._alert_repeats[title] = self._alert_repeats.get(title, 1) + 1
-                events.debug("Alert Repeated", f"{event.severity}/{title} "
-                             f"x{self._alert_repeats[title]}", source=SOURCE)
-                self._render_alerts()
-                return
-        events.debug("Alert Shown", f"{event.severity}/{title}", source=SOURCE)
+        events.debug("Alert Shown", f"{event.severity}/{event.title}", source=SOURCE)
         self._alerts.append(event)
         del self._alerts[:-50]
         self._render_alerts()
