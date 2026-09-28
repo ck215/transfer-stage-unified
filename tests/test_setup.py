@@ -161,7 +161,7 @@ def test_model_types_is_the_only_list_of_models(panel, fake_types):
     builds. Four copies of this list disagreed before RC-7."""
     assert panel.model_types == list(fake_types)
     titles = [section["title"] for section in panel.schema["sections"]]
-    assert titles == ["Devices", *fake_types, "Launch"]
+    assert titles == ["Update", "Devices", *fake_types, "Launch"]
 
 
 # -- the table (Addendum 2) ------------------------------------------------
@@ -220,7 +220,7 @@ def test_a_model_that_needs_no_port_still_has_one_dropdown(panel):
 def test_the_header_row_offers_refresh_the_scan_status_and_cancel(panel):
     # F18 added "Cancel scan" (enabled only while scanning): a hung scan
     # could not be given up before.
-    header = panel.schema["sections"][0]
+    header = panel.schema["sections"][1]     # after "Update" (the update check)
     assert header["title"] == "Devices"
     assert [(e["type"], e.get("command") or e.get("model_attr"))
             for e in header["elements"]] == [("button", "refresh"),
@@ -992,3 +992,276 @@ def test_a_hosted_class_may_declare_no_resources():
     with pytest.raises(ValueError, match="no Setup row"):
         station_setup.register(hosted)
     station_setup.MODEL_TYPES.pop("Needy", None)
+
+
+# -- the update check (owner, 2026-09-28) ------------------------------------
+
+class FakeUpdater:
+    """`controller.updater.Updater`'s two calls, scripted. `gate`, when set,
+    holds `check()` until the test releases it."""
+
+    def __init__(self, check=None, apply=None, version="abc1234, 2026-09-28"):
+        self.check_result = check or {
+            "status": "up_to_date", "branch": "main", "head": "abc1234",
+            "remote": "abc1234", "behind": 0, "ahead": 0, "log": [], "reason": ""}
+        self.apply_result = apply or {
+            "updated": True, "old": "abc1234", "new": "def5678",
+            "deps_changed": False, "deps_ok": True, "firmware_changed": False,
+            "reason": "Updated main: abc1234 to def5678."}
+        self._version = version
+        self.checks = self.applies = 0
+        self.gate = None
+
+    def version(self):
+        return self._version
+
+    def check(self, timeout=10.0):
+        self.checks += 1
+        if self.gate is not None:
+            assert self.gate.wait(5.0)
+        return dict(self.check_result)
+
+    def apply(self, timeout=10.0):
+        self.applies += 1
+        return dict(self.apply_result)
+
+
+def behind(n, reason=""):
+    return {"status": "behind", "branch": "main", "head": "abc1234",
+            "remote": "def5678", "behind": n, "ahead": 0,
+            "log": [f"{i:07x} commit {i}" for i in range(min(n, 8))],
+            "reason": reason}
+
+
+def wait_idle(panel):
+    for thread in (panel._update_thread, panel._apply_thread):
+        if thread is not None:
+            thread.join(5.0)
+            assert not thread.is_alive()
+
+
+@pytest.fixture
+def checking(monkeypatch):
+    """The startup check switched back on for this test only (conftest turns
+    it off for every test, so nothing ever fetches)."""
+    monkeypatch.delenv("STATION_NO_UPDATE_CHECK", raising=False)
+
+
+def test_the_update_section_is_first_and_a_tier_one_row(panel):
+    section = panel.schema["sections"][0]
+    assert section["title"] == "Update"
+    assert section["layout"] == "row" and section["tier"] == 1
+    assert [(e["type"], e.get("text"), e.get("command") or e.get("model_attr"))
+            for e in section["elements"]] == [
+        ("readonly", "Station", "station_version"),
+        ("readonly", "Updates", "update_status"),
+        ("button", "Update now", "apply_update"),
+        ("button", "Check again", "check_updates"),
+        ("readonly", "Coming", "update_log"),
+    ]
+    status = section["elements"][1]
+    assert status["role"] == "info"
+    update, again = section["elements"][2:4]
+    assert update["role"] == "go" and again["role"] == "neutral"
+    assert update["confirm"].startswith("Update the station now?")
+
+
+def test_no_test_ever_fetches_the_startup_check_is_off(fake_types):
+    updater = FakeUpdater(check=behind(3))
+    panel = Setup(RecordingController(), updater=updater)
+    assert panel._update_thread is None
+    assert updater.checks == 0
+    assert panel.has_update is False
+    assert panel.state["values"]["station_version"] == "unknown"
+
+
+def test_the_startup_check_runs_on_a_thread_and_publishes(fake_types, checking):
+    updater = FakeUpdater(check=behind(3))
+    updater.gate = threading.Event()
+    panel = Setup(RecordingController(), updater=updater)
+    assert panel.state["values"]["update_status"] == "Checking for updates…"
+    assert panel._update_thread.daemon
+    updater.gate.set()
+    wait_idle(panel)
+    values = panel.state["values"]
+    assert values["station_version"] == "abc1234, 2026-09-28"
+    assert values["update_status"] == ("3 new commits are ready. Update now, "
+                                       "then restart the station.")
+    assert values["update_log"] == "\n".join(behind(3)["log"])
+    assert panel.has_update is True
+    assert panel.state["update"]["has_update"] is True
+    assert panel.state["update"]["log"] == behind(3)["log"]
+
+
+def test_one_new_commit_is_said_in_the_singular(fake_types, checking):
+    panel = Setup(RecordingController(), updater=FakeUpdater(check=behind(1)))
+    wait_idle(panel)
+    assert panel.update_status == ("1 new commit is ready. Update now, then "
+                                   "restart the station.")
+
+
+@pytest.mark.parametrize("status,sentence", [
+    ("up_to_date", "Up to date."),
+    ("offline", "Could not reach GitHub; the station runs as it is."),
+    ("dirty", "This checkout has local edits; update by hand."),
+    ("not_git", "Not a git checkout."),
+])
+def test_each_outcome_is_one_sentence(fake_types, checking, status, sentence):
+    result = dict(FakeUpdater().check_result, status=status)
+    panel = Setup(RecordingController(), updater=FakeUpdater(check=result))
+    wait_idle(panel)
+    assert panel.update_status == sentence
+    assert panel.has_update is False
+    assert panel.update_log == ""
+
+
+def test_a_check_that_raises_warns_once_and_leaves_the_station_running(
+        fake_types, checking, warnings):
+    class Broken(FakeUpdater):
+        def check(self, timeout=10.0):
+            raise RuntimeError("git exploded")
+
+    panel = Setup(RecordingController(), updater=Broken())
+    wait_idle(panel)
+    assert panel.has_update is False
+    assert "runs as it is" in panel.update_status
+    assert [e.title for e in warnings if e.severity == "warning"] == ["Update Check Failed"]
+
+
+def test_check_again_reruns_the_check_and_refuses_while_one_runs(fake_types, checking):
+    updater = FakeUpdater()
+    updater.gate = threading.Event()
+    panel = Setup(RecordingController(), updater=updater)
+    result = panel.run("check_updates")
+    assert result.status == "refused"
+    assert "already" in result.reason
+    updater.gate.set()
+    wait_idle(panel)
+    updater.check_result = behind(2)
+    assert panel.run("check_updates").is_ok
+    wait_idle(panel)
+    assert updater.checks == 2
+    assert panel.has_update is True
+
+
+def test_check_again_works_when_the_startup_check_was_off(fake_types):
+    updater = FakeUpdater(check=behind(2))
+    panel = Setup(RecordingController(), updater=updater)
+    assert panel.run("check_updates").is_ok
+    wait_idle(panel)
+    assert updater.checks == 1 and panel.has_update is True
+    assert panel.station_version == "abc1234, 2026-09-28"
+
+
+def _ready(checking_panel):
+    wait_idle(checking_panel)
+    assert checking_panel.has_update is True
+    return checking_panel
+
+
+def test_update_now_refuses_when_there_is_nothing_to_update(fake_types, checking):
+    updater = FakeUpdater()
+    panel = Setup(RecordingController(), updater=updater)
+    wait_idle(panel)
+    result = panel.run("apply_update", args=(True,))
+    assert result.status == "refused"
+    assert updater.applies == 0
+
+
+def test_update_now_refuses_while_the_station_is_launched(fake_types, checking):
+    updater = FakeUpdater(check=behind(2))
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    tick(panel, "alpha")
+    assert panel.run("launch").is_ok
+    result = panel.run("apply_update", args=(True,))
+    assert result.status == "refused"
+    assert result.reason == ("Close every model first: an update must not "
+                             "land under running devices.")
+    assert updater.applies == 0
+    # Closed, the same press goes through.
+    assert panel.run("stop_system").is_ok
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    assert updater.applies == 1
+
+
+def test_update_now_asks_first(fake_types, checking):
+    updater = FakeUpdater(check=behind(2))
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    result = panel.run("apply_update")
+    assert result.status == "needs_confirm"
+    assert result.reason == ("Update the station now? It fast-forwards this "
+                             "checkout; the station must be restarted afterwards.")
+    assert result.command == "apply_update"
+    assert updater.applies == 0
+
+
+def test_a_landed_update_says_restart_and_clears_has_update(
+        fake_types, checking, warnings):
+    updater = FakeUpdater(check=behind(2))
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    assert updater.applies == 1
+    assert panel.update_status == ("Updated to def5678. Quit and start the "
+                                   "station again to run it.")
+    assert panel.has_update is False
+    assert panel.update_log == ""
+    # The version shown is what is RUNNING, not what landed on disk.
+    assert panel.station_version == "abc1234, 2026-09-28"
+    assert "Station Updated" in [e.title for e in warnings if e.severity == "info"]
+    # Checking again does not pretend the new code is running.
+    updater.check_result = dict(FakeUpdater().check_result, head="def5678")
+    assert panel.run("check_updates").is_ok
+    wait_idle(panel)
+    assert panel.update_status.startswith("Updated to def5678. Quit and start")
+
+
+def test_a_refused_update_warns_once_with_the_reason(fake_types, checking, warnings):
+    updater = FakeUpdater(check=behind(2), apply={
+        "updated": False, "old": "abc1234", "new": "abc1234",
+        "deps_changed": False, "deps_ok": True, "firmware_changed": False,
+        "reason": "This checkout has local edits; update by hand."})
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    warned = [e for e in warnings if e.severity == "warning"]
+    assert [e.title for e in warned] == ["Update Not Applied"]
+    assert "local edits" in warned[0].message
+    assert panel.update_status == "This checkout has local edits; update by hand."
+
+
+def test_a_failed_reinstall_after_the_update_is_a_warning(fake_types, checking, warnings):
+    updater = FakeUpdater(check=behind(2), apply={
+        "updated": True, "old": "abc1234", "new": "def5678",
+        "deps_changed": True, "deps_ok": False, "firmware_changed": False,
+        "reason": "Updated main: abc1234 to def5678. The dependencies changed "
+                  "and pip install failed (no network)."})
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    assert [e.title for e in warnings if e.severity == "warning"] == ["Reinstall Failed"]
+    assert panel.has_update is False
+    assert "pip install failed" in panel.update_status
+
+
+def test_launch_waits_while_an_update_is_landing(fake_types, checking):
+    updater = FakeUpdater(check=behind(2))
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    gate = threading.Event()
+    real_apply = updater.apply
+
+    def slow_apply(timeout=10.0):
+        assert gate.wait(5.0)
+        return real_apply(timeout)
+
+    updater.apply = slow_apply
+    assert panel.run("apply_update", args=(True,)).is_ok
+    tick(panel, "alpha")
+    result = panel.run("launch")
+    assert result.status == "refused"
+    assert "update" in result.reason.lower()
+    again = panel.run("apply_update", args=(True,))
+    assert again.status == "refused"
+    gate.set()
+    wait_idle(panel)

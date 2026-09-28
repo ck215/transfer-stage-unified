@@ -230,3 +230,12 @@ def _transfer_map_db_in_tmp(monkeypatch, tmp_path):
     store. Every test's store lives under its own tmp_path instead. A test
     that sets `STATION_MAP_DB` itself still wins: it runs after this."""
     monkeypatch.setenv("STATION_MAP_DB", str(tmp_path / "map" / "transfer_map.sqlite"))
+
+
+@pytest.fixture(autouse=True)
+def _no_update_check(monkeypatch):
+    """Setup checks GitHub for an update on a thread at construction (owner,
+    2026-09-28). No test may fetch: every Setup built in the suite starts with
+    the check off. A test of the check itself deletes the variable and hands
+    Setup a fake Updater."""
+    monkeypatch.setenv("STATION_NO_UPDATE_CHECK", "1")
