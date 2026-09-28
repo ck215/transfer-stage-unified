@@ -19,11 +19,42 @@ use.
 Git runs through `subprocess.run` in the checkout that holds `src/`, with a
 timeout on every call and no credential prompt, so a hung network or a
 remote asking for a password fails the check instead of hanging it.
+
+A frozen bundle (brief-bundle-update B3, owner 2026-09-28) has no git
+checkout. When the build stamped it (`VERSION` and `release.json` beside the
+launchers, written by `packaging/release.py`), it updates from the
+repository's GitHub Releases instead:
+
+    check()   asks the Releases API for the latest release and compares its
+              tag with `VERSION`.
+    apply()   downloads this machine's asset (`release.json` names it),
+              checks its size (and its SHA-256 when the release lists one),
+              unpacks it to `<install>.next`, then swaps: `<install>` ->
+              `<install>.previous`, `<install>.next` -> `<install>`. A failed
+              swap puts `.previous` back.
+
+The repository is private and only machines already signed in to GitHub
+update (owner ruling 2026-09-28: no token file). The login is the machine's
+own: `gh auth token`, else `git credential fill` (the helper a browser or
+keychain sign-in filled). It is held in memory for one call, sent only as
+the Authorization header to api.github.com, and never written or logged.
+A bundle without `release.json` (an unstamped local build) keeps the old
+answer, `bundle`.
 """
+import hashlib
+import json
 import os
+import platform
+import re
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
+import urllib.request
+import zipfile
 from pathlib import Path
 
 #: The checkout this file lives in: src/controller/updater.py -> the repo.
@@ -39,7 +70,18 @@ LOCAL_SECONDS = 15
 
 UP_TO_DATE, BEHIND, DIVERGED, DIRTY = "up_to_date", "behind", "diverged", "dirty"
 OFFLINE, NOT_GIT, BUNDLE, ERROR = "offline", "not_git", "bundle", "error"
-STATUSES = (UP_TO_DATE, BEHIND, DIVERGED, DIRTY, OFFLINE, NOT_GIT, BUNDLE, ERROR)
+UNAUTHORISED = "unauthorised"
+STATUSES = (UP_TO_DATE, BEHIND, DIVERGED, DIRTY, OFFLINE, NOT_GIT, BUNDLE, ERROR,
+            UNAUTHORISED)
+
+#: What a stamped bundle carries beside its launchers (`packaging/release.py`).
+VERSION_FILE, RELEASE_FILE = "VERSION", "release.json"
+API = "https://api.github.com"
+#: A release asset is ~150 MB over a lab network: the timeout is per read,
+#: not for the whole download.
+DOWNLOAD_SECONDS = 60
+#: A `sha256sum` line in a release body: "<64 hex>  <asset name>".
+_SUM_LINE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(\S+)\s*$")
 
 #: What each refusal says: the operator's words, and what to do next.
 REASONS = {
@@ -54,7 +96,14 @@ REASONS = {
     NOT_GIT: "Not a git checkout, so the station cannot update itself.",
     BUNDLE: "This station is a packaged bundle; it is updated by installing "
             "a new bundle.",
+    UNAUTHORISED: "Sign in to GitHub on this machine first: `gh auth login`, "
+                  "or open the repository once with git.",
 }
+#: GitHub answered, but not to this login (401, or 404: a private repository
+#: is invisible to an account that cannot read it).
+REFUSED_LOGIN = ("GitHub did not accept this machine's sign-in for the "
+                 "station's repository (HTTP {code}). Sign in with an account "
+                 "that can read it: `gh auth login`.")
 
 
 class Updater:
@@ -63,19 +112,30 @@ class Updater:
     reinstall step (`pip(root) -> (ok, detail)`), so the tests drive it
     against a throwaway remote and never really pip."""
 
-    def __init__(self, root=None, *, run=None, clock=None, pip=None):
-        self.root = Path(root) if root is not None else ROOT
+    def __init__(self, root=None, *, run=None, clock=None, pip=None, fetch=None):
+        """Frozen, `root` is the install (the folder holding the launchers;
+        default: the running launcher's folder), `run=` also answers the
+        login lookup and `fetch=` stands in for GitHub
+        (`fetch(url, headers, timeout, sink=None) -> (status, body)`)."""
+        if root is None:
+            root = Path(sys.executable).parent if _is_frozen() else ROOT
+        self.root = Path(root)
         self._run = run or subprocess.run
         self._clock = clock or time.monotonic
         self._pip = pip or self._install_dependencies
+        self._fetch = fetch or _fetch
         #: Seconds the last check took, for the log file.
         self.elapsed = None
 
     # -- what the station runs ---------------------------------------------
     def version(self):
-        """"<sha7>, <commit date>" of HEAD; "bundle" frozen; else "unknown"."""
+        """"<sha7>, <commit date>" of HEAD; frozen, "<tag>, <build date>"
+        from VERSION, or "bundle" without one; else "unknown"."""
         if _is_frozen():
-            return "bundle"
+            stamp = self._stamp()
+            if stamp is None:
+                return "bundle"
+            return f"{stamp['tag']}, {stamp['built'][:10]}".rstrip(", ")
         ok, out = self._git("log", "-1", "--format=%H %cs")
         if not ok or " " not in out:
             return "unknown"
@@ -105,6 +165,8 @@ class Updater:
         result = {"updated": False, "old": None, "new": None,
                   "deps_changed": False, "deps_ok": True,
                   "firmware_changed": False, "reason": ""}
+        if _is_frozen() and self._release_info() is not None:
+            return self._apply_release(result, timeout)
         found = self.check(timeout=timeout)
         result["old"] = result["new"] = found["head"]
         if found["status"] != BEHIND:
@@ -149,7 +211,10 @@ class Updater:
                   "behind": 0, "ahead": 0, "log": [], "reason": ""}
         self._upstream = None
         if _is_frozen():
-            return _as(result, BUNDLE)
+            info, stamp = self._release_info(), self._stamp()
+            if info is None or stamp is None:
+                return _as(result, BUNDLE)
+            return self._check_release(result, info, stamp, timeout)[0]
         ok, top = self._git("rev-parse", "--show-toplevel")
         if not ok or Path(top).resolve() != self.root.resolve():
             return _as(result, NOT_GIT)
@@ -193,6 +258,182 @@ class Updater:
         result["status"] = BEHIND
         return result
 
+    # -- the bundle's path (B3) ----------------------------------------------
+    def _stamp(self):
+        """VERSION -> {"tag", "sha", "built"}, or None."""
+        try:
+            lines = (self.root / VERSION_FILE).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            return None
+        lines = [line.strip() for line in lines] + ["", "", ""]
+        if not lines[0]:
+            return None
+        return {"tag": lines[0], "sha": lines[1], "built": lines[2]}
+
+    def _release_info(self):
+        """release.json -> dict with an owner and a repo, or None."""
+        try:
+            info = json.loads((self.root / RELEASE_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(info, dict) or not info.get("owner") or not info.get("repo"):
+            return None
+        return info
+
+    def _login(self):
+        """The machine's own GitHub sign-in, or None: `gh auth token`, then
+        `git credential fill`. Never a prompt, never written anywhere."""
+        env = _git_env()
+        env["GH_PROMPT_DISABLED"] = "1"
+        env["GCM_INTERACTIVE"] = "never"        # Git Credential Manager: no window
+        try:
+            done = self._run(["gh", "auth", "token", "--hostname", "github.com"],
+                             capture_output=True, text=True,
+                             timeout=LOCAL_SECONDS, env=env)
+            token = (done.stdout or "").strip() if done.returncode == 0 else ""
+            if token and not any(c.isspace() for c in token):
+                return token
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        try:
+            done = self._run(["git", "-c", "credential.interactive=false",
+                              "credential", "fill"],
+                             input="protocol=https\nhost=github.com\n\n",
+                             capture_output=True, text=True,
+                             timeout=LOCAL_SECONDS, env=env)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        if done.returncode != 0:
+            return None
+        for line in (done.stdout or "").splitlines():
+            key, _, value = line.partition("=")
+            if key == "password" and value.strip():
+                return value.strip()
+        return None
+
+    def _check_release(self, result, info, stamp, timeout):
+        """-> (result, release or None, login or None)."""
+        result.update(tag=stamp["tag"], head=stamp["tag"], latest=None, title="",
+                      asset=asset_name(info))
+        login = self._login()
+        if login is None:
+            return _as(result, UNAUTHORISED), None, None
+        url = f"{API}/repos/{info['owner']}/{info['repo']}/releases/latest"
+        try:
+            code, body = self._fetch(url, headers=_headers(login), timeout=timeout)
+        except (OSError, ValueError):       # URLError, timeouts, resets: all OSError
+            return _as(result, OFFLINE), None, None
+        if code in (401, 404):
+            result["status"] = UNAUTHORISED
+            result["reason"] = REFUSED_LOGIN.format(code=code)
+            return result, None, None
+        if code != 200:
+            result["reason"] = (f"GitHub answered the update check with HTTP "
+                                f"{code}; the station runs as it is.")
+            return result, None, None
+        try:
+            release = json.loads(body)
+            latest = str(release["tag_name"]).strip()
+        except (ValueError, TypeError, KeyError):
+            result["reason"] = ("GitHub's answer to the update check could not "
+                                "be read; the station runs as it is.")
+            return result, None, None
+        first = _first_line(release.get("body") or "")
+        result.update(latest=latest, remote=latest,
+                      title=str(release.get("name") or latest))
+        if latest == stamp["tag"]:
+            result["status"] = UP_TO_DATE
+            return result, release, login
+        result.update(status=BEHIND, behind=1, log=[first] if first else [])
+        return result, release, login
+
+    def _apply_release(self, result, timeout):
+        info, stamp = self._release_info(), self._stamp()
+        if stamp is None:
+            return dict(result, reason=REASONS[BUNDLE])
+        started = self._clock()
+        try:
+            found, release, login = self._check_release(
+                {"status": ERROR, "branch": None, "head": None, "remote": None,
+                 "behind": 0, "ahead": 0, "log": [], "reason": ""},
+                info, stamp, timeout)
+        finally:
+            self.elapsed = self._clock() - started
+        result["old"] = result["new"] = stamp["tag"]
+        if found["status"] != BEHIND:
+            result["reason"] = found["reason"] or REASONS.get(
+                found["status"], "The update could not be checked.")
+            return result
+        latest, name = found["latest"], found["asset"]
+        asset = next((a for a in release.get("assets") or ()
+                      if isinstance(a, dict) and a.get("name") == name), None)
+        if asset is None or not asset.get("url"):
+            result["reason"] = (f"The release {latest} has no {name} for this "
+                                "machine; nothing was changed.")
+            return result
+        install = self.root.resolve()
+        staged = install.with_name(install.name + ".next")
+        previous = install.with_name(install.name + ".previous")
+        try:
+            work = Path(tempfile.mkdtemp(prefix=".station-update-", dir=install.parent))
+        except OSError as exc:
+            result["reason"] = (f"The station cannot write beside its folder "
+                                f"({exc}); nothing was changed. Move the "
+                                "station folder somewhere you can write, such "
+                                "as your home folder.")
+            return result
+        try:
+            refusal = self._download(asset, name, release, login, work / name)
+            if refusal:
+                result["reason"] = refusal
+                return result
+            _remove(staged)
+            refusal = _unpack(work / name, work / "unpacked", staged)
+            if refusal:
+                _remove(staged)
+                result["reason"] = refusal
+                return result
+            refusal = _swap(install, staged, previous)
+            if refusal:
+                result["reason"] = refusal
+                return result
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        result.update(updated=True, new=latest,
+                      reason=f"Updated to {latest}. Restart the station to run it.")
+        return result
+
+    def _download(self, asset, name, release, login, path):
+        """Fetch `asset` to `path`; -> a refusal sentence, or "" when the
+        file is whole (its size, and its SHA-256 when the release lists one)."""
+        headers = dict(_headers(login), Accept="application/octet-stream")
+        try:
+            with open(path, "wb") as sink:
+                code, _ = self._fetch(asset["url"], headers=headers,
+                                      timeout=DOWNLOAD_SECONDS, sink=sink)
+        except (OSError, ValueError):
+            return ("The download stopped before it finished; nothing was "
+                    "changed. Check the network and try again.")
+        if code != 200:
+            return (f"GitHub answered the download with HTTP {code}; nothing "
+                    "was changed.")
+        size = path.stat().st_size
+        expected = asset.get("size")
+        if isinstance(expected, int) and size != expected:
+            return (f"The download is the wrong size ({size} bytes, the release "
+                    f"says {expected}); nothing was changed. Try again.")
+        listed = _listed_sums(release.get("body") or "").get(name)
+        if listed:
+            digest = hashlib.sha256()
+            with open(path, "rb") as f:
+                for block in iter(lambda: f.read(1 << 20), b""):
+                    digest.update(block)
+            if digest.hexdigest() != listed.lower():
+                return ("The download does not match the SHA-256 the release "
+                        "lists; nothing was changed. Try again, and tell the "
+                        "lead if it happens twice.")
+        return ""
+
     def _is_dirty(self):
         """Edits to tracked files, staged or not: `update.sh`'s rule.
         Untracked files (logs, data/) never block an update."""
@@ -235,6 +476,183 @@ class Updater:
             tail = ((done.stderr or done.stdout or "").strip().splitlines() or [""])[-1]
             return False, f"pip exited {done.returncode}: {tail}".rstrip(": ")
         return True, ""
+
+
+# -- the bundle's helpers -----------------------------------------------------
+#: The one call that moves a folder; the tests make it fail on purpose.
+_rename = os.rename
+
+
+def asset_name(info, system=None, machine=None):
+    """This machine's release asset, from release.json's pattern and maps:
+    `station-{os}-{arch}.zip` with `platform.system()` / `platform.machine()`
+    looked up (Darwin -> macos, AMD64 -> x86_64, ...). A lookup, never a
+    branch; the build uses the same function to name what it uploads."""
+    system = system or platform.system()
+    machine = machine or platform.machine()
+    os_name = (info.get("os") or {}).get(system, system.lower())
+    arch = (info.get("arch") or {}).get(machine, machine.lower())
+    return str(info.get("asset") or "station-{os}-{arch}.zip").format(
+        os=os_name, arch=arch)
+
+
+def _headers(login):
+    return {"Authorization": f"Bearer {login}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "transfer-stage-station"}
+
+
+def _request(url, headers):
+    """A urllib request whose Authorization is never carried across a
+    redirect: GitHub sends an asset download on to storage that refuses a
+    second credential, and the login must reach GitHub alone."""
+    request = urllib.request.Request(url)
+    for key, value in headers.items():
+        if key.lower() == "authorization":
+            request.add_unredirected_header(key, value)
+        else:
+            request.add_header(key, value)
+    return request
+
+
+def _fetch(url, headers=None, timeout=10.0, sink=None):
+    """The default `fetch=`: urllib, with a timeout. -> (status, body bytes),
+    or (status, None) once the body is streamed into `sink`. An HTTP error
+    status is returned, not raised; a network failure raises OSError."""
+    try:
+        response = urllib.request.urlopen(_request(url, headers or {}), timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read()
+        except Exception:               # an error with no body to read
+            body = b""
+        finally:
+            exc.close()
+        return exc.code, body
+    with response:
+        if sink is None:
+            return response.status, response.read()
+        shutil.copyfileobj(response, sink, 1 << 20)
+        return response.status, None
+
+
+def _first_line(body):
+    """The release notes' first line the operator reads: blank lines,
+    checksum lines and Markdown markers skipped."""
+    for line in str(body).splitlines():
+        text = line.strip().lstrip("#*->").strip()
+        if text and not _SUM_LINE.match(line.strip()):
+            return text
+    return ""
+
+
+def _listed_sums(body):
+    sums = {}
+    for line in str(body).splitlines():
+        found = _SUM_LINE.match(line.strip())
+        if found:
+            sums[found.group(2)] = found.group(1)
+    return sums
+
+
+def _remove(path):
+    if os.path.islink(path) or os.path.isfile(path):
+        os.unlink(path)
+    elif os.path.isdir(path):
+        shutil.rmtree(path)
+
+
+def _inside(root, path):
+    root, path = os.path.normcase(root), os.path.normcase(path)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _unpack(archive, work, staged):
+    """Unpack `archive` into `work`, then move the folder holding VERSION to
+    `staged`. Keeps POSIX modes (the launchers must stay executable) and
+    symlinks (macOS Qt frameworks); refuses any entry or link that would land
+    outside `work`. -> a refusal sentence, or ""."""
+    refused = ("The download could not be unpacked ({}); nothing was changed.")
+    root = os.path.realpath(work)
+    try:
+        os.makedirs(root)
+        with zipfile.ZipFile(archive) as zf:
+            for info in zf.infolist():
+                name = info.filename.replace("\\", "/")
+                target = os.path.normpath(os.path.join(root, name))
+                if os.path.isabs(name) or not _inside(root, target):
+                    return refused.format(f"{info.filename} is outside the bundle")
+                if name.endswith("/"):
+                    os.makedirs(target, exist_ok=True)
+                    continue
+                parent = os.path.dirname(target)
+                os.makedirs(parent, exist_ok=True)
+                if not _inside(root, os.path.realpath(parent)):
+                    return refused.format(f"{info.filename} is outside the bundle")
+                mode = info.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    link = zf.read(info).decode("utf-8")
+                    if os.path.isabs(link) or not _inside(
+                            root, os.path.normpath(os.path.join(parent, link))):
+                        return refused.format(f"{info.filename} links outside the bundle")
+                    os.symlink(link, target)
+                    continue
+                with zf.open(info) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst, 1 << 20)
+                if mode & 0o777:
+                    os.chmod(target, mode & 0o777)
+    except (OSError, zipfile.BadZipFile, UnicodeDecodeError, ValueError) as exc:
+        return refused.format(exc)
+    top = root
+    entries = os.listdir(root)
+    if VERSION_FILE not in entries and len(entries) == 1:
+        top = os.path.join(root, entries[0])
+    if not os.path.isfile(os.path.join(top, VERSION_FILE)):
+        return refused.format("it carries no VERSION")
+    try:
+        os.replace(top, staged)             # within the temp dir's filesystem
+    except OSError as exc:
+        return refused.format(exc)
+    return ""
+
+
+def _swap(install, staged, previous):
+    """`install` -> `previous`, `staged` -> `install`; the first move undone
+    when the second fails. -> a refusal sentence, or ""."""
+    try:
+        _remove(previous)
+    except OSError as exc:
+        _remove_quietly(staged)
+        return (f"The last update's {previous.name} could not be cleared ({exc}); "
+                "nothing was changed.")
+    try:
+        _rename(install, previous)
+    except OSError as exc:
+        _remove_quietly(staged)
+        return (f"The running version could not be moved aside ({exc}); nothing "
+                "was changed. Quit the station and try again.")
+    try:
+        _rename(staged, install)
+    except OSError as exc:
+        try:
+            _rename(previous, install)
+        except OSError as again:
+            return (f"The new version could not be put in place ({exc}) and the "
+                    f"running version could not be moved back ({again}). It is "
+                    f"in {previous}: rename it to {install.name} before starting "
+                    "the station again.")
+        _remove_quietly(staged)
+        return (f"The new version could not be put in place ({exc}); the running "
+                "version was restored and nothing was changed.")
+    return ""
+
+
+def _remove_quietly(path):
+    try:
+        _remove(path)
+    except OSError:
+        pass
 
 
 def _as(result, status):
