@@ -31,6 +31,12 @@ with no hardware that owns a local store, reads other models by duck type
    with a classmethod `identify_port(port, should_abort) -> bool`, which the
    scan asks before the firmware handshake (the Rotator's SMC100 query is
    the example).
+   `HOST` (default `None`) names the model whose page draws this one:
+   Red Percent sets `HOST = "Transfer Map"` (owner ruling 2026-09-28, one
+   dashboard). A hosted model keeps its own Panel, commands, stop path and
+   tests; while its host is launched the views draw its sections on the
+   host's page and list no page of its own, and ticking the host in Setup
+   ticks it. Launched without its host, it is an ordinary page.
 2. **Own your devices.** Each device is a `devices.device.Device`
    (`open`, `close`, `is_open`, `status`). Return them from `devices`. Use
    one of these `status` words: `verified`, `unverified`, `simulated`,

@@ -739,3 +739,23 @@ def test_window_focus_gates_every_device_that_has_a_gate(controller):
     controller.set_input_focus(False)
     controller.set_input_focus(True)
     assert knob.gates == [False, True]
+
+
+# -- host: a model drawn on another model's page (Model.HOST, 2026-09-28) ----
+
+def test_state_names_the_host_only_while_the_host_is_launched(controller):
+    class Hosted(FakeModel):
+        HOST = "map"
+    hosted = Hosted()
+    controller.add("red", hosted, {})
+    assert controller.state()["models"]["red"]["host"] is None
+    controller.add("map", FakeModel(), {})
+    assert controller.state()["models"]["red"]["host"] == "map"
+    assert controller.state()["models"]["map"]["host"] is None
+
+
+def test_a_model_never_hosts_itself(controller):
+    class Loop(FakeModel):
+        HOST = "loop"
+    controller.add("loop", Loop(), {})
+    assert controller.state()["models"]["loop"]["host"] is None

@@ -946,3 +946,38 @@ def test_relaunch_asks_first_while_something_is_energized(panel):
 def test_close_every_model_does_not_ask_when_nothing_is_energized(panel):
     _launch_alpha(panel)
     assert panel.run("stop_system").is_ok
+
+
+# -- a host ticks the rows drawn on its page (Model.HOST, 2026-09-28) --------
+
+@pytest.fixture
+def hosted_types(monkeypatch):
+    types = {}
+    for model_class in (make_model_class("Map", needs_port=False),
+                        make_model_class("Red", needs_port=False),
+                        make_model_class("Alpha", "a")):
+        types[model_class.NAME] = model_class
+    types["Red"].HOST = "Map"
+    monkeypatch.setattr(station_setup, "MODEL_TYPES", types)
+    return types
+
+
+def test_ticking_a_host_ticks_the_rows_drawn_on_its_page(hosted_types):
+    panel = Setup(RecordingController())
+    tick(panel, "map")
+    assert panel.map_enabled and panel.red_enabled
+    assert not panel.alpha_enabled
+    assert [c["model"] for c in panel.configs] == ["Map", "Red"]
+
+
+def test_ticking_a_hosted_row_alone_leaves_its_host_unticked(hosted_types):
+    panel = Setup(RecordingController())
+    tick(panel, "red")
+    assert panel.red_enabled and not panel.map_enabled
+
+
+def test_unticking_a_host_leaves_the_hosted_row_as_it_is(hosted_types):
+    panel = Setup(RecordingController())
+    tick(panel, "map")
+    tick(panel, "map", False)
+    assert not panel.map_enabled and panel.red_enabled

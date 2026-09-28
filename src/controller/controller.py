@@ -146,7 +146,16 @@ class Controller:
                                               "values": {}, "closed": True}
         with self._lock:
             models = dict(self._models)
-        return {"models": {n: m.state for n, m in models.items()},
+        states = {}
+        for n, m in models.items():
+            state = m.state
+            # A hosted model is drawn on its host's page while the host is
+            # launched (Red Percent on the Transfer Map); alone, it is its
+            # own page. The views read `host`, never a class.
+            host = getattr(m, "HOST", None)
+            state["host"] = host if host in models and host != n else None
+            states[n] = state
+        return {"models": states,
                 "is_estopped": self.is_estopped, "is_active": self.is_active,
                 "energized": [n for n, m in models.items()
                               if getattr(m, "is_energized", False)],

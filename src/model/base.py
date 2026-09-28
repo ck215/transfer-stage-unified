@@ -15,6 +15,13 @@ from result import Refused, NeedsConfirm
 
 class Model(Panel):
     IDENTITY = None          # handshake identity byte, or None
+    #: The NAME of the model whose page shows this one (owner ruling
+    #: 2026-09-28: Red Percent and the Transfer Map are one dashboard). A
+    #: hosted model keeps its own Panel, commands, stop and tests; only
+    #: where the views DRAW it changes, and only while its host is launched
+    #: (`Controller.state` publishes `host` per model; on its own it is a
+    #: page like any other). None for every other model.
+    HOST = None
     NEEDS_PORT = False
     NEEDS_GAMEPAD = False
     ESTOP_BUDGET = 0.08      # s the caller waits for the hardware stop

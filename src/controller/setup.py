@@ -987,6 +987,16 @@ class Setup(Panel):
         setattr(self, f"{key}_enabled", flag)
         events.debug("Ticked" if flag else "Unticked", self._rows[key]["name"],
                      source=self.NAME)
+        if flag:
+            # A host brings the models drawn on its page (Model.HOST): ticking
+            # the Transfer Map ticks Red Percent. Unticking is left alone.
+            host_name = self._rows[key]["name"]
+            for other_key, row in self._rows.items():
+                hosted = getattr(MODEL_TYPES.get(row["name"]), "HOST", None)
+                if hosted == host_name and not getattr(self, f"{other_key}_enabled"):
+                    setattr(self, f"{other_key}_enabled", True)
+                    events.debug("Ticked", f"{row['name']} (drawn on {host_name})",
+                                 source=self.NAME)
         self._refresh_rows()
         return flag
 

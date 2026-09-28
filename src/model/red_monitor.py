@@ -234,6 +234,7 @@ class RedMonitor(Model):
 
     NAME = "Red Percent"
     IDENTITY = None
+    HOST = "Transfer Map"    # drawn on the Transfer Map page (one dashboard)
     NEEDS_PORT = False
     NEEDS_GAMEPAD = False
 

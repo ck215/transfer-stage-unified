@@ -413,3 +413,15 @@ def test_a_gamepad_model_takes_its_input_from_the_mixin(model):
     assert dropdowns, f"{type(model).__name__} declares no Gamepad: dropdown"
     assert dropdowns[0]["options_command"] == "gamepad_options"
     assert dropdowns[0]["model_attr"] == "gamepad_name"
+
+
+def test_host_is_none_or_another_registered_model(model):
+    """`HOST` (2026-09-28): the page that draws this model, or None."""
+    host = getattr(type(model), "HOST", None)
+    assert host is None or (host in MODEL_TYPES and host != type(model).NAME)
+
+
+def test_red_percent_is_drawn_on_the_transfer_map():
+    from model.red_monitor import RedMonitor
+    from model.transfer_map import TransferMap
+    assert RedMonitor.HOST == TransferMap.NAME
