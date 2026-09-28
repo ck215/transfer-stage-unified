@@ -256,6 +256,10 @@ class _Trial:
         self.tilt = tilt
         self.broke = False
         self.closed = False
+        #: The Red Percent run this trial started (its `run_token`), or None
+        #: when the operator started it on the Red Percent page (then it is
+        #: theirs to end).
+        self.run = None
 
 
 class TransferMap(Model):
@@ -384,6 +388,7 @@ class TransferMap(Model):
         trial = self._claim(timeout=0.05)
         if trial is not None:
             self._release_red()
+            self._end_own_run(trial)
             # The store the trial was armed in: a new session database made
             # while this is being written must not receive it.
             writer = threading.Thread(target=self._save_aborted,
@@ -417,6 +422,21 @@ class TransferMap(Model):
             self._red, self._red_name = None, None
         self._tilts.pop(name, None)
         self._probes.pop(name, None)
+
+    def _end_own_run(self, trial):
+        """End the Red Percent run this trial started, and no other: a run
+        the operator started, or started again after this one ended, is
+        left running. `end_run` latches and returns (no I/O, no join), so
+        this is safe on the stop path; a missing or stopped Red Percent is
+        nothing to do."""
+        red = self._red
+        if trial.run is None or red is None:
+            return
+        try:
+            if getattr(red, "run_token", None) is trial.run:
+                red.end_run()
+        except Exception as exc:
+            events.debug("End Run Failed", repr(exc), source=self.NAME)
 
     def _release_red(self):
         red = self._red
@@ -563,15 +583,17 @@ class TransferMap(Model):
         trial.samples.append((time.monotonic() - trial.armed, red, z, x, y))
 
     # -- the guided trial --------------------------------------------------
-    def arm_trial(self):
+    def arm_trial(self, confirmed=False):
+        """Arm a trial. Starts Red Percent's run when none is running (T2: a
+        trial is a red-only run by definition, so the start's doubts are
+        accepted here) and remembers that it did, so Finish, Abort and the
+        stop end that run and no other."""
         self._guard("Arm")
         if self.is_armed:
             raise Refused("A trial is already armed. Finish or abort it first.")
         red = self._red
         if red is None:
             raise Refused("Open Red Percent first: a trial records its red percent.")
-        if not getattr(red, "is_running", False):
-            raise Refused("Start a Red Percent run first: the trial records its samples.")
         tip = (self.tip_id or "").strip()
         if (self.typed_tilt or "").strip() and _number(self.typed_tilt) is None:
             raise Refused("Tilt without a rotator must be a number of degrees, "
@@ -579,17 +601,30 @@ class TransferMap(Model):
         if not tip:
             raise Refused("Type a tip ID before arming, so the trial can be "
                           "traced to its tip.")
-        tilt, tilt_source = self._read_tilt()
-        speed, speed_source = self._read_speed()
-        trial_id = self._store.insert({
-            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "tip_id": tip,
-            "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
-            "origin": "recorded", "tilt_source": tilt_source,
-            "speed_source": speed_source, "note": ""})
-        before = self._save_frame(trial_id, "before")
-        if before:
-            self._store.update(trial_id, {"before_path": before})
+        if not getattr(red, "region", None):
+            raise Refused("Set the capture region first: the trial's pictures "
+                          "and its red percent are read from it.")
+        run = None
+        if not getattr(red, "is_running", False):
+            red.start_run(confirmed=True)               # a Refused stops here
+            run = red.run_token
+        try:
+            tilt, tilt_source = self._read_tilt()
+            speed, speed_source = self._read_speed()
+            trial_id = self._store.insert({
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "tip_id": tip,
+                "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
+                "origin": "recorded", "tilt_source": tilt_source,
+                "speed_source": speed_source, "note": ""})
+            before = self._save_frame(trial_id, "before")
+            if before:
+                self._store.update(trial_id, {"before_path": before})
+        except BaseException:
+            if run is not None:
+                red.end_run()                            # ours: undo it
+            raise
         trial = _Trial(trial_id, tilt, speed, tip)
+        trial.run = run
         with self._lock:
             self._trial = trial
         red.subscribe(self._on_sample)
@@ -619,6 +654,7 @@ class TransferMap(Model):
             raise Refused("No trial is armed.")
         self._release_red()
         after = self._save_frame(trial.id, "after")
+        self._end_own_run(trial)
         samples = list(trial.samples)
         profile = {"t": [s[0] for s in samples], "red": [s[1] for s in samples]}
         found = analysis.detect(profile, trial.operator_t) or {}
@@ -652,6 +688,7 @@ class TransferMap(Model):
         if trial is None:
             raise Refused("No trial is armed.")
         self._release_red()
+        self._end_own_run(trial)
         self._save_aborted(trial)
         return trial.id
 

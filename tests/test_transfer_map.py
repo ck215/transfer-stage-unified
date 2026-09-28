@@ -293,12 +293,20 @@ def test_arm_refuses_without_red_percent():
         model.arm_trial()
 
 
-def test_arm_refuses_while_red_percent_is_not_running(red):
-    model = TransferMap()
-    model.on_model_added("Red Percent", red)
-    model.tip_id = "tip-A"
-    with pytest.raises(Refused, match="Start a Red Percent run"):
-        model.arm_trial()
+def test_arm_refuses_without_a_capture_region(tmp_path, private_db):
+    bare = RedMonitor(screen=fake_screen())
+    bare.output_root = tmp_path / "runs"
+    bare.open()
+    try:
+        model = TransferMap()
+        model.on_model_added("Red Percent", bare)
+        model.tip_id = "tip-A"
+        with pytest.raises(Refused, match="capture region"):
+            model.arm_trial(True)
+        assert not bare.is_running and not model.is_armed
+        assert model.trial_count == 0
+    finally:
+        bare.close()
 
 
 def test_arm_refuses_without_a_tip_id(station):
@@ -781,3 +789,111 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     model.estop()
     assert step() == ""                      # latched: the stop says what to do
     model.close()
+
+
+# -- T2: Arm owns the run --------------------------------------------------------
+# The stop path first: every way a trial ends must end the run the map
+# started, and only that run, including when Red Percent is gone or stopped.
+
+@pytest.fixture
+def idle_station(red):
+    """A Transfer Map beside a Red Percent with a region and no run."""
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    model.on_model_added("Stepper Probe", FakeProbe())
+    model.tip_id = "tip-A"
+    assert not red.is_running
+    yield model, red
+    model.close()
+
+
+def test_estop_ends_the_run_the_map_started(idle_station, private_db):
+    model, red = idle_station
+    trial = _arm(model)
+    assert red.is_running
+    assert _wait_for(lambda: len(model._trial.samples) >= 5)
+    started = time.monotonic()
+    assert model.estop() is True
+    assert time.monotonic() - started < 0.5
+    assert not red.is_running and not model.is_armed
+    model.disable()
+    assert _rows(private_db, "SELECT status FROM trials WHERE id=?",
+                 trial)[0]["status"] == "aborted"
+
+
+def test_abort_ends_the_run_the_map_started(idle_station):
+    model, red = idle_station
+    _arm(model)
+    assert model.run("abort_trial").is_ok
+    assert not red.is_running
+
+
+def test_finish_ends_the_run_the_map_started(idle_station, private_db):
+    model, red = idle_station
+    trial = _arm(model)
+    assert _wait_for(lambda: len(model._trial.samples) >= 5)
+    _finish(model)
+    assert not red.is_running
+    assert _rows(private_db, "SELECT status FROM trials WHERE id=?",
+                 trial)[0]["status"] == "recorded"
+
+
+def test_a_run_the_operator_started_is_left_running(station):
+    """The station fixture starts the run on the Red Percent page."""
+    model, red, *_ = station
+    run = red.run_id
+    _record(model, red)
+    assert red.is_running and red.run_id == run
+    _arm(model)
+    assert model.run("abort_trial").is_ok and red.is_running
+    _arm(model)
+    assert model.estop() is True
+    assert red.is_running and red.run_id == run
+
+
+def test_a_later_run_the_operator_started_is_not_the_maps_to_end(idle_station):
+    """The map started a run; the operator ended it on Red Percent and
+    started their own. Finishing the trial leaves the operator's run alone."""
+    model, red = idle_station
+    _arm(model)
+    red.end_run()
+    red.start_run(confirmed=True)
+    theirs = red.run_id
+    assert model.run("abort_trial").is_ok
+    assert red.is_running and red.run_id == theirs
+
+
+def test_the_stop_works_when_red_percent_is_gone(idle_station):
+    model, red = idle_station
+    _arm(model)
+    model.on_model_removed("Red Percent", red)
+    assert model.estop() is True
+    assert not model.is_armed
+    red.end_run()                        # the removed model's own close
+
+
+def test_abort_works_when_red_percent_already_stopped(idle_station):
+    model, red = idle_station
+    _arm(model)
+    red.end_run()
+    assert model.run("abort_trial").is_ok and not model.is_armed
+    assert model.estop() is True
+
+
+def test_arm_starts_red_percents_run_when_none_is_running(idle_station):
+    """A trial is a red-only run by definition: the start's doubts (no
+    position source, no synced axis) are the map's to accept."""
+    model, red = idle_station
+    assert red._source is None and not red.sync_axes_list
+    trial = _arm(model)
+    assert red.is_running and model.is_armed
+    assert model._trial.run is red.run_token and trial == model._trial.id
+
+
+def test_arm_that_cannot_start_the_run_writes_nothing(idle_station, private_db):
+    model, red = idle_station
+    red.estop()
+    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    assert result.is_refused and "Red Percent" in result.reason
+    assert not model.is_armed and model.trial_count == 0

@@ -1295,3 +1295,22 @@ def test_grab_frame_is_none_without_a_region_or_a_frame(monitor):
     closed = RedMonitor(screen=fake_screen())
     closed.region = {"top": 0, "left": 0, "width": 10, "height": 10}
     assert closed.grab_frame() is None                   # screen never opened
+
+
+# -- trial sheet T2: a run's identity that no later run shares (additive) ------
+
+def test_run_token_names_this_run_and_no_later_one(monitor):
+    """`run_id` repeats whenever the operator has typed a Run / Cut ID, so
+    the Transfer Map cannot tell the run it started from the operator's next
+    one by it. `run_token` can: None when no run is active."""
+    monitor.set_region(0, 0, 10, 10)
+    assert monitor.run_token is None
+    monitor.start_run(confirmed=True)
+    first = monitor.run_token
+    assert first is not None
+    assert monitor.run_token is first                   # stable while it runs
+    monitor.end_run()
+    assert monitor.run_token is None
+    monitor.start_run(confirmed=True)
+    assert monitor.run_id == "C001"                    # the same name again
+    assert monitor.run_token is not None and monitor.run_token is not first
