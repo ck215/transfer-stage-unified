@@ -1246,6 +1246,32 @@ def test_the_overlay_over_a_screenshot_is_opaque_and_holds_the_picture(qapp):
 
 
 @pytest.mark.qt
+def test_the_overlay_draws_the_picture_one_to_one_not_stretched_to_itself(qapp):
+    """The bench (2026-09-28, Linux, Qt): the window manager kept the overlay
+    out of a panel and the picture was stretched to it - "squished ... mild
+    offset". Now the picture keeps the desktop's size and is anchored where
+    the desktop's origin falls in the overlay."""
+    from PySide6.QtCore import QRect
+    shot = {"image": _desktop_png(), "left": 0, "top": 0, "width": 800, "height": 450}
+    overlay = qt.RegionOverlay(lambda *a: None, screenshot=shot)
+    try:
+        overlay.desktop = (0, 0, 800, 450)
+        overlay.setGeometry(0, 40, 800, 410)          # kept below a 40-px panel
+        assert overlay.picture_rect() == QRect(0, -40, 800, 450)
+        overlay.setGeometry(0, 0, 800, 450)
+        assert overlay.picture_rect() == QRect(0, 0, 800, 450)
+        # A capture twice the logical desktop (a Retina Mac) is halved.
+        overlay.bounds = dict(shot, width=1600, height=900)
+        assert overlay.picture_rect() == QRect(0, 0, 800, 450)
+        # A second monitor to the left: the overlay on the primary only.
+        overlay.bounds = dict(shot, left=-800, width=1600)
+        overlay.desktop = (-800, 0, 1600, 450)
+        assert overlay.picture_rect() == QRect(-800, 0, 1600, 450)
+    finally:
+        overlay.close()
+
+
+@pytest.mark.qt
 @pytest.mark.parametrize("screenshot", [None, {"image": b"not a png", "width": 1,
                                                "height": 1}])
 def test_without_a_usable_screenshot_the_overlay_stays_translucent(qapp, screenshot):

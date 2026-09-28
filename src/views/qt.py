@@ -87,6 +87,7 @@ import schema as sch
 from events import events
 from views import theme
 from views import base as view_base
+from views import picking
 from views.base import Dashboard, PanelView, event_line, join_names, stop_words
 
 try:                                    # the module imports without PySide6
@@ -3203,12 +3204,22 @@ class RegionOverlay(QWidget):
         self.picture = self._decode(screenshot)
         if self.picture is None:
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            self.bounds = None
+        else:
+            # What the picture was taken of; bytes with no bounds are
+            # measured by their own pixels.
+            self.bounds = dict(screenshot)
+            if not self.bounds.get("width") or not self.bounds.get("height"):
+                self.bounds.update(width=self.picture.width(),
+                                   height=self.picture.height())
 
         geometry = QRect()
         for screen in QApplication.screens():
             geometry = geometry.united(screen.geometry())
         if not geometry.isNull():
             self.setGeometry(geometry)
+        #: The logical virtual desktop, which the picture is drawn 1:1 in.
+        self.desktop = self._rect_box(geometry)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3250,6 +3261,10 @@ class RegionOverlay(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
         events.debug("Region Overlay", f"shown over {self.geometry()}",
                      source="QtView")
+        if self.picture is not None:
+            events.debug("Region Picture Placed", picking.placement_line(
+                self.bounds, self.desktop, self._rect_box(self.geometry())),
+                source="QtView")
 
     def mousePressEvent(self, event):
         self.start_point = event.globalPosition().toPoint()
@@ -3292,9 +3307,11 @@ class RegionOverlay(QWidget):
         painter = QPainter(self)
         tint = QColor(theme.BACKGROUND)
         if self.picture is not None:
-            # Scaled to the overlay's own geometry, which covers the same
-            # virtual desktop: what is under a point is what it reports.
-            painter.drawPixmap(self.rect(), self.picture)
+            # 1:1 in desktop coordinates, anchored where the desktop's origin
+            # falls in the overlay - never stretched to the overlay, which a
+            # window manager may have kept out of a panel (the bench,
+            # 2026-09-28: "squished the screen so there was mild offset").
+            painter.drawPixmap(self.picture_rect(), self.picture)
             tint.setAlpha(self.PICTURE_TINT)
         else:
             tint.setAlpha(100)
@@ -3310,6 +3327,18 @@ class RegionOverlay(QWidget):
         painter.drawRect(left - origin.x(), top - origin.y(), width, height)
 
     # -- helpers -----------------------------------------------------------
+    @staticmethod
+    def _rect_box(rect):
+        """A QRect as `(left, top, width, height)`."""
+        return (rect.x(), rect.y(), rect.width(), rect.height())
+
+    def picture_rect(self):
+        """Where the picture is drawn, in the overlay's own coordinates."""
+        scale, x, y = picking.picture_placement(
+            self.bounds, self.desktop, self._rect_box(self.geometry()))
+        width, height = picking.drawn_size(self.bounds, scale)
+        return QRect(int(round(x)), int(round(y)), width, height)
+
     def _logical_region(self):
         left, right = sorted((self.start_point.x(), self.end_point.x()))
         top, bottom = sorted((self.start_point.y(), self.end_point.y()))
