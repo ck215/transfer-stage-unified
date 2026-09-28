@@ -244,8 +244,9 @@ class _Trial:
     run thread (a list append, nothing else); everything else is written
     by the command thread."""
 
-    def __init__(self, trial_id, tilt, speed):
+    def __init__(self, trial_id, tilt, speed, tip=""):
         self.id = trial_id
+        self.tip = tip
         self.armed = time.monotonic()
         self.samples = []            # (t_s, red, z, x, y)
         self.dropped = 0
@@ -533,13 +534,14 @@ class TransferMap(Model):
         before = self._save_frame(trial_id, "before")
         if before:
             self._store.update(trial_id, {"before_path": before})
-        trial = _Trial(trial_id, tilt, speed)
+        trial = _Trial(trial_id, tilt, speed, tip)
         with self._lock:
             self._trial = trial
         red.subscribe(self._on_sample)
         self._changed()
-        events.info("Trial Armed", f"Trial {trial_id} armed. Lower the tip, "
-                    "press Mark force at the force you want, then Finish.",
+        events.info("Trial Armed", f"Trial {trial_id} armed, "
+                    f"{self._place_on_tip(trial)}. Lower the tip, press Mark "
+                    "force at the force you want, then Finish.",
                     source=self.NAME)
         return trial_id
 
@@ -584,8 +586,9 @@ class TransferMap(Model):
             events.warn("Trial Too Long", f"Trial {trial.id} kept its first "
                         f"{MAX_SAMPLES} samples; {trial.dropped} more were not "
                         "stored.", source=self.NAME)
-        events.info("Trial Recorded", f"Trial {trial.id}: {len(samples)} "
-                    "samples recorded.", source=self.NAME)
+        events.info("Trial Recorded", f"Trial {trial.id} recorded, "
+                    f"{self._place_on_tip(trial)}: {len(samples)} samples.",
+                    source=self.NAME)
         self.note = ""
         return trial.id
 
@@ -596,6 +599,11 @@ class TransferMap(Model):
         self._release_red()
         self._save_aborted(trial)
         return trial.id
+
+    def _place_on_tip(self, trial):
+        """ "the 3rd on tip T7": this trial's place among its tip's trials."""
+        n = self._store.count_for_tip(trial.tip, up_to=trial.id)
+        return f"the {_ordinal(n)} on tip {trial.tip}"
 
     def _claim(self, timeout=-1):
         """Take the armed trial, once: Finish, Abort and the stop race for it
@@ -965,6 +973,13 @@ class TransferMap(Model):
         return self._store.count()
 
     @property
+    def tip_trial_count(self):
+        """Stored trials on the typed tip: None (shown blank) while the Tip
+        ID entry is blank, 0 for a tip the database has not seen."""
+        tip = (self.tip_id or "").strip()
+        return self._store.count_for_tip(tip) if tip else None
+
+    @property
     def trial_status(self):
         trial = self._trial
         if trial is not None:
@@ -1066,6 +1081,7 @@ class TransferMap(Model):
                 sch.readonly("Speed", "speed_now", rail=True, param=P["speed_now"]),
                 sch.readonly("Red", "red_now", param=P["red_now"], format=".2f"),
                 sch.entry("Tip ID", "tip_id", P["tip_id"]),
+                sch.readonly("Trials on this tip", "tip_trial_count"),
                 sch.button("Arm trial", "arm_trial",
                            inputs=("tip_id", "typed_tilt"),
                            role="go", disabled_when=("armed", "latched")),
@@ -1131,6 +1147,14 @@ class TransferMap(Model):
             ),
             self._safety_section(),
         )
+
+
+def _ordinal(n):
+    """1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st, 101st, 111th."""
+    n = int(n)
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    return f"{n}" + {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
 
 
 def _number(value):

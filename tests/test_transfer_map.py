@@ -647,3 +647,60 @@ def test_the_trials_log_lists_one_line_per_trial(station):
     _record(model, red)
     lines = model.trials_log
     assert len(lines) == 1 and "recorded" in lines[0] and "tip-A" in lines[0]
+
+
+# -- T5: trials on this tip -----------------------------------------------------
+
+def test_trials_on_this_tip_counts_the_typed_tip(station):
+    """Bench 2026-09-27: "I need to see how many trials have been done on a
+    given tip ID"."""
+    model, red, *_ = station
+    values = lambda: model.state["values"]            # noqa: E731
+    model.tip_id = ""
+    assert values()["tip_trial_count"] == ""          # blank entry: nothing
+    model.tip_id = "tip-A"
+    assert values()["tip_trial_count"] == "0"         # a new tip
+    _record(model, red)
+    _record(model, red)
+    model.tip_id = "  tip-A "
+    assert values()["tip_trial_count"] == "2"         # stripped
+    model.tip_id = "tip-B"
+    assert values()["tip_trial_count"] == "0"
+    _record(model, red)
+    assert values()["tip_trial_count"] == "1"
+    assert model._store.count_for_tip("tip-A") == 2
+    assert model._store.count_for_tip("tip-A", up_to=1) == 1
+
+
+def test_trials_on_this_tip_sits_under_the_tip_id_entry():
+    model = TransferMap()
+    trial = next(s for s in model.schema["sections"] if s["title"] == "Trial")
+    keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
+    at = keys.index("tip_id")
+    assert keys[at + 1] == "tip_trial_count"
+    element = trial["elements"][at + 1]
+    assert element["type"] == "readonly" and element["text"] == "Trials on this tip"
+
+
+@pytest.mark.parametrize("n, word", [(1, "1st"), (2, "2nd"), (3, "3rd"),
+                                     (4, "4th"), (11, "11th"), (12, "12th"),
+                                     (13, "13th"), (21, "21st"), (22, "22nd"),
+                                     (101, "101st"), (111, "111th")])
+def test_ordinals_read_as_the_operator_says_them(n, word):
+    assert tm_module._ordinal(n) == word
+
+
+def test_arm_and_finish_name_the_trials_place_on_its_tip(station):
+    model, red, *_ = station
+    _record(model, red)
+    model.tip_id = "T7"
+    since = events.latest_id
+    trial = _record(model, red)
+    armed = _titled("Trial Armed", since)[0].message
+    assert armed.startswith(f"Trial {trial} armed, the 1st on tip T7.")
+    since = events.latest_id
+    trial = _record(model, red)
+    assert _titled("Trial Armed", since)[0].message.startswith(
+        f"Trial {trial} armed, the 2nd on tip T7.")
+    recorded = _titled("Trial Recorded", since)[0].message
+    assert recorded.startswith(f"Trial {trial} recorded, the 2nd on tip T7:")
