@@ -89,20 +89,33 @@ class Heater(Model):
     READ_FLOOR = 0.01            # s between reads: never above ~100 Hz
     MIN_BACKOFF, MAX_BACKOFF = 0.1, 2.0
     PERSISTENT_AFTER = 5         # read failures before the link is called lost
+    #: s after `open()` in which a failed read is the board coming up, not
+    #: news (bench, 2026-09-27: "always boots with a warning, then works").
+    #: `SerialPort.open()` returns before the handle exists and then spends
+    #: up to its bootloader wait plus its handshake budget CONNECTING, so the
+    #: reader's first pass sees a port that is not open yet. The window is
+    #: that whole connect sequence. A failure inside it goes to the log file
+    #: only; a streak that outlasts it warns, once, with the usual text. The
+    #: first reading ends the window early: after it, every rule is as before.
+    BOOT_GRACE_SEC = SerialPort.BOOTLOADER_WAIT + SerialPort.HANDSHAKE_TIMEOUT
     #: s a stop waits for an Enter Settings. Short, so that this plus the
     #: port's own priority wait still fits inside `Model.ESTOP_BUDGET`.
     WRITE_LOCK_TIMEOUT = 0.02
     FLUSH_TIMEOUT = 1.0
 
-    def __init__(self, port=None, gamepad=None, sim=False):
+    def __init__(self, port=None, gamepad=None, sim=False, clock=time.monotonic):
         """was TemperatureSystem.__init__
 
         `port` is a port name, or an already-built SerialPort (Setup may have
         opened one to read its identity byte, and a test hands in a double).
         `gamepad` is accepted because every Model takes it; a heater has no
-        use for one.
+        use for one. `clock` times the boot grace; a test hands in its own.
         """
         super().__init__()
+        self._clock = clock
+        #: `clock()` value the boot grace ends at; None = no grace (a reader
+        #: driven without `open()`, or a boot that is over).
+        self._boot_grace_until = None
         if hasattr(port, "write") and not isinstance(port, str):
             self.port = port
         else:
@@ -150,7 +163,22 @@ class Heater(Model):
         """The reader, spawned through the base (MOD-2). `Model.close()` stops
         and joins it BEFORE the devices close, so it is never inside
         `read_line` on a descriptor closing under it (TEMP-11)."""
+        self._arm_boot_grace()
         self._spawn("reader", self._read_loop)
+
+    def _arm_boot_grace(self):
+        """Start the boot window. `open()` does it; a test does it by hand."""
+        self._boot_grace_until = self._clock() + self.BOOT_GRACE_SEC
+
+    def _is_booting(self):
+        """Still inside the boot window: armed, no reading yet, not expired."""
+        until = self._boot_grace_until
+        if until is None:
+            return False
+        if self._clock() < until:
+            return True
+        self._boot_grace_until = None
+        return False
 
     # -- what the operator reads -------------------------------------------
     @property
@@ -513,8 +541,14 @@ class Heater(Model):
 
         Nothing here publishes per iteration: transitions only, and every
         in-loop diagnostic carries `every=`.
+
+        Boot grace: a failure inside `BOOT_GRACE_SEC` of `open()`, before the
+        first reading, is logged at debug only, and a link that comes up
+        inside the window says nothing at all. `is_warned` is what "Resumed"
+        answers to, so a warning is always paired with its recovery and a
+        non-event produces neither.
         """
-        failures = 0
+        failures, is_warned = 0, False
         while not self._threads_stop.is_set():
             self._touch()   # the reader is alive; a frozen value shows in `age` of the reading
             line, why, error = None, None, None
@@ -530,14 +564,16 @@ class Heater(Model):
             if why is None:
                 if line:
                     self._parse_line(line)
-                    if failures or self._is_link_lost:
+                    if is_warned or self._is_link_lost:
                         events.info("Temperature Reading Resumed",
                                     f"after {failures} failed read(s)",
                                     source=self.NAME)
+                    if failures:
                         events.debug("Reader Recovered",
                                      f"failure count reset from {failures}",
                                      source=self.NAME)
-                    failures, self._is_link_lost = 0, False
+                    failures, is_warned, self._is_link_lost = 0, False, False
+                    self._boot_grace_until = None    # the board is up
                 # An idle read is not a failure: the board sends ~1.7 lines/s,
                 # so most passes legitimately see nothing. The floor is what
                 # keeps a non-blocking port from free-spinning at GB/s.
@@ -546,14 +582,22 @@ class Heater(Model):
                 continue
 
             failures += 1
-            if failures == 1:
+            if self._is_booting():
+                events.debug("Reader Boot Grace",
+                             f"failure {failures} inside the "
+                             f"{self.BOOT_GRACE_SEC:g} s boot grace, not "
+                             f"reported: {why}", source=self.NAME,
+                             exception=error, every=1.0)
+            elif not is_warned:
+                is_warned = True
                 events.debug("Temperature Read Error", why, source=self.NAME,
                              exception=error)
                 events.warn("Temperature Read Error", "A temperature reading "
                             "failed. Retrying; check the controller's cable "
                             "if this repeats.", source=self.NAME,
                             exception=error)
-            if failures > self.PERSISTENT_AFTER and not self._is_link_lost:
+            if (is_warned and failures > self.PERSISTENT_AFTER
+                    and not self._is_link_lost):
                 self._is_link_lost = True
                 events.warn("Temperature Disconnected",
                             f"No temperature reading after {failures} "

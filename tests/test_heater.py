@@ -724,3 +724,251 @@ def test_heating_to_is_quiet_until_a_setpoint_is_sent(heater):
     line = next(e for e in _elements(heater) if e.get("model_attr") == "heating_to")
     section = next(s for s in heater.schema["sections"] if line in s["elements"])
     assert section.get("tier", 1) == 1
+
+
+# -- the boot grace (bench, 2026-09-27) ------------------------------------------
+#
+# "The temperature probe and rotator always boot with a warning, then work just
+# fine." `SerialPort.open()` returns before the handle exists (the open runs on
+# a worker), and the reader starts at once, so its first pass saw a port that
+# is not open yet, counted a failure, and `failures == 1` warned. The first
+# line then said "Temperature Reading Resumed". A failure inside the boot grace
+# is now debug only; a streak that outlasts it warns exactly as before.
+
+class _Clock:
+    """A clock the test moves by hand."""
+
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def _reported(log):
+    """What reached the operator from the heater: warnings, infos, errors."""
+    return [(e.severity, e.title) for e in log.seen
+            if e.source == Heater.NAME and e.severity != "debug"]
+
+
+def _drive(heater, clock, script):
+    """Run the reader, advancing the clock by each wait it asks for.
+
+    `script(n)` runs at the n-th wait (1-based), after the clock has moved;
+    returning True stops the reader.
+    """
+    calls = {"n": 0}
+
+    def _wait(seconds):
+        calls["n"] += 1
+        clock.now += seconds
+        return bool(script(calls["n"]))
+
+    heater._backoff_wait = _wait
+    heater._read_loop()
+
+
+def test_the_boot_grace_is_derived_from_the_ports_own_connect_sequence():
+    from devices.serial_port import SerialPort
+    assert Heater.BOOT_GRACE_SEC == (SerialPort.BOOTLOADER_WAIT
+                                     + SerialPort.HANDSHAKE_TIMEOUT)
+
+
+def test_a_first_read_that_fails_inside_the_boot_grace_reports_nothing(port):
+    """B3(a): fail, then read, inside the window: no warn, no Resumed."""
+    clock = _Clock()
+    heater = Heater(port=port, clock=clock)
+    heater._arm_boot_grace()
+    port.read_error = OSError("still coming up")
+
+    def script(n):
+        if n == 1:
+            port.read_error = None
+            port.lines.append("1.0,25.00,0.0")
+        return n >= 4
+
+    with EventRecorder(events) as log:
+        _drive(heater, clock, script)
+    assert heater.temperature == "25.00 °C"
+    assert clock.now - 1000.0 < Heater.BOOT_GRACE_SEC
+    assert _reported(log) == [], _reported(log)
+
+
+def test_a_port_not_open_yet_at_boot_reports_nothing(port):
+    """The bench case itself: the handle does not exist on the first pass."""
+    clock = _Clock()
+    heater = Heater(port=port, clock=clock)
+    heater._arm_boot_grace()
+    port._is_open = False
+
+    def script(n):
+        if n == 1:
+            port._is_open = True
+            port.lines.append("1.0,25.00,0.0")
+        return n >= 4
+
+    with EventRecorder(events) as log:
+        _drive(heater, clock, script)
+    assert heater.temperature == "25.00 °C"
+    assert _reported(log) == [], _reported(log)
+
+
+def test_a_failure_that_outlasts_the_boot_grace_warns_once_then_resumes(port):
+    """B3(b): the same warning as today, once, and "Resumed" when it ends."""
+    clock = _Clock()
+    heater = Heater(port=port, clock=clock)
+    heater._arm_boot_grace()
+    port.read_error = OSError("link down")
+    passes = {}
+
+    def script(n):
+        if clock.now - 1000.0 > Heater.BOOT_GRACE_SEC + 3 and not passes:
+            passes["recovered_at"] = n
+            port.read_error = None
+            port.lines.append("1.0,25.00,0.0")
+        return passes and n >= passes["recovered_at"] + 2
+
+    with EventRecorder(events) as log:
+        _drive(heater, clock, script)
+    reported = _reported(log)
+    assert reported.count(("warning", "Temperature Read Error")) == 1, reported
+    assert reported.count(("info", "Temperature Reading Resumed")) == 1, reported
+    assert (reported.index(("warning", "Temperature Read Error"))
+            < reported.index(("info", "Temperature Reading Resumed")))
+    read_error = log.titled("Temperature Read Error")
+    assert read_error[0].message.startswith("A temperature reading failed.")
+
+
+def test_nothing_is_reported_while_the_boot_grace_lasts(port):
+    """No warning before the window closes, however many failures."""
+    clock = _Clock()
+    heater = Heater(port=port, clock=clock)
+    heater._arm_boot_grace()
+    port.read_error = OSError("link down")
+    seen_inside = []
+
+    def script(n):
+        if clock.now - 1000.0 < Heater.BOOT_GRACE_SEC:
+            seen_inside.extend(_reported(log))
+        return clock.now - 1000.0 > Heater.BOOT_GRACE_SEC + 5
+
+    with EventRecorder(events) as log:
+        _drive(heater, clock, script)
+    assert seen_inside == []
+    assert ("warning", "Temperature Read Error") in _reported(log)
+
+
+def test_a_drop_after_a_healthy_start_warns_on_its_first_failure(port):
+    """B3(c): once a reading has arrived the boot is over, even inside the
+    window: a mid-run drop warns on its first failure, as it always did."""
+    clock = _Clock()
+    heater = Heater(port=port, clock=clock)
+    heater._arm_boot_grace()
+    port.lines.append("1.0,25.00,0.0")
+    at_first_failure = {}
+
+    def script(n):
+        if n == 1:
+            port.read_error = OSError("cable pulled")
+        elif n == 2:                       # the wait after the first failure
+            at_first_failure["reported"] = _reported(log)
+            at_first_failure["t"] = clock.now - 1000.0
+            port.read_error = None
+            port.lines.append("2.0,25.00,0.0")
+        return n >= 4
+
+    with EventRecorder(events) as log:
+        _drive(heater, clock, script)
+    assert at_first_failure["t"] < Heater.BOOT_GRACE_SEC
+    assert at_first_failure["reported"] == [("warning", "Temperature Read Error")]
+    assert ("info", "Temperature Reading Resumed") in _reported(log)
+
+
+def test_a_reader_run_without_open_keeps_todays_rules(heater, port):
+    """No `open()`, no grace: the first failure warns, as every older test
+    in this file relies on."""
+    port.read_error = OSError("link down")
+    with EventRecorder(events) as log:
+        _run_reader(heater, stop_after=2)
+    assert len(log.titled("Temperature Read Error")) == 1
+
+
+class _BootingTeensy:
+    """A pyserial handle behind a real `SerialPort`: slow to open (as a Linux
+    open is), answers the identity ping, then streams readings."""
+
+    LINE = b"1.0,25.00,0.0\r\n"
+
+    def __init__(self):
+        self.is_open = True
+        self.wire = b""
+        self._pending = b""
+        self._answered = False
+        self._streaming = False
+        self._last_line = 0.0
+
+    @property
+    def in_waiting(self):
+        now = time.monotonic()
+        if self._streaming and not self._pending and now - self._last_line > 0.02:
+            self._pending += self.LINE
+            self._last_line = now
+        return len(self._pending)
+
+    def write(self, data):
+        self.wire += bytes(data)
+        if bytes(data) == b"s\n":
+            self._pending += b"DEV: t\r\n"
+            self._answered = True
+        return len(data)
+
+    def read(self, size=1):
+        out, self._pending = self._pending[:size], self._pending[size:]
+        return out
+
+    def reset_input_buffer(self):
+        self._pending = b""
+        if self._answered:
+            self._streaming = True
+
+    def reset_output_buffer(self):
+        pass
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.is_open = False
+
+
+def test_a_heater_booting_over_the_real_transport_reports_nothing(monkeypatch):
+    """End to end, through `Model.open()` and a real `SerialPort`: the port
+    opens on its worker, the reader starts before the handle exists, the
+    board answers and streams. The operator sees no warning and no Resumed.
+    Before the grace this raised "Temperature Read Error" on every boot."""
+    from types import SimpleNamespace
+
+    from devices import serial_port
+
+    handle = _BootingTeensy()
+
+    def _slow_open(**kwargs):
+        time.sleep(0.05)
+        return handle
+
+    monkeypatch.setattr(serial_port, "pyserial", SimpleNamespace(Serial=_slow_open))
+    monkeypatch.setattr(serial_port.SerialPort, "BOOTLOADER_WAIT", 0.05)
+    heater = Heater(port="/dev/fake-teensy")
+    with EventRecorder(events) as log:
+        heater.open()
+        try:
+            deadline = time.monotonic() + 3.0
+            while (heater.temperature != "25.00 °C"
+                   and time.monotonic() < deadline):
+                time.sleep(0.02)
+            assert heater.temperature == "25.00 °C", heater.temperature
+            time.sleep(0.1)
+            reported = _reported(log)
+        finally:
+            heater.close()
+    assert reported == [], reported
