@@ -1,0 +1,8 @@
+{
+  "owner": "",
+  "repo": "",
+  "asset": "station-{os}-{arch}.zip",
+  "os": {"Darwin": "macos", "Windows": "windows", "Linux": "linux"},
+  "arch": {"arm64": "arm64", "aarch64": "arm64", "ARM64": "arm64",
+           "x86_64": "x86_64", "AMD64": "x86_64", "amd64": "x86_64"}
+}
