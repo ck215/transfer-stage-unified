@@ -150,6 +150,16 @@ lands as `palette.py` / `theme.py` tokens.
   derived from the port's bootloader and handshake waits; 3 s rotator).
   If the bench warning was titled "Port Unverified", that is
   `devices/serial_port.py` and is not covered.
+  **2026-09-28: whole-screen pictures per trial** (`rb-full`, merged
+  `46076c8`): `before_full.png` / `after_full.png` beside the region
+  pictures, `Screen.screenshot_png(max_width=None)`, Red Percent
+  `grab_screen()`, store schema 2 with an in-place upgrade of a version-1
+  file (trials kept, proven on a seeded file), a tier-2 "Full pictures"
+  section, both paths in the export, and a second stop-latch check in Arm
+  after the pictures (the full grab widens the window). Gates: **fast
+  2733, golden 78, Qt 230**. Open owner call: the full picture is PNG
+  (~0.7 MB here, more on the lab display, ~0.5 s to encode); JPEG or a
+  lower compression is one line if it matters.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
