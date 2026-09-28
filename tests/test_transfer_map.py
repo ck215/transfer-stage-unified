@@ -1026,3 +1026,30 @@ def test_the_picture_elements_say_when_they_are_taken():
         ("image", "Before picture", "Taken when you arm.")
     assert (after["type"], after["text"], after["empty"]) == \
         ("image", "After picture", "Taken when you finish.")
+
+
+# -- T6: the order of the sheet ------------------------------------------------
+
+def test_the_sheet_reads_in_the_order_a_trial_is_run():
+    model = TransferMap()
+    sections = model.schema["sections"]
+    tier_one = [s["title"] for s in sections if s.get("tier", 1) == 1
+                and s["title"] != "Safety"]
+    assert tier_one == ["Session", "Trial"]
+    trial = next(s for s in sections if s["title"] == "Trial")
+    keys = [e.get("command") if e["type"] in ("button", "region_select")
+            else e.get("model_attr") or e.get("command") or e.get("data_command")
+            for e in trial["elements"]]
+    assert keys == ["next_step", "set_region", "tilt_now", "speed_now",
+                    "red_now", "tip_id", "tip_trial_count", "arm_trial",
+                    "mark_force", "note", "finish_trial", "abort_trial",
+                    "is_broke", "trial_status", "before_image",
+                    "after_image", "live_series", "figure"]
+    later = [(s["title"], s.get("tier")) for s in sections
+             if s.get("tier", 1) != 1]
+    assert later == [("Figure", 2), ("AFM measurement", 2), ("Data", 2),
+                     ("Diagnostics", 3), ("Safety", 3)]
+    diagnostics = next(s for s in sections if s["title"] == "Diagnostics")
+    assert [e.get("model_attr") or e.get("source_command") or e.get("command")
+            for e in diagnostics["elements"]] == [
+        "last_trial_numbers", "width_gradient", "trials_log", "delete_trial"]
