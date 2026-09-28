@@ -238,6 +238,23 @@ lands as `palette.py` / `theme.py` tokens.
   briefed and not started; the picker still uses the 1600-px picture (a
   full-size one is a one-line change in `screen_image`); Tk/Qt renders of
   the sheet, the dialog and the picker remain unseen on a display.
+  **2026-09-28, paused on the owner's word.** Two worktrees hold WIP
+  commits, to be resumed on command with their briefs: `rb-restart`
+  (`handoff/brief-restart-prompt.md`: an action key on acknowledged
+  notices, "Update now" / "Restart now", `Setup.restart_station`, the Web
+  reload, the Tk/Qt alert band removed, `/api/ack`, and R8: three model
+  names drawn over each other low in the Qt rail, see
+  `handoff/shots/qt_offscreen_transfer_map.png`) and `rb-launch`
+  (`handoff/brief-launchers.md`: two launchers with OS detection, the
+  swap/flash check moved onto the Setup page as a Firmware row, nothing
+  printed to the terminal, docs). Each handoff starts with a "Paused
+  here" block. To resume: a fresh Opus agent per worktree with the
+  worktree-fixer profile, the brief, and "continue from the Paused here
+  block". Landed by the lead meanwhile: the picker picture at full size
+  (`836f241`), the Next step copy shortened for Qt (`a8a2614`), Qt
+  offscreen captures (`handoff/shots/qt_offscreen_*.png`; the harness is
+  in the session scratch, recipe: `QtDashboard(Controller(), Setup())`,
+  `controller.add` + `board._add_panel`, `open_entry`, `grab().save`).
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
