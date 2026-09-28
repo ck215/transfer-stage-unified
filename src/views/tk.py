@@ -2047,6 +2047,13 @@ class TkPanelView(PanelView):
 
     `sheet` is the dashboard's scrolling sheet when the entry lives on it;
     without one (Setup's page, a test) the view scrolls its own body.
+
+    `host` is another entry's view when this model is drawn on that model's
+    page (`Model.HOST`, owner ruling 2026-09-28: Red Percent on the Transfer
+    Map, one dashboard). The view is still this model's own - every element
+    binds to its name - but its head and tier 1 are a GROUP in the host's
+    body after the host's tier 1, and its disclosure and well follow the
+    host's well. Its head is its name one step down and its mode word.
     """
 
     #: How often the dropdown option lists are re-read. Options can be
@@ -2059,8 +2066,15 @@ class TkPanelView(PanelView):
     #: and 5 on X11.
     WHEEL_EVENTS = ("<MouseWheel>", "<Button-4>", "<Button-5>")
 
-    def __init__(self, master, controller, name, panel=None, sheet=None):
+    def __init__(self, master, controller, name, panel=None, sheet=None, host=None):
         super().__init__(controller, name, panel)
+        self._host_view = host          # the entry this one is drawn on, or None
+        self._hosted = {}               # name -> the views drawn on this entry
+        self._group_slot = None         # in `_body`, after tier 1: the groups
+        self._tail_slot = None          # in `_body`, after the well: their wells
+        self._is_closed = False
+        if host is not None:
+            master = host._open_slots()
         self._widgets = {}          # id(element) -> {widget, var, ...}
         self._grid = {}             # id(container) -> the grid cursor
         self._flows = {}            # id(flow strip) -> its wrapping lines
@@ -2093,12 +2107,24 @@ class TkPanelView(PanelView):
         self._well = self._diagnostics = None
         self._well_holder = None        # what is packed to show tier 2
         self._well_canvas = self._well_window = None
+        self._is_well_mapped = False    # the tier-2 well is packed now
         self._building_tier = 1
         self._readings = []             # (element, base kind) - re-sized by prominence
         self._why_labels = {}           # id(section container) -> its reason caption
         self._inset = 0 if sheet is not None else INSET
 
         self.frame = tk.Frame(master, background=_page())
+        if host is not None:
+            self.frame.pack(side="top", fill="x")
+            # Its disclosure and well sit in the host's tail slot, after the
+            # host's own well; the anchor keeps the disclosure first there.
+            self._foot = tk.Frame(host._tail_slot, background=_page())
+            self._foot.pack(side="top", fill="both", expand=True)
+            self._foot_anchor = tk.Frame(self._foot, background=_page(), height=0)
+            self._foot_anchor.pack(side="top", fill="x")
+            host._hosted[name] = self
+        else:
+            self._foot = self._foot_anchor = None
         # The entry's head: a 2 px ink rule (signal while a link is lost or
         # a stop did not confirm), then the model's name. The tier-2
         # disclosure is not here: it sits at the foot of the body (K3).
@@ -2119,6 +2145,14 @@ class TkPanelView(PanelView):
                                anchor="w", background=_page(),
                                foreground=theme.TEXT)
         self._title.pack(side="left")
+        # A hosted group's head says its mode beside its name, in the
+        # caption's muted ink, as its state word.
+        self._state_word = None
+        if host is not None:
+            self._state_word = tk.Label(self._head, text="", font=_caption_font(),
+                                        anchor="w", background=_page(),
+                                        foreground=theme.MUTED)
+            self._state_word.pack(side="left", padx=(SPACE[3], 0))
         self._head_right = tk.Frame(self._head, background=_page())
         self._head_right.pack(side="right")
         self._open_label = tk.Label(self._head_right, text=f"{CHEVRON[False]} {OPEN_WORD}",
@@ -2197,8 +2231,79 @@ class TkPanelView(PanelView):
         self._body.pack(side="top", fill="both", expand=True)
 
     def _name_font(self):
-        """The opened model's name is a step louder than a closed one's."""
+        """The opened model's name is a step louder than a closed one's; a
+        hosted group's is one step down from its host's."""
+        if self._host_view is not None:
+            return _font(STEP_1, bold=True)
         return _font(STEP_2 if self._is_opened else STEP_1, bold=True)
+
+    # -- a hosted model's group (Model.HOST) ------------------------------------
+    def _open_slots(self):
+        """The two slots a hosted view is drawn in, made on the first one:
+        the group slot after tier 1 (raised above tier 1 in the stacking
+        order, so Tab reaches it after tier 1 and before the disclosure),
+        and the tail slot after the well. -> the group slot"""
+        if self._group_slot is None:
+            self._tier_frame(1)
+            self._group_slot = tk.Frame(self._body, background=_page())
+            self._tail_slot = tk.Frame(self._body, background=_page())
+            try:
+                self._group_slot.lift(self._tiers[1])
+            except Exception as exc:
+                events.debug("Group Not Ordered", f"{self.name}: {exc}",
+                             source=SOURCE, exception=exc)
+        return self._group_slot
+
+    def _foot_parent(self):
+        """Where the tier-2 disclosure and the well are made: the body, or
+        for a hosted view its own foot in the host's tail slot."""
+        return self._foot if self._foot is not None else self._body
+
+    def _detach(self, name):
+        """A hosted view closed: its group and its well leave this page."""
+        self._hosted.pop(name, None)
+        self._seat_group()
+        self._seat_tail()
+
+    def _seat_group(self):
+        """The groups, after tier 1, on the device page only."""
+        slot = self._group_slot
+        if slot is None:
+            return
+        try:
+            if self._hosted and self._is_opened:
+                slot.pack(side="top", fill="x", padx=self._inset,
+                          pady=(SPACE[6], 0), after=self._tiers[1])
+            else:
+                slot.pack_forget()
+        except Exception as exc:
+            events.debug("Group Not Shown", f"{self.name}: {exc}", source=SOURCE,
+                         exception=exc)
+
+    def _seat_tail(self):
+        """The groups' disclosures and wells, after this entry's well; the
+        slot takes the page's height only while one of their wells is shown."""
+        slot = self._tail_slot
+        if slot is None:
+            return
+        try:
+            if not (self._hosted and self._is_opened):
+                slot.pack_forget()
+                return
+            after = (self._well_holder if self._is_well_mapped
+                     else self._disclosures[2].frame if 2 in self._disclosures
+                     else self._group_slot)
+            is_tall = any(view.well_canvas is not None for view in self._hosted.values())
+            slot.pack(side="top", fill="both" if is_tall else "x", expand=is_tall,
+                      padx=self._inset, after=after)
+        except Exception as exc:
+            events.debug("Group Well Not Shown", f"{self.name}: {exc}",
+                         source=SOURCE, exception=exc)
+
+    @property
+    def hosted_views(self):
+        """The views drawn on this entry, in the order they joined."""
+        return list(self._hosted.values())
 
     # -- the scroll area ---------------------------------------------------
     def _build_scroll_area(self):
@@ -2400,6 +2505,14 @@ class TkPanelView(PanelView):
         return self._after_id is not None
 
     def close(self):
+        if self._is_closed:
+            return
+        self._is_closed = True
+        # The groups drawn on this entry are inside its frame: they close
+        # first (the dashboard moves them to pages of their own before a
+        # host closes; this is the teardown's order).
+        for view in list(self._hosted.values()):
+            view.close()
         if self._after_id is not None:
             try:
                 self.frame.after_cancel(self._after_id)
@@ -2415,11 +2528,16 @@ class TkPanelView(PanelView):
                 self._close_log_window(element, restore_focus=False)
         super().close()
         self._widgets.clear()
-        try:
-            self.frame.destroy()
-        except Exception as exc:
-            events.debug("Panel Destroy Failed", str(exc), source=SOURCE,
-                         exception=exc)
+        for widget in (self.frame, self._foot):
+            if widget is None:
+                continue
+            try:
+                widget.destroy()
+            except Exception as exc:
+                events.debug("Panel Destroy Failed", str(exc), source=SOURCE,
+                             exception=exc)
+        if self._host_view is not None:
+            self._host_view._detach(self.name)
         events.debug("Panel Closed", self.name, source=SOURCE)
 
     # -- layout: planning ---------------------------------------------------
@@ -2504,7 +2622,7 @@ class TkPanelView(PanelView):
         if self._well is None:
             if 1 not in self._tiers:
                 self._tier_frame(1)
-            opener = _Disclosure(self._body, self._tier_text.get(
+            opener = _Disclosure(self._foot_parent(), self._tier_text.get(
                 2, theme.TIER_LABELS[2]), lambda is_open: self.set_disclosure(2, is_open),
                 _page())
             self._disclosures[2] = opener
@@ -2515,7 +2633,7 @@ class TkPanelView(PanelView):
                 # A page of its own (Setup, a test): the tray without the
                 # sheet's scroller, so without its top line.
                 well = self._well = self._well_holder = tk.Frame(
-                    self._body, background=theme.SURFACE, padx=SPACE[5],
+                    self._foot_parent(), background=theme.SURFACE, padx=SPACE[5],
                     pady=SPACE[4])
             self._tiers[2] = tk.Frame(well, background=theme.SURFACE)
             self._tiers[2].pack(side="top", fill="x")
@@ -2548,7 +2666,7 @@ class TkPanelView(PanelView):
         the wheel. The well is a frame on a canvas of its own; the canvas
         asks for no height, so the entry's natural height is its head and
         tier 1. -> the well frame"""
-        area = self._well_holder = tk.Frame(self._body, background=_page())
+        area = self._well_holder = tk.Frame(self._foot_parent(), background=_page())
         _tray_line(area)
         self._well_bar = ttk.Scrollbar(area, orient="vertical")
         canvas = self._well_canvas = tk.Canvas(area, height=1, background=_page(),
@@ -2706,9 +2824,15 @@ class TkPanelView(PanelView):
         opener = self._disclosures.get(2)
         if opener is None:
             return
+        if self._foot_anchor is not None:
+            after = self._foot_anchor
+        elif self._group_slot is not None and self._hosted and self._is_opened:
+            after = self._group_slot
+        else:
+            after = self._tiers[1]
         try:
             opener.frame.pack(side="top", anchor="w", padx=self._inset,
-                              pady=(SPACE[3], 0), after=self._tiers[1])
+                              pady=(SPACE[3], 0), after=after)
         except Exception as exc:
             events.debug("Disclosure Not Shown", f"{self.name}: {exc}",
                          source=SOURCE, exception=exc)
@@ -2765,14 +2889,23 @@ class TkPanelView(PanelView):
                 target.pack(side="top", fill="both" if on_sheet else "x",
                             expand=on_sheet, padx=self._inset,
                             pady=(0, SPACE[3]), after=self._disclosures[2].frame)
+                self._is_well_mapped = True
             elif tier == 3 and is_open:
                 target.pack(side="top", fill="x", padx=self._inset,
                             pady=(SPACE[2], 0))
             else:
                 target.pack_forget()
+                if tier == 2:
+                    self._is_well_mapped = False
         except Exception as exc:
             events.debug("Tier Not Shown", f"{self.name} tier {tier}: {exc}",
                          source=SOURCE, exception=exc)
+        if tier == 2:
+            # The groups' wells follow this well; a group's well opening
+            # gives the host's tail slot the page's height.
+            self._seat_tail()
+            if self._host_view is not None:
+                self._host_view._seat_tail()
 
     # -- the two pages (K4) -----------------------------------------------------
     def _apply_page(self):
@@ -2781,6 +2914,7 @@ class TkPanelView(PanelView):
         The device page shows the disclosures and the remembered wells.
         `_DISCLOSED` is not touched either way."""
         is_press = self._sheet is not None and not self._is_opened
+        self._seat_group()
         opener = self._disclosures.get(2)
         if opener is not None:
             if self._is_opened:
@@ -2793,6 +2927,7 @@ class TkPanelView(PanelView):
         for tier in (2, 3):
             if tier in self._tiers:
                 self._map_tier(tier)
+        self._seat_tail()
         self._open_tip.text = f"{OPEN_WORD} {self.name}" if is_press else ""
         try:
             if is_press:
@@ -5227,6 +5362,13 @@ class TkPanelView(PanelView):
             except Exception:
                 pass
 
+    @staticmethod
+    def _hazard_of(state):
+        """(stop did not confirm, the fault's reason or "") from a state."""
+        state = state if isinstance(state, dict) else {}
+        return (state.get("stop_confirmed") is False,
+                (state.get("fault") or "") if state.get("is_faulted") else "")
+
     def _refresh(self):
         super()._refresh()
         if self._panel is None:
@@ -5235,8 +5377,26 @@ class TkPanelView(PanelView):
             # the chord, the gamepad or the model's own switch. A failed
             # disable is marked the same way (O4).
             state = self._last_state
-            self.set_hazard(state.get("stop_confirmed") is False,
-                            state.get("fault") if state.get("is_faulted") else "")
+            is_unconfirmed, fault = self._hazard_of(state)
+            if not self._is_opened:
+                # The overview entry of a host carries the stop state of the
+                # models drawn on its page (they have no entry of their own).
+                for name in self._hosted:
+                    try:
+                        other = self.controller.state(name)
+                    except Exception:
+                        continue
+                    other_unconfirmed, other_fault = self._hazard_of(other)
+                    is_unconfirmed = is_unconfirmed or other_unconfirmed
+                    if other_fault and not fault:
+                        fault = f"{name}: {other_fault}"
+            self.set_hazard(is_unconfirmed, fault)
+            if self._state_word is not None:
+                try:
+                    mode = str(state.get("mode") or "").replace("_", " ")
+                    self._state_word.configure(text=_sentence(mode))
+                except Exception:
+                    pass
         devices = self._last_state.get("devices") or {}
         self._set_lost([name for name, status in sorted(devices.items())
                         if str(status) == "lost"])
@@ -5447,6 +5607,7 @@ class TkDashboard(Dashboard):
         super().__init__(controller, setup)
         self._panels = {}       # name -> TkPanelView
         self._frames = {}       # name -> its frame: Setup's page, a model's entry
+        self._hosts = {}        # hosted name -> the host whose page draws it
         self._menu_vars = {}    # name -> BooleanVar in the Models menu
         self._after_id = None
         self._is_focused = None
@@ -5941,7 +6102,7 @@ class TkDashboard(Dashboard):
         self._rail_lamps = {}
         self._energy_marks = {}
         self._overview_item = None
-        names = [n for n in self._panels if n != self.SETUP_TAB]
+        names = self._page_names()
         if names:
             ring, label = self._overview_item = self._rail_line(
                 OVERVIEW_PAGE, self._on_overview_pressed)
@@ -5965,7 +6126,8 @@ class TkDashboard(Dashboard):
         """A line's lamp slot: SIGNAL for a model whose stop did not confirm
         or whose disable failed; ink on the shown page; else hidden."""
         seen = self._stop_seen or ((), (), False)
-        if name is not None and (name in (seen[1] or ()) or name in self._faulted):
+        members = self._members(name) if name is not None else ()
+        if any(m in (seen[1] or ()) or m in self._faulted for m in members):
             return "unconfirmed"
         if self._rail_ground(name) == theme.SURFACE:
             return "on"
@@ -6116,11 +6278,13 @@ class TkDashboard(Dashboard):
         alone, full width. A device that no longer exists gives way to the
         overview. Laid out again only when the models, the page or the
         column count change."""
-        names = [name for name in self._panels if name != self.SETUP_TAB]
+        names = self._page_names()
+        if self._opened in self._hosts:
+            self._opened = self._hosts[self._opened]
         if self._opened not in names:
             self._opened = None
         columns = self._sheet_columns()
-        key = (tuple(names), self._opened, columns)
+        key = (tuple(names), self._opened, columns, tuple(sorted(self._hosts.items())))
         if key == self._sheet_key and not force:
             return
         self._sheet_key = key
@@ -6131,6 +6295,18 @@ class TkDashboard(Dashboard):
                 view.frame.grid_forget()
             except Exception:
                 pass
+        for name, host in self._hosts.items():
+            # A group is drawn, and polled, only on its host's device page.
+            view = self._panels[name]
+            is_shown = host == self._opened
+            view.set_prominence(is_shown)
+            if is_shown:
+                view.resume()
+            else:
+                view.pause()
+        for name in names:
+            if self._panels[name].hosted_views:
+                self._panels[name]._apply_page()
         for row in self._sheet_rows:
             try:
                 row.destroy()
@@ -6202,13 +6378,17 @@ class TkDashboard(Dashboard):
             return 0
         if not isinstance(need, int):
             return 0
-        if view is not None and view.well_canvas is not None:
-            need += view.WELL_FLOOR_PX
+        for each in ([view] + view.hosted_views) if view is not None else ():
+            if each.well_canvas is not None:
+                need += each.WELL_FLOOR_PX
         return need
 
     def _scroll_device_well(self, step, widget=None):
         view = self._panels.get(self._opened) if self._opened else None
-        return bool(view is not None and view.scroll_well(step, widget))
+        if view is None:
+            return False
+        return any(each.scroll_well(step, widget)
+                   for each in [view] + view.hosted_views)
 
     def show_model(self, name):
         """The device page (K4): what a press on a model's rail line or on
@@ -6216,10 +6396,99 @@ class TkDashboard(Dashboard):
         disclosures, scrolled to the top; Setup gives way. -> bool"""
         if name not in self._panels or name == self.SETUP_TAB:
             return False
-        self._opened = name
+        host = self._hosts.get(name)
+        self._opened = host or name
         self._show_sheet_page()
+        if host is not None:
+            # A model drawn on another's page: that page, at its group.
+            self._sheet.scroll_into_view(self._panels[name].frame)
+            events.debug("Model Shown", f"{name} on {host}", source=SOURCE)
+            return True
         events.debug("Model Shown", name, source=SOURCE)
         return True
+
+    # -- models drawn on another model's page (Model.HOST) ----------------------
+    def _page_names(self):
+        """The models with a page (a rail line, an overview entry): every
+        open one but Setup and those drawn on another model's page."""
+        return [n for n in self._panels
+                if n != self.SETUP_TAB and not self._hosts.get(n)]
+
+    def _members(self, name):
+        """A page's models: its own, then the ones drawn on it."""
+        return [name] + [n for n, host in self._hosts.items() if host == name]
+
+    def _station_models(self):
+        """`state()["models"]`, or None when it cannot be read."""
+        try:
+            return (self.controller.state() or {}).get("models") or {}
+        except Exception as exc:
+            events.debug("Station State Unread", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
+            return None
+
+    def _placement(self, models, adding=None):
+        """Where each open model is drawn, from `state()["models"][n]["host"]`:
+        hosted name -> host, for a host that has a page of its own here.
+        `adding` is a model whose view is being built."""
+        wanted, known = {}, set(self._panels) | {adding}
+        for name, state in models.items():
+            host = state.get("host") if isinstance(state, dict) else None
+            if (name in known and host and host != name
+                    and host in self._panels and host != self.SETUP_TAB):
+                wanted[name] = host
+        # A host that is itself drawn elsewhere hosts nothing: no chains.
+        return {name: host for name, host in wanted.items() if host not in wanted}
+
+    def _new_view(self, name, host=None):
+        view = TkPanelView(self._sheet.body, self.controller, name,
+                           sheet=self._sheet,
+                           host=self._panels.get(host) if host else None)
+        view.log_window_bounds = self._log_window_bounds
+        view.on_open = self.show_model
+        view.on_close = self._confirm_close_model
+        return view
+
+    def _place(self, name, host):
+        """Build `name`'s view again where it is now drawn: a Tk widget
+        cannot change parents, so a group moving onto a page, or back to a
+        page of its own, is a new view (its uncommitted edits go with the
+        old one)."""
+        old = self._panels.get(name)
+        if old is not None:
+            try:
+                old.close()
+            except Exception as exc:
+                events.debug("Panel Close Failed", f"{name}: {exc}", source=SOURCE,
+                             exception=exc)
+        view = self._new_view(name, host)
+        self._panels[name] = view
+        self._frames[name] = view.frame
+        if host:
+            self._hosts[name] = host
+        else:
+            self._hosts.pop(name, None)
+        events.debug("Entry Placed", f"{name} on {host}" if host
+                     else f"{name} on its own page", source=SOURCE)
+        return view
+
+    def _rehome(self, models=None):
+        """Draw every model where `state()` says it belongs. A view whose
+        model has already left the controller is left alone: its removal
+        is on its way. -> True when a model moved."""
+        models = self._station_models() if models is None else models
+        if models is None:
+            return False
+        placement = self._placement(models)
+        moved = [name for name in self._panels
+                 if name != self.SETUP_TAB and name in models
+                 and placement.get(name) != self._hosts.get(name)]
+        for name in moved:
+            self._place(name, placement.get(name))
+        if moved:
+            self._build_rail_list()
+            self._lay_out_sheet(force=True)
+        return bool(moved)
 
     def show_overview(self):
         """The overview (K4): every open model, tier 1 only. -> bool"""
@@ -6685,6 +6954,7 @@ class TkDashboard(Dashboard):
         if not isinstance(station, dict):
             return
         models = station.get("models") or {}
+        self._rehome(models)
         faulted = tuple(name for name, state in models.items()
                         if isinstance(state, dict) and state.get("is_faulted"))
         energized = tuple(station.get("energized") or ())
@@ -6772,16 +7042,19 @@ class TkDashboard(Dashboard):
             latched, unconfirmed = seen[0], seen[1]
         size = _lamp_px()
         for name, (canvas, tooltip) in self._rail_marks.items():
-            if name in (unconfirmed or ()):
+            # A host's line carries the models drawn on its page (they have
+            # no line of their own): the worst of them shows.
+            members = self._members(name)
+            if any(m in (unconfirmed or ()) for m in members):
                 fill, words = theme.SIGNAL, RAIL_MARK_WORDS["unconfirmed"]
-            elif name in self._faulted:
+            elif any(m in self._faulted for m in members):
                 fill, words = theme.SIGNAL, RAIL_MARK_WORDS["faulted"]
-            elif name in latched:
+            elif any(m in latched for m in members):
                 fill, words = theme.TEXT, RAIL_MARK_WORDS["latched"]
             else:
                 fill, words = None, ""
             energy = self._energy_marks.get(name)
-            is_energized = name in self._energized
+            is_energized = any(m in self._energized for m in members)
             if is_energized:
                 words = (f"{words}; {RAIL_MARK_WORDS['energized'].lower()}" if words
                          else RAIL_MARK_WORDS["energized"])
@@ -6891,12 +7164,15 @@ class TkDashboard(Dashboard):
     def _add_panel(self, name):
         if name in self._panels:
             return
-        view = TkPanelView(self._sheet.body, self.controller, name, sheet=self._sheet)
-        view.log_window_bounds = self._log_window_bounds
-        view.on_open = self.show_model
-        view.on_close = self._confirm_close_model
+        models = self._station_models() or {}
+        host = self._placement(models, adding=name).get(name)
+        view = self._new_view(name, host)
         self._panels[name] = view
         self._frames[name] = view.frame
+        if host:
+            self._hosts[name] = host
+        # A host launched after its hosted models takes them onto its page.
+        self._rehome(models)
         self._build_menu_bar()
         self._build_rail_list()
         if self._is_opening:
@@ -6915,6 +7191,16 @@ class TkDashboard(Dashboard):
     def _remove_panel(self, name):
         if name not in self._panels:
             return
+        # The models drawn on this page get pages of their own back before
+        # it goes: their widgets are inside it.
+        still_open = set(self.controller.model_names)
+        for hosted in [n for n, host in self._hosts.items() if host == name]:
+            if hosted in still_open:
+                self._place(hosted, None)
+            else:
+                # Leaving too: its own removal takes the entry away.
+                self._panels[hosted].close()
+                self._hosts.pop(hosted, None)
         self._destroy_panel(name)
         self._build_menu_bar()
         self._build_rail_list()
@@ -7002,6 +7288,7 @@ class TkDashboard(Dashboard):
     def _destroy_panel(self, name):
         view = self._panels.pop(name, None)
         frame = self._frames.pop(name, None)
+        self._hosts.pop(name, None)
         if view is not None:
             try:
                 view.close()
