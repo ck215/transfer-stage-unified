@@ -394,6 +394,40 @@ function eventText(event) {
   return (message ? title + ': ' + message : title) + count;
 }
 
+/** The acknowledgement queue (rb-ack A3): one entry per title, oldest
+ *  first. A repeat of a queued title joins its entry - counted, never a
+ *  second dialog - so the open one is redrawn, not reopened. Returns the
+ *  entry's index. Pure, so a test without a browser runs the real code. */
+function ackEnqueue(queue, event) {
+  const title = String((event && event.title) || '');
+  const index = queue.findIndex((entry) => entry.title === title);
+  if (index >= 0) {
+    queue[index].events.push(event);
+    return index;
+  }
+  queue.push({ title, events: [event] });
+  return queue.length - 1;
+}
+
+/** What the dialog says for the head of the queue: the title in sentence
+ *  case as the heading, the newest message as the body with the repeat
+ *  count, how many other titles wait, and the one key's words. */
+function ackWords(queue) {
+  const entry = queue[0];
+  if (!entry) return null;
+  const latest = entry.events[entry.events.length - 1] || {};
+  const repeats = entry.events.reduce(
+    (sum, event) => sum + Math.max(1, Number(event.count) || 1), 0);
+  const message = unshout(latest.message || latest.text || '').trim();
+  const waiting = queue.length - 1;
+  return {
+    title: entry.title ? sentenceCase(entry.title) : 'Notice',
+    body: message + (repeats > 1 ? ' (x' + repeats + ')' : ''),
+    waiting: waiting > 0 ? waiting + ' more waiting' : '',
+    key: 'Understood',
+  };
+}
+
 /** The event that says a model did not confirm a stop (L2). */
 function isUnconfirmedEvent(event) {
   return Boolean(event && event.title === UNCONFIRMED_TITLE);
@@ -2798,6 +2832,7 @@ class Dashboard {
       modalCount: document.getElementById('ack-count'),
       modalText: document.getElementById('ack-text'),
       modalOk: document.getElementById('ack-ok'),
+      modalDialog: document.querySelector('#ack-modal .dialog'),
       confirm: document.getElementById('confirm-modal'),
       confirmText: document.getElementById('confirm-text'),
       confirmYes: document.getElementById('confirm-yes'),
@@ -2824,6 +2859,7 @@ class Dashboard {
     this.isLogCollapsed = true;
     this.dom.stop.addEventListener('click', () => this.toggleEstopAll());
     this.dom.modalOk.addEventListener('click', () => this.acknowledge());
+    this.buildAckHeading();
     this.dom.pickerClose.addEventListener('click', () => this.closeRegionPicker());
     this.dom.pickerUse.addEventListener('click', () => this.useTypedRegion());
     for (const field of this.dom.pickerFields) {
@@ -2843,7 +2879,7 @@ class Dashboard {
     // swallow it first. Ctrl+. stops every model from anywhere, a
     // text box included (F9). Escape answers the top-most thing over the page: a
     // confirmation is cancelled, the region picker closes, the drawer
-    // withdraws. It never dismisses an acknowledgement - that wants one.
+    // withdraws, an acknowledgement is Understood.
     window.addEventListener('keydown', (event) => {
       if (this.isShutDown) return;      // nothing left to stop or answer
       if (event.ctrlKey && !event.altKey && event.key === STOP_KEY) {
@@ -2854,6 +2890,9 @@ class Dashboard {
       if (event.key !== 'Escape') return;
       if (this.confirmPending) { event.preventDefault(); this.answerConfirm(false); return; }
       if (!this.dom.picker.hidden) { this.closeRegionPicker(); return; }
+      // rb-ack (A3): an acknowledgement has one answer, Understood, so
+      // Escape gives it too - as Return on its focused key does.
+      if (!this.dom.modal.hidden) { event.preventDefault(); this.acknowledge(); return; }
       // An in-page panel answers its own Escape (G4): the drawer behind it
       // does not also withdraw.
       if (document.activeElement && document.activeElement.closest
@@ -4126,20 +4165,16 @@ class Dashboard {
   }
 
   /** Only `needs_ack` opens a modal. Everything else is a line in the log.
-   *  The messages queue: a second one arriving before the first is
-   *  acknowledged is added under it, never written over it (F1, HC-2). The
-   *  modal starts below the rail, so the stop stays in reach. */
+   *  The dialog shows ONE title at a time (rb-ack A3, parity with the
+   *  latch-release question): a second title waits behind it, never over
+   *  it or under it (F1, HC-2), and a repeat of a queued title is counted
+   *  in its entry. The modal starts below the rail, so the stop stays in
+   *  reach, and it takes nothing inert that the rail needs. */
   showAck(event) {
     const wasHidden = this.dom.modal.hidden;
     if (wasHidden) this.ackReturn = document.activeElement;
-    const text = eventText(event);
-    this.ackQueue.push(text);
-    const list = this.dom.modalText;
-    list.appendChild(make('p', 'ack-line', text));
-    const count = this.ackQueue.length;
-    putText(this.dom.modalCount, count > 1 ? count + ' messages need acknowledging' : '');
-    this.dom.modalCount.hidden = count < 2;
-    putText(this.dom.modalOk, count > 1 ? 'Acknowledge all' : 'Acknowledge');
+    ackEnqueue(this.ackQueue, event);
+    this.renderAck();
     if (wasHidden) {
       this.dom.modal.hidden = false;
       this.updateInert();
@@ -4147,8 +4182,40 @@ class Dashboard {
     }
   }
 
+  /** The dialog's heading: the event's title, as the confirm dialog's
+   *  words are its text. Built here because the markup is not this file's;
+   *  the dialog is labelled by the heading and described by the body. */
+  buildAckHeading() {
+    if (this.dom.modalTitle) return;
+    const heading = make('h2', 'dialog-title');
+    heading.id = 'ack-title';
+    this.dom.modalDialog.insertBefore(heading, this.dom.modalDialog.firstChild);
+    this.dom.modalTitle = heading;
+    putAttr(this.dom.modalDialog, 'aria-labelledby', 'ack-title');
+    putAttr(this.dom.modalDialog, 'aria-describedby', 'ack-text');
+    putText(this.dom.modalOk, 'Understood');
+  }
+
+  renderAck() {
+    const words = ackWords(this.ackQueue);
+    if (!words) return;
+    putText(this.dom.modalTitle, words.title);
+    clear(this.dom.modalText);
+    this.dom.modalText.appendChild(make('p', 'ack-line', words.body));
+    putText(this.dom.modalCount, words.waiting);
+    this.dom.modalCount.hidden = !words.waiting;
+    putText(this.dom.modalOk, words.key);
+  }
+
+  /** Understood: the title shown is read, every repeat of it; the next
+   *  title takes the dialog, or it closes and focus goes back. */
   acknowledge() {
-    this.ackQueue = [];
+    this.ackQueue.shift();
+    if (this.ackQueue.length) {
+      this.renderAck();
+      this.dom.modalOk.focus({ preventScroll: true });
+      return;
+    }
     clear(this.dom.modalText);
     this.dom.modal.hidden = true;
     this.updateInert();
