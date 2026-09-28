@@ -845,6 +845,7 @@ function clockTime(date) {
 function renderReadonly(panel, element) {
   const node = row(element, 'stat');
   if (element.model_attr) node.dataset.attr = element.model_attr;
+  const isStatusLine = panel.name === SETUP_NAME && /_status$/.test(element.model_attr || '');
   const value = make('span', 'value is-empty ' + roleClass(element.role), '--');
   value.setAttribute('translate', 'no');
   node.appendChild(value);
@@ -866,7 +867,10 @@ function renderReadonly(panel, element) {
       let shown = readoutText(text);
       // L17: Setup's statuses are words the model wrote in lower case
       // ("simulated", "on"); they read in sentence case like every line.
-      if (panel.name === SETUP_NAME && readoutKind(shown) !== 'number') shown = sentence(shown);
+      // A status is a `*_status` line; any other value - the version sha,
+      // the incoming commits, the address - is shown as the model gives it
+      // (W2: "d66c462" had read "D66c462").
+      if (isStatusLine) shown = sentence(shown);
       // Status by exception, tier 1 only: tiers 2 and 3 are where a normal
       // state is still read on purpose. A model's key reading (`rail: true`)
       // is never hidden: unknown is information, drawn "--" muted at the

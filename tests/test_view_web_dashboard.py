@@ -761,3 +761,69 @@ def test_w1_pin_opened_skips_a_card_with_guests():
     body = _body(r"\n  pinOpened\(\) \{(.*?)\n  \}\n")
     assert "this.guestsOf(card.name).length" in body, body
 
+
+
+# ==========================================================================
+# W2: a value is shown as the model gives it (brief-web-polish.md)
+# ==========================================================================
+class _VersionSetup(FakeSetup):
+    """FakeSetup with the real Setup's Update row: a version sha and the
+    incoming commits (values, lower case), and a row status (a status line,
+    L17, lower case)."""
+
+    def __init__(self):
+        super().__init__()
+        self.station_version = "d66c462"
+        self.update_log = "d66c462 fix the map"
+        self.probe_status = "simulated"
+
+    @property
+    def schema(self):
+        base = super().schema
+        base["sections"].insert(0, sch.section(
+            "Update",
+            sch.readonly("Station", "station_version"),
+            sch.readonly("Coming", "update_log"),
+            layout="row"))
+        base["sections"][-1]["elements"].append(sch.readonly("Status:", "probe_status"))
+        return base
+
+
+@pytest.fixture
+def version_station():
+    controller = Controller()
+    controller.factory = lambda config: FakeProbe()
+    probe = FakeProbe()
+    controller.add("Fake Probe", probe, {"kind": "Fake Probe"})
+    view = WebView(controller, _VersionSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, probe
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_w2_a_lowercase_value_is_not_sentence_cased(version_station, tmp_path):
+    """The version sha read "D66c462". A value's text is the model's; the
+    caption beside it and a Setup status line keep their sentence case."""
+    view, controller, probe = version_station
+    out = _browse(view, r"""
+      if (!(await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open')))) {
+        await page.click('#setup-link'); await sleep(500);
+      }
+      await until(() => document.querySelector('#setup-drawer [data-attr="station_version"] .value')
+        && document.querySelector('#setup-drawer [data-attr="station_version"] .value').textContent !== '--');
+      await sleep(300);
+      return page.evaluate(() => {
+        const at = (attr) => document.querySelector('#setup-drawer [data-attr="' + attr + '"]');
+        const value = (attr) => at(attr).querySelector('.value').textContent;
+        return { version: value('station_version'), log: value('update_log'),
+                 status: value('probe_status'),
+                 caption: at('station_version').textContent.replace(value('station_version'), '').trim() };
+      });
+    """, tmp_path)
+    assert out["version"] == "d66c462", out
+    assert out["log"] == "d66c462 fix the map", out
+    assert out["status"] == "Simulated", out
+    assert out["caption"].startswith("Station"), out

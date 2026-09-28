@@ -3065,7 +3065,9 @@ def test_setup_says_its_statuses_in_sentence_case_and_cancel_scan_only_while_sca
       await sleep(300);
       return page.evaluate(() => {
         const drawer = document.getElementById('setup-drawer');
-        const words = Array.from(drawer.querySelectorAll('.section-row .row.stat .value'))
+        // L17 is about the status lines; any other value (the version sha,
+        // the address) is shown as the model gives it (W2).
+        const words = Array.from(drawer.querySelectorAll('.section-row .row.stat[data-attr$="_status"] .value'))
           .filter((v) => v.getClientRects().length).map((v) => v.textContent);
         const cancel = Array.from(drawer.querySelectorAll('button')).find((b) => b.textContent === 'Cancel scan');
         return { words, cancel: Boolean(cancel && cancel.getClientRects().length) };
