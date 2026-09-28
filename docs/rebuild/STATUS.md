@@ -160,6 +160,28 @@ lands as `palette.py` / `theme.py` tokens.
   2733, golden 78, Qt 230**. Open owner call: the full picture is PNG
   (~0.7 MB here, more on the lab display, ~0.5 s to encode); JPEG or a
   lower compression is one line if it matters.
+  **2026-09-28: one dashboard, and the hidden-tab stop.** Owner: "why is
+  Red Percent still separate from the Transfer Map? They should be a
+  single dashboard", and "the app going out of focus stops controller
+  polling". Core `0d3645d`: `Model.HOST` (Red Percent -> "Transfer Map"),
+  `Controller.state` publishes `host` while the host is launched, Setup
+  ticks the hosted rows, `MODEL_CONTRACT.md` step 1. Three view worktrees
+  (`rb-dash-{tk,qt,web}`, one contract `handoff/brief-dashboard-contract.md`)
+  merged: the map's page runs tier 1, the Red Percent group (name one
+  step down, its mode as a caption), Configure Transfer Map, Red Percent
+  details; no Red Percent link or Overview entry while hosted; its stop
+  marks fold into the map's (unconfirmed first, the views' existing
+  order); close the map and it gets its page back. Focus bug root cause
+  (Web): `visibilitychange` stopped the heartbeat, so a hidden tab looked
+  like a gone browser and the watchdog FULL STOPPED at 15 s. Now the
+  heartbeat runs in a Worker that beats while hidden and ends on
+  `pagehide`/Quit; `/api/heartbeat` carries `hidden` for the log; the
+  watchdog rules are unchanged. Owner note: D-8's "closed the laptop lid"
+  case now counts as present until the machine sleeps. Captures
+  `handoff/shots/dashboard_web_*`. Open: the map's tier 1 (~480 px) is
+  pinned and Red Percent's group scrolls under it; pinning off for a host
+  page is the likely follow-up. Tk/Qt renders unseen. Gates on the
+  merged tree: **fast 2798, golden 78, Qt 243**.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,

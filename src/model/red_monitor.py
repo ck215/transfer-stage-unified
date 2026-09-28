@@ -355,7 +355,7 @@ class RedMonitor(Model):
     def next_step(self):
         """What unblocks Start run, or "" (quiet) when nothing does (L3)."""
         if self.gate_mode == "no_region":
-            return "Set a capture region under Red Percent details to start a run."
+            return "Set a capture region to start a run."
         return ""
 
     @property

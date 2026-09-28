@@ -16,7 +16,7 @@ on it. Plan rows: Tier S in
 
 ## How a session records a trial (for the owner)
 
-Everything happens on the **Transfer Map** page. You do not need to open the Red Percent page during a trial; Red Percent only has to be launched.
+Everything happens on the **Transfer Map** page: since 2026-09-28 Red Percent is drawn on it (its live group after the trial sheet, its details behind their own disclosure) and has no page of its own while the map is launched. Ticking the Transfer Map in Setup ticks Red Percent.
 
 1. **Launch** with Red Percent and the Transfer Map ticked (the Rotator and a probe too, ideally). When the Transfer Map opens, it makes its database ready and the event log says where it is and how many trials it holds ("Database Ready: …/data/transfer_map.sqlite: 12 trial(s)"). The same path is on the sheet under **Session → Database**, next to the **Trials** count. `--map-db PATH` or `STATION_MAP_DB` choose another file.
 2. **New session database** (optional, under Session) starts a fresh file beside the current one, `transfer_map_<date>_<time>.sqlite`. The old file stays on disk, untouched. Pictures and exports stay in the same folder.
