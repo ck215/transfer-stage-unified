@@ -6058,3 +6058,369 @@ def test_signature_the_slider_is_a_fader_cap(dashboard, monkeypatch):
     assert trough.colours == [theme.KEY_RIM, theme.SURFACE]
     well = style.elements["StationWell.Scale.trough"][0]
     assert well.colours == [theme.KEY_RIM, theme.DEEP]
+
+
+# ---------------------------------------------------------------------------
+# One dashboard (owner ruling 2026-09-28): a hosted model is drawn on its
+# host's page (`Model.HOST`, `state()["models"][name]["host"]`)
+# ---------------------------------------------------------------------------
+
+class MapPanel(DemoPanel):
+    NAME = "Map"
+
+
+class HostedPanel(DemoPanel):
+    NAME = "Hosted"
+    HOST = "Map"
+
+    @property
+    def schema(self):
+        """Demo's sections as tier 1, plus a tier-2 section with its own
+        disclosure words (Red Percent's "Red Percent details")."""
+        built = super().schema
+        built["sections"].append(sch.section(
+            "Details", sch.entry("Note", "note", self.PARAMS["note"]),
+            tier=2, disclosure="Hosted details"))
+        return built
+
+
+class HostController(FakeController):
+    """`Controller.state()` publishes `host` per model: the host's NAME
+    while the host is open, else None, never itself (as the real one)."""
+
+    def state(self, name=None):
+        station = super().state(name)
+        if name is not None:
+            return station
+        for model, state in station["models"].items():
+            host = getattr(self.panels[model], "HOST", None)
+            state["host"] = host if host in self.panels and host != model else None
+        return station
+
+
+@pytest.fixture
+def pack_chain(monkeypatch):
+    """Tk's packing order per master, `after=`/`before=` honoured, and the
+    stacking order `lift(above)` sets (the focus order): the stand-in's own
+    `pack` only records that a widget was packed."""
+    plain_pack = FakeWidget.pack
+
+    def pack(self, **kwargs):
+        plain_pack(self, **kwargs)
+        master = kwargs.get("in_") or self.master
+        chain = master.__dict__.setdefault("packed", [])
+        anchor = kwargs.get("after") or kwargs.get("before")
+        if self in chain and anchor is None:
+            return
+        if self in chain:
+            chain.remove(self)
+        if anchor is None:
+            chain.append(self)
+            return
+        assert anchor in chain, "packed after a widget that is not packed there"
+        index = chain.index(anchor) + (1 if kwargs.get("after") is not None else 0)
+        chain.insert(index, self)
+
+    def pack_forget(self):
+        self.is_packed = False
+        chain = getattr(self.master, "packed", None)
+        if chain and self in chain:
+            chain.remove(self)
+
+    def lift(self, above=None):
+        siblings = getattr(self.master, "children", None)
+        if not siblings or self not in siblings:
+            return
+        siblings.remove(self)
+        if above is not None and above in siblings:
+            siblings.insert(siblings.index(above) + 1, self)
+        else:
+            siblings.append(self)
+
+    monkeypatch.setattr(FakeWidget, "pack", pack)
+    monkeypatch.setattr(FakeWidget, "pack_forget", pack_forget)
+    monkeypatch.setattr(FakeWidget, "lift", lift, raising=False)
+    monkeypatch.setattr(FakeWidget, "tkraise", lift, raising=False)
+
+
+def _on_screen(widget):
+    """Every widget on screen under `widget`, in the order the eye meets
+    them: packed children in packing order, then gridded ones."""
+    out = [widget]
+    packed = list(getattr(widget, "packed", ()))
+    gridded = [child for child in widget.children
+               if child not in packed and child.grid_info and not child.is_destroyed]
+    for child in packed + gridded:
+        if not child.is_destroyed:
+            out.extend(_on_screen(child))
+    return out
+
+
+def _is_inside(widget, ancestor):
+    node = widget
+    while node is not None:
+        if node is ancestor:
+            return True
+        node = getattr(node, "master", None)
+    return False
+
+
+@pytest.fixture
+def host_pair():
+    return MapPanel(), HostedPanel()
+
+
+@pytest.fixture
+def host_dashboard(host_pair, setup_panel, pack_chain):
+    host, hosted = host_pair
+    controller = HostController(Map=host, Hosted=hosted)
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    yield built
+    if not built._closing:
+        built.close()
+
+
+def test_host_a_hosted_model_has_no_page_of_its_own(host_dashboard):
+    """The page list has one link: the host's. The overview has one entry."""
+    assert list(host_dashboard._rail_items) == ["Map"]
+    host_dashboard.show_overview()
+    placed = [name for name, view in host_dashboard._panels.items()
+              if name != host_dashboard.SETUP_TAB and view.frame.grid_info]
+    assert placed == ["Map"]
+
+
+def test_host_page_holds_the_hosted_group_in_the_contract_order(host_dashboard):
+    """M's tier 1, the group (H's name, then H's tier 1), M's tier-2
+    disclosure, H's tier-2 disclosure with H's own words."""
+    host_dashboard.show_model("Map")
+    host = host_dashboard._panels["Map"]
+    hosted = host_dashboard._panels["Hosted"]
+    shown = _on_screen(host.frame)
+    marks = [host._tiers[1], hosted._title, hosted._tiers[1],
+             host._disclosures[2].frame, hosted._disclosures[2].frame]
+    assert all(mark in shown for mark in marks), "part of the page is not shown"
+    assert [shown.index(mark) for mark in marks] == sorted(
+        shown.index(mark) for mark in marks)
+    assert hosted._title.cget("text") == "Hosted"
+    assert hosted._disclosures[2].text == "Hosted details"
+
+
+def test_host_a_hosted_group_follows_the_hosts_tier_one_in_the_tab_order(
+        host_dashboard):
+    """Tk traverses siblings in stacking order: the group's slot sits just
+    above the host's tier 1, before the host's own disclosure."""
+    host_dashboard.show_model("Map")
+    host = host_dashboard._panels["Map"]
+    hosted = host_dashboard._panels["Hosted"]
+    body = host._body.children
+    slot = next(child for child in body if _is_inside(hosted.frame, child))
+    assert (body.index(host._tiers[1]) < body.index(slot)
+            < body.index(host._disclosures[2].frame))
+
+
+def test_host_the_group_heading_is_the_name_one_step_down_and_the_mode(
+        host_dashboard, host_pair):
+    host_dashboard.show_model("Map")
+    host = host_dashboard._panels["Map"]
+    hosted = host_dashboard._panels["Hosted"]
+    assert host._title.cget("font") == tkmod._font(tkmod.STEP_2, bold=True)
+    assert hosted._title.cget("font") == tkmod._font(tkmod.STEP_1, bold=True)
+    word = hosted._state_word
+    assert word.cget("text") == "Idle"
+    host_pair[1].mode = "no_region"
+    hosted._refresh()
+    assert word.cget("text") == "No region"
+    assert word.cget("foreground") == theme.MUTED
+    host_pair[1].mode = "running"
+    hosted._refresh()
+    assert word.cget("text") == "Running"
+    assert host._state_word is None, "the host's own head is unchanged"
+
+
+def test_host_a_command_in_the_group_reaches_the_hosted_model(host_dashboard,
+                                                            host_pair):
+    host_dashboard.show_model("Map")
+    host = host_dashboard._panels["Map"]
+    hosted = host_dashboard._panels["Hosted"]
+    go = next(e for e in hosted._elements if e.get("command") == "go")
+    assert _is_inside(widget_of(hosted, go), host.frame)
+    click(hosted, go)
+    controller = host_dashboard.controller
+    assert [call[:2] for call in controller.calls if call[1] == "go"] == [("Hosted", "go")]
+    assert host_pair[1].commands == [("go", 1.0)]
+    assert host_pair[0].commands == []
+
+
+def test_host_a_refusal_in_the_group_lands_at_its_control(host_dashboard):
+    host_dashboard.show_model("Map")
+    hosted = host_dashboard._panels["Hosted"]
+    host = host_dashboard._panels["Map"]
+    refuse = next(e for e in hosted._elements if e.get("command") == "refuse_me")
+    click(hosted, refuse)
+    assert hosted._notice is not None
+    assert hosted._notice.cget("text") == "the bench is busy"
+    assert _is_inside(hosted._notice, host.frame)
+    assert host._notice is None
+
+
+def test_host_closing_the_host_gives_the_hosted_model_its_page_back(
+        host_dashboard):
+    controller = host_dashboard.controller
+    host_dashboard.show_model("Map")
+    assert _is_inside(host_dashboard._panels["Hosted"].frame,
+                      host_dashboard._panels["Map"].frame)
+    controller.remove("Map")
+    SCHEDULER.pump()
+    assert "Map" not in host_dashboard._panels
+    hosted = host_dashboard._panels["Hosted"]
+    assert not hosted.frame.is_destroyed
+    assert list(host_dashboard._rail_items) == ["Hosted"]
+    host_dashboard.show_overview()
+    assert hosted.frame.grid_info, "the hosted model is an overview entry again"
+    assert host_dashboard.show_model("Hosted")
+    assert host_dashboard._opened == "Hosted"
+    go = next(e for e in hosted._elements if e.get("command") == "go")
+    click(hosted, go)
+    assert [c[:2] for c in controller.calls if c[1] == "go"] == [("Hosted", "go")]
+
+
+def test_host_launched_after_the_hosted_model_takes_it_onto_its_page(
+        host_dashboard):
+    controller = host_dashboard.controller
+    controller.remove("Map")
+    SCHEDULER.pump()
+    assert list(host_dashboard._rail_items) == ["Hosted"]
+    controller.reopen("Map")
+    SCHEDULER.pump()
+    assert list(host_dashboard._rail_items) == ["Map"]
+    host_dashboard.show_model("Map")
+    hosted = host_dashboard._panels["Hosted"]
+    assert _is_inside(hosted._title, host_dashboard._panels["Map"].frame)
+
+
+def test_host_closing_the_hosted_model_leaves_the_host_untouched(host_dashboard):
+    controller = host_dashboard.controller
+    host_dashboard.show_model("Map")
+    host = host_dashboard._panels["Map"]
+    hosted = host_dashboard._panels["Hosted"]
+    opener = hosted._disclosures[2].frame
+    assert hosted._title in _on_screen(host.frame) and opener in _on_screen(host.frame)
+    controller.remove("Hosted")
+    SCHEDULER.pump()
+    assert "Hosted" not in host_dashboard._panels
+    shown = _on_screen(host.frame)
+    assert hosted._title not in shown and opener not in shown
+    assert host._tiers[1] in shown and host._disclosures[2].frame in shown
+    assert host_dashboard._panels["Map"] is host
+    assert list(host_dashboard._rail_items) == ["Map"]
+
+
+def test_host_navigating_to_the_hosted_model_lands_on_the_hosts_page(
+        host_dashboard, monkeypatch):
+    scrolled = []
+    monkeypatch.setattr(host_dashboard._sheet, "scroll_into_view", scrolled.append)
+    host_dashboard.show_overview()
+    assert host_dashboard.show_model("Hosted")
+    assert host_dashboard._opened == "Map"
+    assert scrolled == [host_dashboard._panels["Hosted"].frame]
+
+
+def test_host_the_hosted_stop_state_is_folded_into_the_hosts_link(
+        host_dashboard):
+    controller = host_dashboard.controller
+    controller.stop = {"latched": ["Hosted"], "unconfirmed": [], "every": False}
+    host_dashboard._sync_stop_button()
+    canvas, tooltip = host_dashboard._rail_marks["Map"]
+    assert [item[0] for item in canvas.items] == ["rect"]
+    assert tooltip.text == tkmod.RAIL_MARK_WORDS["latched"]
+    controller.stop = {"latched": ["Hosted"], "unconfirmed": ["Hosted"],
+                       "every": False}
+    host_dashboard._sync_stop_button()
+    canvas, tooltip = host_dashboard._rail_marks["Map"]
+    assert tooltip.text == tkmod.RAIL_MARK_WORDS["unconfirmed"]
+    assert host_dashboard._rail_lamp_state("Map") == "unconfirmed"
+
+
+def test_host_the_hosted_stop_state_is_folded_into_the_hosts_overview_entry(
+        host_dashboard, host_pair):
+    host_dashboard.show_overview()
+    host = host_dashboard._panels["Map"]
+    host_pair[1].stop_confirmed = False
+    host._refresh()
+    assert host._is_unconfirmed, "the host's entry marks the hosted model's stop"
+    host_pair[1].stop_confirmed = None
+    host._refresh()
+    assert not host._is_unconfirmed
+
+
+def test_host_the_real_pair_in_sim_is_one_dashboard(setup_panel, pack_chain,
+                                                    tmp_path, monkeypatch):
+    """Red Percent on the Transfer Map page, through the real Controller."""
+    monkeypatch.setenv("STATION_MAP_DB", str(tmp_path / "map.sqlite"))
+    from controller.controller import Controller
+    from model.red_monitor import RedMonitor
+    from model.transfer_map import TransferMap
+    controller = Controller()
+    red_model = RedMonitor(sim=True)
+    red_model.output_root = tmp_path / "runs"
+    controller.add("Red Percent", red_model, {})
+    controller.add("Transfer Map", TransferMap(sim=True), {})
+    runs = []
+    real_run = controller.run
+
+    def run(name, command, inputs=None, args=()):
+        runs.append((name, command))
+        return real_run(name, command, inputs, args)
+
+    monkeypatch.setattr(controller, "run", run)
+    built = tkmod.TkDashboard(controller, setup_panel)
+    try:
+        built.open()
+        assert list(built._rail_items) == ["Transfer Map"]
+        built.show_model("Red Percent")
+        assert built._opened == "Transfer Map"
+        page = built._panels["Transfer Map"]
+        red = built._panels["Red Percent"]
+        shown = _on_screen(page.frame)
+        marks = [page._tiers[1], red._title, red._tiers[1],
+                 page._disclosures[2].frame, red._disclosures[2].frame]
+        assert [shown.index(m) for m in marks] == sorted(shown.index(m) for m in marks)
+        assert page._disclosures[2].text == "Configure Transfer Map"
+        assert red._disclosures[2].text == "Red Percent details"
+        start = next(e for e in red._elements if e.get("command") == "start_run")
+        assert _is_inside(widget_of(red, start), page.frame)
+        # Gated by Red Percent's own mode (no region yet), not the page's.
+        red._refresh()
+        assert red._gate_reason(start) == "Set a capture region first"
+        controller.run("Red Percent", "set_region", args=(0, 0, 10, 10))
+        red._refresh()
+        click(red, start)
+        # (asked, then confirmed: both against Red Percent's name)
+        assert {r[0] for r in runs if r[1] == "start_run"} == {"Red Percent"}
+        assert red_model.is_running
+        controller.run("Red Percent", "end_run")
+        controller.remove("Transfer Map")
+        SCHEDULER.pump()
+        assert list(built._rail_items) == ["Red Percent"]
+        assert not built._panels["Red Percent"].frame.is_destroyed
+    finally:
+        if not built._closing:
+            built.close()
+        controller.close()
+
+
+def test_host_the_wheel_over_the_hosted_well_scrolls_that_well(host_dashboard):
+    host_dashboard.show_model("Map")
+    host = host_dashboard._panels["Map"]
+    hosted = host_dashboard._panels["Hosted"]
+    hosted.set_disclosure(2, True)
+    try:
+        assert hosted.well_canvas is not None
+        assert _is_inside(hosted._well, host.frame)
+        assert _is_inside(hosted._well_holder, host._tail_slot)
+        assert host_dashboard._scroll_device_well(1, hosted._tiers[2])
+        assert hosted.well_canvas.scrolled == [(1, "units")]
+        assert host.well_canvas is None or host.well_canvas.scrolled == []
+    finally:
+        hosted.set_disclosure(2, False)
