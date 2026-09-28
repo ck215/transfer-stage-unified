@@ -639,13 +639,14 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
     for key in ("arm_trial", "mark_force", "finish_trial", "abort_trial",
                 "figure", "tip_id", "tilt_now", "speed_now", "red_now",
                 "trial_count", "trial_status", "db_path", "new_database",
-                "before_image", "after_image"):
+                "before_image", "mark_image", "after_image", "tip_status"):
         assert tiers[key] == 1, key
     for key in ("set_figure_type", "set_force_definition", "attach_afm",
                 "export_csv", "import_csv", "before_full_image",
-                "after_full_image"):
+                "mark_full_image", "after_full_image", "export_tips_csv",
+                "retire_tip", "unretire_tip", "set_tip_note", "tip_note"):
         assert tiers[key] == 2, key
-    for key in ("trials_log", "delete_trial", "last_trial_numbers"):
+    for key in ("trials_log", "tips_log", "delete_trial", "last_trial_numbers"):
         assert tiers[key] == 3, key
     disclosures = {s.get("disclosure") for s in model.schema["sections"]
                    if s.get("tier") == 2}
@@ -773,7 +774,11 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     assert step() == "Open Red Percent"
     bare = RedMonitor(screen=fake_screen())
     model.on_model_added("Red Percent", bare)
+    # M3: with neither set, the line says the polling is the sheet's to start.
+    assert step() == "Set the capture region and a tip ID; polling starts by itself"
+    model.tip_id = "tip-A"
     assert step() == "Set the capture region"
+    model.tip_id = ""
     model.on_model_removed("Red Percent", bare)
     model.on_model_added("Red Percent", red)
     model.tip_id = " "
@@ -1043,19 +1048,20 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
             else e.get("model_attr") or e.get("command") or e.get("data_command")
             for e in trial["elements"]]
     assert keys == ["next_step", "set_region", "tilt_now", "speed_now",
-                    "red_now", "tip_id", "tip_trial_count", "arm_trial",
-                    "mark_force", "note", "finish_trial", "abort_trial",
-                    "is_broke", "trial_status", "before_image",
-                    "after_image", "live_series", "figure"]
+                    "red_now", "tip_id", "tip_trial_count", "tip_status",
+                    "arm_trial", "mark_force", "note", "finish_trial",
+                    "abort_trial", "is_broke", "trial_status", "before_image",
+                    "mark_image", "after_image", "live_series", "figure"]
     later = [(s["title"], s.get("tier")) for s in sections
              if s.get("tier", 1) != 1]
-    assert later == [("Full pictures", 2), ("Figure", 2),
+    assert later == [("Full pictures", 2), ("Tip", 2), ("Figure", 2),
                      ("AFM measurement", 2), ("Data", 2),
                      ("Diagnostics", 3), ("Safety", 3)]
     diagnostics = next(s for s in sections if s["title"] == "Diagnostics")
     assert [e.get("model_attr") or e.get("source_command") or e.get("command")
             for e in diagnostics["elements"]] == [
-        "last_trial_numbers", "width_gradient", "trials_log", "delete_trial"]
+        "last_trial_numbers", "width_gradient", "trials_log", "tips_log",
+        "delete_trial"]
 
 
 # -- full pictures: the whole screen at Arm and at Finish (2026-09-28) ----------
@@ -1176,9 +1182,10 @@ def test_the_full_pictures_sit_under_configure(station):
     assert full.get("disclosure") == "Configure Transfer Map"
     assert [(e["type"], e["text"], e["data_command"]) for e in full["elements"]] \
         == [("image", "Before, whole screen", "before_full_image"),
+            ("image", "Mark, whole screen", "mark_full_image"),
             ("image", "After, whole screen", "after_full_image")]
     assert all(e["empty"] for e in full["elements"])
-    for command in ("before_full_image", "after_full_image"):
+    for command in ("before_full_image", "mark_full_image", "after_full_image"):
         assert model.run(command).is_ok       # declared data sources
 
 
@@ -1214,9 +1221,10 @@ def test_export_carries_the_full_picture_paths(station):
     assert header.index("after_full_path") == header.index("after_path") + 2
 
 
-# -- the store migrates: version 1 -> 2 ------------------------------------------
+# -- the store migrates: version 1 or 2 -> 3 -------------------------------------
 
 V2_COLUMNS = ("before_full_path", "after_full_path")
+V3_COLUMNS = ("mark_path", "mark_full_path")
 
 
 def _version(path):
@@ -1229,10 +1237,11 @@ def _columns(path):
         return [r[1] for r in db.execute("PRAGMA table_info(trials)")]
 
 
-def _version_one_file(path, drop=V2_COLUMNS):
-    """A database as the round before this one wrote it: the version-1
-    trials table (no whole-screen columns), one recorded trial with a
-    profile, `user_version = 1`."""
+def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS, version=1):
+    """A database as an earlier round wrote it: the version-1 trials table
+    (no whole-screen columns; with `version=2` and `drop=V3_COLUMNS`, the
+    version-2 table, no Mark columns), no tips table, one measured trial on
+    tip T7 with a profile, `user_version = version`."""
     path.parent.mkdir(parents=True, exist_ok=True)
     columns = [(n, k) for n, k in tm_module.TRIAL_COLUMNS if n not in drop]
     db = sqlite3.connect(path)
@@ -1247,19 +1256,26 @@ def _version_one_file(path, drop=V2_COLUMNS):
                "'/a.png', 'measured', 'bench')")
     db.executemany("INSERT INTO profile VALUES (1, ?, ?, NULL, NULL, NULL)",
                    [(0.1 * i, 10.0 + i) for i in range(5)])
-    db.execute("PRAGMA user_version = 1")
+    db.execute(f"PRAGMA user_version = {int(version)}")
     db.commit()
     db.close()
 
 
-def test_a_fresh_database_is_version_two_with_the_full_picture_columns(
+def _tables(path):
+    with sqlite3.connect(path) as db:
+        return {r[0] for r in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def test_a_fresh_database_is_version_three_with_the_picture_columns_and_tips(
         private_db):
-    assert tm_module.SCHEMA_VERSION == 2
+    assert tm_module.SCHEMA_VERSION == 3
     model = TransferMap()
     model.open()
     model.close()
-    assert _version(private_db) == 2
-    assert set(V2_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 3
+    assert set(V2_COLUMNS + V3_COLUMNS) <= set(_columns(private_db))
+    assert "tips" in _tables(private_db)
 
 
 def test_a_version_one_database_gains_the_columns_and_keeps_its_trial(
@@ -1273,8 +1289,8 @@ def test_a_version_one_database_gains_the_columns_and_keeps_its_trial(
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 2
-        assert set(V2_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 3
+        assert set(V2_COLUMNS + V3_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]   # untouched
@@ -1316,22 +1332,22 @@ def test_the_first_write_migrates_too(private_db):
     _version_one_file(private_db)
     store = tm_module.TrialStore(private_db)
     store.insert({"tip_id": "T8", "status": "recorded",
-                  "before_full_path": "/x.png"})
-    assert _version(private_db) == 2
+                  "before_full_path": "/x.png", "mark_path": "/m.png"})
+    assert _version(private_db) == 3
     assert [r["tip_id"] for r in store.trials()] == ["T7", "T8"]
 
 
 def test_a_half_done_upgrade_finishes(private_db):
-    """A version-1 file that already has one of the two columns (an upgrade
-    cut short between the two ALTERs) gets the other and version 2."""
-    _version_one_file(private_db, drop=("after_full_path",))
+    """A version-1 file that already has some of the new columns (an upgrade
+    cut short between the ALTERs) gets the rest and version 3."""
+    _version_one_file(private_db, drop=("after_full_path",) + V3_COLUMNS)
     assert _version(private_db) == 1
     assert tm_module.TrialStore(private_db).ensure() is False
-    assert _version(private_db) == 2
-    assert set(V2_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 3
+    assert set(V2_COLUMNS + V3_COLUMNS) <= set(_columns(private_db))
 
 
-def test_a_version_two_database_is_left_alone(private_db):
+def test_a_version_three_database_is_left_alone(private_db):
     tm_module.TrialStore(private_db).ensure()
     with sqlite3.connect(private_db) as db:
         schema = db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
@@ -1343,5 +1359,672 @@ def test_a_version_two_database_is_left_alone(private_db):
     with sqlite3.connect(private_db) as db:
         assert db.execute("SELECT sql FROM sqlite_master ORDER BY name"
                           ).fetchall() == schema
-    assert _version(private_db) == 2
+    assert _version(private_db) == 3
     assert not _titled("Database Upgraded", since)
+
+
+def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
+    """M1/M2: the owner's bench file is version 2 and holds trials. It gains
+    the Mark columns and a tip record per tip its trials name; every trial
+    and profile row is kept."""
+    _version_one_file(private_db, drop=V3_COLUMNS, version=2)
+    before = _rows(private_db, "SELECT * FROM trials")
+    assert _version(private_db) == 2 and "tips" not in _tables(private_db)
+    assert set(V2_COLUMNS) <= set(_columns(private_db))
+    assert not set(V3_COLUMNS) & set(_columns(private_db))
+    events.forget("Database Upgraded")  # a new dedupe episode
+    since = events.latest_id
+    model = TransferMap()
+    model.open()
+    try:
+        assert _version(private_db) == 3
+        assert set(V3_COLUMNS) <= set(_columns(private_db))
+        after = _rows(private_db, "SELECT * FROM trials")
+        assert len(after) == 1
+        assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
+        assert after[0]["mark_path"] is None and after[0]["mark_full_path"] is None
+        assert len(_rows(private_db, "SELECT * FROM profile")) == 5
+        tips = _rows(private_db, "SELECT * FROM tips")
+        assert tips == [{"tip_id": "T7", "created_at": "2026-09-27T15:00:00",
+                         "first_trial_id": 1, "last_trial_id": 1,
+                         "last_used_at": "2026-09-27T15:00:00",
+                         "broke_trial_id": None, "retired_at": None,
+                         "note": None}]
+        upgraded = _titled("Database Upgraded", since)
+        assert len(upgraded) == 1
+        assert "mark_path, mark_full_path, tips (version 3)" in upgraded[0].message
+        model.tip_id = "T7"
+        assert model.tip_status == "in use since trial 1"
+        assert model.run("mark_image").is_ok and model.mark_image == b""
+    finally:
+        model.close()
+
+
+def test_a_migrated_version_two_database_records_a_marked_trial(red, private_db):
+    _version_one_file(private_db, drop=V3_COLUMNS, version=2)
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    model.tip_id = "T7"
+    events.forget("Tip Created")        # a new dedupe episode
+    since = events.latest_id
+    try:
+        trial = _record(model, red)
+        assert trial == 2
+        row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+        assert row["mark_path"] and row["mark_full_path"]
+        assert not _titled("Tip Created", since)            # T7 had its record
+        assert model._store.tip("T7")["trials"] == [1, 2]
+        assert model._store.tip("T7")["last_trial_id"] == 2
+    finally:
+        model.close()
+
+
+def test_a_version_two_file_with_a_broken_tip_backfills_it(private_db):
+    _version_one_file(private_db, drop=V3_COLUMNS, version=2)
+    with sqlite3.connect(private_db) as db:
+        db.execute("INSERT INTO trials (tip_id, broke, status) VALUES "
+                   "('T7', 1, 'recorded'), ('T7', 1, 'recorded'), "
+                   "('T9', 0, 'recorded'), ('', 0, 'recorded')")
+    tm_module.TrialStore(private_db).ensure()
+    tips = {r["tip_id"]: r for r in _rows(private_db, "SELECT * FROM tips")}
+    assert set(tips) == {"T7", "T9"}                  # a blank tip is no tip
+    assert (tips["T7"]["first_trial_id"], tips["T7"]["last_trial_id"],
+            tips["T7"]["broke_trial_id"]) == (1, 3, 2)
+    assert tips["T9"]["broke_trial_id"] is None
+
+
+# -- M1: the Mark picture ----------------------------------------------------------
+# "A photo when that mark is taken of how the visuals are at that moment."
+# The Mark is the measurement: it is stamped first, a missing picture warns.
+
+def _marked(model, samples=5):
+    assert _wait_for(lambda: len(model._trial.samples) >= samples)
+    return model.run("mark_force")
+
+
+def test_mark_keeps_a_region_and_a_whole_screen_picture(station, private_db):
+    model, red, *_ = station
+    trial = _record(model, red)
+    folder = model.pictures_root / str(trial)
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+    assert Path(row["mark_path"]) == folder / "mark.png"
+    assert Path(row["mark_full_path"]) == folder / "mark_full.png"
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "after.png", "after_full.png", "before.png", "before_full.png",
+        "mark.png", "mark_full.png"]
+    assert _size((folder / "mark.png").read_bytes()) == (10, 10)
+    assert _size((folder / "mark_full.png").read_bytes()) == DESKTOP_SIZE
+
+
+def test_the_mark_is_stamped_before_its_picture_is_taken(station, monkeypatch):
+    model, red, *_ = station
+    _arm(model)
+    seen = {}
+    real = red.grab_frame
+
+    def grab():
+        seen["t"], seen["z"] = model._trial.operator_t, model._trial.z_mark
+        return real()
+
+    monkeypatch.setattr(red, "grab_frame", grab)
+    marked = _marked(model)
+    assert marked.is_ok
+    assert seen["t"] is not None and seen["z"] == 1000.0
+    assert round(seen["t"], 3) == marked.value
+
+
+def test_the_mark_never_waits_on_the_whole_screen(station, private_db,
+                                                  monkeypatch):
+    """The whole-screen grab is on the picture worker; Finish waits for it
+    (bounded) so the row it writes is complete."""
+    model, red, *_ = station
+    trial = _arm(model)
+    release = threading.Event()
+    real = red.grab_screen
+
+    def slow():
+        release.wait(5.0)
+        return real()
+
+    monkeypatch.setattr(red, "grab_screen", slow)
+    started = time.monotonic()
+    assert _marked(model).is_ok
+    assert time.monotonic() - started < 0.5
+    assert model.mark_image[:8] == PNG             # the region, already there
+    assert model.mark_full_image == b""            # still being taken
+    threading.Timer(0.3, release.set).start()
+    _finish(model)
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+    assert row["status"] == "recorded"
+    assert Path(row["mark_full_path"]) == model.pictures_root / str(trial) / "mark_full.png"
+
+
+def test_finish_waits_for_the_mark_picture_only_so_long(station, private_db,
+                                                        monkeypatch):
+    model, red, *_ = station
+    monkeypatch.setattr(model, "THREAD_JOIN_TIMEOUT", 0.2)
+    trial = _arm(model)
+    release = threading.Event()
+    real = red.grab_screen
+
+    def hung_on_the_worker():
+        # Only the Mark's grab hangs; Finish's own after picture does not.
+        if threading.current_thread().name.startswith("transfer-map-pictures"):
+            release.wait(5.0)
+        return real()
+
+    monkeypatch.setattr(red, "grab_screen", hung_on_the_worker)
+    assert _marked(model).is_ok
+    started = time.monotonic()
+    _finish(model)
+    assert time.monotonic() - started < 1.5
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+    assert row["status"] == "recorded" and row["mark_full_path"] is None
+    release.set()                                  # the late picture still lands
+    assert _wait_for(lambda: _rows(private_db, "SELECT mark_full_path FROM "
+                                   "trials WHERE id=?", trial)[0]["mark_full_path"])
+    assert _rows(private_db, "SELECT status FROM trials WHERE id=?",
+                 trial)[0]["status"] == "recorded"   # its own column only
+
+
+def test_abort_and_the_stop_write_the_trial_after_its_mark_picture(
+        station, private_db, monkeypatch):
+    model, red, *_ = station
+    real = red.grab_screen
+
+    def slow():
+        time.sleep(0.3)
+        return real()
+
+    monkeypatch.setattr(red, "grab_screen", slow)
+    first = _arm(model)
+    assert _marked(model).is_ok
+    assert model.run("abort_trial").is_ok
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", first)[0]
+    assert row["status"] == "aborted" and row["mark_full_path"]
+    second = _arm(model)
+    assert _marked(model).is_ok
+    started = time.monotonic()
+    assert model.estop() is True
+    assert time.monotonic() - started < 0.5          # the stop never waits on it
+    model.disable()
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", second)[0]
+    assert row["status"] == "aborted" and row["mark_path"] and row["mark_full_path"]
+
+
+def test_a_missing_mark_picture_warns_and_the_mark_stands(station, private_db,
+                                                         monkeypatch):
+    model, red, *_ = station
+    trial = _arm(model)
+    real = red.grab_frame
+    monkeypatch.setattr(red, "grab_frame", lambda: None)
+    monkeypatch.setattr(red, "grab_screen", lambda: None)
+    for title in ("No Picture", "No Full Picture"):
+        events.forget(title)
+    since = events.latest_id
+    marked = _marked(model)
+    assert marked.is_ok and model._trial.operator_t is not None
+    assert _wait_for(lambda: model._trial.mark_job.done.is_set())
+    warned = _titled("No Picture", since)
+    assert len(warned) == 1 and warned[0].severity == "warning"
+    assert warned[0].message.startswith(f"Trial {trial} has no picture of the "
+                                        "capture region at the Mark")
+    full = _titled("No Full Picture", since)
+    assert len(full) == 1 and "at the Mark" in full[0].message
+    monkeypatch.setattr(red, "grab_frame", real)
+    _finish(model)
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+    assert row["status"] == "recorded" and row["mark_operator_t"] is not None
+    assert row["mark_path"] is None and row["mark_full_path"] is None
+
+
+def test_the_mark_pictures_show_the_armed_trial_else_the_last(station):
+    model, red, *_ = station
+    assert model.mark_image == b"" and model.mark_full_image == b""
+    first = _arm(model)
+    assert model.mark_image == b""                 # not marked yet
+    assert _marked(model).is_ok
+    folder = model.pictures_root / str(first)
+    assert model.mark_image == (folder / "mark.png").read_bytes()
+    assert _wait_for(lambda: model.mark_full_image != b"")
+    assert _size(model.mark_full_image) == DESKTOP_SIZE
+    _finish(model)
+    assert model.mark_image == (folder / "mark.png").read_bytes()   # the last
+    _arm(model)
+    assert model.mark_image == b"" and model.mark_full_image == b""
+    for command in ("mark_image", "mark_full_image"):
+        assert model.run(command).is_ok            # declared data sources
+
+
+def test_the_mark_picture_says_when_it_is_taken():
+    model = TransferMap()
+    mark = _element(model, "mark_image")
+    assert (mark["type"], mark["text"], mark["empty"]) == \
+        ("image", "Mark picture", "Taken when you press Mark force.")
+    full = _element(model, "mark_full_image")
+    assert full["text"] == "Mark, whole screen" and full["empty"]
+
+
+def test_many_marks_share_one_picture_worker_and_close_ends_it(station):
+    """One worker thread, so one capture handle for the model's life, not
+    one per Mark (a capture handle is per thread; on X11 it is a display
+    connection)."""
+    model, red, *_ = station
+    _arm(model)
+    for _ in range(3):
+        assert _marked(model).is_ok
+    assert _wait_for(lambda: model._trial.mark_job.done.is_set())
+    workers = [t for t in threading.enumerate()
+               if t.name.startswith("transfer-map-pictures") and t.is_alive()]
+    assert len(workers) == 1
+    _finish(model)
+    model.close()
+    assert _wait_for(lambda: not workers[0].is_alive())
+
+
+def test_export_carries_the_mark_picture_paths(station):
+    model, red, *_ = station
+    trial = _record(model, red)
+    rows = list(csv.DictReader(Path(model.export_csv()).open()))
+    folder = model.pictures_root / str(trial)
+    assert rows[0]["mark_path"] == str(folder / "mark.png")
+    assert rows[0]["mark_full_path"] == str(folder / "mark_full.png")
+
+
+# -- M2: tips as records ---------------------------------------------------------
+# "Tip objects that can be created on demand and tracked in the db for
+# usage, and on which trials."
+
+def test_the_first_arm_on_a_new_tip_creates_its_record(station, private_db):
+    model, red, *_ = station
+    model.tip_id = "T7"
+    events.forget("Tip Created")        # a new dedupe episode
+    since = events.latest_id
+    first = _arm(model)
+    created = _titled("Tip Created", since)
+    assert [e.message for e in created] == ["Tip T7 created."]
+    record = model._store.tip("T7")
+    assert (record["first_trial_id"], record["last_trial_id"]) == (first, first)
+    assert record["created_at"] and record["last_used_at"]
+    assert record["broke_trial_id"] is None and record["retired_at"] is None
+    _finish(model)
+    events.forget("Tip Created")
+    since = events.latest_id
+    second = _record(model, red)
+    assert not _titled("Tip Created", since)
+    record = model._store.tip("T7")
+    assert (record["first_trial_id"], record["last_trial_id"]) == (first, second)
+    assert record["trials"] == [first, second] and record["count"] == 2
+    assert record["broke"] is False
+    assert model._store.tip("nobody") is None
+
+
+def test_tip_broke_is_kept_on_the_tips_record(station):
+    model, red, *_ = station
+    first = _record(model, red)
+    trial = _arm(model)
+    assert model.run("mark_broke", None, (True,)).is_ok       # the armed trial
+    assert model._store.tip("tip-A")["broke_trial_id"] == trial
+    assert model.run("mark_broke", None, (False,)).is_ok
+    assert model._store.tip("tip-A")["broke_trial_id"] is None
+    assert model.run("mark_broke", None, (True,)).is_ok
+    _finish(model)
+    record = model._store.tip("tip-A")
+    assert record["broke_trial_id"] == trial and record["broke"] is True
+    assert model.run("mark_broke", None, (False,)).is_ok      # the last trial
+    assert model._store.tip("tip-A")["broke_trial_id"] is None
+    assert first < trial
+
+
+def test_tip_status_reads_under_trials_on_this_tip(station):
+    model, red, *_ = station
+    values = lambda: model.state["values"]            # noqa: E731
+    model.tip_id = ""
+    assert values()["tip_status"] == ""
+    model.tip_id = "T7"
+    assert values()["tip_status"] == "new"
+    first = _record(model, red)
+    assert values()["tip_status"] == f"in use since trial {first}"
+    second = _record(model, red)
+    model.mark_broke(True)
+    assert values()["tip_status"] == f"broke on trial {second}"
+    trial = next(s for s in model.schema["sections"] if s["title"] == "Trial")
+    keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
+    assert keys[keys.index("tip_trial_count") + 1] == "tip_status"
+    assert _element(model, "tip_status")["text"] == "Tip"
+
+
+def test_arming_on_a_broken_tip_asks_once(station):
+    model, red, *_ = station
+    model.tip_id = "T7"
+    broke = _record(model, red)
+    model.mark_broke(True)
+    result = model.run("arm_trial", {"tip_id": "T7"})
+    assert result.needs_confirm
+    assert result.reason == (
+        f"Tip T7 broke on trial {broke}. Arm on it anyway?\n\nFrame the sample "
+        f"now. Continue takes the before picture and arms trial {broke + 1} "
+        "on tip T7.")
+    again = model.run(result.command, result.inputs, (*result.args, True))
+    assert again.is_ok and model.is_armed         # one Continue, not two
+
+
+def test_arming_on_a_retired_tip_asks_once(station):
+    model, red, *_ = station
+    model.tip_id = "T7"
+    _record(model, red)
+    assert _confirmed(model, "retire_tip", {"tip_id": "T7"}) == "T7"
+    result = model.run("arm_trial", {"tip_id": "T7"})
+    assert result.needs_confirm
+    assert result.reason.startswith("Tip T7 is retired. Arm on it anyway?\n\n"
+                                    "Frame the sample now.")
+    again = model.run(result.command, result.inputs, (*result.args, True))
+    assert again.is_ok and model.is_armed
+
+
+def test_retire_asks_and_unretire_returns_the_tip(station):
+    model, red, *_ = station
+    model.tip_id = "T7"
+    first = _record(model, red)
+    asked = model.run("retire_tip", {"tip_id": "T7"})
+    assert asked.needs_confirm and asked.reason.startswith("Retire tip T7? Its 1 trial(s)")
+    assert asked.inputs == {"tip_id": "T7"}
+    assert model._store.tip("T7")["retired_at"] is None       # nothing yet
+    assert model.run(asked.command, asked.inputs, (*asked.args, True)).is_ok
+    assert model._store.tip("T7")["retired_at"] and model.tip_status == "retired"
+    again = model.run("retire_tip", {"tip_id": "T7"}, (True,))
+    assert again.is_refused and "already retired" in again.reason
+    assert model.run("unretire_tip", {"tip_id": "T7"}).is_ok
+    assert model.tip_status == f"in use since trial {first}"
+    assert model.run("unretire_tip", {"tip_id": "T7"}).is_refused
+
+
+def test_the_tip_commands_refuse_a_blank_an_unknown_or_an_armed_tip(station):
+    model, red, *_ = station
+    for command in ("retire_tip", "unretire_tip", "set_tip_note"):
+        blank = model.run(command, {"tip_id": " "})
+        assert blank.is_refused and "tip ID" in blank.reason, command
+        unknown = model.run(command, {"tip_id": "T99"})
+        assert unknown.is_refused and "no record yet" in unknown.reason, command
+    _arm(model, "tip-A")
+    armed = model.run("retire_tip", {"tip_id": "tip-A"}, (True,))
+    assert armed.is_refused and "armed on tip tip-A" in armed.reason
+
+
+def test_a_tip_note_is_saved_on_its_record(station):
+    model, red, *_ = station
+    _record(model, red)
+    result = model.run("set_tip_note", {"tip_id": "tip-A",
+                                        "tip_note": " box B, 2 um "})
+    assert result.is_ok, result
+    assert model._store.tip("tip-A")["note"] == "box B, 2 um"
+
+
+def test_the_tips_log_has_one_line_per_tip(station):
+    model, red, *_ = station
+    first = _record(model, red)
+    second = _record(model, red)
+    model.mark_broke(True)
+    model.tip_id = "T8"
+    third = _record(model, red)
+    assert _confirmed(model, "retire_tip", {"tip_id": "T8"}) == "T8"
+    model.run("set_tip_note", {"tip_id": "T8", "tip_note": "chipped"})
+    assert model.tips_log == [
+        f"tip-A  2 trial(s), trials {first}-{second}  broke on trial {second}",
+        f"T8  1 trial(s), trial {third}  retired  chipped"]
+    assert model.run("tips_log").is_ok            # a declared source
+
+
+def test_export_writes_a_tips_file_with_one_row_per_tip(station):
+    model, red, *_ = station
+    first = _record(model, red)
+    second = _record(model, red)
+    path = Path(model.export_tips_csv())
+    assert path.parent == model.output_root / "exports"
+    assert path.name.startswith("transfer_map_") and path.name.endswith("_tips.csv")
+    rows = list(csv.DictReader(path.open()))
+    assert len(rows) == 1
+    assert rows[0]["tip_id"] == "tip-A"
+    assert rows[0]["trial_count"] == "2"
+    assert rows[0]["trial_ids"] == f"{first} {second}"
+    assert rows[0]["first_trial_id"] == str(first)
+    assert list(rows[0])[:8] == [n for n, _k in tm_module.TIP_COLUMNS]
+    element = _element(model, "export_tips_csv")
+    assert element["type"] == "file_save" and element["text"] == "Export tips"
+
+
+def test_an_import_creates_the_tips_its_trials_name(tmp_path, private_db):
+    source = tmp_path / "typed.csv"
+    source.write_text("tilt_deg,speed_steps_s,tip_id,broke\n"
+                      "10,200, T7 ,0\n12,300,T7,1\n14,400,,0\n16,500,T9,0\n")
+    model = TransferMap()
+    events.forget("Map Imported")
+    since = events.latest_id
+    assert model.import_csv(str(source)) == {"imported": 4, "skipped": 0}
+    assert model._store.tip("T7")["trials"] == [1, 2]
+    assert model._store.tip("T7")["broke_trial_id"] == 2
+    assert model._store.tip("T9")["trials"] == [4]
+    assert [t["tip_id"] for t in model._store.tips()] == ["T7", "T9"]
+    assert "tip(s) created: T7, T9" in _titled("Map Imported", since)[0].message
+
+
+def test_deleting_a_trial_keeps_its_tips_record_current(station):
+    model, red, *_ = station
+    first = _record(model, red)
+    second = _record(model, red)
+    model.mark_broke(True)
+    model.trial_pick = second
+    model.delete_trial(True)
+    record = model._store.tip("tip-A")
+    assert (record["first_trial_id"], record["last_trial_id"]) == (first, first)
+    assert record["broke_trial_id"] is None and record["trials"] == [first]
+
+
+def test_the_tip_section_sits_under_configure():
+    model = TransferMap()
+    section = next(s for s in model.schema["sections"] if s["title"] == "Tip")
+    assert section.get("tier") == 2
+    assert section.get("disclosure") == "Configure Transfer Map"
+    assert [(e["type"], e.get("command") or e.get("model_attr"),
+             tuple(e.get("inputs") or ())) for e in section["elements"]] == [
+        ("entry", "tip_note", ()),
+        ("button", "set_tip_note", ("tip_id", "tip_note")),
+        ("button", "retire_tip", ("tip_id",)),
+        ("button", "unretire_tip", ("tip_id",))]
+
+
+# -- M3: polling starts itself ----------------------------------------------------
+# "Once capture region and tip details are set, the red percent polling
+# baseline is reset and polling begins." The stop path first: every way a
+# trial or the map stops ends the run the map started, and only that one.
+
+@pytest.fixture
+def sheet(red):
+    """A Transfer Map beside a Red Percent with a region, no run, no tip."""
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    model.on_model_added("Stepper Probe", FakeProbe())
+    assert not red.is_running and not model.tip_id
+    yield model, red
+    model.close()
+
+
+def _commit_tip(model, tip):
+    result = model.set_value("tip_id", tip)          # what a view's entry sends
+    assert result.is_ok, result
+    return result
+
+
+def test_the_maps_stop_ends_the_polling_it_started(sheet):
+    model, red = sheet
+    _commit_tip(model, "T7")
+    assert red.is_running
+    started = time.monotonic()
+    assert model.estop() is True
+    assert time.monotonic() - started < 0.5
+    assert not red.is_running and model._auto_run is None
+
+
+def test_the_maps_stop_leaves_a_run_the_operator_started(sheet):
+    model, red = sheet
+    red.start_run(confirmed=True)
+    _commit_tip(model, "T7")
+    assert model._auto_run is None
+    assert model.estop() is True and red.is_running
+
+
+def test_arm_takes_over_the_polling_and_finish_ends_it(sheet, private_db):
+    model, red = sheet
+    _commit_tip(model, "T7")
+    token = red.run_token
+    trial = _arm(model)
+    assert red.run_token is token                  # the same run, not a second
+    assert model._trial.run is token and model._auto_run is None
+    assert _wait_for(lambda: len(model._trial.samples) >= 5)
+    _finish(model)
+    assert not red.is_running
+
+
+@pytest.mark.parametrize("end", ["abort", "estop"])
+def test_abort_and_the_stop_end_the_polling_a_trial_took_over(sheet, end):
+    model, red = sheet
+    _commit_tip(model, "T7")
+    _arm(model)
+    if end == "abort":
+        assert model.run("abort_trial").is_ok
+    else:
+        assert model.estop() is True
+    assert not red.is_running
+
+
+def test_committing_a_tip_id_starts_polling_from_a_fresh_baseline(sheet):
+    model, red = sheet
+    red.baseline_red = 99.0                        # a stale baseline
+    step = lambda: model.state["values"]["next_step"]  # noqa: E731
+    assert step() == "Type a tip ID"
+    events.forget("Polling Started")    # a new dedupe episode
+    since = events.latest_id
+    _commit_tip(model, "T7")
+    assert red.is_running and model._auto_run is red.run_token
+    assert step() == "Press Arm trial"
+    started = _titled("Polling Started", since)
+    assert len(started) == 1 and "tip T7" in started[0].message
+    assert _wait_for(lambda: red._run.frames >= 3)
+    assert red._run.baseline_red is not None and red._run.baseline_red != 99.0
+    assert red.baseline_red == red._run.baseline_red
+    reds = set()
+    assert _wait_for(lambda: reds.add(model.state["values"]["red_now"])
+                     or len(reds) >= 2)            # the sheet's Red moves
+
+
+def test_setting_the_region_with_a_tip_starts_polling(tmp_path):
+    red = RedMonitor(screen=desktop_screen())
+    red.output_root = tmp_path / "runs"
+    red.open()
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    try:
+        _commit_tip(model, "T7")
+        assert not red.is_running                  # no region yet
+        assert model.state["values"]["next_step"] == "Set the capture region"
+        assert model.run("set_region", None, (0, 0, 10, 10)).is_ok
+        assert red.is_running and model._auto_run is red.run_token
+    finally:
+        model.close()
+        red.close()
+
+
+def test_a_region_without_a_tip_does_not_start_polling(tmp_path):
+    red = RedMonitor(screen=desktop_screen())
+    red.output_root = tmp_path / "runs"
+    red.open()
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    try:
+        assert model.state["values"]["next_step"] == (
+            "Set the capture region and a tip ID; polling starts by itself")
+        assert model.run("set_region", None, (0, 0, 10, 10)).is_ok
+        assert not red.is_running
+        assert model.state["values"]["next_step"] == "Type a tip ID"
+    finally:
+        model.close()
+        red.close()
+
+
+def test_clearing_the_tip_or_the_region_does_not_stop_polling(sheet):
+    model, red = sheet
+    _commit_tip(model, "T7")
+    _commit_tip(model, "")
+    assert red.is_running
+    red.region = None                              # as if cleared on Red Percent
+    model._commit()
+    assert red.is_running
+
+
+def test_a_run_the_operator_ended_stays_ended_until_the_tip_changes(sheet):
+    model, red = sheet
+    _commit_tip(model, "T7")
+    red.end_run()                                  # the operator's stop
+    assert model.set_value("note", "anything").is_ok
+    _commit_tip(model, "T7")                       # the same tip again
+    assert not red.is_running
+    _commit_tip(model, "T8")                       # a new tip: a new start
+    assert red.is_running
+
+
+def test_no_polling_while_the_map_is_stopped(sheet):
+    model, red = sheet
+    model.estop()
+    _commit_tip(model, "T7")
+    assert not red.is_running
+
+
+def test_no_polling_while_a_trial_is_armed(idle_station):
+    model, red = idle_station
+    _arm(model)
+    red.end_run()                                  # the operator's stop
+    _commit_tip(model, "T9")
+    assert not red.is_running and model.is_armed
+
+
+def test_a_refused_start_warns_once_and_next_step_says_what_to_fix(sheet,
+                                                                   monkeypatch):
+    model, red = sheet
+    real = red.start_run
+
+    def refuse(confirmed=False):
+        raise Refused("Screen capture is unavailable in this environment.")
+
+    monkeypatch.setattr(red, "start_run", refuse)
+    events.forget("Polling Not Started")
+    since = events.latest_id
+    for tip in ("T7", "T7", "T8"):
+        _commit_tip(model, tip)                    # a commit never fails
+    warned = _titled("Polling Not Started", since)
+    assert len(warned) == 1 and warned[0].severity == "warning"
+    assert "Screen capture is unavailable" in warned[0].message
+    assert model.state["values"]["next_step"] == (
+        "Polling did not start: Screen capture is unavailable in this "
+        "environment. Fix that, then press Arm trial")
+    monkeypatch.setattr(red, "start_run", real)
+    _arm(model)                                    # Arm's own start: the fallback
+    assert red.is_running and model._trial.run is red.run_token
+    assert model.state["values"]["next_step"].startswith("Lower the tip")
+
+
+def test_a_commit_through_the_controller_starts_polling(red):
+    """The Web and Tk entry commit is `Controller.set_value` -> `_commit`."""
+    controller = Controller()
+    model = TransferMap()
+    controller.add("Transfer Map", model, {})
+    model.on_model_added("Red Percent", red)
+    try:
+        result = controller.set_value("Transfer Map", "tip_id", "T7")
+        assert result.is_ok, result
+        assert red.is_running and model._auto_run is red.run_token
+    finally:
+        model.close()
