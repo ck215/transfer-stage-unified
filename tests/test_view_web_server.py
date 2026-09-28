@@ -2285,11 +2285,12 @@ def test_the_stop_is_reachable_with_red_percents_details_open_at_900(sim_station
         await page.click('#drawer-close'); await sleep(400);
       }
       await page.setViewport({ width: 900, height: 900 });
+      // Updated (D, 2026-09-28): Red Percent is drawn on the Transfer Map's
+      // page, its details after the Map's own.
       await page.evaluate(() => {
-        const red = Array.from(document.querySelectorAll('#cards .card'))
-          .find((c) => c.querySelector('.card-title').textContent === 'Red Percent');
-        red.querySelector('.disclosure[data-tier="2"]').click();
-        Array.from(document.querySelectorAll('.model-link')).find((b) => b.textContent === 'Red Percent').click();
+        Array.from(document.querySelectorAll('.model-link')).find((b) => b.textContent === 'Transfer Map').click();
+        Array.from(document.querySelectorAll('#cards .disclosure[data-tier="2"]'))
+          .find((d) => d.textContent.trim() === 'Red Percent details').click();
       });
       await sleep(800);
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
@@ -2387,6 +2388,13 @@ def test_the_tier_two_disclosure_sits_at_the_foot_of_the_body_above_its_well(tie
     assert opened["gap"] is not None and abs(opened["gap"] - 6) <= 1, opened
 
 
+def _page_names(controller):
+    """The models with a page of their own: all but the ones a host draws
+    (Updated, D 2026-09-28: Red Percent is on the Transfer Map's page)."""
+    models = controller.state()["models"]
+    return [n for n in controller.model_names if not models[n].get("host")]
+
+
 @needs_browser
 def test_the_rail_leads_with_an_overview_of_every_model_with_no_wells(sim_station, tmp_path):
     """K4: the rail's first item is Overview and it is the page at launch;
@@ -2400,7 +2408,7 @@ def test_the_rail_leads_with_an_overview_of_every_model_with_no_wells(sim_statio
       }
       return pages();
     """, tmp_path)
-    names = controller.model_names
+    names = _page_names(controller)
     assert out["nav"][0] == "Overview" and out["nav"][1:] == names, out
     assert out["current"] == ["Overview"], out
     assert sorted(out["shown"]) == sorted(names), out
@@ -2445,7 +2453,7 @@ def test_a_device_page_shows_one_model_and_overview_brings_them_all_back(sim_sta
       r.byKey = await pages();
       return r;
     """, tmp_path)
-    names = controller.model_names
+    names = _page_names(controller)
     for key in ("byRail", "byHead"):
         page = out[key]
         assert page["shown"] == ["Stepper Probe"] and page["current"] == ["Stepper Probe"], page
@@ -2480,7 +2488,8 @@ def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path)
     assert out["device"]["shown"] == ["Rotator"], out
     after = out["after"]
     assert after["current"] == ["Overview"] and "Rotator" not in after["nav"], after
-    assert len(after["shown"]) == 6 and after["wells"] == 0, after   # seven models, one closed (Tier S)
+    # Seven models, one closed (Tier S); Red Percent is on the Map's entry (D).
+    assert len(after["shown"]) == 5 and after["wells"] == 0, after
 
 
 # --------------------------------------------------------------------------
@@ -2850,10 +2859,13 @@ def test_an_empty_plot_pane_is_one_caption_tall(sim_station, tmp_path):
       if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
         await page.click('#drawer-close'); await sleep(400);
       }
-      await press('Red Percent');
-      await page.evaluate(() => document.querySelector('#cards .card.is-opened .disclosure[data-tier="2"]').click());
+      // Updated (D, 2026-09-28): Red Percent's details are on the Transfer
+      // Map's page, in the tiers drawn after the Map's own.
+      await press('Transfer Map');
+      await page.evaluate(() => Array.from(document.querySelectorAll('#cards .card-tiers .disclosure[data-tier="2"]'))
+        .find((d) => d.textContent.trim() === 'Red Percent details').click());
       await sleep(1500);
-      return page.evaluate(() => Array.from(document.querySelectorAll('#cards .card.is-opened .plot-frame'))
+      return page.evaluate(() => Array.from(document.querySelectorAll('#cards .card-tiers .plot-frame'))
         .filter((f) => f.getClientRects().length)
         .map((f) => ({ h: f.getBoundingClientRect().height,
                        note: (f.querySelector('.empty-note') || {}).textContent,
@@ -3820,7 +3832,9 @@ def test_o16_under_640_the_chord_hint_and_every_stop_mark_stay_visible(sim_stati
       });
     """, tmp_path)
     assert out["hint"], out
-    assert len(out["marks"]) == 7 and all(out["marks"]), out   # seven models (Tier S)
+    # Seven models (Tier S), six links: Red Percent's stop is folded into
+    # the Transfer Map's link (D, 2026-09-28).
+    assert len(out["marks"]) == 6 and all(out["marks"]), out
     assert not out["sideways"], out
 
 

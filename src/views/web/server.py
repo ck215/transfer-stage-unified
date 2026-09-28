@@ -271,7 +271,10 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             return self._send_json(200, {"status": "ok", "reason": ""})
 
         if route == "/api/heartbeat":
-            self.view.beat()
+            # F (2026-09-28): the page says whether its tab is hidden. It
+            # still checks in while hidden; this is for the log only.
+            hidden = body.get("hidden")
+            self.view.beat(hidden=hidden if isinstance(hidden, bool) else None)
             return self._send_json(200, {"status": "ok",
                                          "age": self.view.heartbeat_age})
 
@@ -772,6 +775,7 @@ class WebView:
         self._halt = threading.Event()
         self._lock = threading.Lock()
         self._last_beat = None
+        self._hidden = None           # what the page last said (F); log only
         self._warned = False
         self._stopped = False
         # O5: what the first Quit answered (the stop it ran first); a second
@@ -909,12 +913,23 @@ class WebView:
         self.controller.close()
 
     # -- browser liveness (D-8 / WEB-19 / WEB-23) --------------------------
-    def beat(self):
+    def beat(self, hidden=None):
         """A browser tab checked in. "Now" is read here, so a slow request
-        cannot backdate the deadline."""
+        cannot backdate the deadline.
+
+        `hidden` is what the page said about its tab (None: it said
+        nothing). A hidden tab is a present browser - it counts exactly like
+        a shown one; the change is logged once, for the bench log (F)."""
         with self._lock:
             previous, self._last_beat = self._last_beat, self._clock()
             self._warned = self._stopped = False
+            changed = hidden is not None and hidden != self._hidden
+            if changed:
+                self._hidden = hidden
+        if changed:
+            events.debug("Browser Hidden" if hidden else "Browser Shown",
+                         "the tab is hidden; it keeps checking in" if hidden
+                         else "the tab is in view", source=SOURCE)
         gap = None if previous is None else self._last_beat - previous
         events.debug("Heartbeat", "first check-in" if gap is None
                      else f"gap {gap:.2f}s", source=SOURCE, every=1.0)
