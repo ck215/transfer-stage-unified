@@ -3140,10 +3140,23 @@ class RegionOverlay(QWidget):
     one of the two modals that hung the Qt suite. **Nothing here opens a
     dialog.** A too-small drag re-labels the instruction line instead.
 
+    What the operator sees is `screenshot` - the model's `screen_image`,
+    taken before this opened - painted under the band, and the overlay is
+    opaque. `WA_TranslucentBackground` needs a compositor: on a bare X11
+    session it paints an opaque sheet, which at the bench (2026-09-27, a
+    Linux PC) covered the whole display during selection. Without a picture
+    (capture unavailable, or bytes that will not decode) the translucent
+    overlay is the fallback, as before. A fallback on what the model
+    supplied, not a platform branch.
+
     Qt event-handler names are fixed by Qt and exempt from the naming scheme.
     """
 
-    def __init__(self, on_region, parent=None):
+    #: The picture's dim, 0-255: enough for the band and the instruction to
+    #: read over it, little enough that the area being picked is visible.
+    PICTURE_TINT = 64
+
+    def __init__(self, on_region, parent=None, screenshot=None):
         QWidget.__init__(self, parent)
         self.on_region = on_region
         self.start_point = None
@@ -3151,7 +3164,9 @@ class RegionOverlay(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.WindowStaysOnTopHint
                             | Qt.WindowType.Tool)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.picture = self._decode(screenshot)
+        if self.picture is None:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         geometry = QRect()
         for screen in QApplication.screens():
@@ -3164,10 +3179,29 @@ class RegionOverlay(QWidget):
         self.instruction_label = QLabel(
             "Click and drag to select the capture region  -  ESC to cancel")
         self.instruction_label.setObjectName("sectionTitle")
+        if self.picture is not None:
+            # On a patch of the page, so it reads over any picture.
+            self.instruction_label.setAutoFillBackground(True)
+            self.instruction_label.setContentsMargins(12, 6, 12, 6)
         layout.addWidget(self.instruction_label, 0,
                          Qt.AlignmentFlag.AlignTop
                          | Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch()
+
+    @staticmethod
+    def _decode(screenshot):
+        """`{"image": png, ...}` -> QPixmap, or None when there is no
+        picture to show."""
+        if not isinstance(screenshot, dict) or not screenshot.get("image"):
+            events.debug("Region Picture", "none: the screen could not be "
+                         "captured", source="QtView")
+            return None
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(bytes(screenshot["image"])):
+            events.debug("Region Picture Failed", "the screenshot would not "
+                         "decode", source="QtView")
+            return None
+        return pixmap
 
     # -- Qt event handlers ------------------------------------------------
     def showEvent(self, event):
@@ -3221,7 +3255,13 @@ class RegionOverlay(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         tint = QColor(theme.BACKGROUND)
-        tint.setAlpha(100)
+        if self.picture is not None:
+            # Scaled to the overlay's own geometry, which covers the same
+            # virtual desktop: what is under a point is what it reports.
+            painter.drawPixmap(self.rect(), self.picture)
+            tint.setAlpha(self.PICTURE_TINT)
+        else:
+            tint.setAlpha(100)
         painter.fillRect(self.rect(), tint)
         if self.start_point is None or self.end_point is None:
             return
@@ -4983,11 +5023,30 @@ class QtPanelView(PanelView, QWidget):
                          source="QtView", every=5.0)
 
     def _pick_region(self, element):
-        """Hand the overlay a callback; the *model* owns the command."""
+        """Hand the overlay a callback; the *model* owns the command. The
+        picture is taken first, so the overlay is never in it."""
+        screenshot = self._region_screenshot(element)
         self._overlay = RegionOverlay(
             lambda x, y, width, height: self._run(element,
-                                                  args=(x, y, width, height)))
+                                                  args=(x, y, width, height)),
+            screenshot=screenshot)
         self._overlay.show()
+
+    def _region_screenshot(self, element):
+        """The element's `data_command` (Red Percent's `screen_image`), or
+        None: no command, a refusal, a failure or no capture all mean the
+        translucent fallback rather than no picker."""
+        command = element.get("data_command")
+        if not command:
+            return None
+        try:
+            result = self._call(command)
+        except Exception as exc:
+            events.debug("Region Screenshot Failed", f"{self.name}.{command}: "
+                         f"{exc}", source="QtView", exception=exc)
+            return None
+        value = result.value if getattr(result, "is_ok", False) else None
+        return value if isinstance(value, dict) and value.get("image") else None
 
     def _save_to_file(self, element):
         """Ask where, run the command, copy what the model wrote there.
