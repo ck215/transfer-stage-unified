@@ -677,3 +677,153 @@ def test_d_the_real_pair_in_sim_is_one_dashboard(map_station, tmp_path):
     assert out["nested"] and out["shown"], out
     assert out["discs"][-1] == "Red Percent details", out
     assert len(out["discs"]) == 2, out
+
+
+# ==========================================================================
+# W1: a host's page is not pinned (brief-web-polish.md)
+# ==========================================================================
+#: The Transfer Map's page at the bench's 1440x900: pinned or not, and where
+#: the host's head and the guest's group sit before and after a scroll.
+_HOST_SCROLL = r"""
+  await page.setViewport({ width: 1440, height: 900 });
+  await openMap();
+  const where = () => page.evaluate(() => {
+    const map = Array.from(document.querySelectorAll('#cards > .card'))
+      .find((c) => (c.querySelector('.card-title') || {}).textContent === 'Fake Map');
+    const red = Array.from(map.querySelectorAll('.card'))
+      .find((c) => (c.querySelector('.card-title') || {}).textContent === 'Fake Red');
+    return { pinned: map.classList.contains('is-pinned'),
+             sticky: getComputedStyle(map.querySelector(':scope > .card-head')).position,
+             head: map.querySelector(':scope > .card-head').getBoundingClientRect().top,
+             red: red ? red.getBoundingClientRect().top : null,
+             scroll: window.scrollY };
+  });
+  // Room to scroll, whatever the fakes' height: the host's entry grows at
+  // its foot, where its details would be (a pin holds inside its entry).
+  await page.evaluate(() => {
+    const map = Array.from(document.querySelectorAll('#cards > .card'))
+      .find((c) => (c.querySelector('.card-title') || {}).textContent === 'Fake Map');
+    const spacer = document.createElement('div');
+    spacer.style.height = '2000px';
+    map.appendChild(spacer);
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  await sleep(200);
+  const before = await where();
+  await page.evaluate(() => window.scrollBy(0, 200));
+  await sleep(300);
+  const after = await where();
+"""
+
+
+@needs_browser
+def test_w1_a_host_page_is_not_pinned_the_whole_page_scrolls(hosted_station, tmp_path):
+    """The Transfer Map's tier 1 was pinned, so Red Percent's group scrolled
+    under it with ~400 px left at 1440x900. A page whose model hosts another
+    is not pinned: the host's head scrolls away with the page."""
+    view, controller, host, guest = hosted_station
+    out = _browse(view, _HOSTED + _HOST_SCROLL + r"""
+      return { before, after };
+    """, tmp_path)
+    before, after = out["before"], out["after"]
+    assert after["scroll"] > 150, out
+    assert before["pinned"] is False and after["pinned"] is False, out
+    assert after["sticky"] != "sticky", out
+    # Unpinned: the head moved up with the page, by the page's scroll.
+    assert after["head"] < before["head"] - 150, out
+    assert after["red"] is not None and after["red"] < before["red"] - 150, out
+
+
+@needs_browser
+def test_w1_the_same_page_without_a_guest_keeps_todays_pin(hosted_station, tmp_path):
+    """Every other page keeps O15's rule: the same host with its guest
+    closed is a page of its own, and its short tier 1 is pinned again."""
+    view, controller, host, guest = hosted_station
+    out = _browse(view, _HOSTED + r"""
+      await api('/api/close_model', { name: 'Fake Red' });
+      await until(() => !Array.from(document.querySelectorAll('#cards .card-title'))
+        .some((t) => t.textContent === 'Fake Red'));
+      await sleep(300);
+    """ + _HOST_SCROLL + r"""
+      return { before, after };
+    """, tmp_path)
+    before, after = out["before"], out["after"]
+    assert after["scroll"] > 150, out
+    assert before["pinned"] and after["pinned"], out
+    assert after["sticky"] == "sticky", out
+    # Pinned (O15's own check): the head holds at the top of the view while
+    # the page moved 200 px under it.
+    assert -0.5 <= after["head"] <= before["head"] + 0.5, out
+
+
+def test_w1_pin_opened_skips_a_card_with_guests():
+    """Static read: the pin decision asks whether the card hosts a guest."""
+    body = _body(r"\n  pinOpened\(\) \{(.*?)\n  \}\n")
+    assert "this.guestsOf(card.name).length" in body, body
+
+
+
+# ==========================================================================
+# W2: a value is shown as the model gives it (brief-web-polish.md)
+# ==========================================================================
+class _VersionSetup(FakeSetup):
+    """FakeSetup with the real Setup's Update row: a version sha and the
+    incoming commits (values, lower case), and a row status (a status line,
+    L17, lower case)."""
+
+    def __init__(self):
+        super().__init__()
+        self.station_version = "d66c462"
+        self.update_log = "d66c462 fix the map"
+        self.probe_status = "simulated"
+
+    @property
+    def schema(self):
+        base = super().schema
+        base["sections"].insert(0, sch.section(
+            "Update",
+            sch.readonly("Station", "station_version"),
+            sch.readonly("Coming", "update_log"),
+            layout="row"))
+        base["sections"][-1]["elements"].append(sch.readonly("Status:", "probe_status"))
+        return base
+
+
+@pytest.fixture
+def version_station():
+    controller = Controller()
+    controller.factory = lambda config: FakeProbe()
+    probe = FakeProbe()
+    controller.add("Fake Probe", probe, {"kind": "Fake Probe"})
+    view = WebView(controller, _VersionSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, probe
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_w2_a_lowercase_value_is_not_sentence_cased(version_station, tmp_path):
+    """The version sha read "D66c462". A value's text is the model's; the
+    caption beside it and a Setup status line keep their sentence case."""
+    view, controller, probe = version_station
+    out = _browse(view, r"""
+      if (!(await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open')))) {
+        await page.click('#setup-link'); await sleep(500);
+      }
+      await until(() => document.querySelector('#setup-drawer [data-attr="station_version"] .value')
+        && document.querySelector('#setup-drawer [data-attr="station_version"] .value').textContent !== '--');
+      await sleep(300);
+      return page.evaluate(() => {
+        const at = (attr) => document.querySelector('#setup-drawer [data-attr="' + attr + '"]');
+        const value = (attr) => at(attr).querySelector('.value').textContent;
+        return { version: value('station_version'), log: value('update_log'),
+                 status: value('probe_status'),
+                 caption: at('station_version').textContent.replace(value('station_version'), '').trim() };
+      });
+    """, tmp_path)
+    assert out["version"] == "d66c462", out
+    assert out["log"] == "d66c462 fix the map", out
+    assert out["status"] == "Simulated", out
+    assert out["caption"].startswith("Station"), out
