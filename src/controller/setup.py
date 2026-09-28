@@ -1069,6 +1069,13 @@ class Setup(Panel):
             # that are being replaced underneath it.
             self._refuse("An update is being applied. Wait for it to finish, "
                          "then quit and start the station again.")
+        with self._lock:
+            updated_to = self._updated_to
+        if updated_to:
+            # The files on disk are newer than the code that is running: a
+            # late import would mix the two. Only a restart runs the update.
+            self._refuse(f"The station was updated to {updated_to}. Quit and "
+                         "start it again before launching.")
         configs = self.configs
         if not configs:
             self._refuse("Select at least one device: tick its Launch box.")

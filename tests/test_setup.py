@@ -1265,3 +1265,16 @@ def test_launch_waits_while_an_update_is_landing(fake_types, checking):
     assert again.status == "refused"
     gate.set()
     wait_idle(panel)
+
+
+def test_launch_is_refused_after_an_update_until_the_restart(fake_types, checking):
+    """The lead's rule: files on disk newer than the running code never
+    launch; only a restart runs the update."""
+    panel = _ready(Setup(RecordingController(), updater=FakeUpdater(check=behind(2))))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    assert panel.update_status.startswith("Updated to")
+    tick(panel, "alpha")
+    result = panel.run("launch")
+    assert result.status == "refused"
+    assert "start it again" in result.reason
