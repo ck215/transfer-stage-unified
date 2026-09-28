@@ -37,6 +37,7 @@ Prior to opening the software, the Xbox controller must be connected to the PC.
 ### Software Initialization
 
 1. Double-click the **Transfer Stage Launcher** icon on the desktop. (To start it from a terminal instead, run `./run.sh` in the repository folder — `./run_macos.sh` on a Mac, `run.bat` on Windows — or `python3 src/app.py`; add `--web`, `--qt` or `--tk` to choose the window style.)
+   To pick up the latest fixes from GitHub between sessions, run `./update.sh` (`update.bat` on Windows) in the repository folder with the station closed. It shows what is coming, fast-forwards, and reinstalls dependencies only when they changed; `./update.sh --check` only reports. It refuses while the station runs or if the checkout has local edits, so nothing is ever overwritten.
 2. A configuration GUI will open and automatically populate the available *COM ports*.
 3. Use the drop-down menus on the right to assign the Xbox controller to each device.
 
