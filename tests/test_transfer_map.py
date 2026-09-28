@@ -920,7 +920,7 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     assert result.needs_confirm, result
     assert result.reason == ("Frame the sample now. Continue takes the before "
                              "picture and arms trial 1 on tip T7, with NO tilt "
-                             "recorded.")
+                             "recorded, 300 steps/s (Stepper Probe).")
     assert result.command == "arm_trial"
     assert result.inputs == {"tip_id": "T7", "typed_tilt": ""}
     assert not model.is_armed and model.trial_count == 0
@@ -1052,7 +1052,7 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
             for e in trial["elements"]]
     assert keys == ["next_step", "set_region", "tilt_now", "speed_now",
                     "red_now", "tip_id", "tip_pick", "new_tip",
-                    "tip_trial_count", "tip_status", "typed_tilt",
+                    "tip_trial_count", "tip_status", "typed_tilt", "typed_speed",
                     "arm_trial", "mark_force", "note", "finish_trial",
                     "abort_trial", "is_broke", "trial_status", "before_image",
                     "mark_image", "after_image", "live_series", "figure"]
@@ -1273,11 +1273,11 @@ def _tables(path):
 
 def test_a_fresh_database_is_version_three_with_the_picture_columns_and_tips(
         private_db):
-    assert tm_module.SCHEMA_VERSION == 3
+    assert tm_module.SCHEMA_VERSION == 4
     model = TransferMap()
     model.open()
     model.close()
-    assert _version(private_db) == 3
+    assert _version(private_db) == 4
     assert set(V2_COLUMNS + V3_COLUMNS) <= set(_columns(private_db))
     assert "tips" in _tables(private_db)
 
@@ -1293,7 +1293,7 @@ def test_a_version_one_database_gains_the_columns_and_keeps_its_trial(
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 3
+        assert _version(private_db) == 4
         assert set(V2_COLUMNS + V3_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
@@ -1337,7 +1337,7 @@ def test_the_first_write_migrates_too(private_db):
     store = tm_module.TrialStore(private_db)
     store.insert({"tip_id": "T8", "status": "recorded",
                   "before_full_path": "/x.png", "mark_path": "/m.png"})
-    assert _version(private_db) == 3
+    assert _version(private_db) == 4
     assert [r["tip_id"] for r in store.trials()] == ["T7", "T8"]
 
 
@@ -1347,7 +1347,7 @@ def test_a_half_done_upgrade_finishes(private_db):
     _version_one_file(private_db, drop=("after_full_path",) + V3_COLUMNS)
     assert _version(private_db) == 1
     assert tm_module.TrialStore(private_db).ensure() is False
-    assert _version(private_db) == 3
+    assert _version(private_db) == 4
     assert set(V2_COLUMNS + V3_COLUMNS) <= set(_columns(private_db))
 
 
@@ -1363,7 +1363,7 @@ def test_a_version_three_database_is_left_alone(private_db):
     with sqlite3.connect(private_db) as db:
         assert db.execute("SELECT sql FROM sqlite_master ORDER BY name"
                           ).fetchall() == schema
-    assert _version(private_db) == 3
+    assert _version(private_db) == 4
     assert not _titled("Database Upgraded", since)
 
 
@@ -1381,7 +1381,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 3
+        assert _version(private_db) == 4
         assert set(V3_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
@@ -1396,7 +1396,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
                          "note": None}]
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert "mark_path, mark_full_path, tips (version 3)" in upgraded[0].message
+        assert "mark_path, mark_full_path, tips (version 4)" in upgraded[0].message
         model.tip_id = "T7"
         assert model.tip_status == "in use since trial 1"
         assert model.run("mark_image").is_ok and model.mark_image == b""
@@ -1709,7 +1709,7 @@ def test_arming_on_a_broken_tip_asks_once(station):
     assert result.reason == (
         f"Tip T7 broke on trial {broke}. Arm on it anyway?\n\nFrame the sample "
         f"now. Continue takes the before picture and arms trial {broke + 1} "
-        "on tip T7 at 22.5 deg (Rotator).")
+        "on tip T7 at 22.5 deg (Rotator), 300 steps/s (Stepper Probe).")
     again = model.run(result.command, result.inputs, (*result.args, True))
     assert again.is_ok and model.is_armed         # one Continue, not two
 
@@ -2109,3 +2109,35 @@ def test_set_tilt_for_trial_corrects_a_recorded_trial(station):
     assert row["tilt_deg"] == 6.5 and row["tilt_source"] == "typed later"
     bad = model.run("set_trial_tilt", {"afm_trial_id": 999, "typed_tilt": "7"})
     assert bad.is_refused
+
+
+# -- the speed is typed per trial and the cut's speed is measured (2026-09-28)
+
+def test_cut_speed_is_the_fast_segment_after_the_mark():
+    from model import transfer_map_analysis as analysis
+    t = [i * 0.1 for i in range(40)]
+    z = [-(i * 1.0) for i in range(20)] + [-20 - (i * 8.0) for i in range(20)]
+    assert analysis.cut_speed(t, z) == pytest.approx(80.0)
+    assert analysis.cut_speed(t, z, after_t=2.0) == pytest.approx(80.0)
+    assert analysis.cut_speed(t[:2], z[:2]) is None
+    assert analysis.cut_speed(t, [0.0] * 40) is None
+
+
+def test_a_typed_speed_wins_over_the_probe_setting(station):
+    model, red, *_ = station
+    model.typed_speed = "150"
+    assert model._read_speed() == (150.0, "typed")
+    model.typed_speed = ""
+    speed, source = model._read_speed()
+    assert source != "typed"
+
+
+def test_set_speed_for_trial_corrects_a_recorded_trial(station):
+    model, red, *_ = station
+    _arm(model, "tip-A")
+    _finish(model)
+    trial_id = model._store.last()["id"]
+    assert model.run("set_trial_speed", {"afm_trial_id": trial_id,
+                                        "typed_speed": "220"}).is_ok
+    row = model._store.trial(trial_id)
+    assert row["speed_steps_s"] == 220.0 and row["speed_source"] == "typed later"

@@ -143,3 +143,7 @@ tabular figures; readings 60/44/36/30. Tokens in `src/palette.py` and
 `src/views/theme.py`; every view reads them and names nothing of its own.
 Tk draws the same parts by tone and lip (1 px rims, square corners, no
 blur); Qt keeps radii and per-side borders; the Web adds the garnish.
+
+## Notices: tray line or acknowledgement (2026-09-28)
+
+A notice is a tray line by default: status by exception, warnings and errors, history in the log. A notice asks for an acknowledgement only when missing it would leave the operator wrong about what the station is doing. That means every error (a failed command, a fault, an unconfirmed stop) and the few warnings in `events.ATTENTION`: the idle timeout that ended a mode, a temperature link or rotator still lost after its boot grace, and a heater-off that was never sent. Countdowns that carry their own affordance (Idle Timeout Soon and its Extend), notices nobody is present to read (Browser Silent), and soft advice (No Picture, Empty Trial) stay tray lines. An acknowledgement has the latch-release dialog's shape in every view. It never takes the stop away. It shows one title at a time with that title as its heading and the message as its body. It has one key, Understood, answered by Return and Escape. Further titles queue behind it, and a repeat of its own title counts in place.

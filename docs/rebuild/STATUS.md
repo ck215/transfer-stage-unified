@@ -213,6 +213,31 @@ lands as `palette.py` / `theme.py` tokens.
   every platform** (owner ruling 2026-09-28, replacing D-9's Tk;
   `app.DEFAULT_VIEW`, the launchers' comments, `run_macos.sh` runs its
   PySide repair by default). Fast-suite gates run after the push.
+  **2026-09-28, closing the day (bench feedback during data collection):**
+  the tilt is asked per trial (tier-1 entry under the tip, Next step
+  insists when no rotator reads, the Arm prompt names it, "Set tilt for
+  trial"); the speed likewise typed per trial and, at Finish, the cut's
+  speed **measured** from the Z trace (`transfer_map_analysis.cut_speed`,
+  fastest sustained |dz/dt| after the Mark; column
+  `speed_measured_steps_s`, store schema 4) because the probe's setting
+  was one number per session; the 3D map's axes padded (`map3d_limits`)
+  so one tilt no longer autoscales to a hair; `rb-ack` merged (acknowledged
+  notices: `events.warn(ack=True)`, `events.ATTENTION` = Idle Timeout,
+  Temperature Disconnected, Rotator Unreachable, Heater Off Not Sent; one
+  Understood dialog per view built from the latch-release dialog; the
+  paragraph is in DESIGN_BRIEF); `rb-picker2` merged (the pickers draw
+  the desktop 1:1 in desktop coordinates via `views/picking.py`, never
+  stretched: the "squished, offset" picker). **Owner's note to act on:**
+  bench trials 1 and 2 need their tilts set retroactively to 6.5 and 7
+  degrees (Trial number under AFM measurement, Tilt for this trial, Set
+  tilt for trial). Open: the Web view does not log an acknowledgement at
+  debug (a `server.py` route); Tk/Qt keep the alert band beside the new
+  dialog (owner ruling wanted); the restart prompt
+  (`handoff/brief-restart-prompt.md`: an action key on the acknowledged
+  notice, "Update now" / "Restart now", `Setup.restart_station`) is
+  briefed and not started; the picker still uses the 1600-px picture (a
+  full-size one is a one-line change in `screen_image`); Tk/Qt renders of
+  the sheet, the dialog and the picker remain unseen on a display.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,

@@ -295,3 +295,34 @@ def gp_gradient(x, y, grid, length=0.3, noise=1e-2, amplitude=None):
         v = numpy.linalg.solve(chol, dk[:, :, d].T)              # (n, m)
         variance[:, d] = numpy.clip(prior - numpy.sum(v * v, axis=0), 0.0, None)
     return gradient, variance
+
+
+def cut_speed(t, z, after_t=None, window=5):
+    """The speed of the cut, in Z steps per second, from a trial's Z trace:
+    the fastest sustained |dz/dt|. The tip is lowered slowly and then
+    accelerated for the cut itself (owner, 2026-09-28), so the value of
+    interest is the fast segment, not the mean over the lowering. Per-sample
+    speeds are smoothed by a running median of `window` samples (a spike
+    from one late position row is not a speed), and the maximum is taken
+    after the operator's Mark when there is one (`after_t`). None when
+    fewer than three usable samples exist or Z never moved."""
+    pairs = [(float(a), float(b)) for a, b in zip(t, z)
+             if a is not None and b is not None]
+    if after_t is not None:
+        kept = [p for p in pairs if p[0] >= after_t]
+        if len(kept) >= 3:
+            pairs = kept
+    if len(pairs) < 3:
+        return None
+    speeds = []
+    for (t0, z0), (t1, z1) in zip(pairs, pairs[1:]):
+        dt = t1 - t0
+        if dt > 0:
+            speeds.append(abs(z1 - z0) / dt)
+    if not speeds:
+        return None
+    half = max(1, window // 2)
+    smoothed = [statistics.median(speeds[max(0, i - half):i + half + 1])
+                for i in range(len(speeds))]
+    best = max(smoothed)
+    return best if best > 0 else None

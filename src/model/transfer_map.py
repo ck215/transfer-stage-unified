@@ -88,6 +88,7 @@ TRIAL_COLUMNS = (
     ("mark_full_path", "TEXT"), ("status", "TEXT NOT NULL"),
     ("origin", "TEXT NOT NULL DEFAULT 'recorded'"), ("tilt_source", "TEXT"),
     ("speed_source", "TEXT"), ("force_given", "TEXT"),
+    ("speed_measured_steps_s", "REAL"),
 )
 _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
 PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y")
@@ -108,7 +109,7 @@ _TIP_NAMES = frozenset(name for name, _kind in TIP_COLUMNS)
 #: older file gains the columns by `ALTER TABLE ... ADD COLUMN` and a tip
 #: record for every tip its trials name, the first time it is opened or
 #: written, and keeps every trial it holds.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _CREATE = (
     "CREATE TABLE IF NOT EXISTS trials ("
@@ -465,6 +466,11 @@ class TransferMap(Model):
         # Text, so blank means "no tilt" rather than a default of 0 degrees.
         Param("typed_tilt", "text", default="",
               label="Tilt without a rotator (deg)"),
+        # Bench 2026-09-28: the probe's speed setting is one number for the
+        # whole session; the trial's intended cut speed is typed, and the
+        # cut's speed is measured from the Z trace at Finish.
+        Param("typed_speed", "text", default="",
+              label="Speed for this trial (steps/s)"),
         Param("note", "text", default="", label="Note"),
         Param("afm_trial_id", "int", default=0, minimum=0, label="Trial"),
         Param("width_um", "float", default=0.0, minimum=0, decimals=3,
@@ -745,6 +751,11 @@ class TransferMap(Model):
             return None
 
     def _read_speed(self):
+        """(steps/s, source): the typed speed for this trial wins over the
+        probe's live or configured speed."""
+        typed = _number(self.typed_speed)
+        if typed is not None:
+            return typed, "typed"
         name, model = self._probe()
         speed = self._speed_of(model) if model is not None else None
         return speed, (name if speed is not None else None)
@@ -884,9 +895,13 @@ class TransferMap(Model):
             tilt_now, tilt_from = self._read_tilt()
             tilt_words = (f" at {tilt_now:g} deg" + (f" ({tilt_from})" if tilt_from != "typed" else "")
                           if tilt_now is not None else ", with NO tilt recorded")
+            speed_now, speed_from = self._read_speed()
+            speed_words = (f", {speed_now:g} steps/s"
+                           + ("" if speed_from == "typed" else f" ({speed_from})")
+                           if speed_now is not None else ", NO speed")
             prompt = (f"Frame the sample now. Continue takes the before picture "
                       f"and arms trial {self._store.next_id()} on tip {tip}"
-                      f"{tilt_words}.")
+                      f"{tilt_words}{speed_words}.")
             doubt = self._tip_doubt(tip)
             raise NeedsConfirm(doubt + "\n\n" + prompt if doubt else prompt,
                                "arm_trial",
@@ -1056,6 +1071,9 @@ class TransferMap(Model):
             "status": "recorded", "note": (self.note or "").strip(),
             "after_path": after, "after_full_path": after_full,
             "speed_steps_s": trial.speed,
+            "speed_measured_steps_s": analysis.cut_speed(
+                [s[0] for s in samples], [s[2] for s in samples],
+                trial.operator_t),
             "z_contact": trial.z_mark, "mark_operator_t": trial.operator_t,
             "mark_auto_max_t": found.get("max_t"),
             "mark_auto_min_t": found.get("min_t"),
@@ -1417,6 +1435,27 @@ class TransferMap(Model):
                     source=self.NAME)
         return trial_id
 
+    def set_trial_speed(self):
+        """Correct a recorded trial's intended speed from the sheet."""
+        trial_id = int(self.afm_trial_id or 0)
+        if trial_id <= 0:
+            raise Refused("Type the trial number under AFM measurement, Trial.")
+        row = self._store.trial(trial_id)
+        if row is None:
+            raise Refused(f"No trial {trial_id} in the database.")
+        if row["status"] == "armed":
+            raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
+        speed = _number(self.typed_speed)
+        if speed is None:
+            raise Refused("Type the speed in steps/s under Speed for this trial.")
+        self._store.update(trial_id, {"speed_steps_s": float(speed),
+                                      "speed_source": "typed later"})
+        self._indices.pop(trial_id, None)
+        self._changed()
+        events.info("Speed Set", f"Trial {trial_id}: speed set to {speed:g} "
+                    "steps/s.", source=self.NAME)
+        return trial_id
+
     def attach_afm(self):
         trial_id = int(self.afm_trial_id or 0)
         if trial_id <= 0:
@@ -1770,6 +1809,9 @@ class TransferMap(Model):
             tilt = "?" if row["tilt_deg"] is None else f"{row['tilt_deg']:g} deg"
             speed = ("?" if row["speed_steps_s"] is None
                      else f"{row['speed_steps_s']:g} steps/s")
+            measured = row["speed_measured_steps_s"]
+            if measured is not None:
+                speed += f" (cut measured {measured:g})"
             lines.append(f"{row['id']:>4}  {row['status']:<8} "
                          f"{row['tip_id'] or '-'}  {tilt}  {speed}  {width}"
                          f"{'  broke' if row['broke'] else ''}"
@@ -1856,8 +1898,10 @@ class TransferMap(Model):
                 # trial, and Next step insists on it when no rotator reads.
                 sch.entry("Tilt for this trial (deg)", "typed_tilt",
                           P["typed_tilt"]),
+                sch.entry("Speed for this trial (steps/s)", "typed_speed",
+                          P["typed_speed"]),
                 sch.button("Arm trial", "arm_trial",
-                           inputs=("tip_id", "typed_tilt"),
+                           inputs=("tip_id", "typed_tilt", "typed_speed"),
                            role="go", disabled_when=("armed", "latched")),
                 sch.button("Mark force", "mark_force", enabled_when=("armed",)),
                 sch.entry("Note", "note", P["note"]),
@@ -1929,6 +1973,8 @@ class TransferMap(Model):
                                    "thickness_nm", "thickness_sigma_nm")),
                 sch.button("Set tilt for trial", "set_trial_tilt",
                            inputs=("afm_trial_id", "typed_tilt")),
+                sch.button("Set speed for trial", "set_trial_speed",
+                           inputs=("afm_trial_id", "typed_speed")),
                 tier=2, disclosure=configure,
             ),
             sch.section(

@@ -3178,6 +3178,7 @@ def ack_box(parent, title, message, on_finished):
     box.setInformativeText(message)
     understood = box.button(QMessageBox.StandardButton.Ok)
     understood.setText("Understood")
+    box.setWindowTitle(title)     # the constructor's title is dropped on some platforms
     box.setDefaultButton(QMessageBox.StandardButton.Ok)
     box.setEscapeButton(QMessageBox.StandardButton.Ok)
     box.setWindowModality(Qt.WindowModality.NonModal)
