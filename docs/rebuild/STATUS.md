@@ -255,6 +255,15 @@ lands as `palette.py` / `theme.py` tokens.
   offscreen captures (`handoff/shots/qt_offscreen_*.png`; the harness is
   in the session scratch, recipe: `QtDashboard(Controller(), Setup())`,
   `controller.add` + `board._add_panel`, `open_entry`, `grab().save`).
+  Rulings the lead owes at resume: (1) `tests/test_setup_registry.py`
+  (the titles line) joins `rb-launch`'s write set so the Firmware row can
+  land (its patch: `handoff/fix-launchers-firmware-row.patch`); (2)
+  `src/events.py` echoes every info/warning to the terminal (line ~167):
+  keep it for `--no-browser` and tests, silence it otherwise, or make it
+  debug-only, so nothing but the log speaks; (3) the old `run_swap.sh`
+  mentions in `updater.py`, `update.sh`/`.bat` and `setup.py` point at
+  `dev/swap_branch.sh` or at the Firmware row; (4) R8's fix is `hide()`
+  before `deleteLater()` in `_sync_rail` and `_build_reopen`.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
