@@ -955,6 +955,35 @@ kbd {
 .sheet.is-overview .card > .disclosure,
 .sheet.is-overview .card > .tier-well { display: none; }
 
+/* A model drawn on another model's page (Model.HOST: Red Percent on the
+   Transfer Map). On the host's page it is a group after the host's tier 1:
+   the entry's own head at one step down - a line rule instead of the ink
+   rule, the name one size smaller - and its tier-2 disclosure and well
+   follow the host's, in `.card-tiers`. The Overview draws neither: the
+   host's entry stands for both (its head folds in the guest's stop). */
+.card.is-hosted {
+  grid-column: 1 / -1;
+  padding-top: var(--space-4);
+  border-top: var(--line) solid var(--rule-strong);
+  box-shadow: none;
+}
+
+.card.is-hosted .card-title { font-size: var(--t-lg); }
+
+.card-tiers {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--space-4);
+  min-width: 0;
+}
+
+.card-tiers > * { min-width: 0; }
+.card-tiers > .disclosure[data-tier="2"] { justify-self: start; }
+.card-tiers > .disclosure[data-tier="2"] + .tier-well { margin-top: calc(var(--space-2) - var(--space-4)); }
+
+.sheet.is-overview .card.is-hosted,
+.sheet.is-overview .card-tiers { display: none; }
+
 /* The one launch moment: entries arrive one after another, 60 ms apart. */
 .card.is-entering {
   animation: entry-in 240ms ease-out both;
@@ -1050,7 +1079,7 @@ kbd {
 .stale-badge[hidden], .card-state[hidden] { display: none; }
 
 /* A lost device: a word in ink, and the entry's head rule in signal. */
-.card.is-lost .stale-badge { color: var(--text); font-weight: 600; }
+.card.is-lost .stale-badge:not(.card.is-hosted:not(.is-lost) .stale-badge) { color: var(--text); font-weight: 600; }
 
 /* Signature: an unconfirmed (or faulted, or lost) entry's rule is 3 px of
    signal, the entry sliding up by the extra pixel so nothing under it
@@ -1423,11 +1452,17 @@ span.value.is-word,
 
 /* Frozen: latched, stale, lost, or the station not answering. A frozen
    number must never look like a live one (F3, F4, CRIT-1). */
-.card.is-latched .value,
-.card.stale .value,
+/* A host's latch or staleness is its own: a model drawn on its page keeps
+   its own state's colours (the :not()s), and its tiers, drawn apart from
+   its entry, carry its state classes (`.card-tiers`). */
+.card.is-latched .value:not(.card.is-hosted:not(.is-latched) .value):not(.card-tiers:not(.is-latched) .value),
+.card.stale .value:not(.card.is-hosted:not(.stale) .value):not(.card-tiers:not(.stale) .value),
 .is-offline .card .value,
-.card.stale .row span.value.is-word,
-.is-offline .card .row span.value.is-word { color: var(--muted); }
+.card.stale .row span.value.is-word:not(.card.is-hosted:not(.stale) .value):not(.card-tiers:not(.stale) .value),
+.is-offline .card .row span.value.is-word,
+.card-tiers.is-latched .value,
+.card-tiers.stale .value,
+.card-tiers.stale .row span.value.is-word { color: var(--muted); }
 
 /* A danger-role value (a fault reason) is ink beside a signal mark: signal
    text on the sheet is a mark, not a sentence (F14, UXPM-4). */
@@ -1676,7 +1711,8 @@ span.value.role-danger:not(.is-empty)::before { width: 0.875rem; height: 0.875re
 
 /* Disabled or latched: the fill goes quiet and the cap flat. */
 .slider.disabled .slider-fill,
-.card.is-latched .slider-fill { background: var(--edge-soft); }
+.card.is-latched .slider-fill:not(.card.is-hosted:not(.is-latched) .slider-fill):not(.card-tiers:not(.is-latched) .slider-fill),
+.card-tiers.is-latched .slider-fill { background: var(--edge-soft); }
 
 .slider.disabled .slider-range { cursor: not-allowed; }
 

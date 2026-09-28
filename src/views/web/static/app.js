@@ -1802,6 +1802,15 @@ class PanelCard {
     this.isOffline = false;
     this.lost = [];
     this.title = (options && options.title) || name;
+    //: The host whose page draws this model (`state.host`, Model.HOST), or
+    //: null: its own page. While hosted, the entry is a group inside the
+    //: host's entry and its tier-2 disclosure sits in `tiersNode`, after
+    //: the host's own (handoff/brief-dashboard-contract.md).
+    this.hostName = null;
+    this.tiersNode = null;
+    this.titleNode = null;
+    //: What the head says about the stop, before any guest is folded in.
+    this.headStop = { latched: false, flagged: false, words: '' };
     // An ENTRY on the sheet (Bench sheet, 2026-09-25): a 2 px ink rule, the
     // model's name, its tier-1 body; tiers 2 and 3 behind one disclosure.
     // The DOM hook keeps its old name, `card`, which is what the tests and
@@ -1812,6 +1821,7 @@ class PanelCard {
     this.head = head;
     const title = make('h2', 'card-title', sentence(this.title));
     title.setAttribute('translate', 'no');
+    this.titleNode = title;
     controlSerial += 1;
     title.id = 'model-title-' + controlSerial;
     this.node.setAttribute('aria-labelledby', title.id);
@@ -2110,7 +2120,7 @@ class PanelCard {
     const open = Boolean(isOpen);
     if (target.hidden !== !open) target.hidden = !open;
     putAttr(button, 'aria-expanded', open ? 'true' : 'false');
-    this.node.classList.toggle('tier-' + tier + '-open', open);
+    this.mark('tier-' + tier + '-open', open);
     if (!restoring && this.dashboard && this.dashboard.rememberTier) {
       this.dashboard.rememberTier(this.name, tier, open);
     }
@@ -2136,9 +2146,86 @@ class PanelCard {
   }
 
   /** The device page's model (K4): alone, full width, its axis readings at
-   *  the focal size (theme.READING_SIZES), its disclosures drawn. */
+   *  the focal size (theme.READING_SIZES), its disclosures drawn. A hosted
+   *  model is opened with its host's page. */
   setOpened(isOpened) {
-    this.node.classList.toggle('is-opened', Boolean(isOpened));
+    this.mark('is-opened', isOpened);
+  }
+
+  /** A state class on the entry, and on its tiers where a host draws those
+   *  apart from it: what mutes a frozen number there reads the same class. */
+  mark(name, isOn) {
+    const on = Boolean(isOn);
+    this.node.classList.toggle(name, on);
+    if (this.tiersNode) this.tiersNode.classList.toggle(name, on);
+  }
+
+  /** Whether `node` is this model's: in its entry, or in its tiers. */
+  owns(node) {
+    return Boolean(node && (this.node.contains(node)
+      || (this.tiersNode && this.tiersNode.contains(node))));
+  }
+
+  // -- hosted on another model's page (Model.HOST) ------------------------
+  /** Draw this model on `host`'s page: its entry becomes a group after the
+   *  host's tier 1 (its head the group's heading, one step down), its
+   *  tier-2 disclosure and well follow the host's. Nothing is rebuilt:
+   *  every control is still this model's and runs against its name. */
+  attachTo(host) {
+    if (this.hostName === host.name) return;
+    this.detachFromHost();
+    this.hostName = host.name;
+    this.node.classList.add('is-hosted');
+    for (const other of ['span-2', 'span-3', 'span-6', 'is-pinned']) this.node.classList.remove(other);
+    if (this.titleNode) this.titleNode.setAttribute('aria-level', '3');
+    host.node.insertBefore(this.node, host.disclose2 || host.firstGuestTiers() || null);
+    if (this.disclose2) {
+      const tiers = make('div', 'card-tiers');
+      for (const name of ['is-latched', 'stale', 'is-lost', 'is-opened']) {
+        if (this.node.classList.contains(name)) tiers.classList.add(name);
+      }
+      tiers.appendChild(this.disclose2);
+      tiers.appendChild(this.well);
+      this.tiersNode = tiers;
+      host.node.appendChild(tiers);
+    }
+  }
+
+  /** Back to a page of its own (the host closed, or it stopped hosting). */
+  detachFromHost() {
+    if (!this.hostName) return;
+    this.hostName = null;
+    this.node.classList.remove('is-hosted');
+    if (this.titleNode) this.titleNode.removeAttribute('aria-level');
+    if (this.tiersNode) {
+      this.node.appendChild(this.disclose2);
+      this.node.appendChild(this.well);
+      this.tiersNode.remove();
+      this.tiersNode = null;
+    }
+    if (this.node.parentNode) this.node.parentNode.removeChild(this.node);
+  }
+
+  /** The first guest's tiers on this entry, which the host's own come before. */
+  firstGuestTiers() {
+    return this.node.querySelector(':scope > .card-tiers');
+  }
+
+  /** What the head says about the stop: its own, and on the Overview (where
+   *  a hosted model has no entry) the worse of its own and its guests' -
+   *  a latch or an unconfirmed stop anywhere on the page shows. */
+  paintHead() {
+    let { latched, flagged, words } = this.headStop;
+    const guests = (this.dashboard && this.dashboard.guestsOf) ? this.dashboard.guestsOf(this.name) : [];
+    if (!this.isOpened()) {
+      for (const guest of guests) {
+        const theirs = guest.headStop;
+        if (theirs.flagged && !flagged) { flagged = true; words = theirs.words; }
+        latched = latched || theirs.latched;
+      }
+    }
+    this.setStateWord(latched ? 'Stopped' : '');
+    this.setUnconfirmed(flagged, words);
   }
 
   isOpened() {
@@ -2149,6 +2236,8 @@ class PanelCard {
    *  Overview, only the opened one on a device page. */
   isShown() {
     const shownPage = this.dashboard && this.dashboard.opened;
+    // A hosted model is drawn on its host's page only (not on the Overview).
+    if (this.hostName) return shownPage === this.hostName;
     return !shownPage || shownPage === this.name;
   }
 
@@ -2418,15 +2507,16 @@ class PanelCard {
     const isLatched = Boolean(this.values.is_estopped);
     this.node.classList.toggle('is-live', !isLost
       && age !== null && age !== undefined && age <= STALE_AFTER_S);
-    this.node.classList.toggle('is-lost', isLost);
-    this.node.classList.toggle('is-latched', isLatched);
-    this.setStateWord(isLatched ? 'Stopped' : '');
+    this.mark('is-lost', isLost);
+    this.mark('is-latched', isLatched);
     // L1: the entry's own "Stop not confirmed. Treat as live." follows the
     // model's `stop_confirmed` (None unless latched), not an event. O4: a
     // fault is the same hazard - a disable that did not reach the board - so
     // it is marked the same way, with the fault's own reason under the head.
     const isUnconfirmed = Boolean(state) && state.stop_confirmed === false;
-    this.setUnconfirmed(isUnconfirmed || isFaulted, isUnconfirmed ? '' : faultWords(state));
+    this.headStop = { latched: isLatched, flagged: isUnconfirmed || isFaulted,
+                      words: isUnconfirmed ? '' : faultWords(state) };
+    this.paintHead();
     this.node.classList.toggle('is-faulted', isFaulted);
     const reason = isFaulted ? String(state.fault || '') : '';
     putText(this.faultLine, reason);
@@ -2522,7 +2612,7 @@ class PanelCard {
   setStale(isStale, label) {
     putText(this.staleBadge, label || 'Stale');
     if (this.staleBadge.hidden !== !isStale) this.staleBadge.hidden = !isStale;
-    this.node.classList.toggle('stale', Boolean(isStale));
+    this.mark('stale', isStale);
   }
 
   /** Where a refusal about `element` is shown: right under the control, or
@@ -2530,7 +2620,7 @@ class PanelCard {
   anchorFor(element) {
     const widget = element && this.widgets.find((w) => w.element === element);
     const node = widget && widget.node;
-    if (!node || !node.isConnected || !this.node.contains(node)) return null;
+    if (!node || !node.isConnected || !this.owns(node)) return null;
     return node.closest('.section-row') || node.closest('.actions') || node;
   }
 
@@ -2576,7 +2666,7 @@ class PanelCard {
    *  the Overview a tier-2 field is not drawn, so null (the refusal then
    *  sits where the press was). */
   reveal(field) {
-    if (!field || !field.node || !this.node.contains(field.node)) return null;
+    if (!field || !field.node || !this.owns(field.node)) return null;
     const inWell = this.well && this.well.contains(field.node);
     if (inWell && !this.isOpened()) return null;
     if (inWell) this.setTierOpen(2, true);
@@ -2604,6 +2694,7 @@ class PanelCard {
       if (widget.dispose) widget.dispose();
     }
     this.widgets = [];
+    if (this.tiersNode) { this.tiersNode.remove(); this.tiersNode = null; }
     if (this.node.parentNode) this.node.parentNode.removeChild(this.node);
   }
 }
@@ -2664,6 +2755,9 @@ class Dashboard {
     //: of the model whose device page it is.
     this.opened = null;
     this.navKey = null;
+    //: Which model's page draws which (Model.HOST): hosted name -> host
+    //: name, from `state.models[name].host`, while both are open.
+    this.hostOf = new Map();
     //: Which models' tier-2 and tier-3 disclosures are open: the page's
     //: memory for the session, per model, surviving a close and reopen.
     this.tierMemory = new Map();
@@ -3270,9 +3364,15 @@ class Dashboard {
       const card = this.cards.get(name);
       if (card) card.refresh(models[name]);
     }
+    // Hosting first, removal second: a host that closed hands its guests
+    // their own pages before its entry (which holds them) goes.
+    this.placeHosted(models);
     for (const name of Array.from(this.cards.keys())) {
       if (!(name in models)) this.removeCard(name);
     }
+    // A host's head folds in its guests' stop, so it is painted after all
+    // of them have their state.
+    for (const card of this.cards.values()) card.paintHead();
     this.renderNav(models);
     this.renderSimLine(models);
     this.layoutSheet();
@@ -3369,8 +3469,63 @@ class Dashboard {
 
   removeCard(name) {
     const card = this.cards.get(name);
+    // Its guests are never taken down with it.
+    for (const guest of this.guestsOf(name)) this.unhost(guest);
     if (card) card.close();
     this.cards.delete(name);
+    this.hostOf.delete(name);
+  }
+
+  // -- a model drawn on another model's page (Model.HOST) ------------------
+  //
+  // `state.models[name].host` is the host's name while the host is open
+  // (Controller.state), never a class. The hosted model keeps its own entry,
+  // controls and name; only where it is drawn changes: inside its host's
+  // entry, after the host's tier 1, with no page, link or Overview entry of
+  // its own. Its host closed, it is a page like any other again.
+  placeHosted(models) {
+    const wanted = new Map();
+    for (const name of Object.keys(models || {})) {
+      const host = models[name] && models[name].host;
+      if (host && host !== name && host in models && this.cards.has(host) && this.cards.has(name)) {
+        wanted.set(name, host);
+      }
+    }
+    for (const [name, card] of this.cards) {
+      const host = wanted.get(name) || null;
+      if (card.hostName === host) continue;
+      if (host) {
+        card.attachTo(this.cards.get(host));
+        this.hostOf.set(name, host);
+      } else {
+        this.unhost(card);
+      }
+    }
+  }
+
+  /** `card` back on the sheet, a page of its own, in station order. */
+  unhost(card) {
+    if (!card.hostName) return;
+    card.detachFromHost();
+    this.hostOf.delete(card.name);
+    const names = Array.from(this.cards.keys());
+    const after = names.slice(names.indexOf(card.name) + 1)
+      .map((n) => this.cards.get(n)).find((c) => !c.hostName && c.node.parentNode === this.dom.cards);
+    this.dom.cards.insertBefore(card.node, after ? after.node : null);
+  }
+
+  /** The cards drawn on `name`'s page. */
+  guestsOf(name) {
+    const guests = [];
+    for (const [guest, host] of this.hostOf) {
+      if (host === name && this.cards.has(guest)) guests.push(this.cards.get(guest));
+    }
+    return guests;
+  }
+
+  /** The models with a page (and a link, and an Overview entry) of their own. */
+  pageNames() {
+    return Array.from(this.cards.keys()).filter((n) => !this.hostOf.has(n));
   }
 
   // -- the sheet's two pages (K4) ------------------------------------------
@@ -3382,9 +3537,10 @@ class Dashboard {
   // the sheet's class, never moved or rebuilt, so a model's controls, focus
   // and remembered tiers survive every trip between the two.
   layoutSheet() {
-    const names = Array.from(this.cards.keys());
-    // The shown device was closed, or is gone: back to the Overview.
-    if (this.opened && !this.cards.has(this.opened)) this.opened = null;
+    const names = this.pageNames();
+    // The shown device was closed, or is gone (or is drawn on another
+    // model's page now): back to the Overview.
+    if (this.opened && (!this.cards.has(this.opened) || this.hostOf.has(this.opened))) this.opened = null;
     const isDevice = Boolean(this.opened);
     // toggle(…, force), never remove()/add() blindly: an unconditional
     // write rewrites the class attribute, which is a mutation every poll (F21).
@@ -3398,6 +3554,13 @@ class Dashboard {
         card.node.classList.toggle(other, other === span);
       }
     });
+    // A guest is opened with its host's page; the host's head says a
+    // guest's stop only where the guest is not drawn (paintHead).
+    for (const [guest, host] of this.hostOf) {
+      const card = this.cards.get(guest);
+      if (card) card.setOpened(isDevice && host === this.opened);
+    }
+    for (const name of names) this.cards.get(name).paintHead();
     this.pinOpened();
   }
 
@@ -3409,7 +3572,7 @@ class Dashboard {
     const room = window.innerHeight - (this.dom.logPanel ? this.dom.logPanel.offsetHeight : 0);
     for (const card of this.cards.values()) {
       let pin = false;
-      if (card.isOpened() && card.head) {
+      if (card.isOpened() && card.head && !card.hostName) {
         const head = card.head.offsetHeight;
         const tall = head + card.body.offsetHeight;
         pin = tall > 0 && tall <= room * 0.6;
@@ -3430,7 +3593,8 @@ class Dashboard {
    *  (no value is said twice); the shown page is the current one. Rebuilt
    *  only when the set of models changes. */
   renderNav(models) {
-    const names = Object.keys(models);
+    // A hosted model has no link: its host's link stands for both.
+    const names = Object.keys(models).filter((n) => !this.hostOf.has(n));
     const key = names.join('\n');
     if (key !== this.navKey) {
       this.navKey = key;
@@ -3478,19 +3642,40 @@ class Dashboard {
    *  Overview. The sheet goes to the top; a device page takes focus (its
    *  entry), the Overview leaves focus where the press was. */
   showPage(name) {
-    const page = name && this.cards.has(name) ? name : null;
+    // A hosted model's page is its host's, scrolled to its group.
+    const guest = name && this.hostOf.has(name) && this.cards.has(this.hostOf.get(name))
+      ? this.cards.get(name) : null;
+    const target = guest ? this.hostOf.get(name) : name;
+    const page = target && this.cards.has(target) ? target : null;
     this.opened = page;
     this.layoutSheet();
     this.renderNav(Object.fromEntries(Array.from(this.cards.keys()).map((n) => [n, {}])));
     window.scrollTo({ top: 0 });
-    if (page) this.cards.get(page).node.focus({ preventScroll: true });
+    if (guest) {
+      this.scrollToGroup(guest);
+      guest.node.focus({ preventScroll: true });
+    } else if (page) {
+      this.cards.get(page).node.focus({ preventScroll: true });
+    }
     // What the new page reveals is fetched now, not a data cycle later.
-    const shown = page ? [this.cards.get(page)] : Array.from(this.cards.values());
+    const shown = page ? [this.cards.get(page)].concat(this.guestsOf(page))
+      : Array.from(this.cards.values());
     for (const card of shown) {
       for (const widget of card.widgets) {
         if (widget.dataCommand && !widget.isOpen && card.wantsData(widget)) card.loadData(widget);
       }
     }
+  }
+
+  /** Bring a hosted model's group into view, clear of the rail and of the
+   *  host's pinned head and tier 1 (O15), which would otherwise cover it. */
+  scrollToGroup(card) {
+    const host = this.cards.get(card.hostName);
+    const pinned = host && host.node.classList.contains('is-pinned')
+      ? host.head.offsetHeight + host.body.offsetHeight : 0;
+    const rail = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--rail-top')) || 0;
+    const top = card.node.getBoundingClientRect().top + window.scrollY - rail - pinned;
+    window.scrollTo({ top: Math.max(0, top) });
   }
 
   /** A press on a model's name in the rail: its device page. */
@@ -3530,13 +3715,17 @@ class Dashboard {
       const name = link.dataset.model;
       const mark = link.querySelector('.nav-mark');
       if (!mark) continue;
-      const isUnconfirmed = this.unconfirmed.has(name);
-      const isFaulted = !isUnconfirmed && this.faulted.has(name);
-      const isLatched = !isUnconfirmed && !isFaulted && this.latched.has(name);
+      // A host's link stands for the models drawn on its page too: the
+      // worst of them shows.
+      const group = [name].concat(this.guestsOf(name).map((c) => c.name));
+      const faultedOne = group.find((n) => this.faulted.has(n));
+      const isUnconfirmed = group.some((n) => this.unconfirmed.has(n));
+      const isFaulted = !isUnconfirmed && faultedOne !== undefined;
+      const isLatched = !isUnconfirmed && !isFaulted && group.some((n) => this.latched.has(n));
       const words = isUnconfirmed ? 'did not confirm'
         : (isFaulted ? 'faulted' : (isLatched ? 'stopped' : ''));
       const title = isUnconfirmed ? 'Did not confirm the stop'
-        : (isFaulted ? (this.faulted.get(name) ? 'Disable failed: treat as live'
+        : (isFaulted ? (this.faulted.get(faultedOne) ? 'Disable failed: treat as live'
                                                : 'Faulted: treat as live')
           : (isLatched ? 'Stopped' : ''));
       mark.classList.toggle('is-latched', isLatched);
@@ -3552,7 +3741,9 @@ class Dashboard {
   setEnergized(names) {
     const on = new Set(names || []);
     for (const ring of this.dom.nav.querySelectorAll('.model-link[data-model] .nav-energized')) {
-      const hide = this.isShutDown || !on.has(ring.parentNode.dataset.model);
+      const name = ring.parentNode.dataset.model;
+      const group = [name].concat(this.guestsOf(name).map((c) => c.name));
+      const hide = this.isShutDown || !group.some((n) => on.has(n));
       putText(ring, hide ? '' : 'energized');
       putAttr(ring, 'title', hide ? '' : 'Energized');
       if (ring.hidden !== hide) ring.hidden = hide;
