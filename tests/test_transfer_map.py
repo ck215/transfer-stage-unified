@@ -704,3 +704,80 @@ def test_arm_and_finish_name_the_trials_place_on_its_tip(station):
         f"Trial {trial} armed, the 2nd on tip T7.")
     recorded = _titled("Trial Recorded", since)[0].message
     assert recorded.startswith(f"Trial {trial} recorded, the 2nd on tip T7:")
+
+
+# -- T1: Red Percent's controls, on the trial sheet ----------------------------
+
+def _element(model, key):
+    return next(e for e in sch.elements(model.schema)
+                if key in (e.get("command"), e.get("model_attr"),
+                           e.get("data_command")))
+
+
+def test_the_capture_region_is_red_percents_set_from_the_sheet(red):
+    """Bench 2026-09-27: "the red percent and transfer map are decoupled?
+    They should be unified". The region is set on the trial sheet."""
+    model = TransferMap()
+    assert model.region is None and model.state["values"]["region"] == ""
+    assert model.state["has_region"] is False
+    refused = model.run("set_region", None, (1, 2, 30, 40))
+    assert refused.is_refused and "Open Red Percent" in refused.reason
+    model.on_model_added("Red Percent", red)
+    assert model.region == red.region and model.state["has_region"] is True
+    result = model.run("set_region", None, (1, 2, 30, 40))
+    assert result.is_ok, result
+    assert red.region == {"top": 2, "left": 1, "width": 30, "height": 40}
+    assert model.region == red.region
+    assert model.state["values"]["region"] == sch.format_region(red.region)
+    assert model.run("set_region", None, (0, 0, 0, 5)).is_refused   # red's own check
+
+
+def test_the_region_is_fixed_while_a_trial_is_armed(station):
+    model, red, *_ = station
+    _arm(model)
+    before = dict(red.region)
+    result = model.run("set_region", None, (5, 5, 20, 20))
+    assert result.is_refused and "fixed" in result.reason
+    assert red.region == before
+
+
+def test_the_region_picker_reads_red_percents_screen(red, monkeypatch):
+    model = TransferMap()
+    assert model.screen_image is None
+    assert model.run("screen_image").is_ok            # a declared data source
+    model.on_model_added("Red Percent", red)
+    bounds = {"left": 0, "top": 0, "width": 8, "height": 6}
+    monkeypatch.setattr(red.screen, "screenshot_png", lambda: (b"PNG!", bounds))
+    assert model.screen_image == {"image": b"PNG!", **bounds}
+    element = _element(model, "set_region")
+    assert element["type"] == "region_select"
+    assert element["text"] == "Set capture region"
+    assert element["model_attr"] == "region"
+    assert element["data_command"] == "screen_image"
+
+
+def test_the_next_step_walks_the_operator_through_a_trial(red):
+    model = TransferMap()
+    step = lambda: model.state["values"]["next_step"]  # noqa: E731
+    assert _element(model, "next_step")["role"] == "info"
+    assert step() == "Open Red Percent"
+    bare = RedMonitor(screen=fake_screen())
+    model.on_model_added("Red Percent", bare)
+    assert step() == "Set the capture region"
+    model.on_model_removed("Red Percent", bare)
+    model.on_model_added("Red Percent", red)
+    model.tip_id = " "
+    assert step() == "Type a tip ID"
+    model.tip_id = "tip-A"
+    assert step() == "Press Arm trial"
+    if not red.is_running:
+        red.start_run(confirmed=True)       # before T2, Arm needs a run
+    _arm(model)
+    assert step() == "Lower the tip; press Mark force when the force is right"
+    model.mark_force()
+    assert step() == "Press Finish trial"
+    _finish(model)
+    assert step() == "Press Arm trial"
+    model.estop()
+    assert step() == ""                      # latched: the stop says what to do
+    model.close()

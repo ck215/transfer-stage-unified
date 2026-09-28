@@ -489,6 +489,61 @@ class TransferMap(Model):
     def red_now(self):
         return getattr(self._red, "current_red", None)
 
+    # -- Red Percent's controls, forwarded (T1): the trial sheet is the one
+    # page of a trial; Red Percent keeps them, this only reaches them.
+    @property
+    def region(self):
+        """Red Percent's capture region, or None."""
+        red = self._red
+        return getattr(red, "region", None) if red is not None else None
+
+    @property
+    def has_region(self):
+        return bool(self.region)
+
+    def set_region(self, x, y, width, height):
+        red = self._red
+        if red is None:
+            raise Refused("Open Red Percent first: the capture region is the "
+                          "part of the screen it measures.")
+        if self.is_armed:
+            raise Refused("The capture region is fixed while a trial is armed. "
+                          "Finish or abort the trial to change it.")
+        region = red.set_region(x, y, width, height)
+        self._touch()
+        return region
+
+    @property
+    def screen_image(self):
+        """Red Percent's desktop picture for the region picker, or None."""
+        red = self._red
+        return getattr(red, "screen_image", None) if red is not None else None
+
+    @property
+    def next_step(self):
+        """The one thing to do next on the trial sheet; "" while latched
+        (the stop says what to do then)."""
+        if self.gate_mode == "latched":
+            return ""
+        if self._red is None:
+            return "Open Red Percent"
+        if not self.has_region:
+            return "Set the capture region"
+        trial = self._trial
+        if trial is not None:
+            if trial.operator_t is None:
+                return "Lower the tip; press Mark force when the force is right"
+            return "Press Finish trial"
+        if not (self.tip_id or "").strip():
+            return "Type a tip ID"
+        return "Press Arm trial"
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["has_region"] = self.has_region
+        return snapshot
+
     # -- the samples, on Red Percent's run thread ------------------------------
     def _on_sample(self, t_s, red, positions):
         """One row of Red Percent's log. Appends and returns; never raises
@@ -1077,6 +1132,10 @@ class TransferMap(Model):
             ),
             sch.section(
                 "Trial",
+                sch.readonly("Next step", "next_step", role="info"),
+                sch.region_select("Set capture region", "set_region",
+                                  model_attr="region", role="info",
+                                  data_command="screen_image"),
                 sch.readonly("Tilt", "tilt_now", rail=True, param=P["tilt_now"]),
                 sch.readonly("Speed", "speed_now", rail=True, param=P["speed_now"]),
                 sch.readonly("Red", "red_now", param=P["red_now"], format=".2f"),
