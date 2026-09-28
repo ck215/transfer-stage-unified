@@ -5,7 +5,8 @@ A 3D map over **tilt angle, speed and force** whose value of interest is the
 itself as trials are recorded: the operator arms a trial, lowers the tip,
 presses Mark force at the force they want, and finishes; the station keeps
 the red-percent slice of the lowering, a before and an after picture of the
-capture region, and the tilt and speed at the time. AFM widths and
+capture region, the whole screen at both moments (the microscope feed as
+displayed), and the tilt and speed at the time. AFM widths and
 thicknesses are attached later, with their uncertainties.
 
 **Force** has no sensor. It is approximated from the red-percent trace of
@@ -60,7 +61,8 @@ FIGURES = {
     "Trial profile": "profile",
 }
 
-#: The trials table. The brief's columns, then four of ours: where the
+#: The trials table. The brief's columns (with the whole-screen pictures
+#: beside the region ones, schema version 2), then four of ours: where the
 #: trial came from, where its tilt and speed were read, and the force
 #: indices an import gave for a trial with no profile (JSON).
 TRIAL_COLUMNS = (
@@ -72,13 +74,18 @@ TRIAL_COLUMNS = (
     ("red_max", "REAL"), ("red_baseline", "REAL"), ("width_um", "REAL"),
     ("width_sigma_um", "REAL"), ("thickness_nm", "REAL"),
     ("thickness_sigma_nm", "REAL"), ("note", "TEXT"), ("before_path", "TEXT"),
-    ("after_path", "TEXT"), ("status", "TEXT NOT NULL"),
+    ("after_path", "TEXT"), ("before_full_path", "TEXT"),
+    ("after_full_path", "TEXT"), ("status", "TEXT NOT NULL"),
     ("origin", "TEXT NOT NULL DEFAULT 'recorded'"), ("tilt_source", "TEXT"),
     ("speed_source", "TEXT"), ("force_given", "TEXT"),
 )
 _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
 PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y")
-SCHEMA_VERSION = 1
+#: `PRAGMA user_version`. 1: the first store. 2: `before_full_path` and
+#: `after_full_path` (the whole-screen pictures); a version-1 file gains
+#: them by `ALTER TABLE ... ADD COLUMN` the first time it is opened or
+#: written, and keeps every trial it holds.
+SCHEMA_VERSION = 2
 
 _CREATE = (
     "CREATE TABLE IF NOT EXISTS trials ("
@@ -87,7 +94,6 @@ _CREATE = (
     "REFERENCES trials(id), t_s REAL NOT NULL, red REAL, z REAL, x REAL, "
     "y REAL)",
     "CREATE INDEX IF NOT EXISTS profile_trial ON profile(trial_id)",
-    "PRAGMA user_version = 1",
 )
 
 #: Samples kept per trial. At Red Percent's fastest a lowering is minutes
@@ -122,7 +128,8 @@ class TrialStore:
         return db
 
     def write(self, fn):
-        """Run `fn(db)` in one transaction, creating the file on first use."""
+        """Run `fn(db)` in one transaction, creating the file on first use
+        and bringing an older one up to `SCHEMA_VERSION` first."""
         with self._lock:
             fresh = not self.exists
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +138,7 @@ class TrialStore:
                 with db:
                     for statement in _CREATE:
                         db.execute(statement)
+                    added = self._migrate(db, fresh)
                     result = fn(db)
             finally:
                 db.close()
@@ -138,11 +146,37 @@ class TrialStore:
             events.info("Map Database Created", "A new Transfer Map database "
                         "was created at " + str(self.path) + ".",
                         source="Transfer Map")
+        elif added is not None:
+            events.info("Database Upgraded", f"{self.path} now has "
+                        f"{', '.join(added) or 'every column'} (version "
+                        f"{SCHEMA_VERSION}). Its trials are kept.",
+                        source="Transfer Map")
         return result
 
+    @staticmethod
+    def _migrate(db, fresh):
+        """Bring the file to `SCHEMA_VERSION`. A file already there (or
+        newer) is left alone. Older: every trials column it lacks is added
+        (a column that exists is skipped, so an upgrade cut short finishes),
+        then the version is set. Returns the columns added, or None when
+        nothing was done or the file is new."""
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version >= SCHEMA_VERSION:
+            return None
+        have = {row[1] for row in db.execute("PRAGMA table_info(trials)")}
+        added = []
+        for name, kind in TRIAL_COLUMNS:
+            if name not in have:
+                # Names and kinds are this module's own, never input.
+                db.execute(f"ALTER TABLE trials ADD COLUMN {name} {kind}")
+                added.append(name)
+        db.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
+        return None if fresh else added
+
     def ensure(self):
-        """Create the file and its schema if missing; a no-op otherwise
-        (every statement is IF NOT EXISTS). True when it was created now."""
+        """Create the file and its schema if missing, and upgrade an older
+        one; a no-op on a current file (every statement is IF NOT EXISTS).
+        True when it was created now."""
         fresh = not self.exists
         self.write(lambda db: None)
         return fresh
@@ -622,6 +656,9 @@ class TransferMap(Model):
             if not png:
                 raise Refused("No before picture: the capture region is not "
                               "set or the screen is not open.")
+            full = self._take_full_picture()
+            # The whole-screen grab takes a moment; a stop inside it wins.
+            self._guard("Arm")
             tilt, tilt_source = self._read_tilt()
             speed, speed_source = self._read_speed()
             trial_id = self._store.insert({
@@ -629,8 +666,11 @@ class TransferMap(Model):
                 "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
                 "origin": "recorded", "tilt_source": tilt_source,
                 "speed_source": speed_source, "note": ""})
-            self._store.update(trial_id, {
-                "before_path": self._write_picture(trial_id, "before", png)})
+            pictures = {"before_path": self._write_picture(trial_id, "before", png)}
+            if full:
+                pictures["before_full_path"] = self._write_picture(
+                    trial_id, "before_full", full)
+            self._store.update(trial_id, pictures)
         except BaseException:
             if run is not None:
                 red.end_run()                            # ours: undo it
@@ -643,6 +683,8 @@ class TransferMap(Model):
             self._trial = trial
         red.subscribe(self._on_sample)
         self._changed()
+        if not full:
+            self._warn_no_full(trial_id, "Arm", "before")
         events.info("Trial Armed", f"Trial {trial_id} armed, "
                     f"{self._place_on_tip(trial)}. Lower the tip, press Mark "
                     "force at the force you want, then Finish.",
@@ -677,18 +719,22 @@ class TransferMap(Model):
             raise Refused("No after picture: the capture region is not set or "
                           "the screen is not open. Fix it and press Finish "
                           "trial again, or Abort trial to keep the profile.")
+        full = self._take_full_picture()
         trial = self._claim()
         if trial is None:
             raise Refused("No trial is armed.")          # the stop took it
         self._release_red()
         self._end_own_run(trial)
         after = self._write_picture(trial.id, "after", png)
+        after_full = (self._write_picture(trial.id, "after_full", full)
+                      if full else None)
         samples = list(trial.samples)
         profile = {"t": [s[0] for s in samples], "red": [s[1] for s in samples]}
         found = analysis.detect(profile, trial.operator_t) or {}
         fields = {
             "status": "recorded", "note": (self.note or "").strip(),
-            "after_path": after, "speed_steps_s": trial.speed,
+            "after_path": after, "after_full_path": after_full,
+            "speed_steps_s": trial.speed,
             "z_contact": trial.z_mark, "mark_operator_t": trial.operator_t,
             "mark_auto_max_t": found.get("max_t"),
             "mark_auto_min_t": found.get("min_t"),
@@ -697,6 +743,8 @@ class TransferMap(Model):
         self._store.update(trial.id, fields, samples)
         self._indices.pop(trial.id, None)
         self._changed()
+        if not full:
+            self._warn_no_full(trial.id, "Finish", "after")
         if not samples:
             events.warn("Empty Trial", f"Trial {trial.id} has no red-percent "
                         "samples. Check that Red Percent was recording while "
@@ -761,13 +809,31 @@ class TransferMap(Model):
     def _take_picture(self):
         """The one frame source of the before and after pictures: Red
         Percent's capture region (what it measures), as PNG bytes, or None.
-        The owner may ask for the whole feed later; that change is here."""
+        The gate: no region picture, no Arm (and no Finish)."""
         red = self._red
         try:
             return (red.grab_frame() if red is not None else None) or None
         except Exception as exc:
             events.debug("Frame Failed", repr(exc), source=self.NAME)
             return None
+
+    def _take_full_picture(self):
+        """The whole screen at full size (the microscope feed as displayed),
+        as PNG bytes, or None. The record, not the measurement: a missing
+        one is a warning, never a refusal. `grab_screen` is optional on the
+        Red Percent the map found."""
+        grab = getattr(self._red, "grab_screen", None)
+        try:
+            return (grab() if callable(grab) else None) or None
+        except Exception as exc:
+            events.debug("Full Frame Failed", repr(exc), source=self.NAME)
+            return None
+
+    def _warn_no_full(self, trial_id, moment, which):
+        events.warn("No Full Picture", f"Trial {trial_id} has no whole-screen "
+                    f"picture at {moment}; its {which} picture of the capture "
+                    "region is kept. Check that Red Percent can capture the "
+                    "screen.", source=self.NAME)
 
     def _write_picture(self, trial_id, which, png):
         folder = self.pictures_root / str(trial_id)
@@ -805,6 +871,14 @@ class TransferMap(Model):
     @property
     def after_image(self):
         return self._picture("after")
+
+    @property
+    def before_full_image(self):
+        return self._picture("before_full")
+
+    @property
+    def after_full_image(self):
+        return self._picture("after_full")
 
     # -- after the trial ---------------------------------------------------
     @property
@@ -1257,6 +1331,16 @@ class TransferMap(Model):
                          empty="Arm a trial and its red percent plots here."),
                 sch.image("Transfer map", "figure",
                           empty="No trials yet. Record one, or import trials."),
+            ),
+            sch.section(
+                "Full pictures",
+                sch.image("Before, whole screen", "before_full_image",
+                          empty="The whole screen, taken with the before "
+                                "picture when you arm."),
+                sch.image("After, whole screen", "after_full_image",
+                          empty="The whole screen, taken with the after "
+                                "picture when you finish."),
+                tier=2, disclosure=configure,
             ),
             sch.section(
                 "Figure",
