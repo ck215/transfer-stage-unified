@@ -3,3 +3,6 @@
 #     python3 -m pip install -r requirements.txt
 # `python3 src/app.py --tk|--qt|--web` keeps working without installing.
 -e .[qt]
+# Named here as well so a plain `pip install -r` shows it; the pin must
+# match pyproject.toml's (tests/test_packaging.py checks).
+imageio-ffmpeg==0.6.0
