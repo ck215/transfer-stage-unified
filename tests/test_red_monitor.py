@@ -1361,9 +1361,9 @@ def test_grab_screen_is_the_whole_desktop_at_full_size(tmp_path):
         image = Image.open(io.BytesIO(png))
         assert image.size == (1700, 40)                 # not downscaled
         assert image.getpixel((0, 0))[:3] == (0, 0, 200)
-        # The picker's picture is unchanged: downscaled to 1600.
+        # The picker's picture is the desktop at full size (2026-09-28).
         picker = model.screen_image
-        assert Image.open(io.BytesIO(picker["image"])).size == (1600, 38)
+        assert Image.open(io.BytesIO(picker["image"])).size == (1700, 40)
         assert picker["width"] == 1700
     finally:
         model.close()

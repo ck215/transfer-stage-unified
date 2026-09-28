@@ -1221,7 +1221,9 @@ class RedMonitor(Model):
         """The desktop as PNG for the browser's region picker: `{"image":
         bytes, "left", "top", "width", "height"}` (the full-size bounds the
         picture was scaled from), or None when capture is unavailable."""
-        png, bounds = self.screen.screenshot_png()
+        # Full size since 2026-09-28: the desktop pickers draw it 1:1 in
+        # desktop coordinates (views/picking.py); the browser scales it.
+        png, bounds = self.screen.screenshot_png(max_width=None)
         return None if png is None else {"image": png, **bounds}
 
     @property
