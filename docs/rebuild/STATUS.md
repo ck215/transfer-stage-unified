@@ -284,8 +284,8 @@ lands as `palette.py` / `theme.py` tokens.
   are hidden before their deferred delete (R8). Captures:
   `handoff/shots/restart_web_*.png`, `qt_offscreen_transfer_map_r8.png`.
   Unverified: a real restart on each view and on Windows, `run.bat`
-  beyond static checks, a real flash. Gates on the final tree are in
-  the closing line below.
+  beyond static checks, a real flash. Gates on the final tree: **fast
+  3073, golden 78, Qt 255**.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
