@@ -15,11 +15,20 @@ from inside the thread the instant it started (REDPERCENT-4). Here the import
 happens in `open()`, a failure is recorded, `is_available` reports it, and the
 model refuses to start a run rather than starting one that cannot capture.
 
-**One `mss` instance per thread.** `mss` is explicitly not thread-safe; an
-instance belongs to the thread that created it. The run loop is a worker
-thread, the schema's live readouts are polled from the UI thread. A
-thread-local instance is created on demand and every one of them is closed by
-`close()`.
+**A kept handle for the run loop only; every other grab opens and closes
+its own.** `mss` is explicitly not thread-safe; an instance belongs to the
+thread that created it. The run loop is one long-lived thread that grabs
+flat out, so it declares itself (`keep_handle()`) and reuses one instance
+until `drop_handle()` (or `close()`). Any other thread - a Web request
+thread (a new one per request), Arm, Finish, the region picker - opens an
+instance for that one call and closes it before returning. A kept handle
+per calling thread used to stay in `_instances` until `close()`, one per
+request; on X11 each is a display connection, and the server caps them
+(2026-09-28). Creating and closing an instance is serialised by one
+module-wide lock (`_HANDLE_LOCK`): `mss` 10 guards its own Xlib calls, but
+older releases and the Xlib backend's own note ("different threads
+simultaneously may still cause problems") do not promise it, and the cost
+is one lock per open, never per frame of the loop.
 
 **A grab returns the raw frame.** No PIL, no per-frame `numpy.array(...)` copy
 — `RedMonitor._measure_red` reads the BGRA buffer the screenshot already
@@ -30,6 +39,10 @@ import threading
 
 from devices.device import Device
 from events import events
+
+#: Serialises creating and closing `mss` instances across every Screen and
+#: thread (see the module docstring). Never held across a grab.
+_HANDLE_LOCK = threading.Lock()
 
 
 class Screen(Device):
@@ -72,11 +85,7 @@ class Screen(Device):
         with self._lock:
             instances, self._instances = self._instances, []
         for instance in instances:
-            try:
-                instance.close()
-            except Exception as exc:
-                events.debug("Close Failed", str(exc), source=self.NAME,
-                             exception=exc)
+            self._close_instance(instance)
         self._local = threading.local()
         events.debug("Close", f"{len(instances)} capture handle(s) closed; "
                      f"{self._failures} grab failure(s) this session",
@@ -117,9 +126,9 @@ class Screen(Device):
             return None, None
         try:
             from PIL import Image
-            instance = self._instance()
-            bounds = dict(instance.monitors[0])   # the virtual desktop
-            shot = instance.grab(bounds)
+            with self._handle() as instance:
+                bounds = dict(instance.monitors[0])   # the virtual desktop
+                shot = instance.grab(bounds)
             image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
             if max_width is not None and image.width > max_width:
                 image = image.resize((max_width, round(image.height * max_width / image.width)))
@@ -147,20 +156,98 @@ class Screen(Device):
         if not self._is_open or not region:
             return None
         try:
-            return self._instance().grab(region)
+            kept = getattr(self._local, "capture", None)
+            if kept is not None:
+                return kept.grab(region)          # the run loop: no open per frame
+            with self._handle() as instance:
+                return instance.grab(region)
         except Exception as exc:
             self._failures += 1
             events.debug("Grab Failed", f"{exc} (failure #{self._failures})",
                          source=self.NAME, exception=exc, every=1.0)
             return None
 
-    def _instance(self):
+    # -- handles -------------------------------------------------------------
+    def keep_handle(self):
+        """The calling thread grabs continuously (the run loop): give it one
+        instance, kept until `drop_handle()` or `close()`. Idempotent, and
+        never raises: a handle that will not open leaves the thread on
+        one-call handles, whose failures `grab` counts as before."""
+        if not self._is_open or getattr(self._local, "capture", None) is not None:
+            return
+        try:
+            with _HANDLE_LOCK:
+                instance = self._factory()
+        except Exception as exc:
+            events.debug("Capture Handle Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            return
+        self._local.capture = instance
+        with self._lock:
+            self._instances.append(instance)
+        events.debug("Capture Handle", "kept mss instance for "
+                     f"{threading.current_thread().name}", source=self.NAME)
+
+    def drop_handle(self):
+        """Close the calling thread's kept instance, if it has one (the run
+        loop leaving). Never raises."""
         instance = getattr(self._local, "capture", None)
+        self._local.capture = None
         if instance is None:
-            instance = self._factory()
-            self._local.capture = instance
-            with self._lock:
-                self._instances.append(instance)
-            events.debug("Capture Handle", "new per-thread mss instance",
-                         source=self.NAME)
-        return instance
+            return
+        with self._lock:
+            self._instances = [i for i in self._instances if i is not instance]
+        self._close_instance(instance)
+
+    @property
+    def kept_handles(self):
+        """How many kept instances are open (one per running loop)."""
+        with self._lock:
+            return len(self._instances)
+
+    def _handle(self):
+        """The calling thread's kept instance, else a new one for this call
+        that is closed on leaving the `with`."""
+        kept = getattr(self._local, "capture", None)
+        return _Borrowed(kept) if kept is not None else _OneShot(self)
+
+    def _close_instance(self, instance):
+        try:
+            with _HANDLE_LOCK:
+                instance.close()
+        except Exception as exc:
+            events.debug("Close Failed", str(exc), source=self.NAME,
+                         exception=exc)
+
+
+class _Borrowed:
+    """A kept instance, used and left open."""
+
+    def __init__(self, instance):
+        self._instance = instance
+
+    def __enter__(self):
+        return self._instance
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class _OneShot:
+    """An instance for one call: made on entry, closed on exit (the
+    `with mss.mss() as instance:` of the design, through the factory so a
+    test's fake is used the same way)."""
+
+    def __init__(self, screen):
+        self._screen = screen
+        self._instance = None
+
+    def __enter__(self):
+        with _HANDLE_LOCK:
+            self._instance = self._screen._factory()
+        return self._instance
+
+    def __exit__(self, *_exc):
+        if self._instance is not None:
+            self._screen._close_instance(self._instance)
+        return False

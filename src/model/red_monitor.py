@@ -765,6 +765,11 @@ class RedMonitor(Model):
 
         events.debug("Run Loop", f"started: mode={mode} axes={axes or 'none'} "
                      f"threshold={threshold}", source=self.NAME)
+        # The one thread that grabs flat out keeps its capture handle; every
+        # other grab opens and closes its own (`Screen`, 2026-09-28).
+        keep = getattr(screen, "keep_handle", None)
+        if callable(keep):
+            keep()
         try:
             while not stop.is_set():
                 frame = screen.grab(region)
@@ -818,6 +823,9 @@ class RedMonitor(Model):
                          "recorded so far are kept; save them, then start a "
                          "new run.", source=self.NAME, exception=exc)
         finally:
+            drop = getattr(screen, "drop_handle", None)
+            if callable(drop):
+                drop()
             run.end()
             events.debug("Run Loop", f"exited after {run.frames} frame(s), "
                          f"{run.rows} row(s), {run.grab_failures} grab "
