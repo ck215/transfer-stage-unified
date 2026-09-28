@@ -245,9 +245,13 @@ class Setup(Panel):
     IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
         "idle", "listing", "identifying", "done", "cancelled")
 
-    def __init__(self, controller, updater=None):
+    def __init__(self, controller, updater=None, restart=None):
+        """`restart` (rb-restart R3) replaces this process with a fresh one
+        (`app.restart_process`); None means this station cannot restart
+        itself, and `restart_station` says so."""
         super().__init__()
         self.controller = controller
+        self._restart = restart
         self._rows = self._build_rows()
         self._schema = self._build_schema()
         self._lock = threading.RLock()
@@ -1279,6 +1283,53 @@ class Setup(Panel):
         events.debug("Update", "apply started", source=self.NAME)
         return True
 
+    #: `restart_station`'s question when it came from a button, not the dialog.
+    RESTART_CONFIRM = "Restart the station now? Every model closes first."
+
+    def restart_station(self, confirmed=False):
+        """Restart now (rb-restart R3): close every model through the
+        Controller, flush the log, then hand over to `restart` - the same
+        interpreter, argv and view, from the checkout root. Refused while
+        anything is energized; asked once unless `confirmed` (the Restart
+        Needed dialog passes it: that dialog IS the question)."""
+        with self._lock:
+            if _alive(self._apply_thread):
+                self._refuse("An update is being applied. Wait for it to "
+                             "finish, then restart.")
+        if self._restart is None:
+            self._refuse("This station cannot restart itself: quit and start "
+                         "it again by hand.")
+        if getattr(self.controller, "is_energized", False):
+            energized = [n for n in list(getattr(self.controller, "model_names", ()) or ())
+                         if getattr(self.controller._model_or_none(n),
+                                    "is_energized", False)]
+            if energized:
+                names = (", ".join(energized[:-1]) + " and " + energized[-1]
+                         if len(energized) > 1 else energized[0])
+                verb = "are" if len(energized) > 1 else "is"
+                self._refuse(f"{names} {verb} energized. Stop it and put it "
+                             "out of its mode first, then restart.")
+            self._refuse("A model is energized. Stop it and put it out of its "
+                         "mode first, then restart.")
+        if not confirmed:
+            raise NeedsConfirm(self.RESTART_CONFIRM, "restart_station")
+        running = list(getattr(self.controller, "model_names", ()) or ())
+        events.info("Restart", "Restarting the station: closing "
+                    f"{', '.join(running) or 'nothing'} first.", source=self.NAME)
+        self.controller.reset()
+        self._is_launched = False
+        events.flush_file()
+        try:
+            self._restart()
+        except Exception as exc:        # the process is still this one
+            events.error("Restart Failed", f"The station did not restart ({exc}). "
+                         "Every model was closed; quit and start it again by "
+                         "hand.", source=self.NAME, exception=exc)
+            self._refresh_rows()
+            self._refuse(f"The station did not restart ({exc}). Quit and start "
+                         "it again by hand.")
+        return True
+
     def _start_update_thread(self):
         self._update_thread = threading.Thread(
             target=self._check_worker, daemon=True, name="setup-update-check")
@@ -1331,6 +1382,23 @@ class Setup(Panel):
                      source=self.NAME)
         if code == "error":
             self._warn_update_once("Update Check Failed", sentence)
+        if code == "behind" and behind:
+            self._ask_to_update(behind, lines, result.get("remote"))
+
+    def _ask_to_update(self, behind, lines, remote):
+        """R2: the Update Ready dialog, once per distinct remote sha (a Check
+        again that finds the same commits says nothing new)."""
+        key = ("ready", remote or "|".join(lines))
+        with self._lock:
+            if key in self._warned_updates:
+                return
+            self._warned_updates.add(key)
+        first = _subject(lines[0]) if lines else ""
+        count = (f"{behind} new commit{'s are' if behind != 1 else ' is'} ready"
+                 + (f": {first}" if first else ""))
+        events.warn(events.UPDATE_READY, f"{count}. Update now, then restart "
+                    "the station.", source=self.NAME, ack=True,
+                    action=("Update now", events.SETUP_PANEL, "apply_update"))
 
     def _restart_sentence(self):
         return (f"Updated to {self._updated_to}. Quit and start the station "
@@ -1373,6 +1441,21 @@ class Setup(Panel):
             self.has_update = False
             self.update_status = " ".join([self._restart_sentence(), *extras])
         events.info("Station Updated", reason or self.update_status, source=self.NAME)
+        # R2: the line alone was easy to miss; the dialog asks, and its
+        # Restart now is the answer (confirmed: the dialog is the question).
+        # Not when the restart must be by hand: a re-exec into dependencies
+        # pip could not install would not come back, and only run_swap.sh
+        # flashes changed firmware on the way up.
+        if extras:
+            events.warn(events.RESTART_NEEDED, " ".join(
+                [f"Updated to {self._updated_to}.", *extras,
+                 "Then quit and start the station again."]),
+                source=self.NAME, ack=True)
+        else:
+            events.warn(events.RESTART_NEEDED, f"Updated to {self._updated_to}. "
+                        "Restart the station to run it.", source=self.NAME,
+                        ack=True, action=("Restart now", events.SETUP_PANEL,
+                                          "restart_station", (True,)))
         if result.get("deps_changed") and not result.get("deps_ok", True):
             events.warn("Reinstall Failed", reason, source=self.NAME)
 
@@ -1435,6 +1518,10 @@ class Setup(Panel):
             sch.button("Update now", "apply_update", role="go",
                        confirm=self.UPDATE_CONFIRM),
             sch.button("Check again", "check_updates", role="neutral"),
+            # rb-restart R3: the Restart Needed dialog's action, and the way
+            # back to it after "Later". Asks first; refused while energized.
+            sch.button("Restart", "restart_station", role="neutral",
+                       confirm=self.RESTART_CONFIRM),
             # Setup has no Diagnostics: the incoming commits sit in this row,
             # empty when nothing is coming.
             sch.readonly("Coming", "update_log"),
@@ -1553,6 +1640,14 @@ class Setup(Panel):
         else:
             self._selected = (f"{count} device{'s' if count != 1 else ''} "
                               "ticked to launch.")
+
+
+def _subject(oneline):
+    """A `git log --oneline` line without its leading short sha."""
+    head, _, rest = str(oneline).strip().partition(" ")
+    if rest and len(head) >= 7 and all(c in "0123456789abcdef" for c in head.lower()):
+        return rest.strip()
+    return str(oneline).strip()
 
 
 def _alive(thread):

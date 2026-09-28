@@ -1828,13 +1828,24 @@ class _AckDialog:
     window's close button all answer it. The dashboard owns the queue: this
     shows one event at a time and `update` redraws it in place when the
     same title repeats.
+
+    An event with an `action` (rb-restart R1) has TWO keys: the action's
+    label, which holds the focus and answers Return, and "Later", which
+    Escape and the close button answer. `on_answer(dialog, acted)` says
+    which. The window is transient for the main window and lifted on every
+    show (R6: the alert band is gone, so nothing else keeps it in view);
+    still no grab.
     """
 
-    def __init__(self, master, event, on_understood, repeats=1, waiting=0):
+    LATER = "Later"
+
+    def __init__(self, master, event, on_answer, repeats=1, waiting=0):
         self.master = master
-        self.on_understood = on_understood
+        self.on_answer = on_answer
         self.event = event
-        self.top = self.key = self.title_label = self.body = self.count = None
+        self.action = getattr(event, "action", None) or None
+        self.top = self.key = self.later = None
+        self.title_label = self.body = self.count = None
         self._build(repeats, waiting)
 
     @staticmethod
@@ -1874,20 +1885,42 @@ class _AckDialog:
         self.count = tk.Label(row, text="", font=_font(), anchor="w",
                               background=theme.SURFACE, foreground=theme.MUTED)
         self.count.pack(side="left")
-        self.key = _Press(row, "Understood", self._understood, theme.SURFACE)
-        self.key.frame.pack(side="right")
-        top.bind("<Return>", lambda _e: self._understood())
-        top.bind("<Escape>", lambda _e: self._understood())
+        if self.action:
+            # Packed from the right: Later outermost, the action beside it.
+            self.later = _Press(row, self.LATER, self._later, theme.SURFACE)
+            self.later.frame.pack(side="right")
+            self.key = _Press(row, self.action["label"], self._act, theme.SURFACE)
+            self.key.frame.pack(side="right", padx=(0, SPACE[3]))
+            top.bind("<Return>", lambda _e: self._act())
+            top.bind("<Escape>", lambda _e: self._later())
+            closer = self._later
+        else:
+            self.key = _Press(row, "Understood", self._understood, theme.SURFACE)
+            self.key.frame.pack(side="right")
+            top.bind("<Return>", lambda _e: self._understood())
+            top.bind("<Escape>", lambda _e: self._understood())
+            closer = self._understood
         try:
-            top.protocol("WM_DELETE_WINDOW", self._understood)
+            top.protocol("WM_DELETE_WINDOW", closer)
         except Exception:
             pass
         self.set_waiting(waiting)
         _ConfirmDialog._centre(self)
+        self.raise_over()
         try:
             self.key.widget.focus_set()
         except Exception:
             pass
+
+    def raise_over(self):
+        """Above the main window, every time it is shown (R6): transient for
+        it and lifted - never a grab, so the stop keeps working."""
+        for call in (lambda: self.top.transient(self.master.winfo_toplevel()),
+                     lambda: self.top.lift()):
+            try:
+                call()
+            except Exception:
+                pass
 
     def update(self, event, repeats, waiting):
         """The same title again: new words, a count, the same window."""
@@ -1897,6 +1930,7 @@ class _AckDialog:
         except Exception:
             pass
         self.set_waiting(waiting)
+        self.raise_over()
 
     def set_waiting(self, waiting):
         try:
@@ -1905,7 +1939,15 @@ class _AckDialog:
             pass
 
     def _understood(self):
-        self.on_understood(self)
+        self.on_answer(self, False)
+        return "break"
+
+    def _later(self):
+        self.on_answer(self, False)
+        return "break"
+
+    def _act(self):
+        self.on_answer(self, True)
         return "break"
 
     def close(self):

@@ -508,9 +508,11 @@ def test_an_acknowledged_warning_is_still_a_warning():
 def test_the_attention_set_is_exactly_the_titles_the_lead_named():
     """A2: one place marks a warning as asking for attention."""
     import events as events_module
+    # rb-restart R2 (owner 2026-09-28, "should prompt for restart"): the two
+    # update prompts ask too; each carries its action.
     assert events_module.ATTENTION == frozenset({
         "Idle Timeout", "Temperature Disconnected", "Rotator Unreachable",
-        "Heater Off Not Sent"})
+        "Heater Off Not Sent", "Update Ready", "Restart Needed"})
     assert isinstance(events_module.ATTENTION, frozenset)
     # The countdown, the silent browser and the map's soft notices stay
     # tray lines.
@@ -554,3 +556,67 @@ def test_every_attention_title_is_raised_with_ack_and_nothing_else_is():
                 plain.add(title)
     assert acked == events_module.ATTENTION, (acked, events_module.ATTENTION)
     assert not (plain & events_module.ATTENTION), plain & events_module.ATTENTION
+
+
+# -- rb-restart R1: an action on an acknowledged notice ------------------------
+
+def test_an_acknowledged_notice_carries_its_action_into_the_dict():
+    log = _log()
+    event = log.warn("Restart Needed", "Updated to def5678.", ack=True,
+                     action=("Restart now", "__setup__", "restart_station", (True,)))
+    assert event.action == {"label": "Restart now", "name": "__setup__",
+                            "command": "restart_station", "args": [True]}
+    assert event.to_dict()["action"] == event.action
+    # Three items are the brief's shape; the args default to none.
+    plain = log.error("Update Failed", "x", action=("Retry", "__setup__", "apply_update"))
+    assert plain.to_dict()["action"] == {"label": "Retry", "name": "__setup__",
+                                         "command": "apply_update", "args": []}
+
+
+def test_a_notice_without_an_action_says_none():
+    log = _log()
+    assert log.warn("Idle Timeout", "x", ack=True).to_dict()["action"] is None
+    assert log.error("Fault", "x").to_dict()["action"] is None
+    assert log.info("Connected", "COM3").to_dict()["action"] is None
+
+
+def test_an_action_only_rides_on_a_notice_that_asks_for_acknowledgement():
+    """An action is a key on the acknowledgement dialog: a tray line has no
+    dialog to put it on, so asking for one is a programming error."""
+    log = _log()
+    with pytest.raises(ValueError):
+        log.warn("Slow", "poll late", action=("Go", "__setup__", "x"))
+    with pytest.raises(ValueError):
+        log.error("Fault", "x", ack=False, action=("Go", "__setup__", "x"))
+    with pytest.raises(ValueError):
+        log.warn("Update Ready", "x", ack=True, action=("Go", "__setup__"))
+
+
+def test_the_action_survives_the_trip_to_json():
+    import json
+    event = _log().warn("Update Ready", "2 new commits are ready.", ack=True,
+                        action=("Update now", "__setup__", "apply_update"))
+    back = json.loads(json.dumps(event.to_dict()))
+    assert back["action"] == {"label": "Update now", "name": "__setup__",
+                              "command": "apply_update", "args": []}
+
+
+def test_the_setup_panel_target_is_named_once():
+    import events as events_module
+    from events import events
+    assert events_module.SETUP_PANEL == "__setup__"
+    assert events.SETUP_PANEL == "__setup__"
+    assert events.UPDATE_READY == "Update Ready"
+    assert events.RESTART_NEEDED == "Restart Needed"
+
+
+def test_flush_file_writes_what_is_buffered_and_keeps_the_file_open(tmp_path):
+    log = _log()
+    path = log.open_file(str(tmp_path))
+    log.info("Restart", "closing every model")
+    log.flush_file()
+    assert "closing every model" in open(path, encoding="utf-8").read()
+    log.info("After", "still open")
+    log.close_file()
+    assert "still open" in open(path, encoding="utf-8").read()
+    log.flush_file()        # closed: nothing to flush, never an error

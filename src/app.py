@@ -22,7 +22,10 @@ import argparse
 import os
 import atexit
 import importlib
+import subprocess
 import sys
+import threading
+import time
 
 from controller.controller import Controller
 from events import events
@@ -42,6 +45,14 @@ VIEWS = {
 ALIASES = {"legacy": "tk", "tkinter": "tk", "pyside": "qt", "pyside6": "qt"}
 
 DEFAULT_PORT = 8080
+
+#: The checkout this file runs from: a restart re-executes from here, so a
+#: relative path in argv or a data default means what it meant at launch.
+CHECKOUT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: Seconds between the answer to Restart and the exec: long enough for the
+#: Web's answer to reach the page, short enough to feel immediate.
+RESTART_DELAY = 0.5
 
 
 #: Owner decision D-9, amended 2026-09-25: an unqualified launch opens the
@@ -63,6 +74,86 @@ def pick_view(requested, platform=None, pyside_available=None):
     if requested is not None:
         return ALIASES.get(requested, requested)
     return DEFAULT_VIEW
+
+
+def restart_argv(args=None, extra_args=()):
+    """The command line a restart runs: this interpreter, this script (made
+    absolute, since the restart runs from `CHECKOUT_ROOT`), `args` (default:
+    this run's flags) and `extra_args`. A frozen bundle's `sys.executable`
+    IS its launcher, so it is re-executed on its own."""
+    flags = list(sys.argv[1:] if args is None else args) + list(extra_args)
+    if getattr(sys, "frozen", False):
+        return [sys.executable, *flags]
+    script = sys.argv[0] if sys.argv else ""
+    if script and os.path.exists(script):
+        script = os.path.abspath(script)
+    return [sys.executable, script, *flags]
+
+
+def web_restart_flags(flags):
+    """`flags` without `--port` and `--no-browser`: the Web restart puts back
+    the port it is serving on and `--no-browser` (the page reloads itself),
+    so a flag is replaced, never piled up restart after restart."""
+    kept, skip = [], False
+    for flag in flags:
+        if skip:
+            skip = False
+            continue
+        if flag == "--port":
+            skip = True
+            continue
+        if flag == "--no-browser" or flag.startswith("--port="):
+            continue
+        kept.append(flag)
+    return kept
+
+
+def restart_process(args=None, extra_args=(), delay=0.0):
+    """Replace this process with a fresh run of the same command line
+    (rb-restart R3): `restart_argv`, from `CHECKOUT_ROOT`. The caller has
+    closed every model; this closes the log file (an exec runs no exit path)
+    and reopens it if the exec fails.
+
+    With `delay`, the exec runs on a daemon thread after that many seconds
+    and the thread is returned at once (a failure there is an error event);
+    without, it runs here and a failure raises.
+
+    The one platform branch for a restart lives here and nowhere else: on
+    Windows `execv` hands the console back to the parent shell while the new
+    process runs detached, so the new run is started and this one ends."""
+    if delay:
+        def later():
+            time.sleep(delay)
+            try:
+                restart_process(args, extra_args)
+            except Exception as exc:
+                events.error("Restart Failed", f"The station did not restart "
+                             f"({exc}). Quit and start it again by hand.",
+                             source="app", exception=exc)
+        thread = threading.Thread(target=later, name="station-restart", daemon=True)
+        thread.start()
+        return thread
+    argv = restart_argv(args, extra_args)
+    events.info("Restart", " ".join(argv), source="app")
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    events.close_file()
+    try:
+        if not getattr(sys, "frozen", False):
+            os.chdir(CHECKOUT_ROOT)
+        if sys.platform == "win32":
+            subprocess.Popen(argv, cwd=CHECKOUT_ROOT if not getattr(
+                sys, "frozen", False) else None)
+            os._exit(0)
+        else:
+            os.execv(sys.executable, argv)
+    except OSError:
+        events.open_file()
+        raise
+    return None
 
 
 def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
@@ -101,7 +192,20 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
     if font_size is not None:
         theme.set_font_size(font_size)
 
-    setup = Setup(controller)
+    built = {}
+
+    def restart():
+        """Setup's Restart (rb-restart R3): the same view and flags. The Web
+        keeps the port it is serving on (it may have walked up from
+        `port`), and opens no second tab: the page reloads itself."""
+        if view_name != "web":
+            return restart_process(delay=RESTART_DELAY)
+        serving = getattr(built.get("view"), "port", None) or port
+        return restart_process(args=web_restart_flags(sys.argv[1:]),
+                               extra_args=("--no-browser", "--port", str(serving)),
+                               delay=RESTART_DELAY)
+
+    setup = Setup(controller, restart=restart)
     module_name, attribute = VIEWS[view_name]
     view_class = getattr(importlib.import_module(module_name), attribute)
     # --port / --no-browser are the Web view's alone; the desktop views take
@@ -111,6 +215,7 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
         ensure_application()
     view = (view_class(controller, setup, port=port, open_browser=open_browser)
             if view_name == "web" else view_class(controller, setup))
+    built["view"] = view
     # A toolkit may have replaced the process's signal handlers while the
     # view was built (Tk 9 on Aqua does, for SIGTERM): put the Controller's
     # back, so a SIGTERM still runs close() before the process ends.

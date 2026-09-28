@@ -276,3 +276,147 @@ def test_a_sigterm_under_tk_still_runs_the_close_path(tmp_path):
             child.kill()
     assert child.returncode == -signal.SIGTERM, \
         f"exit {child.returncode}: the toolkit's handler won\\n{out[-2000:]}"
+
+
+# -- rb-restart R3: restart_process ------------------------------------------
+
+@pytest.fixture
+def exec_calls(monkeypatch):
+    """`os.execv`, `os.chdir`, `subprocess.Popen` and `os._exit` recorded:
+    nothing here ever replaces or ends the test process."""
+    calls = []
+    monkeypatch.setattr(app.os, "execv", lambda path, argv: calls.append(
+        ("execv", path, list(argv))))
+    monkeypatch.setattr(app.os, "chdir", lambda path: calls.append(("chdir", path)))
+    monkeypatch.setattr(app.os, "_exit", lambda code: calls.append(("_exit", code)))
+    monkeypatch.setattr(app.subprocess, "Popen", lambda argv, **kw: calls.append(
+        ("Popen", list(argv), kw.get("cwd"))))
+    monkeypatch.setattr(app.sys, "platform", "darwin")
+    return calls
+
+
+def test_restart_process_re_executes_the_same_interpreter_and_argv_from_the_root(
+        monkeypatch, tmp_path, request):
+    script = tmp_path / "app.py"
+    script.write_text("")
+    monkeypatch.chdir(tmp_path)          # the real chdir, before it is recorded
+    exec_calls = request.getfixturevalue("exec_calls")
+    monkeypatch.setattr(app.sys, "argv", ["app.py", "--qt", "--font-size", "14"])
+    app.restart_process()
+    assert exec_calls == [
+        ("chdir", app.CHECKOUT_ROOT),
+        # The script is made absolute before the working directory moves.
+        ("execv", sys.executable, [sys.executable, str(script), "--qt",
+                                   "--font-size", "14"])]
+
+
+def test_restart_process_adds_the_extra_flags(exec_calls, monkeypatch):
+    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--web"])
+    app.restart_process(extra_args=("--no-browser",))
+    assert exec_calls[-1] == ("execv", sys.executable,
+                              [sys.executable, "/abs/src/app.py", "--web", "--no-browser"])
+
+
+def test_a_frozen_bundle_re_executes_its_own_launcher_where_it_stands(
+        exec_calls, monkeypatch):
+    monkeypatch.setattr(app.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(app.sys, "argv", ["/Apps/station-web", "--port", "8100"])
+    app.restart_process()
+    assert exec_calls == [("execv", sys.executable,
+                           [sys.executable, "--port", "8100"])]
+
+
+def test_on_windows_the_restart_starts_a_new_process_and_ends_this_one(
+        exec_calls, monkeypatch):
+    """The one platform branch, and it is here: `execv` on Windows leaves
+    the console to the parent shell."""
+    monkeypatch.setattr(app.sys, "platform", "win32")
+    monkeypatch.setattr(app.sys, "argv", ["C:/station/src/app.py", "--tk"])
+    app.restart_process()
+    assert exec_calls == [
+        ("chdir", app.CHECKOUT_ROOT),
+        ("Popen", [sys.executable, "C:/station/src/app.py", "--tk"], app.CHECKOUT_ROOT),
+        ("_exit", 0)]
+
+
+def test_the_log_is_closed_before_the_exec(exec_calls, monkeypatch):
+    order = []
+    monkeypatch.setattr(events, "close_file", lambda: order.append("closed"))
+    monkeypatch.setattr(app.os, "execv", lambda path, argv: order.append("exec"))
+    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--tk"])
+    app.restart_process()
+    assert order == ["closed", "exec"]
+
+
+def test_a_failed_exec_reopens_the_log_and_raises(exec_calls, monkeypatch):
+    opened = []
+    monkeypatch.setattr(events, "open_file", lambda *a: opened.append(True) or "x")
+
+    def broken(path, argv):
+        raise OSError("exec format error")
+    monkeypatch.setattr(app.os, "execv", broken)
+    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--tk"])
+    with pytest.raises(OSError):
+        app.restart_process()
+    assert opened
+
+
+def test_a_delayed_restart_runs_on_its_own_thread(exec_calls, monkeypatch):
+    """The Web's answer to Restart must reach the page before the process
+    goes: `delay` puts the exec on a thread and returns at once."""
+    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--web"])
+    thread = app.restart_process(delay=0.05)
+    assert thread is not None and thread.daemon
+    thread.join(5.0)
+    assert exec_calls[-1][0] == "execv"
+
+
+def test_a_delayed_restart_that_fails_is_an_error_event(exec_calls, monkeypatch):
+    seen = []
+    monkeypatch.setattr(events, "open_file", lambda *a: "x")
+
+    def broken(path, argv):
+        raise OSError("no such file")
+    monkeypatch.setattr(app.os, "execv", broken)
+    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--web"])
+    events.subscribe(seen.append)
+    try:
+        app.restart_process(delay=0.01).join(5.0)
+    finally:
+        events.unsubscribe(seen.append)
+    assert [e for e in seen if e.title == "Restart Failed" and e.severity == "error"]
+
+
+def test_launch_hands_setup_a_restart_that_keeps_the_web_port(
+        fake_views, monkeypatch):
+    asked = []
+    monkeypatch.setattr(app, "restart_process",
+                        lambda args=None, extra_args=(), delay=0.0: asked.append(
+                            (args, tuple(extra_args), delay)))
+    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--web", "--port",
+                                          "8100", "--no-browser"])
+    web = app.launch("web", port=8100, open_browser=True)
+    web.setup._restart()
+    args, extra, delay = asked[-1]
+    # The page reloads itself: no second browser tab, the same port, and the
+    # flags are replaced rather than piled up restart after restart.
+    assert args == ["--web"]
+    assert extra == ("--no-browser", "--port", "8100")
+    assert delay == app.RESTART_DELAY > 0
+    desktop = app.launch("tk")
+    desktop.setup._restart()
+    assert asked[-1] == (None, (), app.RESTART_DELAY)
+
+
+def test_the_web_restart_flags_replace_the_old_ones():
+    flags = ["--web", "--port", "8080", "--no-browser", "--port=9000",
+             "--font-size", "12"]
+    assert app.web_restart_flags(flags) == ["--web", "--font-size", "12"]
+
+
+def test_restart_process_takes_the_flags_it_is_given(exec_calls, monkeypatch):
+    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--web", "--port", "1"])
+    app.restart_process(args=["--web"], extra_args=("--port", "8100"))
+    assert exec_calls[-1] == ("execv", sys.executable,
+                              [sys.executable, "/abs/src/app.py", "--web",
+                               "--port", "8100"])

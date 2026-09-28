@@ -1057,6 +1057,7 @@ def test_the_update_section_is_first_and_a_tier_one_row(panel):
         ("readonly", "Updates", "update_status"),
         ("button", "Update now", "apply_update"),
         ("button", "Check again", "check_updates"),
+        ("button", "Restart", "restart_station"),     # rb-restart R3
         ("readonly", "Coming", "update_log"),
     ]
     status = section["elements"][1]
@@ -1225,7 +1226,9 @@ def test_a_refused_update_warns_once_with_the_reason(fake_types, checking, warni
     panel = _ready(Setup(RecordingController(), updater=updater))
     assert panel.run("apply_update", args=(True,)).is_ok
     wait_idle(panel)
-    warned = [e for e in warnings if e.severity == "warning"]
+    # rb-restart: the Update Ready prompt that led here is not this warning.
+    warned = [e for e in warnings if e.severity == "warning"
+              and e.title != events.UPDATE_READY]
     assert [e.title for e in warned] == ["Update Not Applied"]
     assert "local edits" in warned[0].message
     assert panel.update_status == "This checkout has local edits; update by hand."
@@ -1240,7 +1243,13 @@ def test_a_failed_reinstall_after_the_update_is_a_warning(fake_types, checking, 
     panel = _ready(Setup(RecordingController(), updater=updater))
     assert panel.run("apply_update", args=(True,)).is_ok
     wait_idle(panel)
-    assert [e.title for e in warnings if e.severity == "warning"] == ["Reinstall Failed"]
+    prompts = (events.UPDATE_READY, events.RESTART_NEEDED)
+    assert [e.title for e in warnings if e.severity == "warning"
+            and e.title not in prompts] == ["Reinstall Failed"]
+    # rb-restart: a restart into missing dependencies would not come back,
+    # so the Restart Needed dialog says what to do and offers no Restart now.
+    [restart] = [e for e in warnings if e.title == events.RESTART_NEEDED]
+    assert restart.action is None and "pip install" in restart.message
     assert panel.has_update is False
     assert "pip install failed" in panel.update_status
 
@@ -1278,3 +1287,156 @@ def test_launch_is_refused_after_an_update_until_the_restart(fake_types, checkin
     result = panel.run("launch")
     assert result.status == "refused"
     assert "start it again" in result.reason
+
+
+# -- rb-restart R2/R3: the update prompts act ---------------------------------
+
+def _prompts(seen, title):
+    return [e for e in seen if e.title == title]
+
+
+def test_a_ready_update_asks_once_per_remote_sha_with_update_now(
+        fake_types, checking, warnings):
+    updater = FakeUpdater(check=behind(3))
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    [ready] = _prompts(warnings, events.UPDATE_READY)
+    assert ready.severity == "warning" and ready.needs_ack is True
+    assert ready.message == ("3 new commits are ready: commit 0. Update now, "
+                             "then restart the station.")
+    assert ready.to_dict()["action"] == {"label": "Update now", "name": "__setup__",
+                                         "command": "apply_update", "args": []}
+    # Check again, same remote: no second prompt (not even a folded repeat).
+    assert panel.run("check_updates").is_ok
+    wait_idle(panel)
+    assert len(_prompts(warnings, events.UPDATE_READY)) == 1 and ready.count == 1
+    # A newer remote asks again, in the singular when it is one commit.
+    updater.check_result = dict(behind(1), remote="fed9876")
+    assert panel.run("check_updates").is_ok
+    wait_idle(panel)
+    prompts = _prompts(warnings, events.UPDATE_READY)
+    assert len(prompts) == 2
+    assert prompts[1].message == ("1 new commit is ready: commit 0. Update now, "
+                                  "then restart the station.")
+    # The Setup line is unchanged by the prompt ("Later" leaves it as it is).
+    assert panel.update_status == ("1 new commit is ready. Update now, then "
+                                   "restart the station.")
+
+
+def test_an_up_to_date_check_asks_nothing(fake_types, checking, warnings):
+    panel = Setup(RecordingController(), updater=FakeUpdater())
+    wait_idle(panel)
+    assert not _prompts(warnings, events.UPDATE_READY)
+    assert not _prompts(warnings, events.RESTART_NEEDED)
+
+
+def test_a_landed_update_asks_to_restart_with_restart_now(
+        fake_types, checking, warnings):
+    panel = _ready(Setup(RecordingController(), updater=FakeUpdater(check=behind(2))))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    [prompt] = _prompts(warnings, events.RESTART_NEEDED)
+    assert prompt.severity == "warning" and prompt.needs_ack is True
+    assert prompt.message == "Updated to def5678. Restart the station to run it."
+    # From the dialog the modal IS the question: the action says confirmed.
+    assert prompt.to_dict()["action"] == {"label": "Restart now", "name": "__setup__",
+                                          "command": "restart_station", "args": [True]}
+    # "Later": the line and the Launch refusal stay as they were.
+    assert panel.update_status == ("Updated to def5678. Quit and start the "
+                                   "station again to run it.")
+    tick(panel, "alpha")
+    assert panel.run("launch").status == "refused"
+
+
+def test_an_update_that_did_not_land_asks_nothing(fake_types, checking, warnings):
+    updater = FakeUpdater(check=behind(2), apply={
+        "updated": False, "reason": "This checkout has local edits; update by hand."})
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    assert not _prompts(warnings, events.RESTART_NEEDED)
+
+
+class _EnergizedController(RecordingController):
+    is_energized = True
+
+
+def _restartable(controller=None, **kwargs):
+    calls = []
+    panel = Setup(controller or RecordingController(), updater=FakeUpdater(),
+                  restart=lambda: calls.append(list(panel.controller.calls)),
+                  **kwargs)
+    return panel, calls
+
+
+def test_restart_refuses_while_anything_is_energized(fake_types):
+    panel, calls = _restartable(_EnergizedController())
+    for args in ((), (True,)):
+        result = panel.run("restart_station", args=args)
+        assert result.status == "refused", result
+        assert "energized" in result.reason
+    assert calls == [] and "reset" not in panel.controller.calls
+
+
+def test_restart_asks_once_then_closes_every_model_before_it_restarts(
+        fake_types, monkeypatch):
+    flushed = []
+    monkeypatch.setattr(events, "flush_file", lambda: flushed.append(True))
+    panel, calls = _restartable()
+    asked = panel.run("restart_station")
+    assert asked.needs_confirm and asked.command == "restart_station"
+    assert asked.reason == "Restart the station now? Every model closes first."
+    assert calls == [] and "reset" not in panel.controller.calls
+    assert panel.run("restart_station", args=(True,)).is_ok
+    # The restart ran once, after every model was closed and the log flushed.
+    assert calls == [["reset"]]
+    assert flushed
+
+
+def test_restart_is_refused_without_a_way_to_restart(fake_types):
+    """Setup never execs by itself: `app.launch` hands it the restart."""
+    panel = Setup(RecordingController(), updater=FakeUpdater())
+    result = panel.run("restart_station", args=(True,))
+    assert result.status == "refused"
+    assert "start it again by hand" in result.reason
+
+
+def test_restart_waits_while_an_update_is_landing(fake_types, checking):
+    gate = threading.Event()
+
+    class Slow(FakeUpdater):
+        def apply(self, timeout=10.0):
+            gate.wait(5.0)
+            return super().apply(timeout)
+
+    calls = []
+    panel = _ready(Setup(RecordingController(), updater=Slow(check=behind(2)),
+                         restart=lambda: calls.append(1)))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    result = panel.run("restart_station", args=(True,))
+    assert result.status == "refused" and "being applied" in result.reason
+    gate.set()
+    wait_idle(panel)
+    assert calls == []
+
+
+def test_a_failed_restart_is_an_error_and_the_station_stays_up(fake_types, warnings):
+    def broken():
+        raise OSError("exec format error")
+    panel = Setup(RecordingController(), updater=FakeUpdater(), restart=broken)
+    result = panel.run("restart_station", args=(True,))
+    assert result.status == "refused"
+    assert "did not restart" in result.reason
+    assert [e for e in warnings if e.title == "Restart Failed" and e.severity == "error"]
+
+
+def test_changed_firmware_asks_for_a_restart_by_hand_and_offers_no_restart_now(
+        fake_types, checking, warnings):
+    """run_swap.sh flashes the boards on the way up; a re-exec would not."""
+    updater = FakeUpdater(check=behind(2), apply=dict(
+        FakeUpdater().apply_result, firmware_changed=True))
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    [restart] = _prompts(warnings, events.RESTART_NEEDED)
+    assert restart.needs_ack and restart.action is None
+    assert "run_swap.sh" in restart.message
