@@ -897,3 +897,132 @@ def test_arm_that_cannot_start_the_run_writes_nothing(idle_station, private_db):
     result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
     assert result.is_refused and "Red Percent" in result.reason
     assert not model.is_armed and model.trial_count == 0
+
+
+# -- T3: the picture prompts -------------------------------------------------------
+
+PNG = b"\x89PNG\r\n\x1a\n"
+
+
+def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
+    """Bench 2026-09-27: "No prompt for a before or after image"."""
+    model, red = idle_station
+    result = model.run("arm_trial", {"tip_id": "T7", "typed_tilt": ""})
+    assert result.needs_confirm, result
+    assert result.reason == ("Frame the sample now. OK takes the before "
+                             "picture and arms trial 1 on tip T7.")
+    assert result.command == "arm_trial"
+    assert result.inputs == {"tip_id": "T7", "typed_tilt": ""}
+    assert not model.is_armed and model.trial_count == 0
+    assert not red.is_running                 # nothing started either
+    again = model.run(result.command, result.inputs, (*result.args, True))
+    assert again.is_ok and again.value == 1 and model.is_armed
+
+
+def test_the_arm_prompt_names_the_number_the_trial_will_get(station):
+    model, red, *_ = station
+    _record(model, red)
+    second = _record(model, red)
+    model.trial_pick = second
+    model.delete_trial(True)
+    result = model.run("arm_trial", {"tip_id": "tip-A"})
+    assert "arms trial 3 on tip tip-A" in result.reason
+    assert _confirmed(model, "arm_trial", {"tip_id": "tip-A"}) == 3
+
+
+def test_arm_refuses_before_it_asks(station):
+    model = station[0]
+    result = model.run("arm_trial", {"tip_id": "  "})
+    assert result.is_refused and "tip ID" in result.reason
+
+
+def test_finish_asks_before_the_after_picture(station, private_db):
+    model, red, *_ = station
+    trial = _arm(model)
+    result = model.run("finish_trial", {"note": "clean cut"})
+    assert result.needs_confirm, result
+    assert result.reason == f"OK takes the after picture and ends trial {trial}."
+    assert result.command == "finish_trial"
+    assert result.inputs == {"note": "clean cut"}
+    assert model.is_armed
+    again = model.run(result.command, result.inputs, (*result.args, True))
+    assert again.is_ok and not model.is_armed
+    row = _rows(private_db, "SELECT note, status FROM trials WHERE id=?", trial)[0]
+    assert row == {"note": "clean cut", "status": "recorded"}
+
+
+def test_abort_does_not_ask(station):
+    model = station[0]
+    _arm(model)
+    result = model.run("abort_trial")
+    assert result.is_ok and not model.is_armed
+
+
+def test_arm_without_a_before_picture_is_refused_and_writes_nothing(
+        idle_station, monkeypatch):
+    model, red = idle_station
+    monkeypatch.setattr(red, "grab_frame", lambda: None)
+    since = events.latest_id
+    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    assert result.is_refused
+    assert result.reason == ("No before picture: the capture region is not "
+                             "set or the screen is not open.")
+    assert not model.is_armed and model.trial_count == 0
+    assert not red.is_running                 # the run it started is ended
+    assert not _titled("No Picture", since)   # a refusal, not a tray warning
+
+
+def test_arm_without_a_picture_leaves_the_operators_run_running(station,
+                                                                monkeypatch):
+    model, red, *_ = station
+    monkeypatch.setattr(red, "grab_frame", lambda: None)
+    assert model.run("arm_trial", {"tip_id": "tip-A"}, (True,)).is_refused
+    assert red.is_running
+
+
+def test_finish_without_an_after_picture_is_refused_and_stays_armed(
+        station, monkeypatch, private_db):
+    model, red, *_ = station
+    trial = _arm(model)
+    monkeypatch.setattr(red, "grab_frame", lambda: None)
+    result = model.run("finish_trial", {"note": ""}, (True,))
+    assert result.is_refused and result.reason.startswith(
+        "No after picture: the capture region is not set or the screen is "
+        "not open.")
+    assert model.is_armed
+    assert model.run("abort_trial").is_ok     # the way out still works
+    model.disable()
+    assert _rows(private_db, "SELECT status FROM trials WHERE id=?",
+                 trial)[0]["status"] == "aborted"
+
+
+def test_the_pictures_show_on_the_sheet(station):
+    model, red, *_ = station
+    assert model.before_image == b"" and model.after_image == b""
+    first = _arm(model)
+    folder = model.pictures_root / str(first)
+    assert model.before_image == (folder / "before.png").read_bytes()
+    assert model.before_image[:8] == PNG
+    assert model.after_image == b""           # not the last trial's
+    _finish(model)
+    assert model.after_image == (folder / "after.png").read_bytes()
+    assert model.after_image[:8] == PNG
+    second = _arm(model)
+    assert model.before_image == (model.pictures_root / str(second)
+                                  / "before.png").read_bytes()
+    assert model.after_image == b""
+    model.run("abort_trial")
+    model.disable()
+    model.new_database()
+    assert model.before_image == b"" and model.after_image == b""
+    for command in ("before_image", "after_image"):
+        assert model.run(command).is_ok       # declared data sources
+
+
+def test_the_picture_elements_say_when_they_are_taken():
+    model = TransferMap()
+    before, after = _element(model, "before_image"), _element(model, "after_image")
+    assert (before["type"], before["text"], before["empty"]) == \
+        ("image", "Before picture", "Taken when you arm.")
+    assert (after["type"], after["text"], after["empty"]) == \
+        ("image", "After picture", "Taken when you finish.")

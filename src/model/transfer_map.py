@@ -604,11 +604,24 @@ class TransferMap(Model):
         if not getattr(red, "region", None):
             raise Refused("Set the capture region first: the trial's pictures "
                           "and its red percent are read from it.")
+        if not confirmed:
+            # T3: the before picture is taken on the operator's word, with
+            # the sample framed; nothing is started or written until then.
+            raise NeedsConfirm(
+                f"Frame the sample now. OK takes the before picture and arms "
+                f"trial {self._store.next_id()} on tip {tip}.", "arm_trial",
+                inputs={"tip_id": self.tip_id or "",
+                        "typed_tilt": self.typed_tilt or ""})
         run = None
         if not getattr(red, "is_running", False):
             red.start_run(confirmed=True)               # a Refused stops here
             run = red.run_token
+        trial_id = None
         try:
+            png = self._take_picture()
+            if not png:
+                raise Refused("No before picture: the capture region is not "
+                              "set or the screen is not open.")
             tilt, tilt_source = self._read_tilt()
             speed, speed_source = self._read_speed()
             trial_id = self._store.insert({
@@ -616,12 +629,13 @@ class TransferMap(Model):
                 "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
                 "origin": "recorded", "tilt_source": tilt_source,
                 "speed_source": speed_source, "note": ""})
-            before = self._save_frame(trial_id, "before")
-            if before:
-                self._store.update(trial_id, {"before_path": before})
+            self._store.update(trial_id, {
+                "before_path": self._write_picture(trial_id, "before", png)})
         except BaseException:
             if run is not None:
                 red.end_run()                            # ours: undo it
+            if trial_id is not None:
+                self._forget_row(trial_id)
             raise
         trial = _Trial(trial_id, tilt, speed, tip)
         trial.run = run
@@ -648,13 +662,27 @@ class TransferMap(Model):
                     f"{trial.operator_t:.2f} s.", source=self.NAME)
         return round(trial.operator_t, 3)
 
-    def finish_trial(self):
+    def finish_trial(self, confirmed=False):
+        armed = self._trial
+        if armed is None:
+            raise Refused("No trial is armed.")
+        if not confirmed:
+            raise NeedsConfirm(f"OK takes the after picture and ends trial "
+                               f"{armed.id}.", "finish_trial",
+                               inputs={"note": self.note or ""})
+        png = self._take_picture()
+        if not png:
+            # Still armed: the operator fixes the screen and finishes again,
+            # or aborts (a stop, which keeps the profile).
+            raise Refused("No after picture: the capture region is not set or "
+                          "the screen is not open. Fix it and press Finish "
+                          "trial again, or Abort trial to keep the profile.")
         trial = self._claim()
         if trial is None:
-            raise Refused("No trial is armed.")
+            raise Refused("No trial is armed.")          # the stop took it
         self._release_red()
-        after = self._save_frame(trial.id, "after")
         self._end_own_run(trial)
+        after = self._write_picture(trial.id, "after", png)
         samples = list(trial.samples)
         profile = {"t": [s[0] for s in samples], "red": [s[1] for s in samples]}
         found = analysis.detect(profile, trial.operator_t) or {}
@@ -730,23 +758,53 @@ class TransferMap(Model):
                          "could not be saved. Check the database folder.",
                          source=self.NAME, exception=exc)
 
-    def _save_frame(self, trial_id, which):
+    def _take_picture(self):
+        """The one frame source of the before and after pictures: Red
+        Percent's capture region (what it measures), as PNG bytes, or None.
+        The owner may ask for the whole feed later; that change is here."""
         red = self._red
-        png = None
         try:
-            png = red.grab_frame() if red is not None else None
+            return (red.grab_frame() if red is not None else None) or None
         except Exception as exc:
             events.debug("Frame Failed", repr(exc), source=self.NAME)
-        if not png:
-            events.warn("No Picture", f"No {which} picture was captured for "
-                        f"trial {trial_id}. Check the Red Percent capture "
-                        "region.", source=self.NAME)
             return None
+
+    def _write_picture(self, trial_id, which, png):
         folder = self.pictures_root / str(trial_id)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{which}.png"
         path.write_bytes(png)
         return str(path)
+
+    def _forget_row(self, trial_id):
+        """An Arm that failed after its row was written leaves no row."""
+        try:
+            self._store.delete(trial_id)
+        except Exception as exc:
+            events.debug("Forget Failed", repr(exc), source=self.NAME)
+
+    def _picture(self, which):
+        """PNG bytes of the armed trial's picture, else the last trial's,
+        else b"" (the element then says when it is taken)."""
+        trial = self._trial
+        if trial is not None:
+            path = self.pictures_root / str(trial.id) / f"{which}.png"
+        else:
+            last = self._store.last()
+            stored = last.get(f"{which}_path") if last else None
+            path = Path(stored) if stored else None
+        try:
+            return path.read_bytes() if path is not None and path.is_file() else b""
+        except OSError:
+            return b""
+
+    @property
+    def before_image(self):
+        return self._picture("before")
+
+    @property
+    def after_image(self):
+        return self._picture("after")
 
     # -- after the trial ---------------------------------------------------
     @property
@@ -1190,6 +1248,10 @@ class TransferMap(Model):
                 sch.toggle("Tip broke", "is_broke", "mark_broke", "Broke",
                            "Not broken", on_args=(True,), off_args=(False,)),
                 sch.readonly("Status", "trial_status", role="info"),
+                sch.image("Before picture", "before_image",
+                          empty="Taken when you arm."),
+                sch.image("After picture", "after_image",
+                          empty="Taken when you finish."),
                 sch.plot("Red % since Arm", "live_series", x_label="time (s)",
                          y_label="red (%)",
                          empty="Arm a trial and its red percent plots here."),
