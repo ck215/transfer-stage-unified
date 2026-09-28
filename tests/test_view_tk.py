@@ -6424,3 +6424,151 @@ def test_host_the_wheel_over_the_hosted_well_scrolls_that_well(host_dashboard):
         assert host.well_canvas is None or host.well_canvas.scrolled == []
     finally:
         hosted.set_disclosure(2, False)
+
+
+# ---------------------------------------------------------------------------
+# rb-ack (A3): the acknowledgement is a dialog like the latch-release one
+# ---------------------------------------------------------------------------
+
+def _attention(index, title="Idle Timeout", message="Stepper Probe was idle "
+               "for 300 s, so it was powered down.", severity="warning"):
+    return Event(index, severity, "Stepper Probe", title, message, None, True,
+                 0.0)
+
+
+def _ack_texts(dialog):
+    return dialog.title_label.cget("text"), dialog.body.cget("text")
+
+
+def test_ack_an_acknowledged_event_opens_a_titled_dialog_with_one_key(
+        dashboard, tk_harness):
+    """The event's title is the dialog's title (and its heading), its
+    message the body, in the confirm dialog's type; one key, Understood,
+    holds the focus; nothing grabs."""
+    dashboard.open()
+    dashboard._on_event(_attention(1))
+    SCHEDULER.pump()
+    dialog = dashboard._ack_dialog
+    assert dialog is not None and not dialog.top.is_destroyed
+    assert dialog.top.titles == ["Idle timeout"]
+    assert _ack_texts(dialog) == (
+        "Idle timeout",
+        "Stepper Probe was idle for 300 s, so it was powered down.")
+    assert dialog.body.cget("font") == tkmod._font()
+    assert dialog.body.cget("wraplength") == 420
+    assert dialog.key.widget.cget("text") == "Understood"
+    presses = [w for w in _all_widgets(dialog.top)
+               if w.cget("takefocus") == 1]
+    assert presses == [dialog.key.widget], "one key, and only one"
+    assert Focus.current is dialog.key.widget, "Understood is the default"
+    assert GRABS == [], "an application-modal grab takes the stop away"
+    assert tk_harness.errors == []
+
+
+def _all_widgets(widget):
+    out = []
+    for child in getattr(widget, "children", []):
+        out.append(child)
+        out.extend(_all_widgets(child))
+    return out
+
+
+def test_ack_return_escape_and_the_close_button_all_acknowledge(dashboard):
+    dashboard.open()
+    for index, gesture in enumerate(("<Return>", "<Escape>", "close")):
+        dashboard._on_event(_attention(index, title=f"Fault {index}"))
+        SCHEDULER.pump()
+        dialog = dashboard._ack_dialog
+        if gesture == "close":
+            dialog.top.protocols["WM_DELETE_WINDOW"]()
+        else:
+            dialog.top.fire(gesture)
+        assert dialog.top.is_destroyed, gesture
+        assert dashboard._alerts == [] and dashboard._ack_dialog is None, gesture
+
+
+def test_ack_a_second_alert_queues_behind_the_first(dashboard):
+    """Queue, not stack: the second waits for the first's Understood."""
+    dashboard.open()
+    dashboard._on_event(_attention(1))
+    dashboard._on_event(_attention(2, title="Rotator Unreachable",
+                                   message="The stage stopped answering."))
+    SCHEDULER.pump()
+    first = dashboard._ack_dialog
+    assert _ack_texts(first)[0] == "Idle timeout"
+    assert first.count.cget("text") == "1 more waiting"
+    assert [e.title for e in dashboard._alerts] == ["Idle Timeout",
+                                                   "Rotator Unreachable"]
+    first.key.widget.fire("<Button-1>")
+    assert first.top.is_destroyed
+    second = dashboard._ack_dialog
+    assert second is not first and not second.top.is_destroyed
+    assert _ack_texts(second) == ("Rotator unreachable",
+                                  "The stage stopped answering.")
+    assert second.count.cget("text") == ""
+    second.key.widget.fire("<Button-1>")
+    assert dashboard._ack_dialog is None and dashboard._alerts == []
+    assert Focus.current is dashboard._stop_button, "focus goes back to the stop"
+
+
+def test_ack_a_repeat_of_the_open_title_counts_and_does_not_reopen(dashboard):
+    dashboard.open()
+    dashboard._on_event(_attention(1))
+    SCHEDULER.pump()
+    dialog = dashboard._ack_dialog
+    dashboard._on_event(_attention(2, message="Stepper Probe was idle for "
+                                   "301 s, so it was powered down."))
+    SCHEDULER.pump()
+    assert dashboard._ack_dialog is dialog and not dialog.top.is_destroyed
+    assert len(dashboard._alerts) == 1
+    assert dialog.body.cget("text") == ("Stepper Probe was idle for 301 s, so "
+                                        "it was powered down. (x2)")
+    dialog.key.widget.fire("<Button-1>")
+    assert dashboard._ack_dialog is None and dashboard._alerts == []
+
+
+def test_ack_the_stop_still_fires_while_the_dialog_is_open(dashboard,
+                                                          controller):
+    dashboard.open()
+    dashboard._on_event(_attention(1))
+    SCHEDULER.pump()
+    dialog = dashboard._ack_dialog
+    ALL_BINDINGS["<Control-period>"](FakeEvent())
+    assert controller.estop_calls == 1 and controller.is_estopped
+    assert not dialog.top.is_destroyed, "the stop does not answer for the operator"
+    assert GRABS == []
+
+
+def test_ack_the_acknowledgement_is_logged_at_debug(dashboard, monkeypatch):
+    said = []
+    monkeypatch.setattr(tkmod.events, "debug",
+                        lambda title, message, **kw: said.append((title, message)))
+    dashboard.open()
+    dashboard._on_event(_attention(1))
+    SCHEDULER.pump()
+    dashboard._ack_dialog.key.widget.fire("<Button-1>")
+    assert ("Alert Acknowledged", "warning/Idle Timeout") in said, said
+
+
+def test_ack_the_band_acknowledge_closes_the_dialog_too(dashboard):
+    """The band stays as the window's record of what is waiting (a
+    non-modal dialog can end up behind the window); its Acknowledge clears
+    all, and the dialog with them."""
+    dashboard.open()
+    dashboard._on_event(_attention(1))
+    dashboard._on_event(_attention(2, title="Heater Off Not Sent"))
+    SCHEDULER.pump()
+    dialog = dashboard._ack_dialog
+    assert dashboard._band.is_packed
+    assert dashboard._band_text.cget("text").startswith("2 notices need")
+    dashboard._band_ack.widget.fire("<Button-1>")
+    assert dialog.top.is_destroyed and dashboard._ack_dialog is None
+
+
+def test_ack_close_takes_the_dialog_down(dashboard):
+    dashboard.open()
+    dashboard._on_event(_attention(1))
+    SCHEDULER.pump()
+    dialog = dashboard._ack_dialog
+    dashboard.close()
+    assert dialog.top.is_destroyed
