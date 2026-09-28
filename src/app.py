@@ -49,7 +49,7 @@ DEFAULT_PORT = 8080
 #: used to be Tk on macOS and Qt-or-Web elsewhere, which made the operator's
 #: first screen depend on the OS (audit P8) against the no-platform-specific-UI
 #: ruling. `--web` / `--qt` / `--tk` still choose explicitly.
-DEFAULT_VIEW = "tk"
+DEFAULT_VIEW = "qt"      # owner ruling 2026-09-28: Qt is the default view (was Tk, D-9 amended 2026-09-25)
 
 
 def pick_view(requested, platform=None, pyside_available=None):
@@ -138,8 +138,8 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Views:
-  tk        Tkinter interface (the default on every platform, owner decision D-9)
-  qt        Native Qt desktop GUI (PySide6)
+  tk        Tkinter interface
+  qt        Native Qt desktop GUI (PySide6): the default on every platform (owner ruling 2026-09-28)
   web       Browser-based dashboard, served on localhost
 
 Examples:

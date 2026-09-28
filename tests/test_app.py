@@ -73,15 +73,14 @@ def test_an_explicit_request_always_wins():
     assert app.pick_view("qt", "darwin") == "qt"
 
 
-def test_every_platform_defaults_to_tkinter():
-    """Owner decision D-9, amended 2026-09-25: the unqualified launch is Tk
-    everywhere. It was Tk on macOS and Qt-or-Web elsewhere, which made the
-    first screen depend on the OS (audit P8) against the ruling that no UI
+def test_every_platform_defaults_to_qt():
+    """Owner ruling 2026-09-28: the unqualified launch is Qt everywhere (it
+    was Tk from D-9 amended 2026-09-25). Still one answer on every OS: no UI
     behaviour is platform-specific."""
     for platform in ("darwin", "linux", "win32"):
         for pyside in (True, False, None):
-            assert app.pick_view(None, platform, pyside_available=pyside) == "tk"
-    assert app.DEFAULT_VIEW == "tk"
+            assert app.pick_view(None, platform, pyside_available=pyside) == "qt"
+    assert app.DEFAULT_VIEW == "qt"
 
 
 def test_the_packaged_entry_points_fix_the_view_and_forward_the_flags(
@@ -213,7 +212,7 @@ def test_main_defaults_the_view_from_the_platform(fake_views, monkeypatch):
                         lambda name, **kwargs: picked.append(name))
     monkeypatch.setattr(app.sys, "platform", "linux")
     app.main([])
-    assert picked == ["tk"]
+    assert picked == ["qt"]
 
 
 def test_the_view_flags_are_mutually_exclusive(fake_views):

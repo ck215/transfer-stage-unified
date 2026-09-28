@@ -688,8 +688,8 @@ def test_trials_on_this_tip_sits_under_the_tip_id_entry():
     trial = next(s for s in model.schema["sections"] if s["title"] == "Trial")
     keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
     at = keys.index("tip_id")
-    assert keys[at + 1] == "tip_trial_count"
-    element = trial["elements"][at + 1]
+    assert keys[at + 3] == "tip_trial_count"     # after Known tips and New tip
+    element = trial["elements"][at + 3]
     assert element["type"] == "readonly" and element["text"] == "Trials on this tip"
 
 
@@ -1048,7 +1048,8 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
             else e.get("model_attr") or e.get("command") or e.get("data_command")
             for e in trial["elements"]]
     assert keys == ["next_step", "set_region", "tilt_now", "speed_now",
-                    "red_now", "tip_id", "tip_trial_count", "tip_status",
+                    "red_now", "tip_id", "tip_pick", "new_tip",
+                    "tip_trial_count", "tip_status",
                     "arm_trial", "mark_force", "note", "finish_trial",
                     "abort_trial", "is_broke", "trial_status", "before_image",
                     "mark_image", "after_image", "live_series", "figure"]
@@ -1745,8 +1746,11 @@ def test_the_tip_commands_refuse_a_blank_an_unknown_or_an_armed_tip(station):
     for command in ("retire_tip", "unretire_tip", "set_tip_note"):
         blank = model.run(command, {"tip_id": " "})
         assert blank.is_refused and "tip ID" in blank.reason, command
+    for command in ("retire_tip", "unretire_tip"):
         unknown = model.run(command, {"tip_id": "T99"})
         assert unknown.is_refused and "no record yet" in unknown.reason, command
+    # A note on an unknown tip creates its record (owner call 2026-09-28).
+    assert model.run("set_tip_note", {"tip_id": "T98", "tip_note": "n"}).is_ok
     _arm(model, "tip-A")
     armed = model.run("retire_tip", {"tip_id": "tip-A"}, (True,))
     assert armed.is_refused and "armed on tip tip-A" in armed.reason
@@ -2028,3 +2032,46 @@ def test_a_commit_through_the_controller_starts_polling(red):
         assert red.is_running and model._auto_run is red.run_token
     finally:
         model.close()
+
+
+# -- Known tips and New tip (bench 2026-09-28) -------------------------------
+
+def _map_with_tip(tmp_path, tip="T7"):
+    from model.transfer_map import TransferMap
+    tm = TransferMap(db_path=tmp_path / "map.sqlite")
+    tm.tip_id = tip
+    assert tm.run("new_tip", inputs={"tip_id": tip}).is_ok
+    return tm
+
+
+def test_new_tip_creates_a_record_before_any_trial(tmp_path):
+    tm = _map_with_tip(tmp_path)
+    assert tm.tip_options == [tm.NO_TIP, "T7"]
+    assert tm.tip_status == "new"
+    assert tm.tip_pick == "T7"
+
+
+def test_new_tip_refuses_a_blank_or_known_id(tmp_path):
+    tm = _map_with_tip(tmp_path)
+    again = tm.run("new_tip", inputs={"tip_id": "T7"})
+    assert again.status == "refused" and "already on record" in again.reason
+    blank = tm.run("new_tip", inputs={"tip_id": ""})
+    assert blank.status == "refused"
+
+
+def test_picking_a_known_tip_fills_the_entry(tmp_path):
+    tm = _map_with_tip(tmp_path)
+    tm.tip_id = ""
+    assert tm.tip_pick == tm.NO_TIP
+    assert tm.run("pick_tip", args=("T7",)).is_ok
+    assert tm.tip_id == "T7"
+    assert tm.run("pick_tip", args=(tm.NO_TIP,)).is_ok and tm.tip_id == "T7"
+    assert tm.run("pick_tip", args=("T99",)).status == "refused"
+
+
+def test_a_note_creates_the_tip_record_when_there_is_none(tmp_path):
+    from model.transfer_map import TransferMap
+    tm = TransferMap(db_path=tmp_path / "map.sqlite")
+    tm.tip_id, tm.tip_note = "T8", "fresh"
+    assert tm.run("set_tip_note", inputs={"tip_id": "T8", "tip_note": "fresh"}).is_ok
+    assert tm._store.tip("T8")["note"] == "fresh"

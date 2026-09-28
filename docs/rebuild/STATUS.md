@@ -207,6 +207,12 @@ lands as `palette.py` / `theme.py` tokens.
   Web capitalises the sha's first letter (nit). Open owner calls:
   restart polling after Finish (today the next Arm starts it); a tip
   note before its first trial (refused today).
+  **2026-09-28, bench fixes at the owner's word:** a "Known tips" dropdown
+  and a "New tip" key beside the Tip ID entry (a tip record on demand,
+  before any trial; a note also creates one); **Qt is the default view on
+  every platform** (owner ruling 2026-09-28, replacing D-9's Tk;
+  `app.DEFAULT_VIEW`, the launchers' comments, `run_macos.sh` runs its
+  PySide repair by default). Fast-suite gates run after the push.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,

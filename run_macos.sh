@@ -55,11 +55,11 @@ if [ "$SHOW_HELP" = true ]; then
     exit 0
 fi
 
-# No flag: app.py opens the Tkinter view (D-9, amended 2026-09-25: Tk on
-# every platform). The launcher only needs to know when Qt is coming, for
-# the PySide6 repair checks below (D16: it used to announce Web and start Tk).
+# No flag: app.py opens the Qt view (owner ruling 2026-09-28; it was Tk
+# under D-9). The launcher only needs to know when Qt is coming, for the
+# PySide6 repair checks below.
 if [ -z "$VIEW_MODE" ]; then
-    VIEW_MODE="tk"
+    VIEW_MODE="pyside"
 fi
 
 # Only perform PySide6 self-heal and plugin inspection if launching PySide

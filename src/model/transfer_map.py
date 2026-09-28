@@ -288,6 +288,13 @@ class TrialStore:
             return created
         return self.write(_do)
 
+    def create_tip(self, tip_id, when):
+        """A tip record with no trial yet (New tip on the sheet, or a note
+        on a tip before its first trial). -> created (False: it existed)."""
+        return self.write(lambda db: db.execute(
+            "INSERT OR IGNORE INTO tips (tip_id, created_at) VALUES (?, ?)",
+            (tip_id, when)).rowcount == 1)
+
     def set_tip(self, tip_id, fields):
         names = _checked(fields, _TIP_NAMES, "tips")
         sql = ("UPDATE tips SET " + ", ".join(n + " = ?" for n in names)
@@ -1267,6 +1274,49 @@ class TransferMap(Model):
             return f"in use since trial {record['trials'][0]}"
         return "new"
 
+    #: The dropdown's blank line: the typed tip is not a known one.
+    NO_TIP = "-"
+
+    @property
+    def tip_options(self):
+        """Every tip on record, for the Known tips dropdown (bench
+        2026-09-28: the operator could not see the tips that existed)."""
+        return [self.NO_TIP] + [t["tip_id"] for t in self._store.tips()]
+
+    @property
+    def tip_pick(self):
+        tip = (self.tip_id or "").strip()
+        return tip if tip and tip in self.tip_options else self.NO_TIP
+
+    def pick_tip(self, label):
+        """The Known tips dropdown: fills the Tip ID entry with a tip on
+        record. The blank line changes nothing."""
+        if label == self.NO_TIP:
+            return None
+        if label not in self.tip_options:
+            raise Refused(f"{label!r} is not a tip on record. Type a new ID "
+                          "in Tip ID and press New tip.")
+        self.tip_id = label
+        self._changed()
+        self._start_polling()
+        return label
+
+    def new_tip(self):
+        """A tip record made on demand from the typed ID, before any trial
+        (bench 2026-09-28: "I can't create new tips")."""
+        tip = (self.tip_id or "").strip()
+        if not tip:
+            raise Refused("Type the new tip's ID in Tip ID first, then press "
+                          "New tip.")
+        if self._store.tip(tip) is not None:
+            raise Refused(f"Tip {tip} is already on record: pick it under "
+                          "Known tips.")
+        self._store.create_tip(tip, _now())
+        self._changed()
+        events.info("Tip Created", f"Tip {tip} created.", source=self.NAME)
+        self._start_polling()
+        return tip
+
     def _typed_tip(self):
         """(tip, record) for the typed tip, or Refused naming what is missing."""
         tip = (self.tip_id or "").strip()
@@ -1306,7 +1356,14 @@ class TransferMap(Model):
         return tip
 
     def set_tip_note(self):
-        tip, _record = self._typed_tip()
+        tip = (self.tip_id or "").strip()
+        if not tip:
+            raise Refused("Type the tip ID first.")
+        if self._store.tip(tip) is None:
+            # A note before the first trial creates the record (owner call
+            # 2026-09-28).
+            self._store.create_tip(tip, _now())
+            events.info("Tip Created", f"Tip {tip} created.", source=self.NAME)
         note = (self.tip_note or "").strip()
         self._store.set_tip(tip, {"note": note})
         self._changed()
@@ -1762,6 +1819,8 @@ class TransferMap(Model):
                 sch.readonly("Speed", "speed_now", rail=True, param=P["speed_now"]),
                 sch.readonly("Red", "red_now", param=P["red_now"], format=".2f"),
                 sch.entry("Tip ID", "tip_id", P["tip_id"]),
+                sch.dropdown("Known tips", "tip_pick", "pick_tip", "tip_options"),
+                sch.button("New tip", "new_tip", inputs=("tip_id",)),
                 sch.readonly("Trials on this tip", "tip_trial_count"),
                 sch.readonly("Tip", "tip_status"),
                 sch.button("Arm trial", "arm_trial",
