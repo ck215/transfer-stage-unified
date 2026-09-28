@@ -35,6 +35,26 @@ def private_db(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def jpeg_recorder(request, monkeypatch):
+    """The map tests record on the JPEG path: `devices.video`'s lazy import
+    of the encoder answers None, so no test here starts an ffmpeg (the
+    encoder itself is `tests/test_video.py`'s). A test that asks for the
+    `real_encoder` fixture keeps the real MP4 path; there is ONE, the
+    end-to-end `test_frames_flow_from_red_percent_into_the_trials_video`
+    (grep `real_encoder`)."""
+    if "real_encoder" in request.fixturenames:
+        return
+    from devices import video
+    monkeypatch.setattr(video, "_encoder", lambda: None)
+
+
+@pytest.fixture
+def real_encoder():
+    """Opt out of `jpeg_recorder`: this test records a real H.264 MP4."""
+    return pytest.importorskip("imageio_ffmpeg")
+
+
 class FakeRotator:
     """A tilt source, duck-typed as the Transfer Map reads one."""
     def __init__(self, angle=22.5):
@@ -2068,12 +2088,23 @@ def _mp4_frames(path):
     return ffmpeg.count_frames_and_secs(str(path))[0]
 
 
+def _video_frames(path):
+    """Frames in a trial's video, either path: the MP4's, or the JPEGs."""
+    path = Path(path)
+    if path.is_dir():
+        return len(list(path.glob("frame_*.jpg")))
+    return _mp4_frames(path)
+
+
 def _row(private_db, trial):
     return _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
 
 
-def test_frames_flow_from_red_percent_into_the_trials_video(station, private_db):
+def test_frames_flow_from_red_percent_into_the_trials_video(station, private_db,
+                                                           real_encoder):
+    """The one map test on the real MP4 path (`real_encoder`)."""
     model, red, *_ = station
+    assert model.video_encoder.startswith("H.264 MP4 via imageio-ffmpeg")
     trial = _arm(model)
     assert red._frame_subscribers == (model._on_frame,)
     rec = model._trial.recording
@@ -2205,7 +2236,7 @@ def test_finish_abort_and_the_stop_close_the_video_and_fill_the_columns(
     assert row["status"] == ("recorded" if end == "finish" else "aborted")
     assert row["video_frames"] == len(_index(model, trial)) >= 5
     assert row["video_dropped"] is not None
-    assert _mp4_frames(row["video_path"]) == row["video_frames"]
+    assert _video_frames(row["video_path"]) == row["video_frames"]
 
 
 def test_the_stop_never_closes_the_video_on_its_own_thread(station, private_db,
@@ -2257,7 +2288,7 @@ def test_a_recorder_that_fails_mid_trial_warns_once_and_the_trial_goes_on(
     assert f"Trial {trial}" in warned[0].message
     row = _row(private_db, trial)
     assert row["status"] == "recorded" and row["video_frames"] == 3
-    assert _mp4_frames(row["video_path"]) == 3
+    assert _video_frames(row["video_path"]) == 3
     assert len(_rows(private_db, "SELECT * FROM profile WHERE trial_id=?",
                      trial)) > 0          # the measurement is untouched
 
@@ -2287,19 +2318,18 @@ def test_the_video_status_says_what_is_being_recorded_then_what_was(
     _arm(model)
     rec = model._trial.recording
     assert _wait_for(lambda: rec.frames >= 2)
-    assert model.video_status.startswith("recording, ")
-    assert model.video_status.split(", ")[1].endswith("frames")
+    import re
+    assert re.match(r"recording, \d+ frames", model.video_status), model.video_status
     _finish(model)
     row = model._store.last()
-    assert model.video_status == (f"trial.mp4, {row['video_frames']} frames, "
+    assert model.video_status == (f"no encoder: JPEG frames, "
+                                  f"{row['video_frames']} frames, "
                                   f"{row['video_dropped']} dropped")
 
 
-def test_the_video_encoder_is_in_diagnostics(monkeypatch):
-    pytest.importorskip("imageio_ffmpeg")
-    model = TransferMap()
-    assert model.video_encoder.startswith("H.264 MP4 via imageio-ffmpeg")
-    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+def test_the_video_encoder_is_in_diagnostics():
+    """What the probe says without the encoder (the MP4 wording is checked
+    in the one `real_encoder` test)."""
     assert TransferMap().video_encoder.startswith("imageio-ffmpeg is not installed")
 
 
