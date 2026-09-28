@@ -302,7 +302,7 @@ def test_smoke_scripts_drive_every_setup_row(script):
 
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "package.yml")
 #: runner -> (platform.system(), platform.machine()) on that runner.
-RUNNERS = {"macos-14": ("Darwin", "arm64"), "macos-13": ("Darwin", "x86_64"),
+RUNNERS = {"macos-14": ("Darwin", "arm64"), "macos-15-intel": ("Darwin", "x86_64"),
            "windows-latest": ("Windows", "AMD64"), "ubuntu-22.04": ("Linux", "x86_64")}
 
 

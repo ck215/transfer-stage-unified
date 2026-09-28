@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 
+from controller import updater
 from controller.controller import Controller
 from events import events
 from controller.setup import Setup
@@ -135,6 +136,10 @@ def restart_process(args=None, extra_args=(), delay=0.0):
         return thread
     argv = restart_argv(args, extra_args)
     events.info("Restart", " ".join(argv), source="app")
+    # A bundle's update that could not swap while it ran (Windows locks a
+    # running launcher's folder) waits in <install>.next for this restart.
+    frozen = getattr(sys, "frozen", False)
+    pending = updater.pending_update(os.path.dirname(sys.executable)) if frozen else None
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
@@ -142,13 +147,29 @@ def restart_process(args=None, extra_args=(), delay=0.0):
             pass
     events.close_file()
     try:
-        if not getattr(sys, "frozen", False):
+        if not frozen:
             os.chdir(CHECKOUT_ROOT)
         if sys.platform == "win32":
-            subprocess.Popen(argv, cwd=CHECKOUT_ROOT if not getattr(
-                sys, "frozen", False) else None)
+            if pending is not None:
+                # The swap cannot run in this process: a script beside the
+                # install waits for it to exit, swaps, starts the new launcher.
+                script = os.path.join(os.path.dirname(pending), updater.SWAP_SCRIPT)
+                with open(script, "w", encoding="utf-8", newline="") as f:
+                    f.write(updater.swap_script(pending, os.getpid(), argv))
+                subprocess.Popen(["cmd", "/c", script], cwd=os.path.dirname(pending),
+                                 creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            else:
+                subprocess.Popen(argv, cwd=CHECKOUT_ROOT if not frozen else None)
+            # os._exit, not sys.exit: a delayed restart runs on a daemon
+            # thread, where sys.exit would end only that thread. The models
+            # are closed and the log flushed before this is ever called.
             os._exit(0)
         else:
+            if pending is not None:
+                refusal = updater.finish_pending(pending)
+                if refusal:
+                    events.warn("Update Not Installed", refusal, source="app")
             os.execv(sys.executable, argv)
     except OSError:
         events.open_file()

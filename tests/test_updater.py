@@ -742,14 +742,80 @@ def test_a_failed_swap_restores_the_running_version(bundle, monkeypatch):
     _untouched(bundle)
 
 
-def test_a_running_version_that_cannot_move_changes_nothing(bundle, monkeypatch):
-    def no_move(src, dst):
-        raise PermissionError("in use")
+def test_a_running_folder_that_cannot_move_is_staged_for_the_restart(bundle, monkeypatch):
+    """Windows keeps a running launcher's folder locked: the first move fails,
+    so the new version waits in `.next` with an UPDATE_PENDING marker and the
+    restart swaps it in (`app.restart_process`)."""
+    real = updater_module._rename
 
-    monkeypatch.setattr(updater_module, "_rename", no_move)
+    def install_locked(src, dst):
+        if os.path.basename(src) == "station":
+            raise PermissionError("in use")
+        real(src, dst)
+
+    monkeypatch.setattr(updater_module, "_rename", install_locked)
     result = _bundle_updater(bundle).apply()
-    assert result["updated"] is False and "nothing was changed" in result["reason"]
-    _untouched(bundle)
+    assert result["updated"] is True and result["pending"] is True
+    assert result["new"] == "v1.3.0"
+    assert result["reason"] == "Updated to v1.3.0. Restart the station to run it."
+    staged = bundle.with_name("station.next")
+    assert (staged / "VERSION").read_text().startswith("v1.3.0\n")
+    assert (bundle / "UPDATE_PENDING").read_text().strip() == str(bundle.resolve())
+    assert updater_module.pending_update(bundle) == bundle.resolve()
+    assert (bundle / "VERSION").read_text().startswith("v1.2.0\n")   # still running
+
+
+def test_nothing_is_pending_without_the_marker_or_the_staged_folder(bundle):
+    assert updater_module.pending_update(bundle) is None
+    (bundle / "UPDATE_PENDING").write_text(str(bundle))
+    assert updater_module.pending_update(bundle) is None             # no .next
+
+
+def _staged(bundle):
+    staged = _write_bundle(bundle.with_name("station.next"), "v1.3.0", "new")
+    (bundle / "UPDATE_PENDING").write_text(str(bundle.resolve()) + "\n")
+    return staged
+
+
+def test_finish_pending_swaps_and_leaves_no_marker(bundle):
+    _staged(bundle)
+    assert updater_module.finish_pending(bundle) == ""
+    assert (bundle / "VERSION").read_text().startswith("v1.3.0\n")
+    assert not (bundle / "UPDATE_PENDING").exists()
+    assert _names(bundle) == ["station", "station.previous"]
+
+
+def test_a_finish_that_fails_restores_and_clears_the_marker(bundle, monkeypatch):
+    _staged(bundle)
+    real, moves = updater_module._rename, []
+
+    def second_fails(src, dst):
+        moves.append(src)
+        if len(moves) == 2:
+            raise PermissionError("in use")
+        real(src, dst)
+
+    monkeypatch.setattr(updater_module, "_rename", second_fails)
+    assert "restored" in updater_module.finish_pending(bundle)
+    assert (bundle / "VERSION").read_text().startswith("v1.2.0\n")
+    assert not (bundle / "UPDATE_PENDING").exists()      # no swap loop on every restart
+
+
+def test_the_swap_script_waits_swaps_starts_and_deletes_itself(tmp_path):
+    install = tmp_path / "Program 100%" / "station"
+    argv = [str(install / "station-tk.exe"), "--font-size", "14"]
+    text = updater_module.swap_script(install, 4242, argv)
+    assert 'tasklist /FI "PID eq 4242"' in text
+    assert "ping -n 2 127.0.0.1" in text               # a sleep that needs no console
+    assert "geq 120" in text                           # the wait is bounded
+    esc = str(install).replace("%", "%%")
+    assert f'rmdir /s /q "{esc}.previous"' in text
+    assert f'ren "{esc}" "station.previous"' in text
+    assert f'ren "{esc}.next" "station"' in text
+    assert f'ren "{esc}.previous" "station"' in text   # a failed swap puts it back
+    assert "station-tk.exe\" \"--font-size\" \"14\"" in text
+    assert text.index("ren \"") < text.index('start ""')
+    assert 'del "%~f0"' in text
 
 
 def test_the_login_is_never_logged_or_returned(bundle, tmp_path):

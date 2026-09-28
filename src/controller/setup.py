@@ -1087,6 +1087,11 @@ class Setup(Panel):
                          "then quit and start the station again.")
         with self._lock:
             updated_to = self._updated_to
+        if updated_to and self._update_pending:
+            # Windows: the new version waits in <install>.next; only the
+            # Restart button's swap script puts it in place.
+            self._refuse(f"The station was updated to {updated_to}. Press "
+                         "Restart before launching.")
         if updated_to:
             # The files on disk are newer than the code that is running: a
             # late import would mix the two. Only a restart runs the update.
@@ -1215,8 +1220,8 @@ class Setup(Panel):
 
     # -- the update check (owner, 2026-09-28) -------------------------------
     #: `apply_update`'s confirmation: the one question before the checkout moves.
-    UPDATE_CONFIRM = ("Update the station now? It fast-forwards this checkout; "
-                      "the station must be restarted afterwards.")
+    UPDATE_CONFIRM = ("Update the station now? The station must be "
+                      "restarted afterwards.")
     #: `Updater.check()`'s status -> the one sentence the Updates line says.
     #: `behind` is counted, `error` carries the check's own reason.
     UPDATE_SENTENCES = {
@@ -1240,6 +1245,7 @@ class Setup(Panel):
         self._update_code = None        # the last check's status
         self._update_lines = []         # the incoming `--oneline` lines
         self._updated_to = None         # sha7 once an update landed
+        self._update_pending = False    # a bundle's swap waits for Restart
         self._version_read = False
         self._warned_updates = set()
         #: What is RUNNING: read once, so a landed update does not claim to be
@@ -1425,6 +1431,8 @@ class Setup(Panel):
                     action=("Update now", events.SETUP_PANEL, "apply_update"))
 
     def _restart_sentence(self):
+        if self._update_pending:
+            return f"Updated to {self._updated_to}. Press Restart to run it."
         return (f"Updated to {self._updated_to}. Quit and start the station "
                 "again to run it.")
 
@@ -1459,6 +1467,7 @@ class Setup(Panel):
                           "Firmware row flashes the boards that are out of date.")
         with self._lock:
             self._updated_to = result.get("new")
+            self._update_pending = bool(result.get("pending"))
             self._update_code = "updated"
             self._update_lines = []
             self.update_log = ""

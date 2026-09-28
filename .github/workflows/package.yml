@@ -62,7 +62,7 @@ jobs:
         include:
           - runner: macos-14
             asset: station-macos-arm64.zip
-          - runner: macos-13
+          - runner: macos-15-intel
             asset: station-macos-x86_64.zip
           - runner: windows-latest
             asset: station-windows-x86_64.zip

@@ -76,6 +76,11 @@ STATUSES = (UP_TO_DATE, BEHIND, DIVERGED, DIRTY, OFFLINE, NOT_GIT, BUNDLE, ERROR
 
 #: What a stamped bundle carries beside its launchers (`packaging/release.py`).
 VERSION_FILE, RELEASE_FILE = "VERSION", "release.json"
+#: Written into the install when its folder could not be moved while running
+#: (Windows locks it): one line, the install; the restart finishes the swap.
+PENDING_FILE = "UPDATE_PENDING"
+#: The swap script `app.restart_process` leaves beside a Windows install.
+SWAP_SCRIPT = "station-update.cmd"
 API = "https://api.github.com"
 #: A release asset is ~150 MB over a lab network: the timeout is per read,
 #: not for the whole download.
@@ -393,13 +398,15 @@ class Updater:
                 _remove(staged)
                 result["reason"] = refusal
                 return result
-            refusal = _swap(install, staged, previous)
+            refusal, pending = _swap(install, staged, previous, stage=True), False
+            if refusal is PENDING:
+                refusal, pending = "", True
             if refusal:
                 result["reason"] = refusal
                 return result
         finally:
             shutil.rmtree(work, ignore_errors=True)
-        result.update(updated=True, new=latest,
+        result.update(updated=True, new=latest, pending=pending,
                       reason=f"Updated to {latest}. Restart the station to run it.")
         return result
 
@@ -617,18 +624,31 @@ def _unpack(archive, work, staged):
     return ""
 
 
-def _swap(install, staged, previous):
+#: `_swap`'s answer when the running folder is locked and the swap is left
+#: to the restart.
+PENDING = object()
+
+
+def _swap(install, staged, previous, stage=False):
     """`install` -> `previous`, `staged` -> `install`; the first move undone
-    when the second fails. -> a refusal sentence, or ""."""
+    when the second fails. -> a refusal sentence, or "". With `stage`, a
+    running folder that cannot move (Windows locks a running launcher's
+    folder) is not a failure: `staged` stays, UPDATE_PENDING names the
+    install, and the answer is `PENDING`. No platform branch: the move is
+    tried everywhere, and only its failure stages."""
     try:
         _remove(previous)
     except OSError as exc:
+        if stage:
+            return _stage(install)
         _remove_quietly(staged)
         return (f"The last update's {previous.name} could not be cleared ({exc}); "
                 "nothing was changed.")
     try:
         _rename(install, previous)
     except OSError as exc:
+        if stage:
+            return _stage(install)
         _remove_quietly(staged)
         return (f"The running version could not be moved aside ({exc}); nothing "
                 "was changed. Quit the station and try again.")
@@ -646,6 +666,79 @@ def _swap(install, staged, previous):
         return (f"The new version could not be put in place ({exc}); the running "
                 "version was restored and nothing was changed.")
     return ""
+
+
+def _stage(install):
+    try:
+        with open(install / PENDING_FILE, "w", encoding="utf-8") as f:
+            f.write(f"{install}\n")
+    except OSError as exc:
+        _remove_quietly(install.with_name(install.name + ".next"))
+        return (f"The running version could not be moved aside and the update "
+                f"could not be staged ({exc}); nothing was changed.")
+    return PENDING
+
+
+def pending_update(install):
+    """The install whose staged update waits for the restart, or None: its
+    UPDATE_PENDING marker and its `<install>.next` (holding a VERSION)."""
+    install = Path(install).resolve()
+    marker = install / PENDING_FILE
+    staged = install.with_name(install.name + ".next")
+    if marker.is_file() and (staged / VERSION_FILE).is_file():
+        return install
+    return None
+
+
+def finish_pending(install):
+    """The restart's swap where a folder can move while its launcher runs
+    (every OS but Windows; there the swap script does it). Clears the marker
+    either way, so a swap that cannot happen is not retried on every
+    restart. -> a refusal sentence, or ""."""
+    install = Path(install).resolve()
+    refusal = _swap(install, install.with_name(install.name + ".next"),
+                    install.with_name(install.name + ".previous"))
+    _remove_quietly(install / PENDING_FILE)
+    return refusal
+
+
+def _cmd_quote(text):
+    return '"' + str(text).replace("%", "%%") + '"'
+
+
+def swap_script(install, pid, argv, tries=120):
+    """The `.cmd` a Windows restart leaves beside the install: wait (at most
+    `tries` seconds) for process `pid` to exit, move the install to
+    `.previous` and `.next` into its place (the old one put back if that
+    fails), start `argv` from the install's path, delete itself. Text only;
+    `app.restart_process` writes and starts it."""
+    install = Path(install)
+    folder = str(install)
+    previous, staged = folder + ".previous", folder + ".next"
+    name = install.name
+    command = " ".join(_cmd_quote(a) for a in argv)
+    return "\r\n".join([
+        "@echo off",
+        "chcp 65001 >NUL",
+        f"rem Station update: wait for the station (PID {pid}) to exit, swap in",
+        "rem the new version, start it. Written by app.restart_process.",
+        "set /a tries=0",
+        ":wait",
+        f'tasklist /FI "PID eq {pid}" /NH 2>NUL | find " {pid} " >NUL',
+        "if errorlevel 1 goto swap",
+        "set /a tries+=1",
+        f"if %tries% geq {tries} goto swap",
+        "ping -n 2 127.0.0.1 >NUL",
+        "goto wait",
+        ":swap",
+        f"if exist {_cmd_quote(previous)} rmdir /s /q {_cmd_quote(previous)}",
+        f"ren {_cmd_quote(folder)} {_cmd_quote(name + '.previous')} || goto start",
+        f"ren {_cmd_quote(staged)} {_cmd_quote(name)} || "
+        f"(ren {_cmd_quote(previous)} {_cmd_quote(name)} & goto start)",
+        ":start",
+        f'start "" {command}',
+        '(goto) 2>NUL & del "%~f0"',
+        ""])
 
 
 def _remove_quietly(path):

@@ -1192,8 +1192,8 @@ def test_update_now_asks_first(fake_types, checking):
     panel = _ready(Setup(RecordingController(), updater=updater))
     result = panel.run("apply_update")
     assert result.status == "needs_confirm"
-    assert result.reason == ("Update the station now? It fast-forwards this "
-                             "checkout; the station must be restarted afterwards.")
+    assert result.reason == ("Update the station now? The station must be "
+                             "restarted afterwards.")
     assert result.command == "apply_update"
     assert updater.applies == 0
 
@@ -1909,3 +1909,30 @@ def test_the_login_never_reaches_the_station_log(fake_types, checking, tmp_path,
     assert "v1.3.0" in text                 # the log did record the update
     assert tu.SECRET not in text
     assert tu.SECRET not in repr(panel.state)
+
+
+def test_the_update_confirmation_names_no_world(panel):
+    assert Setup.UPDATE_CONFIRM == ("Update the station now? The station must be "
+                                    "restarted afterwards.")
+    assert "checkout" not in Setup.UPDATE_CONFIRM and "bundle" not in Setup.UPDATE_CONFIRM
+
+
+def test_an_update_waiting_for_the_restart_says_press_restart(fake_types, checking,
+                                                              warnings):
+    """Windows: the swap waits for the restart, so "quit and start again" by
+    hand would run the old version; the line and Launch say Restart."""
+    updater = FakeUpdater(check=released(), apply={
+        "updated": True, "old": "v1.2.0", "new": "v1.3.0", "pending": True,
+        "deps_changed": False, "deps_ok": True, "firmware_changed": False,
+        "reason": "Updated to v1.3.0. Restart the station to run it."})
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    assert panel.update_status == "Updated to v1.3.0. Press Restart to run it."
+    [prompt] = _prompts(warnings, events.RESTART_NEEDED)
+    assert prompt.to_dict()["action"]["command"] == "restart_station"
+    tick(panel, "alpha")
+    refused = panel.run("launch")
+    assert refused.status == "refused"
+    assert refused.reason == ("The station was updated to v1.3.0. Press Restart "
+                              "before launching.")
