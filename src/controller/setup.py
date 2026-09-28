@@ -39,6 +39,7 @@ import threading
 import time
 
 import schema as sch
+from controller.firmware import FirmwareCheck
 from controller.updater import Updater
 from devices import gamepad as gamepad_module
 from devices import serial_port as serial_port_module
@@ -245,7 +246,7 @@ class Setup(Panel):
     IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
         "idle", "listing", "identifying", "done", "cancelled")
 
-    def __init__(self, controller, updater=None):
+    def __init__(self, controller, updater=None, firmware=None):
         super().__init__()
         self.controller = controller
         self._rows = self._build_rows()
@@ -299,6 +300,7 @@ class Setup(Panel):
         self._refresh_rows()
         # Last: the startup update check's thread reads nothing above.
         self._init_updates(updater)
+        self._init_firmware(firmware)
 
     # -- what a view reads -------------------------------------------------
     @property
@@ -642,6 +644,10 @@ class Setup(Panel):
         with self._lock:
             if self.is_scanning:
                 self._refuse("A hardware scan is already running.")
+            if self.is_flashing:
+                # The flash tool probes and uploads over these same ports.
+                self._refuse("The firmware is being flashed. Refresh when "
+                             "the Flashing cell is empty.")
             self._abort.clear()
             self._warned_ports.clear()
             self._found.clear()
@@ -1064,6 +1070,11 @@ class Setup(Panel):
         and the Relaunch button once the system is up (a build resets the
         Controller first, so relaunching is the same call). A relaunch over
         energized models asks first (round 8, PM8-6)."""
+        if self.is_flashing:
+            # A board mid-upload is not a board to open: its port is the
+            # uploader's, and its firmware is neither the old nor the new.
+            self._refuse("The firmware is being flashed. Launch when the "
+                         "Flashing cell is empty.")
         if _alive(self._apply_thread):
             # An update is landing in this checkout: nothing starts on files
             # that are being replaced underneath it.
@@ -1080,6 +1091,7 @@ class Setup(Panel):
         if not configs:
             self._refuse("Select at least one device: tick its Launch box.")
         self.validate(configs)
+        self._ask_about_firmware(configs, confirmed)
         self._ask_before_taking_down("Relaunch", "launch", confirmed)
         return self.build(configs)
 
@@ -1363,8 +1375,8 @@ class Setup(Panel):
             extras.append("The dependencies changed and pip install failed: run "
                           "pip install -e '.[qt]' by hand before starting again.")
         if result.get("firmware_changed"):
-            extras.append("The firmware changed: start with run_swap.sh to flash "
-                          "the boards.")
+            extras.append("The firmware changed: after the restart, the "
+                          "Firmware row flashes the boards that are out of date.")
         with self._lock:
             self._updated_to = result.get("new")
             self._update_code = "updated"
@@ -1385,6 +1397,206 @@ class Setup(Panel):
                 return
             self._warned_updates.add(key)
         events.warn(title, message, source=self.NAME, exception=exception)
+
+    # -- the firmware check (owner, 2026-09-28: the old launcher's, on the page) --
+    FIRMWARE_CHECKING = "checking…"
+    FIRMWARE_CHECK_OFF = ("not checked this run (STATION_NO_FIRMWARE_CHECK); "
+                          "press Check firmware")
+    #: The button's static text; the question actually asked names the boards.
+    FLASH_CONFIRM = ("Flash the out-of-date boards? This overwrites their "
+                     "running firmware.")
+
+    def _init_firmware(self, firmware):
+        """The Firmware row's state, then - unless `STATION_NO_FIRMWARE_CHECK`
+        is set - the startup check on a daemon thread. The check reads the
+        stamp file and the sketches; it opens no port and never flashes
+        (`controller.firmware`)."""
+        self._firmware = firmware if firmware is not None else FirmwareCheck()
+        self._firmware_thread = self._flash_thread = None
+        self._firmware_result = None    # the last check()'s answer
+        self._firmware_asked = set()    # stale-board sets Launch already asked about
+        self.firmware_progress = ""
+        #: The Web view's address, which it fills in once it serves; the
+        #: desktop views leave it empty. It used to be a terminal line.
+        self.web_address = ""
+        if os.environ.get("STATION_NO_FIRMWARE_CHECK", "") not in ("", "0"):
+            self.firmware_status = self.FIRMWARE_CHECK_OFF
+            events.debug("Firmware Check", "off: STATION_NO_FIRMWARE_CHECK is set",
+                         source=self.NAME)
+            return
+        self.firmware_status = self.FIRMWARE_CHECKING
+        self._start_firmware_thread()
+
+    @property
+    def is_flashing(self):
+        return _alive(getattr(self, "_flash_thread", None))
+
+    def check_firmware(self):
+        """Check firmware: the board statuses again, on a thread."""
+        with self._lock:
+            if self.is_flashing:
+                self._refuse("A flash is running; the Boards line updates when "
+                             "it finishes.")
+            if _alive(self._firmware_thread):
+                self._refuse("The firmware check is already running. Wait for "
+                             "its answer on the Boards line.")
+            self.firmware_status = self.FIRMWARE_CHECKING
+            self._start_firmware_thread()
+        return True
+
+    def flash_firmware(self, confirmed=False):
+        """Flash out-of-date boards: `firmware/flash_firmware.py --yes --only
+        <the boards the check found>` on a thread, its lines streaming into
+        the Flashing cell. Never while the station holds a port, never while
+        the scan does, never with nothing to flash, never unasked."""
+        with self._lock:
+            if self.is_flashing:
+                self._refuse("A flash is already running. Wait for it to finish.")
+            if _alive(self._firmware_thread):
+                self._refuse("The firmware check is still running. Wait for its "
+                             "answer, then press Flash.")
+            running = list(getattr(self.controller, "model_names", None) or [])
+            if self._is_launched or running:
+                self._refuse("Close every model first: a board cannot be "
+                             "flashed while the station holds its port.")
+            if self.is_scanning or self._is_restart_pending:
+                self._refuse("The scan is using the ports. Flash when it has "
+                             "finished, or press Cancel scan.")
+            result = self._firmware_result
+            if result is None:
+                self._refuse("The firmware has not been checked. Press Check "
+                             "firmware first.")
+            boards = list(result.get("to_flash") or [])
+            if not boards:
+                self._refuse("Every board is current; there is nothing to flash.")
+            missing = list(result.get("missing_tools") or [])
+            if missing:
+                self._refuse(f"{_and(missing)} {'is' if len(missing) == 1 else 'are'} "
+                             "not installed on this computer: flash by hand "
+                             "with firmware/flash_firmware.py.")
+            script = getattr(self._firmware, "script", None)
+            if script is not None and not os.path.isfile(script):
+                self._refuse("The flash tool is not part of this installation: "
+                             "flash by hand.")
+            if not confirmed:
+                raise NeedsConfirm(
+                    f"Flash {_and(boards)} now? This overwrites the running "
+                    "firmware of every one of them that is plugged in; the "
+                    "others are skipped. Launch waits until it finishes.",
+                    "flash_firmware")
+            self.firmware_status = f"flashing {_and(boards)}"
+            self.firmware_progress = "starting…"
+            self._flash_thread = threading.Thread(
+                target=self._flash_worker, args=(boards,), daemon=True,
+                name="setup-firmware-flash")
+            self._flash_thread.start()
+        events.debug("Firmware Flash", f"started: {', '.join(boards)}", source=self.NAME)
+        return True
+
+    def _start_firmware_thread(self):
+        self._firmware_thread = threading.Thread(
+            target=self._firmware_check_worker, daemon=True,
+            name="setup-firmware-check")
+        self._firmware_thread.start()
+
+    def _firmware_check_worker(self):
+        self._publish_firmware(self._check_firmware_now())
+
+    def _check_firmware_now(self):
+        try:
+            return self._firmware.check()
+        except Exception as exc:        # never let a worker die silently
+            events.debug("Firmware Check Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            events.warn("Firmware Check Failed", "The firmware check failed; "
+                        "the details are in the log file.", source=self.NAME,
+                        exception=exc)
+            return None
+
+    def _publish_firmware(self, result, prefix=""):
+        with self._lock:
+            self._firmware_result = result
+            summary = (result or {}).get("summary") or "the check failed: see the log"
+            self.firmware_status = prefix + summary
+        events.debug("Firmware Check", f"{summary}: {(result or {}).get('boards')}",
+                     source=self.NAME)
+
+    def _flash_worker(self, boards):
+        def on_line(line):
+            events.debug("Firmware Flash", line, source=self.NAME)
+            if line.strip():
+                self.firmware_progress = line.strip()
+
+        try:
+            outcome = self._firmware.flash(boards, on_line=on_line)
+        except Exception as exc:        # never let a worker die silently
+            events.debug("Firmware Flash Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            outcome = {"ok": False, "last": repr(exc), "lines": []}
+        result = self._check_firmware_now()
+        left = [b for b in boards if b in ((result or {}).get("to_flash") or [])]
+        absent = next((line.strip() for line in outcome.get("lines") or []
+                       if line.startswith("Not connected")), "")
+        with self._lock:
+            self.firmware_progress = ""
+        if not outcome.get("ok"):
+            self._publish_firmware(result, prefix="the last flash failed; ")
+            events.warn("Firmware Flash Failed",
+                        f"Flashing {_and(boards)} failed: {outcome.get('last') or 'no output'}. "
+                        "A board may be half-flashed; fix the cause and flash "
+                        "again. The whole output is in the log file.",
+                        source=self.NAME)
+            return
+        self._publish_firmware(result)
+        done = [b for b in boards if b not in left]
+        if left:
+            events.warn("Firmware Not Flashed",
+                        f"{_and(left)} still {'needs' if len(left) == 1 else 'need'} "
+                        f"flashing. {absent or outcome.get('last') or ''}".strip(),
+                        source=self.NAME)
+        if done:
+            events.info("Firmware Flashed", f"{_and(done)} now run this "
+                        "checkout's firmware.", source=self.NAME)
+        with self._lock:
+            self._firmware_asked.clear()
+
+    def _ask_about_firmware(self, configs, confirmed):
+        """Launch warns, once, when a board it is about to open runs firmware
+        older than this checkout's (a NeedsConfirm, not a refusal: the
+        operator may mean it - main's boards). A board never flashed from
+        here is not warned about: nothing says what it runs."""
+        result = self._firmware_result or {}
+        opening = {c.get("model") for c in configs if not c.get("sim")}
+        stale = [b for b in (result.get("stale") or []) if b in opening]
+        if not stale:
+            return
+        key = frozenset(stale)
+        with self._lock:
+            if confirmed or key in self._firmware_asked:
+                self._firmware_asked.add(key)
+                return
+        sentence = (f"{stale[0]}'s firmware is out of date." if len(stale) == 1
+                    else f"The firmware on {_and(stale)} is out of date.")
+        prompt = f"{sentence} Launch anyway?"
+        try:
+            self._ask_before_taking_down("Relaunch", "launch", False)
+        except NeedsConfirm as energized:
+            # One question, not two: the rerun comes back confirmed.
+            prompt = f"{energized.prompt} {prompt}"
+        raise NeedsConfirm(prompt, "launch")
+
+    def _firmware_section(self):
+        """The Firmware row, right after Update: what the boards run against
+        this checkout's sketches, the flash while it runs, and the two keys."""
+        return sch.section(
+            "Firmware",
+            sch.readonly("Boards", "firmware_status", role="info"),
+            sch.readonly("Flashing", "firmware_progress"),
+            sch.button("Flash out-of-date boards", "flash_firmware", role="go",
+                       confirm=self.FLASH_CONFIRM),
+            sch.button("Check firmware", "check_firmware", role="neutral"),
+            layout="row",
+        )
 
     # -- schema ------------------------------------------------------------
     def _build_rows(self):
@@ -1439,13 +1651,15 @@ class Setup(Panel):
             # empty when nothing is coming.
             sch.readonly("Coming", "update_log"),
             layout="row",
-        ), sch.section(
+        ), self._firmware_section(), sch.section(
             "Devices",
             sch.button("Refresh", "refresh", role="info"),
             sch.readonly("Scan:", "scan_status"),
             # F18: a hung scan can be given up without restarting it.
             sch.button("Cancel scan", "cancel_scan", role="neutral",
                        enabled_when=[self.SCANNING]),
+            # L3: where the Web view is served; empty in the desktop views.
+            sch.readonly("Address", "web_address"),
             layout="row",
         )]
         for key, row in self._rows.items():
@@ -1553,6 +1767,11 @@ class Setup(Panel):
         else:
             self._selected = (f"{count} device{'s' if count != 1 else ''} "
                               "ticked to launch.")
+
+
+def _and(names):
+    names = list(names)
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def _alive(thread):

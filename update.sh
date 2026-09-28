@@ -84,8 +84,8 @@ if changed pyproject.toml requirements.txt; then
 fi
 
 if changed firmware; then
-    say "firmware changed. run_swap.sh flashes only the boards that are out of date on the next launch;"
-    say "plain run.sh leaves the boards as they are."
+    say "firmware changed: the Setup page's Firmware row flashes the boards that are out of date"
+    say "(dev/swap_branch.sh when you run main's app)."
     git --no-pager diff --name-only "$OLD" "$NEW" -- firmware | sed 's/^/    /'
 fi
 
@@ -93,4 +93,4 @@ if changed src/model/transfer_map.py; then
     say "the Transfer Map changed: your trial database is kept (data/ is never touched); check its Diagnostics line after launch."
 fi
 
-say "done. Launch with ./run.sh (or run_swap.sh to check firmware first)."
+say "done. Launch with ./run.sh; its Setup page checks the firmware."

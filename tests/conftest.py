@@ -239,3 +239,15 @@ def _no_update_check(monkeypatch):
     the check off. A test of the check itself deletes the variable and hands
     Setup a fake Updater."""
     monkeypatch.setenv("STATION_NO_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def _no_firmware_check(monkeypatch, tmp_path):
+    """Setup works out each board's firmware status on a thread at
+    construction (owner, 2026-09-28: the check that was `run_swap.sh`'s, now `dev/swap_branch.sh`).
+    Every Setup in the suite starts with it off, and the stamp file it and
+    `firmware/flash_firmware.py` read is this test's own, never the bench's
+    `~/transfer-stage-runs/flashed.json`. A test of the check deletes the
+    variable and hands Setup a fake FirmwareCheck."""
+    monkeypatch.setenv("STATION_NO_FIRMWARE_CHECK", "1")
+    monkeypatch.setenv("STATION_FLASH_STAMP", str(tmp_path / "flash" / "flashed.json"))

@@ -52,7 +52,7 @@ git diff --name-only %OLD% %NEW% -- pyproject.toml requirements.txt | findstr . 
     python -m pip install --quiet -e ".[qt]" || (echo [update] pip install failed. Run: pip install -e ".[qt]" & exit /b 1)
 )
 git diff --name-only %OLD% %NEW% -- firmware | findstr . >nul && (
-    echo [update] firmware changed: run_swap flashes the boards that are out of date on the next launch.
+    echo [update] firmware changed: the Setup page's Firmware row flashes the boards that are out of date.
 )
 echo [update] done. Launch with run.bat.
 endlocal

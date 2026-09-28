@@ -217,7 +217,7 @@ coll = COLLECT(
     name="station",
 )
 
-# macOS: pip marks some downloaded dylibs UF_HIDDEN (run_macos.sh clears
+# macOS: pip marks some downloaded dylibs UF_HIDDEN (run.sh clears
 # them in the venv) and the copy into dist/ keeps the flag; Qt's plugin
 # scanner skips hidden files and then aborts with no platform plugin. Clear
 # it on the whole bundle after the copy. Flags are not part of a code
