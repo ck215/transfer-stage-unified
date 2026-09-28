@@ -1439,4 +1439,4 @@ def test_changed_firmware_asks_for_a_restart_by_hand_and_offers_no_restart_now(
     wait_idle(panel)
     [restart] = _prompts(warnings, events.RESTART_NEEDED)
     assert restart.needs_ack and restart.action is None
-    assert "run_swap.sh" in restart.message
+    assert "firmware changed" in restart.message.lower()

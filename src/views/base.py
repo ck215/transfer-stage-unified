@@ -337,6 +337,42 @@ class Dashboard:
                 self._show_popup(event)
         self._marshal(show)
 
+    def run_action(self, action):
+        """The acknowledgement dialog's action key (rb-restart R1): the same
+        path as a press of a button on that panel (`name` is a model, or
+        `events.SETUP_PANEL`), so a refusal shows on that panel and a
+        confirmation is asked as usual. `action` is `Event.action` (or its
+        dict). Returns the Result, or None when there is nothing to run."""
+        if not action or self._closing:
+            return None
+        name, command = action.get("name"), action.get("command")
+        args = list(action.get("args") or ())
+        events.debug("Action", f"{action.get('label')}: {name} {command} {args}",
+                     source="View")
+        element = {"type": "button", "text": action.get("label") or command,
+                   "command": command, "args": args, "inputs": []}
+        panel = self._action_panel(name)
+        if panel is not None:
+            return panel._run(element)
+        # No panel of it is drawn: the same calls, the Dashboard's question.
+        if name == events.SETUP_PANEL:
+            call = self.setup.run
+        else:
+            def call(c, i=None, a=()):
+                return self.controller.run(name, c, i, a)
+        result = call(command, {}, tuple(args))
+        if result.needs_confirm and self._confirm(result.reason):
+            result = call(result.command, result.inputs, (*result.args, True))
+        if result.is_refused:
+            events.warn("Refused", f"{action.get('label')}: {result.reason}",
+                        source=str(name))
+        return result
+
+    def _action_panel(self, name):
+        """The drawn PanelView for `name` (`events.SETUP_PANEL` is Setup), or
+        None. A toolkit overrides this."""
+        return None
+
     def _on_models_changed(self, change, name):
         def apply():
             if change == "added":
