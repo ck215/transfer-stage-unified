@@ -544,9 +544,9 @@ class Rotator(Model):
                 # that nothing publishes per iteration.
                 events.debug("Rotator Unreachable", repr(exc),
                              source=self.NAME, exception=exc)
-                events.warn("Rotator Unreachable", "The stage stopped "
+                events.warn(events.ROTATOR_UNREACHABLE, "The stage stopped "
                             "answering. Check its cable and power.",
-                            source=self.NAME, exception=exc)
+                            source=self.NAME, exception=exc, ack=True)
             self._poll_ok = False
             events.debug("Poll", f"failed: {exc}", source=self.NAME,
                          exception=exc, every=5.0)

@@ -3160,6 +3160,31 @@ def ask(parent, prompt, title=CONFIRM_WORDS[0], yes=CONFIRM_WORDS[1],
     return answer
 
 
+def ack_box(parent, title, message, on_finished):
+    """An event that wants acknowledging, as a window built from `ask` and
+    held to its rules (rb-ack, owner 2026-09-28: "proper popups ... similar
+    to the popup for the latch release"): modeless, so the rail's stop and
+    Ctrl+. work while it is open; the title as the window title and the
+    heading, the message as the informative text, in `ask`'s type. ONE key,
+    Understood, the default and the escape button, so Return, Escape and the
+    window's close all answer it. It does not wait: `show()`, not a local
+    loop - nothing is waiting for an answer - and `on_finished(box)` runs
+    when it is answered. The stop never answers it (`cancel_pending_confirms`
+    does not see it): it is a notice, not a question.
+    """
+    box = QMessageBox(QMessageBox.Icon.NoIcon, title, title,
+                      QMessageBox.StandardButton.Ok, parent)
+    box.setInformativeText(message)
+    understood = box.button(QMessageBox.StandardButton.Ok)
+    understood.setText("Understood")
+    box.setDefaultButton(QMessageBox.StandardButton.Ok)
+    box.setEscapeButton(QMessageBox.StandardButton.Ok)
+    box.setWindowModality(Qt.WindowModality.NonModal)
+    box.finished.connect(lambda _code: on_finished(box))
+    box.show()
+    return box
+
+
 def cancel_pending_confirms():
     """Answer No to every open question - the stop is about to act."""
     for box in list(_PENDING_CONFIRMS):
@@ -5284,6 +5309,8 @@ class QtDashboard(Dashboard, QMainWindow):
         self.reopen_buttons = {}
         self._lost = {}             # name -> the devices it reports lost
         self._alerts = []           # errors waiting to be acknowledged
+        self._ack_box = None        # the acknowledgement shown (rb-ack)
+        self._ack_title = None      # ... and the title it is showing
         self._raise_on_add = None   # a model being reopened
         self._shown = None          # the device page's model; None: the overview
         self._arrangement = None    # what the sheet's grid last laid out
@@ -5410,6 +5437,7 @@ class QtDashboard(Dashboard, QMainWindow):
         the window. Both bases define `close`; neither is left to the MRO."""
         if not self._closing:
             Dashboard.close(self)
+            self._sync_ack_box()        # closing: the acknowledgement goes too
             events.debug("View Closed", "Qt dashboard closed", source="QtView")
         return QMainWindow.close(self)
 
@@ -6485,8 +6513,9 @@ class QtDashboard(Dashboard, QMainWindow):
         return self.alert_band
 
     def _show_popup(self, event):
-        """An error that wants acknowledging joins the alert band's queue -
-        never a blocking modal over the stop (F1, HC-2, UXPM-1)."""
+        """An event that wants acknowledging joins the alert band's queue,
+        and the oldest title is shown in `ack_box` - a modeless window, never
+        a blocking modal over the stop (F1, HC-2, UXPM-1, rb-ack)."""
         if self._closing:
             return
         events.debug("Alert Queued", f"{event.severity}: {event.text}",
@@ -6500,6 +6529,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._render_alerts()
 
     def _render_alerts(self):
+        self._sync_ack_box()
         if not self._alerts:
             self.alert_band.setVisible(False)
             return
@@ -6511,6 +6541,73 @@ class QtDashboard(Dashboard, QMainWindow):
         self.alert_count.setVisible(waiting > 1)
         self.alert_ack_all.setVisible(waiting > 1)
         self.alert_band.setVisible(True)
+
+    # -- the acknowledgement window (rb-ack A3) ----------------------------
+    def _ack_group(self):
+        """The oldest waiting title and every queued event under it: one
+        window per title, so a repeat of the title shown counts in that
+        window instead of queueing another. The band still lists each."""
+        if not self._alerts:
+            return []
+        title = getattr(self._alerts[0], "title", None)
+        return [a for a in self._alerts if getattr(a, "title", None) == title]
+
+    @staticmethod
+    def _ack_words(group, waiting):
+        latest = group[-1]
+        title = event_line({"title": getattr(latest, "title", "") or "Notice"})
+        repeats = sum(max(1, int(getattr(e, "count", 1) or 1)) for e in group)
+        message = str(getattr(latest, "message", "") or "").strip()[:5000]
+        if repeats > 1:
+            message += f" (x{repeats})"
+        if waiting:
+            message += f"\n\n{waiting} more waiting"
+        return title, message
+
+    def _sync_ack_box(self):
+        """The window shows the oldest waiting title, or nothing: every path
+        that changes the queue ends in `_render_alerts`, which calls this."""
+        group = [] if self._closing else self._ack_group()
+        box = self._ack_box
+        if not group:
+            if box is not None:
+                self._ack_box, self._ack_title = None, None
+                box.done(0)
+                box.deleteLater()
+            return
+        waiting = len({getattr(a, "title", None) for a in self._alerts}) - 1
+        title, message = self._ack_words(group, waiting)
+        head = getattr(group[0], "title", None)
+        if box is not None and self._ack_title == head:
+            if box.informativeText() != message:
+                events.debug("Alert Repeated", f"{head}: {message[:80]}",
+                             source="QtView")
+                box.setInformativeText(message)
+            return
+        if box is not None:
+            self._ack_box = None
+            box.done(0)
+            box.deleteLater()
+        self._ack_title = head
+        self._ack_box = ack_box(self, title, message, self._on_ack_finished)
+
+    def _on_ack_finished(self, box):
+        """Understood (or Return, Escape, the close button): the title shown
+        is read, every repeat of it; the next title takes the window."""
+        if box is not self._ack_box:
+            return          # closed by the queue itself, not the operator
+        self._ack_box = None
+        box.deleteLater()
+        group = self._ack_group()
+        if group:
+            head = getattr(group[0], "title", None)
+            self._alerts = [a for a in self._alerts
+                            if getattr(a, "title", None) != head]
+            events.debug("Alert Acknowledged", f"{group[-1].severity}/{head}"
+                         + (f" x{len(group)}" if len(group) > 1 else ""),
+                         source="QtView")
+        self._ack_title = None
+        self._render_alerts()
 
     def acknowledge(self):
         """The oldest waiting error is read; the next one takes its place."""

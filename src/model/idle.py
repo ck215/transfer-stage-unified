@@ -125,8 +125,10 @@ class IdleInterlock:
             if idle > self.INTERLOCK_TIMEOUT:
                 events.debug("Interlock", f"fired after {idle:.1f} s idle "
                              f"in {self.mode_name}", source=self.NAME)
+                # Asks for an acknowledgement (events.ATTENTION): manual
+                # mode ended by the clock is not a line to miss.
                 events.warn(events.IDLE_TIMEOUT, self._idle_expired_text(idle),
-                            source=self.NAME)
+                            source=self.NAME, ack=True)
                 try:
                     self._on_idle_expired(idle)
                 except Exception as exc:

@@ -4252,3 +4252,97 @@ def test_signature_the_error_mark_is_the_warning_glyph(qapp):
     inks = [image.pixelColor(x, y) for x in range(image.width())
             for y in range(image.height()) if image.pixelColor(x, y).alpha() > 200]
     assert inks and all(_near(c, theme.SIGNAL, 60) for c in inks)
+
+
+# -- rb-ack (A3): the acknowledgement is a window like the latch question ----
+
+class _Attention:
+    """An Event-shaped notice that wants acknowledging."""
+
+    def __init__(self, title="Idle Timeout", message="Stepper Probe was idle "
+                 "for 300 s, so it was powered down.", severity="warning"):
+        self.severity, self.source, self.title = severity, "Stepper Probe", title
+        self.message, self.count, self.needs_ack = message, 1, True
+        self.id = id(self)
+        self.text = f"[{self.source}] {title}: {message}"
+
+
+def test_ack_an_acknowledged_event_opens_a_modeless_titled_window(dashboard, qapp):
+    dashboard.open()
+    dashboard._show_popup(_Attention())
+    box = dashboard._ack_box
+    assert box is not None and box.isVisible()
+    assert box.windowModality() == Qt.WindowModality.NonModal
+    assert QApplication.activeModalWidget() is None
+    assert box.windowTitle() == "Idle timeout" and box.text() == "Idle timeout"
+    assert box.informativeText() == ("Stepper Probe was idle for 300 s, so it "
+                                     "was powered down.")
+    buttons = box.buttons()
+    assert len(buttons) == 1 and buttons[0].text() == "Understood"
+    assert box.defaultButton() is buttons[0] and box.escapeButton() is buttons[0]
+
+
+def test_ack_a_second_title_queues_and_understood_shows_it(dashboard, qapp):
+    dashboard.open()
+    dashboard._show_popup(_Attention())
+    dashboard._show_popup(_Attention("Rotator Unreachable",
+                                     "The stage stopped answering."))
+    first = dashboard._ack_box
+    assert first.text() == "Idle timeout"
+    assert first.informativeText().endswith("1 more waiting")
+    first.button(QMessageBox.StandardButton.Ok).click()
+    qapp.processEvents()
+    second = dashboard._ack_box
+    assert second is not None and second is not first
+    assert second.text() == "Rotator unreachable"
+    assert second.informativeText() == "The stage stopped answering."
+    second.button(QMessageBox.StandardButton.Ok).click()
+    qapp.processEvents()
+    assert dashboard._ack_box is None and dashboard.alerts == []
+    assert dashboard.alert_band.isHidden() is True
+
+
+def test_ack_a_repeat_of_the_shown_title_counts_in_the_same_window(dashboard, qapp):
+    dashboard.open()
+    dashboard._show_popup(_Attention())
+    box = dashboard._ack_box
+    dashboard._show_popup(_Attention(message="Stepper Probe was idle for 301 s, "
+                                     "so it was powered down."))
+    assert dashboard._ack_box is box
+    assert box.informativeText() == ("Stepper Probe was idle for 301 s, so it "
+                                     "was powered down. (x2)")
+    box.button(QMessageBox.StandardButton.Ok).click()
+    qapp.processEvents()
+    assert dashboard._ack_box is None and dashboard.alerts == []
+
+
+def test_ack_the_stop_still_fires_and_does_not_answer_the_window(
+        dashboard, qapp, controller):
+    dashboard.open()
+    dashboard._show_popup(_Attention())
+    box = dashboard._ack_box
+    dashboard.stop_button.click()
+    assert controller.estop_calls == 1
+    dashboard.stop_shortcut.activated.emit()
+    assert dashboard._ack_box is box and box.isVisible(), (
+        "the stop does not acknowledge for the operator")
+
+
+def test_ack_the_band_acknowledge_all_closes_the_window(dashboard, qapp):
+    dashboard.open()
+    dashboard._show_popup(_Attention())
+    box = dashboard._ack_box
+    dashboard.acknowledge_all()
+    qapp.processEvents()
+    assert dashboard._ack_box is None and not box.isVisible()
+
+
+def test_ack_the_acknowledgement_is_logged_at_debug(dashboard, qapp, monkeypatch):
+    said = []
+    monkeypatch.setattr(qt.events, "debug",
+                        lambda title, message, **kw: said.append((title, message)))
+    dashboard.open()
+    dashboard._show_popup(_Attention())
+    dashboard._ack_box.button(QMessageBox.StandardButton.Ok).click()
+    qapp.processEvents()
+    assert ("Alert Acknowledged", "warning/Idle Timeout") in said, said

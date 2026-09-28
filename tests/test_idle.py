@@ -146,3 +146,17 @@ def test_the_loop_is_spawned_through_the_base_and_stopped_at_close():
     lamp.close()
     assert not thread.is_alive()
     assert time.monotonic() - started < 1.0, "close waited out the poll interval"
+
+
+def test_the_timeout_asks_for_an_acknowledgement_and_the_countdown_does_not(lamp):
+    """rb-ack A2: the clock ending manual mode is a popup the operator must
+    answer; the countdown before it (with its Extend) stays a tray line."""
+    with EventRecorder() as log:
+        lamp.switch_on()
+        assert _wait_for(lambda: log.titled(events.IDLE_TIMEOUT))
+    soon = log.titled(events.IDLE_TIMEOUT_SOON)
+    timeout = log.titled(events.IDLE_TIMEOUT)
+    assert soon and all(e.needs_ack is False for e in soon)
+    assert len(timeout) == 1 and timeout[0].needs_ack is True
+    assert timeout[0].severity == "warning"
+    assert "powered down" in timeout[0].message

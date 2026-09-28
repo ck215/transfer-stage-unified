@@ -870,16 +870,23 @@ _STOP_HIT = r"""() => {
 @needs_browser
 def test_an_acknowledgement_never_covers_the_stop_and_two_both_show(station, tmp_path):
     """F1 (WDG-1, HC-2): with an ack open the stop is still what a click at
-    its centre lands on, it still stops, and a second ack is added under the
-    first instead of replacing it."""
+    its centre lands on, it still stops, and a second ack is kept, not
+    written over the first.
+
+    Updated (rb-ack A3): the dialog shows one title at a time, so the
+    second failure is no longer a second line under the first. Two jams are
+    one title: the log folds the identical second one into the first's
+    count, or - past its window - the page folds it into the open entry.
+    Either way it is one dialog, and nothing was overwritten."""
     view, controller, probe = station
     out = _browse(view, r"""
       await api('/api/run', { name: 'Fake Probe', command: 'jam', inputs: {}, args: [] });
       await api('/api/run', { name: 'Fake Probe', command: 'jam', inputs: {}, args: [] });
-      await until(() => !document.getElementById('ack-modal').hidden
-        && document.querySelectorAll('#ack-text .ack-line').length === 2);
+      await until(() => !document.getElementById('ack-modal').hidden);
+      await sleep(600);
       const lines = await page.evaluate(() => Array.from(
         document.querySelectorAll('#ack-text .ack-line')).map((n) => n.textContent));
+      const title = await page.evaluate(() => document.getElementById('ack-title').textContent);
       const onTop = await page.evaluate(%s);
       const box = await page.evaluate(() => {
         const b = document.getElementById('full-stop').getBoundingClientRect();
@@ -888,19 +895,154 @@ def test_an_acknowledgement_never_covers_the_stop_and_two_both_show(station, tmp
       await page.mouse.click(box[0], box[1]);
       await sleep(600);
       const state = await api('/api/state');
-      return { lines, onTop, latched: state.is_estopped };
+      return { lines, title, onTop, latched: state.is_estopped };
     """ % _STOP_HIT, tmp_path)
     assert out["onTop"], "the ack overlay covers the stop"
-    # Two identical failures collapse into one line with a count (the ack
-    # queue dedupes); two different ones are two lines. Either way nothing
-    # was overwritten. Since F19 (operator sentences) both jams read the same.
+    assert out["title"] == "Command failed", out
     lines = out["lines"]
-    assert (len(lines) == 2 and lines[0] != lines[1]) or \
-           (len(lines) == 1 and lines[0].endswith("(x2)")), lines
+    assert len(lines) == 1, lines
     # F19: the ack carries the operator sentence; the raw detail ("the port
     # did not answer") now goes to the log file only.
-    assert all("did not complete" in line for line in out["lines"])
+    assert "did not complete" in lines[0], lines
     assert out["latched"] is True, "a click on the stop under an open ack did not stop"
+
+
+def _publish_when(probe, steps):
+    """Publish from the station side once the page has asked for it: each
+    step is (a predicate on the fake probe, a function that publishes). The
+    page triggers a step with a command it runs (jam, home), so an event is
+    never published before the tab opened (which would make it history)."""
+    def watch():
+        for ready, publish in steps:
+            deadline = time.monotonic() + 30.0
+            while not ready(probe) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            time.sleep(0.3)
+            publish()
+    thread = threading.Thread(target=watch, daemon=True)
+    thread.start()
+    return thread
+
+
+#: What the acknowledgement dialog says right now.
+_ACK_NOW = r"""() => {
+  const count = document.getElementById('ack-count');
+  const title = document.getElementById('ack-title');
+  const ok = document.getElementById('ack-ok');
+  return {
+    open: !document.getElementById('ack-modal').hidden,
+    title: title ? title.textContent : null,
+    body: Array.from(document.querySelectorAll('#ack-text .ack-line')).map((n) => n.textContent),
+    waiting: count.hidden ? '' : count.textContent,
+    key: ok.textContent.trim(),
+    buttons: document.querySelectorAll('#ack-modal button').length,
+    focused: document.activeElement === ok,
+    labelledBy: document.querySelector('#ack-modal .dialog').getAttribute('aria-labelledby'),
+  };
+}"""
+
+
+@needs_browser
+def test_ack_one_title_at_a_time_understood_escape_and_return_answer_it(
+        station, tmp_path):
+    """rb-ack A3: the dialog wears the event's title as its heading and the
+    message as its body; ONE key, Understood, focused; a second and a third
+    title wait behind the first; the stop works under it and does not
+    answer it; Escape, Return and a click each acknowledge one title."""
+    view, controller, probe = station
+    events.clear()      # an earlier test's jam must not fold this one's
+    _publish_when(probe, [(lambda p: p.jams >= 1, lambda: (
+        events.warn(events.IDLE_TIMEOUT, "Fake Probe was idle for 300 s, so "
+                    "it was powered down.", source="Fake Probe", ack=True),
+        events.warn(events.ROTATOR_UNREACHABLE, "The stage stopped answering. "
+                    "Check its cable and power.", source="Rotator", ack=True)))])
+    out = _browse(view, r"""
+      const ack = () => page.evaluate(%(now)s);
+      await api('/api/run', { name: 'Fake Probe', command: 'jam', inputs: {}, args: [] });
+      await until(() => document.getElementById('ack-count').textContent === '2 more waiting', 10000);
+      const first = await ack();
+      const onTop = await page.evaluate(%(hit)s);
+      const box = await page.evaluate(() => {
+        const b = document.getElementById('full-stop').getBoundingClientRect();
+        return [b.left + b.width / 2, b.top + b.height / 2];
+      });
+      await page.mouse.click(box[0], box[1]);
+      await sleep(600);
+      const latched = (await api('/api/state')).is_estopped;
+      const afterStop = await ack();
+      await page.keyboard.press('Escape');
+      await sleep(200);
+      const second = await ack();
+      await page.keyboard.press('Enter');
+      await sleep(200);
+      const third = await ack();
+      if (third.open) await page.click('#ack-ok');
+      await sleep(200);
+      const done = await ack();
+      return { first, onTop, latched, afterStop, second, third, done };
+    """ % {"now": _ACK_NOW, "hit": _STOP_HIT}, tmp_path)
+    first = out["first"]
+    assert first["open"] and first["title"] == "Command failed", first
+    assert first["body"] and first["body"][0].startswith("Jam did not complete"), first
+    assert first["waiting"] == "2 more waiting", first
+    assert first["key"] == "Understood" and first["buttons"] == 1, first
+    assert first["focused"], "Understood is the default"
+    assert first["labelledBy"] == "ack-title", first
+    assert out["onTop"], "the ack overlay covers the stop"
+    assert out["latched"] is True, "the stop under an open ack did not stop"
+    assert out["afterStop"]["open"] and out["afterStop"]["title"] == "Command failed", (
+        "the stop answered the acknowledgement for the operator")
+    second = out["second"]
+    assert second["open"] and second["title"] == "Idle timeout", second
+    assert second["body"] == ["Fake Probe was idle for 300 s, so it was powered down."]
+    assert second["waiting"] == "1 more waiting", second
+    third = out["third"]
+    assert third["open"] and third["title"] == "Rotator unreachable", third
+    assert third["waiting"] == "", third
+    assert out["done"]["open"] is False, out["done"]
+
+
+@needs_browser
+def test_ack_a_repeat_of_the_open_title_counts_and_does_not_reopen(station,
+                                                                   tmp_path):
+    view, controller, probe = station
+    events.clear()      # an earlier test's jam must not fold this one's
+    _publish_when(probe, [
+        (lambda p: p.jams >= 1, lambda: events.warn(
+            events.IDLE_TIMEOUT, "Fake Probe was idle for 300 s, so it was "
+            "powered down.", source="Fake Probe", ack=True)),
+        (lambda p: any(run[0] == "home" for run in p.runs), lambda: events.warn(
+            events.IDLE_TIMEOUT, "Fake Probe was idle for 301 s, so it was "
+            "powered down.", source="Fake Probe", ack=True)),
+    ])
+    out = _browse(view, r"""
+      const ack = () => page.evaluate(%(now)s);
+      await api('/api/run', { name: 'Fake Probe', command: 'jam', inputs: {}, args: [] });
+      await until(() => document.getElementById('ack-count').textContent === '1 more waiting', 10000);
+      await page.click('#ack-ok');
+      await until(() => (document.getElementById('ack-title') || {}).textContent === 'Idle timeout');
+      await page.evaluate(() => {
+        window.ackHid = 0;
+        const modal = document.getElementById('ack-modal');
+        new MutationObserver(() => { if (modal.hidden) window.ackHid += 1; })
+          .observe(modal, { attributes: true, attributeFilter: ['hidden'] });
+      });
+      await api('/api/run', { name: 'Fake Probe', command: 'home', inputs: { x_step: '1' }, args: [] });
+      await until(() => (document.querySelector('#ack-text .ack-line') || {}).textContent
+        === 'Fake Probe was idle for 301 s, so it was powered down. (x2)', 10000);
+      const repeated = await ack();
+      const hid = await page.evaluate(() => window.ackHid);
+      await page.click('#ack-ok');
+      await sleep(200);
+      return { repeated, hid, done: await ack() };
+    """ % {"now": _ACK_NOW}, tmp_path)
+    repeated = out["repeated"]
+    assert repeated["open"] and repeated["title"] == "Idle timeout", repeated
+    assert repeated["body"] == ["Fake Probe was idle for 301 s, so it was "
+                                "powered down. (x2)"], repeated
+    assert repeated["waiting"] == "", repeated
+    assert out["hid"] == 0, "the open dialog was closed and reopened"
+    assert out["done"]["open"] is False, "one Understood reads every repeat"
 
 
 @needs_browser
@@ -2837,7 +2979,10 @@ def test_an_event_line_is_title_and_message_in_sentence_case(station, tmp_path):
       await until(() => !document.getElementById('ack-modal').hidden);
       await sleep(300);
       return page.evaluate(() => ({
-        ack: document.querySelector('#ack-text .ack-line').textContent,
+        // Updated (rb-ack A3): the title is the dialog's heading and the
+        // message its body; together they read as the line does.
+        ack: document.getElementById('ack-title').textContent + ': '
+          + document.querySelector('#ack-text .ack-line').textContent,
         tray: document.getElementById('tray-latest').textContent.trim(),
         log: Array.from(document.querySelectorAll('#event-log .event')).pop().textContent,
       }));

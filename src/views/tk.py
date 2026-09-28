@@ -1776,6 +1776,106 @@ class _ConfirmDialog:
         return "break"
 
 
+class _AckDialog:
+    """An event that wants acknowledging, as a window like the latch-release
+    question (rb-ack, owner 2026-09-28: "proper popups ... similar to the
+    popup for the latch release").
+
+    Built from `_ConfirmDialog` and held to the same rules: no grab and no
+    `wait_window` (the disc and Ctrl+. work while it is open; this window
+    does not even block the caller), the event's title as the window title
+    and as its heading, its message as the body in the confirm dialog's type
+    and wrap. ONE key, Understood, holds the focus; Return, Escape and the
+    window's close button all answer it. The dashboard owns the queue: this
+    shows one event at a time and `update` redraws it in place when the
+    same title repeats.
+    """
+
+    def __init__(self, master, event, on_understood, repeats=1, waiting=0):
+        self.master = master
+        self.on_understood = on_understood
+        self.event = event
+        self.top = self.key = self.title_label = self.body = self.count = None
+        self._build(repeats, waiting)
+
+    @staticmethod
+    def title_of(event):
+        """The title in sentence case, as every line says it (L11)."""
+        return event_line({"title": getattr(event, "title", "") or "Notice"})
+
+    @staticmethod
+    def body_of(event, repeats):
+        message = str(getattr(event, "message", "") or "").strip()
+        return f"{message} (x{repeats})" if repeats > 1 else message
+
+    def _build(self, repeats, waiting):
+        top = self.top = tk.Toplevel(self.master)
+        title = self.title_of(self.event)
+        for call in (lambda: top.title(title),
+                     lambda: top.transient(self.master.winfo_toplevel()),
+                     lambda: top.resizable(False, False)):
+            try:
+                call()
+            except Exception:
+                pass
+        top.configure(background=theme.SURFACE)
+        self.title_label = tk.Label(
+            top, text=title, font=_font(bold=True), justify="left", anchor="w",
+            wraplength=420, background=theme.SURFACE, foreground=theme.TEXT,
+            padx=SPACE[5], pady=0)
+        self.title_label.pack(fill="x", pady=(SPACE[5], 0))
+        self.body = tk.Label(top, text=self.body_of(self.event, repeats),
+                             font=_font(), justify="left", anchor="w",
+                             wraplength=420, background=theme.SURFACE,
+                             foreground=theme.TEXT, padx=SPACE[5],
+                             pady=SPACE[3])
+        self.body.pack(fill="x")
+        row = tk.Frame(top, background=theme.SURFACE)
+        row.pack(fill="x", padx=SPACE[5], pady=(SPACE[2], SPACE[5]))
+        self.count = tk.Label(row, text="", font=_font(), anchor="w",
+                              background=theme.SURFACE, foreground=theme.MUTED)
+        self.count.pack(side="left")
+        self.key = _Press(row, "Understood", self._understood, theme.SURFACE)
+        self.key.frame.pack(side="right")
+        top.bind("<Return>", lambda _e: self._understood())
+        top.bind("<Escape>", lambda _e: self._understood())
+        try:
+            top.protocol("WM_DELETE_WINDOW", self._understood)
+        except Exception:
+            pass
+        self.set_waiting(waiting)
+        _ConfirmDialog._centre(self)
+        try:
+            self.key.widget.focus_set()
+        except Exception:
+            pass
+
+    def update(self, event, repeats, waiting):
+        """The same title again: new words, a count, the same window."""
+        self.event = event
+        try:
+            self.body.configure(text=self.body_of(event, repeats))
+        except Exception:
+            pass
+        self.set_waiting(waiting)
+
+    def set_waiting(self, waiting):
+        try:
+            self.count.configure(text=f"{waiting} more waiting" if waiting else "")
+        except Exception:
+            pass
+
+    def _understood(self):
+        self.on_understood(self)
+        return "break"
+
+    def close(self):
+        try:
+            self.top.destroy()
+        except Exception:
+            pass
+
+
 def _confirm(master, prompt, title=CONFIRM_TITLE, yes_text="Yes", no_text="No"):
     """The one confirmation both the dashboard and a panel ask. -> bool.
     The dashboard's own questions are titled and name their answers
@@ -5616,6 +5716,7 @@ class TkDashboard(Dashboard):
         self._setup_menu = None      # the "Show Setup" menu, once built
         self._menubar = None         # the menubar every log window wears too (I7)
         self._alerts = []            # unacknowledged needs_ack events
+        self._ack_dialog = None      # the one acknowledgement shown (rb-ack)
         self._station_text = None
         self._sim_text = None
         self._opened = None          # the device page's model; None = the overview
@@ -6610,17 +6711,21 @@ class TkDashboard(Dashboard):
     def _render_alerts(self):
         alerts = self._alerts
         if not alerts:
+            self._sync_ack_dialog()
             try:
                 self._band.pack_forget()
             except Exception:
                 pass
             return
+        self._sync_ack_dialog()
         if len(alerts) == 1:
             text = _event_line(alerts[0])
         else:
             shown = [_event_line(event) for event in alerts[-BAND_LINES:]]
             more = len(alerts) - len(shown)
-            text = "\n".join([f"{len(alerts)} errors need acknowledgement."]
+            kind = ("errors" if all(getattr(e, "severity", "") == "error"
+                                    for e in alerts) else "notices")
+            text = "\n".join([f"{len(alerts)} {kind} need acknowledgement."]
                              + (["..."] if more else []) + shown)
         try:
             self._band_text.configure(text=text)
@@ -6628,6 +6733,65 @@ class TkDashboard(Dashboard):
         except Exception as exc:
             events.debug("Alert Band Failed", str(exc), source=SOURCE,
                          exception=exc)
+
+    def _ack_group(self):
+        """The oldest waiting title and every queued event under it: one
+        dialog per title, so a repeat of the title shown counts in that
+        window instead of queueing a second one (rb-ack A3). The band still
+        lists every event (HC-2: none is overwritten)."""
+        if not self._alerts:
+            return []
+        title = self._alerts[0].title
+        return [event for event in self._alerts if event.title == title]
+
+    def _sync_ack_dialog(self):
+        """The dialog shows the oldest waiting title, or nothing: every path
+        that changes the queue (a new event, Understood, the band's
+        Acknowledge, L2's dropped stop lines, close) ends here."""
+        dialog = self._ack_dialog
+        group = [] if self._closing else self._ack_group()
+        if not group:
+            if dialog is not None:
+                self._ack_dialog = None
+                dialog.close()
+            return
+        latest = group[-1]                  # the newest words for the title
+        repeats = sum(max(1, int(getattr(e, "count", 1) or 1)) for e in group)
+        waiting = len({e.title for e in self._alerts}) - 1
+        if dialog is not None and dialog.event.title == latest.title:
+            if dialog.event is not latest:
+                events.debug("Alert Repeated", f"{latest.severity}/"
+                             f"{latest.title} x{repeats}", source=SOURCE)
+            dialog.update(latest, repeats, waiting)
+            return
+        if dialog is not None:
+            dialog.close()
+        try:
+            self._ack_dialog = _AckDialog(self.root, latest, self._understood,
+                                          repeats=repeats, waiting=waiting)
+        except Exception as exc:        # the band still says it
+            self._ack_dialog = None
+            events.debug("Ack Dialog Failed", str(exc), source=SOURCE,
+                         exception=exc)
+
+    def _understood(self, dialog):
+        """The dialog's one key: the title shown is read (every repeat of
+        it), the next title (if any) takes the window; after the last, focus
+        goes to the stop."""
+        if dialog is not self._ack_dialog or not self._alerts:
+            dialog.close()
+            return
+        group = self._ack_group()
+        self._alerts = [e for e in self._alerts if e.title != group[0].title]
+        events.debug("Alert Acknowledged", f"{group[-1].severity}/"
+                     f"{group[-1].title}" + (f" x{len(group)}" if len(group) > 1
+                                              else ""), source=SOURCE)
+        self._render_alerts()
+        if not self._alerts:
+            try:
+                self._stop_button.focus_set()
+            except Exception:
+                pass
 
     def _acknowledge(self):
         """One press clears every listed error; focus goes to the stop."""
@@ -6848,6 +7012,9 @@ class TkDashboard(Dashboard):
         if self._closing:
             return
         events.debug("View Closing", "Tk dashboard", source=SOURCE)
+        if self._ack_dialog is not None:
+            dialog, self._ack_dialog = self._ack_dialog, None
+            dialog.close()
         if self._after_id is not None:
             try:
                 self.root.after_cancel(self._after_id)
@@ -7400,9 +7567,10 @@ class TkDashboard(Dashboard):
                          exception=exc, every=5.0)
 
     def _show_popup(self, event):
-        """An event that needs acknowledging joins the alert band. Not a
-        modal: `Dashboard._on_event` decided it earned acknowledgement, not
-        that it may take the stop away."""
+        """An event that needs acknowledging joins the queue: the band lists
+        it and `_AckDialog` shows the oldest (rb-ack). Neither is modal:
+        `Dashboard._on_event` decided it earned acknowledgement, not that it
+        may take the stop away."""
         if self._closing:
             return
         events.debug("Alert Shown", f"{event.severity}/{event.title}", source=SOURCE)

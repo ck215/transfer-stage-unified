@@ -480,3 +480,77 @@ def test_forget_ends_the_dedupe_episode_so_the_next_one_is_new():
     clock.advance(0.5)
     b = log.error("Fault", "coil open", source="Probe")
     assert a is b and a.count == 2
+
+
+# -- attention: a warning that asks for an acknowledgement (rb-ack, A1/A2) ----
+
+def test_a_warning_can_ask_for_an_acknowledgement():
+    """A1: `warn` takes the `ack=` keyword `error` has; the default is still
+    a tray line."""
+    log = _log()
+    assert log.warn("Idle Timeout", "powered down", ack=True).needs_ack is True
+    assert log.warn("Idle Timeout Soon", "soon").needs_ack is False
+    assert log.warn("Slow", "poll late", ack=False).needs_ack is False
+
+
+def test_an_acknowledged_warning_is_still_a_warning():
+    """Only the popup changes: severity, dedupe and the dict are as before."""
+    clock = FakeClock()
+    log = EventLog(clock=clock)
+    first = log.warn("Rotator Unreachable", "x", source="Rotator", ack=True)
+    clock.advance(0.5)
+    again = log.warn("Rotator Unreachable", "x", source="Rotator", ack=True)
+    assert first is again and first.count == 2
+    assert first.severity == "warning"
+    assert first.to_dict()["needs_ack"] is True
+
+
+def test_the_attention_set_is_exactly_the_titles_the_lead_named():
+    """A2: one place marks a warning as asking for attention."""
+    import events as events_module
+    assert events_module.ATTENTION == frozenset({
+        "Idle Timeout", "Temperature Disconnected", "Rotator Unreachable",
+        "Heater Off Not Sent"})
+    assert isinstance(events_module.ATTENTION, frozenset)
+    # The countdown, the silent browser and the map's soft notices stay
+    # tray lines.
+    for title in ("Idle Timeout Soon", "Browser Silent", "No Picture",
+                  "Empty Trial"):
+        assert title not in events_module.ATTENTION
+    assert events_module.IDLE_TIMEOUT in events_module.ATTENTION
+    assert events_module.IDLE_TIMEOUT_SOON not in events_module.ATTENTION
+
+
+def test_every_attention_title_is_raised_with_ack_and_nothing_else_is():
+    """The sites and the set agree: a warning title raised with `ack=True`
+    anywhere under src/ is in ATTENTION, and each ATTENTION title is raised
+    with `ack=True` at its site. Read from the source because some sites
+    (the heater's unsendable off frame) are awkward to reach."""
+    import ast
+    import pathlib
+    import events as events_module
+    src = pathlib.Path(__file__).resolve().parents[1] / "src"
+    names = {k: v for k, v in vars(events_module).items()
+             if isinstance(v, str) and k.isupper()}
+    acked, plain = set(), set()
+    for path in src.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "warn" and node.args):
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                title = first.value
+            elif isinstance(first, ast.Attribute) and first.attr in names:
+                title = names[first.attr]
+            else:
+                continue
+            ack = [k for k in node.keywords if k.arg == "ack"]
+            if ack and isinstance(ack[0].value, ast.Constant) and ack[0].value.value:
+                acked.add(title)
+            else:
+                plain.add(title)
+    assert acked == events_module.ATTENTION, (acked, events_module.ATTENTION)
+    assert not (plain & events_module.ATTENTION), plain & events_module.ATTENTION

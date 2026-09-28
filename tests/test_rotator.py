@@ -920,3 +920,23 @@ def test_a_rotator_whose_first_polls_fail_at_boot_reports_nothing(seen):
         _settle(model)
     assert smc.polls >= 3
     assert _reported(seen) == [], _reported(seen)
+
+
+def test_an_unreachable_stage_past_the_boot_grace_asks_for_attention(seen):
+    """rb-ack A2: "Rotator Unreachable" past the grace is a popup; nothing
+    inside the grace is, and "Rotator Back" is a tray line."""
+    smc = FakeSMC()
+    model, clock = _booting_rotator(smc)
+    smc.failing = True
+    while clock.now - 1000.0 < model.BOOT_GRACE_SEC:
+        model._poll()
+        clock.now += model.SAMPLE_INTERVAL
+    assert [e for e in seen if e.needs_ack] == [], "asked inside the grace"
+    model._poll()
+    unreachable = [e for e in seen if e.title == "Rotator Unreachable"]
+    assert len(unreachable) == 1 and unreachable[0].needs_ack is True
+    smc.failing = False
+    clock.now += model.SAMPLE_INTERVAL
+    model._poll()
+    back = [e for e in seen if e.title == "Rotator Back"]
+    assert back and back[0].needs_ack is False

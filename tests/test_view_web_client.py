@@ -1381,3 +1381,51 @@ def test_signature_the_stop_the_flag_and_the_lamp_slot_are_drawn_from_the_theme(
     setter = _body(r"\n  setUnconfirmed\(isUnconfirmed, words\) \{(.*?)\n  \}")
     assert "if (flag && !this.isFlagged) this.flagWindow.classList.add('is-dropping')" in setter
     assert re.search(r"\.flag-window\.is-dropping \.flag\s*\{[^}]*animation: flag-drop", STYLES)
+
+
+# -- rb-ack (A3): the acknowledgement queue, run as the real code -------------
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_ack_the_queue_is_one_entry_per_title_and_a_repeat_joins_it():
+    out = _node_value("""(() => {
+      const q = [];
+      const a = ackEnqueue(q, {title: 'Idle Timeout', message: 'idle 300 s', count: 1});
+      const b = ackEnqueue(q, {title: 'Rotator Unreachable', message: 'gone', count: 1});
+      const c = ackEnqueue(q, {title: 'Idle Timeout', message: 'idle 301 s', count: 1});
+      return {a, b, c, titles: q.map((e) => e.title), sizes: q.map((e) => e.events.length)};
+    })()""")
+    assert out == {"a": 0, "b": 1, "c": 0,
+                   "titles": ["Idle Timeout", "Rotator Unreachable"],
+                   "sizes": [2, 1]}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_ack_the_dialog_words_are_the_title_the_newest_message_and_one_key():
+    out = _node_value("""(() => {
+      const q = [];
+      ackEnqueue(q, {title: 'Idle Timeout', message: 'idle 300 s', count: 1});
+      const one = ackWords(q);
+      ackEnqueue(q, {title: 'Idle Timeout', message: 'idle 301 s', count: 1});
+      ackEnqueue(q, {title: 'Heater Off Not Sent', message: 'switch it off', count: 1});
+      const two = ackWords(q);
+      q.shift();
+      return {one, two, three: ackWords(q), none: ackWords([])};
+    })()""")
+    assert out["one"] == {"title": "Idle timeout", "body": "idle 300 s",
+                          "waiting": "", "key": "Understood"}
+    assert out["two"] == {"title": "Idle timeout", "body": "idle 301 s (x2)",
+                          "waiting": "1 more waiting", "key": "Understood"}
+    assert out["three"]["title"] == "Heater off not sent"
+    assert out["none"] is None
+
+
+def test_ack_escape_acknowledges_an_open_dialog_after_a_question_and_the_picker():
+    """A3: Return (the focused key) and Escape both answer it; a question
+    or the picker over it answers its own Escape first."""
+    handler = _body(r"window\.addEventListener\('keydown', \(event\) => \{(.*?)\n    \}, true\);")
+    confirm = handler.index("if (this.confirmPending)")
+    picker = handler.index("if (!this.dom.picker.hidden)")
+    ack = handler.index("if (!this.dom.modal.hidden) { event.preventDefault(); this.acknowledge();")
+    assert confirm < picker < ack
+    # The stop chord is checked before any of them.
+    assert handler.index("this.stopAll()") < confirm

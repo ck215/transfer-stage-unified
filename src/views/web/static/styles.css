@@ -2531,6 +2531,10 @@ label.row-title[for] { cursor: pointer; }
 
 .dialog-count { font-size: var(--t-sm); font-weight: 600; }
 
+/* rb-ack: an acknowledgement's heading is the event's title, in the body's
+   size and ink - the weight is all that sets it apart. */
+.dialog-title { margin: 0; font-size: var(--t-md); font-weight: 600; color: var(--text); }
+
 .dialog-count[hidden] { display: none; }
 
 /* Queued acknowledgements, oldest first, each on its own line. */

@@ -972,3 +972,49 @@ def test_a_heater_booting_over_the_real_transport_reports_nothing(monkeypatch):
         finally:
             heater.close()
     assert reported == [], reported
+
+
+# -- attention (rb-ack A2): the persistent loss and an unsendable off frame ----
+
+def test_the_persistent_disconnect_past_the_boot_grace_asks_for_attention(port):
+    """The first read error stays a tray line; "Temperature Disconnected",
+    past the grace, asks for an acknowledgement."""
+    clock = _Clock()
+    heater = Heater(port=port, clock=clock)
+    heater._arm_boot_grace()
+    port.read_error = OSError("link down")
+
+    def script(n):
+        return (clock.now - 1000.0 > Heater.BOOT_GRACE_SEC
+                and heater._is_link_lost)
+
+    with EventRecorder(events) as log:
+        _drive(heater, clock, script)
+    read_error = log.titled("Temperature Read Error")
+    lost = log.titled("Temperature Disconnected")
+    assert len(read_error) == 1 and read_error[0].needs_ack is False
+    assert len(lost) == 1 and lost[0].needs_ack is True
+    assert lost[0].severity == "warning"
+
+
+def test_nothing_inside_the_boot_grace_asks_for_attention(port):
+    clock = _Clock()
+    heater = Heater(port=port, clock=clock)
+    heater._arm_boot_grace()
+    port.read_error = OSError("still coming up")
+
+    def script(n):
+        return clock.now - 1000.0 >= Heater.BOOT_GRACE_SEC - 0.5 or n > 200
+
+    with EventRecorder(events) as log:
+        _drive(heater, clock, script)
+    assert [e for e in log.seen if e.needs_ack] == []
+
+
+def test_a_heater_off_frame_that_cannot_be_sent_asks_for_attention(heater, port):
+    port.write_error = OSError("cable is out")
+    with EventRecorder(events) as log:
+        assert heater.halt() is False
+    not_sent = log.titled("Heater Off Not Sent")
+    assert len(not_sent) == 1 and not_sent[0].needs_ack is True
+    assert not_sent[0].severity == "warning"
