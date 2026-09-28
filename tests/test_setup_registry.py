@@ -94,6 +94,10 @@ def warnings():
 BUILT_INS = ["Stepper Probe", "DC Probe", "Chuck Positioner",
              "Temperature Controller", "Rotator", "Red Percent",
              "Transfer Map"]   # Tier S (2026-09-27)
+#: The built-in Setup rows: Red Percent is registered but has no row of its
+#: own, being drawn on the Transfer Map's page and launched by its row
+#: (Model.HOST, owner ruling 2026-09-28).
+BUILT_IN_ROWS = [name for name in BUILT_INS if name != "Red Percent"]
 
 
 def test_the_six_built_ins_are_registered_in_todays_display_order():
@@ -164,7 +168,7 @@ def test_a_registered_class_gets_a_row_identifies_and_builds(
     Setup.register(PiezoStage)
     panel = Setup(RecordingController())
     titles = [s["title"] for s in panel.schema["sections"]]
-    assert titles == ["Devices", *BUILT_INS, "Piezo Stage", "Launch"]
+    assert titles == ["Devices", *BUILT_IN_ROWS, "Piezo Stage", "Launch"]
     monkeypatch.setattr(station_setup, "SerialPort",
                         port_answering({500000: "DEV: p"}))
     assert panel.identify(PORT) == "Piezo Stage"
