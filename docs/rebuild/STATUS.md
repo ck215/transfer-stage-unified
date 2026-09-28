@@ -29,7 +29,7 @@ ranked defect list with a delegation route per item).
 
 ```
 cd ../mvc-refactor
-./run_macos.sh --web | --qt | --tk        # uses the already-active venv (main/.venv)
+./run.sh --web | --qt | --tk              # uses the already-active venv (main/.venv)
 python3 src/app.py --web --no-browser --port 8080
 
 STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # 2290 pass + 11 window tests skipped + 1 xfail (CON-13), ~240 s; drop the variable when the display is free
@@ -38,7 +38,7 @@ python3 -m pytest tests/test_wire_golden.py -q                         # 78 scen
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
 ```
 
-macOS: pip re-hides PySide6's Qt plugin dylibs (UF_HIDDEN) — `run_macos.sh --qt`
+macOS: pip re-hides PySide6's Qt plugin dylibs (UF_HIDDEN) — `run.sh --qt` (was `run_macos.sh`)
 runs `chflags -R nohidden` first; do the same before any offscreen Qt run.
 Screen Recording permission is needed for Tk screenshots (`screencapture`).
 
@@ -264,6 +264,28 @@ lands as `palette.py` / `theme.py` tokens.
   mentions in `updater.py`, `update.sh`/`.bat` and `setup.py` point at
   `dev/swap_branch.sh` or at the Firmware row; (4) R8's fix is `hide()`
   before `deleteLater()` in `_sync_rail` and `_build_reopen`.
+  **2026-09-28, resumed and landed** (merged `5db7ff7` rb-launch,
+  `a8883c5` rb-restart): two launchers (`run.sh` with `uname` for the
+  macOS PySide repair, `run.bat`; `run_macos.sh` / `run_swap_macos.sh`
+  are shims until 2026-10-31; `run_swap.sh` is `dev/swap_branch.sh`, a
+  developer tool); the firmware check is Setup's **Firmware** row
+  (`controller/firmware.py`: status per board from the stamp file and the
+  sketch hashes, pinned against the script; "Flash out-of-date boards"
+  asks and runs the script as a subprocess; Launch refuses during a
+  flash and asks once for an out-of-date board); nothing prints on a
+  normal launch (`events.py` echoes only errors unless
+  `STATION_ECHO_EVENTS=1`; the Web address is Setup's "Address" and the
+  one deliberate line with `--no-browser`); acknowledged notices carry an
+  **action** ("Update Ready" → Update now, "Restart Needed" → Restart
+  now; `Setup.restart_station` closes every model and re-executes the
+  station, the Web page waits on a `boot` id and reloads); the Tk/Qt
+  alert band is gone (the dialog is transient / a Tool window over the
+  main one); `POST /api/ack` logs each answer; the Qt rail's stray links
+  are hidden before their deferred delete (R8). Captures:
+  `handoff/shots/restart_web_*.png`, `qt_offscreen_transfer_map_r8.png`.
+  Unverified: a real restart on each view and on Windows, `run.bat`
+  beyond static checks, a real flash. Gates on the final tree are in
+  the closing line below.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
