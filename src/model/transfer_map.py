@@ -19,11 +19,13 @@ written on a worker, so a stop is never held by the disk.
 
 **The store is local** (owner ruling 2026-09-27): one SQLite file inside the
 project checkout, `<repo root>/data/transfer_map.sqlite` (the repo root is
-the directory holding `src/`), created with its schema on the first write.
-`STATION_MAP_DB=<path>` overrides it. Pictures sit beside it in
-`data/transfer_map/<trial_id>/`, exports in `data/exports/`. Nothing is
-created until a trial or an import is written, so building the model (the
-contract test does, for every registered class) leaves no file behind.
+the directory holding `src/`), created with its schema when the model opens
+(the event log says where, and how many trials it holds). `STATION_MAP_DB=
+<path>` overrides it. Pictures sit beside it in `data/<database name>/
+<trial_id>/` (`data/transfer_map/` for the default file), exports in
+`data/exports/`. "New session database" starts another file in the same
+folder. Building the model creates nothing (the contract test builds every
+registered class).
 
 Live sources are duck-typed from `on_model_added`, never a class name: tilt
 from a model with `position_deg` (the Rotator), else the operator's typed
@@ -138,6 +140,13 @@ class TrialStore:
                         source="Transfer Map")
         return result
 
+    def ensure(self):
+        """Create the file and its schema if missing; a no-op otherwise
+        (every statement is IF NOT EXISTS). True when it was created now."""
+        fresh = not self.exists
+        self.write(lambda db: None)
+        return fresh
+
     def read(self, sql, args=()):
         if not self.exists:
             return []
@@ -191,6 +200,24 @@ class TrialStore:
         rows = self.read("SELECT COUNT(*) AS n FROM trials")
         return rows[0]["n"] if rows else 0
 
+    def count_for_tip(self, tip_id, up_to=None):
+        """Stored trials on this tip (every status); with `up_to`, only those
+        numbered up to it, so a trial's own place among its tip's trials."""
+        tip = (tip_id or "").strip()
+        if up_to is None:
+            rows = self.read("SELECT COUNT(*) AS n FROM trials WHERE tip_id = ?",
+                             (tip,))
+        else:
+            rows = self.read("SELECT COUNT(*) AS n FROM trials WHERE tip_id = ? "
+                             "AND id <= ?", (tip, int(up_to)))
+        return rows[0]["n"] if rows else 0
+
+    def next_id(self):
+        """The number the next recorded trial will get (AUTOINCREMENT never
+        reuses one, so this is the sequence, not the row count)."""
+        rows = self.read("SELECT seq FROM sqlite_sequence WHERE name = 'trials'")
+        return (rows[0]["seq"] + 1) if rows and rows[0]["seq"] is not None else 1
+
     def profile(self, trial_id):
         rows = self.read("SELECT t_s, red, z, x, y FROM profile WHERE "
                          "trial_id = ? ORDER BY t_s, rowid", (trial_id,))
@@ -217,8 +244,9 @@ class _Trial:
     run thread (a list append, nothing else); everything else is written
     by the command thread."""
 
-    def __init__(self, trial_id, tilt, speed):
+    def __init__(self, trial_id, tilt, speed, tip=""):
         self.id = trial_id
+        self.tip = tip
         self.armed = time.monotonic()
         self.samples = []            # (t_s, red, z, x, y)
         self.dropped = 0
@@ -228,6 +256,10 @@ class _Trial:
         self.tilt = tilt
         self.broke = False
         self.closed = False
+        #: The Red Percent run this trial started (its `run_token`), or None
+        #: when the operator started it on the Red Percent page (then it is
+        #: theirs to end).
+        self.run = None
 
 
 class TransferMap(Model):
@@ -317,6 +349,27 @@ class TransferMap(Model):
     def _expects_heartbeat(self):
         return False                   # no loop of its own
 
+    def open(self):
+        """Open, then make the database ready and say where it is (bench
+        2026-09-27: "no prompt to create the db on startup"). Construction
+        still creates nothing; a store that cannot be created is an error
+        the operator sees, never a model that fails to open."""
+        super().open()
+        self._announce_store()
+
+    def _announce_store(self):
+        try:
+            self._store.ensure()
+        except Exception as exc:
+            events.error("Database Not Ready", f"The Transfer Map database "
+                         f"could not be created at {self.db_path}. Check that "
+                         "the folder exists and can be written, or start with "
+                         "--map-db PATH.", source=self.NAME, exception=exc)
+            return False
+        events.info("Database Ready", f"{self.db_path}: "
+                    f"{self._store.count()} trial(s)", source=self.NAME)
+        return True
+
     @property
     def is_armed(self):
         return self._trial is not None
@@ -335,7 +388,11 @@ class TransferMap(Model):
         trial = self._claim(timeout=0.05)
         if trial is not None:
             self._release_red()
-            writer = threading.Thread(target=self._save_aborted, args=(trial,),
+            self._end_own_run(trial)
+            # The store the trial was armed in: a new session database made
+            # while this is being written must not receive it.
+            writer = threading.Thread(target=self._save_aborted,
+                                      args=(trial, self._store),
                                       daemon=True, name="transfer-map-abort")
             self._persisting.append(writer)
             writer.start()
@@ -365,6 +422,21 @@ class TransferMap(Model):
             self._red, self._red_name = None, None
         self._tilts.pop(name, None)
         self._probes.pop(name, None)
+
+    def _end_own_run(self, trial):
+        """End the Red Percent run this trial started, and no other: a run
+        the operator started, or started again after this one ended, is
+        left running. `end_run` latches and returns (no I/O, no join), so
+        this is safe on the stop path; a missing or stopped Red Percent is
+        nothing to do."""
+        red = self._red
+        if trial.run is None or red is None:
+            return
+        try:
+            if getattr(red, "run_token", None) is trial.run:
+                red.end_run()
+        except Exception as exc:
+            events.debug("End Run Failed", repr(exc), source=self.NAME)
 
     def _release_red(self):
         red = self._red
@@ -437,6 +509,61 @@ class TransferMap(Model):
     def red_now(self):
         return getattr(self._red, "current_red", None)
 
+    # -- Red Percent's controls, forwarded (T1): the trial sheet is the one
+    # page of a trial; Red Percent keeps them, this only reaches them.
+    @property
+    def region(self):
+        """Red Percent's capture region, or None."""
+        red = self._red
+        return getattr(red, "region", None) if red is not None else None
+
+    @property
+    def has_region(self):
+        return bool(self.region)
+
+    def set_region(self, x, y, width, height):
+        red = self._red
+        if red is None:
+            raise Refused("Open Red Percent first: the capture region is the "
+                          "part of the screen it measures.")
+        if self.is_armed:
+            raise Refused("The capture region is fixed while a trial is armed. "
+                          "Finish or abort the trial to change it.")
+        region = red.set_region(x, y, width, height)
+        self._touch()
+        return region
+
+    @property
+    def screen_image(self):
+        """Red Percent's desktop picture for the region picker, or None."""
+        red = self._red
+        return getattr(red, "screen_image", None) if red is not None else None
+
+    @property
+    def next_step(self):
+        """The one thing to do next on the trial sheet; "" while latched
+        (the stop says what to do then)."""
+        if self.gate_mode == "latched":
+            return ""
+        if self._red is None:
+            return "Open Red Percent"
+        if not self.has_region:
+            return "Set the capture region"
+        trial = self._trial
+        if trial is not None:
+            if trial.operator_t is None:
+                return "Lower the tip; press Mark force when the force is right"
+            return "Press Finish trial"
+        if not (self.tip_id or "").strip():
+            return "Type a tip ID"
+        return "Press Arm trial"
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["has_region"] = self.has_region
+        return snapshot
+
     # -- the samples, on Red Percent's run thread ------------------------------
     def _on_sample(self, t_s, red, positions):
         """One row of Red Percent's log. Appends and returns; never raises
@@ -456,15 +583,17 @@ class TransferMap(Model):
         trial.samples.append((time.monotonic() - trial.armed, red, z, x, y))
 
     # -- the guided trial --------------------------------------------------
-    def arm_trial(self):
+    def arm_trial(self, confirmed=False):
+        """Arm a trial. Starts Red Percent's run when none is running (T2: a
+        trial is a red-only run by definition, so the start's doubts are
+        accepted here) and remembers that it did, so Finish, Abort and the
+        stop end that run and no other."""
         self._guard("Arm")
         if self.is_armed:
             raise Refused("A trial is already armed. Finish or abort it first.")
         red = self._red
         if red is None:
             raise Refused("Open Red Percent first: a trial records its red percent.")
-        if not getattr(red, "is_running", False):
-            raise Refused("Start a Red Percent run first: the trial records its samples.")
         tip = (self.tip_id or "").strip()
         if (self.typed_tilt or "").strip() and _number(self.typed_tilt) is None:
             raise Refused("Tilt without a rotator must be a number of degrees, "
@@ -472,23 +601,51 @@ class TransferMap(Model):
         if not tip:
             raise Refused("Type a tip ID before arming, so the trial can be "
                           "traced to its tip.")
-        tilt, tilt_source = self._read_tilt()
-        speed, speed_source = self._read_speed()
-        trial_id = self._store.insert({
-            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "tip_id": tip,
-            "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
-            "origin": "recorded", "tilt_source": tilt_source,
-            "speed_source": speed_source, "note": ""})
-        before = self._save_frame(trial_id, "before")
-        if before:
-            self._store.update(trial_id, {"before_path": before})
-        trial = _Trial(trial_id, tilt, speed)
+        if not getattr(red, "region", None):
+            raise Refused("Set the capture region first: the trial's pictures "
+                          "and its red percent are read from it.")
+        if not confirmed:
+            # T3: the before picture is taken on the operator's word, with
+            # the sample framed; nothing is started or written until then.
+            raise NeedsConfirm(
+                f"Frame the sample now. OK takes the before picture and arms "
+                f"trial {self._store.next_id()} on tip {tip}.", "arm_trial",
+                inputs={"tip_id": self.tip_id or "",
+                        "typed_tilt": self.typed_tilt or ""})
+        run = None
+        if not getattr(red, "is_running", False):
+            red.start_run(confirmed=True)               # a Refused stops here
+            run = red.run_token
+        trial_id = None
+        try:
+            png = self._take_picture()
+            if not png:
+                raise Refused("No before picture: the capture region is not "
+                              "set or the screen is not open.")
+            tilt, tilt_source = self._read_tilt()
+            speed, speed_source = self._read_speed()
+            trial_id = self._store.insert({
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "tip_id": tip,
+                "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
+                "origin": "recorded", "tilt_source": tilt_source,
+                "speed_source": speed_source, "note": ""})
+            self._store.update(trial_id, {
+                "before_path": self._write_picture(trial_id, "before", png)})
+        except BaseException:
+            if run is not None:
+                red.end_run()                            # ours: undo it
+            if trial_id is not None:
+                self._forget_row(trial_id)
+            raise
+        trial = _Trial(trial_id, tilt, speed, tip)
+        trial.run = run
         with self._lock:
             self._trial = trial
         red.subscribe(self._on_sample)
         self._changed()
-        events.info("Trial Armed", f"Trial {trial_id} armed. Lower the tip, "
-                    "press Mark force at the force you want, then Finish.",
+        events.info("Trial Armed", f"Trial {trial_id} armed, "
+                    f"{self._place_on_tip(trial)}. Lower the tip, press Mark "
+                    "force at the force you want, then Finish.",
                     source=self.NAME)
         return trial_id
 
@@ -505,12 +662,27 @@ class TransferMap(Model):
                     f"{trial.operator_t:.2f} s.", source=self.NAME)
         return round(trial.operator_t, 3)
 
-    def finish_trial(self):
+    def finish_trial(self, confirmed=False):
+        armed = self._trial
+        if armed is None:
+            raise Refused("No trial is armed.")
+        if not confirmed:
+            raise NeedsConfirm(f"OK takes the after picture and ends trial "
+                               f"{armed.id}.", "finish_trial",
+                               inputs={"note": self.note or ""})
+        png = self._take_picture()
+        if not png:
+            # Still armed: the operator fixes the screen and finishes again,
+            # or aborts (a stop, which keeps the profile).
+            raise Refused("No after picture: the capture region is not set or "
+                          "the screen is not open. Fix it and press Finish "
+                          "trial again, or Abort trial to keep the profile.")
         trial = self._claim()
         if trial is None:
-            raise Refused("No trial is armed.")
+            raise Refused("No trial is armed.")          # the stop took it
         self._release_red()
-        after = self._save_frame(trial.id, "after")
+        self._end_own_run(trial)
+        after = self._write_picture(trial.id, "after", png)
         samples = list(trial.samples)
         profile = {"t": [s[0] for s in samples], "red": [s[1] for s in samples]}
         found = analysis.detect(profile, trial.operator_t) or {}
@@ -533,8 +705,9 @@ class TransferMap(Model):
             events.warn("Trial Too Long", f"Trial {trial.id} kept its first "
                         f"{MAX_SAMPLES} samples; {trial.dropped} more were not "
                         "stored.", source=self.NAME)
-        events.info("Trial Recorded", f"Trial {trial.id}: {len(samples)} "
-                    "samples recorded.", source=self.NAME)
+        events.info("Trial Recorded", f"Trial {trial.id} recorded, "
+                    f"{self._place_on_tip(trial)}: {len(samples)} samples.",
+                    source=self.NAME)
         self.note = ""
         return trial.id
 
@@ -543,8 +716,14 @@ class TransferMap(Model):
         if trial is None:
             raise Refused("No trial is armed.")
         self._release_red()
+        self._end_own_run(trial)
         self._save_aborted(trial)
         return trial.id
+
+    def _place_on_tip(self, trial):
+        """ "the 3rd on tip T7": this trial's place among its tip's trials."""
+        n = self._store.count_for_tip(trial.tip, up_to=trial.id)
+        return f"the {_ordinal(n)} on tip {trial.tip}"
 
     def _claim(self, timeout=-1):
         """Take the armed trial, once: Finish, Abort and the stop race for it
@@ -563,10 +742,11 @@ class TransferMap(Model):
             trial.closed = True
         return trial
 
-    def _save_aborted(self, trial):
+    def _save_aborted(self, trial, store=None):
+        store = store if store is not None else self._store
         try:
             samples = list(trial.samples)
-            self._store.update(trial.id, {
+            store.update(trial.id, {
                 "status": "aborted", "mark_operator_t": trial.operator_t,
                 "z_contact": trial.z_mark, "broke": int(trial.broke)}, samples)
             self._indices.pop(trial.id, None)
@@ -578,23 +758,53 @@ class TransferMap(Model):
                          "could not be saved. Check the database folder.",
                          source=self.NAME, exception=exc)
 
-    def _save_frame(self, trial_id, which):
+    def _take_picture(self):
+        """The one frame source of the before and after pictures: Red
+        Percent's capture region (what it measures), as PNG bytes, or None.
+        The owner may ask for the whole feed later; that change is here."""
         red = self._red
-        png = None
         try:
-            png = red.grab_frame() if red is not None else None
+            return (red.grab_frame() if red is not None else None) or None
         except Exception as exc:
             events.debug("Frame Failed", repr(exc), source=self.NAME)
-        if not png:
-            events.warn("No Picture", f"No {which} picture was captured for "
-                        f"trial {trial_id}. Check the Red Percent capture "
-                        "region.", source=self.NAME)
             return None
-        folder = self.output_root / "transfer_map" / str(trial_id)
+
+    def _write_picture(self, trial_id, which, png):
+        folder = self.pictures_root / str(trial_id)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{which}.png"
         path.write_bytes(png)
         return str(path)
+
+    def _forget_row(self, trial_id):
+        """An Arm that failed after its row was written leaves no row."""
+        try:
+            self._store.delete(trial_id)
+        except Exception as exc:
+            events.debug("Forget Failed", repr(exc), source=self.NAME)
+
+    def _picture(self, which):
+        """PNG bytes of the armed trial's picture, else the last trial's,
+        else b"" (the element then says when it is taken)."""
+        trial = self._trial
+        if trial is not None:
+            path = self.pictures_root / str(trial.id) / f"{which}.png"
+        else:
+            last = self._store.last()
+            stored = last.get(f"{which}_path") if last else None
+            path = Path(stored) if stored else None
+        try:
+            return path.read_bytes() if path is not None and path.is_file() else b""
+        except OSError:
+            return b""
+
+    @property
+    def before_image(self):
+        return self._picture("before")
+
+    @property
+    def after_image(self):
+        return self._picture("after")
 
     # -- after the trial ---------------------------------------------------
     @property
@@ -666,6 +876,40 @@ class TransferMap(Model):
             return pick if self._store.trial(pick) else None
         last = self._store.last()
         return last["id"] if last else None
+
+    # -- the session database ----------------------------------------------
+    def new_database(self):
+        """A new database beside this one, for a new session. The current
+        file stays on disk untouched; pictures and exports stay in the same
+        folder (`output_root`), the pictures under the new file's own name
+        so trial 1 of the new database never overwrites trial 1 of the old."""
+        if self.is_armed:
+            raise Refused("A trial is armed. Finish or abort it before starting "
+                          "a new database.")
+        for writer in list(self._persisting):      # an abort still being written
+            writer.join(self.THREAD_JOIN_TIMEOUT)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = self.output_root / f"transfer_map_{stamp}.sqlite"
+        suffix = 2
+        while path.exists():
+            path = self.output_root / f"transfer_map_{stamp}_{suffix}.sqlite"
+            suffix += 1
+        store = TrialStore(path)
+        store.ensure()
+        previous = self.db_path
+        self.db_path, self._store = path, store
+        self._indices = {}
+        self._figure_cache = None
+        self._changed()
+        events.info("New Database", f"Trials now go to {path}. The previous "
+                    f"database stays at {previous}.", source=self.NAME)
+        return str(path)
+
+    @property
+    def pictures_root(self):
+        """`<output_root>/<database name>/`: `transfer_map/` for the default
+        file, so one folder of pictures per database."""
+        return self.output_root / self.db_path.stem
 
     # -- export and import -------------------------------------------------
     def _export(self):
@@ -879,6 +1123,13 @@ class TransferMap(Model):
         return self._store.count()
 
     @property
+    def tip_trial_count(self):
+        """Stored trials on the typed tip: None (shown blank) while the Tip
+        ID entry is blank, 0 for a tip the database has not seen."""
+        tip = (self.tip_id or "").strip()
+        return self._store.count_for_tip(tip) if tip else None
+
+    @property
     def trial_status(self):
         trial = self._trial
         if trial is not None:
@@ -966,11 +1217,25 @@ class TransferMap(Model):
         configure = "Configure Transfer Map"
         return sch.schema(
             sch.section(
+                "Session",
+                sch.readonly("Database", "db_path"),
+                sch.readonly("Trials", "trial_count", param=P["trial_count"]),
+                sch.button("New session database", "new_database",
+                           confirm="Start a new database beside this one? The "
+                                   "current one stays on disk.",
+                           disabled_when=("armed",)),
+            ),
+            sch.section(
                 "Trial",
+                sch.readonly("Next step", "next_step", role="info"),
+                sch.region_select("Set capture region", "set_region",
+                                  model_attr="region", role="info",
+                                  data_command="screen_image"),
                 sch.readonly("Tilt", "tilt_now", rail=True, param=P["tilt_now"]),
                 sch.readonly("Speed", "speed_now", rail=True, param=P["speed_now"]),
                 sch.readonly("Red", "red_now", param=P["red_now"], format=".2f"),
                 sch.entry("Tip ID", "tip_id", P["tip_id"]),
+                sch.readonly("Trials on this tip", "tip_trial_count"),
                 sch.button("Arm trial", "arm_trial",
                            inputs=("tip_id", "typed_tilt"),
                            role="go", disabled_when=("armed", "latched")),
@@ -982,8 +1247,11 @@ class TransferMap(Model):
                            stop=True),
                 sch.toggle("Tip broke", "is_broke", "mark_broke", "Broke",
                            "Not broken", on_args=(True,), off_args=(False,)),
-                sch.readonly("Trials", "trial_count", param=P["trial_count"]),
                 sch.readonly("Status", "trial_status", role="info"),
+                sch.image("Before picture", "before_image",
+                          empty="Taken when you arm."),
+                sch.image("After picture", "after_image",
+                          empty="Taken when you finish."),
                 sch.plot("Red % since Arm", "live_series", x_label="time (s)",
                          y_label="red (%)",
                          empty="Arm a trial and its red percent plots here."),
@@ -1028,7 +1296,6 @@ class TransferMap(Model):
             ),
             sch.section(
                 "Diagnostics",
-                sch.readonly("Database", "db_path"),
                 sch.readonly("Last trial", "last_trial_numbers"),
                 sch.readonly("Width gradient", "width_gradient"),
                 sch.log_stream("Trials", "trials_log"),
@@ -1038,6 +1305,14 @@ class TransferMap(Model):
             ),
             self._safety_section(),
         )
+
+
+def _ordinal(n):
+    """1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st, 101st, 111th."""
+    n = int(n)
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    return f"{n}" + {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
 
 
 def _number(value):

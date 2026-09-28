@@ -834,6 +834,15 @@ class RedMonitor(Model):
     def unsubscribe(self, fn):
         self._subscribers = tuple(s for s in self._subscribers if s != fn)
 
+    @property
+    def run_token(self):
+        """The active run itself, as an identity no later run shares (the
+        Transfer Map ends the run it started and no other; `run_id` repeats
+        whenever the operator has typed a Run / Cut ID). None when no run
+        is active. Compare with `is`; never written through."""
+        run = self._run
+        return run if run is not None and run.is_active else None
+
     def _notify(self, subscribers, t_s, red, positions):
         for fn in subscribers:
             try:
