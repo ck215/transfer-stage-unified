@@ -758,7 +758,7 @@ def test_the_region_picker_reads_red_percents_screen(red, monkeypatch):
     assert model.run("screen_image").is_ok            # a declared data source
     model.on_model_added("Red Percent", red)
     bounds = {"left": 0, "top": 0, "width": 8, "height": 6}
-    monkeypatch.setattr(red.screen, "screenshot_png", lambda: (b"PNG!", bounds))
+    monkeypatch.setattr(red.screen, "screenshot_png", lambda **kw: (b"PNG!", bounds))
     assert model.screen_image == {"image": b"PNG!", **bounds}
     element = _element(model, "set_region")
     assert element["type"] == "region_select"
@@ -775,7 +775,7 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     bare = RedMonitor(screen=fake_screen())
     model.on_model_added("Red Percent", bare)
     # M3: with neither set, the line says the polling is the sheet's to start.
-    assert step() == "Set the capture region and a tip ID; polling starts by itself"
+    assert step() == "Set the capture region and a tip ID"
     model.tip_id = "tip-A"
     assert step() == "Set the capture region"
     model.tip_id = ""
@@ -1954,7 +1954,7 @@ def test_a_region_without_a_tip_does_not_start_polling(tmp_path):
     model.on_model_added("Red Percent", red)
     try:
         assert model.state["values"]["next_step"] == (
-            "Set the capture region and a tip ID; polling starts by itself")
+            "Set the capture region and a tip ID")
         assert model.run("set_region", None, (0, 0, 10, 10)).is_ok
         assert not red.is_running
         assert model.state["values"]["next_step"] == "Type a tip ID"

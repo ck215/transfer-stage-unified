@@ -825,7 +825,7 @@ class TransferMap(Model):
         running = bool(getattr(red, "is_running", False))
         if not self.has_region:
             if not tip and not running:
-                return "Set the capture region and a tip ID; polling starts by itself"
+                return "Set the capture region and a tip ID"
             return "Set the capture region"
         trial = self._trial
         if trial is not None:
