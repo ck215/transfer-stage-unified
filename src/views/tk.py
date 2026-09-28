@@ -248,8 +248,6 @@ SEVERITY_WORD = {"error": "Error", "warning": "Warning", "info": "Info"}
 MARK_SOLID, MARK_HOLLOW = "\u25a0", "\u25a1"
 TRAY_SEVERITIES = ("warning", "error")
 
-#: Unacknowledged errors the band lists by name before it summarises.
-BAND_LINES = 3
 #: Warnings and errors the tray's history keeps.
 TRAY_HISTORY = 200
 
@@ -1828,13 +1826,24 @@ class _AckDialog:
     window's close button all answer it. The dashboard owns the queue: this
     shows one event at a time and `update` redraws it in place when the
     same title repeats.
+
+    An event with an `action` (rb-restart R1) has TWO keys: the action's
+    label, which holds the focus and answers Return, and "Later", which
+    Escape and the close button answer. `on_answer(dialog, acted)` says
+    which. The window is transient for the main window and lifted on every
+    show (R6: the alert band is gone, so nothing else keeps it in view);
+    still no grab.
     """
 
-    def __init__(self, master, event, on_understood, repeats=1, waiting=0):
+    LATER = "Later"
+
+    def __init__(self, master, event, on_answer, repeats=1, waiting=0):
         self.master = master
-        self.on_understood = on_understood
+        self.on_answer = on_answer
         self.event = event
-        self.top = self.key = self.title_label = self.body = self.count = None
+        self.action = getattr(event, "action", None) or None
+        self.top = self.key = self.later = None
+        self.title_label = self.body = self.count = None
         self._build(repeats, waiting)
 
     @staticmethod
@@ -1850,8 +1859,7 @@ class _AckDialog:
     def _build(self, repeats, waiting):
         top = self.top = tk.Toplevel(self.master)
         title = self.title_of(self.event)
-        for call in (lambda: top.title(title),
-                     lambda: top.transient(self.master.winfo_toplevel()),
+        for call in (lambda: top.title(title),     # transient: raise_over()
                      lambda: top.resizable(False, False)):
             try:
                 call()
@@ -1874,20 +1882,42 @@ class _AckDialog:
         self.count = tk.Label(row, text="", font=_font(), anchor="w",
                               background=theme.SURFACE, foreground=theme.MUTED)
         self.count.pack(side="left")
-        self.key = _Press(row, "Understood", self._understood, theme.SURFACE)
-        self.key.frame.pack(side="right")
-        top.bind("<Return>", lambda _e: self._understood())
-        top.bind("<Escape>", lambda _e: self._understood())
+        if self.action:
+            # Packed from the right: Later outermost, the action beside it.
+            self.later = _Press(row, self.LATER, self._later, theme.SURFACE)
+            self.later.frame.pack(side="right")
+            self.key = _Press(row, self.action["label"], self._act, theme.SURFACE)
+            self.key.frame.pack(side="right", padx=(0, SPACE[3]))
+            top.bind("<Return>", lambda _e: self._act())
+            top.bind("<Escape>", lambda _e: self._later())
+            closer = self._later
+        else:
+            self.key = _Press(row, "Understood", self._understood, theme.SURFACE)
+            self.key.frame.pack(side="right")
+            top.bind("<Return>", lambda _e: self._understood())
+            top.bind("<Escape>", lambda _e: self._understood())
+            closer = self._understood
         try:
-            top.protocol("WM_DELETE_WINDOW", self._understood)
+            top.protocol("WM_DELETE_WINDOW", closer)
         except Exception:
             pass
         self.set_waiting(waiting)
         _ConfirmDialog._centre(self)
+        self.raise_over()
         try:
             self.key.widget.focus_set()
         except Exception:
             pass
+
+    def raise_over(self):
+        """Above the main window, every time it is shown (R6): transient for
+        it and lifted - never a grab, so the stop keeps working."""
+        for call in (lambda: self.top.transient(self.master.winfo_toplevel()),
+                     lambda: self.top.lift()):
+            try:
+                call()
+            except Exception:
+                pass
 
     def update(self, event, repeats, waiting):
         """The same title again: new words, a count, the same window."""
@@ -1897,6 +1927,7 @@ class _AckDialog:
         except Exception:
             pass
         self.set_waiting(waiting)
+        self.raise_over()
 
     def set_waiting(self, waiting):
         try:
@@ -1905,7 +1936,15 @@ class _AckDialog:
             pass
 
     def _understood(self):
-        self.on_understood(self)
+        self.on_answer(self, False)
+        return "break"
+
+    def _later(self):
+        self.on_answer(self, False)
+        return "break"
+
+    def _act(self):
+        self.on_answer(self, True)
         return "break"
 
     def close(self):
@@ -5794,14 +5833,13 @@ class TkDashboard(Dashboard):
         # left, and the stop is the first thing in it: nothing the sheet
         # holds can push the stop off the window (the stop once went off the
         # bottom of the screen the first time a tall panel opened). In the
-        # main column the tray and the alert band take their strips at the
+        # main column the tray takes its strip at the
         # bottom before the notebook - the one widget that expands - gets
         # what is left. An error never covers, dims or blocks the stop (F1).
         self._build_rail()
         self._main = tk.Frame(self.root, background=theme.BACKGROUND)
         self._main.pack(side="left", fill="both", expand=True)
         self._build_event_panel()
-        self._build_alert_band()
 
         self.notebook = ClosableNotebook(self._main, on_close_tab=self._on_tab_close)
         self.notebook.pack(side="top", fill="both", expand=True)
@@ -5812,11 +5850,10 @@ class TkDashboard(Dashboard):
             self.notebook.configure(takefocus=0)
         except Exception:
             pass
-        for strip in (self._band, self._tray):
-            try:
-                strip.lift()
-            except Exception:
-                pass
+        try:
+            self._tray.lift()
+        except Exception:
+            pass
         self._sheet_page = ttk.Frame(self.notebook)
         self._sheet = _Sheet(self._sheet_page)
         self._sheet.frame.pack(fill="both", expand=True)
@@ -6703,75 +6740,20 @@ class TkDashboard(Dashboard):
         """What the disc, the headline and the rail say (`stop_words`)."""
         return stop_words(state if state is not None else self._stop_state())
 
-    # -- the alert band and the tray -----------------------------------------
-    def _build_alert_band(self):
-        """Errors that need acknowledging, listed by source, under the sheet
-        and never over the stop (F1, HC-2). It replaces
-        `messagebox.showerror`, which was application-modal: five queued
-        errors made five dialogs, and the stop could not take a click while
-        one was up."""
-        self._band = tk.Frame(self._main, background=theme.BACKGROUND,
-                              padx=SPACE[10], pady=SPACE[3])
-        self._band_mark = _mark_canvas(self._band, theme.BACKGROUND)
-        self._band_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]),
-                             pady=SPACE[1])
-        self._band_ack = _Press(self._band, "Acknowledge", self._acknowledge,
-                                theme.BACKGROUND)
-        self._band_ack.frame.pack(side="right", anchor="n", padx=(SPACE[3], 0))
-        self._band_text = tk.Label(self._band, text="", font=_font(), anchor="w",
-                                   justify="left", wraplength=720,
-                                   background=theme.BACKGROUND,
-                                   foreground=theme.TEXT)
-        self._band_text.pack(side="left", fill="x", expand=True)
-        self._band.bind("<Configure>", self._on_band_resized)
-        _draw_warning(self._band_mark, theme.SIGNAL)
-
-    def _on_band_resized(self, event=None):
-        """The band's words wrap in what the mark and Acknowledge leave."""
-        width = getattr(event, "width", 0)
-        if not isinstance(width, int) or width <= SPACE[6] * 10:
-            return
-        try:
-            button = self._band_ack.frame.winfo_reqwidth()
-        except Exception:
-            button = SPACE[10] * 3
-        if not isinstance(button, int):
-            button = SPACE[10] * 3
-        room = width - 2 * SPACE[10] - button - _lamp_px() - 3 * SPACE[3]
-        try:
-            self._band_text.configure(wraplength=max(SPACE[10] * 4, room))
-        except Exception:
-            pass
+    # -- the acknowledgements and the tray ------------------------------------
+    # R6 (owner ruling 2026-09-28): the alert band that stood beside the
+    # dialog is gone. The dialog is the acknowledgement (transient for this
+    # window and lifted on every show, never a grab) and the log keeps the
+    # history.
 
     @property
     def is_alert_shown(self):
         return bool(self._alerts)
 
     def _render_alerts(self):
-        alerts = self._alerts
-        if not alerts:
-            self._sync_ack_dialog()
-            try:
-                self._band.pack_forget()
-            except Exception:
-                pass
-            return
+        """Every path that changes the queue ends here: the dialog shows the
+        oldest waiting title, or nothing."""
         self._sync_ack_dialog()
-        if len(alerts) == 1:
-            text = _event_line(alerts[0])
-        else:
-            shown = [_event_line(event) for event in alerts[-BAND_LINES:]]
-            more = len(alerts) - len(shown)
-            kind = ("errors" if all(getattr(e, "severity", "") == "error"
-                                    for e in alerts) else "notices")
-            text = "\n".join([f"{len(alerts)} {kind} need acknowledgement."]
-                             + (["..."] if more else []) + shown)
-        try:
-            self._band_text.configure(text=text)
-            self._band.pack(side="bottom", fill="x", after=self._tray)
-        except Exception as exc:
-            events.debug("Alert Band Failed", str(exc), source=SOURCE,
-                         exception=exc)
 
     def _ack_group(self):
         """The oldest waiting title and every queued event under it: one
@@ -6785,8 +6767,8 @@ class TkDashboard(Dashboard):
 
     def _sync_ack_dialog(self):
         """The dialog shows the oldest waiting title, or nothing: every path
-        that changes the queue (a new event, Understood, the band's
-        Acknowledge, L2's dropped stop lines, close) ends here."""
+        that changes the queue (a new event, an answer, L2's dropped stop
+        lines, close) ends here."""
         dialog = self._ack_dialog
         group = [] if self._closing else self._ack_group()
         if not group:
@@ -6808,44 +6790,40 @@ class TkDashboard(Dashboard):
         try:
             self._ack_dialog = _AckDialog(self.root, latest, self._understood,
                                           repeats=repeats, waiting=waiting)
-        except Exception as exc:        # the band still says it
+        except Exception as exc:        # the tray and the log still say it
             self._ack_dialog = None
             events.debug("Ack Dialog Failed", str(exc), source=SOURCE,
                          exception=exc)
 
-    def _understood(self, dialog):
-        """The dialog's one key: the title shown is read (every repeat of
+    def _understood(self, dialog, acted=False):
+        """The dialog's answer: the title shown is read (every repeat of
         it), the next title (if any) takes the window; after the last, focus
-        goes to the stop."""
+        goes to the stop. `acted`: its action key was pressed (R1), so the
+        action runs next, on its panel, after the window is down."""
         if dialog is not self._ack_dialog or not self._alerts:
             dialog.close()
             return
         group = self._ack_group()
+        action = next((e.action for e in reversed(group)
+                       if getattr(e, "action", None)), None)
         self._alerts = [e for e in self._alerts if e.title != group[0].title]
         events.debug("Alert Acknowledged", f"{group[-1].severity}/"
                      f"{group[-1].title}" + (f" x{len(group)}" if len(group) > 1
-                                              else ""), source=SOURCE)
+                                              else "")
+                     + (f" -> {action['label']}" if acted and action else ""),
+                     source=SOURCE)
         self._render_alerts()
         if not self._alerts:
             try:
                 self._stop_button.focus_set()
             except Exception:
                 pass
+        if acted and action:
+            self.run_action(action)
 
-    def _acknowledge(self):
-        """One press clears every listed error; focus goes to the stop."""
-        count, self._alerts = len(self._alerts), []
-        events.debug("Alerts Acknowledged", f"{count} acknowledged", source=SOURCE)
-        try:
-            had_focus = self.root.focus_get() is self._band_ack.widget
-        except Exception:
-            had_focus = False
-        self._render_alerts()
-        if had_focus:
-            try:
-                self._stop_button.focus_set()
-            except Exception:
-                pass
+    def _action_panel(self, name):
+        key = self.SETUP_TAB if name == events.SETUP_PANEL else name
+        return self._panels.get(key)
 
     def _build_event_panel(self):
         """The tray: status by exception (E). Warnings and errors only - the
@@ -7606,8 +7584,8 @@ class TkDashboard(Dashboard):
                          exception=exc, every=5.0)
 
     def _show_popup(self, event):
-        """An event that needs acknowledging joins the queue: the band lists
-        it and `_AckDialog` shows the oldest (rb-ack). Neither is modal:
+        """An event that needs acknowledging joins the queue and `_AckDialog`
+        shows the oldest (rb-ack; the band went in R6). It is not modal:
         `Dashboard._on_event` decided it earned acknowledgement, not that it
         may take the stop away."""
         if self._closing:

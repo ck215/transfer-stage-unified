@@ -1429,3 +1429,51 @@ def test_ack_escape_acknowledges_an_open_dialog_after_a_question_and_the_picker(
     assert confirm < picker < ack
     # The stop chord is checked before any of them.
     assert handler.index("this.stopAll()") < confirm
+
+
+# -- rb-restart R1/R4/R7 -------------------------------------------------------
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_restart_an_action_makes_the_key_its_label_and_adds_later():
+    out = _node_value("""(() => {
+      const q = [];
+      const act = {label: 'Restart now', name: '__setup__', command: 'restart_station', args: [true]};
+      ackEnqueue(q, {title: 'Restart Needed', message: 'Updated.', count: 1, action: act});
+      const one = ackWords(q);
+      ackEnqueue(q, {title: 'Idle Timeout', message: 'idle', count: 1, action: null});
+      q.shift();
+      return {one, plain: ackWords(q)};
+    })()""")
+    assert out["one"]["key"] == "Restart now" and out["one"]["later"] == "Later"
+    assert out["one"]["action"]["command"] == "restart_station"
+    assert out["plain"] == {"title": "Idle timeout", "body": "idle", "waiting": "",
+                            "key": "Understood"}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_restart_only_an_accepted_restart_waits_for_the_station():
+    out = _node_value("""[
+      isRestartAnswer('__setup__', 'restart_station', {status: 'ok'}),
+      isRestartAnswer('__setup__', 'restart_station', {status: 'refused'}),
+      isRestartAnswer('__setup__', 'restart_station', {status: 'needs_confirm'}),
+      isRestartAnswer('Probe', 'restart_station', {status: 'ok'}),
+      isRestartAnswer('__setup__', 'apply_update', {status: 'ok'}),
+    ]""")
+    assert out == [True, False, False, False, False]
+
+
+def test_restart_the_page_polls_every_two_seconds_for_a_minute():
+    assert re.search(r"const RESTART_POLL_MS = 2000;", APP_JS)
+    assert re.search(r"const RESTART_WAIT_MS = 60000;", APP_JS)
+    assert "The station did not come back; start it by hand." in APP_JS
+    body = _body(r"\n  awaitRestart\(\) \{(.*?)\n  \}\n")
+    # Stops beating first: no heartbeat reaches anyone while it waits.
+    assert body.index("this.stopHeartbeat()") < body.index("setTimeout(tick")
+    assert "state.boot !== old" in body
+
+
+def test_r7_the_page_logs_every_answer():
+    body = _body(r"\n  acknowledge\(acted\) \{(.*?)\n  \}\n")
+    assert "this.logAcknowledged(" in body
+    assert "'/api/ack'" in APP_JS
+    assert '"/api/ack"' in SERVER.read_text()

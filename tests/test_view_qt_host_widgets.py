@@ -264,3 +264,24 @@ def test_the_real_pair_in_sim_is_one_dashboard(board, station, tmp_path,
     board._remove_panel("Transfer Map")
     board._sync_rail()
     assert list(board._rail_items) == ["Red Percent"]
+
+
+def test_r8_a_rebuilt_page_list_leaves_no_old_link_drawn(board, station, qapp):
+    """R8 (offscreen capture 2026-09-28): the rail rebuilt its links by
+    taking the old ones out of the layout and deleting them LATER; with no
+    event loop running they stayed visible at 0,0 of the list, three names
+    drawn over each other. Every visible link is a current one, and no two
+    visible rail children share a geometry."""
+    board.resize(1440, 1000)
+    board.show()
+    _launch(board, station, ("Red", RedModel()))
+    board._sync_rail()
+    _launch(board, station, ("Map", MapModel()))
+    board._sync_rail()
+    for _ in range(5):
+        qapp.processEvents()
+    current = {id(board.overview_item)} | {id(i) for i in board._rail_items.values()}
+    shown = [w for w in board.rail.findChildren(qt.RailItem) if w.isVisible()]
+    assert {id(w) for w in shown} <= current, [w.text() for w in shown]
+    geometries = [w.geometry().getRect() for w in shown]
+    assert len(set(geometries)) == len(geometries), geometries

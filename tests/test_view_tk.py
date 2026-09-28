@@ -2850,11 +2850,12 @@ def test_the_stop_disc_keeps_its_size_at_the_default_font(monkeypatch):
     assert tkmod.STOP_DIAMETER <= disc.diameter <= tkmod.STOP_DIAMETER * 1.1
 
 
-def test_a_fault_is_a_band_beside_the_stop_never_a_modal(dashboard, tk_harness):
+def test_a_fault_is_a_dialog_beside_the_stop_never_a_modal(dashboard, tk_harness):
     """F1 / HC-2 / UXPM-1. `messagebox.showerror` was application-modal:
     five queued errors were five dialogs and the stop took no click while
-    one was up. An error that needs acknowledging now joins a band packed
-    directly above the stop bar; nothing grabs, and the stop still works."""
+    one was up. Updated (rb-restart R6, owner 2026-09-28): the alert band is
+    gone; the errors queue behind ONE modeless dialog, nothing grabs, and
+    the stop still works."""
     dashboard.open()
     for index in range(3):
         dashboard._on_event(Event(index, "error", "Rotator", f"Fault {index}",
@@ -2862,32 +2863,29 @@ def test_a_fault_is_a_band_beside_the_stop_never_a_modal(dashboard, tk_harness):
     SCHEDULER.pump()
     assert tk_harness.errors == [] and GRABS == []
     assert len(dashboard._alerts) == 3, "stacked, not overwritten"
-    band = dashboard._band
-    assert band.is_packed
-    packed = [options for widget, options in PACK_ORDER if widget is band][-1]
-    # Updated for E: the band sits over the tray under the sheet; the stop
-    # is in the rail, which the band never reaches.
-    assert packed["after"] is dashboard._tray and packed["side"] == "bottom"
-    assert band.master is dashboard._main is not dashboard._rail
-    text = dashboard._band_text.cget("text")
-    assert "3 errors" in text and all(f"Fault {i}" in text for i in range(3))
-    assert text.count("Error") >= 3, "a word beside the colour"
+    dialog = dashboard._ack_dialog
+    assert dialog.title_label.cget("text") == "Fault 0"
+    assert dialog.count.cget("text") == "2 more waiting"
 
     dashboard._stop_button.fire("<Button-1>")          # the stop still works
     assert tk_harness.errors == [] and dashboard.controller.estop_calls == 1
+    assert not dialog.top.is_destroyed, "the stop does not answer it"
 
-    dashboard._band_ack.widget.fire("<Button-1>")      # one press clears all
-    assert dashboard._alerts == [] and not band.is_packed
+    for index in range(3):
+        assert dashboard._ack_dialog.title_label.cget("text") == f"Fault {index}"
+        dashboard._ack_dialog.key.widget.fire("<Button-1>")
+    assert dashboard._alerts == [] and dashboard._ack_dialog is None
 
 
-def test_the_band_is_never_placed_over_anything(dashboard):
-    """It is packed into the window's strips, never `place`d or a Toplevel,
-    so it can take space but never cover the stop."""
+def test_r6_the_alert_band_is_gone(dashboard):
+    """rb-restart R6: no band beside the dialog; the dialog is the
+    acknowledgement and the log keeps the history."""
     dashboard.open()
     dashboard._show_popup(_event("error", needs_ack=True))
-    # Updated for E: packed into the main column, beside the rail.
-    assert dashboard._band.master is dashboard._main
-    assert not hasattr(dashboard._band, "place_info_called")
+    assert not hasattr(dashboard, "_band")
+    assert not hasattr(dashboard, "_band_text")
+    assert not hasattr(tkmod, "BAND_LINES")
+    assert dashboard.is_alert_shown and dashboard._ack_dialog is not None
 
 
 def test_the_clear_confirmation_defaults_to_no():
@@ -4845,13 +4843,13 @@ def test_l2_the_stop_not_confirmed_line_goes_when_the_latch_opens(tk_harness,
     built._on_event(_event("error", needs_ack=True))
     built._on_event(_stop_not_confirmed())
     SCHEDULER.pump()
-    assert built._band.is_packed
-    assert "did not confirm" in built._band_text.cget("text")
+    # Updated (R6): the dialog, not a band, says it.
+    assert built._ack_dialog.title_label.cget("text") == "Error-event"
+    assert [e.title for e in built._alerts] == ["error-event", "Stop Not Confirmed"]
     assert "did not confirm" in built._latest_text.cget("text")
     controller.is_estopped = False
     built._sync_stop_button()
     assert [event.title for event in built._alerts] == ["error-event"]
-    assert "did not confirm" not in built._band_text.cget("text")
     assert "did not confirm" not in built._latest_text.cget("text")
     assert "did not confirm" not in built._event_text.body
     assert "Error-event" in built._latest_text.cget("text"), "the one before it"
@@ -4866,10 +4864,12 @@ def test_l11_band_and_tray_lines_are_sentences_without_a_source(tk_harness,
     built._on_event(Event(8, "warning", "DC Probe", "Power Down Not Supported",
                           "The DC board has no coil kill.", None, False, 0.0))
     SCHEDULER.pump()
-    band = built._band_text.cget("text")
-    # Updated for ARCH-3: "Title: message" is `views.base.event_line`'s.
-    assert band.startswith("Error: Stop not confirmed: Rotator did not confirm")
-    assert "[" not in band and "Stop Not Confirmed" not in band
+    # Updated (R6): the band is gone; the dialog says the title in sentence
+    # case and the message, never the source.
+    dialog = built._ack_dialog
+    assert dialog.title_label.cget("text") == "Stop not confirmed"
+    assert dialog.body.cget("text").startswith("Rotator did not confirm")
+    assert "[" not in dialog.body.cget("text")
     assert built._latest_text.cget("text") == (
         "Warning: Power down not supported: The DC board has no coil kill.")
     # One mark in both places, drawn, not a text glyph. Signature: the
@@ -4918,7 +4918,7 @@ def test_l2_the_acknowledgement_stays_required_while_latched(tk_harness,
     SCHEDULER.pump()
     built._sync_stop_button()
     assert [event.title for event in built._alerts] == ["Stop Not Confirmed"]
-    assert built._band.is_packed
+    assert built._ack_dialog is not None
     built.close()
 
 
@@ -5270,8 +5270,8 @@ def test_l20_tab_order_models_before_setup_and_the_sheet_before_the_tray(
     foot = built._setup_press.frame.master
     assert rail.index(built._model_list) < rail.index(foot)
     assert configured.get("takefocus") == 0, "the hidden tab strip takes no focus"
-    assert lifted.index(built._band) < lifted.index(built._tray), \
-        "sheet, then the band, then the tray"
+    # Updated (R6): no band; the tray comes after the sheet.
+    assert built._tray in lifted, "sheet, then the tray"
     built.close()
 
 
@@ -6634,7 +6634,7 @@ def test_ack_a_repeat_of_the_open_title_counts_and_does_not_reopen(dashboard):
                                    "301 s, so it was powered down."))
     SCHEDULER.pump()
     assert dashboard._ack_dialog is dialog and not dialog.top.is_destroyed
-    assert len(dashboard._alerts) == 2, "the band still lists both (HC-2)"
+    assert len(dashboard._alerts) == 2, "both are kept (HC-2)"
     assert dialog.body.cget("text") == ("Stepper Probe was idle for 301 s, so "
                                         "it was powered down. (x2)")
     dialog.key.widget.fire("<Button-1>")
@@ -6664,21 +6664,6 @@ def test_ack_the_acknowledgement_is_logged_at_debug(dashboard, monkeypatch):
     assert ("Alert Acknowledged", "warning/Idle Timeout") in said, said
 
 
-def test_ack_the_band_acknowledge_closes_the_dialog_too(dashboard):
-    """The band stays as the window's record of what is waiting (a
-    non-modal dialog can end up behind the window); its Acknowledge clears
-    all, and the dialog with them."""
-    dashboard.open()
-    dashboard._on_event(_attention(1))
-    dashboard._on_event(_attention(2, title="Heater Off Not Sent"))
-    SCHEDULER.pump()
-    dialog = dashboard._ack_dialog
-    assert dashboard._band.is_packed
-    assert dashboard._band_text.cget("text").startswith("2 notices need")
-    dashboard._band_ack.widget.fire("<Button-1>")
-    assert dialog.top.is_destroyed and dashboard._ack_dialog is None
-
-
 def test_ack_close_takes_the_dialog_down(dashboard):
     dashboard.open()
     dashboard._on_event(_attention(1))
@@ -6686,3 +6671,184 @@ def test_ack_close_takes_the_dialog_down(dashboard):
     dialog = dashboard._ack_dialog
     dashboard.close()
     assert dialog.top.is_destroyed
+
+
+# ---------------------------------------------------------------------------
+# rb-restart R1/R6: an action on an acknowledged notice
+# ---------------------------------------------------------------------------
+
+class ActionSetup(Panel):
+    """A Setup stand-in with the two update commands the prompts name."""
+    NAME = "Setup"
+
+    def __init__(self):
+        super().__init__()
+        self.restarts, self.applies = [], []
+        self.refuse = ""
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "Update",
+            sch.button("Update now", "apply_update", role="go"),
+            sch.button("Restart", "restart_station"),
+            layout="row"))
+
+    def apply_update(self, confirmed=False):
+        if self.refuse:
+            raise Refused(self.refuse)
+        if not confirmed:
+            raise NeedsConfirm("Update the station now?", "apply_update")
+        self.applies.append(confirmed)
+        return True
+
+    def restart_station(self, confirmed=False):
+        if not confirmed:
+            raise NeedsConfirm("Restart the station now?", "restart_station")
+        self.restarts.append(confirmed)
+        return True
+
+
+RESTART_ACTION = {"label": "Restart now", "name": "__setup__",
+                  "command": "restart_station", "args": [True]}
+UPDATE_ACTION = {"label": "Update now", "name": "__setup__",
+                 "command": "apply_update", "args": []}
+
+
+def _prompt(index, action, title="Restart Needed",
+            message="Updated to def5678. Restart the station to run it."):
+    return Event(index, "warning", "Setup", title, message, None, True, 0.0,
+                 action)
+
+
+@pytest.fixture
+def action_board(controller):
+    setup = ActionSetup()
+    built = tkmod.TkDashboard(controller, setup)
+    built.open()
+    yield built, setup
+    if not built._closing:
+        built.close()
+
+
+def test_restart_an_action_shows_two_keys_and_return_runs_it(action_board,
+                                                             tk_harness):
+    board, setup = action_board
+    board._on_event(_prompt(1, RESTART_ACTION))
+    SCHEDULER.pump()
+    dialog = board._ack_dialog
+    assert dialog.key.widget.cget("text") == "Restart now"
+    assert dialog.later.widget.cget("text") == "Later"
+    presses = [w for w in _all_widgets(dialog.top) if w.cget("takefocus") == 1]
+    assert sorted(w.cget("text") for w in presses) == ["Later", "Restart now"]
+    assert Focus.current is dialog.key.widget, "the action is the default"
+    dialog.top.fire("<Return>")
+    assert dialog.top.is_destroyed and board._ack_dialog is None
+    # The dialog was the question: confirmed, and nothing asked again.
+    assert setup.restarts == [True]
+    assert tk_harness.asked == []
+
+
+def test_restart_escape_and_the_close_button_are_later(action_board):
+    board, setup = action_board
+    for index, gesture in enumerate(("<Escape>", "close", "click")):
+        board._on_event(_prompt(index, RESTART_ACTION, message=f"Updated {index}."))
+        SCHEDULER.pump()
+        dialog = board._ack_dialog
+        if gesture == "close":
+            dialog.top.protocols["WM_DELETE_WINDOW"]()
+        elif gesture == "click":
+            dialog.later.widget.fire("<Button-1>")
+        else:
+            dialog.top.fire(gesture)
+        assert dialog.top.is_destroyed and board._alerts == [], gesture
+    assert setup.restarts == []
+
+
+def test_restart_the_action_key_click_runs_it_too(action_board):
+    board, setup = action_board
+    board._on_event(_prompt(1, RESTART_ACTION))
+    SCHEDULER.pump()
+    board._ack_dialog.key.widget.fire("<Button-1>")
+    assert setup.restarts == [True]
+
+
+def test_restart_an_action_that_asks_asks_as_a_button_press_does(action_board,
+                                                                tk_harness):
+    """Update now from the Update Ready dialog is the panel's own press:
+    its confirmation is asked, and a No runs nothing."""
+    board, setup = action_board
+    tk_harness.confirm_answer = False
+    board._on_event(_prompt(1, UPDATE_ACTION, title="Update Ready",
+                            message="2 new commits are ready: x."))
+    SCHEDULER.pump()
+    board._ack_dialog.key.widget.fire("<Button-1>")
+    assert tk_harness.asked == [("confirm", "Update the station now?")]
+    assert setup.applies == []
+    tk_harness.confirm_answer = True
+    board._on_event(_prompt(2, UPDATE_ACTION, title="Update Ready",
+                            message="3 new commits are ready: y."))
+    SCHEDULER.pump()
+    board._ack_dialog.key.widget.fire("<Button-1>")
+    assert setup.applies == [True]
+
+
+def test_restart_a_refused_action_shows_on_its_panel(action_board, monkeypatch):
+    board, setup = action_board
+    setup.refuse = "Close every model first."
+    shown = []
+    view = board._panels[board.SETUP_TAB]
+    monkeypatch.setattr(view, "_show_refused", lambda reason, *a: shown.append(reason))
+    board._on_event(_prompt(1, UPDATE_ACTION, title="Update Ready"))
+    SCHEDULER.pump()
+    board._ack_dialog.key.widget.fire("<Button-1>")
+    assert "Close every model first." in shown
+
+
+def test_restart_the_dialog_stays_over_the_window_without_a_grab(
+        action_board, monkeypatch):
+    """R6: transient for the main window and lifted on every show."""
+    board, _ = action_board
+    transient = []
+    monkeypatch.setattr(FakeWidget, "winfo_toplevel", lambda self: self,
+                        raising=False)
+    monkeypatch.setattr(FakeRoot, "transient",
+                        lambda self, master=None: transient.append(master),
+                        raising=False)
+    board._on_event(_prompt(1, RESTART_ACTION))
+    SCHEDULER.pump()
+    dialog = board._ack_dialog
+    assert transient == [board.root] and dialog.top.lifted >= 1
+    before = dialog.top.lifted
+    board._on_event(_prompt(2, RESTART_ACTION, message="Updated again."))
+    SCHEDULER.pump()
+    assert board._ack_dialog is dialog and dialog.top.lifted > before
+    assert GRABS == []
+
+
+def test_restart_a_notice_without_an_action_keeps_one_key(action_board):
+    board, _ = action_board
+    board._on_event(_attention(1))
+    SCHEDULER.pump()
+    dialog = board._ack_dialog
+    assert dialog.later is None and dialog.key.widget.cget("text") == "Understood"
+
+
+def test_restart_the_base_runs_an_action_without_a_drawn_panel(tk_harness):
+    """`Dashboard.run_action` with no PanelView for the name: the same call,
+    the Dashboard's own confirmation, a refusal as a tray warning."""
+    from views.base import Dashboard
+    setup = ActionSetup()
+
+    class Bare(Dashboard):
+        asked = []
+
+        def _confirm(self, prompt):
+            self.asked.append(prompt)
+            return True
+
+    board = Bare(FakeController(), setup)
+    assert board.run_action(UPDATE_ACTION).is_ok
+    assert board.asked == ["Update the station now?"] and setup.applies == [True]
+    assert board.run_action(RESTART_ACTION).is_ok and setup.restarts == [True]
+    assert board.run_action(None) is None

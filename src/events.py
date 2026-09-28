@@ -25,14 +25,19 @@ import traceback
 
 class Event:
     __slots__ = ("id", "severity", "source", "title", "message", "exception",
-                 "needs_ack", "count", "first_seen", "last_seen")
+                 "needs_ack", "count", "first_seen", "last_seen", "action")
 
     def __init__(self, id, severity, source, title, message, exception,
-                 needs_ack, now):
+                 needs_ack, now, action=None):
         self.id, self.severity, self.source = id, severity, source
         self.title, self.message, self.exception = title, message, exception
         self.needs_ack, self.count = needs_ack, 1
         self.first_seen = self.last_seen = now
+        #: rb-restart R1: the acknowledgement dialog's second key, or None:
+        #: {"label", "name", "command", "args"}. `name` is a model's name or
+        #: `SETUP_PANEL`; the view runs it the way a press of a button on
+        #: that panel runs, so refusals and confirmations show as usual.
+        self.action = action
 
     @property
     def key(self):
@@ -49,7 +54,9 @@ class Event:
         return {"id": self.id, "severity": self.severity, "source": self.source,
                 "title": self.title, "message": self.message,
                 "needs_ack": self.needs_ack, "count": self.count,
-                "text": self.text, "last_seen": self.last_seen}
+                "text": self.text, "last_seen": self.last_seen,
+                "action": dict(self.action, args=list(self.action["args"]))
+                if self.action else None}
 
     def __repr__(self):
         return f"<Event {self.id} {self.severity} {self.text!r}>"
@@ -65,6 +72,12 @@ BROWSER_GONE = "Browser Gone - FULL STOP"
 TEMPERATURE_DISCONNECTED = "Temperature Disconnected"
 ROTATOR_UNREACHABLE = "Rotator Unreachable"
 HEATER_OFF_NOT_SENT = "Heater Off Not Sent"
+#: rb-restart R2: Setup's two update prompts. Each carries an action.
+UPDATE_READY = "Update Ready"
+RESTART_NEEDED = "Restart Needed"
+
+#: The `name` an action (and the Web's `/api/run`) gives the Setup panel.
+SETUP_PANEL = "__setup__"
 
 #: The warnings that ask for an acknowledgement (rb-ack, owner 2026-09-28:
 #: "more attention grabbing, similar to the popup for the latch release").
@@ -74,7 +87,25 @@ HEATER_OFF_NOT_SENT = "Heater Off Not Sent"
 #: every period would nag), `BROWSER_SILENT` (whoever could answer a modal
 #: is not at the page), and every error (errors ask by default).
 ATTENTION = frozenset({IDLE_TIMEOUT, TEMPERATURE_DISCONNECTED,
-                       ROTATOR_UNREACHABLE, HEATER_OFF_NOT_SENT})
+                       ROTATOR_UNREACHABLE, HEATER_OFF_NOT_SENT,
+                       UPDATE_READY, RESTART_NEEDED})
+
+
+def _action(action, needs_ack):
+    """`(label, name, command[, args])` -> the dict an Event carries, or None.
+    An action is a key on the acknowledgement dialog, so it needs one."""
+    if action is None:
+        return None
+    if not needs_ack:
+        raise ValueError("an action rides only on a notice that asks for "
+                         "acknowledgement (ack=True)")
+    items = tuple(action)
+    if len(items) not in (3, 4):
+        raise ValueError("an action is (label, name, command) or "
+                         "(label, name, command, args)")
+    label, name, command = (str(item) for item in items[:3])
+    args = list(items[3]) if len(items) == 4 else []
+    return {"label": label, "name": name, "command": command, "args": args}
 
 
 class EventLog:
@@ -86,12 +117,17 @@ class EventLog:
         self._max_events, self._clock, self._next_id = max_events, clock, 1
         self._debug_seen, self._file, self._file_lock = {}, None, threading.Lock()
 
-    def error(self, title, message, *, source="", exception=None, ack=True):
-        return self._publish("error", source, title, message, exception, ack)
+    def error(self, title, message, *, source="", exception=None, ack=True,
+              action=None):
+        return self._publish("error", source, title, message, exception, ack,
+                             _action(action, ack))
 
-    def warn(self, title, message, *, source="", exception=None, ack=False):
-        """A tray line; `ack=True` only for a title in `ATTENTION`."""
-        return self._publish("warning", source, title, message, exception, ack)
+    def warn(self, title, message, *, source="", exception=None, ack=False,
+             action=None):
+        """A tray line; `ack=True` only for a title in `ATTENTION`. `action`
+        (rb-restart R1) puts a second key on its dialog."""
+        return self._publish("warning", source, title, message, exception, ack,
+                             _action(action, ack))
 
     def info(self, title, message, *, source=""):
         return self._publish("info", source, title, message, None, False)
@@ -122,6 +158,17 @@ class EventLog:
         self._write_file("info", "EventLog", f"log opened: {path}", None)
         return path
 
+    def flush_file(self):
+        """Push what the log file holds to disk, keeping it open (a restart
+        replaces the process without running any exit path)."""
+        with self._file_lock:
+            if self._file:
+                try:
+                    self._file.flush()
+                    os.fsync(self._file.fileno())
+                except (OSError, ValueError):
+                    pass
+
     def close_file(self):
         with self._file_lock:
             if self._file:
@@ -143,7 +190,8 @@ class EventLog:
             except (OSError, ValueError):
                 pass
 
-    def _publish(self, severity, source, title, message, exception, needs_ack):
+    def _publish(self, severity, source, title, message, exception, needs_ack,
+                 action=None):
         now = self._clock()
         with self._lock:
             self._prune_recent(now)
@@ -155,7 +203,7 @@ class EventLog:
                 is_new = False
             else:
                 event = Event(self._next_id, severity, source, title, message,
-                              exception, needs_ack, now)
+                              exception, needs_ack, now, action)
                 self._next_id += 1
                 self._events.append(event)
                 del self._events[:-self._max_events]
@@ -242,5 +290,6 @@ class EventLog:
 events = EventLog()
 for _name in ("STOP_NOT_CONFIRMED", "IDLE_TIMEOUT_SOON", "IDLE_TIMEOUT", "BROWSER_SILENT",
               "BROWSER_GONE", "TEMPERATURE_DISCONNECTED", "ROTATOR_UNREACHABLE",
-              "HEATER_OFF_NOT_SENT", "ATTENTION"):
+              "HEATER_OFF_NOT_SENT", "UPDATE_READY", "RESTART_NEEDED",
+              "SETUP_PANEL", "ATTENTION"):
     setattr(events, _name, globals()[_name])

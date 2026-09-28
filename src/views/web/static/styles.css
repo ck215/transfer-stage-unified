@@ -363,6 +363,11 @@ span.value.role-danger:not(.is-empty)::before,
 
 .link-state.is-down::before { background: var(--signal); }
 
+/* rb-restart R4: a restart is deliberate, not a fault: ink, not signal,
+   until it did not come back (is-restart-failed keeps the signal mark). */
+.link-state.is-restarting { font-weight: 500; }
+.link-state.is-restarting::before { background: var(--text); }
+
 /* Quit is deliberate, not a fault: the sentence is the one thing left to
    read on the page, ink at readout size (I5, UXPM5-4); it takes focus only
    so focus has somewhere to land, and draws no ring and no mark. */

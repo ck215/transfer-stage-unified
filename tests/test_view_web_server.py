@@ -4195,3 +4195,285 @@ def test_signature_reduced_motion_zeroes_every_duration_and_keeps_the_states(tie
     """, tmp_path)
     assert out["moving"] == [], out
     assert out["collarRed"] and out["down"], out
+
+
+# --------------------------------------------------------------------------
+# rb-restart: the acknowledgement's action (R1), the restart (R4), the ack
+# log (R7)
+# --------------------------------------------------------------------------
+import views.web.server as web_server
+
+
+class RestartSetup(FakeSetup):
+    """FakeSetup with the two update commands the prompts name."""
+
+    def __init__(self):
+        super().__init__()
+        self.restarts, self.applies = [], []
+
+    @property
+    def schema(self):
+        base = FakeSetup.schema.fget(self)
+        base["sections"].insert(0, sch.section(
+            "Update",
+            sch.button("Update now", "apply_update", role="go"),
+            sch.button("Restart", "restart_station"),
+            layout="row"))
+        return base
+
+    def apply_update(self, confirmed=False):
+        if not confirmed:
+            raise NeedsConfirm("Update the station now?", "apply_update")
+        self.applies.append(confirmed)
+        return True
+
+    def restart_station(self, confirmed=False):
+        if not confirmed:
+            raise NeedsConfirm("Restart the station now?", "restart_station")
+        self.restarts.append(confirmed)
+        return True
+
+
+def _restart_station(tmp_path, port=0):
+    controller = Controller()
+    probe = FakeProbe(root=str(tmp_path))
+    controller.add("Fake Probe", probe, {"root": str(tmp_path)})
+    setup = RestartSetup()
+    view = WebView(controller, setup, port=port, open_browser=False)
+    assert view.open()
+    return view, setup
+
+
+@pytest.fixture
+def restartable(tmp_path):
+    view, setup = _restart_station(tmp_path)
+    try:
+        yield view, setup
+    finally:
+        view.close()
+
+
+RESTART_ACTION = ("Restart now", "__setup__", "restart_station", (True,))
+UPDATE_ACTION = ("Update now", "__setup__", "apply_update")
+
+
+def test_state_says_which_station_run_answers(station):
+    view, _, _ = station
+    first = _get(view, "/api/state")[1]["boot"]
+    assert first == web_server.BOOT_ID and first == _get(view, "/api/state")[1]["boot"]
+
+
+def test_the_setup_name_is_the_events_one():
+    assert SETUP_NAME == events.SETUP_PANEL == "__setup__"
+
+
+def test_the_event_feed_carries_the_action(station):
+    view, _, _ = station
+    event = events.warn("Restart Needed", "Updated to def5678.", ack=True,
+                        source="Setup", action=RESTART_ACTION)
+    feed = _get(view, f"/api/events?since={event.id - 1}")[1]["events"]
+    [sent] = [e for e in feed if e["id"] == event.id]
+    assert sent["action"] == {"label": "Restart now", "name": "__setup__",
+                              "command": "restart_station", "args": [True]}
+
+
+def test_r7_an_acknowledgement_is_logged_at_debug(station, monkeypatch):
+    view, _, _ = station
+    said = []
+    real = events.debug
+    monkeypatch.setattr(events, "debug", lambda title, message, **kw: (
+        said.append((title, message)), real(title, message, **kw)))
+    event = events.warn("Idle Timeout", "idle 300 s", ack=True, source="Probe")
+    status, answer = _post(view, "/api/ack", {"id": event.id, "answer": "later"})
+    assert status == 200 and answer == {"status": "ok"}
+    assert ("Acknowledged", f"event {event.id} (warning/Idle Timeout): later") in said
+    # An unknown answer is logged as plain acknowledgement; an id is required.
+    _post(view, "/api/ack", {"id": event.id, "answer": "<script>"})
+    assert [m for t, m in said if t == "Acknowledged"][-1].endswith(": understood")
+    assert _post(view, "/api/ack", {"id": "7"})[0] == 400
+    assert _post(view, "/api/ack", {"id": True})[0] == 400
+    assert _post(view, "/api/ack", {"id": 10 ** 9})[0] == 200
+
+
+def test_r7_the_ack_route_keeps_the_local_only_rules(station):
+    view, _, _ = station
+    status, _ = _post(view, "/api/ack", {"id": 1},
+                      headers={"Origin": "http://evil.example"})
+    assert status == 403
+
+
+def test_r4_a_new_station_is_idle_until_a_page_checks_in(tmp_path):
+    """The restarted server has no client yet: its watchdog never stops
+    anything before the first heartbeat, energized or not."""
+    class Energized(Controller):
+        is_energized = True
+        stops = 0
+
+        def estop_all(self):
+            self.stops += 1
+            return {}
+
+    controller = Energized()
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    try:
+        view._clock = lambda: 10 ** 6
+        view._check_heartbeat()
+        assert view.heartbeat_age is None and controller.stops == 0
+    finally:
+        view.close()
+
+
+#: What the acknowledgement dialog's keys say, and the connection line.
+_ACK_KEYS = r"""() => ({
+  open: !document.getElementById('ack-modal').hidden,
+  keys: Array.from(document.querySelectorAll('#ack-modal button')).map((b) => b.textContent.trim()),
+  focused: document.activeElement && document.activeElement.id,
+  link: document.getElementById('connection').textContent,
+})"""
+
+
+@needs_browser
+def test_restart_an_action_notice_has_two_keys_and_return_runs_it(
+        restartable, tmp_path):
+    view, setup = restartable
+    events.clear()
+
+    def publish():
+        time.sleep(1.5)
+        events.warn("Restart Needed", "Updated to def5678. Restart the station "
+                    "to run it.", source="Setup", ack=True, action=RESTART_ACTION)
+    threading.Thread(target=publish, daemon=True).start()
+    out = _browse(view, r"""
+      const keys = () => page.evaluate(%(keys)s);
+      await until(() => !document.getElementById('ack-modal').hidden, 10000);
+      const shown = await keys();
+      await page.keyboard.press('Enter');
+      await sleep(800);
+      return { shown, after: await keys() };
+    """ % {"keys": _ACK_KEYS}, tmp_path)
+    assert out["shown"]["keys"] == ["Restart now", "Later"], out
+    assert out["shown"]["focused"] == "ack-ok"
+    assert setup.restarts == [True], "Return runs the action, confirmed"
+    assert out["after"]["open"] is False
+    assert out["after"]["link"] == "Restarting the station…", out
+
+
+@needs_browser
+def test_restart_later_and_escape_run_nothing_and_a_plain_notice_keeps_one_key(
+        restartable, tmp_path):
+    view, setup = restartable
+    events.clear()
+
+    def publish():
+        time.sleep(1.5)
+        events.warn("Update Ready", "2 new commits are ready: x. Update now, "
+                    "then restart the station.", source="Setup", ack=True,
+                    action=UPDATE_ACTION)
+        events.warn("Restart Needed", "Updated to def5678.", source="Setup",
+                    ack=True, action=RESTART_ACTION)
+        events.warn("Idle Timeout", "idle 300 s", source="Fake Probe", ack=True)
+    threading.Thread(target=publish, daemon=True).start()
+    out = _browse(view, r"""
+      const keys = () => page.evaluate(%(keys)s);
+      await until(() => document.getElementById('ack-count').textContent === '2 more waiting', 10000);
+      const first = await keys();
+      await page.click('#ack-later');
+      await sleep(300);
+      const second = await keys();
+      await page.keyboard.press('Escape');
+      await sleep(300);
+      const third = await keys();
+      await page.click('#ack-ok');
+      await sleep(300);
+      return { first, second, third, done: await keys() };
+    """ % {"keys": _ACK_KEYS}, tmp_path)
+    assert out["first"]["keys"] == ["Update now", "Later"]
+    assert out["second"]["keys"] == ["Restart now", "Later"]
+    assert out["third"]["keys"] == ["Understood"], "Later leaves with its notice"
+    assert out["done"]["open"] is False
+    assert setup.applies == [] and setup.restarts == []
+
+
+@needs_browser
+def test_restart_an_action_that_asks_asks_on_the_page(restartable, tmp_path):
+    view, setup = restartable
+    events.clear()
+
+    def publish():
+        time.sleep(1.5)
+        events.warn("Update Ready", "2 new commits are ready: x.", source="Setup",
+                    ack=True, action=UPDATE_ACTION)
+    threading.Thread(target=publish, daemon=True).start()
+    out = _browse(view, r"""
+      await until(() => !document.getElementById('ack-modal').hidden, 10000);
+      await page.click('#ack-ok');
+      await until(() => !document.getElementById('confirm-modal').hidden, 5000);
+      const question = await page.evaluate(() => document.getElementById('confirm-text').textContent);
+      await page.click('#confirm-yes');
+      await sleep(600);
+      return { question };
+    """, tmp_path)
+    assert out["question"] == "Update the station now?"
+    assert setup.applies == [True]
+
+
+@needs_browser
+def test_r4_the_page_waits_for_the_restarted_station_and_reloads(tmp_path):
+    """The reload path against a real server stopped and started again on
+    the same port: the page says it is restarting, stops beating, and
+    reloads itself once the new station (another boot) answers."""
+    view, setup = _restart_station(tmp_path)
+    port, boot = view.port, web_server.BOOT_ID
+    state = {"new": None}
+
+    def restart_by_hand():
+        deadline = time.monotonic() + 30
+        while not setup.restarts and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.3)
+        view.close()                         # the old station is gone
+        time.sleep(3.0)                      # nothing listens for a while
+        web_server.BOOT_ID = boot + "-new"   # a new process, as execv makes one
+        state["new"] = _restart_station(tmp_path, port=port)
+    thread = threading.Thread(target=restart_by_hand, daemon=True)
+    thread.start()
+    try:
+        out = _browse(view, r"""
+          await page.evaluate(() => { window.beforeRestart = true; });
+          const beats = [];
+          page.on('request', (r) => { if (r.url().includes('/api/heartbeat')) beats.push(Date.now()); });
+          await page.evaluate(() => document.getElementById('setup-link').click());
+          await sleep(300);
+          const pressed = Date.now();
+          // Press Restart on the Setup card and answer its question.
+          const restart = await page.$$eval('button', (bs) => {
+            const b = bs.find((x) => x.textContent.trim() === 'Restart');
+            if (b) b.click();
+            return Boolean(b);
+          });
+          await until(() => !document.getElementById('confirm-modal').hidden, 5000);
+          await page.click('#confirm-yes');
+          await until(() => document.getElementById('connection').textContent.startsWith('Restarting'), 5000);
+          const waiting = await page.evaluate(() => document.getElementById('connection').textContent);
+          const reloaded = await when(async () => {
+            try { return await page.evaluate(() => window.beforeRestart === undefined); }
+            catch (e) { return false; }
+          }, 20000);
+          await sleep(1500);
+          const after = await page.evaluate(() => ({
+            link: document.getElementById('connection').textContent,
+            cards: document.querySelectorAll('.card').length }));
+          const quietBeats = beats.filter((t) => t > pressed + 1000 && t < pressed + 3500).length;
+          return { restart, waiting, reloaded, after, quietBeats };
+        """, tmp_path)
+    finally:
+        thread.join(40)
+        web_server.BOOT_ID = boot
+        if state["new"] is not None:
+            state["new"][0].close()
+    assert out["restart"] is True
+    assert setup.restarts == [True]
+    assert out["waiting"] == "Restarting the station…"
+    assert out["reloaded"] is True, "the page did not reload for the new station"
+    assert out["after"]["link"] == "" and out["after"]["cards"] >= 1, out
+    assert out["quietBeats"] == 0, "the page kept beating while it waited"

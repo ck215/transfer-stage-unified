@@ -45,8 +45,17 @@ from result import Refused
 from views import theme
 from views.base import stop_words
 
-#: `name` that targets the Setup panel instead of a model.
-SETUP_NAME = "__setup__"
+#: `name` that targets the Setup panel instead of a model (`events.SETUP_PANEL`,
+#: the name an acknowledgement's action carries too).
+SETUP_NAME = events.SETUP_PANEL
+
+#: This process's run, as the page sees it (rb-restart R4): a restart keeps
+#: the pid (`execv`), so the token is the start time and random bits. A page
+#: that sees it change is talking to a new station and reloads itself.
+BOOT_ID = f"{time.time():.6f}-{os.urandom(4).hex()}"
+
+#: What a page may say it answered an acknowledgement with (R7), for the log.
+ACK_ANSWERS = frozenset({"understood", "later", "action"})
 
 SOURCE = "Web"
 
@@ -142,6 +151,7 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             # re-derives the disc's face, the headline or the rail line.
             state = self.controller.state()
             state["stop_words"] = stop_words(state.get("stop") or {})
+            state["boot"] = BOOT_ID
             return self._send_json(200, state)
 
         if route == "/api/schema":
@@ -281,6 +291,9 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         if route == "/api/upload":
             return self._receive_upload(body)
 
+        if route == "/api/ack":
+            return self._receive_ack(body)
+
         if route == "/api/quit":
             # O5 (IMP8-3): every model is stopped BEFORE the answer, and the
             # answer says which did not confirm, so the page's end state can
@@ -298,6 +311,25 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
 
         return self._send_json(404, {"status": "error",
                                      "reason": f"no route {route}"})
+
+    def _receive_ack(self, body):
+        """R7: the page answered an acknowledgement. The log file says so,
+        as the desktop views' own "Alert Acknowledged" line does; nothing
+        else changes. `{"id": <event id>, "answer": "understood" | "later" |
+        "action"}`; the answer is optional."""
+        event_id = body.get("id")
+        if isinstance(event_id, bool) or not isinstance(event_id, int):
+            return self._send_json(400, {"status": "error",
+                                         "reason": "id must be an event id"})
+        answer = body.get("answer")
+        answer = answer if answer in ACK_ANSWERS else "understood"
+        found = next((e for e in events.since(event_id - 1) if e.id == event_id), None)
+        what = (f"{found.severity}/{found.title}" + (f" x{found.count}" if found.count > 1
+                                                     else "")
+                if found is not None else "an event no longer in the log")
+        events.debug("Acknowledged", f"event {event_id} ({what}): {answer}",
+                     source=SOURCE)
+        return self._send_json(200, {"status": "ok"})
 
     # -- the three calls a view makes -------------------------------------
     def _run(self, name, command, inputs=None, args=()):
