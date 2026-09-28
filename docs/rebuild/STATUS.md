@@ -115,6 +115,25 @@ lands as `palette.py` / `theme.py` tokens.
 
 ### Resume here (handoff written 2026-09-26, late; Tier R added 2026-09-27)
 
+- **2026-09-27, night: the first real trial, and its findings.** The owner
+  recorded a trial at the station, which is a **Linux PC** (bare X11, no
+  compositor): the Tk region picker showed an opaque white sheet (its
+  `-alpha` is ignored there; Qt's `WA_TranslucentBackground` has the same
+  requirement; the Web picker draws on a screenshot and works). Workflow
+  findings: Red Percent and the Transfer Map read as two tools on two
+  pages; no prompt before the before/after pictures and a failed grab was
+  only a tray warning; nothing at launch said where the database goes;
+  no per-tip trial count. Two worktrees in flight, briefs in `handoff/`:
+  `rb-trial` (the Transfer Map page becomes the whole trial sheet: region
+  picker and Next step on it, Arm starts the Red Percent run, picture
+  prompts via `NeedsConfirm`, pictures shown, database created and
+  announced in `open()`, "New session database", "Trials on this tip") and
+  `rb-picker` (both pickers draw on a screenshot; transparency is only a
+  fallback). Landed the same night: `update.sh` / `update.bat`, a
+  fast-forward-only updater so the bench takes fixes without GitHub
+  Desktop (`1474a80`). Open owner call: the pictures are the capture
+  region, not the whole feed.
+
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
   Qt 227, golden 78, seven-row launch. What the bench should know:
