@@ -182,6 +182,31 @@ lands as `palette.py` / `theme.py` tokens.
   pinned and Red Percent's group scrolls under it; pinning off for a host
   page is the likely follow-up. Tk/Qt renders unseen. Gates on the
   merged tree: **fast 2798, golden 78, Qt 243**.
+  **2026-09-28, later: the owner's next four asks, landed.** (1) Setup:
+  a hosted model has no row; the Transfer Map row launches Red Percent
+  first (`25ac461`; `register` refuses a hosted class with resources).
+  (2) `rb-mark` merged `effd876`: the Mark picture (region at once,
+  whole screen on the model's one picture thread; store schema 3, the
+  same in-place upgrade), tips as records (`tips` table created on
+  demand at the first Arm or an import; status line under the count;
+  Tip section with note, retire, return; Tips log; a third export;
+  arming on a broken or retired tip asks in the same prompt), polling
+  that starts itself (an entry commit or `set_region` starts Red
+  Percent's run once region + tip are set; keyed on that pair so a
+  Note commit never restarts a run the operator ended; Arm takes the
+  run over; no `reset_baseline`, a new run baselines on its first
+  frame), and the mss handle leak closed at the root (`Screen.keep_handle`
+  for the run loop only; every other grab opens and closes its own; one
+  Web trial used to leave 5 X connections). (3) `rb-update` merged
+  `c86ef66`: `controller/updater.py` (fast-forward only, same rules as
+  `update.sh`), Setup's Update row first (Station, Updates, Update now,
+  Check again, Coming), a startup check on a thread
+  (`STATION_NO_UPDATE_CHECK=1` in tests), Launch refused while an
+  update lands and, the lead's rule, after one until the restart
+  (`d66c462`). Web Setup capture checked by the lead: sizes fine; the
+  Web capitalises the sha's first letter (nit). Open owner calls:
+  restart polling after Finish (today the next Arm starts it); a tip
+  note before its first trial (refused today).
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
