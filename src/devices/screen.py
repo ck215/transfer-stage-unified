@@ -110,7 +110,9 @@ class Screen(Device):
         """The whole virtual desktop as PNG bytes, downscaled to `max_width`,
         plus its full-size bounds: `(png_bytes, {"left","top","width","height"})`.
         For a view that has no overlay of its own (the browser) to draw a
-        region on. Returns (None, None) when capture is unavailable."""
+        region on. `max_width=None` keeps the desktop at full size (the
+        Transfer Map's whole-screen pictures). Returns (None, None) when
+        capture is unavailable."""
         if not self._is_open:
             return None, None
         try:
@@ -119,7 +121,7 @@ class Screen(Device):
             bounds = dict(instance.monitors[0])   # the virtual desktop
             shot = instance.grab(bounds)
             image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-            if image.width > max_width:
+            if max_width is not None and image.width > max_width:
                 image = image.resize((max_width, round(image.height * max_width / image.width)))
             import io
             buffer = io.BytesIO()

@@ -1314,3 +1314,62 @@ def test_run_token_names_this_run_and_no_later_one(monitor):
     monitor.start_run(confirmed=True)
     assert monitor.run_id == "C001"                    # the same name again
     assert monitor.run_token is not None and monitor.run_token is not first
+
+
+# -- full pictures: the whole desktop at full size (additive, 2026-09-28) ------
+
+class _DesktopShot:
+    """An mss-shaped grab: `size` and a BGRA buffer (pure blue here, so a
+    whole-screen picture is told from a region picture at a glance)."""
+
+    def __init__(self, width, height):
+        self.size = (width, height)
+        self.bgra = bytes([200, 0, 0, 255]) * (width * height)
+
+
+class DesktopCapture(FakeCapture):
+    """`FakeCapture` with a virtual desktop wider than the picker's 1600:
+    a grab of `monitors[0]` is the whole desktop; any other region is a
+    frame, as before."""
+
+    DESKTOP = {"left": 0, "top": 0, "width": 1700, "height": 40}
+
+    def __init__(self, frames, delay, varying=True):
+        super().__init__(frames, delay, varying)
+        self.monitors = [dict(self.DESKTOP)]
+
+    def grab(self, region):
+        if dict(region) == self.DESKTOP:
+            return _DesktopShot(region["width"], region["height"])
+        return super().grab(region)
+
+
+def desktop_screen(frames=None, delay=0.001, varying=True):
+    frames = frames if frames is not None else [red_frame()]
+    return Screen(factory=lambda: DesktopCapture(frames, delay, varying))
+
+
+def test_grab_screen_is_the_whole_desktop_at_full_size(tmp_path):
+    from PIL import Image
+    import io
+    model = RedMonitor(screen=desktop_screen())
+    model.output_root = tmp_path / "runs"
+    model.open()
+    try:
+        png = model.grab_screen()
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+        image = Image.open(io.BytesIO(png))
+        assert image.size == (1700, 40)                 # not downscaled
+        assert image.getpixel((0, 0))[:3] == (0, 0, 200)
+        # The picker's picture is unchanged: downscaled to 1600.
+        picker = model.screen_image
+        assert Image.open(io.BytesIO(picker["image"])).size == (1600, 38)
+        assert picker["width"] == 1700
+    finally:
+        model.close()
+
+
+def test_grab_screen_is_none_when_the_screen_is_closed_or_fails(monitor):
+    closed = RedMonitor(screen=desktop_screen())
+    assert closed.grab_screen() is None                 # never opened
+    assert monitor.grab_screen() is None                # a capture with no desktop

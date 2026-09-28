@@ -23,7 +23,7 @@ from model.rotator import Rotator
 from model.transfer_map import TransferMap
 from events import events
 from result import NeedsConfirm, Refused
-from test_red_monitor import fake_screen
+from test_red_monitor import DesktopCapture, desktop_screen, fake_screen
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +61,7 @@ def _wait_for(predicate, timeout=3.0):
 
 @pytest.fixture
 def red(tmp_path):
-    model = RedMonitor(screen=fake_screen())
+    model = RedMonitor(screen=desktop_screen())
     model.output_root = tmp_path / "runs"
     model.run_name = "C001"
     model.open()
@@ -638,10 +638,12 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
             tiers[key] = section.get("tier", 1)
     for key in ("arm_trial", "mark_force", "finish_trial", "abort_trial",
                 "figure", "tip_id", "tilt_now", "speed_now", "red_now",
-                "trial_count", "trial_status", "db_path", "new_database"):
+                "trial_count", "trial_status", "db_path", "new_database",
+                "before_image", "after_image"):
         assert tiers[key] == 1, key
     for key in ("set_figure_type", "set_force_definition", "attach_afm",
-                "export_csv", "import_csv"):
+                "export_csv", "import_csv", "before_full_image",
+                "after_full_image"):
         assert tiers[key] == 2, key
     for key in ("trials_log", "delete_trial", "last_trial_numbers"):
         assert tiers[key] == 3, key
@@ -1047,9 +1049,299 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
                     "after_image", "live_series", "figure"]
     later = [(s["title"], s.get("tier")) for s in sections
              if s.get("tier", 1) != 1]
-    assert later == [("Figure", 2), ("AFM measurement", 2), ("Data", 2),
+    assert later == [("Full pictures", 2), ("Figure", 2),
+                     ("AFM measurement", 2), ("Data", 2),
                      ("Diagnostics", 3), ("Safety", 3)]
     diagnostics = next(s for s in sections if s["title"] == "Diagnostics")
     assert [e.get("model_attr") or e.get("source_command") or e.get("command")
             for e in diagnostics["elements"]] == [
         "last_trial_numbers", "width_gradient", "trials_log", "delete_trial"]
+
+
+# -- full pictures: the whole screen at Arm and at Finish (2026-09-28) ----------
+# "I need additional full image captures included." The region pictures stay
+# the gate; the whole-screen pictures are the record, so a missing one warns.
+
+def _size(png):
+    import io
+    from PIL import Image
+    return Image.open(io.BytesIO(png)).size
+
+
+DESKTOP_SIZE = (DesktopCapture.DESKTOP["width"], DesktopCapture.DESKTOP["height"])
+
+
+def test_arm_and_finish_keep_whole_screen_pictures(station, private_db):
+    model, red, *_ = station
+    trial = _arm(model)
+    folder = model.pictures_root / str(trial)
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+    assert Path(row["before_full_path"]) == folder / "before_full.png"
+    assert row["after_full_path"] is None
+    _finish(model)
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+    assert Path(row["after_full_path"]) == folder / "after_full.png"
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "after.png", "after_full.png", "before.png", "before_full.png"]
+    for name in ("before_full.png", "after_full.png"):
+        png = (folder / name).read_bytes()
+        assert png[:8] == PNG and _size(png) == DESKTOP_SIZE, name
+    for name in ("before.png", "after.png"):          # the region, unchanged
+        assert _size((folder / name).read_bytes()) == (10, 10), name
+
+
+def test_a_missing_full_picture_warns_and_the_trial_is_recorded(
+        station, private_db, monkeypatch):
+    model, red, *_ = station
+    monkeypatch.setattr(red, "grab_screen", lambda: None)
+    events.forget("No Full Picture")    # a new dedupe episode
+    since = events.latest_id
+    trial = _arm(model)
+    assert model.is_armed
+    warned = _titled("No Full Picture", since)
+    assert len(warned) == 1 and warned[0].severity == "warning"
+    assert f"Trial {trial}" in warned[0].message
+    _finish(model)
+    assert len(_titled("No Full Picture", since)) == 2
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+    assert row["status"] == "recorded"
+    assert row["before_full_path"] is None and row["after_full_path"] is None
+    assert row["before_path"] and row["after_path"]
+    folder = model.pictures_root / str(trial)
+    assert sorted(p.name for p in folder.iterdir()) == ["after.png", "before.png"]
+
+
+def test_a_full_grab_that_raises_is_a_missing_picture(station, monkeypatch):
+    model, red, *_ = station
+
+    def broken():
+        raise RuntimeError("display went away")
+
+    monkeypatch.setattr(red, "grab_screen", broken)
+    events.forget("No Full Picture")    # a new dedupe episode
+    since = events.latest_id
+    _arm(model)
+    assert model.is_armed and len(_titled("No Full Picture", since)) == 1
+
+
+def test_a_red_percent_without_grab_screen_still_arms(tmp_path, private_db):
+    """Duck typing: the map finds Red Percent by `subscribe` and
+    `grab_frame`; `grab_screen` is optional."""
+    class Plain:
+        region = {"top": 0, "left": 0, "width": 10, "height": 10}
+        is_running = True
+        run_token = None
+        def subscribe(self, fn): pass
+        def unsubscribe(self, fn): pass
+        def grab_frame(self): return PNG + b"region"
+
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", Plain())
+    model.tip_id = "t"
+    events.forget("No Full Picture")    # a new dedupe episode
+    since = events.latest_id
+    trial = _arm(model)
+    assert model.is_armed and len(_titled("No Full Picture", since)) == 1
+    model.run("abort_trial")
+    model.close()
+    assert _rows(private_db, "SELECT before_full_path FROM trials WHERE id=?",
+                 trial)[0]["before_full_path"] is None
+
+
+def test_a_stop_during_the_arm_pictures_arms_nothing(idle_station, private_db,
+                                                     monkeypatch):
+    """The whole-screen grab widens the time between Arm's guard and the
+    trial being armed; a stop inside it must win."""
+    model, red = idle_station
+    real = red.grab_screen
+
+    def grab_then_stop():
+        png = real()
+        model.estop()
+        return png
+
+    monkeypatch.setattr(red, "grab_screen", grab_then_stop)
+    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    assert result.is_refused and "stopped" in result.reason
+    assert not model.is_armed and model.trial_count == 0
+    assert not red.is_running                    # the run it started is ended
+
+
+def test_the_full_pictures_sit_under_configure(station):
+    model, red, *_ = station
+    sections = model.schema["sections"]
+    full = next(s for s in sections if s["title"] == "Full pictures")
+    assert full.get("tier") == 2
+    assert full.get("disclosure") == "Configure Transfer Map"
+    assert [(e["type"], e["text"], e["data_command"]) for e in full["elements"]] \
+        == [("image", "Before, whole screen", "before_full_image"),
+            ("image", "After, whole screen", "after_full_image")]
+    assert all(e["empty"] for e in full["elements"])
+    for command in ("before_full_image", "after_full_image"):
+        assert model.run(command).is_ok       # declared data sources
+
+
+def test_the_full_pictures_show_the_armed_trial_else_the_last(station):
+    model, red, *_ = station
+    assert model.before_full_image == b"" and model.after_full_image == b""
+    first = _arm(model)
+    folder = model.pictures_root / str(first)
+    assert model.before_full_image == (folder / "before_full.png").read_bytes()
+    assert model.after_full_image == b""
+    _finish(model)
+    assert model.after_full_image == (folder / "after_full.png").read_bytes()
+    assert _size(model.after_full_image) == DESKTOP_SIZE
+    second = _arm(model)
+    assert model.before_full_image == (model.pictures_root / str(second)
+                                       / "before_full.png").read_bytes()
+    assert model.after_full_image == b""      # not the last trial's
+    model.run("abort_trial")
+    model.disable()
+    model.new_database()
+    assert model.before_full_image == b"" and model.after_full_image == b""
+
+
+def test_export_carries_the_full_picture_paths(station):
+    model, red, *_ = station
+    trial = _record(model, red)
+    rows = list(csv.DictReader(Path(model.export_csv()).open()))
+    folder = model.pictures_root / str(trial)
+    assert rows[0]["before_full_path"] == str(folder / "before_full.png")
+    assert rows[0]["after_full_path"] == str(folder / "after_full.png")
+    header = list(rows[0])
+    assert header.index("before_full_path") == header.index("after_path") + 1
+    assert header.index("after_full_path") == header.index("after_path") + 2
+
+
+# -- the store migrates: version 1 -> 2 ------------------------------------------
+
+V2_COLUMNS = ("before_full_path", "after_full_path")
+
+
+def _version(path):
+    with sqlite3.connect(path) as db:
+        return db.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _columns(path):
+    with sqlite3.connect(path) as db:
+        return [r[1] for r in db.execute("PRAGMA table_info(trials)")]
+
+
+def _version_one_file(path, drop=V2_COLUMNS):
+    """A database as the round before this one wrote it: the version-1
+    trials table (no whole-screen columns), one recorded trial with a
+    profile, `user_version = 1`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    columns = [(n, k) for n, k in tm_module.TRIAL_COLUMNS if n not in drop]
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE trials (" + ", ".join(f"{n} {k}" for n, k in columns)
+               + ")")
+    db.execute("CREATE TABLE profile (trial_id INTEGER NOT NULL REFERENCES "
+               "trials(id), t_s REAL NOT NULL, red REAL, z REAL, x REAL, y REAL)")
+    db.execute("CREATE INDEX profile_trial ON profile(trial_id)")
+    db.execute("INSERT INTO trials (started_at, tip_id, tilt_deg, speed_steps_s, "
+               "width_um, before_path, after_path, status, note) VALUES "
+               "('2026-09-27T15:00:00', 'T7', 12.5, 300, 4.2, '/b.png', "
+               "'/a.png', 'measured', 'bench')")
+    db.executemany("INSERT INTO profile VALUES (1, ?, ?, NULL, NULL, NULL)",
+                   [(0.1 * i, 10.0 + i) for i in range(5)])
+    db.execute("PRAGMA user_version = 1")
+    db.commit()
+    db.close()
+
+
+def test_a_fresh_database_is_version_two_with_the_full_picture_columns(
+        private_db):
+    assert tm_module.SCHEMA_VERSION == 2
+    model = TransferMap()
+    model.open()
+    model.close()
+    assert _version(private_db) == 2
+    assert set(V2_COLUMNS) <= set(_columns(private_db))
+
+
+def test_a_version_one_database_gains_the_columns_and_keeps_its_trial(
+        private_db):
+    """The owner's bench database already holds trials."""
+    _version_one_file(private_db)
+    before = _rows(private_db, "SELECT * FROM trials")
+    assert not set(V2_COLUMNS) & set(_columns(private_db))
+    events.forget("No Full Picture")    # a new dedupe episode
+    since = events.latest_id
+    model = TransferMap()
+    model.open()
+    try:
+        assert _version(private_db) == 2
+        assert set(V2_COLUMNS) <= set(_columns(private_db))
+        after = _rows(private_db, "SELECT * FROM trials")
+        assert len(after) == 1
+        assert {k: after[0][k] for k in before[0]} == before[0]   # untouched
+        assert after[0]["before_full_path"] is None
+        assert after[0]["after_full_path"] is None
+        assert len(_rows(private_db, "SELECT * FROM profile")) == 5
+        upgraded = _titled("Database Upgraded", since)
+        assert len(upgraded) == 1 and str(private_db) in upgraded[0].message
+        assert _titled("Database Ready", since)[0].message == \
+            f"{private_db}: 1 trial(s)"
+        assert model.before_image == b""      # the stored paths are gone files
+        assert model.run("before_full_image").is_ok
+        assert model.before_full_image == b""
+    finally:
+        model.close()
+
+
+def test_a_migrated_database_records_a_trial_with_its_full_pictures(
+        red, private_db):
+    _version_one_file(private_db)
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    model.tip_id = "T7"
+    try:
+        trial = _arm(model)
+        assert trial == 2
+        _finish(model)
+        row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+        assert row["before_full_path"] and row["after_full_path"]
+        assert model.tip_trial_count == 2
+    finally:
+        model.close()
+
+
+def test_the_first_write_migrates_too(private_db):
+    """Not only `open`: a store written before anything opened it (an
+    import from a script, a view reading an old file) upgrades on write."""
+    _version_one_file(private_db)
+    store = tm_module.TrialStore(private_db)
+    store.insert({"tip_id": "T8", "status": "recorded",
+                  "before_full_path": "/x.png"})
+    assert _version(private_db) == 2
+    assert [r["tip_id"] for r in store.trials()] == ["T7", "T8"]
+
+
+def test_a_half_done_upgrade_finishes(private_db):
+    """A version-1 file that already has one of the two columns (an upgrade
+    cut short between the two ALTERs) gets the other and version 2."""
+    _version_one_file(private_db, drop=("after_full_path",))
+    assert _version(private_db) == 1
+    assert tm_module.TrialStore(private_db).ensure() is False
+    assert _version(private_db) == 2
+    assert set(V2_COLUMNS) <= set(_columns(private_db))
+
+
+def test_a_version_two_database_is_left_alone(private_db):
+    tm_module.TrialStore(private_db).ensure()
+    with sqlite3.connect(private_db) as db:
+        schema = db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
+    events.forget("No Full Picture")    # a new dedupe episode
+    since = events.latest_id
+    model = TransferMap()
+    model.open()
+    model.close()
+    with sqlite3.connect(private_db) as db:
+        assert db.execute("SELECT sql FROM sqlite_master ORDER BY name"
+                          ).fetchall() == schema
+    assert _version(private_db) == 2
+    assert not _titled("Database Upgraded", since)
