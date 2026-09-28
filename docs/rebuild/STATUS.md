@@ -133,6 +133,23 @@ lands as `palette.py` / `theme.py` tokens.
   fast-forward-only updater so the bench takes fixes without GitHub
   Desktop (`1474a80`). Open owner call: the pictures are the capture
   region, not the whole feed.
+  **Landed (2026-09-28, small hours):** the three worktrees merged by the
+  lead (`3b5fe48` picker, `4177d3c` trial sheet, `a2456bc` boot grace),
+  plus the lead's `tests/conftest.py` fixture (every Transfer Map store
+  under tmp_path, since `open()` now creates it) and the prompt copy
+  ("Continue", the key the views show). Gates on the merged tree: **fast
+  2715, golden 78, Qt 230**. Headless Web capture of one SIM trial on the
+  sheet: `handoff/shots/trial_sheet_web_*`. Still owed: the one
+  `window`-marked Tk picker test on a free display; the bench check on the
+  Linux PC (picture under the pointer, HiDPI); the Tk and Qt renders of
+  the sheet (two pickers, three images, the Session section) have not
+  been seen. Handoffs: `handoff/fix-{trial-sheet,region-picker,boot-warning}.md`.
+  Boot-warning note: the heater warned because the reader's first pass ran
+  before the port worker had opened the handle; the rotator because
+  `_poll_ok` started as None. Both now hold a boot grace (4.5 s heater,
+  derived from the port's bootloader and handshake waits; 3 s rotator).
+  If the bench warning was titled "Port Unverified", that is
+  `devices/serial_port.py` and is not covered.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
