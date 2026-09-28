@@ -33,11 +33,13 @@ it is cheap, then the custom firmware at 500000 and 115200), and the same
 Setup is the one place besides the models allowed to import
 `devices.*` and the model classes: it is the composition root.
 """
+import os
 import re
 import threading
 import time
 
 import schema as sch
+from controller.updater import Updater
 from devices import gamepad as gamepad_module
 from devices import serial_port as serial_port_module
 from devices.serial_port import ConnectionState, SerialPort
@@ -243,7 +245,7 @@ class Setup(Panel):
     IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
         "idle", "listing", "identifying", "done", "cancelled")
 
-    def __init__(self, controller):
+    def __init__(self, controller, updater=None):
         super().__init__()
         self.controller = controller
         self._rows = self._build_rows()
@@ -295,6 +297,8 @@ class Setup(Panel):
         if controller is not None:
             controller.factory = self.model_from_config
         self._refresh_rows()
+        # Last: the startup update check's thread reads nothing above.
+        self._init_updates(updater)
 
     # -- what a view reads -------------------------------------------------
     @property
@@ -402,6 +406,12 @@ class Setup(Panel):
             "gamepads": gamepads,
             "rows": rows,
             "configs": self.configs,
+            "has_update": self.has_update,
+            "update": {"status": self._update_code, "has_update": self.has_update,
+                       "log": list(self._update_lines),
+                       "is_checking": _alive(self._update_thread),
+                       "is_applying": _alive(self._apply_thread),
+                       "updated_to": self._updated_to},
         })
         return snapshot
 
@@ -1054,6 +1064,11 @@ class Setup(Panel):
         and the Relaunch button once the system is up (a build resets the
         Controller first, so relaunching is the same call). A relaunch over
         energized models asks first (round 8, PM8-6)."""
+        if _alive(self._apply_thread):
+            # An update is landing in this checkout: nothing starts on files
+            # that are being replaced underneath it.
+            self._refuse("An update is being applied. Wait for it to finish, "
+                         "then quit and start the station again.")
         configs = self.configs
         if not configs:
             self._refuse("Select at least one device: tick its Launch box.")
@@ -1174,6 +1189,196 @@ class Setup(Panel):
                             "before launching again.", source=self.NAME,
                             exception=exc)
 
+    # -- the update check (owner, 2026-09-28) -------------------------------
+    #: `apply_update`'s confirmation: the one question before the checkout moves.
+    UPDATE_CONFIRM = ("Update the station now? It fast-forwards this checkout; "
+                      "the station must be restarted afterwards.")
+    #: `Updater.check()`'s status -> the one sentence the Updates line says.
+    #: `behind` is counted, `error` carries the check's own reason.
+    UPDATE_SENTENCES = {
+        "up_to_date": "Up to date.",
+        "offline": "Could not reach GitHub; the station runs as it is.",
+        "dirty": "This checkout has local edits; update by hand.",
+        "diverged": "This checkout has commits GitHub does not; update by hand.",
+        "not_git": "Not a git checkout.",
+        "bundle": "A packaged bundle updates by installing a new one.",
+    }
+    CHECKING = "Checking for updates…"
+    CHECK_OFF = ("The update check is off for this run "
+                 "(STATION_NO_UPDATE_CHECK). Press Check again to check now.")
+
+    def _init_updates(self, updater):
+        """The Update row's state, then - unless `STATION_NO_UPDATE_CHECK` is
+        set - the startup check on a daemon thread. The check fetches; it
+        never touches the tree (`controller.updater`)."""
+        self._updater = updater if updater is not None else Updater()
+        self._update_thread = self._apply_thread = None
+        self._update_code = None        # the last check's status
+        self._update_lines = []         # the incoming `--oneline` lines
+        self._updated_to = None         # sha7 once an update landed
+        self._version_read = False
+        self._warned_updates = set()
+        #: What is RUNNING: read once, so a landed update does not claim to be
+        #: running before the restart.
+        self.station_version = "unknown"
+        self.has_update = False
+        self.update_log = ""
+        if os.environ.get("STATION_NO_UPDATE_CHECK", "") not in ("", "0"):
+            self.update_status = self.CHECK_OFF
+            events.debug("Update Check", "off: STATION_NO_UPDATE_CHECK is set",
+                         source=self.NAME)
+            return
+        self.update_status = self.CHECKING
+        self._start_update_thread()
+
+    def check_updates(self):
+        """Check again: fetch and publish, on a thread. Refused while a check
+        or an update is already running."""
+        with self._lock:
+            if _alive(self._apply_thread):
+                self._refuse("An update is being applied. Wait for it to finish.")
+            if _alive(self._update_thread):
+                self._refuse("An update check is already running. Wait for its "
+                             "answer on the Updates line.")
+            self.update_status = self.CHECKING
+            self._start_update_thread()
+        return True
+
+    def apply_update(self, confirmed=False):
+        """Update now: fast-forward this checkout (`Updater.apply`) on a
+        thread. Never under running devices, never without an update to
+        apply, and never unasked."""
+        with self._lock:
+            if _alive(self._apply_thread):
+                self._refuse("An update is already being applied. Wait for it "
+                             "to finish.")
+            if _alive(self._update_thread):
+                self._refuse("The update check is still running. Wait for its "
+                             "answer, then press Update now.")
+            running = list(getattr(self.controller, "model_names", None) or [])
+            if self._is_launched or running:
+                self._refuse("Close every model first: an update must not land "
+                             "under running devices.")
+            if not self.has_update:
+                self._refuse("There is no update to apply. Press Check again "
+                             "to look for one.")
+            if not confirmed:
+                raise NeedsConfirm(self.UPDATE_CONFIRM, "apply_update")
+            self.update_status = ("Updating. Wait for it to finish; Launch "
+                                  "waits too.")
+            self._apply_thread = threading.Thread(
+                target=self._apply_worker, daemon=True, name="setup-update-apply")
+            self._apply_thread.start()
+        events.debug("Update", "apply started", source=self.NAME)
+        return True
+
+    def _start_update_thread(self):
+        self._update_thread = threading.Thread(
+            target=self._check_worker, daemon=True, name="setup-update-check")
+        self._update_thread.start()
+
+    def _check_worker(self):
+        try:
+            if not self._version_read:
+                self.station_version = self._updater.version()
+                self._version_read = True
+            result = self._updater.check()
+        except Exception as exc:        # never let a worker die silently
+            events.debug("Update Check Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            with self._lock:
+                self._update_code, self._update_lines = "error", []
+                self.has_update, self.update_log = False, ""
+                self.update_status = ("The update check failed; the station "
+                                      "runs as it is.")
+            self._warn_update_once("Update Check Failed",
+                                   "The update check failed; the station runs as "
+                                   "it is. The details are in the log file.",
+                                   exception=exc)
+            return
+        self._publish_check(result)
+
+    def _publish_check(self, result):
+        code = result.get("status")
+        behind = int(result.get("behind") or 0)
+        lines = [str(line) for line in (result.get("log") or [])][:8]
+        reason = result.get("reason") or ""
+        if code == "behind" and behind:
+            sentence = (f"{behind} new commit{'s are' if behind != 1 else ' is'} "
+                        "ready. Update now, then restart the station.")
+        elif code == "up_to_date" and self._updated_to:
+            sentence = self._restart_sentence()
+        elif code in self.UPDATE_SENTENCES:
+            sentence = self.UPDATE_SENTENCES[code]
+        else:
+            sentence = reason or "The update check failed; the station runs as it is."
+        with self._lock:
+            self._update_code = code
+            self._update_lines = lines if behind else []
+            self.update_log = "\n".join(self._update_lines)
+            self.has_update = code == "behind" and behind > 0
+            self.update_status = sentence
+        events.debug("Update Check", f"{code}: behind={behind} ahead="
+                     f"{result.get('ahead')} head={result.get('head')} "
+                     f"remote={result.get('remote')} {reason}".rstrip(),
+                     source=self.NAME)
+        if code == "error":
+            self._warn_update_once("Update Check Failed", sentence)
+
+    def _restart_sentence(self):
+        return (f"Updated to {self._updated_to}. Quit and start the station "
+                "again to run it.")
+
+    def _apply_worker(self):
+        try:
+            result = self._updater.apply()
+        except Exception as exc:        # never let a worker die silently
+            events.debug("Update Failed", repr(exc), source=self.NAME, exception=exc)
+            with self._lock:
+                self.has_update = False
+                self.update_status = ("The update did not complete. Press Check "
+                                      "again to see where this checkout stands.")
+            events.warn("Update Failed", "The update did not complete. Press Check "
+                        "again to see where this checkout stands; the details "
+                        "are in the log file.", source=self.NAME, exception=exc)
+            return
+        reason = result.get("reason") or ""
+        events.debug("Update", f"apply: {result}", source=self.NAME)
+        if not result.get("updated"):
+            with self._lock:
+                self.has_update = False
+                self.update_status = reason or ("The update was not applied; "
+                                                "nothing was changed.")
+            events.warn("Update Not Applied", self.update_status, source=self.NAME)
+            return
+        extras = []
+        if result.get("deps_changed") and not result.get("deps_ok", True):
+            extras.append("The dependencies changed and pip install failed: run "
+                          "pip install -e '.[qt]' by hand before starting again.")
+        if result.get("firmware_changed"):
+            extras.append("The firmware changed: start with run_swap.sh to flash "
+                          "the boards.")
+        with self._lock:
+            self._updated_to = result.get("new")
+            self._update_code = "updated"
+            self._update_lines = []
+            self.update_log = ""
+            self.has_update = False
+            self.update_status = " ".join([self._restart_sentence(), *extras])
+        events.info("Station Updated", reason or self.update_status, source=self.NAME)
+        if result.get("deps_changed") and not result.get("deps_ok", True):
+            events.warn("Reinstall Failed", reason, source=self.NAME)
+
+    def _warn_update_once(self, title, message, exception=None):
+        """One warning per distinct failure for the session, not one per
+        press: an offline bench is not told again every time."""
+        key = (title, message)
+        with self._lock:
+            if key in self._warned_updates:
+                return
+            self._warned_updates.add(key)
+        events.warn(title, message, source=self.NAME, exception=exception)
+
     # -- schema ------------------------------------------------------------
     def _build_rows(self):
         rows = {}
@@ -1210,8 +1415,24 @@ class Setup(Panel):
     def _build_schema(self):
         """One compact table: a Devices header row, one row per model type,
         and a Launch row (Addendum 2). Every section is `layout="row"`, which
-        is the hint each renderer lays out horizontally."""
+        is the hint each renderer lays out horizontally.
+
+        The Update row comes first (owner, 2026-09-28): what this station
+        runs, whether GitHub has something newer, and the one press that
+        takes it. `sch.button` has no `enabled_by`, so Update now is gated by
+        refusal (nothing to apply, a model running, a check under way)."""
         sections = [sch.section(
+            "Update",
+            sch.readonly("Station", "station_version"),
+            sch.readonly("Updates", "update_status", role="info"),
+            sch.button("Update now", "apply_update", role="go",
+                       confirm=self.UPDATE_CONFIRM),
+            sch.button("Check again", "check_updates", role="neutral"),
+            # Setup has no Diagnostics: the incoming commits sit in this row,
+            # empty when nothing is coming.
+            sch.readonly("Coming", "update_log"),
+            layout="row",
+        ), sch.section(
             "Devices",
             sch.button("Refresh", "refresh", role="info"),
             sch.readonly("Scan:", "scan_status"),
@@ -1325,6 +1546,10 @@ class Setup(Panel):
         else:
             self._selected = (f"{count} device{'s' if count != 1 else ''} "
                               "ticked to launch.")
+
+
+def _alive(thread):
+    return bool(thread is not None and thread.is_alive())
 
 
 def _split(resources):
