@@ -329,6 +329,42 @@ def rail_mark(name, stop_state, faulted):
     if name in (stop_state.get("latched") or ()):
         return "stopped"
     return None
+
+
+#: `rail_mark`'s kinds, worst first: what a host's link shows when it folds
+#: in the models drawn on its page (Model.HOST).
+RAIL_MARK_RANK = ("unconfirmed", "faulted", "stopped")
+
+
+def worst_mark(marks):
+    """The worse of several `rail_mark`s (None: live)."""
+    marks = set(marks or ())
+    return next((kind for kind in RAIL_MARK_RANK if kind in marks), None)
+
+
+def hosted_pairs(names, states):
+    """{hosted: host} for every open model whose state names an open host
+    (`Controller.state` publishes `host`; owner ruling 2026-09-28, Red
+    Percent and the Transfer Map are one dashboard). A host that is not
+    open, or a model naming itself, hosts nothing. Never a class name."""
+    names = list(names or ())
+    pairs = {}
+    for name in names:
+        host = ((states or {}).get(name) or {}).get("host")
+        if host and host != name and host in names:
+            pairs[name] = host
+    return pairs
+
+
+def page_names(names, hosted):
+    """The page list: every open model but those drawn on a host's page."""
+    return [name for name in (names or ()) if name not in (hosted or {})]
+
+
+def state_word(state):
+    """The hosted group's state word: the model's `mode`, as a word."""
+    mode = str((state or {}).get("mode") or "").replace("_", " ").strip()
+    return sentence(mode) if mode else ""
 #: The sheet's two pages (K4): the rail's first item, and the word at the
 #: right of an overview entry's head (a press opens the device alone).
 OVERVIEW = "Overview"
@@ -3535,6 +3571,9 @@ class SheetEntry(QFrame):
         if panel is not None:
             body.addWidget(panel)
         layout.addLayout(body)
+        #: Where the panel lives; a panel drawn on a host's page comes back
+        #: here when its host closes (Model.HOST).
+        self.body = body
         # A row's entries share one height; the slack goes under the body,
         # never into the head (a taller head drops its name below its row's).
         self.head.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
@@ -3760,6 +3799,7 @@ class QtPanelView(PanelView, QWidget):
         self._is_stale = False
         self._frozen = False        # the model is latched: its numbers stop
         self._closed = False
+        self._hosted = []           # [(group, block)] drawn on this page (HOST)
 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -3944,6 +3984,49 @@ class QtPanelView(PanelView, QWidget):
 
     # `take_disclosure` is retired (K3, 2026-09-26): the entry's head no
     # longer lifts the disclosure out of the body; it stays above its well.
+
+    # -- a model drawn on this one's page (Model.HOST, 2026-09-28) ---------
+    def lend_disclosures(self):
+        """Lift this panel's disclosure block out of its own layout: on its
+        host's page it is drawn after the host's disclosure. It stays this
+        panel's block (its buttons, its well, its remembered state)."""
+        if self.tier_block is not None:
+            self._layout.removeWidget(self.tier_block)
+        return self.tier_block
+
+    def restore_disclosures(self):
+        """The block back at the foot of this panel (its host closed)."""
+        if self.tier_block is not None and self._layout.indexOf(self.tier_block) < 0:
+            self._layout.addWidget(self.tier_block)
+
+    def host(self, group, block):
+        """Draw a hosted model on this page (the contract's order): this
+        panel's tier 1, then `group` (the hosted name, its word, its tier 1),
+        then this panel's disclosure, then the hosted `block`."""
+        blocks = [b for _, b in self._hosted if b is not None]
+        if self.tier_block is not None:
+            index = self._layout.indexOf(self.tier_block)
+        elif blocks:
+            index = self._layout.indexOf(blocks[0])
+        else:
+            index = self._layout.count()
+        self._layout.insertWidget(index, group)
+        if block is not None:
+            self._layout.addWidget(block)
+        self._hosted.append((group, block))
+
+    def unhost(self, group, block):
+        """Take a hosted group and its block off this page (either closed)."""
+        self._hosted = [pair for pair in self._hosted if pair[0] is not group]
+        if not qt_alive(self):
+            return
+        for widget in (group, block):
+            if widget is not None and qt_alive(widget):
+                self._layout.removeWidget(widget)
+
+    def hosted_widgets(self):
+        """[(group, block)] drawn on this page, in order."""
+        return list(self._hosted)
 
     def show_tiers(self, shown):
         """The device page shows the disclosure and its well; the overview
@@ -5142,6 +5225,19 @@ class QtPanelView(PanelView, QWidget):
 # The window
 # ---------------------------------------------------------------------------
 
+class HostGroup:
+    """A hosted model's group on its host's page (Model.HOST): `widget` holds
+    the heading (`title`, its NAME; `word`, its state word) over the hosted
+    model's own panel; `block` is that panel's disclosure block, drawn after
+    the host's. Every control in it is the hosted panel's, so it runs against
+    the hosted model's name."""
+
+    def __init__(self, name, host, widget, title, word):
+        self.name, self.host = name, host
+        self.widget, self.title, self.word = widget, title, word
+        self.block = None
+
+
 class QtDashboard(Dashboard, QMainWindow):
     """The dashboard window: the rail, the sheet, Setup, the tray.
 
@@ -5198,6 +5294,8 @@ class QtDashboard(Dashboard, QMainWindow):
         self._narrow = None
         self._quit_asked = False    # a Quit already answered yes
         self._energized = []        # the station's `energized` (O6)
+        self._hosts = {}            # hosted name -> its host's name, as drawn
+        self._groups = {}           # hosted name -> its HostGroup
 
         self.setWindowTitle("Transfer stage")
         self.resize(1400, 900)
@@ -5594,8 +5692,10 @@ class QtDashboard(Dashboard, QMainWindow):
 
     def _sync_rail(self):
         """One list item per open model, a Reopen line per closed one. Rebuilt
-        only when the set of models changes."""
-        names = list(self.controller.model_names)
+        only when the set of models changes. A model drawn on its host's page
+        (Model.HOST) has no item of its own: its host's item carries it."""
+        every = list(self.controller.model_names)
+        names = page_names(every, self._hosts)
         if names != list(self._rail_items):
             for item in self._rail_items.values():
                 self._rail_list.removeWidget(item)
@@ -5612,7 +5712,7 @@ class QtDashboard(Dashboard, QMainWindow):
                 item.setChecked(name == self._shown)
         if self.overview_item.isChecked() != (self._shown is None):
             self.overview_item.setChecked(self._shown is None)
-        closed = [n for n in self.controller.closed_names if n not in names]
+        closed = [n for n in self.controller.closed_names if n not in every]
         if closed != self._closed_shown:
             self._closed_shown = closed
             self._build_reopen(closed)
@@ -5636,6 +5736,7 @@ class QtDashboard(Dashboard, QMainWindow):
         device, the latch, a stop that did not confirm, the simulation line."""
         names = list(self.controller.model_names)
         states = self._model_states(names)
+        self._sync_hosts(states)
         for name, state in states.items():
             self._show_lost(name, lost_devices(state))
         self._sync_countdowns(names, states)
@@ -5658,13 +5759,20 @@ class QtDashboard(Dashboard, QMainWindow):
         self._faulted_said = faulted
         energized = set(self._energized)
         for name, item in self._rail_items.items():
-            item.set_stop(rail_mark(name, stop, faulted))
-            item.set_energized(name in energized)       # O6: the ink ring
+            # A host's link carries the models drawn on its page: the worse
+            # of their marks shows (Model.HOST).
+            family = self._family(name)
+            item.set_stop(worst_mark(rail_mark(n, stop, faulted) for n in family))
+            item.set_energized(any(n in energized for n in family))  # O6
         for name, entry in self._entries.items():
-            state = states.get(name) or {}
+            family = self._family(name)
             # The model's own word (L1): its stop did not confirm while latched.
-            entry.set_unconfirmed(state.get("stop_confirmed") is False)
-            entry.set_faulted(name in faulted, state.get("fault") or "")
+            entry.set_unconfirmed(any((states.get(n) or {}).get("stop_confirmed")
+                                      is False for n in family))
+            at_fault = [n for n in family if n in faulted]
+            reason = ((states.get(at_fault[0]) or {}).get("fault") or ""
+                      if at_fault else "")
+            entry.set_faulted(bool(at_fault), reason)
         if not latched:
             self._drop_unconfirmed_alerts()
         self.rail_status.set_full_text(self._rail_status_text(names, states))
@@ -5737,8 +5845,25 @@ class QtDashboard(Dashboard, QMainWindow):
         order += within(self._setup_dock)
         for name in self.controller.model_names:
             entry = self._entries.get(name)
-            if entry is not None:
-                order += [entry.head, entry.close_button] + within(entry)
+            if entry is None or name in self._hosts:
+                continue
+            order += [entry.head, entry.close_button]
+            panel = self._panels.get(name)
+            pairs = panel.hosted_widgets() if panel is not None else []
+            if not pairs:
+                order += within(entry)
+                continue
+            # Model.HOST: the host's tier 1, the hosted groups, the host's
+            # disclosure block, the hosted blocks - the page's own order.
+            block = panel.tier_block
+            lent = [w for pair in pairs for w in pair if w is not None]
+            apart = lent + ([block] if block is not None else [])
+            order += [w for w in within(entry)
+                      if not any(r is w or r.isAncestorOf(w) for r in apart)]
+            order += [w for group, _ in pairs for w in within(group)]
+            order += within(block) if block is not None else []
+            order += [w for _, lent_block in pairs if lent_block is not None
+                      for w in within(lent_block)]
         order += within(self.alert_band) + within(self.tray)
         seen, final = set(), []
         for widget in order:
@@ -5858,7 +5983,11 @@ class QtDashboard(Dashboard, QMainWindow):
         self._sync_rail()
 
     def _bring_forward(self, entry):
-        """Scroll the sheet to an entry and hand it focus."""
+        """Scroll the sheet to an entry and hand it focus. A model drawn on
+        its host's page is brought forward there (Model.HOST)."""
+        if entry.name in self._groups:
+            self.open_entry(entry.name)
+            return
         self.sheet_scroll.ensureWidgetVisible(entry, 0, 0)
         entry.setFocus(Qt.FocusReason.OtherFocusReason)
 
@@ -5870,7 +5999,13 @@ class QtDashboard(Dashboard, QMainWindow):
     def open_entry(self, name):
         """A model's rail item, or its overview head: the device page, that
         model alone and full width, its readings `focal`, its disclosures at
-        the foot of its body (K4)."""
+        the foot of its body (K4). A model drawn on its host's page
+        (Model.HOST) lands on that page, scrolled to its group."""
+        group = self._groups.get(name)
+        if group is not None:
+            self.open_entry(group.host)
+            self._scroll_to_group(name)
+            return
         if name not in self._entries:
             return
         entry = self._entries[name]
@@ -5883,6 +6018,15 @@ class QtDashboard(Dashboard, QMainWindow):
         if from_keyboard and name in self._rail_items:
             self._rail_items[name].setFocus(Qt.FocusReason.OtherFocusReason)
         self.sheet_scroll.verticalScrollBar().setValue(0)
+
+    def _scroll_to_group(self, name):
+        """The hosted group in view, now and once the page has settled."""
+        def scroll():
+            group = self._groups.get(name)
+            if group is not None and qt_alive(group.widget):
+                self.sheet_scroll.ensureWidgetVisible(group.widget, 0, 0)
+        scroll()
+        QTimer.singleShot(0, scroll)
 
     def show_overview(self):
         """The rail's "Overview": every model's compact entry, tier 1 only;
@@ -6001,7 +6145,11 @@ class QtDashboard(Dashboard, QMainWindow):
         that entry alone, full width; the others are hidden, so their panels
         stop ticking (F21) and draw nothing."""
         order = [n for n in self.controller.model_names if n in self._entries]
-        names = order + [n for n in self._entries if n not in order]
+        names = page_names(order + [n for n in self._entries if n not in order],
+                           self._hosts)
+        if self._shown in self._hosts:
+            # A hosted model's page is its host's (Model.HOST).
+            self._shown = self._hosts[self._shown]
         if self._shown is not None and self._shown not in names:
             # The shown device closed, or never came back: the overview.
             self._shown = None
@@ -6014,8 +6162,10 @@ class QtDashboard(Dashboard, QMainWindow):
             # Only the shown device is drawn for its page; every other entry
             # stays compact (hidden on a device page, and ready for the grid).
             compact = name != self._shown
-            if entry.is_overview != compact:
+            if name not in self._hosts and entry.is_overview != compact:
                 entry.set_page(compact)
+        for name in self._groups:
+            self._sync_group_page(name)
         for entry in self._entries.values():
             # Columns share the width equally; each entry keeps its own floor.
             entry.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -6069,6 +6219,14 @@ class QtDashboard(Dashboard, QMainWindow):
         (At a launch font so large that tier 1 alone overflows, the well
         keeps a few lines and the page scrolls, rather than hiding it.)"""
         panel = self._panels.get(self._shown) if self._shown is not None else None
+        if panel is not None and panel.hosted_widgets():
+            # Model.HOST: two wells on one page (the host's, the hosted
+            # model's) cannot both take "the room left"; each is its own
+            # height and the page scrolls.
+            self._fit_wells_to_content(
+                [panel] + [self._panels[h] for h, m in self._hosts.items()
+                           if m == self._shown and h in self._panels])
+            return
         scroll = getattr(panel, "well_scroll", None)
         if scroll is None or scroll.isHidden() or not panel.tier_is_shown(2):
             return
@@ -6088,6 +6246,23 @@ class QtDashboard(Dashboard, QMainWindow):
             while widget is not None and widget is not self.sheet_scroll:
                 widget.updateGeometry()
                 widget = widget.parentWidget()
+            self._schedule_arrange()
+
+    def _fit_wells_to_content(self, panels):
+        changed = False
+        for panel in panels:
+            scroll = getattr(panel, "well_scroll", None)
+            if scroll is None or scroll.isHidden() or not panel.tier_is_shown(2):
+                continue
+            height = panel.well_content_height()
+            if scroll.minimumHeight() != height or scroll.maximumHeight() != height:
+                scroll.setFixedHeight(height)
+                widget = scroll.parentWidget()
+                while widget is not None and widget is not self.sheet_scroll:
+                    widget.updateGeometry()
+                    widget = widget.parentWidget()
+                changed = True
+        if changed:
             self._schedule_arrange()
 
     def showEvent(self, event):
@@ -6400,6 +6575,7 @@ class QtDashboard(Dashboard, QMainWindow):
         self._arrange_entries()
         self._schedule_arrange()
         self._sync_rail()
+        self._sync_hosts()
         self._order_tab()
         if reopened:
             self._raise_on_add = None
@@ -6408,6 +6584,10 @@ class QtDashboard(Dashboard, QMainWindow):
         return entry
 
     def _remove_panel(self, name):
+        # Model.HOST: a group comes off its host's page before either entry
+        # goes (a host's entry would take the hosted panel down with it).
+        for hosted in [h for h, m in self._hosts.items() if name in (h, m)]:
+            self._unhost(hosted)
         entry = self._entries.pop(name, None)   # popped first: the entry's own
         panel = self._panels.pop(name, None)    # closeEvent must not re-enter
         self._lost.pop(name, None)
@@ -6425,6 +6605,118 @@ class QtDashboard(Dashboard, QMainWindow):
         self._sync_rail()
         self._order_tab()
         events.debug("Entry Closed", name, source="QtView")
+
+    # -- a model drawn on its host's page (Model.HOST, 2026-09-28) ----------
+    def _family(self, name):
+        """A page's models: `name` and every model drawn on its page."""
+        return [name] + [h for h, m in self._hosts.items() if m == name]
+
+    def _sync_hosts(self, states=None):
+        """Draw each hosted model on its host's page while `Controller.state`
+        names the host (`host`), and give it its own page back when it does
+        not. The group's state word follows its model's `mode`."""
+        if self._closing:
+            return False
+        names = list(self.controller.model_names)
+        if states is None:
+            states = self._model_states(names)
+        pairs = hosted_pairs(names, states)
+        wanted = {h: m for h, m in pairs.items()
+                  if h in self._entries and m in self._entries and m not in pairs}
+        changed = False
+        for name in list(self._hosts):
+            if wanted.get(name) != self._hosts[name]:
+                self._unhost(name)
+                changed = True
+        for name, host in wanted.items():
+            if name not in self._hosts:
+                self._host(name, host, states.get(name))
+                changed = True
+        for name, group in self._groups.items():
+            word = state_word(states.get(name))
+            if group.word.text() != word:
+                group.word.setText(word)
+        if changed:
+            self._arrangement = None
+            self._arrange_entries()
+            self._sync_rail()
+            self._order_tab()
+            self._schedule_arrange()
+        return changed
+
+    def _build_host_group(self, name, host, panel, state):
+        """The hosted group: its NAME in the entry name's style one step down
+        (the closed entry's size), its state word as a caption, then its own
+        panel (its tier 1; the disclosure block is drawn after the host's)."""
+        widget = QWidget()
+        widget.setObjectName("bare")
+        widget.setAccessibleName(name)
+        column = QVBoxLayout(widget)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(theme.SPACE[3])
+        title = QLabel(name)
+        title.setObjectName("entryName")
+        title.setProperty("opened", "false")
+        title.setWordWrap(True)
+        word = QLabel(state_word(state))
+        word.setObjectName("caption")
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(theme.PAD)
+        head.addWidget(title)
+        head.addWidget(word, 0, Qt.AlignmentFlag.AlignBaseline)
+        head.addStretch(1)
+        column.addLayout(head)
+        column.addWidget(panel)
+        return HostGroup(name, host, widget, title, word)
+
+    def _host(self, name, host, state):
+        panel, host_panel = self._panels[name], self._panels[host]
+        block = panel.lend_disclosures()
+        group = self._build_host_group(name, host, panel, state)
+        group.block = block
+        host_panel.host(group.widget, block)
+        self._groups[name] = group
+        self._hosts[name] = host
+        self._entries[name].setVisible(False)
+        self._sync_group_page(name)
+        events.debug("Hosted", f"{name} drawn on the {host} page", source="QtView")
+
+    def _unhost(self, name):
+        group = self._groups.pop(name, None)
+        host = self._hosts.pop(name, None)
+        if group is None:
+            return
+        host_panel = self._panels.get(host)
+        if host_panel is not None:
+            host_panel.unhost(group.widget, group.block)
+        panel, entry = self._panels.get(name), self._entries.get(name)
+        if (panel is not None and entry is not None and qt_alive(panel)
+                and qt_alive(entry)):
+            entry.body.addWidget(panel)
+            panel.restore_disclosures()
+            panel.show_tiers(not entry.is_overview)
+            panel.set_opened(not entry.is_overview)
+        if qt_alive(group.widget):
+            group.widget.setParent(None)
+            group.widget.deleteLater()
+        self._arrangement = None
+        events.debug("Unhosted", f"{name} has its own page again", source="QtView")
+
+    def _sync_group_page(self, name):
+        """The group is drawn on its host's device page, never on the
+        overview's compact entry (tier 1 of the host only)."""
+        group = self._groups.get(name)
+        host = self._entries.get(group.host) if group is not None else None
+        if host is None:
+            return
+        shown = not host.is_overview
+        if group.widget.isHidden() == shown:
+            group.widget.setVisible(shown)
+        panel = self._panels.get(name)
+        if panel is not None:
+            panel.show_tiers(shown)
+            panel.set_opened(shown)
 
     def _on_entry_closed(self, name):
         """The entry's close. Closing an entry closes the model (no hide)."""
