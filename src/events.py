@@ -1,8 +1,11 @@
 """The one event log. Models and the Controller publish; views subscribe.
 
-Popup policy lives here and nowhere else: only `error()` may ask for an
-acknowledged popup, and it is for failed commands, faults and unconfirmed
-stops. `warn()` and `info()` go to the log panel. Repeats of the same event
+Popup policy lives here and nowhere else. An `error()` asks for an
+acknowledged popup by default: failed commands, faults and unconfirmed stops.
+A `warn()` is a tray line unless its title is in `ATTENTION`, the short list
+of warnings the operator must not miss (a timeout that ended manual mode, a
+link that stayed lost past its boot grace, a heater-off that was never sent);
+those sites pass `ack=True`. `info()` is always a log line. Repeats of the same event
 inside `DEDUPE_SECONDS` collapse into one entry with a count, so a fault in a
 60 Hz loop is one line, not a flood.
 
@@ -59,6 +62,19 @@ IDLE_TIMEOUT_SOON = "Idle Timeout Soon"
 IDLE_TIMEOUT = "Idle Timeout"
 BROWSER_SILENT = "Browser Silent"
 BROWSER_GONE = "Browser Gone - FULL STOP"
+TEMPERATURE_DISCONNECTED = "Temperature Disconnected"
+ROTATOR_UNREACHABLE = "Rotator Unreachable"
+HEATER_OFF_NOT_SENT = "Heater Off Not Sent"
+
+#: The warnings that ask for an acknowledgement (rb-ack, owner 2026-09-28:
+#: "more attention grabbing, similar to the popup for the latch release").
+#: Each site raises its title with `warn(..., ack=True)`; a test holds the
+#: sites and this set to each other. Deliberately NOT here: the idle
+#: countdown (`IDLE_TIMEOUT_SOON`, a tray line with its Extend - a modal
+#: every period would nag), `BROWSER_SILENT` (whoever could answer a modal
+#: is not at the page), and every error (errors ask by default).
+ATTENTION = frozenset({IDLE_TIMEOUT, TEMPERATURE_DISCONNECTED,
+                       ROTATOR_UNREACHABLE, HEATER_OFF_NOT_SENT})
 
 
 class EventLog:
@@ -73,8 +89,9 @@ class EventLog:
     def error(self, title, message, *, source="", exception=None, ack=True):
         return self._publish("error", source, title, message, exception, ack)
 
-    def warn(self, title, message, *, source="", exception=None):
-        return self._publish("warning", source, title, message, exception, False)
+    def warn(self, title, message, *, source="", exception=None, ack=False):
+        """A tray line; `ack=True` only for a title in `ATTENTION`."""
+        return self._publish("warning", source, title, message, exception, ack)
 
     def info(self, title, message, *, source=""):
         return self._publish("info", source, title, message, None, False)
@@ -219,5 +236,7 @@ class EventLog:
 
 
 events = EventLog()
-for _name in ("STOP_NOT_CONFIRMED", "IDLE_TIMEOUT_SOON", "IDLE_TIMEOUT", "BROWSER_SILENT", "BROWSER_GONE"):
+for _name in ("STOP_NOT_CONFIRMED", "IDLE_TIMEOUT_SOON", "IDLE_TIMEOUT", "BROWSER_SILENT",
+              "BROWSER_GONE", "TEMPERATURE_DISCONNECTED", "ROTATOR_UNREACHABLE",
+              "HEATER_OFF_NOT_SENT", "ATTENTION"):
     setattr(events, _name, globals()[_name])

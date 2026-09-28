@@ -411,10 +411,10 @@ class Heater(Model):
         except Exception as exc:
             events.debug("Heater Off Not Sent", repr(exc), source=self.NAME,
                          exception=exc)
-            events.warn("Heater Off Not Sent", "The heater-off command could "
-                        "not be sent. The heater may still be on; switch it "
-                        "off at the controller.", source=self.NAME,
-                        exception=exc)
+            events.warn(events.HEATER_OFF_NOT_SENT, "The heater-off command "
+                        "could not be sent. The heater may still be on; switch "
+                        "it off at the controller.", source=self.NAME,
+                        exception=exc, ack=True)
             return False
         finally:
             if is_locked:
@@ -599,10 +599,10 @@ class Heater(Model):
             if (is_warned and failures > self.PERSISTENT_AFTER
                     and not self._is_link_lost):
                 self._is_link_lost = True
-                events.warn("Temperature Disconnected",
+                events.warn(events.TEMPERATURE_DISCONNECTED,
                             f"No temperature reading after {failures} "
                             "attempts. Still retrying; check the controller's "
-                            "cable and power.", source=self.NAME)
+                            "cable and power.", source=self.NAME, ack=True)
             backoff = min(self.MIN_BACKOFF * 2 ** (failures - 1),
                           self.MAX_BACKOFF)
             events.debug("Reader Backoff",
