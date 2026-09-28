@@ -312,6 +312,12 @@ lands as `palette.py` / `theme.py` tokens.
   after the bundle lands: one GitHub sign-in per lab machine (`gh auth
   login` or one https pull) and the first annotated tag (`git tag -a
   v0.2.0 -m "First packaged release"`), which starts the builds.
+  **Resumed 2026-09-28 on the owner's word:** rb-video merged (aa50e7d;
+  a labelled MP4 per trial, schema 5) and rb-web-polish merged (1f448cb;
+  no pinning on a host page, values shown as the model gives them), the
+  V7 text applied to `RECORDING_A_TRIAL.md` (722ccc5). Gates on the
+  merged tree: fast 3116 / golden 78 / Qt 255, pushed. rb-bundle resumed
+  on this base: merge it in, fix its one red test, gates, then merge.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
