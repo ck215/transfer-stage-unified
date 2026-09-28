@@ -233,3 +233,12 @@ coll = COLLECT(
 # signature, so this leaves the ad-hoc signatures valid.
 if sys.platform == "darwin":
     subprocess.run(["chflags", "-R", "nohidden", coll.name], check=True)
+
+# B1: the version the bundle knows. VERSION (tag, commit, build time) and
+# release.json (the repository the frozen updater asks for releases) go beside
+# the launchers. STATION_TAG names the tag (the workflow sets it); a local
+# build gets `git describe`. Written last, after every copy into dist/.
+sys.path.insert(0, HERE)
+import release  # noqa: E402  (packaging/release.py)
+
+print(f"[station.spec] stamped {coll.name}: {release.stamp(coll.name)}")

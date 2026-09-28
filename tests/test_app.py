@@ -420,3 +420,55 @@ def test_restart_process_takes_the_flags_it_is_given(exec_calls, monkeypatch):
     assert exec_calls[-1] == ("execv", sys.executable,
                               [sys.executable, "/abs/src/app.py", "--web",
                                "--port", "8100"])
+
+
+# -- brief-bundle-update follow-up 3: the Windows swap on restart ------------
+
+@pytest.fixture
+def frozen_install(tmp_path, monkeypatch, exec_calls):
+    """A frozen launcher in tmp_path/station with an update staged beside it."""
+    install = tmp_path / "station"
+    staged = tmp_path / "station.next"
+    for folder, tag in ((install, "v1.2.0"), (staged, "v1.3.0")):
+        folder.mkdir()
+        (folder / "VERSION").write_text(f"{tag}\nsha\n2026-09-28T00:00:00Z\n")
+    (install / "UPDATE_PENDING").write_text(str(install.resolve()) + "\n")
+    launcher = install / "station-tk.exe"
+    monkeypatch.setattr(app.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(app.sys, "executable", str(launcher))
+    monkeypatch.setattr(app.sys, "argv", [str(launcher), "--tk"])
+    return install
+
+
+def test_windows_with_an_update_pending_hands_the_swap_to_a_script_and_exits(
+        frozen_install, exec_calls, monkeypatch):
+    monkeypatch.setattr(app.sys, "platform", "win32")
+    app.restart_process()
+    script = frozen_install.parent / "station-update.cmd"
+    assert script.exists()
+    text = script.read_text(encoding="utf-8")
+    assert f'PID eq {_os.getpid()}' in text
+    assert f'ren "{frozen_install.resolve()}.next" "station"' in text
+    kinds = [c[0] for c in exec_calls]
+    assert kinds == ["Popen", "_exit"]
+    assert exec_calls[0][1] == ["cmd", "/c", str(script)]
+    assert exec_calls[1] == ("_exit", 0)
+    # the restart itself swaps nothing: the script does, after this exits
+    assert (frozen_install / "VERSION").read_text().startswith("v1.2.0")
+
+
+def test_windows_without_a_pending_update_restarts_as_before(
+        frozen_install, exec_calls, monkeypatch):
+    (frozen_install / "UPDATE_PENDING").unlink()
+    monkeypatch.setattr(app.sys, "platform", "win32")
+    app.restart_process()
+    assert exec_calls == [("Popen", [app.sys.executable, "--tk"], None), ("_exit", 0)]
+    assert not (frozen_install.parent / "station-update.cmd").exists()
+
+
+def test_elsewhere_a_pending_update_is_swapped_in_before_the_exec(
+        frozen_install, exec_calls):
+    app.restart_process()                       # sys.platform is "darwin" here
+    assert (frozen_install / "VERSION").read_text().startswith("v1.3.0")
+    assert exec_calls == [("execv", app.sys.executable, [app.sys.executable, "--tk"])]
+    assert not (frozen_install.parent / "station-update.cmd").exists()

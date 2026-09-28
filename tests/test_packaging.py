@@ -298,6 +298,168 @@ def test_smoke_scripts_drive_every_setup_row(script):
         assert route in text, route
 
 
+# -- B1: the version a bundle knows; B2 (P5): the builds ----------------------
+
+WORKFLOW = os.path.join(ROOT, ".github", "workflows", "package.yml")
+#: runner -> (platform.system(), platform.machine()) on that runner.
+RUNNERS = {"macos-14": ("Darwin", "arm64"), "macos-15-intel": ("Darwin", "x86_64"),
+           "windows-latest": ("Windows", "AMD64"), "ubuntu-22.04": ("Linux", "x86_64")}
+
+
+@pytest.fixture(scope="module")
+def release_tool():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "station_release_tool", os.path.join(PACKAGING, "release.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def workflow():
+    with open(WORKFLOW, encoding="utf-8") as f:
+        return f.read()
+
+
+def test_release_json_template_names_the_asset_and_no_repository():
+    import json
+    with open(os.path.join(PACKAGING, "release.json"), encoding="utf-8") as f:
+        info = json.load(f)
+    assert info["owner"] == "" and info["repo"] == ""      # filled at build time
+    assert info["asset"] == "station-{os}-{arch}.zip"
+    assert set(info["os"]) >= {"Darwin", "Windows", "Linux"}
+
+
+def test_stamp_writes_version_and_release_json_beside_the_launchers(
+        release_tool, tmp_path, monkeypatch):
+    import json
+    from controller.updater import Updater
+    bundle = tmp_path / "station"
+    bundle.mkdir()
+    release_tool.stamp(str(bundle), tag="v1.3.0", sha="c" * 40,
+                       built="2026-09-28T09:00:00Z", repository="lab/station")
+    assert (bundle / "VERSION").read_text() == f"v1.3.0\n{'c' * 40}\n2026-09-28T09:00:00Z\n"
+    info = json.loads((bundle / "release.json").read_text())
+    assert (info["owner"], info["repo"]) == ("lab", "station")
+    # ... and the frozen Updater reads it
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert Updater(root=bundle).version() == "v1.3.0, 2026-09-28"
+
+
+@pytest.mark.parametrize("remote, repository", [
+    ("https://github.com/lab/station.git", "lab/station"),
+    ("git@github.com:lab/station.git", "lab/station"),
+    ("https://github.com/lab/station", "lab/station"),
+])
+def test_the_repository_is_read_from_the_remote_when_ci_does_not_say(
+        release_tool, remote, repository):
+    assert release_tool.repository_from_remote(remote) == repository
+
+
+@pytest.mark.parametrize("tag, version", [
+    ("v1.3.0", "1.3.0"), ("1.2", "1.2"), ("v1.2.0-3-gabc1234", "1.2.0+3.gabc1234"),
+    ("main", None), ("", None)])
+def test_the_pyproject_version_follows_the_tag(release_tool, tmp_path, tag, version):
+    source = open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8").read()
+    copy = tmp_path / "pyproject.toml"
+    copy.write_text(source)
+    assert release_tool.pep440(tag) == version
+    release_tool.patch_pyproject(str(copy), tag)
+    with open(copy, "rb") as f:
+        patched = tomllib.load(f)["project"]["version"]
+    assert patched == (version or "0.1.0")
+    assert copy.read_text().count("\nversion = ") == 1
+
+
+def test_the_pyproject_in_git_is_not_the_version_source(pyproject):
+    with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
+        text = f.read()
+    assert pyproject["project"]["version"] == "0.1.0"
+    assert "release.py" in text and "tag" in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes and links")
+def test_the_zip_keeps_modes_and_links_and_unpacks_through_the_updater(
+        release_tool, tmp_path):
+    from controller import updater
+    bundle = tmp_path / "dist" / "station"
+    (bundle / "_internal" / "Qt.framework" / "Versions" / "A").mkdir(parents=True)
+    (bundle / "_internal" / "Qt.framework" / "Versions" / "A" / "Qt").write_text("lib")
+    os.symlink("A", bundle / "_internal" / "Qt.framework" / "Versions" / "Current")
+    (bundle / "station-web").write_text("#!/bin/sh\n")
+    (bundle / "station-web").chmod(0o755)
+    release_tool.stamp(str(bundle), tag="v1.3.0", sha="c" * 40,
+                       built="2026-09-28T09:00:00Z", repository="lab/station")
+    archive = tmp_path / "station-test.zip"
+    release_tool.make_zip(str(bundle), str(archive))
+    staged = tmp_path / "out" / "station.next"
+    staged.parent.mkdir()
+    assert updater._unpack(archive, tmp_path / "out" / "work", staged) == ""
+    assert os.access(staged / "station-web", os.X_OK)
+    current = staged / "_internal" / "Qt.framework" / "Versions" / "Current"
+    assert current.is_symlink() and os.readlink(current) == "A"
+    assert (staged / "VERSION").read_text().startswith("v1.3.0\n")
+
+
+def test_the_asset_name_command_is_the_updaters_own(release_tool):
+    from controller import updater
+    import json
+    with open(os.path.join(PACKAGING, "release.json"), encoding="utf-8") as f:
+        info = json.load(f)
+    assert release_tool.asset_name() == updater.asset_name(info)
+
+
+def test_the_spec_stamps_the_bundle(spec_source):
+    assert "release.stamp(" in spec_source or "stamp(coll.name" in spec_source
+
+
+def test_the_workflow_builds_on_a_tag_and_by_hand(workflow):
+    assert re.search(r"^on:\s*$", workflow, re.M)
+    assert re.search(r"tags:\s*\[\s*[\"']v\*[\"']\s*\]", workflow)
+    assert "workflow_dispatch:" in workflow
+
+
+def test_the_workflow_names_the_four_runners_and_their_assets(workflow):
+    from controller import updater
+    import json
+    with open(os.path.join(PACKAGING, "release.json"), encoding="utf-8") as f:
+        info = json.load(f)
+    pairs = re.findall(r"runner:\s*(\S+)\s*\n\s*asset:\s*(\S+)", workflow)
+    assert dict(pairs) == {runner: updater.asset_name(info, *platform)
+                           for runner, platform in RUNNERS.items()}
+    # the build refuses to upload under a name the updater would not look for
+    assert "release.py asset-name" in workflow and "matrix.asset" in workflow
+
+
+def test_the_workflow_pins_python_313_from_setup_python_and_builds_the_spec(workflow):
+    assert "actions/setup-python@" in workflow
+    assert re.search(r"python-version:\s*[\"']3\.13[\"']", workflow)
+    assert "pip install -e \".[qt,dev]\"" in workflow
+    assert "PyInstaller --noconfirm --clean packaging/station.spec" in workflow
+
+
+def test_the_workflow_smokes_the_bundle_headless(workflow):
+    assert "packaging/smoke.sh" in workflow and "packaging/smoke.ps1" in workflow
+    assert "xvfb-run" in workflow                      # Tk on Linux
+    assert "SMOKE_QT_PLATFORM: offscreen" in workflow
+
+
+def test_the_workflow_uploads_to_the_tags_release_and_publishes_last(workflow):
+    assert "gh release create" in workflow and "--draft" in workflow
+    assert "gh release upload" in workflow
+    assert "gh release edit" in workflow and "--draft=false" in workflow
+    assert "sha256sum" in workflow                     # the updater checks these
+    assert "contents: write" in workflow
+    # nothing signs (P7 is the owner's)
+    assert "codesign" not in workflow and "signtool" not in workflow
+
+
+def test_the_workflow_never_echoes_a_secret(workflow):
+    assert "secrets." not in workflow or "secrets.GITHUB_TOKEN" in workflow
+    assert "set -x" not in workflow
+
+
 # -- V1 (2026-09-28): the trial video's encoder -------------------------------
 
 IMAGEIO_FFMPEG = "imageio-ffmpeg==0.6.0"

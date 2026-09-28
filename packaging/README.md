@@ -9,6 +9,8 @@ One portable bundle per platform, three launchers (`docs/rebuild/PACKAGING_PLAN.
 | `hooks/hook-panel.py` | stops pyinstaller-hooks-contrib's HoloViz `panel` hook firing on the station's own `panel.py` |
 | `smoke.sh` | bundle acceptance test, macOS / Linux (P4) |
 | `smoke.ps1` | the same for Windows (written, not yet run) |
+| `release.py` | stamps `VERSION` and `release.json` into a bundle (the spec calls it), patches a build's pyproject version from the tag, names this machine's asset, zips the bundle with links and modes kept |
+| `release.json` | the template: owner and repo left empty (filled at build time), the asset pattern `station-{os}-{arch}.zip` and its OS/arch lookups |
 
 ## Build (on the platform you are building for; nothing cross-compiles)
 
@@ -44,6 +46,13 @@ launch and trips antivirus.
 - **macOS `UF_HIDDEN`**: pip-installed dylibs carry the hidden flag and the
   copy into `dist/` keeps it; Qt's plugin scanner skips hidden files. The spec
   runs `chflags -R nohidden` on the bundle after COLLECT.
+
+## Releases
+
+Push a tag `v1.3.0` (an annotated tag's message becomes the release notes;
+its first line is what the Update row shows). `.github/workflows/package.yml`
+builds all four zips into a draft release and publishes it once every build
+has passed its smoke. Installed bundles pick it up at their next startup check.
 
 ## Smoke exit codes
 

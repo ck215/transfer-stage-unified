@@ -1,0 +1,155 @@
+# P5 (docs/rebuild/PACKAGING_PLAN.md): one bundle per platform, built on the
+# platform itself, on every tag `v*` and by hand.
+#
+#   draft    a tag's release is created as a DRAFT: GitHub's
+#            /releases/latest never returns a draft, so no installed bundle
+#            sees the release until every build is on it.
+#   build    four runners; Python 3.13 from actions/setup-python (the
+#            python.org build, so Tk ships); pip install -e .[qt,dev];
+#            PyInstaller; the spec stamps VERSION and release.json beside the
+#            launchers (packaging/release.py); the smoke script, headless
+#            (Web and Tk; Qt offscreen); zip; upload to the draft.
+#   publish  the SHA-256 of every asset appended to the notes (the bundle's
+#            updater checks them), then the draft is published as latest.
+#
+# A run by hand (workflow_dispatch) builds and smokes; its zips are workflow
+# artifacts, never a release. Nothing signs (P7 is the owner's). Ref names
+# reach the shell through env, never through ${{ }} inside a script.
+name: package
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Draft the tag's release (notes = the tag's message)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git tag -l --format='%(contents)' "$TAG" > notes.md
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "The release $TAG exists; the builds upload to it."
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes-file notes.md
+          fi
+
+  build:
+    needs: draft
+    # A run by hand has no draft job; a tag's builds wait for the draft.
+    if: always() && (needs.draft.result == 'success' || needs.draft.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        # `asset` is what controller.updater.asset_name() says on that
+        # runner; the Zip step refuses a mismatch.
+        include:
+          - runner: macos-14
+            asset: station-macos-arm64.zip
+          - runner: macos-15-intel
+            asset: station-macos-x86_64.zip
+          - runner: windows-latest
+            asset: station-windows-x86_64.zip
+          - runner: ubuntu-22.04
+            asset: station-linux-x86_64.zip
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SMOKE_QT_PLATFORM: offscreen
+      TRANSFER_STAGE_DATA_ROOT: ${{ github.workspace }}/smoke-runs
+      STATION_NO_UPDATE_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Linux libraries (Qt offscreen, SDL, a virtual display for Tk)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libegl1 libgl1 libxkbcommon0 \
+            libxkbcommon-x11-0 libfontconfig1 libdbus-1-3
+      - name: Version from the tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then TAG="$REF_NAME"; else TAG="$(git describe --tags --always)"; fi
+          echo "STATION_TAG=$TAG" >> "$GITHUB_ENV"
+          python packaging/release.py pyproject "$TAG"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[qt,dev]"
+      - name: Build (the spec stamps VERSION and release.json)
+        run: python -m PyInstaller --noconfirm --clean packaging/station.spec
+      - name: Smoke (macOS)
+        if: runner.os == 'macOS'
+        run: packaging/smoke.sh dist/station
+      - name: Smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a packaging/smoke.sh dist/station
+      - name: Smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/smoke.ps1 -BundleDir dist/station
+      - name: Zip
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          NAME="$(python packaging/release.py asset-name)"
+          if [ "$NAME" != "$ASSET" ]; then
+            echo "This runner's bundle looks for $NAME; the matrix says $ASSET."
+            exit 1
+          fi
+          python packaging/release.py zip dist/station "$ASSET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+      - name: Upload to the draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          ASSET: ${{ matrix.asset }}
+        run: gh release upload "$TAG" "$ASSET" --clobber
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checksums into the notes, then publish as latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir assets
+          gh release download "$TAG" --pattern 'station-*.zip' --dir assets
+          (cd assets && sha256sum station-*.zip) > sums.txt
+          gh release view "$TAG" --json body --jq .body | grep -Ev '^[0-9a-f]{64}  ' > notes.md || true
+          { cat notes.md; echo; cat sums.txt; } > body.md
+          gh release edit "$TAG" --notes-file body.md --draft=false --latest

@@ -1192,8 +1192,8 @@ def test_update_now_asks_first(fake_types, checking):
     panel = _ready(Setup(RecordingController(), updater=updater))
     result = panel.run("apply_update")
     assert result.status == "needs_confirm"
-    assert result.reason == ("Update the station now? It fast-forwards this "
-                             "checkout; the station must be restarted afterwards.")
+    assert result.reason == ("Update the station now? The station must be "
+                             "restarted afterwards.")
     assert result.command == "apply_update"
     assert updater.applies == 0
 
@@ -1814,3 +1814,125 @@ def test_changed_firmware_asks_for_a_restart_by_hand_and_offers_no_restart_now(
     [restart] = _prompts(warnings, events.RESTART_NEEDED)
     assert restart.needs_ack and restart.action is None
     assert "firmware changed" in restart.message.lower()
+
+
+# -- the bundle's Update row copy (brief-bundle-update B4) --------------------
+# One copy for both worlds, never naming which: a release is "vX is ready",
+# a checkout keeps counting commits (the tests above).
+
+def released(latest="v1.3.0", tag="v1.2.0", first="Faster jog"):
+    status = "up_to_date" if latest == tag else "behind"
+    return {"status": status, "branch": None, "head": tag, "remote": latest,
+            "behind": 0 if status == "up_to_date" else 1, "ahead": 0,
+            "log": [first] if first and status == "behind" else [],
+            "reason": "", "tag": tag, "latest": latest, "title": f"Station {latest}"}
+
+
+def test_a_newer_release_says_its_tag_and_first_line(fake_types, checking, warnings):
+    panel = _ready(Setup(RecordingController(), updater=FakeUpdater(check=released())))
+    assert panel.update_status == ("v1.3.0 is ready: Faster jog. Update now, "
+                                   "then restart.")
+    assert panel.update_log == "Faster jog"
+    [ready] = _prompts(warnings, events.UPDATE_READY)
+    assert ready.message == "v1.3.0 is ready: Faster jog. Update now, then restart."
+    assert ready.to_dict()["action"]["command"] == "apply_update"
+    for word in ("bundle", "checkout", "commit", "git"):
+        assert word not in panel.update_status.lower()
+
+
+def test_a_release_with_no_notes_is_still_ready(fake_types, checking, warnings):
+    panel = _ready(Setup(RecordingController(),
+                         updater=FakeUpdater(check=released(first=""))))
+    assert panel.update_status == "v1.3.0 is ready. Update now, then restart."
+
+
+def test_level_with_the_latest_release_says_the_version(fake_types, checking, warnings):
+    panel = Setup(RecordingController(),
+                  updater=FakeUpdater(check=released(latest="v1.2.0")))
+    wait_idle(panel)
+    assert panel.update_status == "Up to date (v1.2.0)."
+    assert panel.has_update is False
+    assert not _prompts(warnings, events.UPDATE_READY)
+
+
+def test_a_machine_not_signed_in_reads_the_sign_in_sentence(fake_types, checking):
+    from controller.updater import REASONS
+    result = dict(released(), status="unauthorised", behind=0, log=[],
+                  reason=REASONS["unauthorised"])
+    panel = Setup(RecordingController(), updater=FakeUpdater(check=result))
+    wait_idle(panel)
+    assert panel.update_status == ("Sign in to GitHub on this machine first: "
+                                   "`gh auth login`, or open the repository once with git.")
+    assert panel.has_update is False
+
+
+def test_a_landed_release_asks_to_restart_as_a_checkout_does(
+        fake_types, checking, warnings):
+    updater = FakeUpdater(check=released(), apply={
+        "updated": True, "old": "v1.2.0", "new": "v1.3.0", "deps_changed": False,
+        "deps_ok": True, "firmware_changed": False,
+        "reason": "Updated to v1.3.0. Restart the station to run it."})
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    [prompt] = _prompts(warnings, events.RESTART_NEEDED)
+    assert prompt.message == "Updated to v1.3.0. Restart the station to run it."
+    assert prompt.to_dict()["action"]["command"] == "restart_station"
+    # a check after the swap finds the new tag on disk: still "restart"
+    updater.check_result = released(latest="v1.3.0", tag="v1.3.0")
+    assert panel.run("check_updates").is_ok
+    wait_idle(panel)
+    assert panel.update_status.startswith("Updated to v1.3.0.")
+
+
+def test_the_login_never_reaches_the_station_log(fake_types, checking, tmp_path,
+                                                 monkeypatch):
+    """The real Updater, frozen, behind a fake GitHub and a fake `gh`,
+    driven through Setup's check and apply: the log file (where Setup writes
+    every check and apply result) never holds the login."""
+    import test_updater as tu
+    monkeypatch.setattr(__import__("sys"), "frozen", True, raising=False)
+    install = tu._write_bundle(tmp_path / "apps" / "station", "v1.2.0", "old")
+    from controller.updater import Updater
+    updater = Updater(root=install, run=tu.FakeLogin(), fetch=tu.FakeGitHub())
+    log = events.open_file(str(tmp_path / "logs"))
+    try:
+        panel = _ready(Setup(RecordingController(), updater=updater))
+        assert panel.run("apply_update", args=(True,)).is_ok
+        wait_idle(panel)
+        assert panel.station_version == "v1.2.0, 2026-09-20"
+        assert (install / "VERSION").read_text().startswith("v1.3.0")
+        events.flush_file()
+        text = open(log, encoding="utf-8").read()
+    finally:
+        events.close_file()
+    assert "v1.3.0" in text                 # the log did record the update
+    assert tu.SECRET not in text
+    assert tu.SECRET not in repr(panel.state)
+
+
+def test_the_update_confirmation_names_no_world(panel):
+    assert Setup.UPDATE_CONFIRM == ("Update the station now? The station must be "
+                                    "restarted afterwards.")
+    assert "checkout" not in Setup.UPDATE_CONFIRM and "bundle" not in Setup.UPDATE_CONFIRM
+
+
+def test_an_update_waiting_for_the_restart_says_press_restart(fake_types, checking,
+                                                              warnings):
+    """Windows: the swap waits for the restart, so "quit and start again" by
+    hand would run the old version; the line and Launch say Restart."""
+    updater = FakeUpdater(check=released(), apply={
+        "updated": True, "old": "v1.2.0", "new": "v1.3.0", "pending": True,
+        "deps_changed": False, "deps_ok": True, "firmware_changed": False,
+        "reason": "Updated to v1.3.0. Restart the station to run it."})
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    assert panel.update_status == "Updated to v1.3.0. Press Restart to run it."
+    [prompt] = _prompts(warnings, events.RESTART_NEEDED)
+    assert prompt.to_dict()["action"]["command"] == "restart_station"
+    tick(panel, "alpha")
+    refused = panel.run("launch")
+    assert refused.status == "refused"
+    assert refused.reason == ("The station was updated to v1.3.0. Press Restart "
+                              "before launching.")

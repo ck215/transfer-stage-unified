@@ -2,6 +2,34 @@
 
 This document outlines the standard procedures for system initialization, controller configuration, and software operation of the transfer stage devices.
 
+## Install
+
+The station ships as one folder per operating system, with three launchers
+in it: `station-tk` (the default view), `station-web` and `station-qt`
+(`.exe` on Windows).
+
+1. Download the zip for your computer from the repository's latest GitHub
+   Release: `station-windows-x86_64.zip`, `station-macos-arm64.zip` (Apple
+   silicon), `station-macos-x86_64.zip` (Intel Mac) or
+   `station-linux-x86_64.zip`.
+2. Unzip it where it will stay (for example your home folder). Keep the
+   whole `station` folder together; do not move a launcher out of it.
+3. Run the launcher for the view you want.
+   - macOS: the bundle is not signed yet, so the first run is blocked;
+     right-click the launcher and choose **Open**.
+   - Windows: SmartScreen may warn; choose **More info**, then **Run anyway**.
+
+**Updates.** The Setup panel's Update row checks GitHub at startup. The
+repository is private, so only a machine already signed in to GitHub can
+update: sign in once with `gh auth login` (GitHub CLI), or clone or pull the
+repository once with git so its credential helper remembers you. A machine
+that is not signed in says so on the Update row and runs as it is. When a
+new version is ready, press **Update now**, then **Restart**. The previous
+version is kept beside the new one as `station.previous`.
+
+Developers run from a source checkout instead (`run.sh` / `run.bat`, or
+`pip install -e ".[qt]"`); a checkout updates itself by fast-forwarding git.
+
 ## System Initialization and Operating System Selection
 
 Upon powering on the PC, a *GRUB bootloader* menu will appear to select between Windows and Linux Mint.
