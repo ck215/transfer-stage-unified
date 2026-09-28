@@ -111,6 +111,62 @@ async function apiPostChecked(path, body) {
 }
 
 // ==========================================================================
+// the heartbeat's own thread (F, 2026-09-28: "the app going out of focus
+// stops controller polling")
+// ==========================================================================
+//: A dedicated Worker, built from this string (no file of its own), that
+//: checks in every HEARTBEAT_MS by itself. A hidden tab's page timers are
+//: throttled (Chrome: 1/s, then 1/min after five minutes); a worker's are
+//: not, so switching to the microscope window no longer reads to the
+//: watchdog as a gone browser. It says whether the page is hidden, which the
+//: server logs. It ends on `pagehide` and at shutdown only: a closed tab or a
+//: crashed browser is silence, and the watchdog's rules are unchanged. Its
+//: fetch is bounded like every other (WEB-22).
+const HEARTBEAT_WORKER_SOURCE = [
+  "'use strict';",
+  "let url = '', every = 0, bound = 8000, hidden = false, timer = null;",
+  "async function beat() {",
+  "  const controller = new AbortController();",
+  "  const clock = setTimeout(() => controller.abort(), bound);",
+  "  try {",
+  "    const response = await fetch(url, { method: 'POST', signal: controller.signal,",
+  "      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hidden }) });",
+  "    const answer = await response.json();",
+  "    postMessage({ ok: Boolean(answer && answer.status === 'ok') });",
+  "  } catch (err) {",
+  "    postMessage({ ok: false });",
+  "  } finally {",
+  "    clearTimeout(clock);",
+  "  }",
+  "}",
+  "onmessage = (message) => {",
+  "  const said = message.data || {};",
+  "  if ('hidden' in said) hidden = Boolean(said.hidden);",
+  "  if (said.start && !timer) {",
+  "    url = said.url; every = said.every; bound = said.bound || bound;",
+  "    beat();",
+  "    timer = setInterval(beat, every);",
+  "  }",
+  "};",
+].join('\n');
+
+/** The worker, or null where the page cannot have one (the caller then
+ *  beats from its own timer). */
+function heartbeatWorker() {
+  if (typeof Worker === 'undefined' || typeof Blob === 'undefined'
+      || typeof URL === 'undefined' || !URL.createObjectURL) return null;
+  const source = URL.createObjectURL(new Blob([HEARTBEAT_WORKER_SOURCE],
+                                              { type: 'text/javascript' }));
+  try {
+    return new Worker(source);
+  } catch (err) {
+    return null;
+  } finally {
+    URL.revokeObjectURL(source);
+  }
+}
+
+// ==========================================================================
 // schema.is_enabled, mirrored. One rule, three views.
 // ==========================================================================
 function isEnabled(element, mode, values) {
@@ -2584,6 +2640,7 @@ class Dashboard {
     this.lastEventId = 0;
     this.isPolling = false;
     this.heartbeatTimer = null;
+    this.heartbeatWorker = null;
     this.setupCard = null;
     this.isLaunched = false;
     this.isEstopped = false;
@@ -2918,46 +2975,72 @@ class Dashboard {
 
   // -- browser liveness, client half (D-8 / WEB-19) ----------------------
   //
-  // Deliberately NOT the same signal as the state poll. The state poll keeps
-  // running - throttled, not stopped - in a backgrounded tab in every
-  // browser this targets, which would tell the watchdog a client is present
-  // while the operator is looking at another tab entirely: the exact "closed
-  // the laptop lid" case D-8 exists for. This stops outright the moment the
-  // tab is hidden and resumes the moment it is visible.
+  // Deliberately NOT the same signal as the state poll, and since F
+  // (2026-09-28) not on the page's thread either: a dedicated worker
+  // (heartbeatWorker) beats on its own timer, which a hidden tab's
+  // throttling does not reach. A hidden tab is not a gone browser - on a
+  // single-screen bench PC the operator switches to the microscope window
+  // with the gamepad drive live - so hiding the tab only tells the worker
+  // to say so. What silences the heartbeat is the tab going (pagehide) and
+  // the station's Quit; then the watchdog stops what is energized.
   startHeartbeat() {
     this.stopHeartbeat();
     if (this.isShutDown) return;
+    const hidden = typeof document !== 'undefined' && Boolean(document.hidden);
+    const worker = heartbeatWorker();
+    if (worker) {
+      worker.onmessage = (message) => this.heardBeat(message.data && message.data.ok);
+      worker.postMessage({ start: true, every: HEARTBEAT_MS, bound: fetchTimeoutMs(),
+        url: new URL('/api/heartbeat', window.location.href).href, hidden });
+      this.heartbeatWorker = worker;
+      return;
+    }
     this.sendHeartbeat();
     this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), HEARTBEAT_MS);
   }
 
   stopHeartbeat() {
+    if (this.heartbeatWorker) {
+      this.heartbeatWorker.terminate();
+      this.heartbeatWorker = null;
+    }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
   }
 
+  /** The page's own beat: the fallback where there is no worker. */
   async sendHeartbeat() {
-    if (typeof document !== 'undefined' && document.hidden) return;
     try {
-      const answer = await apiPost('/api/heartbeat', {});
-      if (answer && answer.status === 'ok') {
-        this.lastBeatOk = Date.now();
-        // O12 (PM8-3): the browser is back, so the watchdog's warning is
-        // over: the tray takes it back (the log keeps it).
-        if (this.trayEvent && this.trayEvent.title === SILENT_TITLE) this.setTray(null);
-      }
+      const hidden = typeof document !== 'undefined' && Boolean(document.hidden);
+      const answer = await apiPost('/api/heartbeat', { hidden });
+      this.heardBeat(Boolean(answer && answer.status === 'ok'));
     } catch (err) {
       // Nothing to recover: a missed heartbeat is the signal itself.
     }
   }
 
+  /** A heartbeat landed (or did not). */
+  heardBeat(isOk) {
+    if (!isOk || this.isShutDown) return;
+    this.lastBeatOk = Date.now();
+    // O12 (PM8-3): the browser is back, so the watchdog's warning is
+    // over: the tray takes it back (the log keeps it).
+    if (this.trayEvent && this.trayEvent.title === SILENT_TITLE) this.setTray(null);
+  }
+
   watchVisibility() {
+    // Hidden or shown, the heartbeat goes on; the worker only says which.
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) this.stopHeartbeat(); else this.startHeartbeat();
+      if (this.heartbeatWorker) this.heartbeatWorker.postMessage({ hidden: Boolean(document.hidden) });
     });
+    // The tab going is the silence the watchdog exists for. A tab restored
+    // from the back-forward cache is a browser that came back.
     window.addEventListener('pagehide', () => this.stopHeartbeat());
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted && !this.isShutDown) this.startHeartbeat();
+    });
   }
 
   // -- polling ------------------------------------------------------------

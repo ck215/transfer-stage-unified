@@ -946,7 +946,12 @@ def test_no_server_string_can_become_markup(sink):
 def test_every_fetch_is_bounded_by_a_timeout():
     """WEB-22: an unbounded fetch hung the poll cycle forever behind one
     stalled request. There is one call site, and it is the wrapper."""
-    assert len(re.findall(r"(?<![.\w])fetch\(", APP_JS)) == 1, (
+    # Updated (F, 2026-09-28): the heartbeat worker is a second thread with
+    # no access to the wrapper, so it carries its own AbortController
+    # (test_view_web_dashboard pins that); outside it there is one call.
+    worker = re.search(r"const HEARTBEAT_WORKER_SOURCE = \[(.*?)\]\.join", APP_JS, re.S)
+    page = APP_JS.replace(worker.group(0), "") if worker else APP_JS
+    assert len(re.findall(r"(?<![.\w])fetch\(", page)) == 1, (
         "a fetch call bypassed the bounded wrapper")
     wrapper = _body(r"async function api\(path, options\) \{(.*?)\n\}")
     assert "AbortController" in wrapper and "controller.abort()" in wrapper
@@ -955,20 +960,22 @@ def test_every_fetch_is_bounded_by_a_timeout():
 
 
 # --------------------------------------------------------------------------
-# the heartbeat's old semantics, kept
+# the heartbeat (Updated, F 2026-09-28: a hidden tab keeps checking in)
 # --------------------------------------------------------------------------
-def test_the_heartbeat_stops_when_the_tab_is_hidden_and_resumes_when_it_is_not():
-    """Deliberately not the same signal as the state poll, which keeps
-    running in a backgrounded tab and would tell the watchdog a client is
-    present while the laptop lid is shut (D-8)."""
+def test_the_heartbeat_goes_on_while_hidden_and_stops_when_the_tab_goes():
+    """Replaced: this used to pin "stops the moment the tab is hidden",
+    which was the owner's focus bug - switching to the microscope window
+    FULL STOPped an energized station 15 s later. Still deliberately not the
+    state poll's signal; it now runs in its own worker, and only the tab
+    going (pagehide) or the Quit silences it (test_view_web_dashboard)."""
     watch = _body(r"watchVisibility\(\) \{(.*?)\n  \}")
     assert "visibilitychange" in watch
-    assert "if (document.hidden) this.stopHeartbeat(); else this.startHeartbeat();" in watch
-    assert "pagehide" in watch, (
-        "a bfcache-restored tab would resume a stale interval")
+    assert "this.stopHeartbeat(); else this.startHeartbeat();" not in watch
+    assert "window.addEventListener('pagehide', () => this.stopHeartbeat());" in watch
+    assert "pageshow" in watch, (
+        "a bfcache-restored tab would stay silent after its pagehide")
     send = _body(r"async sendHeartbeat\(\) \{(.*?)\n  \}")
-    assert "document.hidden) return;" in send, (
-        "a direct call while hidden still counted as a live client")
+    assert "document.hidden) return;" not in send
     assert "'/api/heartbeat'" in send
 
 
