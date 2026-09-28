@@ -318,6 +318,27 @@ lands as `palette.py` / `theme.py` tokens.
   V7 text applied to `RECORDING_A_TRIAL.md` (722ccc5). Gates on the
   merged tree: fast 3116 / golden 78 / Qt 255, pushed. rb-bundle resumed
   on this base: merge it in, fix its one red test, gates, then merge.
+  **rb-bundle landed (9de18da):** a frozen bundle updates itself from
+  GitHub Releases with the machine's own sign-in (`gh auth token`, then
+  `git credential fill`; no token file, owner's ruling); the package
+  workflow builds per `v*` tag (`ubuntu-22.04`, `macos-15-intel`,
+  `macos-14`, `windows-2022`) and stamps `VERSION` and `release.json`;
+  on Windows an update that cannot swap while the launcher runs waits in
+  `<install>.next` with an `UPDATE_PENDING` marker and swaps on Restart
+  through a detached script (`os._exit`, since the delayed restart runs on
+  a daemon thread); the Setup line says "Press Restart". Its "red" test
+  was a one-off Puppeteer flake ("Attempted to use detached Frame"), green
+  on the merged tree. Gates on the final tree: fast 3185 / golden 78 /
+  Qt 255, pushed; the three worktrees retired. Open, bench-only: the
+  Windows swap path has only run against fakes; an operator who quits
+  instead of pressing Restart starts the old bundle by hand and is offered
+  the release again (a swap at startup in `app.main` would close it);
+  the workflow's first real run, the real credential stores and a real
+  PyInstaller build are unverified. Owner steps: `gh auth login` (or one
+  https pull) once per lab machine; `git tag -a v0.2.0 -m "First packaged
+  release" && git push origin v0.2.0` starts the builds; if the release
+  step is refused, allow read and write workflow permissions under the
+  repository's Actions settings.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
