@@ -296,10 +296,19 @@ lands as `palette.py` / `theme.py` tokens.
   the one narrowed assertion in `test_view_web_server.py`, ruled).
   `rb-bundle` (`brief-bundle-update.md`: B1–B6 landed, 3133 fast; the
   owner ruled NO token file: the bundle uses `gh auth token`, then `git
-  credential fill`; follow-ups in progress: `macos-15-intel` for the
-  retired `macos-13`, a Windows swap-on-restart in `app.restart_process`
-  with an `UPDATE_PENDING` marker, the confirm text). Merge order at
-  resume: video, web polish, bundle; then the Qt pass. Owner steps
+  credential fill`; the follow-ups are in WIP commit c012b7b:
+  `macos-15-intel` for the retired `macos-13`, a Windows swap-on-restart
+  in `app.restart_process` with an `UPDATE_PENDING` marker, the neutral
+  confirm text; its fast gate is RED by one test,
+  `test_view_web_server.py::test_o4_a_faulted_probe_is_marked_like_an_unconfirmed_stop`,
+  unread; the Windows swap path is untested on Windows). Merge order at
+  resume: video, web polish, bundle; then the Qt pass. Incident at the
+  pause (13:56): a file-sync client wrote an older snapshot over all four
+  checkouts, resetting every branch ref to 345763f and leaving `SFConflict`
+  copies; the commits survived, the lead reset each worktree to its WIP
+  commit and verified every conflict copy equalled committed content. The
+  repository folder is inside a synced directory; keep it out of the sync,
+  owner's call. Owner steps
   after the bundle lands: one GitHub sign-in per lab machine (`gh auth
   login` or one https pull) and the first annotated tag (`git tag -a
   v0.2.0 -m "First packaged release"`), which starts the builds.
