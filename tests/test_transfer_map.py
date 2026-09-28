@@ -21,6 +21,7 @@ from model import transfer_map as tm_module
 from model.red_monitor import RedMonitor
 from model.rotator import Rotator
 from model.transfer_map import TransferMap
+from events import events
 from result import NeedsConfirm, Refused
 from test_red_monitor import fake_screen
 
@@ -91,15 +92,33 @@ def _rows(path, sql, *args):
         return [dict(r) for r in db.execute(sql, args)]
 
 
+def _confirmed(model, command, inputs=None):
+    """Run `command` as a view does: answer its question, if it asks one,
+    by re-running with `confirmed=True` and the inputs it names."""
+    result = model.run(command, inputs)
+    if result.needs_confirm:
+        result = model.run(result.command, result.inputs, (*result.args, True))
+    assert result.is_ok, result
+    return result.value
+
+
+def _arm(model, tip=None):
+    return _confirmed(model, "arm_trial",
+                      {"tip_id": tip if tip is not None else model.tip_id})
+
+
+def _finish(model, note=""):
+    return _confirmed(model, "finish_trial", {"note": note})
+
+
 def _record(model, red, samples=20, mark=True, note=""):
-    trial = model.arm_trial()
+    trial = _arm(model)
     start = len(model._trial.samples)
     assert _wait_for(lambda: len(model._trial.samples) >= start + samples)
     if mark:
         model.mark_force()
     assert _wait_for(lambda: len(model._trial.samples) >= start + samples + 5)
-    model.note = note
-    model.finish_trial()
+    _finish(model, note)
     return trial
 
 
@@ -132,20 +151,128 @@ def test_station_map_db_overrides_the_path(private_db):
     assert model.state["output_root"] == str(private_db.parent)
 
 
-def test_nothing_creates_the_database_until_a_trial_is_written(private_db):
-    """Construction, open, state, the figure and every declared command with
-    no inputs (the contract test's own sweep) leave no file behind."""
+def test_construction_creates_nothing(private_db):
+    """Construction, state and the figure leave no file behind (the
+    contract test builds every registered class); `open` is what creates it."""
     model = TransferMap(port="SIM", gamepad=None, sim=True)
-    model.open()
     model.state
     model.figure
-    for element in sch.elements(model.schema):
-        if element.get("command") and element["type"] in ("button", "toggle"):
-            model.run(element["command"], None,
-                      tuple(element.get("on_args") or element.get("args") or ()))
-    model.close()
     assert not private_db.exists()
     assert not private_db.parent.exists()
+
+
+# -- T4: the database at launch -------------------------------------------------
+
+def _titled(title, since):
+    return [e for e in events.since(since) if e.title == title]
+
+
+def test_open_creates_the_database_and_says_where(private_db):
+    """Bench 2026-09-27: "no prompt to create the db on startup". Opening
+    the model creates the file and its schema and names it in the events."""
+    since = events.latest_id
+    model = TransferMap(port="SIM", gamepad=None, sim=True)
+    model.open()
+    try:
+        assert private_db.is_file()
+        tables = {r["name"] for r in _rows(private_db, "SELECT name FROM "
+                                           "sqlite_master WHERE type='table'")}
+        assert {"trials", "profile"} <= tables
+        ready = _titled("Database Ready", since)
+        assert len(ready) == 1
+        assert ready[0].message == f"{private_db}: 0 trial(s)"
+        assert ready[0].source == "Transfer Map"
+    finally:
+        model.close()
+
+
+def test_open_on_an_existing_database_counts_and_keeps_its_trials(private_db):
+    first = TransferMap()
+    first._store.insert({"tip_id": "T1", "status": "recorded"})
+    since = events.latest_id
+    model = TransferMap()
+    model.open()
+    try:
+        assert _titled("Database Ready", since)[0].message == \
+            f"{private_db}: 1 trial(s)"
+        assert model.trial_count == 1
+        assert model._store.ensure() is False          # a no-op now
+        assert _rows(private_db, "SELECT tip_id FROM trials") == [{"tip_id": "T1"}]
+    finally:
+        model.close()
+
+
+def test_open_with_an_unwritable_folder_still_opens_and_says_so(tmp_path):
+    blocker = tmp_path / "not_a_folder"
+    blocker.write_text("a file where the database folder should be")
+    since = events.latest_id
+    model = TransferMap(db_path=blocker / "m.sqlite")
+    model.open()                                   # never raises
+    try:
+        assert _titled("Database Not Ready", since)
+        assert not _titled("Database Ready", since)
+    finally:
+        model.close()
+
+
+def test_the_session_section_leads_tier_one():
+    model = TransferMap()
+    first = model.schema["sections"][0]
+    assert first["title"] == "Session" and first.get("tier", 1) == 1
+    keys = [e.get("model_attr") or e.get("command") for e in first["elements"]]
+    assert keys == ["db_path", "trial_count", "new_database"]
+    button = first["elements"][2]
+    assert button["text"] == "New session database"
+    assert button["confirm"] == ("Start a new database beside this one? The "
+                                 "current one stays on disk.")
+    diagnostics = next(s for s in model.schema["sections"]
+                       if s["title"] == "Diagnostics")
+    assert "db_path" not in [e.get("model_attr") for e in diagnostics["elements"]]
+
+
+def test_new_database_starts_beside_the_old_one(station, private_db):
+    model, red, *_ = station
+    old_trial = _record(model, red)
+    old_before = _rows(private_db, "SELECT before_path FROM trials")[0]["before_path"]
+    old_png = Path(old_before).read_bytes()
+    assert model.figure[:8] == b"\x89PNG\r\n\x1a\n"
+    since = events.latest_id
+    result = model.run("new_database")
+    assert result.is_ok, result
+    new_path = Path(result.value)
+    assert new_path.parent == private_db.parent == model.output_root
+    assert new_path.name.startswith("transfer_map_") and new_path.suffix == ".sqlite"
+    assert model.db_path == new_path and new_path.is_file()
+    assert model.state["values"]["db_path"] == str(new_path)
+    assert model.trial_count == 0 and model.figure == b""
+    assert _titled("New Database", since)
+    # the old one stays on disk, whole
+    assert [r["id"] for r in _rows(private_db, "SELECT id FROM trials")] == [old_trial]
+    # a trial in the new database starts at 1 again and must not overwrite
+    # the old database's trial 1 pictures
+    trial = _record(model, red)
+    assert trial == 1 == old_trial
+    assert Path(old_before).read_bytes() == old_png
+    new_before = _rows(new_path, "SELECT before_path FROM trials")[0]["before_path"]
+    assert Path(new_before) != Path(old_before)
+    assert Path(new_before).parent.parent.parent == model.output_root
+
+
+def test_new_database_twice_in_one_second_gets_two_files(station):
+    model = station[0]
+    first = Path(model.new_database())
+    second = Path(model.new_database())
+    assert first != second and first.is_file() and second.is_file()
+
+
+def test_new_database_refuses_while_armed(station, private_db):
+    model = station[0]
+    _arm(model)
+    result = model.run("new_database")
+    assert result.is_refused
+    assert model.db_path == private_db
+    with pytest.raises(Refused, match="Finish or abort"):
+        model.new_database()
 
 
 def test_the_rotator_reads_its_tilt_as_position_deg():
@@ -190,7 +317,7 @@ def test_arm_refuses_while_latched(station):
 
 def test_arm_snapshots_tilt_speed_and_the_before_frame(station, private_db):
     model, red, rotator, probe = station
-    trial = model.arm_trial()
+    trial = _arm(model)
     assert model.is_active and model.mode_name == "armed"
     row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
     assert row["status"] == "armed" and row["tip_id"] == "tip-A"
@@ -254,9 +381,9 @@ def test_a_recorded_trial_keeps_its_raw_profile_marks_and_frames(station, privat
 
 def test_the_profile_matches_what_red_percent_logged(station, private_db):
     model, red, *_ = station
-    trial = model.arm_trial()
+    trial = _arm(model)
     assert _wait_for(lambda: len(model._trial.samples) >= 30)
-    model.finish_trial()
+    _finish(model)
     reds = [p["red"] for p in _rows(private_db, "SELECT red FROM profile "
                                     "WHERE trial_id=? ORDER BY rowid", trial)]
     logged = list(red._run.log.red_values)
@@ -268,7 +395,7 @@ def test_the_profile_matches_what_red_percent_logged(station, private_db):
 def test_mark_force_is_refused_unless_armed(station):
     model = station[0]
     assert model.run("mark_force").is_refused
-    model.arm_trial()
+    _arm(model)
     assert model.run("mark_force").is_ok
 
 
@@ -278,10 +405,10 @@ def test_finish_with_no_samples_still_records(red, private_db):
     red.start_run(confirmed=True)
     model.tip_id = "t"
     red.unsubscribe  # the hook exists
-    trial = model.arm_trial()
+    trial = _arm(model)
     model._trial.samples.clear()
     red.unsubscribe(model._on_sample)
-    model.finish_trial()
+    _finish(model)
     row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
     assert row["status"] == "recorded" and row["mark_auto_max_t"] is None
     model.close()
@@ -291,7 +418,7 @@ def test_finish_with_no_samples_still_records(red, private_db):
 
 def test_estop_aborts_the_armed_trial_and_keeps_its_profile(station, private_db):
     model, red, *_ = station
-    trial = model.arm_trial()
+    trial = _arm(model)
     assert _wait_for(lambda: len(model._trial.samples) >= 10)
     started = time.monotonic()
     assert model.estop() is True
@@ -307,7 +434,7 @@ def test_estop_aborts_the_armed_trial_and_keeps_its_profile(station, private_db)
 def test_the_stop_never_waits_on_a_held_lock(station):
     """`_halt_hardware` must not wait on a lock without a timeout."""
     model = station[0]
-    model.arm_trial()
+    _arm(model)
     with model._lock:
         done = threading.Event()
         threading.Thread(target=lambda: (model._halt_hardware(), done.set()),
@@ -320,7 +447,7 @@ def test_the_station_stop_confirms_every_model_with_a_trial_armed(station):
     controller = Controller()
     controller.add("Red Percent", red)
     controller.add("Transfer Map", model)
-    model.arm_trial()
+    _arm(model)
     results = controller.estop_all()
     assert results == {"Red Percent": True, "Transfer Map": True}
     assert not red.is_running and not model.is_active
@@ -333,7 +460,7 @@ def test_abort_is_a_stop_that_ignores_bad_entry_text(station, private_db):
     button = next(e for e in sch.elements(model.schema)
                   if e.get("command") == "abort_trial")
     assert button.get("stop") is True
-    trial = model.arm_trial()
+    trial = _arm(model)
     result = model.run("abort_trial", {"width_um": "not a number"})
     assert result.is_ok, result
     model.disable()
@@ -343,7 +470,7 @@ def test_abort_is_a_stop_that_ignores_bad_entry_text(station, private_db):
 
 def test_close_with_an_armed_trial_saves_it_as_aborted(station, private_db):
     model = station[0]
-    trial = model.arm_trial()
+    trial = _arm(model)
     model.close()
     assert _rows(private_db, "SELECT status FROM trials WHERE id=?",
                  trial)[0]["status"] == "aborted"
@@ -351,8 +478,8 @@ def test_close_with_an_armed_trial_saves_it_as_aborted(station, private_db):
 
 def test_a_late_sample_after_finish_is_ignored(station):
     model, *_ = station
-    model.arm_trial()
-    model.finish_trial()
+    _arm(model)
+    _finish(model)
     model._on_sample(9.0, 50.0, {})           # a row in flight at the swap
     assert model._trial is None
 
@@ -361,10 +488,10 @@ def test_a_late_sample_after_finish_is_ignored(station):
 
 def test_mark_broke_on_the_armed_then_the_last_trial(station, private_db):
     model, red, *_ = station
-    model.arm_trial()
+    _arm(model)
     model.mark_broke(True)
     assert model.is_broke is True
-    trial = model.finish_trial()
+    trial = _finish(model)
     assert _rows(private_db, "SELECT broke FROM trials WHERE id=?", trial)[0]["broke"] == 1
     model.mark_broke(False)
     assert _rows(private_db, "SELECT broke FROM trials WHERE id=?", trial)[0]["broke"] == 0
@@ -503,12 +630,12 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
             tiers[key] = section.get("tier", 1)
     for key in ("arm_trial", "mark_force", "finish_trial", "abort_trial",
                 "figure", "tip_id", "tilt_now", "speed_now", "red_now",
-                "trial_count", "trial_status"):
+                "trial_count", "trial_status", "db_path", "new_database"):
         assert tiers[key] == 1, key
     for key in ("set_figure_type", "set_force_definition", "attach_afm",
                 "export_csv", "import_csv"):
         assert tiers[key] == 2, key
-    for key in ("trials_log", "delete_trial", "db_path", "last_trial_numbers"):
+    for key in ("trials_log", "delete_trial", "last_trial_numbers"):
         assert tiers[key] == 3, key
     disclosures = {s.get("disclosure") for s in model.schema["sections"]
                    if s.get("tier") == 2}

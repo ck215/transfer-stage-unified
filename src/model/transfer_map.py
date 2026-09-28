@@ -19,11 +19,13 @@ written on a worker, so a stop is never held by the disk.
 
 **The store is local** (owner ruling 2026-09-27): one SQLite file inside the
 project checkout, `<repo root>/data/transfer_map.sqlite` (the repo root is
-the directory holding `src/`), created with its schema on the first write.
-`STATION_MAP_DB=<path>` overrides it. Pictures sit beside it in
-`data/transfer_map/<trial_id>/`, exports in `data/exports/`. Nothing is
-created until a trial or an import is written, so building the model (the
-contract test does, for every registered class) leaves no file behind.
+the directory holding `src/`), created with its schema when the model opens
+(the event log says where, and how many trials it holds). `STATION_MAP_DB=
+<path>` overrides it. Pictures sit beside it in `data/<database name>/
+<trial_id>/` (`data/transfer_map/` for the default file), exports in
+`data/exports/`. "New session database" starts another file in the same
+folder. Building the model creates nothing (the contract test builds every
+registered class).
 
 Live sources are duck-typed from `on_model_added`, never a class name: tilt
 from a model with `position_deg` (the Rotator), else the operator's typed
@@ -138,6 +140,13 @@ class TrialStore:
                         source="Transfer Map")
         return result
 
+    def ensure(self):
+        """Create the file and its schema if missing; a no-op otherwise
+        (every statement is IF NOT EXISTS). True when it was created now."""
+        fresh = not self.exists
+        self.write(lambda db: None)
+        return fresh
+
     def read(self, sql, args=()):
         if not self.exists:
             return []
@@ -190,6 +199,24 @@ class TrialStore:
     def count(self):
         rows = self.read("SELECT COUNT(*) AS n FROM trials")
         return rows[0]["n"] if rows else 0
+
+    def count_for_tip(self, tip_id, up_to=None):
+        """Stored trials on this tip (every status); with `up_to`, only those
+        numbered up to it, so a trial's own place among its tip's trials."""
+        tip = (tip_id or "").strip()
+        if up_to is None:
+            rows = self.read("SELECT COUNT(*) AS n FROM trials WHERE tip_id = ?",
+                             (tip,))
+        else:
+            rows = self.read("SELECT COUNT(*) AS n FROM trials WHERE tip_id = ? "
+                             "AND id <= ?", (tip, int(up_to)))
+        return rows[0]["n"] if rows else 0
+
+    def next_id(self):
+        """The number the next recorded trial will get (AUTOINCREMENT never
+        reuses one, so this is the sequence, not the row count)."""
+        rows = self.read("SELECT seq FROM sqlite_sequence WHERE name = 'trials'")
+        return (rows[0]["seq"] + 1) if rows and rows[0]["seq"] is not None else 1
 
     def profile(self, trial_id):
         rows = self.read("SELECT t_s, red, z, x, y FROM profile WHERE "
@@ -317,6 +344,27 @@ class TransferMap(Model):
     def _expects_heartbeat(self):
         return False                   # no loop of its own
 
+    def open(self):
+        """Open, then make the database ready and say where it is (bench
+        2026-09-27: "no prompt to create the db on startup"). Construction
+        still creates nothing; a store that cannot be created is an error
+        the operator sees, never a model that fails to open."""
+        super().open()
+        self._announce_store()
+
+    def _announce_store(self):
+        try:
+            self._store.ensure()
+        except Exception as exc:
+            events.error("Database Not Ready", f"The Transfer Map database "
+                         f"could not be created at {self.db_path}. Check that "
+                         "the folder exists and can be written, or start with "
+                         "--map-db PATH.", source=self.NAME, exception=exc)
+            return False
+        events.info("Database Ready", f"{self.db_path}: "
+                    f"{self._store.count()} trial(s)", source=self.NAME)
+        return True
+
     @property
     def is_armed(self):
         return self._trial is not None
@@ -335,7 +383,10 @@ class TransferMap(Model):
         trial = self._claim(timeout=0.05)
         if trial is not None:
             self._release_red()
-            writer = threading.Thread(target=self._save_aborted, args=(trial,),
+            # The store the trial was armed in: a new session database made
+            # while this is being written must not receive it.
+            writer = threading.Thread(target=self._save_aborted,
+                                      args=(trial, self._store),
                                       daemon=True, name="transfer-map-abort")
             self._persisting.append(writer)
             writer.start()
@@ -563,10 +614,11 @@ class TransferMap(Model):
             trial.closed = True
         return trial
 
-    def _save_aborted(self, trial):
+    def _save_aborted(self, trial, store=None):
+        store = store if store is not None else self._store
         try:
             samples = list(trial.samples)
-            self._store.update(trial.id, {
+            store.update(trial.id, {
                 "status": "aborted", "mark_operator_t": trial.operator_t,
                 "z_contact": trial.z_mark, "broke": int(trial.broke)}, samples)
             self._indices.pop(trial.id, None)
@@ -590,7 +642,7 @@ class TransferMap(Model):
                         f"trial {trial_id}. Check the Red Percent capture "
                         "region.", source=self.NAME)
             return None
-        folder = self.output_root / "transfer_map" / str(trial_id)
+        folder = self.pictures_root / str(trial_id)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{which}.png"
         path.write_bytes(png)
@@ -666,6 +718,40 @@ class TransferMap(Model):
             return pick if self._store.trial(pick) else None
         last = self._store.last()
         return last["id"] if last else None
+
+    # -- the session database ----------------------------------------------
+    def new_database(self):
+        """A new database beside this one, for a new session. The current
+        file stays on disk untouched; pictures and exports stay in the same
+        folder (`output_root`), the pictures under the new file's own name
+        so trial 1 of the new database never overwrites trial 1 of the old."""
+        if self.is_armed:
+            raise Refused("A trial is armed. Finish or abort it before starting "
+                          "a new database.")
+        for writer in list(self._persisting):      # an abort still being written
+            writer.join(self.THREAD_JOIN_TIMEOUT)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = self.output_root / f"transfer_map_{stamp}.sqlite"
+        suffix = 2
+        while path.exists():
+            path = self.output_root / f"transfer_map_{stamp}_{suffix}.sqlite"
+            suffix += 1
+        store = TrialStore(path)
+        store.ensure()
+        previous = self.db_path
+        self.db_path, self._store = path, store
+        self._indices = {}
+        self._figure_cache = None
+        self._changed()
+        events.info("New Database", f"Trials now go to {path}. The previous "
+                    f"database stays at {previous}.", source=self.NAME)
+        return str(path)
+
+    @property
+    def pictures_root(self):
+        """`<output_root>/<database name>/`: `transfer_map/` for the default
+        file, so one folder of pictures per database."""
+        return self.output_root / self.db_path.stem
 
     # -- export and import -------------------------------------------------
     def _export(self):
@@ -966,6 +1052,15 @@ class TransferMap(Model):
         configure = "Configure Transfer Map"
         return sch.schema(
             sch.section(
+                "Session",
+                sch.readonly("Database", "db_path"),
+                sch.readonly("Trials", "trial_count", param=P["trial_count"]),
+                sch.button("New session database", "new_database",
+                           confirm="Start a new database beside this one? The "
+                                   "current one stays on disk.",
+                           disabled_when=("armed",)),
+            ),
+            sch.section(
                 "Trial",
                 sch.readonly("Tilt", "tilt_now", rail=True, param=P["tilt_now"]),
                 sch.readonly("Speed", "speed_now", rail=True, param=P["speed_now"]),
@@ -982,7 +1077,6 @@ class TransferMap(Model):
                            stop=True),
                 sch.toggle("Tip broke", "is_broke", "mark_broke", "Broke",
                            "Not broken", on_args=(True,), off_args=(False,)),
-                sch.readonly("Trials", "trial_count", param=P["trial_count"]),
                 sch.readonly("Status", "trial_status", role="info"),
                 sch.plot("Red % since Arm", "live_series", x_label="time (s)",
                          y_label="red (%)",
@@ -1028,7 +1122,6 @@ class TransferMap(Model):
             ),
             sch.section(
                 "Diagnostics",
-                sch.readonly("Database", "db_path"),
                 sch.readonly("Last trial", "last_trial_numbers"),
                 sch.readonly("Width gradient", "width_gradient"),
                 sch.log_stream("Trials", "trials_log"),
