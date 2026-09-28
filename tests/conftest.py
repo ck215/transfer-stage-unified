@@ -219,3 +219,14 @@ sys.modules['tkinter'] = tkinter_mock
 sys.modules['tkinter.ttk'] = ttk_mock
 sys.modules['tkinter.filedialog'] = MagicMock()
 sys.modules['tkinter.messagebox'] = MagicMock()
+
+
+@pytest.fixture(autouse=True)
+def _transfer_map_db_in_tmp(monkeypatch, tmp_path):
+    """The Transfer Map makes its database ready at `open()` (bench
+    2026-09-27), so every test that opens the seven rows would otherwise
+    leave `data/transfer_map.sqlite` (and a session file per "New session
+    database" press) in the checkout: on the lab PC, junk beside the real
+    store. Every test's store lives under its own tmp_path instead. A test
+    that sets `STATION_MAP_DB` itself still wins: it runs after this."""
+    monkeypatch.setenv("STATION_MAP_DB", str(tmp_path / "map" / "transfer_map.sqlite"))
