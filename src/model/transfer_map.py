@@ -608,7 +608,7 @@ class TransferMap(Model):
             # T3: the before picture is taken on the operator's word, with
             # the sample framed; nothing is started or written until then.
             raise NeedsConfirm(
-                f"Frame the sample now. OK takes the before picture and arms "
+                f"Frame the sample now. Continue takes the before picture and arms "
                 f"trial {self._store.next_id()} on tip {tip}.", "arm_trial",
                 inputs={"tip_id": self.tip_id or "",
                         "typed_tilt": self.typed_tilt or ""})
@@ -667,7 +667,7 @@ class TransferMap(Model):
         if armed is None:
             raise Refused("No trial is armed.")
         if not confirmed:
-            raise NeedsConfirm(f"OK takes the after picture and ends trial "
+            raise NeedsConfirm(f"Continue takes the after picture and ends trial "
                                f"{armed.id}.", "finish_trial",
                                inputs={"note": self.note or ""})
         png = self._take_picture()

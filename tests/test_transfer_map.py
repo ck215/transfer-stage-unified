@@ -909,7 +909,7 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     model, red = idle_station
     result = model.run("arm_trial", {"tip_id": "T7", "typed_tilt": ""})
     assert result.needs_confirm, result
-    assert result.reason == ("Frame the sample now. OK takes the before "
+    assert result.reason == ("Frame the sample now. Continue takes the before "
                              "picture and arms trial 1 on tip T7.")
     assert result.command == "arm_trial"
     assert result.inputs == {"tip_id": "T7", "typed_tilt": ""}
@@ -941,7 +941,7 @@ def test_finish_asks_before_the_after_picture(station, private_db):
     trial = _arm(model)
     result = model.run("finish_trial", {"note": "clean cut"})
     assert result.needs_confirm, result
-    assert result.reason == f"OK takes the after picture and ends trial {trial}."
+    assert result.reason == f"Continue takes the after picture and ends trial {trial}."
     assert result.command == "finish_trial"
     assert result.inputs == {"note": "clean cut"}
     assert model.is_armed
