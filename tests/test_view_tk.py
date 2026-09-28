@@ -293,6 +293,13 @@ class FakeCanvas(FakeWidget):
         self.items.append(("arc", coords, options))
         return len(self.items)
 
+    def create_image(self, x, y, **options):
+        self.items.append(("image", (x, y), options))
+        return len(self.items)
+
+    def tag_raise(self, _item, _above=None):
+        pass
+
     def coords(self, _item, *values):
         self.items.append(("coords", values, {}))
 
@@ -1750,7 +1757,7 @@ def test_region_select_runs_the_command_with_four_args(view, panel, monkeypatch)
         def __init__(self, _master):
             pass
 
-        def pick(self):
+        def pick(self, screenshot=None):
             return (10, 20, 30, 40)
 
     monkeypatch.setattr(tkmod, "_RegionPicker", Picked)
@@ -1764,7 +1771,7 @@ def test_a_cancelled_region_shows_the_reason_and_runs_nothing(view, panel,
         def __init__(self, _master):
             self.reason = "Region selection cancelled."
 
-        def pick(self):
+        def pick(self, screenshot=None):
             return None
 
     monkeypatch.setattr(tkmod, "_RegionPicker", Cancelled)
@@ -1779,6 +1786,255 @@ def test_the_captured_region_is_drawn_not_announced(view, panel, tk_harness):
     element = element_of(view, "region_select")
     assert view._widgets[id(element)]["var"].get() == sch.format_region(panel.region)
     assert tk_harness.errors == []
+
+
+# -- the picker draws on a screenshot (bench 2026-09-27, bare X11) ---------
+#
+# "A white view covered the whole display during selection": on an X11
+# session with no compositor `-alpha` is accepted and never honoured, so the
+# 0.3-alpha overlay was an opaque sheet of `theme.BACKGROUND`. With a
+# picture of the desktop the overlay is opaque on purpose and shows it.
+
+def _desktop_png(width=800, height=450):
+    """A synthetic two-colour desktop: red on the left, blue on the right."""
+    import io
+    from PIL import Image
+    image = Image.new("RGB", (width, height), (0, 0, 255))
+    image.paste((255, 0, 0), (0, 0, width // 2, height))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _screenshot(**bounds):
+    shot = {"image": _desktop_png(), "left": 0, "top": 0,
+            "width": 3200, "height": 1800}
+    shot.update(bounds)
+    return shot
+
+
+def _items(picker, kind):
+    return [item for item in picker.canvas.items if item[0] == kind]
+
+
+def _alpha_requests(picker):
+    return [args for args in picker.top.attrs if args and args[0] == "-alpha"]
+
+
+def test_the_picture_is_drawn_at_the_overlays_own_size():
+    assert tkmod._picture_size({"width": 3200, "height": 1800},
+                               (2560, 1440)) == (2560, 1440)
+
+
+def test_an_unmeasured_overlay_draws_the_picture_at_its_bounds():
+    assert tkmod._picture_size({"width": 3200, "height": 1800}, (0, 0)) == (3200, 1800)
+
+
+def test_the_drawn_size_is_never_empty():
+    assert tkmod._picture_size({}, (0, 0)) == (1, 1)
+    assert tkmod._picture_size({"width": "bad", "height": None}, (-5, 0)) == (1, 1)
+
+
+def test_with_a_screenshot_the_picker_shows_it_and_requests_no_alpha():
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build(screenshot=_screenshot())
+    assert _alpha_requests(picker) == []
+    images = _items(picker, "image")
+    assert len(images) == 1
+    assert images[0][1] == (0, 0) and images[0][2]["image"] is picker.photo
+    # The picture is the overlay's size (FakeWidget's virtual desktop), and
+    # it is the desktop - dimmed, not replaced: the left half still reads red.
+    import io
+    from PIL import Image
+    drawn = Image.open(io.BytesIO(base64.b64decode(picker.photo.data)))
+    assert drawn.size == (2560, 1440)
+    red, green, blue = drawn.convert("RGB").getpixel((10, 10))
+    assert red > 150 and red > blue + 100 and red > green + 100
+    red, green, blue = drawn.convert("RGB").getpixel((2550, 10))
+    assert blue > 150 and blue > red + 100
+
+
+def test_over_a_picture_the_instruction_line_is_drawn_on_the_canvas():
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build(screenshot=_screenshot())
+    texts = [item[2].get("text") for item in _items(picker, "text")]
+    assert "Drag a box around the area to watch. Esc cancels." in texts
+    (x, y), = [item[1] for item in _items(picker, "text")]
+    assert x == 2560 // 2          # top centre of the overlay
+
+
+def test_without_a_screenshot_the_alpha_overlay_says_it_could_not_picture():
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build(screenshot=None)
+    assert _alpha_requests(picker) == [("-alpha", 0.3)]
+    assert _items(picker, "image") == []
+    texts = " ".join(str(item[2].get("text")) for item in _items(picker, "text"))
+    assert "Drag a box around the area to watch. Esc cancels." in texts
+    assert "(the screen could not be pictured)" in texts
+
+
+def test_a_screenshot_that_will_not_decode_falls_back_to_the_alpha_overlay():
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build(screenshot=_screenshot(image=b"not a png"))
+    assert _alpha_requests(picker) == [("-alpha", 0.3)]
+    assert _items(picker, "image") == []
+    assert picker.photo is None
+
+
+def test_over_a_picture_the_drag_still_reports_screen_coordinates():
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build(screenshot=_screenshot())
+    _drag(picker, (400, 500), (100, 200))
+    assert picker.region == (100, 200, 300, 300)
+    assert picker.top.is_destroyed
+
+
+def test_pick_hands_the_screenshot_to_the_overlay(monkeypatch):
+    built = []
+    picker = tkmod._RegionPicker(FakeWidget())
+    original = picker._build
+    monkeypatch.setattr(picker, "_build",
+                        lambda screenshot=None: (built.append(screenshot),
+                                                 original(screenshot=screenshot)))
+    shot = _screenshot()
+    picker.pick(screenshot=shot)
+    assert built == [shot]
+
+
+class ShotPanel(DemoPanel):
+    """A region picker whose element declares the desktop picture, as Red
+    Percent's does (`data_command="screen_image"`)."""
+
+    def __init__(self, shot):
+        super().__init__()
+        self.shot = shot
+        self.shots_taken = 0
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "Controls",
+            sch.region_select("Pick area", "set_region", model_attr="region",
+                              data_command="screen_image")))
+
+    @property
+    def screen_image(self):
+        self.shots_taken += 1
+        return self.shot
+
+
+def _region_view(shot, monkeypatch):
+    seen = []
+
+    class Recording:
+        reason = ""
+
+        def __init__(self, _master):
+            seen.append(("built", shot_panel.shots_taken))
+
+        def pick(self, screenshot=None):
+            seen.append(("picked", screenshot))
+            return (10, 20, 30, 40)
+
+    shot_panel = ShotPanel(shot)
+    monkeypatch.setattr(tkmod, "_RegionPicker", Recording)
+    built = tkmod.TkPanelView(FakeWidget(), FakeController(Demo=shot_panel), "Demo")
+    return built, shot_panel, seen
+
+
+def test_the_region_click_takes_the_picture_before_the_overlay_opens(monkeypatch):
+    shot = _screenshot()
+    built, shot_panel, seen = _region_view(shot, monkeypatch)
+    try:
+        click(built, element_of(built, "region_select"))
+        assert seen == [("built", 1), ("picked", shot)]
+        assert shot_panel.region == {"left": 10, "top": 20, "width": 30, "height": 40}
+    finally:
+        built.close()
+
+
+def test_with_no_picture_the_region_click_still_opens_the_picker(monkeypatch):
+    built, shot_panel, seen = _region_view(None, monkeypatch)
+    try:
+        click(built, element_of(built, "region_select"))
+        assert seen[-1] == ("picked", None)
+        assert shot_panel.region == {"left": 10, "top": 20, "width": 30, "height": 40}
+    finally:
+        built.close()
+
+
+def test_a_region_select_with_no_data_command_takes_no_picture(view, panel,
+                                                               controller,
+                                                               monkeypatch):
+    shots = []
+
+    class Recording:
+        reason = ""
+
+        def __init__(self, _master):
+            pass
+
+        def pick(self, screenshot=None):
+            shots.append(screenshot)
+            return (1, 2, 30, 40)
+
+    monkeypatch.setattr(tkmod, "_RegionPicker", Recording)
+    before = len(controller.calls)
+    click(view, element_of(view, "region_select"))
+    assert shots == [None]
+    assert [c[1] for c in controller.calls[before:]][0] == "set_region"
+
+
+_REAL_PICKER = r'''
+import base64, io, json, os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "src"))
+import tkinter as tk
+from PIL import Image
+import views.tk as tkv
+try:
+    root = tk.Tk()
+except Exception as exc:        # no display
+    print(json.dumps({"skip": repr(exc)})); sys.exit(0)
+root.withdraw()
+requested = []
+original = tk.Toplevel.attributes
+def recording(self, *args):
+    requested.append([str(a) for a in args])
+    return original(self, *args)
+tk.Toplevel.attributes = recording
+image = Image.new("RGB", (800, 450), (0, 0, 255))
+image.paste((255, 0, 0), (0, 0, 400, 450))
+buffer = io.BytesIO(); image.save(buffer, format="PNG")
+shot = {"image": buffer.getvalue(), "left": 0, "top": 0, "width": 800, "height": 450}
+picker = tkv._RegionPicker(root)
+picker._build(screenshot=shot)
+root.update_idletasks()
+kinds = [picker.canvas.type(item) for item in picker.canvas.find_all()]
+alpha = [args for args in requested if args and args[0] == "-alpha"]
+picker._finish(); root.update(); root.destroy()
+print(json.dumps({"kinds": kinds, "alpha": alpha}))
+'''
+
+
+@pytest.mark.window
+def test_a_real_picker_over_a_screenshot_holds_an_image_and_no_alpha():
+    """P3: the real toolkit, in a child process - the picture is a canvas
+    image item and `-alpha` is never requested of the overlay."""
+    import json
+    import subprocess
+    import sys
+    tree = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
+        tkmod.__file__))))
+    done = subprocess.run([sys.executable, "-c", _REAL_PICKER, tree,
+                           "-ApplePersistenceIgnoreState", "YES"],
+                          capture_output=True, text=True, timeout=120)
+    lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
+    assert done.returncode == 0 and lines, done.stderr[-2000:]
+    result = json.loads(lines[-1])
+    if "skip" in result:
+        pytest.skip(f"no display for a real Tk picker: {result['skip']}")
+    assert "image" in result["kinds"], result
+    assert result["alpha"] == [], result
 
 
 def test_file_save_copies_the_written_file_to_the_destination(view, panel,

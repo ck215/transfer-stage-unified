@@ -1013,8 +1013,31 @@ class ClosableNotebook(ttk.Notebook):
             return None
 
 
+def _picture_size(bounds, overlay):
+    """The size the desktop picture is drawn at on the region picker.
+
+    `bounds` is the full-size desktop the screenshot was taken of (`{"width",
+    "height"}`, capture pixels); `overlay` is the overlay's own `(width,
+    height)`. The picture fills the overlay, which covers the same desktop,
+    so what is seen under a point is what the point's `x_root` reports. An
+    overlay not yet measured (0) draws it at the capture size. Never empty.
+    """
+    def whole(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+    width, height = (whole(v) for v in (overlay or (0, 0)))
+    if width > 0 and height > 0:
+        return width, height
+    bounds = bounds or {}
+    return (max(1, whole(bounds.get("width"))),
+            max(1, whole(bounds.get("height"))))
+
+
 class _RegionPicker:
-    """A borderless, semi-transparent overlay the operator drags a box on.
+    """A borderless overlay the operator drags a box on, over a picture of
+    the desktop.
 
     Tk had no picker at all — `_select_region` asked for "x,y,width,height" as
     *text* in a modal prompt, which is why REDPERCENT-18 is still open. This
@@ -1022,12 +1045,28 @@ class _RegionPicker:
     `Toplevel` sized to the virtual desktop, a rubber band on a Canvas,
     Escape to cancel, and screen coordinates out.
 
+    What the operator sees is a screenshot taken before the overlay opened,
+    drawn on the canvas and dimmed a little - never transparency. At the
+    bench (2026-09-27, a Linux PC) the overlay was a 0.3-alpha sheet: an X11
+    session without a compositor accepts `-alpha` and never honours it, and
+    "a white view covered the whole display during selection". With a
+    picture the overlay is opaque on purpose and `-alpha` is not requested.
+    Without one (capture unavailable, or a picture that will not decode) the
+    alpha overlay is the fallback, and says the screen could not be pictured.
+    That is a fallback on what the model supplied, not a platform branch.
+
     A drag smaller than `MINIMUM_DRAG` is reported rather than returned: a
     stray click used to capture a 1x1 region, and a 1x1 focus area reads 100%
     red forever.
     """
 
     MINIMUM_DRAG = 10      # px; below this a drag is a misclick, not a region
+    INSTRUCTION = "Drag a box around the area to watch. Esc cancels."
+    NO_PICTURE = " (the screen could not be pictured)"
+    #: How far the picture is blended toward the page colour: enough for the
+    #: band and the instruction to read over it, little enough that the
+    #: area being picked is plainly visible.
+    DIM = 0.25
 
     def __init__(self, master):
         self.master = master
@@ -1038,10 +1077,18 @@ class _RegionPicker:
         self._band = None
         self.top = None
         self.canvas = None
+        #: The picture on the canvas. Tk drops an image the moment Python
+        #: does, so the picker keeps the reference for its lifetime.
+        self.photo = None
 
-    def pick(self):
-        """Blocks until the operator drags or cancels. -> (x, y, w, h) | None."""
-        self._build()
+    def pick(self, screenshot=None):
+        """Blocks until the operator drags or cancels. -> (x, y, w, h) | None.
+
+        `screenshot` is the model's `screen_image`: `{"image": png, "left",
+        "top", "width", "height"}`, or None when the screen could not be
+        captured. The caller takes it BEFORE this opens, so the overlay is
+        not in the picture."""
+        self._build(screenshot=screenshot)
         try:
             self.master.wait_window(self.top)
         except Exception as exc:
@@ -1051,21 +1098,31 @@ class _RegionPicker:
                      source=SOURCE)
         return self.region
 
-    def _build(self):
+    def _build(self, screenshot=None):
+        geometry, size = self._virtual_desktop()
+        # Decoded and scaled before the overlay exists: a picture that will
+        # not decode is known before anything is asked of the window.
+        picture = self._picture_data(screenshot, size)
         self.top = tk.Toplevel(self.master)
         self.top.overrideredirect(True)
-        for attribute, value in (("-alpha", 0.3), ("-topmost", True)):
-            try:
-                self.top.attributes(attribute, value)
-            except Exception as exc:
-                events.debug("Overlay Attribute Refused",
-                             f"{attribute}={value}: {exc}", source=SOURCE,
-                             exception=exc)
-        self.top.geometry(self._virtual_desktop())
+        self._request("-topmost", True)
+        self.top.geometry(geometry)
         self.top.configure(background=theme.BACKGROUND)
         self.canvas = tk.Canvas(self.top, highlightthickness=0, cursor="crosshair",
                                 background=theme.BACKGROUND)
         self.canvas.pack(fill="both", expand=True)
+        if picture is not None:
+            try:
+                self.photo = tk.PhotoImage(data=picture)
+                self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+            except Exception as exc:
+                events.debug("Region Picture Failed", str(exc), source=SOURCE,
+                             exception=exc)
+                self.photo = None
+        if self.photo is None:
+            # The fallback: see-through where a compositor honours it.
+            self._request("-alpha", 0.3)
+        self._draw_instruction(size[0], is_pictured=self.photo is not None)
         self.canvas.bind("<ButtonPress-1>", self._on_canvas_press)
         self.canvas.bind("<B1-Motion>", self._on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
@@ -1077,15 +1134,78 @@ class _RegionPicker:
             events.debug("Overlay Grab Failed", str(exc), source=SOURCE,
                          exception=exc)
 
+    def _request(self, attribute, value):
+        try:
+            self.top.attributes(attribute, value)
+        except Exception as exc:
+            events.debug("Overlay Attribute Refused",
+                         f"{attribute}={value}: {exc}", source=SOURCE,
+                         exception=exc)
+
+    def _picture_data(self, screenshot, size):
+        """The screenshot scaled to the overlay and dimmed, as base64 PNG for
+        `tk.PhotoImage` (Tk reads PNG natively, as `_show_image` does), or
+        None when there is no picture to show."""
+        if not isinstance(screenshot, dict) or not screenshot.get("image"):
+            events.debug("Region Picture", "none: the screen could not be "
+                         "captured", source=SOURCE)
+            return None
+        try:
+            import io
+            from PIL import Image
+            image = Image.open(io.BytesIO(bytes(screenshot["image"]))).convert("RGB")
+            drawn = _picture_size(screenshot, size)
+            bounds = (screenshot.get("width") or 0, screenshot.get("height") or 0)
+            if all(bounds) and abs(drawn[0] * bounds[1] - drawn[1] * bounds[0]) \
+                    > 0.02 * drawn[0] * bounds[1]:
+                # The picture and the overlay disagree about the desktop's
+                # shape: it is stretched, and the file log should say so.
+                events.debug("Region Picture Stretched",
+                             f"desktop {bounds[0]}x{bounds[1]} drawn at "
+                             f"{drawn[0]}x{drawn[1]}", source=SOURCE)
+            if image.size != drawn:
+                image = image.resize(drawn)
+            ground = Image.new("RGB", drawn, theme.BACKGROUND)
+            image = Image.blend(image, ground, self.DIM)
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG", compress_level=1)
+        except Exception as exc:
+            events.debug("Region Picture Failed", f"the screenshot would not "
+                         f"decode: {exc}", source=SOURCE, exception=exc)
+            return None
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    def _draw_instruction(self, width, is_pictured):
+        """One line, top centre, on a patch of the page so it reads over any
+        picture."""
+        text = self.INSTRUCTION + ("" if is_pictured else self.NO_PICTURE)
+        pad = SPACE[4]
+        try:
+            line = self.canvas.create_text(max(1, width) // 2, pad, anchor="n",
+                                           text=text, fill=theme.TEXT,
+                                           font=_font(BASE))
+        except Exception as exc:
+            events.debug("Region Instruction Failed", str(exc), source=SOURCE,
+                         exception=exc)
+            return
+        try:
+            left, top, right, bottom = self.canvas.bbox(line)
+            patch = self.canvas.create_rectangle(
+                left - pad, top - pad // 2, right + pad, bottom + pad // 2,
+                fill=theme.BACKGROUND, outline="")
+            self.canvas.tag_raise(line, patch)
+        except Exception:
+            pass
+
     def _virtual_desktop(self):
         """The whole virtual desktop, so a region on a second monitor is
-        reachable. Falls back to the primary screen."""
-        widget = self.top
+        reachable. Falls back to the primary screen. -> (geometry, (w, h))."""
+        widget = self.top if self.top is not None else self.master
         width = self._measure(widget, "winfo_vrootwidth", "winfo_screenwidth")
         height = self._measure(widget, "winfo_vrootheight", "winfo_screenheight")
         left = self._measure(widget, "winfo_vrootx", None)
         top = self._measure(widget, "winfo_vrooty", None)
-        return f"{width}x{height}+{left}+{top}"
+        return f"{width}x{height}+{left}+{top}", (width, height)
 
     @staticmethod
     def _measure(widget, name, fallback_name):
@@ -3794,8 +3914,11 @@ class TkPanelView(PanelView):
             pass
 
     def _on_region_clicked(self, element):
+        # The picture first, then the overlay: the overlay must never be in
+        # the screenshot it shows (bench 2026-09-27).
+        screenshot = self._region_screenshot(element)
         picker = _RegionPicker(self.frame)
-        region = picker.pick()
+        region = picker.pick(screenshot=screenshot)
         if region is None:
             previous, self._acting = self._acting, element
             try:
@@ -3805,6 +3928,23 @@ class TkPanelView(PanelView):
             return None
         self._show_refused("")
         return self._run(element, args=region)
+
+    def _region_screenshot(self, element):
+        """The element's `data_command` (Red Percent's `screen_image`): the
+        desktop as `{"image": png, ...}`, or None - no command, a refusal, a
+        failure or no capture all mean the picker falls back to its alpha
+        overlay rather than not opening."""
+        command = element.get("data_command")
+        if not command:
+            return None
+        try:
+            result = self._call(command)
+        except Exception as exc:
+            events.debug("Region Screenshot Failed", f"{self.name}.{command}: "
+                         f"{exc}", source=SOURCE, exception=exc)
+            return None
+        value = result.value if getattr(result, "is_ok", False) else None
+        return value if isinstance(value, dict) and value.get("image") else None
 
     def _on_save_clicked(self, element):
         """Ask for a destination, let the model write, then copy it there.
