@@ -8,6 +8,7 @@ against a throwaway bare remote under `tmp_path`, the way `update.sh` was
 tested; nothing here touches this checkout, and pip is never really run.
 """
 import subprocess
+from pathlib import Path
 import sys
 
 import pytest
@@ -350,13 +351,21 @@ def test_the_default_pip_step_is_this_python_installing_the_checkout(
     assert seen["kwargs"]["timeout"] == 600
 
 
-def test_a_firmware_change_is_flagged_for_run_swap(repos):
+def test_a_firmware_change_points_at_the_firmware_row(repos):
     _, station, upstream = repos
     push(upstream, "firmware/stepper/stepper.ino", "// v2\n", "firmware")
     result = Updater(root=station, pip=FakePip()).apply()
     assert result["updated"] is True
     assert result["firmware_changed"] is True
-    assert "run_swap.sh" in result["reason"]
+    assert "Firmware row" in result["reason"]
+    assert "run_swap" not in result["reason"]
+
+
+def test_no_launcher_or_updater_names_the_retired_run_swap():
+    root = Path(__file__).resolve().parents[1]
+    for name in ("update.sh", "update.bat", "src/controller/updater.py",
+                 "src/controller/setup.py", "run.sh", "run.bat"):
+        assert "run_swap" not in (root / name).read_text(), name
 
 
 def test_git_runs_in_the_checkout_with_a_timeout_and_no_prompt(repos):

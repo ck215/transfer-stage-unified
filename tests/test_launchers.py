@@ -257,3 +257,84 @@ def test_swap_branch_finds_a_main_worktree_beside_this_one(bench):
     assert done.returncode == 0, done.stderr
     assert f"tree: {sibling}" in done.stdout
     assert calls == []
+
+
+# -- nothing else prints (L3; lead's ruling 2026-09-28) -----------------------
+# The log file is the record and the tray is the operator's view: info and
+# warning events no longer echo to the terminal unless STATION_ECHO_EVENTS=1.
+# Errors still reach stderr.
+
+@pytest.fixture
+def fresh_log():
+    from events import EventLog
+    return EventLog()
+
+
+def test_info_and_warning_events_are_silent_on_the_terminal(fresh_log, capsys, monkeypatch):
+    monkeypatch.delenv("STATION_ECHO_EVENTS", raising=False)
+    fresh_log.info("Log File", "/tmp/x.log", source="app")
+    fresh_log.warn("Firmware Not Flashed", "DC Probe still needs flashing.", source="Setup")
+    assert capsys.readouterr() == ("", "")
+
+
+def test_the_echo_comes_back_with_station_echo_events(fresh_log, capsys, monkeypatch):
+    monkeypatch.setenv("STATION_ECHO_EVENTS", "1")
+    fresh_log.info("Log File", "/tmp/x.log", source="app")
+    fresh_log.warn("Careful", "a warning", source="app")
+    out = capsys.readouterr().out
+    assert "Log File" in out and "Careful" in out
+
+
+def test_an_error_still_reaches_stderr(fresh_log, capsys, monkeypatch):
+    monkeypatch.delenv("STATION_ECHO_EVENTS", raising=False)
+    fresh_log.error("Web Server Failed", "cannot bind", source="web", ack=False)
+    captured = capsys.readouterr()
+    assert captured.out == "" and "Web Server Failed" in captured.err
+
+
+def _served_web(tmp_path, *flags):
+    """A real headless Web launch, SIM only, on a free port; returns what it
+    printed before Quit."""
+    import socket
+    import urllib.request
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = {k: v for k, v in os.environ.items() if k != "STATION_ECHO_EVENTS"}
+    env.update(TRANSFER_STAGE_DATA_ROOT=str(tmp_path), STATION_NO_UPDATE_CHECK="1",
+               STATION_NO_FIRMWARE_CHECK="1", QT_QPA_PLATFORM="offscreen")
+    child = subprocess.Popen([sys.executable, str(REPO / "src" / "app.py"), "--web",
+                              "--port", str(port), *flags],
+                             env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, cwd=str(tmp_path))
+    try:
+        import time
+        deadline = time.monotonic() + 30
+        setup = None
+        while time.monotonic() < deadline and setup is None:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/setup", timeout=2) as r:
+                    setup = json.loads(r.read())
+            except OSError:
+                time.sleep(0.2)
+        assert setup is not None, "the Web view never served"
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/api/quit", data=b"{}",
+                                         headers={"Content-Type": "application/json",
+                                                  "Origin": f"http://127.0.0.1:{port}"},
+                                         method="POST")
+        urllib.request.urlopen(request, timeout=5).read()
+        out, err = child.communicate(timeout=30)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate()
+    return setup, out, err, port
+
+
+def test_a_headless_web_launch_prints_only_its_address(tmp_path):
+    setup, out, err, port = _served_web(tmp_path, "--no-browser")
+    assert out.strip().splitlines() == [f"Station served at http://127.0.0.1:{port}"]
+    assert err == ""
+    titles = [s["title"] for s in setup["schema"]["sections"]]
+    assert titles[:3] == ["Update", "Firmware", "Devices"]
+    assert setup["state"]["values"]["web_address"] == f"http://127.0.0.1:{port}"

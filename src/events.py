@@ -164,7 +164,11 @@ class EventLog:
             subscribers = list(self._subscribers)
         self._write_file(severity, source, f"{title}: {message}", exception)
         if is_new:  # a repeat updates the count; it neither re-prints nor re-notifies
-            print(event.text, file=sys.stderr if severity == "error" else sys.stdout)
+            # The log file is the record and the tray the operator's view
+            # (lead's ruling 2026-09-28): only errors reach the terminal,
+            # unless STATION_ECHO_EVENTS=1 asks for every event there too.
+            if severity == "error" or os.environ.get("STATION_ECHO_EVENTS") == "1":
+                print(event.text, file=sys.stderr if severity == "error" else sys.stdout)
             for fn in subscribers:
                 try:
                     fn(event)

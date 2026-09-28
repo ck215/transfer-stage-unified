@@ -1375,8 +1375,8 @@ class Setup(Panel):
             extras.append("The dependencies changed and pip install failed: run "
                           "pip install -e '.[qt]' by hand before starting again.")
         if result.get("firmware_changed"):
-            extras.append("The firmware changed: start with run_swap.sh to flash "
-                          "the boards.")
+            extras.append("The firmware changed: after the restart, the "
+                          "Firmware row flashes the boards that are out of date.")
         with self._lock:
             self._updated_to = result.get("new")
             self._update_code = "updated"
@@ -1398,7 +1398,7 @@ class Setup(Panel):
             self._warned_updates.add(key)
         events.warn(title, message, source=self.NAME, exception=exception)
 
-    # -- the firmware check (owner, 2026-09-28: run_swap.sh's, on the page) --
+    # -- the firmware check (owner, 2026-09-28: the old launcher's, on the page) --
     FIRMWARE_CHECKING = "checking…"
     FIRMWARE_CHECK_OFF = ("not checked this run (STATION_NO_FIRMWARE_CHECK); "
                           "press Check firmware")
@@ -1651,7 +1651,7 @@ class Setup(Panel):
             # empty when nothing is coming.
             sch.readonly("Coming", "update_log"),
             layout="row",
-        ), sch.section(
+        ), self._firmware_section(), sch.section(
             "Devices",
             sch.button("Refresh", "refresh", role="info"),
             sch.readonly("Scan:", "scan_status"),

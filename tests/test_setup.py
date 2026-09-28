@@ -161,7 +161,7 @@ def test_model_types_is_the_only_list_of_models(panel, fake_types):
     builds. Four copies of this list disagreed before RC-7."""
     assert panel.model_types == list(fake_types)
     titles = [section["title"] for section in panel.schema["sections"]]
-    assert titles == ["Update", "Devices", *fake_types, "Launch"]
+    assert titles == ["Update", "Firmware", "Devices", *fake_types, "Launch"]
 
 
 # -- the table (Addendum 2) ------------------------------------------------
@@ -1246,6 +1246,17 @@ def test_a_failed_reinstall_after_the_update_is_a_warning(fake_types, checking, 
     assert "pip install failed" in panel.update_status
 
 
+def test_a_landed_firmware_change_points_at_the_firmware_row(fake_types, checking):
+    updater = FakeUpdater(check=behind(2), apply=dict(
+        FakeUpdater().apply_result, firmware_changed=True))
+    panel = _ready(Setup(RecordingController(), updater=updater))
+    assert panel.run("apply_update", args=(True,)).is_ok
+    wait_idle(panel)
+    assert panel.update_status.endswith(
+        "The firmware changed: after the restart, the Firmware row flashes "
+        "the boards that are out of date.")
+
+
 def test_launch_waits_while_an_update_is_landing(fake_types, checking):
     updater = FakeUpdater(check=behind(2))
     panel = _ready(Setup(RecordingController(), updater=updater))
@@ -1282,7 +1293,7 @@ def test_launch_is_refused_after_an_update_until_the_restart(fake_types, checkin
 
 
 
-# -- the firmware check (owner, 2026-09-28: run_swap.sh's, on the Setup page) --
+# -- the firmware check (owner, 2026-09-28: the old launcher's, on the Setup page) --
 
 class FakeFirmware:
     """`controller.firmware.FirmwareCheck`'s two calls, scripted. `gate`
@@ -1400,6 +1411,27 @@ def test_the_firmware_row_block_builds_the_brief_shape(panel):
     assert boards["role"] == "info"
     assert flash["role"] == "go" and again["role"] == "neutral"
     assert flash["confirm"].startswith("Flash the out-of-date boards?")
+
+
+def test_the_firmware_row_is_second_right_after_update(panel):
+    sections = panel.schema["sections"]
+    assert [s["title"] for s in sections[:3]] == ["Update", "Firmware", "Devices"]
+    assert sections[1] == panel._firmware_section()
+
+
+def test_the_firmware_row_reaches_the_views_through_run_and_state(fake_types):
+    firmware = FakeFirmware()
+    panel = Setup(RecordingController(), firmware=firmware)
+    assert panel.run("check_firmware").is_ok
+    wait_firmware(panel)
+    values = panel.state["values"]
+    assert values["firmware_status"] == "Stepper Probe out of date"
+    assert values["firmware_progress"] == ""
+    result = panel.run("flash_firmware")
+    assert result.status == "needs_confirm" and result.command == "flash_firmware"
+    assert panel.run("flash_firmware", args=(True,)).is_ok
+    wait_firmware(panel)
+    assert firmware.flashes == [["Stepper Probe"]]
 
 
 def test_no_test_ever_checks_firmware_the_startup_check_is_off(fake_types):

@@ -815,13 +815,16 @@ class WebView:
         # indicators"): the address is a Setup readonly now, not a terminal
         # line. With --no-browser nothing opens the page, and the port may
         # have moved up past a busy one, so there - and only there - the
-        # address is still said where the operator can read it.
+        # address is also written to the terminal: the station's one
+        # deliberate line of output (lead's ruling 2026-09-28).
         try:
             self.setup.web_address = self.url
         except AttributeError:      # a Setup stand-in that forbids new attributes
             pass
-        say = events.debug if self.open_browser else events.info
-        say("Web Dashboard", f"serving at {self.url}", source=SOURCE)
+        events.debug("Web Dashboard", f"serving at {self.url}", source=SOURCE)
+        if not self.open_browser:
+            sys.stdout.write(f"Station served at {self.url}\n")
+            sys.stdout.flush()
         events.debug("Watchdog Started", f"warn at {self.WARN_SECONDS}s, FULL "
                      f"STOP at {self.STOP_SECONDS}s of browser silence",
                      source=SOURCE)

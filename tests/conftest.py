@@ -244,7 +244,7 @@ def _no_update_check(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_firmware_check(monkeypatch, tmp_path):
     """Setup works out each board's firmware status on a thread at
-    construction (owner, 2026-09-28: the check that was `run_swap.sh`'s).
+    construction (owner, 2026-09-28: the check that was `run_swap.sh`'s, now `dev/swap_branch.sh`).
     Every Setup in the suite starts with it off, and the stamp file it and
     `firmware/flash_firmware.py` read is this test's own, never the bench's
     `~/transfer-stage-runs/flashed.json`. A test of the check deletes the

@@ -1,4 +1,4 @@
-"""The firmware check that used to live in `run_swap.sh` (owner, 2026-09-28:
+"""The firmware check that used to live in `run_swap.sh` (now `dev/swap_branch.sh`; owner, 2026-09-28:
 "retire any system that doesn't use the SWAP check. Push any setup left in
 the terminal to GUI indicators").
 

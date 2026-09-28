@@ -2,7 +2,7 @@
 2026-09-28: "retire any system that doesn't use the SWAP check. Push any
 setup left in the terminal to GUI indicators").
 
-`FirmwareCheck` answers the question `run_swap.sh` asked before every
+`FirmwareCheck` answers the question `run_swap.sh` (now `dev/swap_branch.sh`) asked before every
 launch - is each board running the sketch this checkout carries? - without
 arduino-cli and without opening a port:
 

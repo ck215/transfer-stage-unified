@@ -9,7 +9,7 @@ an update check on startup moving forward").
               that has diverged from GitHub, offline, and in a frozen bundle.
               Reinstalls only when `pyproject.toml` / `requirements.txt`
               changed; says so when `firmware/` changed (flashing is
-              `run_swap.sh`'s job, never this one's).
+              the Setup page's Firmware row's job, never this one's).
 
 There is no stash, no reset, no checkout and no branch switch anywhere in
 this file, and there must never be: an update that can rewrite the bench's
@@ -137,9 +137,9 @@ class Updater:
                                  "pip install -e '.[qt]'.")
         if self._changed(old, new, "firmware"):
             result["firmware_changed"] = True
-            sentences.append("The firmware changed: run_swap.sh flashes the "
-                             "boards that are out of date on the next launch; "
-                             "plain run.sh leaves them as they are.")
+            sentences.append("The firmware changed: after the restart, the "
+                             "Setup page's Firmware row flashes the boards "
+                             "that are out of date.")
         result["reason"] = " ".join(sentences)
         return result
 
