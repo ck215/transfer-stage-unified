@@ -1373,3 +1373,36 @@ def test_grab_screen_is_none_when_the_screen_is_closed_or_fails(monitor):
     closed = RedMonitor(screen=desktop_screen())
     assert closed.grab_screen() is None                 # never opened
     assert monitor.grab_screen() is None                # a capture with no desktop
+
+
+# -- capture handles (2026-09-28): the loop keeps one, nothing else does -----
+
+def test_the_run_loop_keeps_one_handle_and_other_grabs_keep_none(tmp_path):
+    """A Web request is a new thread each time; a frame or screen grab from
+    one must leave no capture handle open (on X11, a display connection).
+    The run loop keeps exactly one for its life and drops it on leaving."""
+    model = RedMonitor(screen=desktop_screen())
+    model.output_root = tmp_path / "runs"
+    model.open()
+    try:
+        model.set_region(0, 0, 10, 10)
+        model.start_run(confirmed=True)
+        run = model._run
+        deadline = time.monotonic() + 3.0
+        while run.frames < 5 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert run.frames >= 5
+        assert model.screen.kept_handles == 1
+        for grab in (model.grab_frame, model.grab_screen) * 3:
+            out = []
+            worker = threading.Thread(target=lambda: out.append(grab()))
+            worker.start()
+            worker.join()
+            assert out[0] and out[0][:8] == b"\x89PNG\r\n\x1a\n"
+        assert model.screen.kept_handles == 1      # still only the loop's
+        model.end_run()
+        run.thread.join(2.0)
+        assert not run.thread.is_alive()
+        assert model.screen.kept_handles == 0      # dropped with the loop
+    finally:
+        model.close()

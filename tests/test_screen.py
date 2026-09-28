@@ -84,25 +84,29 @@ def test_no_region_is_not_an_error():
 
 # --- threads --------------------------------------------------------------
 
-def test_each_thread_gets_its_own_capture_handle_and_close_closes_them_all():
+def test_only_a_keeping_thread_reuses_a_handle_and_close_closes_it():
     """`mss` is not thread-safe: an instance belongs to the thread that made
-    it. The run loop is a worker thread; the live readouts are polled from
-    the UI thread."""
+    it. Amended 2026-09-28 (it asserted a kept handle for EVERY thread, the
+    leak): only the thread that declared itself with `keep_handle()` (the
+    run loop) reuses one; `close()` still closes it."""
     screen, made = _screen()
     screen.open()
     region = {"top": 0, "left": 0, "width": 2, "height": 2}
 
-    screen.grab(region)
-    screen.grab(region)
-    assert len(made) == 1, "one thread must reuse its own handle"
+    def loop():
+        screen.keep_handle()
+        screen.grab(region)
+        screen.grab(region)
 
-    worker = threading.Thread(target=lambda: screen.grab(region))
+    worker = threading.Thread(target=loop)
     worker.start()
     worker.join()
-    assert len(made) == 2, "a second thread must get its own handle"
+    assert len(made) == 1, "the keeping thread must reuse its own handle"
+    assert not made[0].closed and screen.kept_handles == 1
 
     screen.close()
     assert all(capture.closed for capture in made)
+    assert screen.kept_handles == 0
 
 
 # --- failure --------------------------------------------------------------
@@ -185,3 +189,130 @@ def test_screenshot_png_still_downscales_for_the_picker():
     png, bounds = screen.screenshot_png()
     assert _decoded(png).size == (1600, 80)
     assert bounds["width"] == 2000                   # full-size bounds
+
+
+# --- one-call handles (2026-09-28): no connection left behind ------------
+# A Web request is a new thread each time; Arm, Finish and the picker grab
+# from such threads. A kept handle per thread stayed open until close(),
+# one per request (on X11, one display connection each).
+
+REGION = {"top": 0, "left": 0, "width": 2, "height": 2}
+
+
+def _from_fresh_thread(fn):
+    out = []
+    worker = threading.Thread(target=lambda: out.append(fn()))
+    worker.start()
+    worker.join()
+    return out[0]
+
+
+def test_a_grab_from_a_fresh_thread_leaves_no_handle_behind():
+    screen, made = _screen()
+    screen.open()
+    for _ in range(5):
+        assert _from_fresh_thread(lambda: screen.grab(REGION)) == "frame-1"
+    assert len(made) == 5 and all(c.closed for c in made)
+    assert screen.kept_handles == 0
+    assert screen.grab(REGION) == "frame-1"        # the calling thread too
+    assert made[-1].closed and screen.kept_handles == 0
+
+
+def test_a_screenshot_from_a_fresh_thread_leaves_no_handle_behind():
+    made = []
+
+    def factory():
+        made.append(DesktopCapture())
+        return made[-1]
+
+    screen = Screen(factory=factory)
+    screen.open()
+    for _ in range(3):
+        png, _bounds = _from_fresh_thread(lambda: screen.screenshot_png(max_width=None))
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(made) == 3 and all(c.closed for c in made)
+    assert screen.kept_handles == 0
+
+
+def test_a_failing_one_call_grab_still_closes_its_handle():
+    screen, made = _screen(error=RuntimeError("display went away"))
+    screen.open()
+    assert _from_fresh_thread(lambda: screen.grab(REGION)) is None
+    assert screen.failures == 1 and made[0].closed and screen.kept_handles == 0
+
+
+def test_the_keeping_threads_handle_is_reused_for_every_frame():
+    """The run loop's throughput: one open for the loop, never one per frame;
+    another thread's grab meanwhile opens and closes its own."""
+    screen, made = _screen()
+    screen.open()
+    kept, go_on, grabbed = [], threading.Event(), threading.Event()
+
+    def loop():
+        screen.keep_handle()
+        screen.keep_handle()                       # idempotent
+        for _ in range(100):
+            kept.append(screen.grab(REGION))
+        grabbed.set()
+        go_on.wait(5.0)
+        screen.drop_handle()
+
+    worker = threading.Thread(target=loop)
+    worker.start()
+    assert grabbed.wait(5.0)
+    assert len(made) == 1 and len(made[0].regions) == 100
+    assert kept[-1] == "frame-100"
+    assert not made[0].closed and screen.kept_handles == 1
+    assert _from_fresh_thread(lambda: screen.grab(REGION)) == "frame-1"
+    assert len(made) == 2 and made[1].closed and not made[0].closed
+    go_on.set()
+    worker.join()
+    assert made[0].closed and screen.kept_handles == 0     # dropped on leaving
+
+
+def test_keep_handle_that_cannot_open_falls_back_to_one_call_handles():
+    calls = []
+
+    def factory():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("no display yet")
+        return FakeCapture()
+
+    screen = Screen(factory=factory)
+    screen.open()
+    screen.keep_handle()                           # never raises
+    assert screen.kept_handles == 0
+    assert screen.grab(REGION) == "frame-1"
+    screen.drop_handle()                           # nothing kept: harmless
+
+
+def test_a_closed_screen_keeps_nothing():
+    screen, made = _screen()
+    screen.keep_handle()
+    assert made == [] and screen.kept_handles == 0
+
+
+def test_handle_creation_is_serialised_across_threads():
+    """`mss` instances are created and closed under one lock: two threads
+    never construct one at the same moment."""
+    import time
+    inside, overlap = [0], []
+
+    class Slow(FakeCapture):
+        def __init__(self):
+            inside[0] += 1
+            overlap.append(inside[0])
+            time.sleep(0.01)
+            inside[0] -= 1
+            super().__init__()
+
+    screen = Screen(factory=Slow)
+    screen.open()
+    workers = [threading.Thread(target=lambda: screen.grab(REGION))
+               for _ in range(8)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    assert len(overlap) == 8 and max(overlap) == 1
