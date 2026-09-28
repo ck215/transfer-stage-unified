@@ -786,3 +786,137 @@ def test_the_tier_two_disclosure_names_the_device():
     model = _rotator()
     tier_two = [s for s in model.schema["sections"] if s.get("tier") == 2]
     assert tier_two and tier_two[0]["disclosure"] == f"Configure {model.NAME}"
+
+
+# -- the boot grace (bench, 2026-09-27) ------------------------------------
+#
+# "The temperature probe and rotator always boot with a warning, then work just
+# fine." `_poll_ok` started as None, and `None is not False`, so the first
+# poll that raised after `open()` warned "Rotator Unreachable" and the next
+# one said "Rotator Back". A failure inside the boot grace is now debug only;
+# one that outlasts it warns exactly as before.
+
+class _Clock:
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def _reported(seen):
+    return [(e.severity, e.title) for e in seen
+            if e.source == Rotator.NAME and e.severity != "debug"]
+
+
+def _booting_rotator(smc):
+    """A rotator whose grace is armed as `open()` arms it, on a hand clock,
+    with no sampler thread: the test calls `_poll` itself."""
+    clock = _Clock()
+    original = rotator_module.SMC100
+    rotator_module.SMC100 = lambda smc_id, port, **kwargs: smc
+    try:
+        model = Rotator(port="/dev/ttyS5", clock=clock)
+    finally:
+        rotator_module.SMC100 = original
+    model._arm_boot_grace()
+    return model, clock
+
+
+@pytest.fixture
+def seen():
+    events.clear()
+    got = []
+    events.subscribe(got.append)
+    yield got
+    events.unsubscribe(got.append)
+    events.clear()
+
+
+def test_a_first_poll_that_fails_inside_the_boot_grace_reports_nothing(seen):
+    """B3(a): fail, then answer, inside the window: no warn, no Back."""
+    smc = FakeSMC(position=5.0)
+    model, clock = _booting_rotator(smc)
+    smc.failing = True
+    model._poll()
+    assert model.motion_state == "Communication lost"
+    clock.now += model.SAMPLE_INTERVAL
+    smc.failing = False
+    model._poll()
+    assert model.position == 5.0 and model.motion_state == "Ready"
+    assert _reported(seen) == [], _reported(seen)
+
+
+def test_a_failure_that_outlasts_the_boot_grace_warns_once_then_is_back(seen):
+    """B3(b): the same warning as today, once, and "Back" when it answers."""
+    smc = FakeSMC()
+    model, clock = _booting_rotator(smc)
+    smc.failing = True
+    while clock.now - 1000.0 < model.BOOT_GRACE_SEC:
+        model._poll()
+        clock.now += model.SAMPLE_INTERVAL
+    assert _reported(seen) == [], "warned inside the boot grace"
+    for _ in range(4):
+        model._poll()
+        clock.now += model.SAMPLE_INTERVAL
+    assert _reported(seen) == [("warning", "Rotator Unreachable")]
+    smc.failing = False
+    model._poll()
+    assert _reported(seen) == [("warning", "Rotator Unreachable"),
+                               ("info", "Rotator Back")]
+    unreachable = next(e for e in seen if e.title == "Rotator Unreachable")
+    assert unreachable.message == ("The stage stopped answering. Check its "
+                                   "cable and power.")
+
+
+def test_a_drop_after_a_healthy_start_warns_on_its_first_failure(seen):
+    """B3(c): once the stage has answered the boot is over, even inside the
+    window: a drop warns on its first failed poll, as it always did."""
+    smc = FakeSMC()
+    model, clock = _booting_rotator(smc)
+    model._poll()
+    clock.now += model.SAMPLE_INTERVAL
+    assert clock.now - 1000.0 < model.BOOT_GRACE_SEC
+    smc.failing = True
+    model._poll()
+    assert _reported(seen) == [("warning", "Rotator Unreachable")]
+    smc.failing = False
+    clock.now += model.SAMPLE_INTERVAL
+    model._poll()
+    assert _reported(seen)[-1] == ("info", "Rotator Back")
+
+
+def test_a_poll_run_without_open_keeps_todays_rules(seen):
+    """No `open()`, no grace: the first failed poll warns."""
+    smc = FakeSMC()
+    model = _rotator(smc)
+    smc.failing = True
+    model._poll()
+    assert _reported(seen) == [("warning", "Rotator Unreachable")]
+
+
+def test_the_boot_grace_is_a_class_constant_of_three_seconds():
+    assert Rotator.BOOT_GRACE_SEC == 3.0
+
+
+def test_a_rotator_whose_first_polls_fail_at_boot_reports_nothing(seen):
+    """End to end, through `Model.open()` and the real sampler thread: the
+    first two polls after open fail, then the stage answers. Before the grace
+    this was "Rotator Unreachable" then "Rotator Back" on every boot."""
+    class SlowToAnswer(FakeSMC):
+        def get_position_deg(self):
+            self.polls += 1
+            if self.polls <= 2:
+                raise TimeoutError("not answering yet")
+            return self.position
+
+    smc = SlowToAnswer(position=7.0)
+    model = _rotator(smc)
+    model.open()
+    try:
+        assert _wait_until(lambda: model.position == 7.0), model.motion_state
+        time.sleep(2 * model.SAMPLE_INTERVAL)
+    finally:
+        _settle(model)
+    assert smc.polls >= 3
+    assert _reported(seen) == [], _reported(seen)

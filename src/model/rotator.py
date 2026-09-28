@@ -53,6 +53,17 @@ class Rotator(Model):
     #: `main` polled at 2 Hz. This only refreshes two read-only fields.
     SAMPLE_INTERVAL = 0.25
 
+    #: s after `open()` in which a failed poll is the stage coming up, not
+    #: news (bench, 2026-09-27: "always boots with a warning, then works").
+    #: An SMC100 has no bootloader to wait out and `SMC100.open()` has
+    #: already had one TS? answered, so this only has to cover a controller
+    #: that is slow for its first few polls: 3 s is twelve 4 Hz ticks, and
+    #: more than two whole poll retry budgets (TP? + TS?, 11 x 50 ms each).
+    #: A failure inside it goes to the log file only; one that outlasts it
+    #: warns, once, with the usual text. The first good poll ends the window
+    #: early: after it, every rule is as before.
+    BOOT_GRACE_SEC = 3.0
+
     SMC_ID = 1
 
     @classmethod
@@ -99,8 +110,11 @@ class Rotator(Model):
                           label="Step (deg)"),
     }
 
-    def __init__(self, port=None, gamepad=None, sim=False):
+    def __init__(self, port=None, gamepad=None, sim=False, clock=time.monotonic):
         super().__init__()
+        self._clock = clock          # times the boot grace; a test hands in its own
+        #: `clock()` value the boot grace ends at; None = no grace.
+        self._boot_grace_until = None
         self._lock = threading.RLock()
         self._position = None
         self._motion_state = "Disconnected"
@@ -143,7 +157,22 @@ class Rotator(Model):
         """
         if self.smc is None:
             return
+        self._arm_boot_grace()
         self._spawn("sample", self._sample_loop)
+
+    def _arm_boot_grace(self):
+        """Start the boot window. `open()` does it; a test does it by hand."""
+        self._boot_grace_until = self._clock() + self.BOOT_GRACE_SEC
+
+    def _is_booting(self):
+        """Inside the boot window: armed, never answered, not expired."""
+        until = self._boot_grace_until
+        if until is None or self._poll_ok is not None:
+            return False
+        if self._clock() < until:
+            return True
+        self._boot_grace_until = None
+        return False
 
     def disable(self):
         """A stage has nothing to de-energize.
@@ -502,6 +531,14 @@ class Rotator(Model):
             errors, code = smc.get_status()
         except Exception as exc:
             self._publish(None, "Communication lost")
+            if self._is_booting():
+                # `_poll_ok` stays None: a stage that answers next says
+                # nothing, and one that never does warns past the window.
+                events.debug("Poll Boot Grace", f"poll {self._poll_count} "
+                             f"failed inside the {self.BOOT_GRACE_SEC:g} s boot "
+                             f"grace, not reported: {exc!r}", source=self.NAME,
+                             exception=exc, every=1.0)
+                return
             if self._poll_ok is not False:
                 # Once per transition, not once per tick: the loop rule is
                 # that nothing publishes per iteration.
