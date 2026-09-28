@@ -823,6 +823,8 @@ class TransferMap(Model):
             return "Press Finish trial"
         if not tip:
             return "Type a tip ID"
+        if self._read_tilt()[0] is None:
+            return "Type the tilt for this trial"
         if self._poll_refused and not running:
             reason = self._poll_refused.rstrip(".")
             return f"Polling did not start: {reason}. Fix that, then press Arm trial"
@@ -879,8 +881,12 @@ class TransferMap(Model):
             # the sample framed; nothing is started or written until then.
             # A broken or retired tip is asked in the same prompt (M2): one
             # question, one Continue.
+            tilt_now, tilt_from = self._read_tilt()
+            tilt_words = (f" at {tilt_now:g} deg" + (f" ({tilt_from})" if tilt_from != "typed" else "")
+                          if tilt_now is not None else ", with NO tilt recorded")
             prompt = (f"Frame the sample now. Continue takes the before picture "
-                      f"and arms trial {self._store.next_id()} on tip {tip}.")
+                      f"and arms trial {self._store.next_id()} on tip {tip}"
+                      f"{tilt_words}.")
             doubt = self._tip_doubt(tip)
             raise NeedsConfirm(doubt + "\n\n" + prompt if doubt else prompt,
                                "arm_trial",
@@ -1389,6 +1395,28 @@ class TransferMap(Model):
                          f"{span}{end}{note}")
         return lines
 
+    def set_trial_tilt(self):
+        """Correct a recorded trial's tilt from the sheet (bench 2026-09-28:
+        two trials were armed before the tilt was asked for)."""
+        trial_id = int(self.afm_trial_id or 0)
+        if trial_id <= 0:
+            raise Refused("Type the trial number under AFM measurement, Trial.")
+        row = self._store.trial(trial_id)
+        if row is None:
+            raise Refused(f"No trial {trial_id} in the database.")
+        if row["status"] == "armed":
+            raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
+        tilt = _number(self.typed_tilt)
+        if tilt is None:
+            raise Refused("Type the tilt in degrees under Tilt for this trial.")
+        self._store.update(trial_id, {"tilt_deg": float(tilt),
+                                      "tilt_source": "typed later"})
+        self._indices.pop(trial_id, None)
+        self._changed()
+        events.info("Tilt Set", f"Trial {trial_id}: tilt set to {tilt:g} deg.",
+                    source=self.NAME)
+        return trial_id
+
     def attach_afm(self):
         trial_id = int(self.afm_trial_id or 0)
         if trial_id <= 0:
@@ -1823,6 +1851,11 @@ class TransferMap(Model):
                 sch.button("New tip", "new_tip", inputs=("tip_id",)),
                 sch.readonly("Trials on this tip", "tip_trial_count"),
                 sch.readonly("Tip", "tip_status"),
+                # Bench 2026-09-28: the tilt varies between trials of one
+                # tip and was buried two tiers down; it is asked here, per
+                # trial, and Next step insists on it when no rotator reads.
+                sch.entry("Tilt for this trial (deg)", "typed_tilt",
+                          P["typed_tilt"]),
                 sch.button("Arm trial", "arm_trial",
                            inputs=("tip_id", "typed_tilt"),
                            role="go", disabled_when=("armed", "latched")),
@@ -1880,8 +1913,6 @@ class TransferMap(Model):
                              "force_band_options"),
                 sch.entry("Trial to show (0 = latest)", "trial_pick",
                           P["trial_pick"]),
-                sch.entry("Tilt without a rotator (deg)", "typed_tilt",
-                          P["typed_tilt"]),
                 tier=2, disclosure=configure,
             ),
             sch.section(
@@ -1896,6 +1927,8 @@ class TransferMap(Model):
                 sch.button("Attach AFM", "attach_afm",
                            inputs=("afm_trial_id", "width_um", "width_sigma_um",
                                    "thickness_nm", "thickness_sigma_nm")),
+                sch.button("Set tilt for trial", "set_trial_tilt",
+                           inputs=("afm_trial_id", "typed_tilt")),
                 tier=2, disclosure=configure,
             ),
             sch.section(

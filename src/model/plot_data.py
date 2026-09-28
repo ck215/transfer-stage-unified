@@ -485,6 +485,18 @@ def _span(values):
     return low - margin, high + margin
 
 
+def map3d_limits(request):
+    """Axis limits for the 3D map: every trial padded by `_span`, so one
+    trial (or several at one tilt) does not leave matplotlib autoscaling
+    to a hair's width around the value, whose tick labels then read as a
+    wrong tilt (bench 2026-09-28). None for an axis with no values."""
+    limits = {}
+    for key in ("x", "y", "z"):
+        values = [v for v in request.get(key, ()) if v is not None]
+        limits[key] = _span(values) if values else None
+    return limits
+
+
 def _slice_request(placed, definition, band):
     """Width over tilt x speed at a force band: the Gaussian process mean,
     its sigma (drawn as the confidence contours), and the measured trials."""
@@ -599,6 +611,14 @@ def _draw_transfer(request, size=None, dpi=None):
                          pick("z", pending), facecolors="none",
                          edgecolors=palette.MUTED, marker="o", s=30)
         axes.set_zlabel(request["z_label"])
+        for key, setter in (("x", axes.set_xlim), ("y", axes.set_ylim),
+                            ("z", axes.set_zlim)):
+            limit = map3d_limits(request)[key]
+            if limit is not None:
+                setter(*limit)
+        from matplotlib.ticker import MaxNLocator
+        for axis in (axes.xaxis, axes.yaxis, axes.zaxis):
+            axis.set_major_locator(MaxNLocator(5))
         panels = [axes]
     elif kind == "slice":
         axes = figure.add_subplot(111)

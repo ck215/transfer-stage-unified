@@ -784,6 +784,8 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     model.tip_id = " "
     assert step() == "Type a tip ID"
     model.tip_id = "tip-A"
+    assert step() == "Type the tilt for this trial"
+    model.typed_tilt = "6.5"
     assert step() == "Press Arm trial"
     if not red.is_running:
         red.start_run(confirmed=True)       # before T2, Arm needs a run
@@ -917,7 +919,8 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     result = model.run("arm_trial", {"tip_id": "T7", "typed_tilt": ""})
     assert result.needs_confirm, result
     assert result.reason == ("Frame the sample now. Continue takes the before "
-                             "picture and arms trial 1 on tip T7.")
+                             "picture and arms trial 1 on tip T7, with NO tilt "
+                             "recorded.")
     assert result.command == "arm_trial"
     assert result.inputs == {"tip_id": "T7", "typed_tilt": ""}
     assert not model.is_armed and model.trial_count == 0
@@ -1049,7 +1052,7 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
             for e in trial["elements"]]
     assert keys == ["next_step", "set_region", "tilt_now", "speed_now",
                     "red_now", "tip_id", "tip_pick", "new_tip",
-                    "tip_trial_count", "tip_status",
+                    "tip_trial_count", "tip_status", "typed_tilt",
                     "arm_trial", "mark_force", "note", "finish_trial",
                     "abort_trial", "is_broke", "trial_status", "before_image",
                     "mark_image", "after_image", "live_series", "figure"]
@@ -1706,7 +1709,7 @@ def test_arming_on_a_broken_tip_asks_once(station):
     assert result.reason == (
         f"Tip T7 broke on trial {broke}. Arm on it anyway?\n\nFrame the sample "
         f"now. Continue takes the before picture and arms trial {broke + 1} "
-        "on tip T7.")
+        "on tip T7 at 22.5 deg (Rotator).")
     again = model.run(result.command, result.inputs, (*result.args, True))
     assert again.is_ok and model.is_armed         # one Continue, not two
 
@@ -1910,6 +1913,7 @@ def test_committing_a_tip_id_starts_polling_from_a_fresh_baseline(sheet):
     assert step() == "Type a tip ID"
     events.forget("Polling Started")    # a new dedupe episode
     since = events.latest_id
+    model.typed_tilt = "7"
     _commit_tip(model, "T7")
     assert red.is_running and model._auto_run is red.run_token
     assert step() == "Press Arm trial"
@@ -2007,6 +2011,7 @@ def test_a_refused_start_warns_once_and_next_step_says_what_to_fix(sheet,
     events.forget("Polling Not Started")
     since = events.latest_id
     for tip in ("T7", "T7", "T8"):
+        model.typed_tilt = "5"
         _commit_tip(model, tip)                    # a commit never fails
     warned = _titled("Polling Not Started", since)
     assert len(warned) == 1 and warned[0].severity == "warning"
@@ -2075,3 +2080,32 @@ def test_a_note_creates_the_tip_record_when_there_is_none(tmp_path):
     tm.tip_id, tm.tip_note = "T8", "fresh"
     assert tm.run("set_tip_note", inputs={"tip_id": "T8", "tip_note": "fresh"}).is_ok
     assert tm._store.tip("T8")["note"] == "fresh"
+
+
+# -- the tilt is asked per trial (bench 2026-09-28) --------------------------
+
+def test_the_tilt_entry_sits_in_tier_one_before_arm(tmp_path):
+    from model.transfer_map import TransferMap
+    tm = TransferMap(db_path=tmp_path / "map.sqlite")
+    trial = [s for s in tm.schema["sections"] if s["title"] == "Trial"][0]
+    keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
+    assert keys.index("typed_tilt") < keys.index("arm_trial")
+    assert keys.index("typed_tilt") > keys.index("tip_id")
+    figure = [s for s in tm.schema["sections"] if s["title"] == "Figure"][0]
+    assert "typed_tilt" not in [e.get("model_attr") for e in figure["elements"]]
+
+
+def test_set_tilt_for_trial_corrects_a_recorded_trial(station):
+    model, red, *_ = station
+    model.typed_tilt = ""
+    _arm(model, "tip-A")
+    _finish(model)
+    trial_id = model._store.last()["id"]
+    assert model._store.trial(trial_id)["tilt_deg"] == 22.5      # the SIM rotator
+    model.afm_trial_id, model.typed_tilt = trial_id, "6.5"
+    assert model.run("set_trial_tilt", {"afm_trial_id": trial_id,
+                                       "typed_tilt": "6.5"}).is_ok
+    row = model._store.trial(trial_id)
+    assert row["tilt_deg"] == 6.5 and row["tilt_source"] == "typed later"
+    bad = model.run("set_trial_tilt", {"afm_trial_id": 999, "typed_tilt": "7"})
+    assert bad.is_refused

@@ -418,3 +418,17 @@ def test_the_transfer_figures_never_draw_in_the_stop_red():
     source = inspect.getsource(plot_data._draw_transfer)
     assert "SIGNAL" not in source
     assert palette.SIGNAL.lower() not in source.lower()
+
+
+def test_the_map3d_axes_are_padded_so_one_tilt_does_not_read_as_a_wrong_one():
+    """Bench 2026-09-28: with every trial at one tilt, autoscaling drew a
+    hair-wide tilt axis whose ticks looked like a misread angle."""
+    one = [{"id": 1, "tilt": 5.0, "speed": 200.0,
+            "force": {"shadow_vs_peak": 0.4}, "width": None, "width_sigma": None}]
+    request = plot_data.transfer_request("map3d", one, "shadow_vs_peak")
+    limits = plot_data.map3d_limits(request)
+    assert limits["x"] == (4.5, 5.5)
+    assert limits["y"] == (199.5, 200.5)
+    assert limits["z"] is not None
+    assert plot_data.render_transfer_figure("map3d", one, "shadow_vs_peak")[:8] == b"\x89PNG\r\n\x1a\n"
+    assert plot_data.map3d_limits({"x": [], "y": [], "z": []}) == {"x": None, "y": None, "z": None}
