@@ -49,6 +49,7 @@ import schema as sch
 from events import events
 from views import theme
 from views import base as view_base
+from views import picking
 from views.base import Dashboard, PanelView, event_line, join_names, stop_words
 
 SOURCE = "TkView"
@@ -1013,28 +1014,6 @@ class ClosableNotebook(ttk.Notebook):
             return None
 
 
-def _picture_size(bounds, overlay):
-    """The size the desktop picture is drawn at on the region picker.
-
-    `bounds` is the full-size desktop the screenshot was taken of (`{"width",
-    "height"}`, capture pixels); `overlay` is the overlay's own `(width,
-    height)`. The picture fills the overlay, which covers the same desktop,
-    so what is seen under a point is what the point's `x_root` reports. An
-    overlay not yet measured (0) draws it at the capture size. Never empty.
-    """
-    def whole(value):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-    width, height = (whole(v) for v in (overlay or (0, 0)))
-    if width > 0 and height > 0:
-        return width, height
-    bounds = bounds or {}
-    return (max(1, whole(bounds.get("width"))),
-            max(1, whole(bounds.get("height"))))
-
-
 class _RegionPicker:
     """A borderless overlay the operator drags a box on, over a picture of
     the desktop.
@@ -1080,6 +1059,10 @@ class _RegionPicker:
         #: The picture on the canvas. Tk drops an image the moment Python
         #: does, so the picker keeps the reference for its lifetime.
         self.photo = None
+        self._picture_item = None
+        self._placed = None
+        self._screenshot = None
+        self._desktop = None
 
     def pick(self, screenshot=None):
         """Blocks until the operator drags or cancels. -> (x, y, w, h) | None.
@@ -1100,9 +1083,10 @@ class _RegionPicker:
 
     def _build(self, screenshot=None):
         geometry, size = self._virtual_desktop()
+        desktop = self._desktop_box()
         # Decoded and scaled before the overlay exists: a picture that will
         # not decode is known before anything is asked of the window.
-        picture = self._picture_data(screenshot, size)
+        picture = self._picture_data(screenshot, desktop)
         self.top = tk.Toplevel(self.master)
         self.top.overrideredirect(True)
         self._request("-topmost", True)
@@ -1114,7 +1098,18 @@ class _RegionPicker:
         if picture is not None:
             try:
                 self.photo = tk.PhotoImage(data=picture)
-                self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+                # Anchored where the desktop's origin falls in the overlay,
+                # never stretched to it: re-placed if the overlay lands
+                # somewhere other than where it was asked to go.
+                _scale, x, y = picking.picture_placement(screenshot, desktop,
+                                                         desktop)
+                self._picture_item = self.canvas.create_image(
+                    x, y, anchor="nw", image=self.photo)
+                self._placed = (x, y)
+                self._screenshot = screenshot
+                self._desktop = desktop
+                events.debug("Region Picture Placed", picking.placement_line(
+                    screenshot, desktop, desktop), source=SOURCE)
             except Exception as exc:
                 events.debug("Region Picture Failed", str(exc), source=SOURCE,
                              exception=exc)
@@ -1127,6 +1122,8 @@ class _RegionPicker:
         self.canvas.bind("<B1-Motion>", self._on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
         self.top.bind("<Escape>", self._on_escape_press)
+        if self.photo is not None:
+            self.top.bind("<Configure>", self._on_overlay_configure)
         try:
             self.top.focus_force()
             self.canvas.grab_set()
@@ -1142,10 +1139,11 @@ class _RegionPicker:
                          f"{attribute}={value}: {exc}", source=SOURCE,
                          exception=exc)
 
-    def _picture_data(self, screenshot, size):
-        """The screenshot scaled to the overlay and dimmed, as base64 PNG for
-        `tk.PhotoImage` (Tk reads PNG natively, as `_show_image` does), or
-        None when there is no picture to show."""
+    def _picture_data(self, screenshot, desktop):
+        """The screenshot at its logical desktop size (`picking`: 1:1 on the
+        bench, halved on a Retina Mac, never stretched to the overlay) and
+        dimmed, as base64 PNG for `tk.PhotoImage` (Tk reads PNG natively,
+        as `_show_image` does), or None when there is no picture to show."""
         if not isinstance(screenshot, dict) or not screenshot.get("image"):
             events.debug("Region Picture", "none: the screen could not be "
                          "captured", source=SOURCE)
@@ -1154,15 +1152,14 @@ class _RegionPicker:
             import io
             from PIL import Image
             image = Image.open(io.BytesIO(bytes(screenshot["image"]))).convert("RGB")
-            drawn = _picture_size(screenshot, size)
-            bounds = (screenshot.get("width") or 0, screenshot.get("height") or 0)
-            if all(bounds) and abs(drawn[0] * bounds[1] - drawn[1] * bounds[0]) \
-                    > 0.02 * drawn[0] * bounds[1]:
-                # The picture and the overlay disagree about the desktop's
-                # shape: it is stretched, and the file log should say so.
-                events.debug("Region Picture Stretched",
-                             f"desktop {bounds[0]}x{bounds[1]} drawn at "
-                             f"{drawn[0]}x{drawn[1]}", source=SOURCE)
+            scale, _x, _y = picking.picture_placement(screenshot, desktop, desktop)
+            if not screenshot.get("width") or not screenshot.get("height"):
+                # No bounds to measure by: the picture's own pixels are them.
+                screenshot = dict(screenshot, width=image.width,
+                                  height=image.height)
+                scale, _x, _y = picking.picture_placement(screenshot, desktop,
+                                                          desktop)
+            drawn = picking.drawn_size(screenshot, scale)
             if image.size != drawn:
                 image = image.resize(drawn)
             ground = Image.new("RGB", drawn, theme.BACKGROUND)
@@ -1174,6 +1171,48 @@ class _RegionPicker:
                          f"decode: {exc}", source=SOURCE, exception=exc)
             return None
         return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    def _on_overlay_configure(self, _event=None):
+        """The overlay was mapped, moved or resized: keep the desktop's
+        origin under the pixel `x_root` names. A window manager that keeps
+        the overlay out of a panel moves the picture, it does not squash
+        it."""
+        if self.photo is None or self._picture_item is None:
+            return
+        overlay = self._overlay_box()
+        if overlay is None:
+            return
+        _scale, x, y = picking.picture_placement(self._screenshot,
+                                                 self._desktop, overlay)
+        if (x, y) == self._placed:
+            return
+        try:
+            self.canvas.coords(self._picture_item, x, y)
+        except Exception as exc:
+            events.debug("Region Picture Move Failed", str(exc), source=SOURCE,
+                         exception=exc)
+            return
+        self._placed = (x, y)
+        events.debug("Region Picture Placed", picking.placement_line(
+            self._screenshot, self._desktop, overlay), source=SOURCE)
+
+    def _overlay_box(self):
+        """The overlay's actual `(left, top, width, height)` on the desktop,
+        or None before Tk can say."""
+        try:
+            box = (int(self.top.winfo_rootx()), int(self.top.winfo_rooty()),
+                   int(self.top.winfo_width()), int(self.top.winfo_height()))
+        except Exception:
+            return None
+        return box if box[2] > 1 and box[3] > 1 else None
+
+    def _desktop_box(self):
+        """The logical virtual desktop as `(left, top, width, height)`."""
+        widget = self.top if self.top is not None else self.master
+        return (self._measure(widget, "winfo_vrootx", None),
+                self._measure(widget, "winfo_vrooty", None),
+                self._measure(widget, "winfo_vrootwidth", "winfo_screenwidth"),
+                self._measure(widget, "winfo_vrootheight", "winfo_screenheight"))
 
     def _draw_instruction(self, width, is_pictured):
         """One line, top centre, on a patch of the page so it reads over any

@@ -1821,18 +1821,132 @@ def _alpha_requests(picker):
     return [args for args in picker.top.attrs if args and args[0] == "-alpha"]
 
 
-def test_the_picture_is_drawn_at_the_overlays_own_size():
-    assert tkmod._picture_size({"width": 3200, "height": 1800},
-                               (2560, 1440)) == (2560, 1440)
+from views import picking
 
 
-def test_an_unmeasured_overlay_draws_the_picture_at_its_bounds():
-    assert tkmod._picture_size({"width": 3200, "height": 1800}, (0, 0)) == (3200, 1800)
+def _under_pointer(bounds, desktop, overlay, pointer):
+    """The capture pixel drawn under a pointer at logical desktop `pointer`,
+    by the placement: overlay pixel -> picture pixel -> capture units."""
+    scale, x, y = picking.picture_placement(bounds, desktop, overlay)
+    return ((pointer[0] - overlay[0] - x) / scale,
+            (pointer[1] - overlay[1] - y) / scale)
 
 
-def test_the_drawn_size_is_never_empty():
-    assert tkmod._picture_size({}, (0, 0)) == (1, 1)
-    assert tkmod._picture_size({"width": "bad", "height": None}, (-5, 0)) == (1, 1)
+def _capture_pixel(bounds, desktop, pointer):
+    """What the pointer names, in the screenshot's own pixels."""
+    ratio = bounds[2] / desktop[2]
+    return (pointer[0] * ratio - bounds[0], pointer[1] * ratio - bounds[1])
+
+
+def test_placement_ratio_one_overlay_equal_to_the_desktop_is_unscaled_at_the_origin():
+    desktop = (0, 0, 1920, 1080)
+    assert picking.picture_placement(desktop, desktop, desktop) == (1.0, 0.0, 0.0)
+    assert picking.drawn_size(desktop, 1.0) == (1920, 1080)
+
+
+def test_placement_an_overlay_shrunk_by_a_panel_offsets_the_picture_not_squashes_it():
+    """The bench (2026-09-28, Linux, Qt): the window manager kept the overlay
+    out of a 40-px top panel. The picture stays desktop-sized and moves up
+    40 px, so the desktop still lines up under the pointer."""
+    bounds = desktop = (0, 0, 1920, 1080)
+    overlay = (0, 40, 1920, 1040)
+    scale, x, y = picking.picture_placement(bounds, desktop, overlay)
+    assert (scale, x, y) == (1.0, 0.0, -40.0)
+    assert picking.drawn_size(bounds, scale) == (1920, 1080)     # NOT 1920x1040
+    for pointer in [(0, 40), (960, 540), (1919, 1079), (300, 700)]:
+        assert _under_pointer(bounds, desktop, overlay, pointer) == \
+            _capture_pixel(bounds, desktop, pointer)
+    # A panel on the left is the same rule, sideways.
+    assert picking.picture_placement(bounds, desktop, (48, 0, 1872, 1080)) == \
+        (1.0, -48.0, 0.0)
+
+
+def test_placement_ratio_two_halves_the_picture():
+    """A Retina Mac: the capture is twice the logical desktop."""
+    bounds = (0, 0, 5120, 2880)
+    desktop = overlay = (0, 0, 2560, 1440)
+    scale, x, y = picking.picture_placement(bounds, desktop, overlay)
+    assert (scale, x, y) == (0.5, 0.0, 0.0)
+    assert picking.drawn_size(bounds, scale) == (2560, 1440)
+    for pointer in [(0, 0), (1280, 720), (2559, 1439)]:
+        assert _under_pointer(bounds, desktop, overlay, pointer) == \
+            _capture_pixel(bounds, desktop, pointer)
+
+
+def test_placement_a_second_monitor_at_negative_x():
+    bounds = desktop = (-1920, 0, 3840, 1080)
+    # The overlay over the whole virtual desktop: the picture at its origin.
+    assert picking.picture_placement(bounds, desktop, desktop) == (1.0, 0.0, 0.0)
+    # The overlay kept to the primary monitor: the left monitor's half hangs
+    # off the overlay to the left, and the primary's half is under it.
+    overlay = (0, 0, 1920, 1080)
+    assert picking.picture_placement(bounds, desktop, overlay) == (1.0, -1920.0, 0.0)
+    for pointer in [(0, 0), (100, 500), (1919, 1079)]:
+        assert _under_pointer(bounds, desktop, overlay, pointer) == \
+            _capture_pixel(bounds, desktop, pointer)
+
+
+def test_placement_takes_the_screenshot_dict_and_never_divides_by_zero():
+    shot = {"image": b"x", "left": 0, "top": 0, "width": 3200, "height": 1800}
+    assert picking.picture_placement(shot, (0, 0, 1600, 900), (0, 0, 1600, 900)) == \
+        (0.5, 0.0, 0.0)
+    # An unmeasured desktop is taken to be the bounds: unscaled, never stretched.
+    assert picking.picture_placement(shot, (0, 0, 0, 0), (0, 0, 0, 0)) == (1.0, 0.0, 0.0)
+    assert picking.picture_placement(None, None, None) == (1.0, 0.0, 0.0)
+    assert picking.drawn_size({}, 1.0) == (1, 1)
+    assert picking.drawn_size({"width": "bad", "height": None}, 1.0) == (1, 1)
+    assert "ratio=2" in picking.placement_line(shot, (0, 0, 1600, 900), (0, 40, 1600, 860))
+
+
+class _PlacedTop(FakeRoot):
+    """The overlay as the window manager actually placed it."""
+    box = (0, 40, 2560, 1400)
+
+    def winfo_rootx(self):
+        return self.box[0]
+
+    def winfo_rooty(self):
+        return self.box[1]
+
+    def winfo_width(self):
+        return self.box[2]
+
+    def winfo_height(self):
+        return self.box[3]
+
+
+def test_an_overlay_the_window_manager_moved_moves_the_picture_and_keeps_its_size(monkeypatch):
+    """Tk's half of the bench fix: on `<Configure>` the picture is re-anchored
+    where the desktop's origin now falls, and it is never resized to the
+    overlay."""
+    monkeypatch.setattr(tkmod.tk, "Toplevel", _PlacedTop)
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build(screenshot=_screenshot(width=2560, height=1440))
+    import io
+    from PIL import Image
+    drawn = Image.open(io.BytesIO(base64.b64decode(picker.photo.data)))
+    assert drawn.size == (2560, 1440)
+    assert _items(picker, "image")[0][1] == (0.0, 0.0)
+    picker.top.fire("<Configure>")
+    assert ("coords", (0.0, -40.0), {}) in picker.canvas.items
+    assert Image.open(io.BytesIO(base64.b64decode(picker.photo.data))).size == (2560, 1440)
+    # A second Configure at the same place draws nothing new.
+    moves = len(picker.canvas.items)
+    picker.top.fire("<Configure>")
+    assert len(picker.canvas.items) == moves
+
+
+def test_the_picture_is_drawn_at_the_logical_desktop_size_not_the_overlays():
+    """A capture 1.25x the logical virtual root (FakeWidget's 2560x1440) is
+    drawn at 2560x1440; a downscaled capture (the old 1600-px picture) is
+    brought back up to the desktop it was taken of."""
+    picker = tkmod._RegionPicker(FakeWidget())
+    picker._build(screenshot=_screenshot(image=_desktop_png(1600, 900),
+                                         width=2560, height=1440))
+    import io
+    from PIL import Image
+    drawn = Image.open(io.BytesIO(base64.b64decode(picker.photo.data)))
+    assert drawn.size == (2560, 1440)
 
 
 def test_with_a_screenshot_the_picker_shows_it_and_requests_no_alpha():
