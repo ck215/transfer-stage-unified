@@ -4,10 +4,13 @@ A 3D map over **tilt angle, speed and force** whose value of interest is the
 **channel width** of the transferred sample (owner, 2026-09-27). It builds
 itself as trials are recorded: the operator arms a trial, lowers the tip,
 presses Mark force at the force they want, and finishes; the station keeps
-the red-percent slice of the lowering, a before, a Mark and an after
-picture of the capture region, the whole screen at all three moments (the
-microscope feed as displayed), and the tilt and speed at the time. AFM
-widths and thicknesses are attached later, with their uncertainties.
+the red-percent slice of the lowering, a labelled video of the capture
+region from Arm to the end (owner, 2026-09-28: "a video where timestamps
+label the footage for analysis afterward"; an H.264 MP4, or JPEG frames
+without the encoder, with a `video_index.csv` saying what each frame
+shows), the whole screen at Arm (the microscope feed as displayed, for
+context), and the tilt and speed at the time. AFM widths and thicknesses
+are attached later, with their uncertainties.
 
 **Tips are records** (`tips` table): created on demand by the first Arm on
 a tip (or an import naming one), with the trial it broke on and whether it
@@ -22,8 +25,9 @@ from the stored raw profile whenever a figure or an export asks, never
 stored in its place.
 
 **It moves nothing.** No port, no gamepad, no device. `_halt_hardware`
-disarms the trial in memory and returns at once; the aborted trial is
-written on a worker, so a stop is never held by the disk.
+disarms the trial in memory, tells its video to close and returns at once;
+the aborted trial is written on a worker, and the video closed on the
+map's picture thread, so a stop is never held by the disk or the encoder.
 
 **The store is local** (owner ruling 2026-09-27): one SQLite file inside the
 project checkout, `<repo root>/data/transfer_map.sqlite` (the repo root is
@@ -40,7 +44,8 @@ from a model with `position_deg` (the Rotator), else the operator's typed
 "Tilt without a rotator" (blank = no tilt, never a default 0); speed and Z from a model with
 `position`, `position_time` and `mode_name` (a probe: `live_speed` if it has
 one, else the manual or autonomous speed for the mode it is in); samples
-from a model with `subscribe` and `grab_frame` (Red Percent).
+from a model with `subscribe` and `grab_frame` (Red Percent), frames for
+the video from its `subscribe_frames` when it has one.
 """
 import csv
 import json
@@ -54,6 +59,7 @@ import time
 from pathlib import Path
 
 import schema as sch
+from devices.video import TrialRecorder, to_rgb
 from events import events
 from model import plot_data
 from model import transfer_map_analysis as analysis
@@ -89,6 +95,10 @@ TRIAL_COLUMNS = (
     ("origin", "TEXT NOT NULL DEFAULT 'recorded'"), ("tilt_source", "TEXT"),
     ("speed_source", "TEXT"), ("force_given", "TEXT"),
     ("speed_measured_steps_s", "REAL"),
+    # Version 5: the trial's video (the MP4, or its JPEG frames folder), its
+    # frame index, how many frames it holds and how many were dropped.
+    ("video_path", "TEXT"), ("video_index_path", "TEXT"),
+    ("video_frames", "INTEGER"), ("video_dropped", "INTEGER"),
 )
 _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
 PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y")
@@ -105,11 +115,14 @@ TIP_COLUMNS = (
 _TIP_NAMES = frozenset(name for name, _kind in TIP_COLUMNS)
 #: `PRAGMA user_version`. 1: the first store. 2: `before_full_path` and
 #: `after_full_path` (the whole-screen pictures). 3: `mark_path` and
-#: `mark_full_path` (the pictures at the Mark) and the `tips` table. An
-#: older file gains the columns by `ALTER TABLE ... ADD COLUMN` and a tip
-#: record for every tip its trials name, the first time it is opened or
-#: written, and keeps every trial it holds.
-SCHEMA_VERSION = 4
+#: `mark_full_path` (the pictures at the Mark) and the `tips` table. 4:
+#: `speed_measured_steps_s`. 5: the video (`video_path`, `video_index_path`,
+#: `video_frames`, `video_dropped`); the region stills and the Mark and
+#: After whole-screen pictures are no longer taken, their columns stay for
+#: the rows that have them. An older file gains the columns by `ALTER
+#: TABLE ... ADD COLUMN` and a tip record for every tip its trials name,
+#: the first time it is opened or written, and keeps every trial it holds.
+SCHEMA_VERSION = 5
 
 _CREATE = (
     "CREATE TABLE IF NOT EXISTS trials ("
@@ -134,6 +147,14 @@ _BACKFILL_TIPS = (
 #: Samples kept per trial. At Red Percent's fastest a lowering is minutes
 #: of a few hundred rows a second; past this the rest are counted, not kept.
 MAX_SAMPLES = 500_000
+
+#: The video's rate: at most this many of Red Percent's frames a second are
+#: written (it grabs at ~66 Hz; the rest are skipped by design, not counted).
+VIDEO_FPS = 15
+#: Frames waiting for the picture thread, about two seconds of video; a
+#: frame arriving when it is full is dropped and counted, never waited for.
+VIDEO_QUEUE = 2 * VIDEO_FPS
+VIDEO_INDEX_COLUMNS = ("frame", "t_s", "red", "z", "marked")
 
 
 def _checked(names, allowed=_TRIAL_NAMES, table="trials"):
@@ -423,24 +444,44 @@ class _Trial:
         #: when the operator started it on the Red Percent page (then it is
         #: theirs to end).
         self.run = None
-        #: The whole-screen picture of the last Mark, being taken on the
-        #: map's picture worker (`_MarkJob`), or None before any Mark.
-        self.mark_job = None
+        #: The first Mark's time since Arm: the video says MARK from here on.
+        self.first_mark_t = None
+        #: The trial's video (`_Recording`), or None when the Red Percent
+        #: found has no frame hook.
+        self.recording = None
 
 
-class _MarkJob:
-    """One whole-screen picture at a Mark, taken on the map's picture
-    worker so the Mark never waits on a full-frame encode. `done` is set
-    when it is written (or known missing); Finish and Abort wait on it,
-    bounded, before they write the trial. The folder and the store are the
-    trial's own, fixed when the Mark was pressed."""
+class _Recording:
+    """The armed trial's video. Red Percent's run thread offers frames
+    (`TransferMap._on_frame`: a time check and a `put_nowait`, nothing
+    else); the map's picture thread labels, encodes and indexes them, and
+    closes the file when `closing` is set (Finish, Abort, the stop, the
+    model closing), then fills the trial's video columns and sets
+    `closed`. The folder and the store are the trial's own, fixed at Arm,
+    so a new session database never receives them."""
 
-    def __init__(self, trial_id, folder, store):
-        self.trial_id = trial_id
+    def __init__(self, trial, folder, store):
+        self.trial = trial
+        self.trial_id = trial.id
         self.folder = folder
         self.store = store
-        self.done = threading.Event()
+        self.queue = queue.Queue(maxsize=VIDEO_QUEUE)
+        self.next_due = 0.0
+        self.frames = 0                # written
+        self.dropped = 0               # offered when the queue was full
+        self.recorder = None           # opened at the first frame (its size)
+        self.index = None              # the open video_index.csv
+        self.index_writer = None
+        self.failed = None             # why the video stopped, once it has
+        self.mark_t = None             # the Mark the saved Mark frame is of
         self.path = None
+        self.lock = threading.Lock()   # the picture thread vs an inline close
+        self.closing = threading.Event()
+        self.closed = threading.Event()
+
+    @property
+    def index_path(self):
+        return self.folder / "video_index.csv"
 
 
 class TransferMap(Model):
@@ -502,6 +543,10 @@ class TransferMap(Model):
         self._store = TrialStore(self.db_path)
         self._lock = threading.Lock()
         self._trial = None
+        #: The trial being armed (V8): subscribed to before a run starts, so
+        #: the run's first row is its own; numbered and made `_trial` once
+        #: its row is written, dropped if the Arm fails.
+        self._arming = None
         self._persisting = []          # abort writers the stop started
         self._red = None
         self._red_name = None
@@ -520,7 +565,12 @@ class TransferMap(Model):
         self._auto_run = None
         self._poll_key = None
         self._poll_refused = None
-        self._mark_jobs = queue.Queue()   # _MarkJob, for the picture worker
+        #: Videos being written or closed, for the picture thread (a list
+        #: replaced whole under the lock, read as a snapshot).
+        self._recordings = []
+        self._recordings_lock = threading.Lock()
+        self._wake = threading.Event()    # a frame or a close is waiting
+        self._encoder = None              # `TrialRecorder.probe()`, once read
 
     @staticmethod
     def default_db_path():
@@ -584,6 +634,7 @@ class TransferMap(Model):
         self._end_auto_run()           # polling the map started, no trial yet
         if trial is not None:
             self._release_red()
+            self._stop_recording(trial)    # an Event set: no join, no I/O
             self._end_own_run(trial)
             # The store the trial was armed in: a new session database made
             # while this is being written must not receive it.
@@ -643,6 +694,8 @@ class TransferMap(Model):
         red = self._red
         if token is None or red is None:
             return
+        if self._trial is None and self._arming is None:
+            self._release_red()        # V8: the polling's subscription goes too
         try:
             if getattr(red, "run_token", None) is token:
                 red.end_run()
@@ -676,12 +729,18 @@ class TransferMap(Model):
         if key == self._poll_key:
             return False
         try:
+            # V8: subscribed before the run starts, so no row of it is
+            # missed. No trial is armed yet, so `_on_sample` keeps nothing
+            # until Arm takes the run over; a refusal lets go again.
+            self._subscribe_red(red)
             red.start_run(confirmed=True)
         except (Refused, NeedsConfirm) as refusal:
+            self._release_red()
             self._polling_refused(getattr(refusal, "reason", None)
                                   or getattr(refusal, "prompt", ""))
             return False
         except Exception as exc:
+            self._release_red()
             events.debug("Polling Failed", repr(exc), source=self.NAME,
                          exception=exc)
             self._polling_refused("Red Percent could not start its run; the "
@@ -710,6 +769,9 @@ class TransferMap(Model):
         if red is not None:
             try:
                 red.unsubscribe(self._on_sample)
+                unsubscribe_frames = getattr(red, "unsubscribe_frames", None)
+                if callable(unsubscribe_frames):
+                    unsubscribe_frames(self._on_frame)
             except Exception as exc:
                 events.debug("Unsubscribe Failed", repr(exc), source=self.NAME)
 
@@ -851,7 +913,7 @@ class TransferMap(Model):
     def _on_sample(self, t_s, red, positions):
         """One row of Red Percent's log. Appends and returns; never raises
         into the run loop (Red Percent catches it anyway)."""
-        trial = self._trial
+        trial = self._trial or self._arming
         if trial is None or trial.closed:
             return
         if len(trial.samples) >= MAX_SAMPLES:
@@ -899,28 +961,39 @@ class TransferMap(Model):
             speed_words = (f", {speed_now:g} steps/s"
                            + ("" if speed_from == "typed" else f" ({speed_from})")
                            if speed_now is not None else ", NO speed")
-            prompt = (f"Frame the sample now. Continue takes the before picture "
-                      f"and arms trial {self._store.next_id()} on tip {tip}"
+            prompt = (f"Frame the sample now. Continue takes the whole-screen "
+                      f"picture, starts the video and arms trial "
+                      f"{self._store.next_id()} on tip {tip}"
                       f"{tilt_words}{speed_words}.")
             doubt = self._tip_doubt(tip)
             raise NeedsConfirm(doubt + "\n\n" + prompt if doubt else prompt,
                                "arm_trial",
                                inputs={"tip_id": self.tip_id or "",
                                        "typed_tilt": self.typed_tilt or ""})
+        # V8: the trial exists (unnumbered) and the map is subscribed, rows
+        # and frames, BEFORE a run is started, so the run's first row (its
+        # baseline frame) and first frame are the trial's. Its time zero is
+        # the operator's Continue.
+        arming = _Trial(None, None, None, tip)
+        if callable(getattr(red, "subscribe_frames", None)):
+            arming.recording = _Recording(arming, None, None)
+        self._arming = arming
         run, started = None, False
-        if not getattr(red, "is_running", False):
-            red.start_run(confirmed=True)               # a Refused stops here
-            run, started = red.run_token, True
-        elif self._auto_run is not None and \
-                getattr(red, "run_token", None) is self._auto_run:
-            run = self._auto_run          # the map's own polling: the trial's now
         trial_id = None
         created = False
         try:
-            png = self._take_picture()
-            if not png:
-                raise Refused("No before picture: the capture region is not "
-                              "set or the screen is not open.")
+            self._subscribe_red(red)
+            if not getattr(red, "is_running", False):
+                red.start_run(confirmed=True)           # a Refused stops here
+                run, started = red.run_token, True
+            elif self._auto_run is not None and \
+                    getattr(red, "run_token", None) is self._auto_run:
+                run = self._auto_run      # the map's own polling: the trial's now
+            # The capture gate: no picture of the region, no Arm (the video
+            # and the red percent are both read from it). Nothing is kept.
+            if not self._take_picture():
+                raise Refused("No picture of the capture region: the capture "
+                              "region is not set or the screen is not open.")
             full = self._take_full_picture()
             # The whole-screen grab takes a moment; a stop inside it wins.
             self._guard("Arm")
@@ -931,145 +1004,273 @@ class TransferMap(Model):
                 "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
                 "origin": "recorded", "tilt_source": tilt_source,
                 "speed_source": speed_source, "note": ""})
-            pictures = {"before_path": self._write_picture(trial_id, "before", png)}
             if full:
-                pictures["before_full_path"] = self._write_picture(
-                    trial_id, "before_full", full)
-            self._store.update(trial_id, pictures)
+                self._store.update(trial_id, {"before_full_path": self._write_picture(
+                    trial_id, "before_full", full)})
             created = self._store.use_tip(tip, trial_id, _now())
         except BaseException:
+            self._arming = None
+            self._release_red()
             if started:
                 red.end_run()                            # ours: undo it
             if trial_id is not None:
                 self._forget_row(trial_id)
             raise
-        trial = _Trial(trial_id, tilt, speed, tip)
+        trial = arming
+        trial.id, trial.tilt, trial.speed = trial_id, tilt, speed
         trial.run = run
         if run is not None and not started:
             self._auto_run = None                        # the trial ends it
         self._poll_refused = None
+        rec = trial.recording
+        if rec is not None:
+            rec.trial_id = trial_id
+            rec.folder = self.pictures_root / str(trial_id)
+            rec.store = self._store
+            with self._recordings_lock:
+                self._recordings = self._recordings + [rec]
         with self._lock:
             self._trial = trial
-        red.subscribe(self._on_sample)
+            self._arming = None
+        if rec is not None:
+            self._spawn("transfer-map-pictures", self._picture_loop)
+            self._wake.set()
         self._changed()
         if created:
             events.info("Tip Created", f"Tip {tip} created.", source=self.NAME)
         if not full:
-            self._warn_no_full(trial_id, "Arm", "before")
+            self._warn_no_full(trial_id, "Arm", "context")
         events.info("Trial Armed", f"Trial {trial_id} armed, "
                     f"{self._place_on_tip(trial)}. Lower the tip, press Mark "
                     "force at the force you want, then Finish.",
                     source=self.NAME)
         return trial_id
 
+    def _subscribe_red(self, red):
+        """Rows for the profile and, when Red Percent has the hook, frames
+        for the video. Idempotent (Red Percent keeps each callable once)."""
+        red.subscribe(self._on_sample)
+        subscribe_frames = getattr(red, "subscribe_frames", None)
+        if callable(subscribe_frames):
+            subscribe_frames(self._on_frame)
+
     def mark_force(self):
         trial = self._trial
         if trial is None:
             raise Refused("No trial is armed.")
         trial.operator_t = time.monotonic() - trial.armed
+        if trial.first_mark_t is None:
+            trial.first_mark_t = trial.operator_t
         trial.z_mark = self._probe_axes()[2]
         speed = self._read_speed()[0]
         if speed is not None:
             trial.speed = speed      # the speed while lowering, at the Mark
-        # M1: the measurement is stamped above; now the picture of how the
-        # screen looks at it. The region now, the whole screen on the
-        # picture worker. A missing picture warns; the Mark stands.
-        self._take_mark_picture(trial)
-        job = _MarkJob(trial.id, self.pictures_root / str(trial.id), self._store)
-        trial.mark_job = job
-        self._mark_jobs.put(job)
-        self._spawn("transfer-map-pictures", self._picture_loop)
+        # V4: no still of its own. The video says MARK from here on, and its
+        # first frame at or after this Mark is the sheet's Mark frame: the
+        # next frame Red Percent grabs is taken at once, not up to 1/VIDEO_FPS
+        # later.
+        if trial.recording is not None:
+            trial.recording.next_due = 0.0
+        self._wake.set()
         events.info("Force Marked", f"Trial {trial.id}: force marked at "
                     f"{trial.operator_t:.2f} s.", source=self.NAME)
         self._touch()
         return round(trial.operator_t, 3)
 
-    def _take_mark_picture(self, trial):
-        png = self._take_picture()
-        if png:
-            try:
-                path = self._write_picture(trial.id, "mark", png)
-                self._store.update(trial.id, {"mark_path": path})
-                return path
-            except Exception as exc:
-                events.debug("Mark Picture Failed", repr(exc), source=self.NAME,
-                             exception=exc)
-        events.warn("No Picture", f"Trial {trial.id} has no picture of the "
-                    "capture region at the Mark; the Mark is kept. Check that "
-                    "Red Percent can capture the screen.", source=self.NAME)
-        return None
+    # -- the video, on the picture thread (V3, V5) -------------------------------
+    def _on_frame(self, t_s, frame, red):
+        """One frame Red Percent grabbed and measured, on its run thread:
+        a time check and a `put_nowait`, nothing else (no copy, no convert,
+        no encode). At most VIDEO_FPS a second are taken; one offered when
+        the queue is full is dropped and counted."""
+        trial = self._trial or self._arming
+        rec = trial.recording if trial is not None else None
+        if rec is None or trial.closed or rec.closing.is_set():
+            return
+        t = time.monotonic() - trial.armed
+        if t < rec.next_due:
+            return
+        period = 1.0 / VIDEO_FPS
+        rec.next_due = rec.next_due + period if t - rec.next_due < period else t + period
+        try:
+            rec.queue.put_nowait((t, frame, red))
+        except queue.Full:
+            rec.dropped += 1
+            return
+        self._wake.set()
 
     def _picture_loop(self):
-        """The map's one picture worker (one thread, so one capture handle
-        for its life, not one per Mark). Drains what is queued, then leaves
-        when the model closes."""
+        """The map's one picture thread: writes each recording's frames as
+        they come, closes a recording once it is closing and drained, and
+        leaves when the model closes, closing whatever is still open first
+        (a stop's abort writer then finds its video closed)."""
         while True:
-            try:
-                job = self._mark_jobs.get(timeout=0.05)
-            except queue.Empty:
-                if self._threads_stop.is_set():
+            stopping = self._threads_stop.is_set()
+            busy = False
+            for rec in list(self._recordings):
+                if stopping:
+                    rec.closing.set()
+                try:
+                    item = rec.queue.get_nowait()
+                except queue.Empty:
+                    item = None
+                if item is not None:
+                    self._write_frame(rec, item)
+                    busy = True
+                elif rec.closing.is_set():
+                    self._close_recording(rec)
+            if not busy:
+                if stopping and not self._recordings:
                     return
-                continue
-            self._take_mark_full(job)
+                self._wake.wait(0.05)
+                self._wake.clear()
 
-    def _take_mark_full(self, job):
-        try:
-            full = self._take_full_picture()
-            if full:
-                job.folder.mkdir(parents=True, exist_ok=True)
-                path = job.folder / "mark_full.png"
-                path.write_bytes(full)
-                job.store.update(job.trial_id, {"mark_full_path": str(path)})
-                job.path = str(path)
+    def _label(self, trial, t, red):
+        """ `t=12.34 s  red 63.2 %  z -1520  MARK`: seconds since Arm, the
+        frame's red, Z from the latest profile row (else the probe now),
+        MARK from the first Mark on. -> (text, z, marked)."""
+        samples = trial.samples
+        z = samples[-1][2] if samples else self._probe_axes()[2]
+        marked = trial.first_mark_t is not None and t >= trial.first_mark_t
+        text = (f"t={t:.2f} s  red {red:.1f} %  z "
+                + ("-" if z is None else f"{z:.0f}") + ("  MARK" if marked else ""))
+        return text, z, marked
+
+    def _write_frame(self, rec, item):
+        t, frame, red = item
+        with rec.lock:
+            if rec.closed.is_set() or rec.failed:
+                return
+            try:
+                rgb = to_rgb(frame)
+                if rgb is None:
+                    return
+                if rec.recorder is None:
+                    self._open_recording(rec, rgb)
+                text, z, marked = self._label(rec.trial, t, float(red))
+                labelled = rec.recorder.write(rgb, [text])
+                rec.frames += 1
+                rec.index_writer.writerow([rec.frames, round(t, 4),
+                                           round(float(red), 4), z, int(marked)])
+                mark = rec.trial.operator_t
+                if rec.frames == 1:
+                    self._save_still(rec, "first_frame", labelled)
+                if mark is not None and t >= mark and rec.mark_t != mark:
+                    rec.mark_t = mark
+                    self._save_still(rec, "mark_frame", labelled)
+                if rec.frames == 1 or rec.frames % VIDEO_FPS == 0:
+                    self._touch()
+            except Exception as exc:
+                rec.failed = str(exc) or type(exc).__name__
+                events.debug("Video Failed", repr(exc), source=self.NAME,
+                             exception=exc)
+                events.warn("Video Stopped", f"Trial {rec.trial_id}'s video "
+                            f"stopped after {rec.frames} frame(s): {rec.failed}. "
+                            "The trial goes on: its red-percent profile is the "
+                            "measurement.", source=self.NAME)
                 self._touch()
-            else:
-                self._warn_no_full(job.trial_id, "the Mark", "Mark")
-        except Exception as exc:
-            events.debug("Mark Full Picture Failed", repr(exc), source=self.NAME,
-                         exception=exc)
-            self._warn_no_full(job.trial_id, "the Mark", "Mark")
-        finally:
-            job.done.set()
 
-    def _await_mark(self, trial):
-        """Finish and Abort write the trial after its Mark picture (bounded:
-        a grab that hangs is logged and the trial is written without it)."""
-        job = trial.mark_job
-        if job is not None and not job.done.wait(self.THREAD_JOIN_TIMEOUT):
-            events.debug("Mark Picture Late", f"trial {trial.id}: the whole-"
-                         "screen picture at the Mark was not written within "
-                         f"{self.THREAD_JOIN_TIMEOUT} s", source=self.NAME)
+    def _open_recording(self, rec, rgb):
+        rec.folder.mkdir(parents=True, exist_ok=True)
+        height, width = rgb.shape[:2]
+        rec.recorder = TrialRecorder().open(rec.folder / "trial.mp4", VIDEO_FPS,
+                                            (width, height))
+        rec.index = open(rec.index_path, "w", newline="")
+        rec.index_writer = csv.writer(rec.index)
+        rec.index_writer.writerow(VIDEO_INDEX_COLUMNS)
+        if rec.recorder.kind == "jpeg":
+            events.warn("No Video Encoder", f"Trial {rec.trial_id} is recorded "
+                        f"as JPEG frames in {rec.recorder.path}: "
+                        f"{rec.recorder.fallback_reason}. Install imageio-ffmpeg "
+                        "for an MP4.", source=self.NAME)
+
+    def _save_still(self, rec, name, labelled):
+        from PIL import Image
+        Image.fromarray(labelled, "RGB").save(rec.folder / f"{name}.png",
+                                              format="PNG")
+
+    def _close_recording(self, rec):
+        """Finish the file, the index and the trial's video columns, once.
+        On the picture thread; inline on a writer thread (never the stop's)
+        only when no picture thread is left to do it."""
+        with rec.lock:
+            if rec.closed.is_set():
+                return
+            try:
+                if rec.recorder is not None:
+                    rec.path = rec.recorder.close()
+            except Exception as exc:
+                events.debug("Video Close Failed", repr(exc), source=self.NAME,
+                             exception=exc)
+                events.warn("Video Not Closed", f"Trial {rec.trial_id}'s video "
+                            "did not close cleanly; its frames so far may not "
+                            "play.", source=self.NAME)
+                rec.path = getattr(rec.recorder, "path", None)
+                rec.path = None if rec.path is None else str(rec.path)
+            finally:
+                if rec.index is not None:
+                    try:
+                        rec.index.close()
+                    except OSError:
+                        pass
+            try:
+                rec.store.update(rec.trial_id, {
+                    "video_path": rec.path,
+                    "video_index_path": (str(rec.index_path)
+                                         if rec.index is not None else None),
+                    "video_frames": rec.frames, "video_dropped": rec.dropped})
+            except Exception as exc:
+                events.debug("Video Columns Failed", repr(exc), source=self.NAME,
+                             exception=exc)
+            finally:
+                rec.closed.set()
+        with self._recordings_lock:
+            self._recordings = [r for r in self._recordings if r is not rec]
+        self._touch()
+
+    def _stop_recording(self, trial):
+        """Tell the trial's video to close: an Event set and a wake, safe on
+        the stop's own thread (the picture thread does the closing)."""
+        rec = trial.recording
+        if rec is not None:
+            rec.closing.set()
+            self._wake.set()
+
+    def _finish_recording(self, trial):
+        """Close the trial's video and wait for it, bounded, so the row
+        Finish or Abort writes sits beside a complete video; a close that
+        hangs is logged and the trial is written anyway (the picture thread
+        fills the video columns when it lands). Never on the stop's thread."""
+        rec = trial.recording
+        if rec is None:
+            return
+        self._stop_recording(trial)
+        worker = self._thread("transfer-map-pictures")
+        if worker is None or not worker.is_alive():
+            self._close_recording(rec)
+        elif not rec.closed.wait(self.THREAD_JOIN_TIMEOUT):
+            events.debug("Video Late", f"trial {trial.id}: the video was not "
+                         f"closed within {self.THREAD_JOIN_TIMEOUT} s",
+                         source=self.NAME)
 
     def finish_trial(self, confirmed=False):
         armed = self._trial
         if armed is None:
             raise Refused("No trial is armed.")
         if not confirmed:
-            raise NeedsConfirm(f"Continue takes the after picture and ends trial "
-                               f"{armed.id}.", "finish_trial",
+            raise NeedsConfirm(f"Continue ends trial {armed.id} and closes its "
+                               "video.", "finish_trial",
                                inputs={"note": self.note or ""})
-        png = self._take_picture()
-        if not png:
-            # Still armed: the operator fixes the screen and finishes again,
-            # or aborts (a stop, which keeps the profile).
-            raise Refused("No after picture: the capture region is not set or "
-                          "the screen is not open. Fix it and press Finish "
-                          "trial again, or Abort trial to keep the profile.")
-        full = self._take_full_picture()
         trial = self._claim()
         if trial is None:
             raise Refused("No trial is armed.")          # the stop took it
         self._release_red()
         self._end_own_run(trial)
-        after = self._write_picture(trial.id, "after", png)
-        after_full = (self._write_picture(trial.id, "after_full", full)
-                      if full else None)
         samples = list(trial.samples)
         profile = {"t": [s[0] for s in samples], "red": [s[1] for s in samples]}
         found = analysis.detect(profile, trial.operator_t) or {}
         fields = {
             "status": "recorded", "note": (self.note or "").strip(),
-            "after_path": after, "after_full_path": after_full,
             "speed_steps_s": trial.speed,
             "speed_measured_steps_s": analysis.cut_speed(
                 [s[0] for s in samples], [s[2] for s in samples],
@@ -1079,13 +1280,11 @@ class TransferMap(Model):
             "mark_auto_min_t": found.get("min_t"),
             "red_min": found.get("red_min"), "red_max": found.get("red_max"),
             "red_baseline": found.get("baseline"), "broke": int(trial.broke)}
-        self._await_mark(trial)
+        self._finish_recording(trial)
         self._store.update(trial.id, fields, samples)
         self._store.use_tip(trial.tip, trial.id, _now())
         self._indices.pop(trial.id, None)
         self._changed()
-        if not full:
-            self._warn_no_full(trial.id, "Finish", "after")
         if not samples:
             events.warn("Empty Trial", f"Trial {trial.id} has no red-percent "
                         "samples. Check that Red Percent was recording while "
@@ -1105,6 +1304,7 @@ class TransferMap(Model):
         if trial is None:
             raise Refused("No trial is armed.")
         self._release_red()
+        self._stop_recording(trial)
         self._end_own_run(trial)
         self._save_aborted(trial)
         return trial.id
@@ -1134,7 +1334,7 @@ class TransferMap(Model):
     def _save_aborted(self, trial, store=None):
         store = store if store is not None else self._store
         try:
-            self._await_mark(trial)
+            self._finish_recording(trial)
             samples = list(trial.samples)
             store.update(trial.id, {
                 "status": "aborted", "mark_operator_t": trial.operator_t,
@@ -1149,9 +1349,9 @@ class TransferMap(Model):
                          source=self.NAME, exception=exc)
 
     def _take_picture(self):
-        """The one frame source of the before and after pictures: Red
-        Percent's capture region (what it measures), as PNG bytes, or None.
-        The gate: no region picture, no Arm (and no Finish)."""
+        """Red Percent's capture region as it looks now, as PNG bytes, or
+        None: Arm's capture gate (the video and the red percent are read
+        from it). Nothing is kept."""
         red = self._red
         try:
             return (red.grab_frame() if red is not None else None) or None
@@ -1172,12 +1372,12 @@ class TransferMap(Model):
             return None
 
     def _warn_no_full(self, trial_id, moment, which):
-        """ "Trial 4 has no whole-screen picture at Arm; its before picture
-        of the capture region is kept." """
+        """ "Trial 4 has no whole-screen picture at Arm; its video of the
+        capture region is kept." """
         events.warn("No Full Picture", f"Trial {trial_id} has no whole-screen "
-                    f"picture at {moment}; its {which} picture of the capture "
-                    "region is kept. Check that Red Percent can capture the "
-                    "screen.", source=self.NAME)
+                    f"picture at {moment}; its video of the capture region is "
+                    "kept. Check that Red Percent can capture the screen.",
+                    source=self.NAME)
 
     def _write_picture(self, trial_id, which, png):
         folder = self.pictures_root / str(trial_id)
@@ -1193,44 +1393,75 @@ class TransferMap(Model):
         except Exception as exc:
             events.debug("Forget Failed", repr(exc), source=self.NAME)
 
-    def _picture(self, which):
+    def _picture(self, which, column=True):
         """PNG bytes of the armed trial's picture, else the last trial's,
-        else b"" (the element then says when it is taken)."""
+        else b"" (the element then says when it is taken). `column=False`:
+        a still of the video, found in the trial's folder by name."""
         trial = self._trial
         if trial is not None:
             path = self.pictures_root / str(trial.id) / f"{which}.png"
         else:
             last = self._store.last()
-            stored = last.get(f"{which}_path") if last else None
-            path = Path(stored) if stored else None
+            if last is None:
+                path = None
+            elif column:
+                stored = last.get(f"{which}_path")
+                path = Path(stored) if stored else None
+            else:
+                path = self.pictures_root / str(last["id"]) / f"{which}.png"
         try:
             return path.read_bytes() if path is not None and path.is_file() else b""
         except OSError:
             return b""
 
     @property
-    def before_image(self):
-        return self._picture("before")
-
-    @property
-    def after_image(self):
-        return self._picture("after")
-
-    @property
     def before_full_image(self):
         return self._picture("before_full")
 
     @property
-    def after_full_image(self):
-        return self._picture("after_full")
+    def first_frame_image(self):
+        """The video's first frame, labelled."""
+        return self._picture("first_frame", column=False)
 
     @property
-    def mark_image(self):
-        return self._picture("mark")
+    def mark_frame_image(self):
+        """The video's first frame at or after the last Mark, labelled MARK."""
+        return self._picture("mark_frame", column=False)
 
     @property
-    def mark_full_image(self):
-        return self._picture("mark_full")
+    def video_status(self):
+        """ "recording, 312 frames" / "trial.mp4, 1240 frames, 3 dropped" /
+        "no encoder: JPEG frames, 1240 frames, 0 dropped"."""
+        trial = self._trial
+        if trial is not None:
+            rec = trial.recording
+            if rec is None:
+                return "no video: Red Percent has no frame hook"
+            if rec.failed:
+                return f"stopped after {rec.frames} frames: {rec.failed}"
+            words = f"recording, {rec.frames} frames"
+            if rec.recorder is not None and rec.recorder.kind == "jpeg":
+                words += " (no encoder: JPEG frames)"
+            return words + (f", {rec.dropped} dropped" if rec.dropped else "")
+        last = self._store.last()
+        if last is None:
+            return "No video yet."
+        if last.get("video_frames") is None:
+            return "No video for this trial."
+        path = last.get("video_path")
+        frames, dropped = last["video_frames"], last.get("video_dropped") or 0
+        if not path:
+            return "no frames were recorded"
+        name = Path(path).name
+        where = "no encoder: JPEG frames" if name == "frames" else name
+        return f"{where}, {frames} frames, {dropped} dropped"
+
+    @property
+    def video_encoder(self):
+        """Which way this station records a trial's video (Diagnostics)."""
+        if self._encoder is None:
+            self._encoder = TrialRecorder.probe()
+        return self._encoder["detail"]
 
     # -- after the trial ---------------------------------------------------
     @property
@@ -1912,12 +2143,13 @@ class TransferMap(Model):
                 sch.toggle("Tip broke", "is_broke", "mark_broke", "Broke",
                            "Not broken", on_args=(True,), off_args=(False,)),
                 sch.readonly("Status", "trial_status", role="info"),
-                sch.image("Before picture", "before_image",
-                          empty="Taken when you arm."),
-                sch.image("Mark picture", "mark_image",
-                          empty="Taken when you press Mark force."),
-                sch.image("After picture", "after_image",
-                          empty="Taken when you finish."),
+                # V4: the pictures are the video's own frames, labelled.
+                sch.image("First frame", "first_frame_image",
+                          empty="The video's first frame, labelled, once you "
+                                "arm."),
+                sch.image("Mark frame", "mark_frame_image",
+                          empty="The video's frame at Mark force, labelled MARK."),
+                sch.readonly("Video", "video_status"),
                 sch.plot("Red % since Arm", "live_series", x_label="time (s)",
                          y_label="red (%)",
                          empty="Arm a trial and its red percent plots here."),
@@ -1925,16 +2157,9 @@ class TransferMap(Model):
                           empty="No trials yet. Record one, or import trials."),
             ),
             sch.section(
-                "Full pictures",
-                sch.image("Before, whole screen", "before_full_image",
-                          empty="The whole screen, taken with the before "
-                                "picture when you arm."),
-                sch.image("Mark, whole screen", "mark_full_image",
-                          empty="The whole screen, taken with the Mark "
-                                "picture when you press Mark force."),
-                sch.image("After, whole screen", "after_full_image",
-                          empty="The whole screen, taken with the after "
-                                "picture when you finish."),
+                "Context",
+                sch.image("Arm, whole screen", "before_full_image",
+                          empty="The whole screen, taken when you arm."),
                 tier=2, disclosure=configure,
             ),
             sch.section(
@@ -1991,6 +2216,7 @@ class TransferMap(Model):
                 "Diagnostics",
                 sch.readonly("Last trial", "last_trial_numbers"),
                 sch.readonly("Width gradient", "width_gradient"),
+                sch.readonly("Video encoder", "video_encoder"),
                 sch.log_stream("Trials", "trials_log"),
                 sch.log_stream("Tips", "tips_log"),
                 sch.button("Delete trial", "delete_trial", inputs=("trial_pick",),
