@@ -7,26 +7,7 @@ primary), Tkinter and PySide6 — over one Controller. Firmware is untouched;
 every byte on the wire is identical to `legacy/src`'s (the repair tree
 the lab ran Aug 26–Sep 22, 2026), pinned by `tests/golden/`.
 
-## Tree
-
-```
-src/                     the app
-  app.py                 run as a script: python3 src/app.py --web | --qt | --tk
-  events.py panel.py param.py schema.py result.py palette.py
-  controller/            controller.py (owns the models), setup.py (port scan, builds models)
-  model/                 base.py (Model, the one estop latch), probe.py heater.py
-                         rotator.py red_monitor.py plot_data.py
-  devices/               serial_port, gamepad, smc100, screen (only place hardware libs are imported)
-  views/                 tk.py, qt.py, web/ (hold the Controller and nothing else)
-tests/                   the app's suite; tests/golden/ holds the wire captures
-legacy/src/              the old MVC repair tree: reference for the golden wire captures only
-legacy/tests/            the old suite; still runnable
-firmware/                Arduino / Teensy sketches, unchanged
-docs/rebuild/            current docs; docs/archive/ is history
-handoff/                 git-ignored: agent handoffs, audit reports, captures (shots/)
-```
-
-The import rules between these layers are a test (`tests/test_architecture.py`).
+The import rules between the `src/` layers (controller, model, devices, views) are a test (`tests/test_architecture.py`).
 
 ## Read these first, in this order
 
@@ -55,10 +36,7 @@ second test wave).
 
 ```
 python3 src/app.py --web --no-browser --port 8080
-STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # 2290 pass, 1 xfail (+11 window tests when the display is free)
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 212 pass
-python3 -m pytest tests/test_wire_golden.py -q                                    # 78 scenarios byte-identical to legacy/src
-cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
+# test gates: see the verify skill (the four suites and their expected counts)
 ```
 
 Launchers: `run.sh` / `run_macos.sh` / `run.bat`, passing `--web|--qt|--tk`
