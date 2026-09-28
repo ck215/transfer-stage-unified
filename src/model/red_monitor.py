@@ -877,6 +877,21 @@ class RedMonitor(Model):
                          exception=exc)
             return None
 
+    def grab_screen(self):
+        """The whole virtual desktop as it looks now, at full size, as PNG
+        bytes (the microscope feed as displayed, for the Transfer Map's
+        whole-screen pictures), or None when the screen is not open or the
+        grab failed. `screen_image`, the picker's picture, stays downscaled."""
+        if not self.screen.is_open:
+            return None
+        try:
+            png, _bounds = self.screen.screenshot_png(max_width=None)
+        except Exception as exc:
+            events.debug("Screen Grab Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            return None
+        return png or None
+
     def _wants_row(self, run, red):
         if run.sample_mode == "change":
             rounded = round(red, 1)

@@ -136,3 +136,52 @@ def test_mss_failing_to_import_leaves_the_screen_unavailable_not_crashed(
 
 def test_close_on_a_never_opened_screen_is_harmless():
     Screen().close()
+
+
+# --- the whole desktop (full pictures, 2026-09-28; additive) --------------
+
+class _Shot:
+    """What `mss` returns from a grab: `size` and a BGRA buffer."""
+
+    def __init__(self, width, height):
+        self.size = (width, height)
+        self.bgra = bytes([0, 0, 200, 255]) * (width * height)   # pure red
+
+
+class DesktopCapture(FakeCapture):
+    """A capture whose virtual desktop is wider than the picker's 1600."""
+
+    def __init__(self, width=2000, height=100):
+        super().__init__()
+        self.monitors = [{"left": 0, "top": 0, "width": width, "height": height}]
+
+    def grab(self, region):
+        self.regions.append(dict(region))
+        return _Shot(region["width"], region["height"])
+
+
+def _decoded(png):
+    import io
+    from PIL import Image
+    return Image.open(io.BytesIO(png))
+
+
+def test_screenshot_png_without_a_max_width_is_the_desktop_at_full_size():
+    """`max_width=None` means no downscale (it used to raise at the
+    comparison and come back as (None, None))."""
+    screen = Screen(factory=DesktopCapture)
+    screen.open()
+    png, bounds = screen.screenshot_png(max_width=None)
+    assert png is not None and png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert bounds == {"left": 0, "top": 0, "width": 2000, "height": 100}
+    image = _decoded(png)
+    assert image.size == (2000, 100)
+    assert image.getpixel((0, 0))[:3] == (200, 0, 0)
+
+
+def test_screenshot_png_still_downscales_for_the_picker():
+    screen = Screen(factory=DesktopCapture)
+    screen.open()
+    png, bounds = screen.screenshot_png()
+    assert _decoded(png).size == (1600, 80)
+    assert bounds["width"] == 2000                   # full-size bounds
