@@ -21,6 +21,14 @@ const DATA_POLL_MS = 1000;
 const HEARTBEAT_MS = 2000;
 const STALE_AFTER_S = 1.0;
 const SETUP_NAME = '__setup__';
+//: rb-restart R4: after Restart the page asks for /api/state this often, for
+//: this long, and reloads itself once a NEW station (another `boot`) answers.
+const RESTART_POLL_MS = 2000;
+const RESTART_WAIT_MS = 60000;
+const RESTARTING_TEXT = 'Restarting the station\u2026';
+const RESTART_GAVE_UP = 'The station did not come back; start it by hand.';
+//: The acknowledgement's second key when the notice carries an action (R1).
+const ACK_LATER = 'Later';
 //: How many of a model's key numbers are set as readings (large numerals) on
 //: its sheet entry. The rest of its readonly values are captions and values.
 const RAIL_READOUTS = 4;
@@ -420,12 +428,35 @@ function ackWords(queue) {
     (sum, event) => sum + Math.max(1, Number(event.count) || 1), 0);
   const message = unshout(latest.message || latest.text || '').trim();
   const waiting = queue.length - 1;
-  return {
+  const words = {
     title: entry.title ? sentenceCase(entry.title) : 'Notice',
     body: message + (repeats > 1 ? ' (x' + repeats + ')' : ''),
     waiting: waiting > 0 ? waiting + ' more waiting' : '',
     key: 'Understood',
   };
+  // rb-restart R1: an action is a second key. The newest event's action
+  // wins; the action's label is the default key, Later the other.
+  const action = ackAction(entry);
+  if (action) {
+    words.key = String(action.label || 'Continue');
+    words.later = ACK_LATER;
+    words.action = action;
+  }
+  return words;
+}
+
+/** The action of a queue entry: the newest of its events that carries one
+ *  ({label, name, command, args}), or null. */
+function ackAction(entry) {
+  const found = (entry && entry.events || []).slice().reverse()
+    .find((event) => event && event.action && event.action.command);
+  return found ? found.action : null;
+}
+
+/** A Restart that the station accepted: the page waits for the new one. */
+function isRestartAnswer(name, command, result) {
+  return name === SETUP_NAME && command === 'restart_station'
+    && Boolean(result) && result.status === 'ok';
 }
 
 /** The event that says a model did not confirm a stop (L2). */
@@ -2322,6 +2353,12 @@ class PanelCard {
       }
       if (result.status === 'ok') this.showRefused('');
       else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '', element);
+      // R4: the station is going away on purpose; the page waits for the
+      // new one instead of calling it "not answering".
+      if (isRestartAnswer(this.name, element.command, result)) {
+        this.dashboard.awaitRestart();
+        return result;
+      }
       await this.dashboard.refreshNow();
     } catch (err) {
       this.showRefused('The station did not answer (' + failureReason(err)
@@ -2807,6 +2844,11 @@ class Dashboard {
     this.ackQueue = [];
     this.confirmPending = null;
     this.isShutDown = false;
+    //: The station run this page is talking to (`state.boot`, R4), and
+    //: whether it is waiting for a restarted one.
+    this.boot = null;
+    this.isRestarting = false;
+    this.restartTimer = null;
     //: The open in-page panels (a detached log's, G4), oldest first. They sit
     //: under the rail and above the rack, and go inert under an overlay.
     this.floating = [];
@@ -2858,7 +2900,7 @@ class Dashboard {
     };
     this.isLogCollapsed = true;
     this.dom.stop.addEventListener('click', () => this.toggleEstopAll());
-    this.dom.modalOk.addEventListener('click', () => this.acknowledge());
+    this.dom.modalOk.addEventListener('click', () => this.acknowledge(true));
     this.buildAckHeading();
     this.dom.pickerClose.addEventListener('click', () => this.closeRegionPicker());
     this.dom.pickerUse.addEventListener('click', () => this.useTypedRegion());
@@ -3185,7 +3227,13 @@ class Dashboard {
     const askedAt = Date.now();
     try {
       const state = await apiGet('/api/state');
-      if (this.isShutDown) return;      // an answer that crossed the Quit
+      if (this.isShutDown || this.isRestarting) return;   // crossed Quit or Restart
+      // R4: another station run answers (a restart from another tab, or by
+      // hand): this page's events, ids and layout are the old one's.
+      if (state && state.boot) {
+        if (this.boot && state.boot !== this.boot) { this.reloadPage(); return; }
+        this.boot = state.boot;
+      }
       this.setConnected(true);
       await this.applyState(state, askedAt);
       await this.pollEvents(state.latest_event);
@@ -3206,7 +3254,7 @@ class Dashboard {
    *  every number on the page goes muted with the stale mark: a frozen
    *  number must never look like a live one (F4, CRIT-1). */
   setConnected(isConnected) {
-    if (this.isShutDown || this.isConnected === isConnected) return;
+    if (this.isShutDown || this.isRestarting || this.isConnected === isConnected) return;
     this.isConnected = isConnected;
     const link = this.dom.connection;
     if (isConnected) {
@@ -4205,21 +4253,139 @@ class Dashboard {
     putText(this.dom.modalCount, words.waiting);
     this.dom.modalCount.hidden = !words.waiting;
     putText(this.dom.modalOk, words.key);
+    this.renderAckLater(words.later);
+  }
+
+  /** R1: "Later" exists only while the notice shown carries an action (a
+   *  plain notice keeps its one key). Built here because the markup is
+   *  not this file's; it sits beside the action key and answers like
+   *  Escape. */
+  renderAckLater(text) {
+    if (!text) {
+      if (this.dom.modalLater) { this.dom.modalLater.remove(); this.dom.modalLater = null; }
+      return;
+    }
+    if (!this.dom.modalLater) {
+      // The two keys share one row, the action first (Tk's order).
+      let row = this.dom.modalOk.parentNode;
+      if (!row.classList.contains('dialog-actions')) {
+        row = make('div', 'dialog-actions');
+        row.id = 'ack-actions';
+        this.dom.modalOk.parentNode.insertBefore(row, this.dom.modalOk);
+        row.appendChild(this.dom.modalOk);
+      }
+      const later = make('button', 'button role-neutral', text);
+      later.type = 'button';
+      later.id = 'ack-later';
+      later.addEventListener('click', () => this.acknowledge(false));
+      row.appendChild(later);
+      this.dom.modalLater = later;
+    }
+    putText(this.dom.modalLater, text);
   }
 
   /** Understood: the title shown is read, every repeat of it; the next
    *  title takes the dialog, or it closes and focus goes back. */
-  acknowledge() {
-    this.ackQueue.shift();
+  acknowledge(acted) {
+    const entry = this.ackQueue.shift();
+    const action = acted ? ackAction(entry) : null;
+    this.logAcknowledged(entry, action ? 'action' : (ackAction(entry) ? 'later' : 'understood'));
     if (this.ackQueue.length) {
       this.renderAck();
       this.dom.modalOk.focus({ preventScroll: true });
-      return;
+    } else {
+      clear(this.dom.modalText);
+      this.renderAckLater('');
+      this.dom.modal.hidden = true;
+      this.updateInert();
+      this.restoreFocus(this.ackReturn, this.dom.cards);
     }
-    clear(this.dom.modalText);
-    this.dom.modal.hidden = true;
-    this.updateInert();
-    this.restoreFocus(this.ackReturn, this.dom.cards);
+    if (action) this.runAction(action);
+  }
+
+  /** R7: the log file says what the operator answered, as the desktop
+   *  views' "Alert Acknowledged" line does. Best effort: a station that
+   *  does not answer has no log to write. */
+  logAcknowledged(entry, answer) {
+    const events = (entry && entry.events) || [];
+    const latest = events[events.length - 1];
+    if (!latest || typeof latest.id !== 'number') return;
+    apiPost('/api/ack', { id: latest.id, answer }).catch(() => {});
+  }
+
+  /** R1: an acknowledgement's action, as a press of that button on its
+   *  panel: the card's own run, so a refusal shows on the card and a
+   *  confirmation is asked as usual. */
+  async runAction(action) {
+    const name = String(action.name || '');
+    const card = name === SETUP_NAME ? this.setupCard : this.cards.get(name);
+    const args = Array.isArray(action.args) ? action.args : [];
+    if (card) {
+      const drawn = card.widgets.find((w) => w.element && w.element.type === 'button'
+        && w.element.command === action.command && !(w.element.args || []).length);
+      const element = drawn ? drawn.element
+        : { type: 'button', command: action.command, args: [], inputs: [] };
+      return await card.run(element, args);
+    }
+    let result;
+    try {
+      result = await apiPost('/api/run', { name, command: action.command, inputs: {}, args });
+      if (result.status === 'needs_confirm'
+          && await this.confirm(result.reason, confirmLabel(result))) {
+        result = await apiPost('/api/run', { name, command: result.command,
+          inputs: result.inputs || {}, args: (result.args || []).concat([true]) });
+      }
+    } catch (err) {
+      this.notice(String(action.label) + ' did not reach the station (' + failureReason(err) + ').');
+      return null;
+    }
+    if (result.status === 'refused') this.notice(String(action.label) + ': ' + (result.reason || ''));
+    if (isRestartAnswer(name, action.command, result)) this.awaitRestart();
+    return result;
+  }
+
+  // -- a restart (rb-restart R4) -------------------------------------------
+  //
+  // The server answers Restart, closes every model and replaces itself; a
+  // new one listens on the same port within seconds. The page says so (not
+  // "not answering"), stops beating (there is no one to beat to, and the new
+  // station's watchdog stays idle until a page checks in), and reloads once
+  // a station with another `boot` answers - or says it did not come back.
+  awaitRestart() {
+    if (this.isRestarting || this.isShutDown) return;
+    this.isRestarting = true;
+    this.stopHeartbeat();
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    const link = this.dom.connection;
+    link.textContent = RESTARTING_TEXT;
+    link.title = 'The station is restarting. This page reloads itself when it is back.';
+    link.className = 'link-state is-down is-restarting';
+    document.body.classList.add('is-offline');
+    this.muteReadouts('Restarting');
+    const started = Date.now();
+    const old = this.boot;
+    const tick = async () => {
+      try {
+        const state = await apiGet('/api/state');
+        if (state && state.boot && state.boot !== old) { this.reloadPage(); return; }
+      } catch (err) {
+        // Not back yet: the old server is gone, the new one not listening.
+      }
+      if (Date.now() - started >= RESTART_WAIT_MS) {
+        link.textContent = RESTART_GAVE_UP;
+        link.title = 'No station answered for ' + Math.round(RESTART_WAIT_MS / 1000)
+          + ' s after the restart.';
+        link.className = 'link-state is-down is-restart-failed';
+        this.restartTimer = null;
+        return;
+      }
+      this.restartTimer = setTimeout(tick, RESTART_POLL_MS);
+    };
+    this.restartTimer = setTimeout(tick, RESTART_POLL_MS);
+  }
+
+  reloadPage() {
+    window.location.reload();
   }
 
   // -- the region picker --------------------------------------------------
