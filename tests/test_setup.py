@@ -19,7 +19,7 @@ from controller.controller import Controller
 from devices import gamepad as gamepad_module
 from devices import serial_port as serial_port_module
 from events import events
-from result import Refused
+from result import NeedsConfirm, Refused
 from controller.setup import MODEL_TYPES, ON, SIM, Setup
 
 
@@ -220,12 +220,13 @@ def test_a_model_that_needs_no_port_still_has_one_dropdown(panel):
 def test_the_header_row_offers_refresh_the_scan_status_and_cancel(panel):
     # F18 added "Cancel scan" (enabled only while scanning): a hung scan
     # could not be given up before.
-    header = panel.schema["sections"][1]     # after "Update" (the update check)
-    assert header["title"] == "Devices"
+    # L3 added "Address": the Web view's URL, which used to be a terminal line.
+    header = next(s for s in panel.schema["sections"] if s["title"] == "Devices")
     assert [(e["type"], e.get("command") or e.get("model_attr"))
             for e in header["elements"]] == [("button", "refresh"),
                                              ("readonly", "scan_status"),
-                                             ("button", "cancel_scan")]
+                                             ("button", "cancel_scan"),
+                                             ("readonly", "web_address")]
     cancel = header["elements"][2]
     assert cancel["enabled_when"] == ["scanning"]
     assert "scan" not in {e.get("command") for e in _elements(panel)}
@@ -1278,3 +1279,345 @@ def test_launch_is_refused_after_an_update_until_the_restart(fake_types, checkin
     result = panel.run("launch")
     assert result.status == "refused"
     assert "start it again" in result.reason
+
+
+
+# -- the firmware check (owner, 2026-09-28: run_swap.sh's, on the Setup page) --
+
+class FakeFirmware:
+    """`controller.firmware.FirmwareCheck`'s two calls, scripted. `gate`
+    holds `check()`, `flash_gate` holds `flash()`, until the test releases
+    them. `after_flash` is what `check()` answers once a flash has run."""
+
+    def __init__(self, result=None, after_flash=None, flash_ok=True,
+                 lines=("Sketches: firmware", "  Stepper Probe ok")):
+        self.result = result or firmware_result(stale=["Stepper Probe"])
+        self.after_flash = after_flash
+        self.flash_ok, self.lines = flash_ok, list(lines)
+        self.checks, self.flashes = 0, []
+        self.gate = self.flash_gate = None
+        self.progress_seen = []
+
+    def check(self):
+        self.checks += 1
+        if self.gate is not None:
+            assert self.gate.wait(5.0)
+        if self.flashes and self.after_flash is not None:
+            return dict(self.after_flash)
+        return dict(self.result)
+
+    def flash(self, boards, on_line=None, timeout=None):
+        self.flashes.append(list(boards))
+        for line in self.lines:
+            on_line(line)
+        if self.flash_gate is not None:
+            assert self.flash_gate.wait(5.0)
+        return {"ok": self.flash_ok, "returncode": 0 if self.flash_ok else 1,
+                "last": self.lines[-1].strip() if self.lines else "",
+                "lines": list(self.lines)}
+
+
+def firmware_result(stale=(), never=(), missing=()):
+    boards = {b: "current" for b in ("Stepper Probe", "DC Probe",
+                                     "Chuck Positioner", "Temperature Controller")}
+    boards.update({b: "out_of_date" for b in stale})
+    boards.update({b: "never_flashed" for b in never})
+    parts = []
+    if stale:
+        parts.append(station_setup._and(stale) + " out of date")
+    if never:
+        parts.append(station_setup._and(never) + " never flashed here")
+    return {"boards": boards, "stale": list(stale), "never": list(never),
+            "to_flash": list(stale) + list(never), "missing_tools": list(missing),
+            "summary": "; ".join(parts) or "all current"}
+
+
+@pytest.fixture
+def firmware_checking(monkeypatch):
+    """The startup firmware check switched back on for this test only."""
+    monkeypatch.delenv("STATION_NO_FIRMWARE_CHECK", raising=False)
+
+
+@pytest.fixture
+def board_types(monkeypatch):
+    """Rows named like the boards, so Launch can match a row to a board."""
+    types = {}
+    for model_class in (make_model_class("Stepper Probe", "s"),
+                        make_model_class("DC Probe", "d"),
+                        make_model_class("Screen", needs_port=False)):
+        types[model_class.NAME] = model_class
+    monkeypatch.setattr(station_setup, "MODEL_TYPES", types)
+    return types
+
+
+def wait_firmware(panel):
+    for thread in (panel._firmware_thread, panel._flash_thread):
+        if thread is not None:
+            thread.join(5.0)
+            assert not thread.is_alive()
+
+
+def checked(firmware):
+    """A Setup whose startup check is off, then checked once by hand."""
+    panel = Setup(RecordingController(), firmware=firmware)
+    assert panel.check_firmware()
+    wait_firmware(panel)
+    return panel
+
+
+def on_port(panel, key, port):
+    offer(panel, port)
+    select(panel, key, "port", port)
+
+
+def asked(call):
+    with pytest.raises(NeedsConfirm) as raised:
+        call()
+    return raised.value
+
+
+def refused(call):
+    with pytest.raises(Refused) as raised:
+        call()
+    return raised.value.reason
+
+
+def test_the_firmware_row_block_builds_the_brief_shape(panel):
+    """What `_firmware_section()` builds; the schema inserts it right after
+    Update (see the handoff: the insertion waits on a file outside this
+    write set)."""
+    section = panel._firmware_section()
+    assert section["title"] == "Firmware"
+    assert section["layout"] == "row" and section["tier"] == 1
+    assert [(e["type"], e.get("text"), e.get("command") or e.get("model_attr"))
+            for e in section["elements"]] == [
+        ("readonly", "Boards", "firmware_status"),
+        ("readonly", "Flashing", "firmware_progress"),
+        ("button", "Flash out-of-date boards", "flash_firmware"),
+        ("button", "Check firmware", "check_firmware"),
+    ]
+    boards, _, flash, again = section["elements"]
+    assert boards["role"] == "info"
+    assert flash["role"] == "go" and again["role"] == "neutral"
+    assert flash["confirm"].startswith("Flash the out-of-date boards?")
+
+
+def test_no_test_ever_checks_firmware_the_startup_check_is_off(fake_types):
+    firmware = FakeFirmware()
+    panel = Setup(RecordingController(), firmware=firmware)
+    assert panel._firmware_thread is None and firmware.checks == 0
+    assert panel.firmware_status == Setup.FIRMWARE_CHECK_OFF
+    assert panel.firmware_progress == ""
+
+
+def test_the_startup_firmware_check_runs_on_a_thread_and_publishes(
+        fake_types, firmware_checking):
+    firmware = FakeFirmware()
+    firmware.gate = threading.Event()
+    panel = Setup(RecordingController(), firmware=firmware)
+    assert panel.firmware_status == "checking…"
+    assert panel._firmware_thread.daemon
+    firmware.gate.set()
+    wait_firmware(panel)
+    assert panel.firmware_status == "Stepper Probe out of date"
+    assert firmware.checks == 1 and firmware.flashes == []
+
+
+def test_a_firmware_check_that_raises_warns_and_the_station_runs(
+        fake_types, firmware_checking, warnings):
+    class Broken(FakeFirmware):
+        def check(self):
+            raise RuntimeError("disk gone")
+
+    panel = Setup(RecordingController(), firmware=Broken())
+    wait_firmware(panel)
+    assert "check failed" in panel.firmware_status
+    assert [e.title for e in warnings if e.severity == "warning"] == ["Firmware Check Failed"]
+
+
+def test_check_firmware_refuses_while_a_check_runs(fake_types):
+    firmware = FakeFirmware()
+    firmware.gate = threading.Event()
+    panel = Setup(RecordingController(), firmware=firmware)
+    assert panel.check_firmware()
+    assert "already running" in refused(panel.check_firmware)
+    firmware.gate.set()
+    wait_firmware(panel)
+    assert firmware.checks == 1
+
+
+def test_flash_asks_first_and_names_the_boards(fake_types):
+    firmware = FakeFirmware(result=firmware_result(stale=["Stepper Probe"],
+                                                   never=["Chuck Positioner"]))
+    panel = checked(firmware)
+    question = asked(panel.flash_firmware)
+    assert question.command == "flash_firmware"
+    assert question.prompt.startswith(
+        "Flash Stepper Probe and Chuck Positioner now? This overwrites")
+    assert firmware.flashes == []
+
+
+def test_flash_refuses_when_nothing_is_out_of_date(fake_types):
+    firmware = FakeFirmware(result=firmware_result())
+    panel = checked(firmware)
+    assert refused(lambda: panel.flash_firmware(True)) == (
+        "Every board is current; there is nothing to flash.")
+    assert firmware.flashes == []
+
+
+def test_flash_refuses_before_any_check(fake_types):
+    firmware = FakeFirmware()
+    panel = Setup(RecordingController(), firmware=firmware)
+    assert "Check firmware" in refused(lambda: panel.flash_firmware(True))
+    assert firmware.flashes == []
+
+
+def test_flash_refuses_without_the_tools_and_says_flash_by_hand(fake_types):
+    firmware = FakeFirmware(result=firmware_result(stale=["DC Probe"],
+                                                   missing=["arduino-cli"]))
+    panel = checked(firmware)
+    reason = refused(lambda: panel.flash_firmware(True))
+    assert reason.startswith("arduino-cli is not installed") and "by hand" in reason
+    assert firmware.flashes == []
+
+
+def test_flash_refuses_while_the_station_is_launched(fake_types):
+    firmware = FakeFirmware()
+    panel = checked(firmware)
+    tick(panel, "alpha")
+    assert panel.run("launch").is_ok
+    assert refused(lambda: panel.flash_firmware(True)).startswith("Close every model first")
+    assert panel.run("stop_system").is_ok
+    assert panel.flash_firmware(True)
+    wait_firmware(panel)
+    assert firmware.flashes == [["Stepper Probe"]]
+
+
+def test_flash_refuses_while_the_scan_holds_the_ports(fake_types, monkeypatch):
+    firmware = FakeFirmware()
+    panel = checked(firmware)
+    monkeypatch.setattr(Setup, "is_scanning", property(lambda self: True))
+    assert "scan" in refused(lambda: panel.flash_firmware(True))
+    assert firmware.flashes == []
+
+
+def test_a_flash_streams_its_lines_then_rechecks(fake_types, warnings):
+    firmware = FakeFirmware(after_flash=firmware_result())
+    firmware.flash_gate = threading.Event()
+    panel = checked(firmware)
+    assert panel.flash_firmware(True)
+    deadline = time.monotonic() + 5
+    while panel.firmware_progress != "Stepper Probe ok" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert panel.firmware_progress == "Stepper Probe ok"
+    assert panel.firmware_status == "flashing Stepper Probe"
+    assert panel.is_flashing
+    # While it runs: no second flash, no check, no launch, no scan.
+    assert "already running" in refused(lambda: panel.flash_firmware(True))
+    assert "flash is running" in refused(panel.check_firmware)
+    tick(panel, "alpha")
+    result = panel.run("launch")
+    assert result.status == "refused" and "being flashed" in result.reason
+    assert "being flashed" in refused(panel.scan)
+    firmware.flash_gate.set()
+    wait_firmware(panel)
+    assert panel.firmware_progress == ""
+    assert panel.firmware_status == "all current"
+    assert "Firmware Flashed" in [e.title for e in warnings if e.severity == "info"]
+    assert panel.run("launch").is_ok
+
+
+def test_a_failed_flash_warns_with_the_scripts_last_line(fake_types, warnings):
+    firmware = FakeFirmware(flash_ok=False,
+                            lines=["Scanning for connected boards...", "  Stepper Probe FAILED"])
+    panel = checked(firmware)
+    assert panel.flash_firmware(True)
+    wait_firmware(panel)
+    warned = [e for e in warnings if e.severity == "warning"]
+    assert [e.title for e in warned] == ["Firmware Flash Failed"]
+    assert "Stepper Probe FAILED" in warned[0].message
+    assert panel.firmware_status == "the last flash failed; Stepper Probe out of date"
+    assert panel.firmware_progress == ""
+
+
+def test_a_board_that_was_not_plugged_in_is_said_after_the_flash(fake_types, warnings):
+    firmware = FakeFirmware(
+        result=firmware_result(never=["Stepper Probe", "DC Probe"]),
+        after_flash=firmware_result(never=["DC Probe"]),
+        lines=["Not connected (nothing flashed, nothing recorded): DC Probe",
+               "Summary:", "  Stepper Probe ok"])
+    panel = checked(firmware)
+    assert panel.flash_firmware(True)
+    wait_firmware(panel)
+    titles = [(e.severity, e.title) for e in warnings]
+    assert ("warning", "Firmware Not Flashed") in titles
+    assert ("info", "Firmware Flashed") in titles
+    note = next(e for e in warnings if e.title == "Firmware Not Flashed")
+    assert note.message.startswith("DC Probe still needs flashing. Not connected")
+
+
+def test_launch_warns_once_when_a_launched_board_is_out_of_date(board_types):
+    panel = checked(FakeFirmware())
+    on_port(panel, "stepper_probe", "/dev/ttyACM0")
+    result = panel.run("launch")
+    assert result.status == "needs_confirm" and result.command == "launch"
+    assert result.reason == "Stepper Probe's firmware is out of date. Launch anyway?"
+    assert panel.controller.model_names == []
+    assert panel.run("launch", args=(True,)).is_ok
+    assert panel.run("stop_system").is_ok
+    # Asked once: the same boards, still behind, launch without a second question.
+    assert panel.run("launch").is_ok
+
+
+def test_launch_names_every_out_of_date_board_it_opens(board_types):
+    panel = checked(FakeFirmware(result=firmware_result(
+        stale=["Stepper Probe", "DC Probe", "Chuck Positioner"])))
+    on_port(panel, "stepper_probe", "/dev/ttyACM0")
+    on_port(panel, "dc_probe", "/dev/ttyACM1")
+    result = panel.run("launch")
+    assert result.reason == ("The firmware on Stepper Probe and DC Probe is out "
+                             "of date. Launch anyway?")
+
+
+def test_a_simulated_row_is_never_warned_about(board_types):
+    panel = checked(FakeFirmware())
+    tick(panel, "stepper_probe")          # SIM by default
+    assert panel.run("launch").is_ok
+
+
+def test_a_board_never_flashed_here_is_not_warned_about(board_types):
+    panel = checked(FakeFirmware(result=firmware_result(never=["Stepper Probe"])))
+    on_port(panel, "stepper_probe", "/dev/ttyACM0")
+    assert panel.run("launch").is_ok
+
+
+def test_launch_does_not_wait_on_an_unchecked_firmware(board_types):
+    panel = Setup(RecordingController(), firmware=FakeFirmware())
+    on_port(panel, "stepper_probe", "/dev/ttyACM0")
+    assert panel.run("launch").is_ok
+
+
+def test_a_relaunch_over_energized_models_asks_one_question_not_two(board_types):
+    panel = checked(FakeFirmware())
+    tick(panel, "dc_probe")
+    assert panel.run("launch").is_ok
+    panel.controller._model_or_none("DC Probe").is_energized = True
+    on_port(panel, "stepper_probe", "/dev/ttyACM0")
+    result = panel.run("launch")
+    assert result.status == "needs_confirm"
+    assert result.reason.startswith("Relaunch? DC Probe is energized")
+    assert result.reason.endswith("Stepper Probe's firmware is out of date. Launch anyway?")
+    assert panel.run("launch", args=(True,)).is_ok
+
+
+def test_the_web_address_is_empty_until_the_web_view_serves(panel):
+    assert panel.web_address == ""
+    from views.web.server import WebView
+    view = WebView(panel.controller, panel, port=0, open_browser=False)
+    try:
+        url = view.open()
+        assert url.startswith("http://127.0.0.1:")
+        assert panel.web_address == url
+        assert panel.state["values"]["web_address"] == url
+    finally:
+        view.close()

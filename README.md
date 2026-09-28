@@ -36,9 +36,11 @@ Prior to opening the software, the Xbox controller must be connected to the PC.
 
 ### Software Initialization
 
-1. Double-click the **Transfer Stage Launcher** icon on the desktop. (To start it from a terminal instead, run `./run.sh` in the repository folder — `./run_macos.sh` on a Mac, `run.bat` on Windows — or `python3 src/app.py`; add `--web`, `--qt` or `--tk` to choose the window style.)
-   To pick up the latest fixes from GitHub between sessions, run `./update.sh` (`update.bat` on Windows) in the repository folder with the station closed. It shows what is coming, fast-forwards, and reinstalls dependencies only when they changed; `./update.sh --check` only reports. It refuses while the station runs or if the checkout has local edits, so nothing is ever overwritten.
-2. A configuration GUI will open and automatically populate the available *COM ports*.
+1. Double-click the **Transfer Stage Launcher** icon on the desktop. To start it from a terminal instead, run `./run.sh` in the repository folder on macOS or Linux, or `run.bat` on Windows; add `--qt` (the default), `--web` or `--tk` to choose the window style, and `--help` to list the rest. The launcher finds the project's virtual environment (a `.venv` in the folder, or the one already active) and prints nothing unless it cannot. On a Mac it also repairs PySide6 before the Qt window opens. (`run_macos.sh` and `run_swap_macos.sh` still work for old shortcuts and will be removed after 2026-10-31.)
+2. The Setup page opens, scans the *COM ports* by itself and ticks every board that answers. Its first rows say what this station runs:
+   - **Update**: whether GitHub has something newer, and **Update now** to take it. From a terminal, `./update.sh` (`update.bat` on Windows) does the same with the station closed: it shows what is coming, fast-forwards, and reinstalls dependencies only when they changed; `./update.sh --check` only reports. Both refuse while the station runs or when the checkout has local edits, so nothing is ever overwritten.
+   - **Firmware**: **Boards** says whether each board still runs the sketch this checkout carries (`all current`, `Stepper Probe out of date`, `never flashed here`, or that arduino-cli is missing and the board must be flashed by hand). **Flash out-of-date boards** flashes exactly those, after asking, with every model closed; **Flashing** shows the flash tool's progress while it runs, and Launch waits for it. Nothing is ever flashed without that button. Launching a board whose firmware is out of date asks once first ("Stepper Probe's firmware is out of date. Launch anyway?"), since that can be deliberate.
+   - With `--web`, **Address** on the Devices row is where the dashboard is served.
 3. Use the drop-down menus on the right to assign the Xbox controller to each device.
 
 > ![Configuration GUI](./images/GUI_chose_ports_controllers.png)

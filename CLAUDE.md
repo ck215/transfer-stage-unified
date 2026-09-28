@@ -54,15 +54,20 @@ second test wave).
 ## Commands (from the repo root)
 
 ```
-python3 src/app.py --web --no-browser --port 8080
+./run.sh --web --no-browser --port 8080        # = python3 src/app.py ... in the venv
 STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # 2290 pass, 1 xfail (+11 window tests when the display is free)
 QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt    # 212 pass
 python3 -m pytest tests/test_wire_golden.py -q                                    # 78 scenarios byte-identical to legacy/src
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
 ```
 
-Launchers: `run.sh` / `run_macos.sh` / `run.bat`, passing `--web|--qt|--tk`
-through. Agents do not run the Qt pass (a native SIGABRT can kill the
+Launchers: `run.sh` (macOS and Linux; `uname` picks the macOS PySide6
+repair) and `run.bat` (Windows) find the venv and pass every flag to
+`src/app.py`, printing nothing on success; the firmware check is Setup's
+Firmware row (`src/controller/firmware.py`), `update.sh` / `update.bat` stay.
+`run_macos.sh` / `run_swap_macos.sh` are shims to `run.sh` until 2026-10-31;
+`dev/swap_branch.sh` (was `run_swap.sh`) runs `main`'s app on the same boards,
+flashing first (`RUN_SWAP_DRY_RUN=1` prints, runs nothing). Agents do not run the Qt pass (a native SIGABRT can kill the
 session); the lead does. **While anyone is working at this Mac, everything runs
 strictly in the background**: `STATION_NO_WINDOWS=1` before every pytest
 (skips the `window`-marked tests that map a real Tk window; the lead runs
