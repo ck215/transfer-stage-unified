@@ -193,6 +193,12 @@ def register(model_class):
                              "fills only port* and gamepad* resources")
     if len(set(resources)) != len(resources):
         raise ValueError(f"{name!r} declares a resource twice: {resources}")
+    if getattr(model_class, "HOST", None) and resources:
+        # A hosted model has no Setup row (owner ruling 2026-09-28: "it should
+        # just be Transfer Map that calls both those tools"), so nothing could
+        # fill a port or gamepad for it.
+        raise ValueError(f"{name!r} is drawn on {model_class.HOST!r} and so "
+                         f"has no Setup row; it cannot declare resources {resources}")
     types[name] = model_class
     return model_class
 
@@ -415,6 +421,13 @@ class Setup(Panel):
                 continue
             choice = getattr(self, f"{key}_port")
             is_sim = choice == SIM
+            # The models drawn on this row's page (Model.HOST) launch with
+            # it, before it, with no resources and its SIM choice: one row,
+            # "Transfer Map", brings Red Percent (owner ruling 2026-09-28).
+            for hosted_name, hosted_class in MODEL_TYPES.items():
+                if getattr(hosted_class, "HOST", None) == row["name"]:
+                    configs.append({"model": hosted_name, "port": None,
+                                    "gamepad": None, "sim": bool(is_sim)})
             if not row["needs_port"]:
                 port = None         # the screen monitor: on, or simulated
             elif is_sim:
@@ -987,16 +1000,6 @@ class Setup(Panel):
         setattr(self, f"{key}_enabled", flag)
         events.debug("Ticked" if flag else "Unticked", self._rows[key]["name"],
                      source=self.NAME)
-        if flag:
-            # A host brings the models drawn on its page (Model.HOST): ticking
-            # the Transfer Map ticks Red Percent. Unticking is left alone.
-            host_name = self._rows[key]["name"]
-            for other_key, row in self._rows.items():
-                hosted = getattr(MODEL_TYPES.get(row["name"]), "HOST", None)
-                if hosted == host_name and not getattr(self, f"{other_key}_enabled"):
-                    setattr(self, f"{other_key}_enabled", True)
-                    events.debug("Ticked", f"{row['name']} (drawn on {host_name})",
-                                 source=self.NAME)
         self._refresh_rows()
         return flag
 
@@ -1175,6 +1178,8 @@ class Setup(Panel):
     def _build_rows(self):
         rows = {}
         for name, model_class in MODEL_TYPES.items():
+            if getattr(model_class, "HOST", None):
+                continue        # launched by its host's row, drawn on its page
             resources = resources_of(model_class)
             ports, gamepads = _split(resources)
             port_resource = ports[0] if ports else None

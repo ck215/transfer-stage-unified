@@ -948,7 +948,9 @@ def test_close_every_model_does_not_ask_when_nothing_is_energized(panel):
     assert panel.run("stop_system").is_ok
 
 
-# -- a host ticks the rows drawn on its page (Model.HOST, 2026-09-28) --------
+# -- a host's row launches the models drawn on its page (Model.HOST) --------
+# Owner ruling 2026-09-28: "it should just be Transfer Map that calls both
+# those tools on the startup menu". A hosted model has no row of its own.
 
 @pytest.fixture
 def hosted_types(monkeypatch):
@@ -962,22 +964,31 @@ def hosted_types(monkeypatch):
     return types
 
 
-def test_ticking_a_host_ticks_the_rows_drawn_on_its_page(hosted_types):
+def test_a_hosted_model_has_no_setup_row(hosted_types):
+    panel = Setup(RecordingController())
+    assert list(panel._rows) == ["map", "alpha"]
+    assert [r["name"] for r in panel.state["rows"]] == ["Map", "Alpha"]
+    assert not hasattr(panel, "red_enabled")
+
+
+def test_ticking_a_host_launches_the_hosted_model_first_with_its_sim_choice(hosted_types):
     panel = Setup(RecordingController())
     tick(panel, "map")
-    assert panel.map_enabled and panel.red_enabled
-    assert not panel.alpha_enabled
-    assert [c["model"] for c in panel.configs] == ["Map", "Red"]
+    assert [c["model"] for c in panel.configs] == ["Red", "Map"]
+    red = panel.configs[0]
+    assert red["port"] is None and red["gamepad"] is None
+    assert red["sim"] == panel.configs[1]["sim"]
 
 
-def test_ticking_a_hosted_row_alone_leaves_its_host_unticked(hosted_types):
+def test_an_unticked_host_launches_nothing_of_its_own(hosted_types):
     panel = Setup(RecordingController())
-    tick(panel, "red")
-    assert panel.red_enabled and not panel.map_enabled
+    tick(panel, "alpha")
+    assert [c["model"] for c in panel.configs] == ["Alpha"]
 
 
-def test_unticking_a_host_leaves_the_hosted_row_as_it_is(hosted_types):
-    panel = Setup(RecordingController())
-    tick(panel, "map")
-    tick(panel, "map", False)
-    assert not panel.map_enabled and panel.red_enabled
+def test_a_hosted_class_may_declare_no_resources():
+    hosted = make_model_class("Needy", "n")     # needs a port
+    hosted.HOST = "Map"
+    with pytest.raises(ValueError, match="no Setup row"):
+        station_setup.register(hosted)
+    station_setup.MODEL_TYPES.pop("Needy", None)

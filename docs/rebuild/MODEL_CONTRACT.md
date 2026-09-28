@@ -35,8 +35,10 @@ with no hardware that owns a local store, reads other models by duck type
    Red Percent sets `HOST = "Transfer Map"` (owner ruling 2026-09-28, one
    dashboard). A hosted model keeps its own Panel, commands, stop path and
    tests; while its host is launched the views draw its sections on the
-   host's page and list no page of its own, and ticking the host in Setup
-   ticks it. Launched without its host, it is an ordinary page.
+   host's page and list no page of its own. It has no Setup row: the
+   host's row launches it first, with no resources and the host's SIM
+   choice (so it may declare none). Launched without its host (a test, a
+   script), it is an ordinary page.
 2. **Own your devices.** Each device is a `devices.device.Device`
    (`open`, `close`, `is_open`, `status`). Return them from `devices`. Use
    one of these `status` words: `verified`, `unverified`, `simulated`,
