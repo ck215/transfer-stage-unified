@@ -1374,11 +1374,18 @@ class Setup(Panel):
         behind = int(result.get("behind") or 0)
         lines = [str(line) for line in (result.get("log") or [])][:8]
         reason = result.get("reason") or ""
-        if code == "behind" and behind:
+        # A release (a bundle's check, B4) names its tag, never "bundle":
+        # the copy is the same sentence shape in both worlds.
+        latest, running = result.get("latest"), result.get("tag")
+        if code == "behind" and behind and latest:
+            sentence = _release_ready(latest, lines)
+        elif code == "behind" and behind:
             sentence = (f"{behind} new commit{'s are' if behind != 1 else ' is'} "
                         "ready. Update now, then restart the station.")
         elif code == "up_to_date" and self._updated_to:
             sentence = self._restart_sentence()
+        elif code == "up_to_date" and running:
+            sentence = f"Up to date ({running})."
         elif code in self.UPDATE_SENTENCES:
             sentence = self.UPDATE_SENTENCES[code]
         else:
@@ -1396,21 +1403,25 @@ class Setup(Panel):
         if code == "error":
             self._warn_update_once("Update Check Failed", sentence)
         if code == "behind" and behind:
-            self._ask_to_update(behind, lines, result.get("remote"))
+            self._ask_to_update(behind, lines, result.get("remote"), latest)
 
-    def _ask_to_update(self, behind, lines, remote):
+    def _ask_to_update(self, behind, lines, remote, latest=None):
         """R2: the Update Ready dialog, once per distinct remote sha (a Check
-        again that finds the same commits says nothing new)."""
+        again that finds the same commits says nothing new); for a release,
+        once per tag, in the release's own words."""
         key = ("ready", remote or "|".join(lines))
         with self._lock:
             if key in self._warned_updates:
                 return
             self._warned_updates.add(key)
-        first = _subject(lines[0]) if lines else ""
-        count = (f"{behind} new commit{'s are' if behind != 1 else ' is'} ready"
-                 + (f": {first}" if first else ""))
-        events.warn(events.UPDATE_READY, f"{count}. Update now, then restart "
-                    "the station.", source=self.NAME, ack=True,
+        if latest:
+            message = _release_ready(latest, lines)
+        else:
+            first = _subject(lines[0]) if lines else ""
+            count = (f"{behind} new commit{'s are' if behind != 1 else ' is'} ready"
+                     + (f": {first}" if first else ""))
+            message = f"{count}. Update now, then restart the station."
+        events.warn(events.UPDATE_READY, message, source=self.NAME, ack=True,
                     action=("Update now", events.SETUP_PANEL, "apply_update"))
 
     def _restart_sentence(self):
@@ -1860,6 +1871,13 @@ class Setup(Panel):
 def _and(names):
     names = list(names)
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _release_ready(latest, lines):
+    """B4: "v1.3.0 is ready: <the notes' first line>. Update now, then restart." """
+    first = str(lines[0]).strip() if lines else ""
+    return (f"{latest} is ready" + (f": {first.rstrip('.')}" if first else "")
+            + ". Update now, then restart.")
 
 
 def _subject(oneline):
