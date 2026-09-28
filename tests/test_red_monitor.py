@@ -1406,3 +1406,95 @@ def test_the_run_loop_keeps_one_handle_and_other_grabs_keep_none(tmp_path):
         assert model.screen.kept_handles == 0      # dropped with the loop
     finally:
         model.close()
+
+
+# ---------------------------------------------------------------------
+# V3 (2026-09-28): the frame hook the Transfer Map's video reads through
+# ---------------------------------------------------------------------
+
+def test_a_frame_subscriber_is_called_for_every_grabbed_frame(monitor):
+    """`subscribe_frames(fn)`: fn(t_s, frame, red) once per frame the loop
+    grabs and measures, the same frame, whether or not a row is logged."""
+    seen = []
+    monitor.subscribe_frames(lambda t, frame, red: seen.append((t, frame, red)))
+    _started(monitor)
+    assert _wait_for(lambda: len(seen) >= 20)
+    monitor.end_run()
+    monitor._run.thread.join(2)
+    run = monitor._run
+    assert len(seen) == run.frames
+    assert [s[0] for s in seen] == sorted(s[0] for s in seen)
+    for t, frame, red in seen[:5]:
+        assert isinstance(frame, numpy.ndarray) and frame.shape == (10, 10, 3)
+        assert red == pytest.approx(monitor._measure_red(frame))
+    # the hook's red is the run's own: every logged row is one of the frames'
+    assert set(run.log.red_values) <= {s[2] for s in seen}
+
+
+def test_a_failing_frame_subscriber_never_ends_the_run(monitor):
+    def broken(t, frame, red):
+        raise RuntimeError("subscriber bug")
+    monitor.subscribe_frames(broken)
+    _started(monitor)
+    assert _wait_for(lambda: monitor.frames_captured >= 20)
+    assert monitor.is_running and monitor._run.failure is None
+    monitor.end_run()
+
+
+def test_unsubscribe_frames_stops_the_calls_and_is_idempotent(monitor):
+    seen = []
+    fn = lambda t, frame, red: seen.append(red)   # noqa: E731
+    monitor.subscribe_frames(fn)
+    monitor.subscribe_frames(fn)
+    monitor.unsubscribe_frames(fn)
+    monitor.unsubscribe_frames(fn)
+    _started(monitor)
+    assert _wait_for(lambda: monitor.frames_captured >= 10)
+    monitor.end_run()
+    assert seen == []
+
+
+def _loop_rate(model, seconds=0.6):
+    start_frames, start = model._run.frames, time.monotonic()
+    time.sleep(seconds)
+    return (model._run.frames - start_frames) / (time.monotonic() - start)
+
+
+def test_a_slow_frame_consumer_never_slows_the_loop(tmp_path):
+    """Measured: the loop's frame rate with a subscriber that hands frames to
+    a bounded queue drained by a consumer taking 100 ms a frame (the
+    Transfer Map's pattern) stays within reach of the rate with none."""
+    import queue as queue_module
+    model = RedMonitor(screen=fake_screen(delay=0.004))
+    model.output_root = tmp_path / "runs"
+    model.open()
+    try:
+        _started(model)
+        assert _wait_for(lambda: model.frames_captured >= 10)
+        alone = _loop_rate(model)
+        box = queue_module.Queue(maxsize=4)
+        dropped = []
+
+        def hand_off(t, frame, red):
+            try:
+                box.put_nowait(frame)
+            except queue_module.Full:
+                dropped.append(t)
+
+        def consume():
+            while model.is_running:
+                try:
+                    box.get(timeout=0.05)
+                except queue_module.Empty:
+                    continue
+                time.sleep(0.1)
+
+        threading.Thread(target=consume, daemon=True).start()
+        model.subscribe_frames(hand_off)
+        loaded = _loop_rate(model)
+        model.end_run()
+        assert alone > 20, alone
+        assert loaded >= 0.6 * alone, (alone, loaded)
+        assert dropped, "the consumer fell behind, so frames were dropped"
+    finally:
+        model.close()

@@ -35,6 +35,10 @@ dependencies = [
     "Pillow==12.3.0",
     "numpy==2.5.2",
     "matplotlib==3.11.1",
+    # The trial video's H.264 encoder (a wheel carrying its own ffmpeg),
+    # imported lazily by src/devices/video.py only; without it a trial is
+    # recorded as JPEG frames (2026-09-28).
+    "imageio-ffmpeg==0.6.0",
 ]
 
 [project.optional-dependencies]

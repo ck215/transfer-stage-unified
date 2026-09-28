@@ -845,6 +845,7 @@ function clockTime(date) {
 function renderReadonly(panel, element) {
   const node = row(element, 'stat');
   if (element.model_attr) node.dataset.attr = element.model_attr;
+  const isStatusLine = panel.name === SETUP_NAME && /_status$/.test(element.model_attr || '');
   const value = make('span', 'value is-empty ' + roleClass(element.role), '--');
   value.setAttribute('translate', 'no');
   node.appendChild(value);
@@ -866,7 +867,10 @@ function renderReadonly(panel, element) {
       let shown = readoutText(text);
       // L17: Setup's statuses are words the model wrote in lower case
       // ("simulated", "on"); they read in sentence case like every line.
-      if (panel.name === SETUP_NAME && readoutKind(shown) !== 'number') shown = sentence(shown);
+      // A status is a `*_status` line; any other value - the version sha,
+      // the incoming commits, the address - is shown as the model gives it
+      // (W2: "d66c462" had read "D66c462").
+      if (isStatusLine) shown = sentence(shown);
       // Status by exception, tier 1 only: tiers 2 and 3 are where a normal
       // state is still read on purpose. A model's key reading (`rail: true`)
       // is never hidden: unknown is information, drawn "--" muted at the
@@ -3654,12 +3658,15 @@ class Dashboard {
   /** O15 (L5's parity): on a device page the entry's head and its tier-1
    *  body stay in view while the details under them scroll - as long as
    *  they leave most of the window to the details (a tall tier 1 on a short
-   *  window is not pinned: it would cover what it pins over). */
+   *  window is not pinned: it would cover what it pins over).
+   *  A host's page is never pinned (W1): its tier 1 is the head of a longer
+   *  page whose hosted groups are the point of it, and pinned it left a
+   *  guest's group a strip to scroll under it. The whole page scrolls. */
   pinOpened() {
     const room = window.innerHeight - (this.dom.logPanel ? this.dom.logPanel.offsetHeight : 0);
     for (const card of this.cards.values()) {
       let pin = false;
-      if (card.isOpened() && card.head && !card.hostName) {
+      if (card.isOpened() && card.head && !card.hostName && !this.guestsOf(card.name).length) {
         const head = card.head.offsetHeight;
         const tall = head + card.body.offsetHeight;
         pin = tall > 0 && tall <= room * 0.6;

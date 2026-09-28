@@ -316,6 +316,10 @@ class RedMonitor(Model):
         #: log appends. A tuple, replaced whole, so the run thread reads it
         #: without a lock and never sees a list change under it.
         self._subscribers = ()
+        #: V3 (2026-09-28): callables fed `(t_s, frame, red)` for every frame
+        #: the loop grabs and measures (the Transfer Map's video). Same
+        #: discipline: a tuple, replaced whole, read without a lock.
+        self._frame_subscribers = ()
         self._sources = {}
         self._source = None
         self.source_name = None
@@ -795,6 +799,10 @@ class RedMonitor(Model):
                     events.info("Baseline Set", f"{red:.2f}% at run start",
                                 source=self.NAME)
                 self._publish_red(red)
+                frame_subscribers = self._frame_subscribers
+                if frame_subscribers:
+                    self._notify_frames(frame_subscribers,
+                                        now - run.started_monotonic, frame, red)
 
                 if self._wants_row(run, red):
                     run.last_logged_red = round(red, 1)
@@ -842,6 +850,28 @@ class RedMonitor(Model):
 
     def unsubscribe(self, fn):
         self._subscribers = tuple(s for s in self._subscribers if s != fn)
+
+    def subscribe_frames(self, fn):
+        """Call `fn(t_s, frame, red)` for every frame the run loop grabs from
+        now on, on the run thread: the frame it measured (as the screen
+        returned it: an mss screenshot, or an array), and its red percent.
+        `fn` must return at once (hand the frame to a queue; never convert
+        or encode here): the loop's rate is the measurement's. One that
+        raises is logged and skipped, never allowed to end the run."""
+        if fn not in self._frame_subscribers:
+            self._frame_subscribers = self._frame_subscribers + (fn,)
+
+    def unsubscribe_frames(self, fn):
+        self._frame_subscribers = tuple(s for s in self._frame_subscribers
+                                        if s != fn)
+
+    def _notify_frames(self, subscribers, t_s, frame, red):
+        for fn in subscribers:
+            try:
+                fn(t_s, frame, red)
+            except Exception as exc:
+                events.debug("Frame Subscriber Failed", repr(exc),
+                             source=self.NAME, exception=exc, every=1.0)
 
     @property
     def run_token(self):

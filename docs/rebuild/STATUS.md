@@ -286,6 +286,32 @@ lands as `palette.py` / `theme.py` tokens.
   Unverified: a real restart on each view and on Windows, `run.bat`
   beyond static checks, a real flash. Gates on the final tree: **fast
   3073, golden 78, Qt 255**.
+  **2026-09-28, paused again on the owner's word: three worktrees hold
+  WIP commits**, resumable with their briefs and the "Paused here" block
+  at the top of each handoff. `rb-video` (`handoff/brief-trial-video.md`,
+  V1–V8 landed and green, 3112 fast; the follow-up in progress is an
+  autouse JPEG-path fixture so the map tests stop starting ffmpeg; the
+  V7 doc text is applied at merge from the handoff, not before).
+  `rb-web-polish` (`brief-web-polish.md`: W1 landed 853f79a; W2 needs
+  the one narrowed assertion in `test_view_web_server.py`, ruled).
+  `rb-bundle` (`brief-bundle-update.md`: B1–B6 landed, 3133 fast; the
+  owner ruled NO token file: the bundle uses `gh auth token`, then `git
+  credential fill`; the follow-ups are in WIP commit c012b7b:
+  `macos-15-intel` for the retired `macos-13`, a Windows swap-on-restart
+  in `app.restart_process` with an `UPDATE_PENDING` marker, the neutral
+  confirm text; its fast gate is RED by one test,
+  `test_view_web_server.py::test_o4_a_faulted_probe_is_marked_like_an_unconfirmed_stop`,
+  unread; the Windows swap path is untested on Windows). Merge order at
+  resume: video, web polish, bundle; then the Qt pass. Incident at the
+  pause (13:56): a file-sync client wrote an older snapshot over all four
+  checkouts, resetting every branch ref to 345763f and leaving `SFConflict`
+  copies; the commits survived, the lead reset each worktree to its WIP
+  commit and verified every conflict copy equalled committed content. The
+  repository folder is inside a synced directory; keep it out of the sync,
+  owner's call. Owner steps
+  after the bundle lands: one GitHub sign-in per lab machine (`gh auth
+  login` or one https pull) and the first annotated tag (`git tag -a
+  v0.2.0 -m "First packaged release"`), which starts the builds.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,
