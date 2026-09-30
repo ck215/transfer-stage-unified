@@ -186,17 +186,24 @@ def test_a_frozen_bundle_flashes_with_its_own_tools_and_data_dir(tmp_path, stamp
                                         str(firmware / "high_polling_rate")]
     data = str(bundle.resolve() / "tools" / "arduino-data")
     for call in run.calls[:2]:
+        # Absolute: arduino-cli resolves the yaml's relative paths against
+        # the working directory, not the file (rb-dist-build B2).
         assert call["env"]["ARDUINO_DIRECTORIES_DATA"] == data
-        assert call["env"]["ARDUINO_DIRECTORIES_USER"] == data
+        assert call["env"]["ARDUINO_DIRECTORIES_USER"] == data + os.sep + "user"
+        assert call["env"]["ARDUINO_DIRECTORIES_DOWNLOADS"] == data + os.sep + "staging"
+    # ... and every tool runs from tools/, where the yaml's paths point.
+    assert {c["cwd"] for c in run.calls} == {str(bundle.resolve() / "tools")}
 
 
-def test_a_bundle_config_file_is_passed_explicitly_when_it_ships_one(tmp_path):
-    data = tmp_path / "tools" / "arduino-data"
-    data.mkdir(parents=True)
-    (data / "arduino-cli.yaml").write_text("directories: {}\n")
-    tools = flashing.Tools("cli", "loader", data_dir=data)
-    assert tools.arduino("compile") == ["cli", "--config-file",
-                                        str(data / "arduino-cli.yaml"), "compile"]
+def test_the_bundles_config_file_beside_the_cli_is_passed_explicitly(tmp_path):
+    """The layout contract: `tools/arduino-cli.yaml`, beside the binary."""
+    home = tmp_path / "tools"
+    (home / "arduino-data").mkdir(parents=True)
+    (home / "arduino-cli.yaml").write_text("directories: {data: arduino-data}\n")
+    tools = flashing.tools_for(root=tmp_path, frozen=True)
+    assert tools.cwd == str(home)
+    assert tools.arduino("compile")[1:] == ["--config-file",
+                                            str(home / "arduino-cli.yaml"), "compile"]
 
 
 def test_a_frozen_bundle_without_its_tools_names_them_missing(tmp_path):
@@ -319,3 +326,100 @@ def test_the_command_lines_dry_run_prints_the_commands_and_records_nothing(tree,
     assert "--upload -p COM7" in done.stdout
     assert "Stepper Probe            ok (dry run)" in done.stdout
     assert not stamp.exists()
+
+
+# -- rb-dist-build's findings: the table the bundle reads, the libraries -------
+
+def _literals(path):
+    """What packaging/layout.py's `flash_constants` reads: the top-level
+    literal assignments, by `ast`, importing nothing."""
+    import ast
+    found = {}
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            try:
+                found[node.targets[0].id] = ast.literal_eval(node.value)
+            except ValueError:
+                pass
+    return found
+
+
+def test_the_command_line_carries_the_table_as_literals_the_bundle_build_reads():
+    """packaging/layout.py and tools.py read DEVICES, the FQBNs and the
+    library lists from flash_firmware.py with `ast`: they must be literals
+    there, and equal to the table the code uses."""
+    found = _literals(REPO / "firmware" / "flash_firmware.py")
+    assert found["DEVICES"] == flashing.BOARDS
+    for name in ("MEGA_FQBN", "TEENSY_FQBN", "TEENSY_MCU", "MEGA_LIBS", "TEENSY_LIBS"):
+        assert found[name] == getattr(flashing, name), name
+
+
+def test_the_teensy_needs_max6675_which_its_core_does_not_ship():
+    sketch = (REPO / "firmware" / "temp_controller" / "temp_controller.ino").read_text()
+    assert "#include <MAX6675.h>" in sketch
+    assert "MAX6675" in flashing.TEENSY_LIBS
+    assert "MAX6675" in flashing.install_deps_commands(
+        flashing.Tools("cli", "loader"))[-1]
+
+
+def test_no_command_passes_the_vendored_libraries(tmp_path):
+    """The registry LiquidCrystal_I2C wins: the vendored NewLiquidCrystal of
+    the same name does not compile the sketch (`lcd.init()` is private
+    there), so `--libraries firmware/libraries` is never passed."""
+    tree = make_tree(tmp_path / "firmware")
+    tools = flashing.Tools("cli", "loader")
+    for board in flashing.BOARDS:
+        for argv in flashing.commands(board, "COM1", tree, tools):
+            assert "--libraries" not in argv and "--library" not in argv
+    sketch = (REPO / "firmware" / "temp_controller" / "temp_controller.ino").read_text()
+    assert "LiquidCrystal_I2C lcd(0x27, 20, 4);" in sketch and "lcd.init();" in sketch
+
+
+# -- a tool that fails says what the operator can do --------------------------
+
+class Saying(Runner):
+    def __init__(self, line, code=1):
+        super().__init__()
+        self.line, self.rc = line, code
+
+    def __call__(self, argv, cwd, on_line, timeout, env=None):
+        self.calls.append({"argv": list(argv)})
+        on_line(self.line)
+        return self.rc
+
+
+@pytest.mark.parametrize("board, line, words", [
+    ("DC Probe", "fork/exec /t/avr-g++: bad CPU type in executable", "Rosetta 2"),
+    ("Temperature Controller",
+     "teensy_loader_cli: error while loading shared libraries: libusb-0.1.so.4: "
+     "cannot open shared object file", "libusb-0.1-4"),
+    ("Stepper Probe", "avrdude: ser_open(): can't open device \"/dev/ttyACM0\": "
+     "Permission denied", "dialout"),
+    ("Temperature Controller", "Unable to open device", "udev rules"),
+])
+def test_a_tool_failure_names_what_to_do(tree, stamp, path_tools, board, line, words):
+    lines = []
+    answer = flashing.flash([board], sketch_root=tree, stamp=stamp, tools=path_tools,
+                            run=Saying(line), ports=["P"], identify=answering({"P": board}),
+                            on_line=lines.append)
+    assert answer["results"] == {board: "FAILED"}
+    [hint] = answer["hints"]
+    assert words in hint
+    assert f"[HINT] {hint}" in lines
+
+
+def test_a_teensy_that_never_reaches_its_bootloader_says_so(tree, stamp, path_tools):
+    def run(argv, cwd, on_line, timeout, env=None):
+        return None if "teensy_loader_cli" in argv[0] else 0
+    answer = flashing.flash(["Temperature Controller"], sketch_root=tree, stamp=stamp,
+                            tools=path_tools, run=run, ports=["P"],
+                            identify=answering({"P": "Temperature Controller"}))
+    assert answer["hints"] == [flashing.TEENSY_WAIT_HINT]
+
+
+def test_an_ordinary_failure_adds_no_hint(tree, stamp, path_tools):
+    answer = flashing.flash(["DC Probe"], sketch_root=tree, stamp=stamp, tools=path_tools,
+                            run=Saying("avrdude: stk500v2_getsync(): timeout"),
+                            ports=["P"], identify=answering({"P": "DC Probe"}))
+    assert answer["results"] == {"DC Probe": "FAILED"} and answer["hints"] == []

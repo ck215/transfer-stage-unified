@@ -148,7 +148,8 @@ class FirmwareCheck:
     def flash(self, boards, on_line=None, timeout=FLASH_SECONDS, force=False):
         """Flash `boards`, the ones plugged in, unattended (the operator
         already confirmed on the Setup page). -> {"ok", "returncode", "last",
-        "lines", "results", "absent"}; `last` is the last non-empty line,
+        "lines", "results", "absent", "hints"}; `hints` are the operator
+        sentences a tool's failure calls for (Rosetta, libusb, udev); `last` is the last non-empty line,
         what the Flashing cell showed at the end. A step that raises is a
         failed flash, never an exception out of here."""
         boards = list(boards)
@@ -162,7 +163,7 @@ class FirmwareCheck:
             if on_line is not None:
                 on_line(line)
 
-        answer = {"returncode": -1, "results": {}, "absent": []}
+        answer = {"returncode": -1, "results": {}, "absent": [], "hints": []}
         try:
             answer = flashing.flash(
                 boards, sketch_root=self.sketch_root, stamp=self.stamp,
@@ -176,4 +177,5 @@ class FirmwareCheck:
         last = next((l.strip() for l in reversed(lines) if l.strip()), "")
         return {"ok": code == 0, "returncode": code, "last": last, "lines": lines,
                 "results": dict(answer.get("results") or {}),
-                "absent": list(answer.get("absent") or [])}
+                "absent": list(answer.get("absent") or []),
+                "hints": list(answer.get("hints") or [])}

@@ -67,10 +67,22 @@ from controller import flashing  # noqa: E402
 DEFAULT_SKETCH_ROOT = REPO_ROOT / "firmware"
 DEFAULT_STAMP = flashing.DEFAULT_STAMP
 
-# The board table, as the old script named it (DEVICES[name]["dir"]).
-DEVICES = {name: dict(cfg, sketch=DEFAULT_SKETCH_ROOT / cfg["dir"])
-           for name, cfg in flashing.BOARDS.items()}
-MEGA_FQBN, TEENSY_FQBN, TEENSY_MCU = flashing.MEGA_FQBN, flashing.TEENSY_FQBN, flashing.TEENSY_MCU
+# The board table as LITERALS: packaging/layout.py and packaging/tools.py
+# (agent E's bundle build) read these with `ast`, without importing this
+# file, to know which sketch directories to ship and which cores and
+# libraries to pin. `controller.flashing` is the table the code uses;
+# tests/test_flashing.py pins the two equal.
+MEGA_FQBN = "arduino:avr:mega:cpu=atmega2560"
+TEENSY_FQBN = "teensy:avr:teensy35"
+TEENSY_MCU = "MK64FX512"
+MEGA_LIBS = ["AccelStepper", "TMCStepper"]
+TEENSY_LIBS = ["LiquidCrystal_I2C", "MAX6675"]  # MAX6675 does NOT ship with the Teensy core
+DEVICES = {
+    "Stepper Probe": {"dir": "stepper_firmware", "board": "mega"},
+    "DC Probe": {"dir": "high_polling_rate", "board": "mega"},
+    "Chuck Positioner": {"dir": "chuck_firmware", "board": "mega"},
+    "Temperature Controller": {"dir": "temp_controller", "board": "teensy"},
+}
 
 
 def sketch_hash(device_name, sketch_root=None):

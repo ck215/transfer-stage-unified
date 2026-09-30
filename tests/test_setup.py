@@ -2262,3 +2262,16 @@ def test_no_release_yet_reads_as_such_on_the_update_line(panel):
                           "tag": "v1.2.0"})
     assert panel.update_status == "No release has been published yet."
     assert panel.has_update is False
+
+
+def test_a_failed_flash_warns_with_what_to_do(fake_types, warnings):
+    class Hinting(FakeFirmware):
+        def flash(self, boards, on_line=None, timeout=None):
+            answer = super().flash(boards, on_line=on_line, timeout=timeout)
+            answer["hints"] = ["Install Rosetta 2, then flash again."]
+            return answer
+    panel = checked(Hinting(flash_ok=False, lines=["  DC Probe FAILED"]))
+    assert panel.flash_firmware(True)
+    wait_firmware(panel)
+    [failed] = [e for e in warnings if e.title == "Firmware Flash Failed"]
+    assert "Install Rosetta 2, then flash again." in failed.message

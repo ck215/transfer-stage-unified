@@ -44,7 +44,17 @@ TEENSY_FQBN = "teensy:avr:teensy35"
 TEENSY_MCU = "MK64FX512"
 TEENSY_INDEX = "https://www.pjrc.com/teensy/package_teensy_index.json"
 MEGA_LIBS = ["AccelStepper", "TMCStepper"]
-TEENSY_LIBS = ["LiquidCrystal_I2C"]  # Wire and MAX6675 ship with the Teensy core
+#: Wire ships with the Teensy core; MAX6675 (Rob Tillaart's, `MAX6675.h`)
+#: does NOT - the old comment said it did, and the sketch does not compile
+#: without it (agent E, rb-dist-build B2; the bundle pins 0.3.4).
+#: LiquidCrystal_I2C is the REGISTRY library (2.0.0 in the bundle), never
+#: the NewLiquidCrystal vendored as firmware/libraries/LiquidCrystal_I2C:
+#: the sketch uses the registry API (`LiquidCrystal_I2C lcd(0x27, 20, 4)`,
+#: `lcd.init()`), and with `--libraries firmware/libraries` the vendored
+#: one wins and the compile fails (`init()` is private there; checked
+#: against the bundle's arduino-data, 2026-09-30). So no command here ever
+#: passes `--libraries`.
+TEENSY_LIBS = ["LiquidCrystal_I2C", "MAX6675"]
 
 #: Board -> its sketch directory and chip, in flashing order. A board's name
 #: is also its model's NAME, which is what the identity handshake answers.
@@ -131,14 +141,25 @@ def _exe(name):
 class Tools:
     """Where arduino-cli, its data and teensy_loader_cli are. `data_dir`
     (frozen only) is the offline data directory with the cores and the
-    sketch libraries pre-installed; every arduino-cli call is pointed at it,
+    sketch libraries pre-installed (`packaging/tools.py`: libraries under
+    `arduino-data/user/libraries`); every arduino-cli call is pointed at it,
     so a lab machine without network or a user-level arduino-cli setup can
-    compile."""
+    compile. `home` is the bundle's `tools/`: the bundle's
+    `arduino-cli.yaml` holds paths RELATIVE to the working directory
+    (arduino-cli's rule), so every tool runs with `cwd=home`, and the same
+    directories are also given as absolute ARDUINO_DIRECTORIES_* values."""
 
-    def __init__(self, arduino_cli, teensy_loader, data_dir=None):
+    def __init__(self, arduino_cli, teensy_loader, data_dir=None, home=None):
         self.arduino_cli = str(arduino_cli) if arduino_cli else None
         self.teensy_loader = str(teensy_loader) if teensy_loader else None
         self.data_dir = Path(data_dir) if data_dir is not None else None
+        self.home = Path(home) if home is not None else (
+            self.data_dir.parent if self.data_dir is not None else None)
+
+    @property
+    def cwd(self):
+        """The working directory every tool runs in (None: the caller's)."""
+        return str(self.home) if self.home is not None else None
 
     @property
     def missing(self):
@@ -150,9 +171,10 @@ class Tools:
 
     @property
     def config_file(self):
-        if self.data_dir is None:
+        """`tools/arduino-cli.yaml` (the layout contract), when it is there."""
+        if self.home is None:
             return None
-        found = self.data_dir / "arduino-cli.yaml"
+        found = self.home / "arduino-cli.yaml"
         return found if found.is_file() else None
 
     @property
@@ -165,7 +187,7 @@ class Tools:
             return None
         env = dict(os.environ)
         env["ARDUINO_DIRECTORIES_DATA"] = str(self.data_dir)
-        env["ARDUINO_DIRECTORIES_USER"] = str(self.data_dir)
+        env["ARDUINO_DIRECTORIES_USER"] = str(self.data_dir / "user")
         env["ARDUINO_DIRECTORIES_DOWNLOADS"] = str(self.data_dir / "staging")
         env["ARDUINO_UPDATER_ENABLE_NOTIFICATION"] = "false"
         return env
@@ -189,7 +211,7 @@ def tools_for(root=None, which=None, frozen=None):
         cli, loader = tools / _exe(ARDUINO_CLI), tools / _exe(TEENSY_LOADER)
         return Tools(cli if cli.is_file() else None,
                      loader if loader.is_file() else None,
-                     data_dir=tools / "arduino-data")
+                     data_dir=tools / "arduino-data", home=tools)
     which = which or shutil.which
     return Tools(which(ARDUINO_CLI), which(TEENSY_LOADER))
 
@@ -320,6 +342,44 @@ def install_deps_commands(tools):
     return cmds
 
 
+#: What a failing tool's output means for the operator (rb-dist-build's
+#: UNVERIFIED list): the tool's own words, matched, -> one sentence saying
+#: what to do. Keyed on the output, never on the platform.
+HINTS = (
+    (re.compile(r"bad CPU type", re.I),
+     "The Mega boards' compiler is an Intel program: on an Apple-silicon Mac, "
+     "install Rosetta 2 (softwareupdate --install-rosetta --agree-to-license), "
+     "then flash again."),
+    (re.compile(r"libusb-0\.1|libusb\S*: cannot open shared object", re.I),
+     "teensy_loader_cli needs libusb 0.1: install it (on Debian or Ubuntu: "
+     "sudo apt install libusb-0.1-4), then flash again."),
+    (re.compile(r"(can't open device|could not open port|cannot open port)"
+                r".*(permission denied|access is denied)|permission denied.*/dev/tty", re.I),
+     "This user may not open the board's port: on Linux add it to the "
+     "dialout group (sudo usermod -aG dialout $USER), log out and in, then "
+     "flash again."),
+    (re.compile(r"unable to open device|error opening usb device", re.I),
+     "The Teensy loader cannot open the board: on Linux install the Teensy "
+     "udev rules (https://www.pjrc.com/teensy/00-teensy.rules into "
+     "/etc/udev/rules.d/), unplug and plug the board in, then flash again."),
+)
+#: The Teensy loader waited for a bootloader that never came.
+TEENSY_WAIT_HINT = ("The Teensy never reached its bootloader: press the button "
+                    "on the board while it waits, or, on Linux, install the "
+                    "Teensy udev rules (https://www.pjrc.com/teensy/00-teensy.rules "
+                    "into /etc/udev/rules.d/), then flash again.")
+
+
+def hints_for(lines):
+    """The operator sentences a failing tool's output calls for, in order,
+    each once."""
+    found = []
+    for pattern, sentence in HINTS:
+        if sentence not in found and any(pattern.search(l) for l in lines):
+            found.append(sentence)
+    return found
+
+
 def stream_lines(argv, cwd, on_line, timeout, env=None):
     """The default runner: start `argv`, hand each output line (stdout and
     stderr, merged) to `on_line` as it arrives, return the exit code - or
@@ -406,7 +466,7 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
     runner = run or stream_lines
     sketch_root = Path(sketch_root)
     manual = dict(manual or {})
-    answer = {"returncode": 1, "results": {}, "found": {}, "absent": []}
+    answer = {"returncode": 1, "results": {}, "found": {}, "absent": [], "hints": []}
     targets = list(BOARDS) if boards is None else list(boards)
     unknown = [b for b in targets + list(manual) if b not in BOARDS]
     if not targets or unknown:
@@ -488,6 +548,12 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
             continue
         ok = True
         for argv in commands(board, port, sketch_root, tools):
+            output = []
+
+            def said(line, output=output):
+                output.append(line)
+                say(line)
+
             say("  $ " + " ".join(argv))
             if dry_run:
                 continue
@@ -497,13 +563,21 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
                 ok = False
                 break
             try:
-                code = runner(argv, str(cwd or sketch_root), say, left, env=tools.env)
+                code = runner(argv, tools.cwd or str(cwd or sketch_root), said,
+                              left, env=tools.env)
             except (OSError, subprocess.SubprocessError, ValueError) as exc:
-                say(f"The flash tool could not start: {exc}")
+                said(f"The flash tool could not start: {exc}")
                 code = -1
             if code is None:
                 say(f"The flash took longer than {timeout:g} s and was stopped.")
             if code != 0:
+                hints = hints_for(output)
+                if code is None and argv[0] == (tools.teensy_loader or TEENSY_LOADER):
+                    hints.append(TEENSY_WAIT_HINT)
+                for hint in hints:
+                    if hint not in answer["hints"]:
+                        answer["hints"].append(hint)
+                    say(f"[HINT] {hint}")
                 ok = False
                 break
         if ok and not dry_run:

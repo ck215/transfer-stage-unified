@@ -1789,7 +1789,8 @@ class Setup(PortProbe, Panel):
             self._publish_firmware(result, prefix="the last flash failed; ")
             events.warn("Firmware Flash Failed",
                         f"Flashing {_and(boards)} failed: {outcome.get('last') or 'no output'}. "
-                        "A board may be half-flashed; fix the cause and flash "
+                        + "".join(f"{h} " for h in outcome.get("hints") or ())
+                        + "A board may be half-flashed; fix the cause and flash "
                         "again. The whole output is in the log file.",
                         source=self.NAME)
             return
@@ -1925,9 +1926,11 @@ class Setup(PortProbe, Panel):
             which = _and(failed) if failed else "A board"
             events.warn("Switch to Stable Failed",
                         f"{which} could not be flashed with the stable firmware "
-                        f"({outcome.get('last') or 'no output'}). The stable app "
-                        "was not started; this station keeps running. A board may "
-                        "be half-flashed: flash again from the Firmware row.",
+                        f"({outcome.get('last') or 'no output'}). "
+                        + "".join(f"{h} " for h in outcome.get("hints") or ())
+                        + "The stable app was not started; this station keeps "
+                        "running. A board may be half-flashed: flash again from "
+                        "the Firmware row.",
                         source=self.NAME)
             self._publish_firmware(self._check_firmware_now(),
                                    prefix="the switch to stable failed; ")
