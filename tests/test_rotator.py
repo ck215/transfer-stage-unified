@@ -458,6 +458,47 @@ def test_a_wedged_poll_does_not_delay_the_stop():
         _settle(model)
 
 
+def test_the_stop_does_not_wait_behind_the_drivers_transaction_lock():
+    """D2 put a lock across each SMC100 write+reply. `_halt_hardware` must
+    stay off it: a FULL STOP issued while a real driver's poll is holding the
+    link for a slow reply lands at once, on the priority lane."""
+    from devices.smc100 import SMC100
+
+    class SlowReply:
+        def __init__(self):
+            self.writes, self.is_open = [], True
+            self.reading, self.release = threading.Event(), threading.Event()
+
+        def write(self, payload, *, priority=False, abort_if=None):
+            self.writes.append((bytes(payload), priority))
+            return True
+
+        def read_line(self, timeout=None):
+            self.reading.set()
+            self.release.wait(5)
+            return "1TS000033"
+
+        def flush(self, timeout=None):
+            return True
+
+    port = SlowReply()
+    smc = SMC100(1, "SLOW", transport=port, sleep=lambda seconds: None)
+    model = _rotator(smc)
+    poll = threading.Thread(target=smc.get_status, daemon=True)
+    poll.start()
+    try:
+        assert port.reading.wait(2.0), "the poll never reached its read"
+        started = time.monotonic()
+        landed = model.estop()
+        elapsed = time.monotonic() - started
+    finally:
+        port.release.set()
+        poll.join(2.0)
+    assert landed is True
+    assert elapsed < 0.2, f"FULL STOP waited {elapsed:.3f}s behind a poll"
+    assert (b"1ST\r\n", True) in port.writes, port.writes
+
+
 def test_the_stop_is_confirmed_only_when_it_was_written():
     class Deaf(FakeSMC):
         def stop(self, priority=False):

@@ -32,6 +32,9 @@ Carried fixes:
   "wait while it says it is moving" cannot become "wait forever".
 * **ROTATOR-8** -- `stop(priority=True)` takes the priority lane and never
   queues behind an in-flight transaction.
+* **D2** -- one transaction at a time: `sendcmd` holds a FIFO, bounded lock
+  from write to reply and discards stale input before a question, so the
+  poll and a move's status loop no longer read each other's replies.
 
 The five exception classes collapse into `SMC100Error` plus five one-line
 subclasses, so a caller can catch the family without naming five imports.
@@ -39,7 +42,9 @@ subclasses, so a caller can catch the family without naming five imports.
 module, which ran real motion on import-time-visible names) and `__del__`
 (`Rotator.close` closes this device) are gone.
 """
+import threading
 import time
+from collections import deque
 from math import floor
 
 from devices.device import Device
@@ -117,6 +122,52 @@ class SMC100InvalidResponse(SMC100Error):
     MESSAGE = "Invalid response"
 
 
+class SMC100LinkBusy(SMC100ReadTimeout):
+    """Another transaction held the link past `TRANSACTION_LOCK_TIMEOUT`.
+
+    A read timeout by family: nothing was written and nothing was read, so
+    whatever retries a read timeout (`wait_states`) retries this too."""
+
+    MESSAGE = "Link busy; nothing was sent"
+
+
+class _FairLock:
+    """A FIFO lock with a bounded acquire.
+
+    `wait_states` asks `TS?` back to back, so with a plain `Lock` the move's
+    thread re-takes the link the instant it lets go and the 4 Hz poll can
+    starve into its timeout -- a "Communication lost" in the middle of a
+    healthy move. Here a release hands the lock to the longest waiter.
+    """
+
+    def __init__(self):
+        self._mutex = threading.Lock()
+        self._held = False
+        self._waiters = deque()
+
+    def acquire(self, timeout):
+        with self._mutex:
+            if not self._held and not self._waiters:
+                self._held = True
+                return True
+            turn = threading.Event()
+            self._waiters.append(turn)
+        if turn.wait(timeout):
+            return True
+        with self._mutex:
+            if turn.is_set():          # handed over as the wait ran out
+                return True
+            self._waiters.remove(turn)
+            return False
+
+    def release(self):
+        with self._mutex:
+            if self._waiters:
+                self._waiters.popleft().set()    # still held: handed over
+            else:
+                self._held = False
+
+
 class SMC100(Device):
     """One rotation stage on one serial link.
 
@@ -150,6 +201,16 @@ class SMC100(Device):
     #: Bounded, so a flush cannot become the new unbounded wait.
     FLUSH_TIMEOUT_SEC = 0.2
 
+    #: D2: how long an ordinary command waits for the transaction in flight.
+    #: One attempt holds the link for at most a bounded write, a flush or a
+    #: 50 ms read and the pacing delay -- well under half a second -- so this
+    #: only runs out on a wedged link. The priority stop never takes it.
+    TRANSACTION_LOCK_TIMEOUT = 2.0
+
+    #: Bound on the lines discarded before one question: a babbling
+    #: controller must not turn the discard into the new unbounded loop.
+    MAX_DISCARD_LINES = 64
+
     #: How long to wait for the port to come up before giving up on `open()`.
     OPEN_TIMEOUT_SEC = 5.0
 
@@ -177,6 +238,8 @@ class SMC100(Device):
         self._sleep = sleep
         self._last_command_at = 0.0
         self._last_state = None
+        # D2: one transaction -- write, and its reply -- at a time.
+        self._transaction = _FairLock()
         self._port = transport if transport is not None else self._build_transport(port)
 
     def _build_transport(self, port):
@@ -424,6 +487,17 @@ class SMC100(Device):
         `retry` re-sends on a reply that fails verification. Read-only
         commands only: PR and OR are refused a retry here regardless of what
         the caller asked, because repeating them repeats MOTION.
+
+        **D2: one transaction at a time.** Each attempt holds `_transaction`
+        from before its write until its reply is read (or its drain and
+        pacing are done), and a question first discards whatever input is
+        already waiting -- what `legacy/src` did with `_serial_lock` and
+        `flushInput()`. Without it the 4 Hz poll and a move's status loop
+        read each other's replies, and a `TS?` sent just before a `PR`
+        answered READY into the move's wait: Move/Home reported done while
+        the stage was still turning. The lock is FIFO and bounded
+        (`SMC100LinkBusy`), and `stop(priority=True)` never takes it, so the
+        stop cannot wait behind a poll.
         """
         assert command[-1] != "?"
         port = self._port
@@ -436,30 +510,42 @@ class SMC100(Device):
                                           else False)
 
         while True:
-            if not port.write(frame, abort_if=self._abort_if):
-                # `abort_if` fired inside the lock: nothing was written, and
-                # nothing must pretend otherwise.
-                events.debug("Aborted", f"{prefix} not written: abort_if fired "
-                             f"inside the port lock", source="SMC100")
-                raise SMC100Error(f"{prefix} was not written: FULL STOP is latched")
-            events.debug("Wire", f"{prefix} <- {frame.hex(' ')}", source="SMC100",
-                         every=1.0 if command in ("TS", "TP") else 0.0)
-            if not expect_response:
-                # A command with no reply has nothing else to prove it left,
-                # so it is drained -- bounded, unlike the old driver's
-                # unbounded `tcdrain`. A command that expects a reply is
-                # proven delivered by the reply, and draining it as well
-                # would put a thread and a log line on the 4 Hz poll path
-                # for no information.
-                port.flush(self.FLUSH_TIMEOUT_SEC)
-                self._pace()
-                return None
+            waited = time.monotonic()
+            if not self._transaction.acquire(self.TRANSACTION_LOCK_TIMEOUT):
+                waited = time.monotonic() - waited
+                events.debug("Link Busy", f"{prefix} not sent: another "
+                             f"transaction held the link {waited:.2f}s",
+                             source="SMC100", every=5.0)
+                raise SMC100LinkBusy(f"{prefix} waited {waited:.2f}s for the link")
             try:
-                return self._read_reply(prefix, command)
-            except SMC100Error:
-                if retries_left <= 0:
-                    raise
-                retries_left -= 1
+                if expect_response:
+                    self._discard_input(port, prefix)
+                if not port.write(frame, abort_if=self._abort_if):
+                    # `abort_if` fired inside the lock: nothing was written,
+                    # and nothing must pretend otherwise.
+                    events.debug("Aborted", f"{prefix} not written: abort_if "
+                                 f"fired inside the port lock", source="SMC100")
+                    raise SMC100Error(f"{prefix} was not written: FULL STOP is latched")
+                events.debug("Wire", f"{prefix} <- {frame.hex(' ')}", source="SMC100",
+                             every=1.0 if command in ("TS", "TP") else 0.0)
+                if not expect_response:
+                    # A command with no reply has nothing else to prove it
+                    # left, so it is drained -- bounded, unlike the old
+                    # driver's unbounded `tcdrain`. A command that expects a
+                    # reply is proven delivered by the reply, and draining it
+                    # as well would put a thread and a log line on the 4 Hz
+                    # poll path for no information.
+                    port.flush(self.FLUSH_TIMEOUT_SEC)
+                    self._pace()
+                    return None
+                try:
+                    return self._read_reply(prefix, command)
+                except SMC100Error:
+                    if retries_left <= 0:
+                        raise
+                    retries_left -= 1
+            finally:
+                self._transaction.release()
 
     # -- helpers -----------------------------------------------------------
     def _frame(self, command, argument=None):
@@ -474,6 +560,30 @@ class SMC100(Device):
         if retry is True:
             return self.MAX_RETRIES
         return max(0, int(retry))
+
+    def _discard_input(self, port, prefix):
+        """Drop input that arrived before this question: `flushInput()`.
+
+        Only a reply that came back after its own read gave up can be
+        waiting here, and it answers an older question. A transport that
+        offers `discard_input()` does it itself; on the real `SerialPort` the
+        complete lines already in (`read_line(0)` reads only what is there)
+        are dropped. Any other transport is a test double serving scripted
+        replies to the questions still to come, and is left alone.
+        """
+        discard = getattr(port, "discard_input", None)
+        if discard is not None:
+            dropped = discard() or 0
+        elif isinstance(port, SerialPort):
+            dropped = 0
+            while (dropped < self.MAX_DISCARD_LINES
+                   and port.read_line(0) is not None):
+                dropped += 1
+        else:
+            return
+        if dropped:
+            events.debug("Stale Input", f"discarded {dropped} late line(s) "
+                         f"before {prefix}", source="SMC100", every=5.0)
 
     def _read_reply(self, prefix, command):
         line = self._port.read_line(self.READ_TIMEOUT_SEC)

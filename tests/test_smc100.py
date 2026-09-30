@@ -207,6 +207,252 @@ def test_a_priority_stop_does_not_wait_behind_a_blocked_ordinary_write():
     assert elapsed < 0.5, f"the priority stop waited {elapsed:.2f}s"
 
 
+# -- D2: one transaction at a time, write to reply -------------------------
+
+class LatencyStage:
+    """A controller behind a wire that answers `latency` seconds late.
+
+    One shared input stream, as on the bench: a reply is not addressed to the
+    thread that asked, it is simply the next line on the port. `TS?` answers
+    with the state the controller was in **when the question arrived**, so a
+    `TS?` that went out just before a `PR` answers READY even though it is
+    read after the stage has started turning -- which is the whole of D2.
+    """
+
+    MOVE_SEC = 0.15
+
+    def __init__(self, latency=0.020):
+        self.latency = latency
+        self.moving_until = 0.0
+        self.writes = []
+        self.priorities = []
+        self.discarded = 0
+        self._arriving = []          # (arrival time, line), in arrival order
+        self._lock = threading.Lock()
+
+    def write(self, payload, *, priority=False, abort_if=None):
+        if abort_if is not None and abort_if():
+            return False
+        now = time.monotonic()
+        body = bytes(payload).decode("ascii").strip()[1:]
+        with self._lock:
+            self.writes.append(bytes(payload))
+            self.priorities.append(priority)
+            if body.startswith("PR"):
+                self.moving_until = now + self.MOVE_SEC
+            elif body == "ST":
+                self.moving_until = now
+            elif body == "TS?":
+                state = "28" if now < self.moving_until else "33"
+                self._arriving.append((now + self.latency, f"1TS0000{state}"))
+            elif body == "TP?":
+                self._arriving.append((now + self.latency, "1TP0.0000"))
+        return True
+
+    def read_line(self, timeout=None):
+        deadline = time.monotonic() + (0.05 if timeout is None else timeout)
+        while True:
+            with self._lock:
+                if self._arriving and self._arriving[0][0] <= time.monotonic():
+                    return self._arriving.pop(0)[1]
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.001)
+
+    def discard_input(self):
+        """Drop what has already arrived; a reply still on the wire stays."""
+        with self._lock:
+            now = time.monotonic()
+            stale = [entry for entry in self._arriving if entry[0] <= now]
+            self._arriving = [entry for entry in self._arriving if entry[0] > now]
+            self.discarded += len(stale)
+            return len(stale)
+
+    def flush(self, timeout=None):
+        return True
+
+    @property
+    def is_moving(self):
+        return time.monotonic() < self.moving_until
+
+
+def test_a_move_never_reports_done_while_the_poll_shares_the_link():
+    """D2: Move/Home returned while the stage was still turning.
+
+    The rebuild wrote and read with no lock across the pair, so the position
+    poll and the move's status loop read each other's replies: a `TS?` the
+    poll sent a moment before the `PR` answers READY, and the move's wait
+    could take that line as its own. The lead measured 4/10 early returns at
+    20 ms reply latency. The poll here runs back to back, a stress version of
+    the model's 4 Hz sampler, so the collision is not left to luck.
+
+    It also proves the lock is fair: a poll that could not get the link
+    within its bound (the move's tight `TS?` loop starving it) would fail
+    with `SMC100LinkBusy`, which the model would show as "Communication
+    lost" mid-move.
+    """
+    trials, early, starved = 30, [], []
+    for trial in range(trials):
+        stage = LatencyStage(latency=0.020)
+        smc = SMC100(1, "LATENCY", transport=stage)
+        stop = threading.Event()
+
+        def poll():
+            while not stop.is_set():
+                try:
+                    smc.get_position_deg()
+                    smc.get_status()
+                except SMC100Error as exc:
+                    if type(exc).__name__ == "SMC100LinkBusy":
+                        starved.append((trial, repr(exc)))
+                time.sleep(0.001)
+
+        poller = threading.Thread(target=poll, daemon=True)
+        poller.start()
+        time.sleep(0.03)
+        try:
+            smc.move_relative_deg(1.0)
+            if stage.is_moving:
+                early.append(trial)
+        finally:
+            stop.set()
+            poller.join(2.0)
+    assert not early, (f"{len(early)}/{trials} moves reported done while the "
+                       f"stage was still turning (trials {early})")
+    assert not starved, f"the poll was starved off the link: {starved[:3]}"
+
+
+class _StaleHandle:
+    """A pyserial stand-in for the REAL `SerialPort`: answers `TS?` with
+    MOVING, and can be pre-loaded with a late reply to an earlier question."""
+
+    def __init__(self):
+        self.is_open = True
+        self.wire = b""
+        self._pending = b""
+        self._partial = b""
+
+    @property
+    def in_waiting(self):
+        return len(self._pending)
+
+    def write(self, data):
+        self.wire += bytes(data)
+        self._partial += bytes(data)
+        while b"\r\n" in self._partial:
+            frame, self._partial = self._partial.split(b"\r\n", 1)
+            if frame.decode("ascii")[1:] == "TS?":
+                self._pending += b"1TS000028\r\n"
+        return len(data)
+
+    def read(self, size=1):
+        out, self._pending = self._pending[:size], self._pending[size:]
+        return out
+
+    def read_all(self):
+        return self.read(self.in_waiting)
+
+    def readline(self):
+        return self.read_all()
+
+    def reset_input_buffer(self):
+        pass
+
+    def reset_output_buffer(self):
+        pass
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.is_open = False
+
+
+def test_a_late_reply_is_discarded_before_the_next_question():
+    """D2, the second half: `legacy/src` cleared the input before every
+    question. A reply that arrived after its own read timed out -- READY,
+    from before the move -- is otherwise read as the answer to the next
+    `TS?`. Run over the real `SerialPort`, because the discard has to work
+    on the transport the bench gets."""
+    from types import SimpleNamespace
+
+    from devices import serial_port
+
+    handle = _StaleHandle()
+    with patch.object(serial_port, "pyserial",
+                      SimpleNamespace(Serial=lambda **kwargs: handle)):
+        smc = SMC100(1, "/dev/fake-smc100", sleep=lambda seconds: None)
+        smc._port.open()
+        assert smc._port.wait_open(2.0)
+        try:
+            handle._pending = b"1TS000033\r\n"      # the late READY
+            assert smc.get_status() == (0, "28"), (
+                "a stale READY was read as the answer to this TS?")
+            assert handle.wire == b"1TS?\r\n", "the discard must not write"
+        finally:
+            smc.close()
+
+
+class _WedgedReadPort(FakePort):
+    """A reply that does not come until the test says so."""
+
+    def __init__(self):
+        super().__init__()
+        self.reading = threading.Event()
+        self.release = threading.Event()
+
+    def read_line(self, timeout=None):
+        self.reading.set()
+        self.release.wait(5)
+        return "1TS000033"
+
+
+def test_a_priority_stop_does_not_wait_behind_a_transaction_in_flight():
+    """The transaction lock added for D2 must never be on the stop's path:
+    `Rotator._halt_hardware` calls `stop(priority=True)`, and a poll that
+    holds the link across a slow reply must not delay it."""
+    port = _WedgedReadPort()
+    smc = _smc(port)
+    poll = threading.Thread(target=smc.get_status, daemon=True)
+    poll.start()
+    try:
+        assert port.reading.wait(2.0), "the poll never reached its read"
+        started = time.monotonic()
+        landed = smc.stop(priority=True)
+        elapsed = time.monotonic() - started
+    finally:
+        port.release.set()
+        poll.join(2.0)
+    assert landed is True
+    assert elapsed < 0.1, f"the priority stop waited {elapsed:.3f}s"
+    assert port.writes[-1][:2] == (b"1ST\r\n", True)
+
+
+def test_an_ordinary_command_waits_a_bounded_time_for_the_link(monkeypatch):
+    """The transaction lock is bounded: a command behind a wedged one gives
+    up with `SMC100LinkBusy` -- a read timeout, so `wait_states` retries it
+    -- instead of queueing forever. And it writes nothing."""
+    busy = getattr(driver, "SMC100LinkBusy", None)
+    assert busy is not None, "no bounded transaction lock in this driver"
+    assert issubclass(busy, SMC100ReadTimeout)
+    monkeypatch.setattr(SMC100, "TRANSACTION_LOCK_TIMEOUT", 0.1)
+    port = _WedgedReadPort()
+    smc = _smc(port)
+    first = threading.Thread(target=smc.get_status, daemon=True)
+    first.start()
+    try:
+        assert port.reading.wait(2.0)
+        started = time.monotonic()
+        with pytest.raises(busy):
+            smc.get_position_deg()
+        elapsed = time.monotonic() - started
+    finally:
+        port.release.set()
+        first.join(2.0)
+    assert elapsed < 1.0, f"the bounded wait took {elapsed:.2f}s"
+    assert port.payloads == [b"1TS?\r\n"], port.payloads
+
+
 # -- replies ---------------------------------------------------------------
 
 def test_no_reply_is_a_read_timeout():
