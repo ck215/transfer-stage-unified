@@ -460,3 +460,56 @@ def test_the_link_counters_reach_the_state_after_a_loss_and_a_recovery(
     assert link["status"] == "unverified"
     assert link["losses"] == 1 and link["reconnects"] == 1
     assert re.fullmatch(r"\d\d:\d\d:\d\d", link["last_loss"])
+
+
+# --------------------------------------------------------------------------
+# L4 -- the operator is told, and told what to do
+# --------------------------------------------------------------------------
+
+def test_a_lost_link_asks_for_attention_in_the_owners_words(rig, monkeypatch):
+    import events as events_module
+    events.clear()
+    seen = Warnings()
+    try:
+        probe, port, h1, _ = rig(FlakyHandle(), OSError("gone"))
+        monkeypatch.setattr(port, "_reconnect_sleep", lambda seconds: True)
+        probe.set_mode("autonomous")
+        _lose(port, h1)
+        assert _wait_for(lambda: seen.titled("Connection Lost"))
+    finally:
+        seen.close()
+    lost = seen.titled(events_module.LINK_LOST)
+    assert len(lost) == 1, [e.text for e in seen.seen]
+    event = lost[0]
+    assert event.needs_ack is True and event.severity == "warning"
+    assert event.source == "Stepper Probe"
+    assert event.message.startswith(f"Stepper Probe lost its serial port {PORT}: ")
+    assert event.message.endswith("It was stopped and disabled; it will "
+                                  "reconnect by itself."), event.message
+    assert events_module.LINK_LOST in events_module.ATTENTION
+
+
+def test_an_unconfirmed_stop_on_a_lost_link_says_treat_it_as_live(rig, monkeypatch):
+    events.clear()
+    seen = Warnings()
+    try:
+        probe, port, h1, _ = rig(FlakyHandle(), OSError("gone"))
+        monkeypatch.setattr(port, "_reconnect_sleep", lambda seconds: True)
+        probe.set_mode("autonomous")
+        h1.fail_writes = 10 ** 6
+        with pytest.raises(TransportError):
+            port.write(b"x")
+        assert _wait_for(lambda: seen.titled("Connection Lost"))
+    finally:
+        seen.close()
+    message = seen.titled("Connection Lost")[0].message
+    assert "treat it as live" in message and "reconnect by itself" in message
+
+
+def test_the_restored_and_lost_titles_are_named_once():
+    import events as events_module
+    assert events_module.LINK_LOST == "Connection Lost"
+    assert events_module.LINK_RESTORED == "Connection Restored"
+    assert events.LINK_LOST == "Connection Lost"
+    assert events.LINK_RESTORED == "Connection Restored"
+    assert events_module.LINK_RESTORED not in events_module.ATTENTION

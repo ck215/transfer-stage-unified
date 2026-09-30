@@ -839,10 +839,25 @@ class SerialPort(Device):
                              source=self._source, exception=exc)
 
     def _report_loss(self, why, stopped):
-        # warn, not error: the owning model faults on the TransportError it
-        # is about to receive, and that fault is the acknowledged popup.
-        events.warn("Connection Lost", f"{self.port}: {why}",
-                    source=self._source, exception=why if isinstance(why, Exception) else None)
+        """L4: a port its model owns asks for attention, in the owner's name,
+        and says what was done and what happens next. A port nobody owns
+        (Setup's scan, the SMC100's, whose model reports its own loss) keeps
+        a tray line."""
+        exception = why if isinstance(why, Exception) else None
+        if self._on_lost is None:
+            events.warn("Port Lost", f"{self.port}: {why}",
+                        source=self._source, exception=exception)
+            return
+        owner = self.owner or f"The device on {self.port}"
+        if stopped:
+            outcome = "It was stopped and disabled"
+        else:
+            outcome = ("The stop could not be confirmed, so treat it as live "
+                       "until you have checked it")
+        events.warn(events.LINK_LOST, f"{owner} lost its serial port "
+                    f"{self.port}: {why}. {outcome}; it will reconnect by "
+                    "itself.", source=self.owner or self._source,
+                    exception=exception, ack=True)
 
     def _recover(self, generation, why, handle):
         """The loss worker (L1): the owner's stop on the still-open handle,

@@ -468,7 +468,10 @@ def test_the_loss_is_reported_once_not_on_every_later_command(build, monkeypatch
         with pytest.raises(TransportError):
             port.write(b"x")
 
-    assert reports.count("Connection Lost") == 1, reports
+    # A port with no owning model (Setup's scan, the SMC100's) reports it
+    # as a tray line; the owned port's acknowledged "Connection Lost" is in
+    # test_link_recovery.py (L4).
+    assert reports.count("Port Lost") == 1, reports
 
 
 def test_a_write_failure_raises_but_reports_nothing_itself(build, monkeypatch):

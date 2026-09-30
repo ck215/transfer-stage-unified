@@ -512,10 +512,12 @@ def test_the_attention_set_is_exactly_the_titles_the_lead_named():
     # update prompts ask too; each carries its action.
     # Owner 2026-09-28 (the launcher's flash, unattended): the startup
     # firmware check asks once, and Flash now is its action.
+    # Owner 2026-09-30 (L4, "track dropped packets like events and display
+    # warnings"): a lost serial link asks too.
     assert events_module.ATTENTION == frozenset({
         "Idle Timeout", "Temperature Disconnected", "Rotator Unreachable",
         "Heater Off Not Sent", "Update Ready", "Restart Needed",
-        "Firmware Out of Date"})
+        "Firmware Out of Date", "Connection Lost"})
     assert isinstance(events_module.ATTENTION, frozenset)
     # The countdown, the silent browser and the map's soft notices stay
     # tray lines.

@@ -112,7 +112,7 @@ class Model(Panel):
         the model stays where the loss left it (DISABLED) until the operator
         enters a mode again, the same rule as `clear_estop`."""
         names = ", ".join(str(p.port) for p in self._link_ports()) or "its port"
-        events.info("Connection Restored", f"{self.NAME} is back on {names}. "
+        events.info(events.LINK_RESTORED, f"{self.NAME} is back on {names}. "
                     "Re-enable it when you are ready.", source=self.NAME)
 
     def _is_link_down(self):
