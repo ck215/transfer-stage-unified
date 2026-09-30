@@ -155,7 +155,12 @@ FAULTED_LINE = "Disable failed. Treat as live."
 #: signal, Signature) before one that did not confirm or whose disable
 #: failed; the words are the line's tooltip, so colour never carries it alone.
 RAIL_MARK_WORDS = {"latched": "Stopped", "unconfirmed": "Did not confirm the stop",
-                   "faulted": "Disable failed", "energized": "Energized"}
+                   "faulted": "Disable failed", "energized": "Energized",
+                   "lost": "Connection lost"}
+#: A rail mark in the attention tier (V1): the warning glyph in the
+#: warning's mark ink. A sentinel, so it is never mistaken for "stopped"'s
+#: ink square, which is the same colour.
+WARNING_MARK = object()
 #: A model's own stop, the small switch in its Diagnostics (O16, PM8-8): one
 #: word per thing. The disc is "Stop" / "Clear"; this switch is "Stop this
 #: model" / "Stopped", whatever the schema's state words.
@@ -2366,9 +2371,15 @@ class TkPanelView(PanelView):
                                      justify="left", wraplength=640,
                                      background=_page(), foreground=theme.TEXT)
         # What is wrong with the entry as a whole (a lost link), in ink under
-        # the head; packed only while there is something to say.
-        self._health = tk.Label(self.frame, text="", anchor="w", justify="left",
-                                font=_font(), wraplength=640,
+        # the head, led by the warning glyph in its tier's mark colour;
+        # packed only while there is something to say.
+        self._notices = []
+        self._health_row = tk.Frame(self.frame, background=_page())
+        self._health_mark = _mark_canvas(self._health_row, _page())
+        self._health_mark.pack(side="left", anchor="n", padx=(0, SPACE[2]),
+                               pady=SPACE[0])
+        self._health = tk.Label(self._health_row, text="", anchor="w",
+                                justify="left", font=_font(), wraplength=640,
                                 background=_page(), foreground=theme.TEXT)
         # A refusal with no control to sit under (a region picker's reason
         # lands at its control; this is the fallback). It wraps: a 300-
@@ -5043,7 +5054,7 @@ class TkPanelView(PanelView):
 
     def _is_quiet(self):
         """True while the entry's values cannot be trusted as live."""
-        return bool(self._is_stale) or bool(self.lost_devices)
+        return bool(self._is_stale) or bool(self.lost_devices) or bool(self.link_down)
 
     def _set_text(self, element, text):
         entry = self._entry_for(element)
@@ -5229,6 +5240,9 @@ class TkPanelView(PanelView):
             return LATCHED_REASON
         if self._held_by_fault(element):
             return FAULT_REASON
+        held = self._gate_words(element)
+        if held:
+            return held
         by = element.get("enabled_by")
         if by and not values.get(by):
             names = [e.get("text") for e in self._elements
@@ -5297,19 +5311,37 @@ class TkPanelView(PanelView):
         events.debug("Link State Changed", f"{self.name} lost={list(lost)}",
                      source=SOURCE)
 
+    def _set_notices(self, notices):
+        """The entry's standing lines (`views.base.entry_notices`): a link
+        lost or reconnecting (the danger tier), a link up with no position
+        (the attention tier). Drawn only when they change (F21)."""
+        notices = [tuple(n) for n in notices or ()]
+        if notices == self._notices:
+            return
+        self._notices = notices
+        self._paint_health()
+        events.debug("Entry Notices Changed", f"{self.name}: {notices}",
+                     source=SOURCE)
+
     def _paint_health(self):
         """The head rule is 2 px of ink; it turns signal while a device link
-        is lost (F3) or while this model's stop did not confirm (E), and the
-        head says which in words."""
+        is lost (F3), while the model's link is lost or reconnecting, or
+        while this model's stop did not confirm (E), and the head says which
+        in words. A link up with no position says so under the head in the
+        attention tier: the warning glyph in ink, the rule left ink."""
         lost, is_stale = self.lost_devices, bool(self._is_stale)
-        if lost:
+        notices = list(self._notices)
+        tier = view_base.worst_severity(notices)
+        is_down = bool(lost) or bool(self.link_down)
+        if is_down:
             title = f"{self.name} (connection lost)"
         elif is_stale:
             title = f"{self.name} (stale)"
         else:
             title = self.name
-        heading = theme.MUTED if is_stale and not lost else theme.TEXT
-        is_alarm = bool(lost) or self._is_unconfirmed or bool(self._fault)
+        heading = theme.MUTED if is_stale and not is_down else theme.TEXT
+        is_alarm = (is_down or tier == "error" or self._is_unconfirmed
+                    or bool(self._fault))
         try:
             self._title.configure(foreground=heading, text=title)
             self._rule.configure(background=theme.SIGNAL if is_alarm
@@ -5317,17 +5349,29 @@ class TkPanelView(PanelView):
                                  height=theme.RULE_STRONG_PX)
         except Exception:
             pass
-        try:
-            if lost:
-                self._health.configure(text=(
-                    f"Connection lost: {_device_list(lost)}. Its readings are "
+        if notices:
+            # The link's own words replace the device sentence: it knows when
+            # the link went and whether it is coming back.
+            text = "\n".join(line for _severity, line in notices)
+        elif lost:
+            text = (f"Connection lost: {_device_list(lost)}. Its readings are "
                     "frozen. Press Stop, check the cable, then relaunch from "
-                    "Setup."))
-                self._health.pack(fill="x", padx=self._inset, pady=(0, GAP),
-                                  after=self._head_ring.outer)
+                    "Setup.")
+        else:
+            text = ""
+        mark = (theme.SEVERITY_MARK.get(tier) if notices
+                else (theme.SIGNAL if lost else None))
+        try:
+            _draw_warning(self._health_mark, mark)
+            if text:
+                self._health.configure(text=text, font=_font(bold=bool(notices)))
+                self._health_row.pack(fill="x", padx=self._inset, pady=(0, GAP),
+                                      after=self._head_ring.outer)
+                self._health.pack(side="left", fill="x", expand=True)
             else:
                 self._health.configure(text="")
                 self._health.pack_forget()
+                self._health_row.pack_forget()
         except Exception:
             pass
         for element in self._elements:
@@ -5797,6 +5841,9 @@ class TkDashboard(Dashboard):
         self._ack_dialog = None      # the one acknowledgement shown (rb-ack)
         self._station_text = None
         self._sim_text = None
+        #: name -> (tier, line) of what its entry says under its head (the
+        #: link, V1): the rail's line for that model shows the same tier.
+        self._entry_tiers = {}
         self._opened = None          # the device page's model; None = the overview
         self._bring_forward = None   # a Models-menu reopen: shown on its own page
         self._overview_item = None   # the rail's "Overview": (ring, label)
@@ -7229,12 +7276,23 @@ class TkDashboard(Dashboard):
             # A host's line carries the models drawn on its page (they have
             # no line of their own): the worst of them shows.
             members = self._members(name)
+            # V1: the entry's own tier (a link lost or reconnecting is the
+            # danger tier, a stalled link the attention tier), the worst of
+            # the page's models.
+            tiers = [self._entry_tiers[m] for m in members if m in self._entry_tiers]
+            link_tier = view_base.worst_severity(tiers)
+            link_words = next((line for tier, line in tiers
+                               if tier == link_tier and line), "")
             if any(m in (unconfirmed or ()) for m in members):
                 fill, words = theme.SIGNAL, RAIL_MARK_WORDS["unconfirmed"]
             elif any(m in self._faulted for m in members):
                 fill, words = theme.SIGNAL, RAIL_MARK_WORDS["faulted"]
+            elif link_tier == "error":
+                fill, words = theme.SIGNAL, link_words or RAIL_MARK_WORDS["lost"]
             elif any(m in latched for m in members):
                 fill, words = theme.TEXT, RAIL_MARK_WORDS["latched"]
+            elif link_tier:
+                fill, words = WARNING_MARK, link_words
             else:
                 fill, words = None, ""
             energy = self._energy_marks.get(name)
@@ -7260,6 +7318,11 @@ class TkDashboard(Dashboard):
                     # glyph: told apart from "stopped" without colour (A11Y-6).
                     _draw_glyph(canvas, "warning", 0, 0, size, fill,
                                 tags=("warning",))
+                elif fill is WARNING_MARK:
+                    # The attention tier: the same glyph in ink (the tray's
+                    # warning mark), never the square that says "stopped".
+                    _draw_glyph(canvas, "warning", 0, 0, size,
+                                theme.SEVERITY_MARK["warning"], tags=("warning",))
                 elif fill is not None:
                     inset = max(3, size // 4)
                     canvas.create_rectangle(inset, inset, size - inset, size - inset,
@@ -7286,17 +7349,31 @@ class TkDashboard(Dashboard):
         under the stop - the one place the operator's eye passes on the way
         to it. And say "Simulation, no hardware attached" while every open
         model's hardware is the simulator."""
-        lost = [(name, view.lost_devices) for name, view in self._panels.items()
-                if getattr(view, "lost_devices", ())]
-        text = "; ".join(f"{name}: {_device_list(devices)} connection lost"
-                         for name, devices in lost)
+        parts, tiers = [], {}
+        for name, view in self._panels.items():
+            notices = list(getattr(view, "notices", None) or ())
+            if notices and name != self.SETUP_TAB:
+                # The link's own words (V1) stand for the device sentence.
+                tiers[name] = (view_base.worst_severity(notices), notices[0][1])
+                parts.append(f"{name}: {notices[0][1]}")
+            elif getattr(view, "lost_devices", ()):
+                tiers[name] = ("error", "")
+                parts.append(f"{name}: {_device_list(view.lost_devices)} "
+                             "connection lost")
+        text = "; ".join(parts)
+        if tiers != self._entry_tiers:
+            events.debug("Rail Tiers Changed", str(tiers), source=SOURCE)
+            self._entry_tiers = tiers
+            self._paint_rail_marks()
         self._sync_sim_line()
         if text == self._station_text:
             return
         self._station_text = text
+        worst = view_base.worst_severity(list(tiers.values()))
         try:
             self._station_line.configure(text=text)
-            _draw_warning(self._station_mark, theme.SIGNAL if text else None)
+            _draw_warning(self._station_mark,
+                          theme.SEVERITY_MARK.get(worst) if text else None)
             if text:
                 self._station_row.pack(side="top", fill="x", before=self._model_list,
                                        pady=(0, SPACE[4]))

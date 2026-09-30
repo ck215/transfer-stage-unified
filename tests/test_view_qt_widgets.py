@@ -2044,6 +2044,88 @@ def test_f3_a_lost_port_is_said_on_the_panel_the_entry_and_the_rail(
     assert "Fake lost its serial port" in dashboard.rail_status.full_text()
 
 
+def _with_link(controller, monkeypatch, link, **values):
+    """Serve `state["link"]` (the rb-link contract) on the Fake's state."""
+    live = controller.state
+
+    def linked(name=None):
+        snapshot = live(name)
+        if name is None:
+            return snapshot
+        snapshot = dict(snapshot)
+        snapshot["link"] = dict(link)
+        snapshot["devices"] = {"SerialPort": link["status"]}
+        if values:
+            snapshot["values"] = dict(snapshot["values"], **values)
+        return snapshot
+    monkeypatch.setattr(controller, "state", linked)
+    return link
+
+
+def _link(**overrides):
+    link = {"status": "verified", "losses": 0, "reconnects": 0, "dropped": 0,
+            "stalls": 0, "stalled": False, "last_loss": None}
+    link.update(overrides)
+    return link
+
+
+def test_v1_a_reconnecting_link_turns_the_entry_signal_and_holds_the_modes(
+        dashboard, qapp, controller, monkeypatch):
+    """rb-link-views V1: "reconnecting" is not "lost" in `devices`, so the
+    F3 rule never saw it. The panel says when the link went, the entry's
+    head rule turns signal, the numbers dim, the mode toggle and the go
+    command are held with the link's reason, and the rail carries it."""
+    link = _with_link(controller, monkeypatch,
+                      _link(status="reconnecting", losses=1, last_loss="12:41:07"))
+    dashboard.open()
+    panel_view = dashboard._panels["Fake"]
+    panel_view._refresh()
+    dashboard._on_rail_tick()
+    assert panel_view.notice.text() == "Link lost 12:41:07, reconnecting…"
+    assert panel_view.notice.isVisibleTo(panel_view)
+    assert panel_view.property("stale") == "true"
+    power = panel_view._widget_for(element_named(panel_view, "is_on"))
+    assert not power.isEnabled()
+    go = next(e for e in panel_view._elements if e.get("command") == "go")
+    assert not panel_view._widget_for(go).isEnabled()
+    assert panel_view._widget_for(go).toolTip() == "Link lost: wait for it to reconnect"
+    entry = dashboard._entries["Fake"]
+    assert entry.link_tier == "error"
+    assert theme.SIGNAL in entry.rule.styleSheet()
+    assert entry.lost_label.text() == "Link lost 12:41:07, reconnecting…"
+    assert dashboard._rail_items["Fake"].stop_mark == "lost"
+    assert "Link lost 12:41:07" in dashboard.rail_status.full_text()
+
+    link.update(status="lost")
+    panel_view._refresh()
+    dashboard._on_rail_tick()
+    assert panel_view.notice.text() == "Link lost 12:41:07; not reconnecting"
+
+    link.update(status="verified", reconnects=1)
+    panel_view._refresh()
+    dashboard._on_rail_tick()
+    assert not panel_view.notice.isVisibleTo(panel_view)
+    assert power.isEnabled()
+    assert entry.link_tier == "" and entry.rule.styleSheet() == ""
+    assert dashboard._rail_items["Fake"].stop_mark is None
+
+
+def test_v1_a_stalled_link_is_the_attention_tier(dashboard, qapp, controller,
+                                                 monkeypatch):
+    _with_link(controller, monkeypatch, _link(stalled=True, stalls=1),
+               position_age="6.0")
+    dashboard.open()
+    panel_view = dashboard._panels["Fake"]
+    panel_view._refresh()
+    dashboard._on_rail_tick()
+    assert panel_view.notice.text() == "No position for 6 s; link up, check the board"
+    assert panel_view._notice_mark.colour == theme.SEVERITY_MARK["warning"]
+    entry = dashboard._entries["Fake"]
+    assert entry.link_tier == "warning" and entry.rule.styleSheet() == ""
+    assert dashboard._rail_items["Fake"].stop_mark == "attention"
+    assert panel_view._widget_for(element_named(panel_view, "is_on")).isEnabled()
+
+
 def test_f3_stale_readouts_really_are_repolished(view, panel):
     """The stale rule is a descendant selector; polishing the panel alone
     never re-read it for the labels. Updated (E): a readout is ink at rest

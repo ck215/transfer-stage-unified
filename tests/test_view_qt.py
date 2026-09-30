@@ -355,6 +355,26 @@ def test_only_a_lost_device_is_reported():
         "Stepper Probe lost its serial port")
 
 
+def test_v1_the_rail_mark_carries_the_entrys_link_tier():
+    """rb-link-views V1: a link lost or reconnecting is the danger tier on
+    the rail (the loud square), outranked only by a stop that did not
+    confirm and a fault; a stalled link is the attention tier, under a
+    plain latch."""
+    stop = {"latched": ["B"], "unconfirmed": ["C"]}
+    tiers = {"A": "error", "B": "warning", "C": "error", "D": "warning"}
+    assert qt.rail_mark("A", stop, set(), tiers) == "lost"
+    assert qt.rail_mark("B", stop, set(), tiers) == "stopped"
+    assert qt.rail_mark("C", stop, set(), tiers) == "unconfirmed"
+    assert qt.rail_mark("D", stop, set(), tiers) == "attention"
+    assert qt.rail_mark("A", stop, {"A"}, tiers) == "faulted"
+    assert qt.rail_mark("E", stop, set(), tiers) is None
+    assert qt.rail_mark("A", stop, set()) is None, "no tiers: the old rule"
+    assert qt.worst_mark(["attention", "lost", "stopped"]) == "lost"
+    assert qt.worst_mark(["attention", "stopped"]) == "stopped"
+    for kind in ("lost", "attention"):
+        assert qt.RAIL_STOP_WORDS[kind]
+
+
 def test_no_motion_is_read_from_the_environment(monkeypatch):
     monkeypatch.delenv("STATION_NO_MOTION", raising=False)
     assert qt.motion_reduced() is False
@@ -969,9 +989,12 @@ def test_o4_o6_o16_the_rail_mark_is_one_state_per_model_with_its_words():
     assert qt.rail_mark("DC Probe", stop, faulted=set()) == "stopped"
     assert qt.rail_mark("Stepper Probe", stop, faulted={"Stepper Probe"}) == "faulted"
     assert qt.rail_mark("Stepper Probe", stop, faulted=set()) is None
+    # Updated (rb-link-views V1): the rail line also carries the entry's
+    # link tier - a link lost or reconnecting, a stalled link - with words.
     assert qt.RAIL_STOP_WORDS == {"stopped": "stopped",
                                   "unconfirmed": "did not confirm",
-                                  "faulted": "faulted"}
+                                  "faulted": "faulted", "lost": "link lost",
+                                  "attention": "needs attention"}
     assert qt.ENERGIZED_WORD == "energized"
 
 

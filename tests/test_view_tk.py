@@ -3086,6 +3086,124 @@ def test_the_stop_bar_names_the_model_and_the_device_it_lost(controller,
     built.close()
 
 
+class LinkPanel(DemoPanel):
+    """A model that owns a serial port and publishes `state["link"]` (the
+    rb-link contract): its status, its counters, whether it is stalled."""
+
+    def __init__(self):
+        super().__init__()
+        self.link = {"status": "verified", "losses": 0, "reconnects": 0,
+                     "dropped": 0, "stalls": 0, "stalled": False,
+                     "last_loss": None}
+        self.position_age = None
+        self.pad = "bound"
+
+    @property
+    def state(self):
+        state = dict(super().state)
+        status = self.link["status"]
+        state["devices"] = {"SerialPort": status, "Gamepad": self.pad}
+        state["link"] = dict(self.link)
+        if self.position_age is not None:
+            state["values"] = dict(state["values"], position_age=self.position_age)
+        return state
+
+
+def _mark_fills(canvas):
+    return {item[2].get("fill") for item in canvas.items if item[0] == "line"}
+
+
+def test_v1_a_reconnecting_link_turns_the_entry_signal_and_holds_its_modes(
+        tk_harness):
+    """F3 / HC-1 (rb-link-views V1): `link.status` "reconnecting" - which
+    `devices` reports as "reconnecting", not "lost", so the old device rule
+    missed it - turns the head rule signal, mutes the numbers, holds the mode
+    toggle and says in words when the link went and that it is coming
+    back. "lost" says it is not."""
+    panel = LinkPanel()
+    panel.speed = 2.5
+    view = tkmod.TkPanelView(FakeWidget(), FakeController(Probe=panel), "Probe")
+    readout = widget_of(view, element_of(view, "readonly", "Speed now:"))
+    run = element_of(view, "toggle", "Run")
+    assert view._rule.cget("background") == theme.RULE_STRONG
+    assert view._widgets[id(run)]["is_enabled"] is True
+    assert not view._health.is_packed
+
+    panel.link.update(status="reconnecting", losses=1, last_loss="12:41:07")
+    view._refresh()
+    assert view._rule.cget("background") == theme.SIGNAL
+    assert view._health.cget("text") == "Link lost 12:41:07, reconnecting…"
+    assert view._health.is_packed and view._health_row.is_packed
+    assert theme.SIGNAL in _mark_fills(view._health_mark)
+    assert readout.cget("foreground") == theme.MUTED
+    assert "connection lost" in view._title.cget("text")
+    assert view._widgets[id(run)]["is_enabled"] is False
+    assert view._gate_reason(run) == "Link lost: wait for it to reconnect"
+
+    panel.link.update(status="lost")
+    view._refresh()
+    assert view._health.cget("text") == "Link lost 12:41:07; not reconnecting"
+    assert view._rule.cget("background") == theme.SIGNAL
+    assert view._widgets[id(run)]["is_enabled"] is False
+
+    panel.link.update(status="verified", reconnects=1)
+    view._refresh()
+    assert view._rule.cget("background") == theme.RULE_STRONG
+    assert readout.cget("foreground") == theme.TEXT
+    assert view._title.cget("text") == "Probe"
+    assert not view._health.is_packed
+    assert view._widgets[id(run)]["is_enabled"] is True
+    view.close()
+
+
+def test_v1_a_stalled_link_is_the_attention_tier_and_holds_nothing(tk_harness):
+    """A link that is up but brings no position: one warning-tier line, the
+    glyph in ink, the rule left ink, the modes left live."""
+    panel = LinkPanel()
+    view = tkmod.TkPanelView(FakeWidget(), FakeController(Probe=panel), "Probe")
+    run = element_of(view, "toggle", "Run")
+    panel.link.update(stalled=True, stalls=2)
+    panel.position_age = 7.2
+    view._refresh()
+    assert view._health.cget("text") == "No position for 7 s; link up, check the board"
+    assert view._health.is_packed
+    assert view._rule.cget("background") == theme.RULE_STRONG
+    assert _mark_fills(view._health_mark) == {theme.SEVERITY_MARK["warning"]}
+    assert view._widgets[id(run)]["is_enabled"] is True
+    view.close()
+
+
+def test_v1_the_rail_line_of_a_down_link_shows_its_tier(controller, setup_panel):
+    """The rail's per-model line takes the entry's tier: the warning glyph
+    in signal while the link is down, in ink while it is stalled, nothing
+    when it is well; the station line under the stop says it in words."""
+    panel = LinkPanel()
+    built = tkmod.TkDashboard(FakeController(**{"Stepper Probe": panel}), setup_panel)
+    built.open()
+    mark = built._rail_marks["Stepper Probe"][0]
+
+    def tick():
+        built._panels["Stepper Probe"]._refresh()
+        built._on_refresh_tick()
+
+    panel.link.update(status="reconnecting", last_loss="12:41:07")
+    tick()
+    assert "Link lost 12:41:07, reconnecting" in built._station_line.cget("text")
+    assert _mark_fills(mark) == {theme.SIGNAL}
+    assert built._rail_marks["Stepper Probe"][1].text.startswith("Link lost")
+
+    panel.link.update(status="verified", stalled=True)
+    tick()
+    assert _mark_fills(mark) == {theme.SEVERITY_MARK["warning"]}
+    assert "No position" in built._station_line.cget("text")
+
+    panel.link.update(stalled=False)
+    tick()
+    assert _mark_fills(mark) == set()
+    assert built._station_line.cget("text") == ""
+    built.close()
+
+
 # ---------------------------------------------------------------------------
 # Tier F: refusals, severity, long names, repaint cost, focus, tokens
 # ---------------------------------------------------------------------------

@@ -256,7 +256,8 @@ FAULT_GATE = view_base.GATE_WORDS["fault"][0]
 #: latched model, the signal with a "!" knocked out for one that did not
 #: confirm or whose disable failed (O16: shape, not colour alone).
 RAIL_STOP_WORDS = {"stopped": "stopped", "unconfirmed": "did not confirm",
-                   "faulted": "faulted"}
+                   "faulted": "faulted", "lost": "link lost",
+                   "attention": "needs attention"}
 #: O6: an energized model's rail mark is an ink ring after the stop mark.
 ENERGIZED_WORD = "energized"
 #: Where the ring's stroke runs, as a fraction of the mark's side.
@@ -320,21 +321,29 @@ def close_model_words(name):
             f"Close {name}?", f"Close {name}", "Keep it open")
 
 
-def rail_mark(name, stop_state, faulted):
-    """The one stop mark a model carries on the rail: a stop that did not
-    confirm outranks a fault, a fault outranks a plain latch."""
+def rail_mark(name, stop_state, faulted, tiers=None):
+    """The one mark a model carries on the rail: a stop that did not
+    confirm outranks a fault, a fault a link that is down (the entry's
+    danger tier, V1), that a plain latch, and a latch the attention tier (a
+    stalled link). `tiers` is {name: "error" | "warning"}, the worst of
+    what the entry says under its head (`views.base.entry_notices`)."""
+    tier = (tiers or {}).get(name) or ""
     if name in (stop_state.get("unconfirmed") or ()):
         return "unconfirmed"
     if name in faulted:
         return "faulted"
+    if tier == "error":
+        return "lost"
     if name in (stop_state.get("latched") or ()):
         return "stopped"
+    if tier:
+        return "attention"
     return None
 
 
 #: `rail_mark`'s kinds, worst first: what a host's link shows when it folds
 #: in the models drawn on its page (Model.HOST).
-RAIL_MARK_RANK = ("unconfirmed", "faulted", "stopped")
+RAIL_MARK_RANK = ("unconfirmed", "faulted", "lost", "stopped", "attention")
 
 
 def worst_mark(marks):
@@ -3039,7 +3048,23 @@ def rail_mark_icon(stop_kind, energized, side):
             painter.drawEllipse(QRectF(left + inset, inset,
                                        side - 2 * inset, side - 2 * inset))
             continue
-        loud = kind in ("unconfirmed", "faulted")
+        if kind == "attention":
+            # The attention tier (V1): an open ink square with the "!" in
+            # ink - the stopped square's colour, never its solid shape.
+            pen = QPen(QColor(theme.TEXT))
+            pen.setWidthF(max(1.4, side * 0.12))
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            inset = side * 0.12
+            painter.drawRect(QRectF(left + inset, inset, side - 2 * inset,
+                                    side - 2 * inset))
+            unit = side / 8.0
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(theme.TEXT))
+            painter.drawRect(QRectF(left + 3.5 * unit, 2 * unit, unit, 2.5 * unit))
+            painter.drawRect(QRectF(left + 3.5 * unit, 5 * unit, unit, unit))
+            continue
+        loud = kind in ("unconfirmed", "faulted", "lost")
         # The loud square fills its cell, so its "!" is laid on an eighths
         # grid: a bar three eighths tall, a gap, a dot two eighths square.
         inset = 0 if loud else side * 0.2
@@ -3560,6 +3585,9 @@ class SheetEntry(QFrame):
         self.is_unconfirmed = False
         self.is_faulted = False
         self.is_overview = False
+        #: The worst tier of what the entry says under its head (V1):
+        #: "error" (a link lost or reconnecting), "warning" or "".
+        self.link_tier = ""
         self.setObjectName("entry")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3671,6 +3699,17 @@ class SheetEntry(QFrame):
             self.panel.set_opened(not overview)
             self.panel.show_tiers(not overview)
 
+    def set_link_tier(self, tier):
+        """The entry's link tier (V1): the danger tier turns the head rule
+        signal and the mark before the line signal; the attention tier
+        leaves the rule ink and draws the mark in the warning's ink."""
+        tier = str(tier or "")
+        if tier == self.link_tier:
+            return
+        self.link_tier = tier
+        self.lost_mark.set_colour(theme.SEVERITY_MARK.get(tier) or theme.SIGNAL)
+        self._sync_rule()
+
     def set_lost(self, text):
         """A lost device, said in the entry's own head."""
         shown = bool(text)
@@ -3707,7 +3746,7 @@ class SheetEntry(QFrame):
         self._fault_line.setVisible(flag)
 
     def _sync_rule(self):
-        red = self.is_unconfirmed or self.is_faulted
+        red = self.is_unconfirmed or self.is_faulted or self.link_tier == "error"
         sheet = f"QFrame#entryRule {{ background-color: {theme.SIGNAL}; }}" if red else ""
         if self.rule.styleSheet() != sheet:
             self.rule.setStyleSheet(sheet)
@@ -3869,6 +3908,7 @@ class QtPanelView(PanelView, QWidget):
         self._last_state = None
         self._styled = {}           # id(element) -> the sheet it was given
         self._lost = []             # devices the model reports lost
+        self._notices = []          # [(tier, line)] the link says (V1)
         self._is_stale = False
         self._frozen = False        # the model is latched: its numbers stop
         self._closed = False
@@ -4153,10 +4193,12 @@ class QtPanelView(PanelView, QWidget):
         row = QHBoxLayout(holder)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(theme.PAD)
-        row.addWidget(mark(colour), 0, Qt.AlignmentFlag.AlignTop)
+        glyph = mark(colour)
+        row.addWidget(glyph, 0, Qt.AlignmentFlag.AlignTop)
         row.addWidget(label, 1)
         holder.setVisible(False)
         self._notice_holder = holder
+        self._notice_mark = glyph
         return holder
 
     # -- F21: a panel nobody can see does not tick ---------------------------
@@ -4976,8 +5018,8 @@ class QtPanelView(PanelView, QWidget):
         if not isinstance(widget, QAbstractButton):
             return
         state = self._last_state or {}
-        reason = "" if is_enabled else gate_reason(
-            element, state.get("mode"), state.get("values") or {}, self._caption_of)
+        reason = "" if is_enabled else (self._gate_words(element) or gate_reason(
+            element, state.get("mode"), state.get("values") or {}, self._caption_of))
         if self._reasons.get(id(element)) == reason:
             return
         self._reasons[id(element)] = reason
@@ -5019,7 +5061,8 @@ class QtPanelView(PanelView, QWidget):
         """Numbers go muted when the readings are stale, a device is lost, or
         the model is latched: in each case a number on screen is no longer
         what the hardware is doing."""
-        dim = "true" if (self._is_stale or self._lost or self._frozen) else "false"
+        dim = ("true" if (self._is_stale or self._lost or self._frozen or self.link_down)
+               else "false")
         for element in self._elements:
             if element["type"] == "plot":
                 self._widget_for(element).set_frozen(dim == "true")
@@ -5066,16 +5109,46 @@ class QtPanelView(PanelView, QWidget):
         if lost == self._lost:
             return
         self._lost = list(lost)
-        if lost:
-            self.notice.setText(
-                f"{lost_sentence(self.name, lost)}. Its readings are frozen. "
-                f"Press Stop, check the cable, then relaunch from Setup.")
-        self._notice_holder.setVisible(bool(lost))
+        self._sync_notice()
         self.stale_label.setVisible(self._is_stale and not lost)
         self._sync_dim()
         if lost:
             events.debug("Device Lost Shown", f"{self.name}: {lost}",
                          source="QtView")
+
+    def _set_notices(self, notices):
+        """The link's own words (V1, `views.base.entry_notices`): at the top
+        of the panel, led by the warning glyph in the tier's mark colour."""
+        notices = [tuple(n) for n in notices or ()]
+        if notices == self._notices:
+            return
+        self._notices = notices
+        self._sync_notice()
+        events.debug("Entry Notices Changed", f"{self.name}: {notices}",
+                     source="QtView")
+
+    def notice_text(self):
+        """What the panel's top line says now: the link's words (they know
+        when it went and whether it is coming back), else the lost device."""
+        if self._notices:
+            return "\n".join(line for _tier, line in self._notices)
+        if self._lost:
+            return (f"{lost_sentence(self.name, self._lost)}. Its readings are "
+                    f"frozen. Press Stop, check the cable, then relaunch from Setup.")
+        return ""
+
+    def notice_tier(self):
+        return view_base.worst_severity(self._notices) or ("error" if self._lost else "")
+
+    def _sync_notice(self):
+        text = self.notice_text()
+        if text and self.notice.text() != text:
+            self.notice.setText(text)
+        mark_ = getattr(self, "_notice_mark", None)
+        if mark_ is not None and text:
+            mark_.set_colour(theme.SEVERITY_MARK.get(self.notice_tier()) or theme.SIGNAL)
+        if self._notice_holder.isHidden() == bool(text):
+            self._notice_holder.setVisible(bool(text))
 
     def _confirm(self, prompt):
         return ask(self, prompt)
@@ -5356,6 +5429,8 @@ class QtDashboard(Dashboard, QMainWindow):
         self._closed_shown = None
         self.reopen_buttons = {}
         self._lost = {}             # name -> the devices it reports lost
+        self._notices = {}          # name -> [(tier, line)] under its head (V1)
+        self._tiers = {}            # name -> the worst of those tiers
         self._alerts = []           # errors waiting to be acknowledged
         self._ack_box = None        # the acknowledgement shown (rb-ack)
         self._ack_title = None      # ... and the title it is showing
@@ -5801,8 +5876,9 @@ class QtDashboard(Dashboard, QMainWindow):
             self._order_tab()
 
     def _rail_status_text(self, names, states):
-        lost = [lost_sentence(n, self._lost.get(n)) for n in names
-                if self._lost.get(n)]
+        lost = [f"{n}: {self._notices[n][0][1]}" if self._notices.get(n)
+                else lost_sentence(n, self._lost.get(n)) for n in names
+                if self._notices.get(n) or self._lost.get(n)]
         if lost:
             return "; ".join(lost)
         if names:
@@ -5819,8 +5895,13 @@ class QtDashboard(Dashboard, QMainWindow):
         names = list(self.controller.model_names)
         states = self._model_states(names)
         self._sync_hosts(states)
+        tiers = {}
         for name, state in states.items():
-            self._show_lost(name, lost_devices(state))
+            notices = self._entry_notices(state)
+            if notices:
+                tiers[name] = view_base.worst_severity(notices)
+            self._show_lost(name, lost_devices(state), notices)
+        self._tiers = tiers
         self._sync_countdowns(names, states)
         stop = self._stop_state()
         words = stop_words(stop)
@@ -5844,7 +5925,8 @@ class QtDashboard(Dashboard, QMainWindow):
             # A host's link carries the models drawn on its page: the worse
             # of their marks shows (Model.HOST).
             family = self._family(name)
-            item.set_stop(worst_mark(rail_mark(n, stop, faulted) for n in family))
+            item.set_stop(worst_mark(rail_mark(n, stop, faulted, self._tiers)
+                                     for n in family))
             item.set_energized(any(n in energized for n in family))  # O6
         for name, entry in self._entries.items():
             family = self._family(name)
@@ -6016,15 +6098,34 @@ class QtDashboard(Dashboard, QMainWindow):
             events.debug("Extend Refused", f"{name}: {result.reason}", source="QtView")
         self._sync_states()
 
-    def _show_lost(self, name, lost):
-        """A lost device, said on the rail and in the entry's own head."""
-        if self._lost.get(name, []) == lost:
+    def _entry_notices(self, state):
+        """What an entry says under its head (`views.base.entry_notices`),
+        from the model's state: the same function the panel draws from."""
+        return view_base.entry_notices(state)
+
+    def _show_lost(self, name, lost, notices=()):
+        """A lost device, or the link's own words (V1), said on the rail and
+        in the entry's own head, in the entry's tier."""
+        notices = [tuple(n) for n in notices or ()]
+        if self._lost.get(name, []) == lost and self._notices.get(name, []) == notices:
             return False
         self._lost[name] = lost
+        self._notices[name] = notices
         entry = self._entries.get(name)
         if entry is not None:
-            entry.set_lost(sentence(f"{' and '.join(lost)} lost") if lost else "")
+            entry.set_link_tier(view_base.worst_severity(notices)
+                                or ("error" if lost else ""))
+            entry.set_lost(self._head_line(name))
         return True
+
+    def _head_line(self, name):
+        """The entry's standing line: the link's words, else the lost
+        device, else nothing."""
+        notices = self._notices.get(name) or []
+        if notices:
+            return "\n".join(line for _tier, line in notices)
+        lost = self._lost.get(name)
+        return sentence(f"{' and '.join(lost)} lost") if lost else ""
 
     def _build_reopen(self, closed):
         """A model the operator closed is put away, not gone: the way back is
@@ -6691,8 +6792,10 @@ class QtDashboard(Dashboard, QMainWindow):
         entry.set_page(True)
         self._entries[name] = entry
         self._panels[name] = panel
-        if self._lost.get(name):
-            entry.set_lost(sentence(f"{' and '.join(self._lost[name])} lost"))
+        if self._lost.get(name) or self._notices.get(name):
+            entry.set_link_tier(view_base.worst_severity(self._notices.get(name))
+                                or ("error" if self._lost.get(name) else ""))
+            entry.set_lost(self._head_line(name))
         reopened = self._raise_on_add == name
         # A model Setup launched lands on the overview (K4); one reopened
         # from the rail is shown alone, like a press on its rail item.
@@ -6718,6 +6821,7 @@ class QtDashboard(Dashboard, QMainWindow):
         entry = self._entries.pop(name, None)   # popped first: the entry's own
         panel = self._panels.pop(name, None)    # closeEvent must not re-enter
         self._lost.pop(name, None)
+        self._notices.pop(name, None)
         if entry is None:
             self._sync_rail()
             return
