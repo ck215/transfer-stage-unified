@@ -694,6 +694,58 @@ def test_an_index_that_renumbers_onto_another_device_counts_as_a_disconnect(hub,
         pad.close()
 
 
+def _pump_raises_once(fake_sdl):
+    """SDL's event pump raises on its next call only: one failed enumeration
+    (`GamepadHub.count` does not pump, so the cheap index check still
+    answers)."""
+    real = fake_sdl.event.pump
+    armed = [True]
+
+    def _pump():
+        if armed[0]:
+            armed[0] = False
+            raise FakeError("SDL hiccup")
+        return real()
+    fake_sdl.event.pump = _pump
+    return armed
+
+
+def test_a_failed_enumeration_is_unknown_and_keeps_a_bound_pad(hub, fake_sdl):
+    """rb-pump P4: `_enumerate` returned [] on an exception, and the macOS
+    presence check read that empty scan as "pad gone": it released the
+    binding and dropped Manual. A failed scan is "unknown": the last good
+    scan stands, and a later good scan is honoured."""
+    with platform_as("darwin"):
+        pad = make_pad(hub, "StepperProbe", bind_to=0)
+        armed = _pump_raises_once(fake_sdl)
+        pad._darwin_scan_mark = 0.0          # the next check re-enumerates
+        pad.poll_once()
+        assert not armed[0], "the enumeration never ran"
+        assert pad.is_bound, "a failed enumeration released the binding"
+        assert pad.status == "bound"
+
+        # A later good scan that says the pad is gone is honoured.
+        del fake_sdl.joystick.devices[1]
+        fake_sdl.joystick.devices[0] = FakeJoystick(name="Thrustmaster T.16000M")
+        pad._darwin_scan_mark = 0.0
+        pad.poll_once()
+        assert pad.is_bound is False, "a good scan was ignored"
+        pad.close()
+
+
+def test_a_failed_enumeration_returns_none_and_the_option_list_survives(hub, fake_sdl):
+    """rb-pump P4: the hub says "unknown" (None), not "no pads"; `names`
+    and a Gamepad's `options` still read as lists."""
+    _pump_raises_once(fake_sdl)
+    assert hub._enumerate() is None
+    _pump_raises_once(fake_sdl)
+    assert hub.names == []
+    pad = make_pad(hub, "StepperProbe")
+    _pump_raises_once(fake_sdl)
+    assert pad.options == ["None"]
+    pad.close()
+
+
 def test_losing_the_pad_stops_the_loop_and_releases_the_claim(hub, fake_sdl):
     """The model reads `is_bound`: losing the pad while MANUAL is what makes
     it halt and disable (STEPPER-5, DC-17, VIEW-TKINTER-4)."""
