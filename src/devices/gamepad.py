@@ -888,10 +888,22 @@ class Gamepad(Device):
         return self._darwin_scan
 
     def _handle_disconnect(self, reason="device gone"):
-        """The pad went away. Stop, release, and say so exactly once."""
+        """The pad went away. Stop, release, and say so exactly once.
+
+        rb-pump P3: the operator reads what happened and what to do; the
+        owner id and the internal reason go to the file log only. (The lead
+        is to add "Gamepad Disconnected" to events.ATTENTION.)
+        """
         label = self._label or "gamepad"
+        events.debug("Gamepad Disconnected",
+                     f"{self._owner_id}: {label} is gone ({reason})",
+                     source=self._source)
+        pad = f"The gamepad {self._label}" if self._label else "The gamepad"
         events.warn("Gamepad Disconnected",
-                    f"{self._owner_id}: {label} is gone ({reason})", source=self._source)
+                    f"{pad} disconnected. {self._owner_id} left manual mode "
+                    "and its motors were disabled. Plug it back in and choose "
+                    "it again under Gamepad, then press Manual.",
+                    source=self._source)
         self._note(f"Disconnected: {label} ({reason})")
         self._stop_poll_loop("disconnect")
         self._release_binding(f"disconnect: {reason}")
@@ -999,8 +1011,11 @@ class Gamepad(Device):
                     return False
                 self._read_hardware(joystick)
         except Exception as exc:
-            events.warn("Gamepad Polling Error",
-                        f"{self._owner_id}: {exc}", source=self._source, exception=exc)
+            # File only, like the hardware-error path: the disconnect below
+            # is the one operator line (rb-pump P3).
+            events.debug("Gamepad Polling Error",
+                         f"{self._owner_id}: {exc}", source=self._source,
+                         exception=exc)
             self._handle_disconnect(f"poll failed: {exc}")
             return False
 
@@ -1106,9 +1121,12 @@ class Gamepad(Device):
         try:
             return self._read_layout()
         except (pygame.error if pygame else ()) as exc:
-            events.warn("Gamepad Disconnected",
-                        f"{self._owner_id}: hardware error during poll: {exc}",
-                        source=self._source, exception=exc)
+            # File only: `_handle_disconnect` tells the operator, once
+            # (rb-pump P3; this used to be a second warn under the same
+            # title, carrying the owner id and the exception).
+            events.debug("Gamepad Disconnected",
+                         f"{self._owner_id}: hardware error during poll: {exc}",
+                         source=self._source, exception=exc)
             self._handle_disconnect(f"hardware error: {exc}")
             return None
 

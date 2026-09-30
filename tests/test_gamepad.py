@@ -712,6 +712,73 @@ def test_losing_the_pad_stops_the_loop_and_releases_the_claim(hub, fake_sdl):
     pad.close()
 
 
+class _FileSpy:
+    """What `events` would write to the log file, captured in memory."""
+
+    def __init__(self, monkeypatch):
+        self.lines = []
+        real = events._write_file
+
+        def _spy(severity, source, text, exception):
+            self.lines.append((severity, source, text))
+            return real(severity, source, text, exception)
+        monkeypatch.setattr(events, "_write_file", _spy)
+
+    def debug(self, prefix):
+        return [text for severity, _source, text in self.lines
+                if severity == "debug" and text.startswith(prefix)]
+
+
+def test_a_disconnect_tells_the_operator_what_happened_and_what_to_do(
+        hub, fake_sdl, monkeypatch):
+    """rb-pump P3: "StepperProbe: ID 0: ... is gone (poll failed: ...)" named
+    the owner id and an internal reason. The operator reads what happened
+    and what to do; the reason stays in the file log."""
+    from test_core_fakes import EventRecorder
+    spy = _FileSpy(monkeypatch)
+    pad = make_pad(hub, "Stepper Probe", bind_to=0)
+    label = pad._label
+    with EventRecorder() as log:
+        pad._handle_disconnect("poll failed: device removed")
+    warnings = [e for e in log.titled("Gamepad Disconnected")
+                if e.severity == "warning"]
+    assert len(warnings) == 1, [e.message for e in log.seen]
+    assert warnings[0].message == (
+        f"The gamepad {label} disconnected. Stepper Probe left manual mode "
+        "and its motors were disabled. Plug it back in and choose it again "
+        "under Gamepad, then press Manual.")
+    for jargon in ("poll failed", "device removed", "is gone"):
+        assert jargon not in warnings[0].message, jargon
+    assert any("poll failed: device removed" in text
+               for text in spy.debug("Gamepad Disconnected")), spy.lines
+    pad.close()
+
+
+def test_a_hardware_error_during_poll_is_told_once_in_operator_words(
+        hub, fake_sdl, monkeypatch):
+    """rb-pump P3: the pygame.error path warned "Gamepad Disconnected" with
+    the owner id and the exception, then `_handle_disconnect` warned again.
+    One operator line; the exception goes to the file."""
+    from test_core_fakes import EventRecorder
+    spy = _FileSpy(monkeypatch)
+    pad = make_pad(hub, "Stepper Probe", bind_to=0)
+
+    def _raise():
+        raise FakeError("usb reset")
+    monkeypatch.setattr(pad, "_read_layout", _raise)
+    with EventRecorder() as log:
+        assert pad._read_raw() is None
+    assert pad.is_bound is False
+    shown = [e for e in log.seen if e.severity != "debug"]
+    assert len(log.titled("Gamepad Disconnected")) == 1, \
+        [e.message for e in shown]
+    for event in shown:
+        assert "usb reset" not in event.message, event.message
+        assert "Stepper Probe:" not in event.message, event.message
+    assert any("usb reset" in text for _s, _src, text in spy.lines), spy.lines
+    pad.close()
+
+
 def test_status_words_report_the_binding(hub):
     pad = make_pad(hub, "StepperProbe")
     assert pad.status == "unbound"
