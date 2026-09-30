@@ -638,6 +638,11 @@ class Setup(PortProbe, Panel):
 
     @property
     def state(self):
+        if self._offer_on_read:
+            # A2: the Web page's first read of Setup; see `startup_checks`.
+            with self._lock:
+                self._offer_on_read, self._startup_listening = False, True
+            self._deliver_startup_offer()
         snapshot = super().state
         with self._lock:
             found = dict(self._found)
@@ -1538,6 +1543,11 @@ class Setup(PortProbe, Panel):
         self._firmware_result = None    # the last check()'s answer
         self._firmware_asked = set()    # stale-board sets Launch already asked about
         self._flash_offered = set()     # board sets the startup dialog already offered
+        # A2 (OP-4): the startup check's offer waits for a view to listen.
+        self._startup_offer = None      # the startup check's answer, not yet offered
+        self._startup_offered = False
+        self._startup_listening = False
+        self._offer_on_read = False
         self.firmware_progress = ""
         #: The Web view's address, which it fills in once it serves; the
         #: desktop views leave it empty. It used to be a terminal line.
@@ -1628,7 +1638,37 @@ class Setup(PortProbe, Panel):
         result = self._check_firmware_now()
         self._publish_firmware(result)
         if offer:
-            self._offer_flash(result)
+            with self._lock:
+                self._startup_offer = result or {}
+            self._deliver_startup_offer()
+
+    def startup_checks(self, on_next_read=False):
+        """The view is listening (A2, OP-4): the startup firmware check's
+        Flash now dialog may go out. It used to be published from the
+        check's thread at construction, before any view had subscribed to
+        the event log, so it reached nobody and Flash now was unreachable.
+
+        `app.launch` calls this the moment a desktop view subscribes; for
+        the Web (`on_next_read`), the offer goes out with the next read of
+        this panel's state - the page's first Setup read, after it has
+        taken its place in the event stream (older events it replays as
+        history, never as a dialog). A check still running offers when it
+        finishes. Offered once per run; a second call offers nothing new."""
+        with self._lock:
+            if on_next_read:
+                self._offer_on_read = True
+                return True
+            self._startup_listening = True
+        self._deliver_startup_offer()
+        return True
+
+    def _deliver_startup_offer(self):
+        with self._lock:
+            if not self._startup_listening or self._startup_offer is None \
+                    or self._startup_offered:
+                return
+            result, self._startup_offered = self._startup_offer, True
+        self._offer_flash(result)
 
     def _offer_flash(self, result):
         """The startup check found boards to flash and the tool to do it: one

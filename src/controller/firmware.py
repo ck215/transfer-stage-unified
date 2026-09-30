@@ -27,8 +27,11 @@ from pathlib import Path
 from controller import flashing
 from controller.flashing import stream_lines  # noqa: F401  (the default runner)
 
-#: The checkout this file lives in: src/controller/firmware.py -> the repo.
-ROOT = Path(__file__).resolve().parents[2]
+#: The station's own folder: a checkout (src/controller/firmware.py -> the
+#: repo), or, frozen, the bundle root beside the launchers - never
+#: `__file__`'s folder, which a frozen bundle puts inside `_internal`
+#: (A2: the check said "firmware sketches not found" there).
+ROOT = flashing.install_root()
 #: The script's own default; both branches' checkouts share it.
 DEFAULT_STAMP = flashing.DEFAULT_STAMP
 STAMP_ENV = flashing.STAMP_ENV
@@ -70,7 +73,7 @@ class FirmwareCheck:
     def __init__(self, root=None, *, sketch_root=None, stamp=None, run=None,
                  which=None, tools=None, identify=None, ports=None,
                  channel=flashing.STATION, version=None):
-        self.root = Path(root) if root is not None else ROOT
+        self.root = Path(root) if root is not None else flashing.install_root()
         self.sketch_root = Path(sketch_root) if sketch_root is not None else self.root / "firmware"
         self.stamp = Path(stamp) if stamp is not None else Path(
             os.environ.get(STAMP_ENV) or DEFAULT_STAMP).expanduser()
@@ -79,7 +82,7 @@ class FirmwareCheck:
         self._tools = tools
         self._identify, self._ports = identify, ports
         self.channel = channel
-        self.version = version
+        self.version = version if version is not None else flashing.bundle_version()
 
     @property
     def tools(self):
@@ -87,7 +90,9 @@ class FirmwareCheck:
         is found by the next check."""
         if self._tools is not None:
             return self._tools
-        return flashing.tools_for(which=self._which)
+        frozen = flashing.is_frozen()
+        return flashing.tools_for(self.root if frozen else None,
+                                  which=self._which, frozen=frozen)
 
     def sketch_hash(self, board):
         return sketch_hash(self.sketch_root, board)

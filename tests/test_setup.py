@@ -1474,8 +1474,7 @@ FLASH_NOW = {"label": "Flash now", "name": "__setup__", "command": "flash_firmwa
 def test_the_startup_check_asks_once_and_flash_now_flashes_unattended(
         fake_types, firmware_checking, warnings):
     firmware = FakeFirmware()
-    panel = Setup(RecordingController(), firmware=firmware)
-    wait_firmware(panel)
+    panel = _listening(Setup(RecordingController(), firmware=firmware))
     [offer] = _prompts(warnings, events.FIRMWARE_OUT_OF_DATE)
     assert offer.severity == "warning" and offer.needs_ack is True
     assert offer.message == ("Stepper Probe out of date. Flash it now? This "
@@ -1498,8 +1497,7 @@ def test_the_startup_offer_names_every_board_the_button_would_flash(
         fake_types, firmware_checking, warnings):
     firmware = FakeFirmware(result=firmware_result(stale=["Stepper Probe", "DC Probe"],
                                                    never=["Chuck Positioner"]))
-    panel = Setup(RecordingController(), firmware=firmware)
-    wait_firmware(panel)
+    panel = _listening(Setup(RecordingController(), firmware=firmware))
     [offer] = _prompts(warnings, events.FIRMWARE_OUT_OF_DATE)
     assert offer.message.startswith(
         "Stepper Probe and DC Probe out of date; Chuck Positioner never flashed "
@@ -1510,10 +1508,77 @@ def test_the_startup_offer_names_every_board_the_button_would_flash(
     assert firmware.flashes == [["Stepper Probe", "DC Probe", "Chuck Positioner"]]
 
 
+def _listening(panel):
+    """What `app.launch` does once the view has subscribed (A2)."""
+    wait_firmware(panel)
+    starting = getattr(panel, "startup_checks", None)
+    if starting is not None:
+        starting()
+    return panel
+
+
+def test_a_view_that_subscribes_after_setup_is_built_still_gets_the_offer(
+        fake_types, firmware_checking):
+    """OP-4: the startup check finished before any view had subscribed, so
+    its Firmware Out of Date dialog went to nobody and Flash now was
+    unreachable. The offer waits for `startup_checks()`, which the app
+    calls once the view listens."""
+    events.clear()
+    firmware = FakeFirmware()
+    panel = Setup(RecordingController(), firmware=firmware)
+    wait_firmware(panel)                 # the check is done; no view yet
+    seen = []
+    events.subscribe(seen.append)        # the view subscribes
+    try:
+        _listening(panel)
+        [offer] = _prompts(seen, events.FIRMWARE_OUT_OF_DATE)
+        assert offer.needs_ack and offer.to_dict()["action"] == FLASH_NOW
+    finally:
+        events.unsubscribe(seen.append)
+        events.clear()
+
+
+def test_the_offer_waits_for_a_check_still_running_when_the_view_listens(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware()
+    firmware.gate = threading.Event()
+    panel = Setup(RecordingController(), firmware=firmware)
+    panel.startup_checks()               # the view listens before the answer
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    firmware.gate.set()
+    wait_firmware(panel)
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+    panel.startup_checks()               # a second call offers nothing new
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+
+
+def test_nothing_is_offered_before_the_view_listens(
+        fake_types, firmware_checking, warnings):
+    panel = Setup(RecordingController(), firmware=FakeFirmware())
+    wait_firmware(panel)
+    assert panel.firmware_status == "Stepper Probe out of date"
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+
+
+def test_on_next_read_the_offer_goes_out_with_the_first_state_read(
+        fake_types, firmware_checking, warnings):
+    """The Web: the page replays older events as history (no dialog), so
+    the offer goes out when the page first reads Setup, after it has
+    taken its place in the event stream."""
+    panel = Setup(RecordingController(), firmware=FakeFirmware())
+    wait_firmware(panel)
+    panel.startup_checks(on_next_read=True)
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    panel.state
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+    panel.state
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+
+
 def test_the_startup_check_asks_nothing_when_every_board_is_current(
         fake_types, firmware_checking, warnings):
-    panel = Setup(RecordingController(), firmware=FakeFirmware(result=firmware_result()))
-    wait_firmware(panel)
+    panel = _listening(Setup(RecordingController(),
+                             firmware=FakeFirmware(result=firmware_result())))
     assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
 
 
@@ -1521,8 +1586,7 @@ def test_the_startup_check_asks_nothing_it_could_not_do_without_the_tools(
         fake_types, firmware_checking, warnings):
     firmware = FakeFirmware(result=firmware_result(stale=["DC Probe"],
                                                    missing=["arduino-cli"]))
-    panel = Setup(RecordingController(), firmware=firmware)
-    wait_firmware(panel)
+    panel = _listening(Setup(RecordingController(), firmware=firmware))
     assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
     assert "by hand" in refused(lambda: panel.flash_firmware(True))
 

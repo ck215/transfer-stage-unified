@@ -370,3 +370,55 @@ def test_the_default_runner_gives_the_script_no_stdin():
     fw.stream_lines([sys.executable, "-c", "print(repr(input('?')))"],
                     cwd=str(REPO), on_line=seen.append, timeout=30)
     assert any("EOFError" in line for line in seen)
+
+
+# -- A2: in a frozen bundle the check reads the bundle's sketches and tools -----
+
+@pytest.fixture
+def bundle(tmp_path, monkeypatch):
+    """A frozen launcher in tmp_path/station, with the layout contract's
+    firmware/ and tools/ beside it."""
+    root = tmp_path / "station"
+    make_tree(root / "firmware")
+    exe = ".exe" if os.name == "nt" else ""
+    (root / "tools" / "arduino-data").mkdir(parents=True)
+    for tool in ("arduino-cli", "teensy_loader_cli"):
+        (root / "tools" / f"{tool}{exe}").write_text("")
+    (root / f"station-qt{exe}").write_text("")
+    (root / "VERSION").write_text("v1.4.0\nabc1234\n2026-09-30T00:00:00Z\n")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(root / f"station-qt{exe}"))
+    monkeypatch.setattr(sys, "_MEIPASS", str(root / "_internal"), raising=False)
+    return root.resolve()
+
+
+def test_a_frozen_bundle_checks_the_sketches_beside_its_launchers(bundle, stamp):
+    """Frozen, `__file__` is inside `_internal`: the check said "firmware
+    sketches not found". It reads `<bundle>/firmware`."""
+    check = FirmwareCheck(stamp=stamp)
+    assert check.root == bundle
+    assert check.sketch_root == bundle / "firmware"
+    result = check.check()
+    assert result["summary"] == "never flashed here"
+    assert result["missing_tools"] == []
+
+
+def test_a_frozen_bundle_uses_its_own_tools_not_the_path(bundle, stamp):
+    check = FirmwareCheck(stamp=stamp, which=lambda tool: None)
+    exe = ".exe" if os.name == "nt" else ""
+    assert check.tools.arduino_cli == str(bundle / "tools" / f"arduino-cli{exe}")
+    assert check.check()["missing_tools"] == []
+
+
+def test_a_frozen_bundles_flash_is_stamped_with_its_version(bundle, stamp):
+    check = FirmwareCheck(stamp=stamp, run=FakeRun(),
+                          **on_ports(COM3="Chuck Positioner"))
+    assert check.version == "v1.4.0"
+    assert check.flash(["Chuck Positioner"])["ok"]
+    entry = json.loads(stamp.read_text())["Chuck Positioner"]
+    assert entry["version"] == "v1.4.0" and entry["channel"] == "station"
+
+
+def test_a_checkout_still_checks_its_own_firmware(stamp):
+    check = FirmwareCheck(stamp=stamp, which=everything_found)
+    assert check.sketch_root == REPO / "firmware" and check.version is None

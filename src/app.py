@@ -247,13 +247,50 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
     # `setup.state`, so this never delays the window by the handshake budget.
     setup.start()
     events.info("View", f"{view_name} starting", source="app")
-    view.open()
-    # A desktop view's open() runs its event loop and returns at close; the
-    # Web view serves on a thread and waits here for the same reason.
-    wait = getattr(view, "wait", None)
-    if wait is not None:
-        wait()
+    # A2 (OP-4): Setup's startup dialogs go out once the view listens, not
+    # at construction. A desktop view subscribes to the event log inside
+    # open(), just before its loop: the first subscription is the moment.
+    # The Web page subscribes by polling; Setup offers at its first read.
+    listening = None
+    if view_name != "web":
+        listening = _after_first_subscriber(events, setup.startup_checks)
+    try:
+        view.open()
+        if view_name == "web":
+            setup.startup_checks(on_next_read=True)
+        # A desktop view's open() runs its event loop and returns at close;
+        # the Web view serves on a thread and waits here for the same reason.
+        wait = getattr(view, "wait", None)
+        if wait is not None:
+            wait()
+    finally:
+        if listening is not None:
+            listening()
     return view
+
+
+def _after_first_subscriber(log, then):
+    """Run `then()` once, right after the first `log.subscribe(fn)` - the
+    moment a view starts to listen. The hook is on this one instance and
+    goes away at the first subscription; the returned function removes it
+    if nothing ever subscribed (a view that failed to open)."""
+    original = log.subscribe
+
+    def remove():
+        if vars(log).get("subscribe") is subscribe:
+            del log.subscribe
+
+    def subscribe(fn):
+        remove()
+        original(fn)
+        try:
+            then()
+        except Exception as exc:        # never fail the view's own open()
+            events.debug("Startup Checks Failed", repr(exc), source="app",
+                         exception=exc)
+
+    log.subscribe = subscribe
+    return remove
 
 
 def main(argv=None):
