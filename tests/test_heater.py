@@ -435,12 +435,32 @@ def test_the_reader_leaves_the_instant_close_asks_however_long_its_backoff(
         heater, port):
     """TEMP-2's seam. A plain `time.sleep(backoff)` is only checked at the top
     of the loop, so a reader parked in the 2.0 s backoff outlives the 1.5 s
-    join — and `close()` then shuts the port underneath a live thread."""
+    join — and `close()` then shuts the port underneath a live thread.
+
+    The first backoff is forced to the ceiling (MIN_BACKOFF = MAX_BACKOFF on
+    the instance), so the reader is parked in a 2.0 s wait when the stop
+    comes; without that it would still be in a ~0.1 s backoff and a plain
+    sleep would pass (gate W1). The wait is observed, not replaced: the
+    recorder calls the real `_backoff_wait`."""
+    heater.MIN_BACKOFF = heater.MAX_BACKOFF
+    parked = threading.Event()
+    waits = []
+    real_wait = heater._backoff_wait
+
+    def recording_wait(seconds):
+        waits.append(seconds)
+        if seconds == heater.MAX_BACKOFF:
+            parked.set()
+        return real_wait(seconds)
+
+    heater._backoff_wait = recording_wait
     port.read_error = OSError("link down")
     heater.open()
+    assert parked.wait(1.0), f"the reader never reached the ceiling backoff: {waits}"
     time.sleep(0.05)
     reader = heater._thread("reader")
     assert reader.is_alive()
+    assert waits[-1] == Heater.MAX_BACKOFF
 
     started = time.monotonic()
     heater._stop_threads()
