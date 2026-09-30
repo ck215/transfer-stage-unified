@@ -3434,7 +3434,7 @@ class Dashboard {
   // replaced by the next event: a stop that did not land, a model that lost
   // its device. They sit on the rail, beside the stop, and the rail grows to
   // hold them. Keyed, so a poll that repeats a line does not rewrite it.
-  setRailLine(key, text, canDismiss) {
+  setRailLine(key, text, canDismiss, tier) {
     let line = this.railLines.get(key);
     if (!text) {
       if (line) {
@@ -3461,6 +3461,11 @@ class Dashboard {
         else this.dom.railAlert.appendChild(node);
       }
       putText(line.words, text);
+      // V4: the attention tier's glyph is the warning's ink, not signal.
+      const warning = tier === 'warning';
+      if (line.node.classList.contains('severity-warning') !== warning) {
+        line.node.classList.toggle('severity-warning', warning);
+      }
     }
     const isEmpty = this.railLines.size === 0;
     if (this.dom.railAlert.hidden !== isEmpty) this.dom.railAlert.hidden = isEmpty;
@@ -3475,7 +3480,8 @@ class Dashboard {
       const words = (this.linkWords || {})[name];
       if (words && words.line) {
         lost.add('lost:' + name);
-        this.setRailLine('lost:' + name, sentence(name) + ': ' + words.line);
+        this.setRailLine('lost:' + name, sentence(name) + ': ' + words.line, false,
+          words.tier);
         continue;
       }
       const devices = lostDevices(models[name]);
