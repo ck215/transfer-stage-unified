@@ -2126,6 +2126,40 @@ def test_v1_a_stalled_link_is_the_attention_tier(dashboard, qapp, controller,
     assert panel_view._widget_for(element_named(panel_view, "is_on")).isEnabled()
 
 
+class DiagnosedPanel(FakePanel):
+    """The Fake with a Diagnostics section of its own (tier 3)."""
+
+    @property
+    def schema(self):
+        schema = dict(super().schema)
+        schema["sections"] = list(schema["sections"]) + [sch.section(
+            "Diagnostics", sch.readonly("Reading again:", "reading"),
+            tier=3, disclosure="Diagnostics")]
+        return schema
+
+
+def test_v2_the_link_counters_are_a_readout_in_diagnostics(qapp, monkeypatch):
+    """rb-link-views V2: one compact readonly line in the model's own
+    Diagnostics, built by the Qt readonly and filled from `state.link`."""
+    from views import base as view_base
+    controller = FakeController(DiagnosedPanel())
+    link = _with_link(controller, monkeypatch, _link(losses=1, dropped=3,
+                                                     last_loss="12:41:07"))
+    built = qt.QtPanelView(controller, "Fake")
+    try:
+        row = element_named(built, view_base.LINK_ATTR)
+        assert row["text"] == view_base.LINK_CAPTION
+        assert built._tier_of.get(id(row)) == 3
+        built._refresh()
+        label = built._widget_for(row)
+        assert "1 / 0 / 3 / 0; last loss 12:41:07" in label.text()
+        link.update(reconnects=1)
+        built._refresh()
+        assert "1 / 1 / 3 / 0" in built._widget_for(row).text()
+    finally:
+        built.close()
+
+
 def test_f3_stale_readouts_really_are_repolished(view, panel):
     """The stale rule is a descendant selector; polishing the panel alone
     never re-read it for the labels. Updated (E): a readout is ink at rest

@@ -25,6 +25,7 @@ from events import Event
 from panel import Panel
 from param import Param
 from result import Refused, NeedsConfirm, Result
+from views import base as view_base
 from views import theme
 from views import tk as tkmod
 
@@ -3173,6 +3174,40 @@ def test_v1_a_stalled_link_is_the_attention_tier_and_holds_nothing(tk_harness):
     view.close()
 
 
+class DiagnosedLinkPanel(LinkPanel):
+    """A linked model with a Diagnostics section of its own (tier 3)."""
+
+    @property
+    def schema(self):
+        schema = dict(super().schema)
+        schema["sections"] = list(schema["sections"]) + [sch.section(
+            "Diagnostics", sch.readonly("Done:", "done_count", param=self.DONE_COUNT),
+            tier=3, disclosure="Diagnostics")]
+        return schema
+
+
+def test_v2_the_link_counters_are_a_readout_in_diagnostics(tk_harness):
+    """rb-link-views V2: `losses / reconnects / dropped / stalls` and the
+    last loss, one compact readonly line in the model's own Diagnostics
+    (tier 3), filled from `state.link` on every refresh."""
+    panel = DiagnosedLinkPanel()
+    view = tkmod.TkPanelView(FakeWidget(), FakeController(Probe=panel), "Probe")
+    row = element_of(view, "readonly", view_base.LINK_CAPTION)
+    assert row["model_attr"] == view_base.LINK_ATTR
+    assert view._widgets[id(row)]["var"].get() == "0 / 0 / 0 / 0; last loss never"
+    panel.link.update(losses=1, reconnects=1, dropped=5, stalls=2,
+                      last_loss="12:41:07")
+    view._refresh()
+    assert view._widgets[id(row)]["var"].get() == "1 / 1 / 5 / 2; last loss 12:41:07"
+    # In the tier-3 strip, with the section's own readouts.
+    def ancestors(widget):
+        while widget is not None:
+            yield widget
+            widget = getattr(widget, "master", None)
+    assert view._tiers[3] in list(ancestors(widget_of(view, row)))
+    view.close()
+
+
 def test_v1_the_rail_line_of_a_down_link_shows_its_tier(controller, setup_panel):
     """The rail's per-model line takes the entry's tier: the warning glyph
     in signal while the link is down, in ink while it is stalled, nothing
@@ -3972,6 +4007,7 @@ _REAL_BUILD = r'''
 import json, os, sys
 sys.path.insert(0, os.path.join(sys.argv[1], "src"))
 POINTS, WIDTH, HEIGHT = int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+from views import base as view_base
 from views import theme
 theme.set_font_size(POINTS)
 from controller.controller import Controller

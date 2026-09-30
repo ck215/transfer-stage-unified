@@ -144,6 +144,59 @@ def link_gate_reason(state):
     return ""
 
 
+#: The Diagnostics line a view adds for a linked model (V2, `with_link_row`).
+#: Its attribute is not a model's: `link_counters` fills it from the state.
+LINK_ATTR = "_link_counters"
+LINK_CAPTION = "Losses / reconnects / dropped / stalls:"
+
+
+def link_counters(state):
+    """The compact Diagnostics line: `losses / reconnects / dropped / stalls`
+    and when the link was last lost. "" for a model without a link."""
+    link = link_of(state)
+    if not link:
+        return ""
+
+    def count(key):
+        try:
+            return str(int(link.get(key) or 0))
+        except (TypeError, ValueError):
+            return "0"
+    at = str(link.get("last_loss") or "").strip() or "never"
+    return (f"{count('losses')} / {count('reconnects')} / {count('dropped')} / "
+            f"{count('stalls')}; last loss {at}")
+
+
+def link_row_element():
+    """The readonly that carries `link_counters` in a Diagnostics section."""
+    return {"type": "readonly", "text": LINK_CAPTION, "model_attr": LINK_ATTR,
+            "writable": False, "role": "info"}
+
+
+def with_link_row(schema, state, element):
+    """`schema` with `element` (the link counters readout) at the end of the
+    model's Diagnostics section when its state has a link: the section
+    titled "Diagnostics", else its first tier-3 section. The schema is the
+    model's (src/schema.py is not the views'), so the row is added here, to
+    a copy; the model's own dicts are never touched."""
+    if not link_of(state) or not isinstance(schema, dict):
+        return schema
+    sections = list(schema.get("sections") or [])
+    at = next((i for i, s in enumerate(sections)
+               if str(s.get("title") or "").strip().lower() == "diagnostics"), None)
+    if at is None:
+        at = next((i for i, s in enumerate(sections) if s.get("tier") == 3), None)
+    if at is None:
+        return schema
+    section = dict(sections[at])
+    elements = list(section.get("elements") or [])
+    if any(e is element for e in elements):
+        return schema
+    section["elements"] = elements + [element]
+    sections[at] = section
+    return dict(schema, sections=sections)
+
+
 def is_stop_control(element):
     """The stop itself (a per-model stop toggle, a stop button)."""
     return bool(element.get("stop")) or element.get("command") in STOP_COMMANDS
@@ -274,10 +327,20 @@ class PanelView:
         #: first (`entry_notices`), and whether its link is down.
         self.notices = []
         self.link_down, self._link_reason = False, ""
+        self._link_row = link_row_element()
 
     # -- the three calls a view makes -------------------------------------
     def _schema(self):
-        return self._panel.schema if self._panel else self.controller.schema(self.name)
+        if self._panel:
+            return self._panel.schema
+        schema = self.controller.schema(self.name)
+        # V2: a linked model's Diagnostics carries its link counters, drawn
+        # by each toolkit's own readonly. Read at build time only.
+        try:
+            state = self.controller.state(self.name)
+        except Exception:
+            return schema
+        return with_link_row(schema, state, self._link_row)
 
     def _state(self):
         return self._panel.state if self._panel else self.controller.state(self.name)
@@ -359,6 +422,8 @@ class PanelView:
             if kind == "entry":
                 if not self._entry_is_dirty(element):
                     self._set_text(element, values.get(attr, ""))
+            elif kind == "readonly" and attr == LINK_ATTR:
+                self._set_text(element, link_counters(state))
             elif kind in ("readonly", "region_select", "dropdown") and attr:
                 self._set_text(element, values.get(attr, ""))
             elif kind in ("toggle", "indicator", "checkbox"):
