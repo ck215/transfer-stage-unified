@@ -93,6 +93,11 @@ class IdleInterlock:
         running = self._thread("interlock")
         if (running is not None and running.is_alive()
                 and not self._interlock_stop.is_set()):
+            # Already armed: a re-arm (AUTO -> MANUAL, say) is still the
+            # operator doing something, so it restarts the clock (rb-pump
+            # P2). Returning without this left 10 s on the clock after a
+            # mode switch at 4 min 50 s.
+            self._touch_activity()
             return
         self._interlock_stop = threading.Event()
         self._interlock_generation += 1
