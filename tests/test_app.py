@@ -541,3 +541,39 @@ def test_exit_process_closes_the_log_then_exits(monkeypatch):
     monkeypatch.setattr(app.os, "_exit", lambda code: order.append(("_exit", code)))
     app.exit_process()
     assert order == ["closed", ("_exit", 0)]
+
+
+# -- A5: an update staged for the restart is swapped in at the next start -----
+
+def test_a_pending_update_is_swapped_in_before_anything_opens(
+        frozen_install, exec_calls, fake_views):
+    """The operator quit instead of pressing Restart: the next start swaps
+    the staged version in and runs it, before any view, model or log opens."""
+    assert app.main(["--tk"]) == 0
+    assert FakeView.built == [], "nothing opened on the old version"
+    assert (frozen_install / "VERSION").read_text().startswith("v1.3.0")
+    assert not (frozen_install / "UPDATE_PENDING").exists()
+    assert exec_calls == [("execv", app.sys.executable, [app.sys.executable, "--tk"])]
+
+
+def test_on_windows_the_startup_swap_goes_to_the_script(
+        frozen_install, exec_calls, fake_views, monkeypatch):
+    monkeypatch.setattr(app.sys, "platform", "win32")
+    assert app.main(["--tk"]) == 0
+    assert FakeView.built == []
+    assert [c[0] for c in exec_calls] == ["Popen", "_exit"]
+    assert (frozen_install.parent / "station-update.cmd").exists()
+
+
+def test_without_a_pending_update_the_start_is_as_before(
+        frozen_install, exec_calls, fake_views):
+    (frozen_install / "UPDATE_PENDING").unlink()
+    assert app.main(["--tk"]) == 0
+    assert exec_calls == [] and len(FakeView.built) == 1
+
+
+def test_a_checkout_never_looks_for_a_pending_update(exec_calls, fake_views, monkeypatch):
+    monkeypatch.setattr(app.updater, "pending_update",
+                        lambda install: pytest.fail("looked in a checkout"))
+    assert app.main(["--tk"]) == 0
+    assert len(FakeView.built) == 1

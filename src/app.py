@@ -177,6 +177,18 @@ def restart_process(args=None, extra_args=(), delay=0.0):
     return None
 
 
+def _swap_in_pending_update():
+    """True when a pending update was handed to `restart_process`: this
+    start has then been replaced (or, where `execv` returns in a test,
+    must not go on). A checkout never has one."""
+    if not getattr(sys, "frozen", False):
+        return False
+    if updater.pending_update(os.path.dirname(sys.executable)) is None:
+        return False
+    restart_process()
+    return True
+
+
 def exit_process():
     """End the station now: Setup's Switch to stable has closed every model
     and started the stable app. `os._exit`, not `sys.exit`: it is called from
@@ -353,6 +365,13 @@ Examples:
     # hardware-capable web server instead of the view the operator asked for
     # (MANAGER-14).
     args = parser.parse_args(argv)
+    # A5: an update staged for the restart (Windows locks a running
+    # install, so it waits in <install>.next) is swapped in now, before any
+    # view, model or log file opens - also when the operator quit instead
+    # of pressing Restart. The swap re-executes the new version (or, on
+    # Windows, hands over to the swap script) and this start ends here.
+    if _swap_in_pending_update():
+        return 0
     if args.no_motion:
         os.environ["STATION_NO_MOTION"] = "1"
     if args.map_db:

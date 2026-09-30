@@ -2252,3 +2252,13 @@ def test_the_switch_waits_for_a_scan_and_a_flash(fake_types, stable, monkeypatch
     panel = switching(stable, StableFirmware(), [])
     monkeypatch.setattr(Setup, "is_scanning", property(lambda self: True))
     assert "scan" in refused(lambda: panel.switch_to_stable(True))
+
+
+# -- A5: no release yet --------------------------------------------------------
+
+def test_no_release_yet_reads_as_such_on_the_update_line(panel):
+    panel._publish_check({"status": "no_release", "behind": 0, "log": [],
+                          "reason": "No release has been published yet.",
+                          "tag": "v1.2.0"})
+    assert panel.update_status == "No release has been published yet."
+    assert panel.has_update is False

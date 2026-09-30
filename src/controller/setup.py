@@ -1290,6 +1290,7 @@ class Setup(PortProbe, Panel):
         "diverged": "This checkout has commits GitHub does not; update by hand.",
         "not_git": "Not a git checkout.",
         "bundle": "A packaged bundle updates by installing a new one.",
+        "no_release": "No release has been published yet.",
     }
     CHECKING = "Checking for updates…"
     CHECK_OFF = ("The update check is off for this run "
