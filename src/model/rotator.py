@@ -429,8 +429,9 @@ class Rotator(Model):
 
         The check that counts now happens **inside the port lock**: the
         SMC100 carries `abort_if=self._estop.is_set` into every
-        `SerialPort.write`, so a stop that lands while this command is queued
-        on the lock aborts it before its bytes go out. What is left here is
+        `SerialPort.write` that is not a read-only `TS?`/`TP?` poll (SF-3),
+        so a stop that lands while this command is queued on the lock aborts
+        it before its bytes go out. What is left here is
         dispatch and what to do when a move does not finish.
 
         **The caller holds `_motion_lock`**; this releases it when the move

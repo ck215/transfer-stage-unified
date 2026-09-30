@@ -135,16 +135,52 @@ def test_opening_vouches_for_the_link_once_the_controller_answers():
 
 # -- the FULL STOP latch, inside the port lock -----------------------------
 
-def test_every_ordinary_command_carries_the_latch_into_the_port_lock():
-    port = FakePort(replies=["1TS000032"])
+@pytest.mark.parametrize("command, argument, expect", [
+    ("PR", 1.5, False), ("PA", 10.0, False), ("OR", None, False),
+    ("RS", None, False), ("PW", 1, False), ("ZX", 1, False),
+    ("ST", None, False), ("ID", "?", True),
+])
+def test_every_command_that_is_not_a_poll_carries_the_latch_into_the_port_lock(
+        command, argument, expect):
+    port = FakePort(replies=["1IDTRB25CC"])
     latch = threading.Event()
     abort_if = latch.is_set
     smc = _smc(port, abort_if=abort_if)
-    smc.get_status()
+    smc.sendcmd(command, argument, expect_response=expect)
     assert port.writes[0][2] is abort_if, (
-        "the command did not carry abort_if, so the latch is only ever "
+        f"{command} did not carry abort_if, so the latch is only ever "
         "checked outside the lock, where it cannot catch a stop that landed "
         "while the command queued")
+
+
+def test_the_read_only_polls_are_not_refused_by_the_latch():
+    """SF-3: `TS?` and `TP?` move nothing, and after a stop they are what
+    confirms it. Refusing them under the latch made every FULL STOP read as
+    a lost cable. They carry no `abort_if`; everything that moves still
+    does (above), and a latched move still writes nothing (below)."""
+    port = FakePort(replies=["1TS000033", "1TP4.5"])
+    latch = threading.Event()
+    latch.set()
+    smc = _smc(port, abort_if=latch.is_set)
+    assert smc.get_status() == (0, "33")
+    assert smc.get_position_deg() == 4.5
+    assert port.payloads == [b"1TS?\r\n", b"1TP?\r\n"]
+    assert [abort for _payload, _priority, abort in port.writes] == [None, None]
+    with pytest.raises(SMC100Error):
+        smc.move_relative_deg(1.0, wait_stop=False)
+    assert port.payloads == [b"1TS?\r\n", b"1TP?\r\n"], "a latched move was written"
+
+
+def test_a_wait_for_motion_is_still_abandoned_under_the_latch():
+    """The polls are exempt; waiting on a MOVE is not. With `TS?` no longer
+    aborting inside the port lock, `wait_states` must still give up on its
+    own check of the latch rather than keep watching a stopped stage."""
+    port = FakePort(replies=["1TS000028"] * 50)
+    latch = threading.Event()
+    latch.set()
+    smc = _smc(port, abort_if=latch.is_set)
+    with pytest.raises(SMC100Error, match="FULL STOP"):
+        smc.wait_states(("33",))
 
 
 def test_a_latched_command_writes_nothing_and_says_so():

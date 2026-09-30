@@ -176,7 +176,11 @@ class SMC100(Device):
     this command has won the lock and immediately before its bytes go out --
     which is the only place a check can catch a stop that landed while the
     command was queued. `stop(priority=True)` deliberately passes no
-    `abort_if`: a latched stop is the one write that must still go.
+    `abort_if`: a latched stop is the one write that must still go. Nor do
+    the read-only polls `TS?`/`TP?` (SF-3, `LATCH_EXEMPT_QUERIES`): they
+    move nothing, and after a stop they are how the stage is seen to have
+    stopped. `wait_states` still abandons a move's wait on its own check of
+    the latch.
     """
 
     #: A hardware link (MOD-5): losing it loses the stage.
@@ -225,6 +229,13 @@ class SMC100(Device):
 
     #: Repeating these would repeat MOTION. Never retried, whatever is asked.
     NO_RETRY_COMMANDS = ("PR", "OR")
+
+    #: SF-3: the questions that move nothing, asked as `<cmd>?`. They carry
+    #: no `abort_if`: after a FULL STOP they are what shows where the stage
+    #: stopped and confirms the ST, and refusing them made every stop read
+    #: as a lost cable. Everything else -- motion, configuration, ID? inside
+    #: Reset & Configure -- stays latched.
+    LATCH_EXEMPT_QUERIES = ("TS", "TP")
 
     #: retry=True means "until it answers". Bounded anyway: the vendor driver's
     #: `retry <= 0` test is False for `True`, so its loop had no exit at all.
@@ -508,6 +519,9 @@ class SMC100(Device):
         prefix = self._smc_id + command
         retries_left = self._retry_budget(retry if command not in self.NO_RETRY_COMMANDS
                                           else False)
+        is_poll = (expect_response and argument == "?"
+                   and command in self.LATCH_EXEMPT_QUERIES)
+        abort_if = None if is_poll else self._abort_if
 
         while True:
             waited = time.monotonic()
@@ -520,7 +534,7 @@ class SMC100(Device):
             try:
                 if expect_response:
                     self._discard_input(port, prefix)
-                if not port.write(frame, abort_if=self._abort_if):
+                if not port.write(frame, abort_if=abort_if):
                     # `abort_if` fired inside the lock: nothing was written,
                     # and nothing must pretend otherwise.
                     events.debug("Aborted", f"{prefix} not written: abort_if "
