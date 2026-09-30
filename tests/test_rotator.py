@@ -426,6 +426,33 @@ def test_a_confirmation_comes_back_as_needs_confirm_through_run():
     assert model.run("move_to", args=(True,)).is_ok
 
 
+def test_the_step_defaults_to_one_degree():
+    """D11: Step defaulted to 0 (`main` had 1.0), so Move +/- on a fresh
+    session did nothing and said nothing."""
+    assert Rotator.PARAMS["step_deg"].default == 1.0
+    model = _rotator(position=0.0)
+    assert float(model.step_deg) == 1.0
+    assert model.move_by(1) is True
+    assert _wait_until(lambda: model.smc.calls)
+    assert model.smc.calls[0] == ("move_relative_deg", 1.0)
+
+
+def test_a_zero_step_is_refused_with_a_reason():
+    """D11: a zero step is not a move. It is refused where the operator
+    sees it, sends nothing, and leaves the reference alone."""
+    model = _rotator(position=5.0)
+    model.step_deg = 0
+    with pytest.raises(Refused) as refused:
+        model.move_by(1)
+    assert "step" in str(refused.value).lower()
+    result = model.run("move_by", inputs={"step_deg": "0"}, args=(-1,))
+    assert result.is_refused
+    assert "step" in result.reason.lower(), result.reason
+    time.sleep(0.05)
+    assert model.smc.calls == [], "a zero step reached the stage"
+    assert model._commanded_target is None
+
+
 def test_an_unparseable_entry_is_refused_by_name():
     model = _rotator(position=0.0)
     result = model.run("move_to", inputs={"target_deg": "nan"})

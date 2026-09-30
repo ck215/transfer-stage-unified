@@ -105,7 +105,8 @@ class Rotator(Model):
         "target_deg": Param("target_deg", "float", default=0, minimum=-175,
                             maximum=175, decimals=2, unit="deg",
                             label="Target (deg)"),
-        "step_deg": Param("step_deg", "float", default=0, minimum=-175,
+        # D11: 1.0, as on `main`. A default of 0 made Move +/- do nothing.
+        "step_deg": Param("step_deg", "float", default=1.0, minimum=-175,
                           maximum=175, decimals=2, unit="deg",
                           label="Step (deg)"),
     }
@@ -303,9 +304,15 @@ class Rotator(Model):
         commanded target when there is one -- the sum of every move this
         model has accepted, and so the only value that can see a stack of
         clicks.
+
+        A zero step is refused, not sent (D11): a `PR0` that moves nothing
+        and says nothing reads to the operator as a dead button.
         """
         sign = 1 if float(sign) >= 0 else -1
         step = self.PARAMS["step_deg"].coerce(self.step_deg) * sign
+        if step == 0:
+            raise Refused("Move refused: Step (deg) is 0. Enter a step size, "
+                          "then Move - or Move +.")
         reference, is_known = self._reference_position()
         return self._move_guarded(reference + step,
                                   lambda: self.smc.move_relative_deg(step),
