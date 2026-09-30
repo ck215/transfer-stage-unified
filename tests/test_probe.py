@@ -699,6 +699,39 @@ def test_the_heartbeat_is_not_touched_by_a_read_that_raised(probe):
 
 
 @pytest.mark.transport
+def test_a_snap_to_zero_while_enabled_warns_of_a_board_reset(probe):
+    """L6: the stepper firmware's setup() zeroes its counts, so a board
+    that reset mid-session reports exactly (0,0,0). Warn (ATTENTION); the
+    mode is NOT changed (a false positive would be an unasked-for stop)."""
+    import events as events_module
+    probe.enable()
+    probe._note_position((5000, -20, 7))
+    with Collected() as seen:
+        probe._note_position((0, 0, 0))
+    warned = [e for e in seen.seen if e.title == events_module.BOARD_RESET_SUSPECTED]
+    assert len(warned) == 1 and warned[0].needs_ack is True
+    assert warned[0].message == (
+        "Stepper Probe's position snapped to zero while enabled; the board "
+        "may have reset and its drivers are off. Leave the mode and enter it "
+        "again.")
+    assert probe.mode is ProbeMode.IDLE, "the heuristic must never stop the probe"
+
+
+@pytest.mark.transport
+@pytest.mark.parametrize("case", ["disabled", "small", "slow", "not_zero"])
+def test_what_is_not_a_board_reset(probe, case):
+    if case != "disabled":
+        probe.enable()
+    start = (probe.RESET_JUMP_COUNTS // 2 if case == "small" else 5000, 0, 0)
+    probe._note_position(start)
+    if case == "slow":
+        probe._position_time -= probe.RESET_WINDOW + 0.1
+    with Collected() as seen:
+        probe._note_position((0, 0, 1) if case == "not_zero" else (0, 0, 0))
+    assert not [e for e in seen.seen if e.title == "Board Reset Suspected"]
+
+
+@pytest.mark.transport
 def test_the_drain_is_bounded(probe):
     probe.port.lines = ["POS:1,1,1"] * (probe.MAX_DRAIN_LINES + 10)
     probe._read_position()

@@ -152,6 +152,19 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: L3: at most one "Packets Dropped" warning per this many seconds.
     DROPPED_WARN_INTERVAL = 10.0
 
+    #: L6: a jump to exactly (0,0,0) from farther than this, within
+    #: RESET_WINDOW, is a board that reset (its setup() zeroes the counts),
+    #: not motion. The stepper/chuck firmware caps each axis at
+    #: setMaxSpeed(1600 * microstepMode / 2) = 6400 steps/s (microstepMode
+    #: 8) and prints every PRINT_INTERVAL = 100 ms, so one sample can move at
+    #: most 640 counts; twice that allows for a late or merged sample. The
+    #: DC board's encoder rate is not stated in its sketch: this is a
+    #: stepper-derived number there, for the owner to judge at the bench.
+    RESET_JUMP_COUNTS = 1280
+    #: Two print intervals: 6400 steps/s x 0.2 s = 1280, so no real move
+    #: inside the window can cover RESET_JUMP_COUNTS.
+    RESET_WINDOW = 0.2
+
     # The idle interlock's INTERLOCK_TIMEOUT (300 s), INTERLOCK_POLL_INTERVAL
     # and IDLE_WARN_SECONDS (60 s) come from `model.idle.IdleInterlock`.
 
@@ -810,6 +823,23 @@ class Probe(GamepadInput, IdleInterlock, Model):
                     f"position for {self.STREAM_STALL_SECONDS:g} s; the link "
                     "is up. Check the board.", source=self.NAME)
 
+    def _check_reset(self, position, previous, previous_time, now):
+        """L6: warn when the position snaps to zero while enabled. Warning
+        only: the mode is not touched (a false positive mid-move would be a
+        stop the operator did not ask for)."""
+        if (tuple(position) != (0, 0, 0) or previous_time is None
+                or self._mode is ProbeMode.DISABLED
+                or now - previous_time > self.RESET_WINDOW
+                or max(abs(v) for v in previous) <= self.RESET_JUMP_COUNTS):
+            return
+        events.debug("Board Reset Suspected", f"{previous} -> (0, 0, 0) in "
+                     f"{(now - previous_time) * 1000:.0f} ms in mode "
+                     f"{self._mode.value}", source=self.NAME)
+        events.warn(events.BOARD_RESET_SUSPECTED, f"{self.NAME}'s position "
+                    "snapped to zero while enabled; the board may have reset "
+                    "and its drivers are off. Leave the mode and enter it "
+                    "again.", source=self.NAME, ack=True)
+
     def _link_stream_state(self):
         return {"dropped": int(self._dropped), "stalls": int(self._stalls),
                 "stalled": bool(self._stalled)}
@@ -828,6 +858,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         now = time.monotonic()
         previous, previous_time = self._position, self._position_time
         moved = position != previous
+        self._check_reset(position, previous, previous_time, now)
         if previous_time is not None and now > previous_time:
             span = now - previous_time
             self._velocity = tuple(

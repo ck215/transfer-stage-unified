@@ -517,7 +517,7 @@ def test_the_attention_set_is_exactly_the_titles_the_lead_named():
     assert events_module.ATTENTION == frozenset({
         "Idle Timeout", "Temperature Disconnected", "Rotator Unreachable",
         "Heater Off Not Sent", "Update Ready", "Restart Needed",
-        "Firmware Out of Date", "Connection Lost"})
+        "Firmware Out of Date", "Connection Lost", "Board Reset Suspected"})
     assert isinstance(events_module.ATTENTION, frozenset)
     # The countdown, the silent browser and the map's soft notices stay
     # tray lines.

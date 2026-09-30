@@ -83,6 +83,8 @@ FIRMWARE_OUT_OF_DATE = "Firmware Out of Date"
 #: port stops the model and reconnects by itself), and came back (info).
 LINK_LOST = "Connection Lost"
 LINK_RESTORED = "Connection Restored"
+#: L6: a probe's position snapped to (0,0,0) while enabled (warning only).
+BOARD_RESET_SUSPECTED = "Board Reset Suspected"
 
 #: The `name` an action (and the Web's `/api/run`) gives the Setup panel.
 SETUP_PANEL = "__setup__"
@@ -97,7 +99,7 @@ SETUP_PANEL = "__setup__"
 ATTENTION = frozenset({IDLE_TIMEOUT, TEMPERATURE_DISCONNECTED,
                        ROTATOR_UNREACHABLE, HEATER_OFF_NOT_SENT,
                        UPDATE_READY, RESTART_NEEDED, FIRMWARE_OUT_OF_DATE,
-                       LINK_LOST})
+                       LINK_LOST, BOARD_RESET_SUSPECTED})
 
 
 def _action(action, needs_ack):
@@ -301,5 +303,6 @@ for _name in ("STOP_NOT_CONFIRMED", "IDLE_TIMEOUT_SOON", "IDLE_TIMEOUT", "BROWSE
               "BROWSER_GONE", "TEMPERATURE_DISCONNECTED", "ROTATOR_UNREACHABLE",
               "HEATER_OFF_NOT_SENT", "UPDATE_READY", "RESTART_NEEDED",
               "FIRMWARE_OUT_OF_DATE", "LINK_LOST", "LINK_RESTORED",
+              "BOARD_RESET_SUSPECTED",
               "SETUP_PANEL", "ATTENTION"):
     setattr(events, _name, globals()[_name])
