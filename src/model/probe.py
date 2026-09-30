@@ -452,6 +452,11 @@ class Probe(GamepadInput, IdleInterlock, Model):
             if previous is not ProbeMode.DISABLED:
                 events.debug("Mode", f"{previous.value} -> disabled (halt)",
                              source=self.NAME)
+        elif self._link_loss_in_progress:
+            # L1: the link itself is gone. The loss is reported by the port,
+            # with this outcome in it; FAULT would block the recovery.
+            events.debug("Halt Not Confirmed", "the link is lost; leaving the "
+                         "mode as DISABLED, not FAULT", source=self.NAME)
         elif self.port is not None:
             self._enter_fault("The stop did not reach the board, so the "
                               "motors may still be powered. Treat it as live "
@@ -459,6 +464,20 @@ class Probe(GamepadInput, IdleInterlock, Model):
         if not self.can_kill_coils:
             self._report_no_coil_kill()
         return all(landed.values())
+
+    def _leave_mode_for_link_loss(self, landed):
+        """L1: a lost link leaves the mode as DISABLED, never FAULT (FAULT
+        is the needs-a-person latch and would block the recovery). The stop
+        has already been attempted on the still-open handle."""
+        with self._mode_lock:
+            previous = self._mode
+            self._moving_deadline = None
+            self._stop_interlock()
+            if previous is not ProbeMode.FAULT:
+                self._mode = ProbeMode.DISABLED
+        events.debug("Mode", f"{previous.value} -> {self._mode.value} (link "
+                     f"lost; stop {'landed' if landed else 'NOT confirmed'})",
+                     source=self.NAME)
 
     def _write_stop(self, label, payload):
         if self.port is None:
@@ -595,7 +614,17 @@ class Probe(GamepadInput, IdleInterlock, Model):
         if self._is_off_neutral(levels):
             self._touch_activity()
         payload = self._jog_bytes(levels)
-        written = bool(self.port.write(payload, abort_if=self._estop.is_set))
+        try:
+            written = bool(self.port.write(payload, abort_if=self._estop.is_set))
+        except serial_device.TransportError as exc:
+            if not self._is_link_down():
+                raise
+            # L1: the link is lost and its owner stop is on its way. Raising
+            # here would reach the pump's fault hook and turn a recoverable
+            # loss into FAULT (and end the pump).
+            events.debug("Jog Not Sent", f"link lost: {exc}", source=self.NAME,
+                         every=1.0)
+            return False
         events.debug("Jog", f"50 Hz stream; last frame written={written}",
                      source=self.NAME, every=1.0)
         return written

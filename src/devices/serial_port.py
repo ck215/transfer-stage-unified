@@ -258,11 +258,12 @@ class SerialPort(Device):
 
     def __init__(self, port, baud_rate=115200, *, xonxoff=False,
                  read_timeout=None, write_timeout=None, line_terminator="\n",
-                 handshake=True, probe=False):
+                 handshake=True, probe=False, owner=None):
         """was serial.__init__ - minus all the I/O, which is now `open()`.
         `probe=True` is Setup's scan asking a port what it is: an unanswered
         handshake there is information (most ports are not ours), not the
-        warning a configured port earns (round 7, Web CCR 3)."""
+        warning a configured port earns (round 7, Web CCR 3). `owner` is the
+        owning model's NAME, for the sentences a loss is reported in."""
         write_timeout = self.WRITE_TIMEOUT if write_timeout is None else write_timeout
         if not isinstance(write_timeout, (int, float)) or write_timeout <= 0:
             raise ValueError("write_timeout must be a positive number of "
@@ -284,6 +285,12 @@ class SerialPort(Device):
         self.line_terminator = line_terminator
         self.has_handshake = bool(handshake)
         self.is_simulated = port in self._SIMULATED_NAMES
+        self.owner = owner
+
+        # The owner's reaction to a loss (L1): `on_lost(why) -> bool` stops
+        # the hardware while the handle is still open; see `_mark_lost`.
+        self._on_lost = None
+        self._on_restored = None
 
         self._lock = threading.RLock()
         self._write_io_lock = threading.Lock()
@@ -330,6 +337,30 @@ class SerialPort(Device):
     @property
     def _source(self):
         return f"SerialPort {self.port if not self.is_simulated else 'SIM'}"
+
+    def set_link_handlers(self, on_lost=None, on_restored=None, owner=None):
+        """The owning model's reaction to a loss and to a recovery (L1/L2).
+
+        `on_lost(why) -> bool` is called once per loss, on a worker, while
+        the handle is still open: it is the owner's one chance to put a stop
+        on the wire before the handle goes (the stop that landed -> True).
+        It is bounded by `loss_stop_budget`; what it raises is logged, never
+        passed on. `on_restored()` is called once the link is back. A port
+        with no `on_lost` (Setup's scan, the SMC100's) closes its handle at
+        the first failure, as it always did, and does not reconnect.
+        """
+        self._on_lost = on_lost
+        self._on_restored = on_restored
+        if owner is not None:
+            self.owner = owner
+
+    @property
+    def loss_stop_budget(self):
+        """Seconds the owner's stop may take on a lost link: its three
+        priority writes (zero frame, `'d'`, `'k'`), each bounded by the
+        priority lane's two lock waits and the write timeout."""
+        return 3 * (self.PRIORITY_LOCK_TIMEOUT + self.WRITE_IO_LOCK_TIMEOUT
+                    + self.write_timeout)
 
     def _verify(self):
         """was serial._verify_serial. Is there an open handle?"""
@@ -664,6 +695,12 @@ class SerialPort(Device):
                 outcome = "port not open"
                 raise TransportError(
                     f"port {self.port} is not open; {payload!r} was not sent")
+            if not priority and self._state is ConnectionState.LOST:
+                # The handle of a lost link is kept only for the owner's stop
+                # (L1). Motion must never reach it, not even once.
+                outcome = "link lost"
+                raise TransportError(
+                    f"the link to {self.port} is lost; {payload!r} was not sent")
             try:
                 handle.write(payload)
             except Exception as exc:
@@ -709,9 +746,16 @@ class SerialPort(Device):
         return True
 
     def _mark_lost(self, why):
-        """First transport failure wins: go LOST, release the handle, report
-        once (SERIAL-8). The state then carries the fact; later failures
-        raise TransportError without another report.
+        """First transport failure wins: go LOST and report once (SERIAL-8).
+        The state then carries the fact; later failures raise TransportError
+        without another report.
+
+        With an owner (`set_link_handlers`), the handle is NOT dropped here
+        (L1, BUGFIX_PLAN D5): a worker gives the owner one bounded stop on
+        the still-open handle, and only then closes it. Dropping it first
+        made the owner's stop raise "port not open", so no zero frame and no
+        `'d'` were ever attempted and the stage could drift at its last jog
+        value. Without an owner the handle is released at once, as before.
 
         Takes only `_state_lock`, which is never held across I/O, so this is
         safe on the priority path with the transaction lock in someone
@@ -726,19 +770,73 @@ class SerialPort(Device):
             was = self._state
             self._state = ConnectionState.LOST
             handle = self._handle
-            if not self.is_simulated:
+            recovers = self._on_lost is not None and not self.is_simulated
+            if not self.is_simulated and not recovers:
                 self._handle = None
+            generation = self._generation
         self._note_state(was, ConnectionState.LOST, f"transport failure: {why}")
+        if recovers:
+            threading.Thread(target=self._recover, args=(generation, why, handle),
+                             daemon=True, name=f"serial-recover-{self.port}").start()
+            return
+        self._close_lost_handle(handle)
+        self._report_loss(why, None)
+
+    def _close_lost_handle(self, handle):
+        with self._state_lock:
+            if self._handle is handle and not self.is_simulated:
+                self._handle = None
         if handle is not None:
             try:
                 handle.close()
             except Exception as exc:
                 events.debug("Close After Loss Failed", str(exc),
                              source=self._source, exception=exc)
+
+    def _report_loss(self, why, stopped):
         # warn, not error: the owning model faults on the TransportError it
         # is about to receive, and that fault is the acknowledged popup.
         events.warn("Connection Lost", f"{self.port}: {why}",
                     source=self._source, exception=why if isinstance(why, Exception) else None)
+
+    def _recover(self, generation, why, handle):
+        """The loss worker (L1): the owner's stop on the still-open handle,
+        then the close. Never raises."""
+        stopped = self._owner_stop(why)
+        self._close_lost_handle(handle)
+        events.debug("Lost Handle Closed", f"after the owner's stop "
+                     f"(landed={stopped})", source=self._source)
+        self._report_loss(why, stopped)
+
+    def _owner_stop(self, why):
+        """Run `on_lost(why)` on its own thread and wait `loss_stop_budget`.
+        -> True/False (did the stop land), or None when it ran out of time.
+        A failure of the attempt is logged, never raised."""
+        handler = self._on_lost
+        if handler is None:
+            return None
+        done, result = threading.Event(), []
+
+        def _run():
+            try:
+                result.append(bool(handler(why)))
+            except Exception as exc:
+                result.append(False)
+                events.debug("Loss Stop Raised", repr(exc),
+                             source=self._source, exception=exc)
+            finally:
+                done.set()
+
+        started = time.monotonic()
+        threading.Thread(target=_run, daemon=True,
+                         name=f"serial-loss-stop-{self.port}").start()
+        in_time = done.wait(self.loss_stop_budget)
+        landed = result[0] if in_time and result else None
+        events.debug("Loss Stop", f"landed={landed} in "
+                     f"{(time.monotonic() - started) * 1000:.1f} ms "
+                     f"(budget {self.loss_stop_budget:.2f} s)",
+                     source=self._source)
+        return landed
 
     # -- reads ---------------------------------------------------------------
     def read_line(self, timeout=None):

@@ -8,6 +8,7 @@ import threading
 import time
 
 import schema as sch
+from devices.serial_port import SerialPort
 from events import events
 from panel import Panel
 from result import Refused, NeedsConfirm
@@ -45,6 +46,9 @@ class Model(Panel):
         self._threads_stop = threading.Event()
         self._spawned = []           # [(name, thread, stop_event)], newest last
         self._spawn_lock = threading.Lock()
+        #: True while `_on_link_lost` runs its stop: a stop that cannot land
+        #: on a lost link is that loss, not a fault (L1).
+        self._link_loss_in_progress = False
 
     # -- devices and lifecycle --------------------------------------------
     @property
@@ -53,10 +57,63 @@ class Model(Panel):
         return []
 
     def open(self):
-        """Open every owned Device, then start this model's threads."""
+        """Open every owned Device, then start this model's threads.
+
+        Each owned SerialPort is told who owns it and how the owner reacts
+        to a loss, before it opens (L1): the one place for every model."""
+        for port in self._link_ports():
+            port.set_link_handlers(on_lost=self._on_link_lost,
+                                   on_restored=self._on_link_restored,
+                                   owner=self.NAME)
         for device in self.devices:
             device.open()
         self._start_threads()
+
+    # -- the serial link -------------------------------------------------
+    def _link_ports(self):
+        """The hardware SerialPorts this model owns directly (a recording
+        double in a test is not one)."""
+        return [d for d in self.devices if isinstance(d, SerialPort)]
+
+    def _on_link_lost(self, why):
+        """A port of this model lost its link (L1). Runs on the port's loss
+        worker while the handle is still open, bounded by the port.
+
+        The model's strongest stop first, on the priority lane, then the
+        model leaves its mode through `_leave_mode_for_link_loss`: to
+        DISABLED, never to FAULT, since FAULT is the needs-a-person latch
+        and the link recovers by itself. -> True when the stop landed."""
+        events.debug("Link Lost", f"{why}; stopping before the handle closes",
+                     source=self.NAME)
+        self._link_loss_in_progress = True
+        try:
+            try:
+                landed = bool(self._halt_hardware())
+            except Exception as exc:
+                landed = False
+                events.debug("Link Loss Stop Raised", repr(exc),
+                             source=self.NAME, exception=exc)
+            try:
+                self._leave_mode_for_link_loss(landed)
+            except Exception as exc:
+                events.debug("Link Loss Mode Change Raised", repr(exc),
+                             source=self.NAME, exception=exc)
+        finally:
+            self._link_loss_in_progress = False
+        events.debug("Link Loss Stop", f"landed={landed}", source=self.NAME)
+        return landed
+
+    def _leave_mode_for_link_loss(self, landed):
+        """Leave whatever mode the model is in, without faulting. Nothing by
+        default; a model with modes overrides it."""
+
+    def _on_link_restored(self):
+        """A port of this model is back. Nothing restarts by itself."""
+
+    def _is_link_down(self):
+        """True while an owned port is lost or reconnecting."""
+        return any(p.status in ("lost", "reconnecting")
+                   for p in self._link_ports())
 
     def close(self):
         """Stop threads, halt, de-energize, close devices. Each step isolated:
