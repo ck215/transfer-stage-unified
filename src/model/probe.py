@@ -314,6 +314,13 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 return self._deenergize(reason)
             if target is ProbeMode.FAULT:
                 self._refuse("Fault is not a mode you can select.")
+            if previous is ProbeMode.FAULT or self.is_faulted:
+                # L8 (SF-1): FAULT is an unconfirmed disable. Arming out of it
+                # sent 'e' and cleared the fault on the strength of nothing;
+                # only a confirmed 'd' (a Stop, or leaving the mode) ends it.
+                self._refuse(f"{self.NAME} is in fault: its last disable was "
+                             "not confirmed. Stop it; a confirmed stop clears "
+                             "the fault.")
             if target is ProbeMode.MANUAL and not self._is_gamepad_bound:
                 # Before the enable, never after: checking afterwards can
                 # revert the Python flag, but the firmware has already been
@@ -329,7 +336,6 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 self._drain_edges()
             self._mode = target
             self._moving_deadline = None
-            self._clear_fault()
             self._start_interlock()
             self._touch()
             events.debug("Mode", f"{previous.value} -> {target.value} ({reason})",
@@ -1027,9 +1033,11 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # are validated as a set. **Not** gated on "autonomous": a
                 # second step while already AUTO is the normal way to work
                 # (DC-6, review finding 5). `is_moving` is what refuses.
+                # L8 (SF-1): greyed in fault as well; `_set_mode` refuses it.
                 sch.button("Step", "step",
                            inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
-                           role="go", disabled_when=("manual", "latched")),
+                           role="go", disabled_when=("manual", "latched",
+                                                     "fault")),
                 # Declared so `run("extend_idle")` passes the allow-list; it
                 # renders nothing. The views draw the countdown and its
                 # Extend from `idle_remaining` in state (Tier N).

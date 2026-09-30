@@ -287,13 +287,62 @@ def test_an_unconfirmed_disable_is_a_fault_not_a_disabled_claim(probe):
 
 
 @pytest.mark.mode
-def test_rearming_out_of_fault_resends_the_hardware_enable(probe):
+def test_rearming_out_of_fault_needs_a_confirmed_disable_first(probe):
+    """L8 (SF-1): FAULT means the disable was never confirmed. No mode may
+    be entered out of it; only a confirmed `'d'` leaves it, and the next
+    arming then resends the hardware enable."""
     probe.enable()
     probe._enter_fault("unknown")
     probe.port.writes.clear()
+    with pytest.raises(Refused):
+        probe.enable()
+    assert probe.port.writes == [], "an enable reached a FAULTed board"
+    assert probe.is_faulted is True
+    probe.set_mode("disabled")          # the 'd' lands: the fault clears
+    assert probe.is_faulted is False and probe.mode is ProbeMode.DISABLED
+    probe.port.writes.clear()
     probe.enable()
     assert probe.port.writes[0] == b"e"
-    assert probe.is_faulted is False
+
+
+def _fault_by_failed_disable(probe):
+    probe.enable()
+    probe.port.fail_on = lambda payload: payload == b"d"
+    probe.set_mode("disabled")
+    probe.port.fail_on = None
+    assert probe.mode is ProbeMode.FAULT and probe.is_faulted
+    probe.port.writes.clear()
+
+
+@pytest.mark.mode
+def test_step_is_refused_on_a_faulted_probe_and_sends_nothing(probe):
+    """L8 (SF-1, blocker): Step on a FAULTed probe sent `'e'` and a move
+    frame, the stage moved, and the fault vanished although the disable
+    was never confirmed."""
+    _fault_by_failed_disable(probe)
+    assert probe.run("step").is_refused
+    with pytest.raises(Refused):
+        probe.step()
+    assert probe.port.writes == [], probe.port.writes
+    assert probe.mode is ProbeMode.FAULT and probe.is_faulted
+
+
+@pytest.mark.mode
+@pytest.mark.parametrize("target", ["idle", "autonomous", "manual"])
+def test_no_mode_is_entered_out_of_fault(probe, target):
+    _fault_by_failed_disable(probe)
+    with pytest.raises(Refused):
+        probe.set_mode(target)
+    assert probe.port.writes == []
+    assert probe.mode is ProbeMode.FAULT
+
+
+@pytest.mark.schema
+def test_step_is_greyed_on_a_faulted_probe(probe):
+    import schema as sch
+    step = _by_command(probe, "step")
+    assert "fault" in step["disabled_when"]
+    assert not sch.is_enabled(step, "fault")
 
 
 @pytest.mark.mode
