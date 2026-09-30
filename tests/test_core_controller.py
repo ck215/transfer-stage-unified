@@ -621,6 +621,40 @@ def test_hooking_exit_is_idempotent(controller):
     atexit.unregister(controller.close)
 
 
+def test_the_sigterm_handler_stops_and_closes_then_re_raises(controller, monkeypatch):
+    """The handler `hook_signals` installs, called in-process (gate G1).
+
+    Port of legacy `test_lifecycle_exit.py::test_sigterm_tears_down_before_the_process_dies`.
+    `signal.signal` and `signal.raise_signal` are stubbed so no real handler
+    is installed and the re-raise does not take the pytest session down; the
+    re-raise being recorded is the evidence the signal is not swallowed.
+    """
+    import signal
+
+    device = FakeDevice("port")
+    model = FakeModel(devices=[device])
+    controller.add("probe", model, {"port": "SIM"})
+
+    installs = []
+    reraised = []
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: installs.append((sig, handler)))
+    monkeypatch.setattr(signal, "raise_signal", lambda sig: reraised.append(sig))
+
+    controller.hook_signals()
+    handlers = {sig: handler for sig, handler in installs}
+    assert signal.SIGTERM in handlers and callable(handlers[signal.SIGTERM])
+    handler = handlers[signal.SIGTERM]
+    installs.clear()
+
+    handler(signal.SIGTERM, None)
+
+    assert model.is_estopped, "the handler must stop the hardware"
+    assert model.disable_calls == 1 and not device.is_open, "the handler must close the model"
+    assert controller.model_names == []
+    assert installs == [(signal.SIGTERM, signal.SIG_DFL)], "the default action is restored"
+    assert reraised == [signal.SIGTERM], "the signal must be re-raised, not swallowed"
+
+
 # -- the station's stop state (audit round 7, IMP7-1/2, TK7-1) --------------
 #
 # `is_estopped` is "any model latched" and stays so (the watchdog and the
