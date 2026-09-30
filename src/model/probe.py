@@ -191,6 +191,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         # energized probe sat idle indefinitely (STEPPER-6, DC-1).
         self._moving_deadline = None
         self._coil_kill_reported = False
+        #: L9 (SF-5): bumped by every `_halt_hardware`, so a mode entry can
+        #: tell that a stop landed between its enable and its mode write.
+        self._halt_generation = 0
 
     # -- devices ----------------------------------------------------------
     def _build_port(self, port, sim):
@@ -310,6 +313,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """
         with self._mode_lock:
             previous = self._mode
+            halts = self._halt_generation
             if target is ProbeMode.DISABLED:
                 return self._deenergize(reason)
             if target is ProbeMode.FAULT:
@@ -334,6 +338,20 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # Entering manual starts with no step pending (D3): a press
                 # parked before this point was not made in manual mode.
                 self._drain_edges()
+            if self._halt_generation != halts or self._estop.is_set():
+                # L9 (SF-5): a stop from another thread (the Web, the
+                # watchdog) landed after the enable. Writing the target now
+                # would overwrite its DISABLED and leave the probe latched in
+                # MANUAL, and Clear would resume the jog stream. Back out
+                # through the one de-energize, which ends on the wire with
+                # the zero frame and 'd'.
+                events.debug("Mode Entry Backed Out", f"a stop landed while "
+                             f"entering {target.value}", source=self.NAME)
+                self._deenergize(f"stop during entry to {target.value}")
+                self._guard(f"Mode change to {target.value}")
+                self._refuse(f"A stop arrived while the {self.NAME} was "
+                             f"entering {target.value} mode, so it stayed "
+                             "disabled. Enter the mode again.")
             self._mode = target
             self._moving_deadline = None
             self._start_interlock()
@@ -456,6 +474,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         operator to ignore the one signal meant to mean something.
         """
         started = time.monotonic()
+        self._halt_generation += 1
         self._moving_deadline = None
         self._stop_interlock()
         landed = {}

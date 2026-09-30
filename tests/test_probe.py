@@ -337,6 +337,58 @@ def test_no_mode_is_entered_out_of_fault(probe, target):
     assert probe.mode is ProbeMode.FAULT
 
 
+def _stop_inside_the_entry_window(probe, stop):
+    """Run `set_mode("manual")` with the window between its enable and its
+    mode write widened by 20 ms (the auditor's reproduction of SF-5), and
+    `stop()` from another thread inside that window."""
+    entered, real = threading.Event(), probe.gamepad.drain_edges
+
+    def _slow_drain():
+        entered.set()
+        time.sleep(0.02)
+        return real()
+
+    probe.gamepad.drain_edges = _slow_drain
+    outcome = []
+
+    def _enter():
+        try:
+            outcome.append(probe.set_mode("manual"))
+        except Refused as refused:
+            outcome.append(refused)
+
+    worker = threading.Thread(target=_enter)
+    worker.start()
+    assert entered.wait(2.0)
+    stop()
+    worker.join(2.0)
+    return outcome
+
+
+@pytest.mark.estop
+def test_a_stop_during_a_mode_entry_leaves_the_probe_disabled_not_manual(probe):
+    """L9 (SF-5): a stop landing between `'e'` and the mode write was
+    overwritten by it, leaving the probe latched in MANUAL; Clear then
+    resumed the jog stream with no mode press."""
+    outcome = _stop_inside_the_entry_window(probe, probe.estop)
+    assert probe.is_estopped
+    assert probe.mode is ProbeMode.DISABLED, (probe.mode, outcome)
+    assert isinstance(outcome[0], Refused), outcome
+    # The back-out ends on the wire with a stop: zero frame, then 'd'.
+    assert probe.port.writes[-2:] in ([ZERO, b"d"], [b"d", b"k\n"]), \
+        probe.port.writes[-4:]
+    probe.clear_estop(True)
+    assert probe.mode is ProbeMode.DISABLED
+    assert probe.is_manual is False, "Clear would resume the jog stream"
+
+
+@pytest.mark.estop
+def test_an_unlatched_halt_during_a_mode_entry_is_not_overwritten(probe):
+    """The same window with a plain halt (no latch): the entry backs out."""
+    outcome = _stop_inside_the_entry_window(probe, probe.halt)
+    assert probe.mode is ProbeMode.DISABLED, (probe.mode, outcome)
+
+
 @pytest.mark.schema
 def test_step_is_greyed_on_a_faulted_probe(probe):
     import schema as sch
