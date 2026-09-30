@@ -827,3 +827,165 @@ def test_w2_a_lowercase_value_is_not_sentence_cased(version_station, tmp_path):
     assert out["log"] == "d66c462 fix the map", out
     assert out["status"] == "Simulated", out
     assert out["caption"].startswith("Station"), out
+
+
+# ==========================================================================
+# rb-link-views V4: the link on the page
+# ==========================================================================
+class LinkedProbe(FakeProbe):
+    """A probe that owns a port: `state["link"]` (the rb-link contract), a
+    mode toggle, a go command and a Diagnostics section of its own."""
+
+    def __init__(self, root=None):
+        super().__init__(root)
+        self.link = {"status": "verified", "losses": 0, "reconnects": 0,
+                     "dropped": 0, "stalls": 0, "stalled": False, "last_loss": None}
+        self.is_auto = False
+        self.position_age = "6.0"
+
+    @property
+    def schema(self):
+        schema = dict(super().schema)
+        schema["sections"] = list(schema["sections"]) + [
+            sch.section("Modes",
+                        sch.toggle("Autonomous", "is_auto", "set_auto", "On", "Off",
+                                   on_args=[True], off_args=[False]),
+                        sch.button("Step", "step", role="go")),
+            sch.section("Diagnostics",
+                        sch.readonly("Position age (s):", "position_age"),
+                        tier=3, disclosure="Diagnostics"),
+        ]
+        return schema
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["link"] = dict(self.link)
+        snapshot["devices"] = {"SerialPort": self.link["status"]}
+        return snapshot
+
+    def set_auto(self, flag):
+        self.is_auto = bool(flag)
+
+    def step(self):
+        return "stepped"
+
+
+@pytest.fixture
+def linked(tmp_path):
+    controller = Controller()
+    probe = LinkedProbe(root=str(tmp_path))
+    controller.add("Fake Probe", probe, {"root": str(tmp_path)})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, probe
+    finally:
+        view.close()
+
+
+def test_v4_the_server_serves_the_link_words_and_the_counters_row(linked):
+    """One implementation: /api/state carries `link_words` from views.base
+    (the same functions Tk and Qt draw from) and /api/schema the counters
+    row in the model's own Diagnostics; the model's schema is untouched."""
+    from test_view_web_server import _get
+    from views import base as view_base
+    view, controller, probe = linked
+    probe.link.update(status="reconnecting", losses=1, last_loss="12:41:07")
+    status, state = _get(view, "/api/state")
+    words = state["link_words"]["Fake Probe"]
+    assert words == {"tier": "error", "line": "Link lost 12:41:07, reconnecting…",
+                     "down": True, "reason": "Link lost: wait for it to reconnect",
+                     "counters": "1 / 0 / 0 / 0; last loss 12:41:07",
+                     "attr": view_base.LINK_ATTR}
+    status, schema = _get(view, "/api/schema?name=Fake%20Probe")
+    diagnostics = next(s for s in schema["sections"] if s["title"] == "Diagnostics")
+    assert diagnostics["elements"][-1]["model_attr"] == view_base.LINK_ATTR
+    assert all(e.get("model_attr") != view_base.LINK_ATTR
+               for e in sch.elements(controller.schema("Fake Probe")))
+
+
+def test_v4_a_model_without_a_port_has_no_link_words(station):
+    from test_view_web_server import _get
+    view, _, _ = station
+    status, state = _get(view, "/api/state")
+    assert state["link_words"] == {}
+
+
+#: What the page shows about the probe's link, read in the page.
+_LINK_READ = r"""
+  return page.evaluate(() => {
+    const card = Array.from(document.querySelectorAll('.card'))
+      .find((c) => !c.classList.contains('setup-card'));
+    const probe = (color) => {
+      const s = document.createElement('span');
+      s.style.color = getComputedStyle(document.documentElement).getPropertyValue(color).trim();
+      document.body.appendChild(s);
+      return getComputedStyle(s).color;
+    };
+    const button = (text) => Array.from(card.querySelectorAll('button'))
+      .find((b) => b.textContent.trim().startsWith(text));
+    const alert = card.querySelector('.card-alert');
+    const mark = document.querySelector('.model-link[data-model="Fake Probe"] .nav-mark');
+    return {
+      cls: card.className, bar: getComputedStyle(card).borderTopColor,
+      signal: probe('--signal'), ruleStrong: probe('--rule-strong'),
+      alert: alert.hidden ? '' : alert.textContent,
+      alertCls: alert.className,
+      badge: card.querySelector('.stale-badge').hidden ? '' : card.querySelector('.stale-badge').textContent,
+      auto: button('Off') ? button('Off').disabled : null,
+      step: button('Step') ? button('Step').disabled : null,
+      stop: button('Stop this model') ? button('Stop this model').disabled : null,
+      rail: document.getElementById('rail-alert').hidden ? '' : document.getElementById('rail-alert').textContent,
+      mark: mark ? mark.className : '', markTitle: mark ? mark.title : '',
+      text: card.textContent,
+    };
+  });
+"""
+
+
+@needs_browser
+def test_v4_a_reconnecting_link_is_the_danger_tier_on_the_page(linked, tmp_path):
+    view, _, probe = linked
+    probe.link.update(status="reconnecting", losses=1, dropped=3,
+                      last_loss="12:41:07")
+    out = _browse(view, r"""
+      await until(() => { const a = document.querySelector('.card-alert');
+                          return a && !a.hidden; });
+      await sleep(300);
+    """ + _LINK_READ, tmp_path)
+    assert out["alert"] == "Link lost 12:41:07, reconnecting…", out
+    assert "severity-warning" not in out["alertCls"]
+    assert "is-lost" in out["cls"] and out["bar"] == out["signal"], out
+    assert out["badge"] == "Connection lost"
+    assert out["auto"] is True and out["step"] is True, "modes held while down"
+    assert out["stop"] is False, "the stop is never held"
+    assert "Fake Probe: Link lost 12:41:07, reconnecting" in out["rail"]
+    assert "is-link-lost" in out["mark"] and out["markTitle"].startswith("Link lost")
+    assert "1 / 0 / 3 / 0; last loss 12:41:07" in out["text"], "the counters row"
+
+
+@needs_browser
+def test_v4_a_stalled_link_is_the_attention_tier_on_the_page(linked, tmp_path):
+    view, _, probe = linked
+    probe.link.update(stalled=True, stalls=1)
+    out = _browse(view, r"""
+      await until(() => { const a = document.querySelector('.card-alert');
+                          return a && !a.hidden; });
+      await sleep(300);
+    """ + _LINK_READ, tmp_path)
+    assert out["alert"] == "No position for 6 s; link up, check the board", out
+    assert "severity-warning" in out["alertCls"]
+    assert "is-lost" not in out["cls"] and out["bar"] != out["signal"], out
+    assert out["auto"] is False and out["step"] is False
+    assert "is-attention" in out["mark"] and "is-link-lost" not in out["mark"]
+    assert "0 / 0 / 0 / 1; last loss never" in out["text"]
+
+
+@needs_browser
+def test_v4_a_well_link_says_nothing(linked, tmp_path):
+    view, _, probe = linked
+    out = _browse(view, "await sleep(800);" + _LINK_READ, tmp_path)
+    assert out["alert"] == "" and "is-lost" not in out["cls"]
+    assert out["auto"] is False and out["step"] is False
+    assert "is-attention" not in out["mark"] and "is-link-lost" not in out["mark"]

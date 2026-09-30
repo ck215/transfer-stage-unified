@@ -760,6 +760,18 @@ function lostDevices(state) {
   return Object.keys(devices).filter((kind) => devices[kind] === 'lost').map(deviceWord);
 }
 
+//: V4 (rb-link-views): the commands that ARE the stop, which a down link
+//: never greys (`views.base.STOP_COMMANDS`, mirrored like `gateReason`).
+const LINK_STOP_COMMANDS = ['toggle_estop', 'clear_estop', 'estop', 'estop_all',
+  'clear_estop_all'];
+
+/** `views.base.link_holds`, mirrored: a down link greys a mode toggle or a
+ *  `go` command, never the stop. */
+function linkHolds(element) {
+  if (element.stop || LINK_STOP_COMMANDS.indexOf(element.command) !== -1) return false;
+  return element.type === 'toggle' || element.role === 'go';
+}
+
 /** MOD-5 / CON-6: the device class names that were hardware links before a
  *  model published `hardware_devices`; read ONLY for a state without the
  *  key, never when the key is there as an empty list
@@ -1870,6 +1882,9 @@ class PanelCard {
     this.lastData = 0;
     this.isOffline = false;
     this.lost = [];
+    //: What the server says about this model's link (`state.link_words`,
+    //: V4), or null for a model without a port. Set before each refresh.
+    this.linkWords = null;
     this.title = (options && options.title) || name;
     //: The host whose page draws this model (`state.host`, Model.HOST), or
     //: null: its own page. While hosted, the entry is a group inside the
@@ -2541,12 +2556,17 @@ class PanelCard {
     const now = Date.now();
     const wantsData = now - this.lastData >= DATA_POLL_MS;
     if (wantsData) this.lastData = now;
+    const link = this.linkWords;
+    const isDown = Boolean(link && link.down);
     for (const widget of this.widgets) {
       const element = widget.element;
       const kind = element.type;
       const attr = element.model_attr;
       if (kind === 'entry') {
         if (!widget.isDirty()) widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
+      } else if (kind === 'readonly' && link && attr === link.attr) {
+        // V2 on the Web: the Diagnostics row the server added (with_link_row).
+        widget.setText(link.counters || '');
       } else if ((kind === 'readonly' || kind === 'region_select' || kind === 'dropdown') && attr) {
         widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
       } else if (kind === 'toggle' || kind === 'indicator' || kind === 'checkbox') {
@@ -2556,9 +2576,14 @@ class PanelCard {
       }
       // O4: a faulted probe's mode toggles are greyed by their own schema
       // (`disabled_when` carries "fault") and say the served reason.
-      widget.setEnabled(isEnabled(element, mode, this.values));
+      // V1/V4: a link lost or reconnecting holds the modes and the go
+      // commands (never the stop), with the link's own reason.
+      const held = isDown && linkHolds(element);
+      widget.setEnabled(isEnabled(element, mode, this.values) && !held);
       // L3: a disabled control says why, from the same gate.
-      if (widget.setReason) widget.setReason(gateReason(element, mode, this.values));
+      if (widget.setReason) {
+        widget.setReason(held ? (link.reason || '') : gateReason(element, mode, this.values));
+      }
       if (widget.onlyWhileOn && widget.node) {
         const off = !isEnabled(element, mode, this.values);
         if (widget.node.hidden !== off) widget.node.hidden = off;
@@ -2570,11 +2595,15 @@ class PanelCard {
     // A lost device freezes the numbers even while the model's own loop
     // keeps ticking, so `age` alone would call them fresh (F3, HC-1).
     this.lost = lostDevices(state);
-    const isLost = this.lost.length > 0;
+    // V1/V4: a link lost or reconnecting is a lost device too, and its own
+    // words (when it went, whether it is coming back) replace the device
+    // sentence. A stalled link is the attention tier: a line, no signal.
+    const isLost = this.lost.length > 0 || isDown;
     this.setStale(isStale(state) || isLost, isLost ? 'Connection lost' : 'Stale');
-    this.setAlert(isLost ? sentence(this.title) + ' lost its ' + this.lost.join(' and ')
+    const linkLine = (link && link.line) || '';
+    this.setAlert(linkLine || (isLost ? sentence(this.title) + ' lost its ' + this.lost.join(' and ')
       + '. Its readings are frozen. Press Stop, check the cable, then relaunch from Setup.'
-      : '');
+      : ''), linkLine ? (link.tier || 'error') : 'error');
     // State classes, not colour: a live model is silent; a lost one's head
     // rule turns signal red; a latched one's readings freeze to muted and
     // its head says "Stopped".
@@ -2656,9 +2685,16 @@ class PanelCard {
     this.node.classList.remove('is-live');
   }
 
-  setAlert(text) {
+  /** The standing line under the head, led by the warning glyph in its
+   *  tier's mark colour: "error" (a lost link, signal) or "warning" (a
+   *  stalled link, ink). */
+  setAlert(text, tier) {
     putText(this.alert, text);
     if (this.alert.hidden !== !text) this.alert.hidden = !text;
+    const warning = Boolean(text) && tier === 'warning';
+    if (this.alert.classList.contains('severity-warning') !== warning) {
+      this.alert.classList.toggle('severity-warning', warning);
+    }
   }
 
   /** `PanelView._wants_data`: whether a data element is polled now. A
@@ -3435,6 +3471,13 @@ class Dashboard {
   renderLostLines(models) {
     const lost = new Set();
     for (const name of Object.keys(models)) {
+      // V4: the link's own words first (lost, reconnecting, stalled).
+      const words = (this.linkWords || {})[name];
+      if (words && words.line) {
+        lost.add('lost:' + name);
+        this.setRailLine('lost:' + name, sentence(name) + ': ' + words.line);
+        continue;
+      }
       const devices = lostDevices(models[name]);
       if (!devices.length) continue;
       lost.add('lost:' + name);
@@ -3450,10 +3493,14 @@ class Dashboard {
     const models = state.models || {};
     this.isActive = Boolean(state.is_active);
     this.energized = Array.isArray(state.energized) ? state.energized : [];
+    this.linkWords = state.link_words || {};
     for (const name of Object.keys(models)) {
       if (!this.cards.has(name)) await this.addCard(name);
       const card = this.cards.get(name);
-      if (card) card.refresh(models[name]);
+      if (card) {
+        card.linkWords = this.linkWords[name] || null;
+        card.refresh(models[name]);
+      }
     }
     // Hosting first, removal second: a host that closed hands its guests
     // their own pages before its entry (which holds them) goes.
@@ -3815,16 +3862,29 @@ class Dashboard {
       const faultedOne = group.find((n) => this.faulted.has(n));
       const isUnconfirmed = group.some((n) => this.unconfirmed.has(n));
       const isFaulted = !isUnconfirmed && faultedOne !== undefined;
-      const isLatched = !isUnconfirmed && !isFaulted && group.some((n) => this.latched.has(n));
+      // V4: the entry's link tier - a link lost or reconnecting (danger)
+      // under a fault, a stalled link (attention) under a plain latch.
+      const linkOf = (n) => (this.linkWords || {})[n] || null;
+      const downOne = group.map(linkOf).find((w) => w && w.tier === 'error');
+      const isLinkLost = !isUnconfirmed && !isFaulted && Boolean(downOne);
+      const isLatched = !isUnconfirmed && !isFaulted && !isLinkLost
+        && group.some((n) => this.latched.has(n));
+      const warnOne = group.map(linkOf).find((w) => w && w.tier === 'warning');
+      const isAttention = !isUnconfirmed && !isFaulted && !isLinkLost && !isLatched
+        && Boolean(warnOne);
       const words = isUnconfirmed ? 'did not confirm'
-        : (isFaulted ? 'faulted' : (isLatched ? 'stopped' : ''));
+        : (isFaulted ? 'faulted' : (isLinkLost ? 'link lost'
+          : (isLatched ? 'stopped' : (isAttention ? 'needs attention' : ''))));
       const title = isUnconfirmed ? 'Did not confirm the stop'
         : (isFaulted ? (this.faulted.get(faultedOne) ? 'Disable failed: treat as live'
                                                : 'Faulted: treat as live')
-          : (isLatched ? 'Stopped' : ''));
+          : (isLinkLost ? downOne.line : (isLatched ? 'Stopped'
+            : (isAttention ? warnOne.line : ''))));
       mark.classList.toggle('is-latched', isLatched);
       mark.classList.toggle('is-unconfirmed', isUnconfirmed);
       mark.classList.toggle('is-faulted', isFaulted);
+      mark.classList.toggle('is-link-lost', isLinkLost);
+      mark.classList.toggle('is-attention', isAttention);
       putText(mark, words);
       putAttr(mark, 'title', title);
       if (mark.hidden !== !words) mark.hidden = !words;

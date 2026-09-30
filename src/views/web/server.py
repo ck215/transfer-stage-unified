@@ -43,6 +43,7 @@ import schema as sch
 from events import events
 from result import Refused
 from views import theme
+from views import base as view_base
 from views.base import stop_words
 
 #: `name` that targets the Setup panel instead of a model (`events.SETUP_PANEL`,
@@ -58,6 +59,31 @@ BOOT_ID = f"{time.time():.6f}-{os.urandom(4).hex()}"
 ACK_ANSWERS = frozenset({"understood", "later", "action"})
 
 SOURCE = "Web"
+
+#: The watchdog warning's recovery hint (V4): what makes a tab go silent
+#: while the station is fine, and what the operator does about it.
+SILENT_HINT = ("If this tab is in the background, the browser may be throttling "
+               "or sleeping it: keep the station in its own window.")
+
+
+def link_words(models):
+    """{name: what the page says about that model's link} for every model
+    whose state has one (V4): the tier and line under its head, whether its
+    link is down, why a down link greys a mode, and the Diagnostics counters
+    - all from `views.base`, so the page never re-derives them. The Web has
+    no input gate, so nothing is ever "held" here."""
+    words = {}
+    for name, state in (models or {}).items():
+        if not isinstance(state, dict) or not view_base.link_of(state):
+            continue
+        notices = view_base.entry_notices(state)
+        words[name] = {"tier": view_base.worst_severity(notices),
+                       "line": notices[0][1] if notices else "",
+                       "down": view_base.link_is_down(state),
+                       "reason": view_base.link_gate_reason(state),
+                       "counters": view_base.link_counters(state),
+                       "attr": view_base.LINK_ATTR}
+    return words
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 _LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"})
@@ -151,6 +177,9 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             # re-derives the disc's face, the headline or the rail line.
             state = self.controller.state()
             state["stop_words"] = stop_words(state.get("stop") or {})
+            # V4 (rb-link-views): what every view says about each model's
+            # link, from the functions Tk and Qt draw from.
+            state["link_words"] = link_words(state.get("models") or {})
             state["boot"] = BOOT_ID
             return self._send_json(200, state)
 
@@ -161,7 +190,16 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             if name not in self.controller.model_names:
                 return self._send_json(404, {"status": "error",
                                              "reason": f"{name} is not open"})
-            return self._send_json(200, self.controller.schema(name))
+            # V2 on the Web: a linked model's Diagnostics carries its link
+            # counters, added to a copy exactly as the desktop views add it.
+            schema = self.controller.schema(name)
+            try:
+                schema = view_base.with_link_row(
+                    schema, self.controller.state(name), view_base.link_row_element())
+            except Exception as exc:
+                events.debug("Link Row Not Added", f"{name}: {exc}", source=SOURCE,
+                             exception=exc, every=5.0)
+            return self._send_json(200, schema)
 
         if route == "/api/setup":
             return self._send_json(200, {"schema": self.view.setup.schema,
@@ -1035,7 +1073,9 @@ class WebView:
                 self._warned = True
             # PM8-3: a sentence, not a shout, and a space before the unit.
             # The page takes this line back on the next heartbeat (O12).
+            # V4: the recovery hint. A tab in the background is throttled or
+            # slept by the browser; its own window keeps it checking in.
             events.warn(events.BROWSER_SILENT,
                         f"No browser has checked in for {silence:.1f} s while "
                         f"devices are energized. The station stops every model "
-                        f"at {self.STOP_SECONDS:.0f} s.", source=SOURCE)
+                        f"at {self.STOP_SECONDS:.0f} s. {SILENT_HINT}", source=SOURCE)

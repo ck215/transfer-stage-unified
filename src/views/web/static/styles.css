@@ -725,6 +725,32 @@ kbd {
   line-height: 1;
 }
 
+/* V4 (rb-link-views): a link lost or reconnecting is the danger tier, drawn
+   as the fault is (the signal lamp with its "!"); a stalled link is the
+   attention tier - an ink outline with the "!" in ink, never the solid
+   ink lamp that says "stopped". */
+.nav-mark.is-link-lost { background: var(--lamp-unconfirmed); }
+
+.nav-mark.is-link-lost::before,
+.nav-mark.is-attention::before {
+  content: "!";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--danger-fg);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.nav-mark.is-attention {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text);
+}
+
+.nav-mark.is-attention::before { color: var(--text); }
+
 .nav-mark[hidden] { display: none; }
 
 /* O6: energized - a ring, in ink, after the lamp. Never red, never a lamp:
@@ -1156,6 +1182,9 @@ kbd {
 }
 
 .card-alert::before { margin-top: 0.1rem; }
+
+/* V4: the attention tier (a stalled link): the glyph in the warning's ink. */
+.card-alert.severity-warning::before { background: var(--warning-mark); }
 
 .card-alert[hidden] { display: none; }
 
