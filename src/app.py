@@ -177,6 +177,19 @@ def restart_process(args=None, extra_args=(), delay=0.0):
     return None
 
 
+def exit_process():
+    """End the station now: Setup's Switch to stable has closed every model
+    and started the stable app. `os._exit`, not `sys.exit`: it is called from
+    Setup's worker thread, where `sys.exit` would end only that thread."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    events.close_file()
+    os._exit(0)
+
+
 def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
     """Build the one Controller and the one Setup, then open the view.
     was <app>.run_legacy_app, <app>.run_pyside_app, <app>.run_web_app
@@ -226,7 +239,7 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
                                extra_args=("--no-browser", "--port", str(serving)),
                                delay=RESTART_DELAY)
 
-    setup = Setup(controller, restart=restart)
+    setup = Setup(controller, restart=restart, exit_app=exit_process)
     module_name, attribute = VIEWS[view_name]
     view_class = getattr(importlib.import_module(module_name), attribute)
     # --port / --no-browser are the Web view's alone; the desktop views take

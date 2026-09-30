@@ -35,11 +35,13 @@ Setup is the one place besides the models allowed to import
 """
 import os
 import re
+import subprocess
 import threading
 import time
+from pathlib import Path
 
 import schema as sch
-from controller import user_config
+from controller import flashing, user_config
 from controller.firmware import FirmwareCheck
 from controller.updater import Updater
 from devices import gamepad as gamepad_module
@@ -223,6 +225,10 @@ del _built_in
 # choices file. Wired here, at the composition root: `model/` never imports
 # the controller.
 TransferMap.choices = user_config
+
+
+#: `Setup(stable_root=...)`'s "find it yourself" (None means "there is none").
+_UNSET = object()
 
 
 class PortProbe:
@@ -522,12 +528,25 @@ class Setup(PortProbe, Panel):
               label="New store name"),
     )}
 
-    def __init__(self, controller, updater=None, firmware=None, restart=None):
+    def __init__(self, controller, updater=None, firmware=None, restart=None,
+                 stable_root=_UNSET, stable_firmware=None, launch_stable=None,
+                 exit_app=None):
         """`firmware` (rb-launch L2) checks and flashes the boards; `restart`
         (rb-restart R3) replaces this process with a fresh one
         (`app.restart_process`); None means this station cannot restart
-        itself, and `restart_station` says so."""
+        itself, and `restart_station` says so.
+
+        A4, Switch to stable: `stable_root` is the bundle's `stable/` folder
+        (default: found beside the launcher; None in a checkout, which hides
+        the row), `stable_firmware` the FirmwareCheck over its sketches,
+        `launch_stable(argv, cwd)` starts the stable app detached and
+        `exit_app()` ends this process (`app.exit_process`)."""
         super().__init__()
+        self._stable_root = (flashing.stable_root() if stable_root is _UNSET
+                             else (None if stable_root is None else Path(stable_root)))
+        self._stable_firmware = stable_firmware
+        self._launch_stable = launch_stable or _launch_detached
+        self._exit_app = exit_app
         legacy = TransferMap.legacy_store_path()
         if legacy is not None:
             self.map_store_path = str(legacy)   # offered, never opened for them
@@ -1824,6 +1843,122 @@ class Setup(PortProbe, Panel):
             layout="row",
         )
 
+    # -- A4: Switch to stable (owner decision 3, 2026-09-30; temporary) -------
+    #: The one question before the boards are flashed with the stable
+    #: firmware; the way back is the station's own startup Flash now.
+    STABLE_CONFIRM = ("Switch to the stable station? The boards will be flashed "
+                      "with the stable firmware, every model is closed, and the "
+                      "stable app opens. To come back, start the station again "
+                      "and accept Flash now.")
+
+    @property
+    def has_stable(self):
+        return self._stable_root is not None
+
+    @property
+    def stable_status(self):
+        return ("The lab's original app, beside this one. Switching flashes the "
+                "boards with its firmware.")
+
+    def _stable_check(self):
+        if self._stable_firmware is None:
+            self._stable_firmware = FirmwareCheck(
+                sketch_root=self._stable_root / "firmware", channel=flashing.STABLE)
+        return self._stable_firmware
+
+    def switch_to_stable(self, confirmed=False):
+        """Switch to stable: close every model (the Controller's own close
+        path), flash the stable sketches to the boards that are plugged in,
+        stamp them `stable`, start the stable app detached and end this one.
+        A board that fails to flash stops the switch before anything is
+        started; this station keeps running and says which board."""
+        if not self.has_stable:
+            self._refuse("This station has no stable app beside it: switch "
+                         "branches by hand (dev/swap_branch.sh).")
+        with self._lock:
+            if self.is_flashing:
+                self._refuse("A flash is already running. Wait for it to finish.")
+            if _alive(self._apply_thread):
+                self._refuse("An update is being applied. Wait for it to finish.")
+            if self.is_scanning or self._is_restart_pending:
+                self._refuse("The scan is using the ports. Switch when it has "
+                             "finished, or press Cancel scan.")
+        if getattr(self.controller, "is_energized", False):
+            self._refuse("A model is energized. Stop it and put it out of its "
+                         "mode first, then switch.")
+        if not confirmed:
+            raise NeedsConfirm(self.STABLE_CONFIRM, "switch_to_stable")
+        running = list(getattr(self.controller, "model_names", ()) or ())
+        events.info("Switch to Stable", "Closing "
+                    f"{', '.join(running) or 'nothing'}, then flashing the stable "
+                    "firmware.", source=self.NAME)
+        self.controller.reset()
+        self._is_launched = False
+        self._refresh_rows()
+        with self._lock:
+            self.firmware_status = "switching to stable: flashing"
+            self.firmware_progress = "starting…"
+            self._flash_thread = threading.Thread(
+                target=self._stable_worker, daemon=True, name="setup-stable-switch")
+            self._flash_thread.start()
+        return True
+
+    def _stable_worker(self):
+        def on_line(line):
+            events.debug("Stable Flash", line, source=self.NAME)
+            if line.strip():
+                self.firmware_progress = line.strip()
+
+        boards = list(flashing.BOARDS)
+        try:
+            outcome = self._stable_check().flash(boards, on_line=on_line)
+        except Exception as exc:        # never let a worker die silently
+            events.debug("Stable Flash Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            outcome = {"ok": False, "last": repr(exc), "lines": [], "results": {}}
+        with self._lock:
+            self.firmware_progress = ""
+        if not outcome.get("ok"):
+            failed = [b for b, status in (outcome.get("results") or {}).items()
+                      if status == "FAILED"]
+            which = _and(failed) if failed else "A board"
+            events.warn("Switch to Stable Failed",
+                        f"{which} could not be flashed with the stable firmware "
+                        f"({outcome.get('last') or 'no output'}). The stable app "
+                        "was not started; this station keeps running. A board may "
+                        "be half-flashed: flash again from the Firmware row.",
+                        source=self.NAME)
+            self._publish_firmware(self._check_firmware_now(),
+                                   prefix="the switch to stable failed; ")
+            return
+        argv = [str(self._stable_root / _exe("station-stable"))]
+        try:
+            self._launch_stable(argv, str(self._stable_root))
+        except Exception as exc:
+            events.warn("Switch to Stable Failed", f"The stable app could not be "
+                        f"started ({exc}). The boards now run the stable "
+                        "firmware: start the stable app by hand, or accept "
+                        "Flash now here to come back.", source=self.NAME,
+                        exception=exc)
+            self._publish_firmware(self._check_firmware_now())
+            return
+        events.info("Switch to Stable", "The stable app is starting; this "
+                    "station closes.", source=self.NAME)
+        events.flush_file()
+        if self._exit_app is not None:
+            self._exit_app()
+        else:
+            os._exit(0)
+
+    def _stable_section(self):
+        return sch.section(
+            "Stable",
+            sch.readonly("Stable app", "stable_status"),
+            sch.button("Switch to stable", "switch_to_stable", role="neutral",
+                       confirm=self.STABLE_CONFIRM),
+            layout="row",
+        )
+
     # -- the trial store (A3) -----------------------------------------------
     def _transfer_map(self):
         """The open Transfer Map, if one is: it adopts a store chosen here."""
@@ -1928,7 +2063,11 @@ class Setup(PortProbe, Panel):
             # empty when nothing is coming.
             sch.readonly("Coming", "update_log"),
             layout="row",
-        ), self._firmware_section(), sch.section(
+        ), self._firmware_section()]
+        if self.has_stable:
+            # A4: a frozen bundle with the stable app beside it only.
+            sections.append(self._stable_section())
+        sections += [sch.section(
             "Devices",
             sch.button("Refresh", "refresh", role="info"),
             sch.readonly("Scan:", "scan_status"),
@@ -2044,6 +2183,25 @@ class Setup(PortProbe, Panel):
         else:
             self._selected = (f"{count} device{'s' if count != 1 else ''} "
                               "ticked to launch.")
+
+
+def _exe(name):
+    return name + ".exe" if os.name == "nt" else name
+
+
+def _launch_detached(argv, cwd):
+    """Start `argv` so it outlives this process: its own session (POSIX), or
+    detached from this console in a new process group (Windows) - the
+    pattern `app.restart_process` uses for the update's swap script."""
+    kwargs = {"cwd": cwd, "stdin": subprocess.DEVNULL,
+              "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+              "close_fds": True}
+    if os.name == "nt":
+        kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                                   | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(argv, **kwargs)
 
 
 def _and(names):

@@ -422,3 +422,25 @@ def test_a_frozen_bundles_flash_is_stamped_with_its_version(bundle, stamp):
 def test_a_checkout_still_checks_its_own_firmware(stamp):
     check = FirmwareCheck(stamp=stamp, which=everything_found)
     assert check.sketch_root == REPO / "firmware" and check.version is None
+
+
+# -- A4: the way back from stable needs no code beyond the check ---------------
+
+def test_after_a_stable_flash_every_station_board_is_out_of_date(tmp_path, stamp):
+    """Switch to stable stamps the stable sketches (channel `stable`); the
+    station's startup check then sees every board differ and offers Flash
+    now - the way back."""
+    station = make_tree(tmp_path / "station")
+    stable = tmp_path / "stable"
+    for board, directory in fw.BOARDS.items():
+        (stable / directory).mkdir(parents=True)
+        (stable / directory / f"{directory}.ino").write_text(f"// stable {board}\n")
+    ports = {f"COM{i}": board for i, board in enumerate(fw.BOARDS, 1)}
+    flashed = FirmwareCheck(sketch_root=stable, stamp=stamp, which=everything_found,
+                            run=FakeRun(), identify=ports.get, ports=list(ports),
+                            channel="stable").flash(list(fw.BOARDS))
+    assert flashed["ok"]
+    assert {e["channel"] for e in json.loads(stamp.read_text()).values()} == {"stable"}
+    result = checker(station, stamp).check()
+    assert set(result["boards"].values()) == {fw.OUT_OF_DATE}
+    assert result["to_flash"] == list(fw.BOARDS)

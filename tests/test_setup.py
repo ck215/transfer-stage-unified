@@ -2147,3 +2147,108 @@ def test_setup_offers_the_store_an_earlier_build_left_in_the_install(store_choic
     panel = Setup(RecordingController())
     assert panel.map_store_path == str(left)
     assert panel.map_store_status.startswith("Not chosen")
+
+
+# -- A4: Switch to stable (frozen bundles only; owner decision 3) ---------------
+
+STABLE_CONFIRM = ("Switch to the stable station? The boards will be flashed with "
+                  "the stable firmware, every model is closed, and the stable app "
+                  "opens. To come back, start the station again and accept Flash now.")
+
+
+class StableFirmware(FakeFirmware):
+    """The stable sketches' FirmwareCheck: `failed` names the boards whose
+    upload fails."""
+
+    def __init__(self, failed=(), **kwargs):
+        super().__init__(**kwargs)
+        self.failed = list(failed)
+        self.order = None
+
+    def flash(self, boards, on_line=None, timeout=None):
+        if self.order is not None:
+            self.order.append("flash")
+        answer = super().flash(boards, on_line=on_line, timeout=timeout)
+        answer["results"] = {b: "FAILED" if b in self.failed else "ok" for b in boards}
+        if self.failed:
+            answer.update(ok=False, returncode=1)
+        return answer
+
+
+@pytest.fixture
+def stable(tmp_path):
+    """A bundle's stable/ folder: its launcher and its sketches."""
+    import os as _os
+    root = tmp_path / "stable"
+    (root / "firmware").mkdir(parents=True)
+    (root / ("station-stable.exe" if _os.name == "nt" else "station-stable")).write_text("")
+    return root
+
+
+def switching(stable, firmware, order, controller=None):
+    return Setup(controller or RecordingController(), stable_root=stable,
+                 stable_firmware=firmware,
+                 launch_stable=lambda argv, cwd: order.append(("launch", argv, cwd)),
+                 exit_app=lambda: order.append("exit"))
+
+
+def wait_stable(panel):
+    thread = panel._flash_thread
+    if thread is not None:
+        thread.join(5.0)
+        assert not thread.is_alive()
+
+
+def test_a_checkout_has_no_switch_to_stable(panel):
+    assert "Stable" not in [s["title"] for s in panel.schema["sections"]]
+    assert "no stable app" in refused(lambda: panel.switch_to_stable(True))
+
+
+def test_a_bundle_with_stable_beside_it_offers_the_switch(fake_types, stable):
+    panel = switching(stable, StableFirmware(), [])
+    titles = [s["title"] for s in panel.schema["sections"]]
+    assert titles[:4] == ["Update", "Firmware", "Stable", "Devices"]
+    [button] = [e for e in panel.schema["sections"][2]["elements"]
+                if e["type"] == "button"]
+    assert button["command"] == "switch_to_stable"
+    assert button["confirm"] == STABLE_CONFIRM
+    question = asked(panel.switch_to_stable)
+    assert question.prompt == STABLE_CONFIRM and question.command == "switch_to_stable"
+
+
+def test_the_switch_closes_flashes_stable_launches_it_then_exits(fake_types, stable):
+    order = []
+    firmware = StableFirmware(lines=["Sketches: stable", "Summary:", "  DC Probe ok"])
+    firmware.order = order
+    controller = RecordingController()
+    panel = switching(stable, firmware, order, controller)
+    tick(panel, "alpha")
+    assert panel.run("launch").is_ok
+    assert controller.model_names == ["Alpha"]
+    assert panel.run("switch_to_stable", args=(True,)).is_ok
+    wait_stable(panel)
+    assert controller.model_names == [] and "reset" in controller.calls
+    assert firmware.flashes == [["Stepper Probe", "DC Probe", "Chuck Positioner",
+                                 "Temperature Controller"]]
+    exe = stable / ("station-stable.exe" if __import__("os").name == "nt" else "station-stable")
+    assert order == ["flash", ("launch", [str(exe)], str(stable)), "exit"]
+
+
+def test_a_board_that_fails_to_flash_stops_the_switch(fake_types, stable, warnings):
+    order = []
+    firmware = StableFirmware(failed=["Chuck Positioner"],
+                              lines=["  Chuck Positioner FAILED"])
+    panel = switching(stable, firmware, order)
+    assert panel.switch_to_stable(True)
+    wait_stable(panel)
+    assert [o for o in order if o != "flash"] == [], "nothing launched, no exit"
+    [failed] = [e for e in warnings if e.title == "Switch to Stable Failed"]
+    assert "Chuck Positioner" in failed.message
+    assert "keeps running" in failed.message
+    assert panel.firmware_progress == ""
+
+
+def test_the_switch_waits_for_a_scan_and_a_flash(fake_types, stable, monkeypatch):
+    panel = switching(stable, StableFirmware(), [])
+    monkeypatch.setattr(Setup, "is_scanning", property(lambda self: True))
+    assert "scan" in refused(lambda: panel.switch_to_stable(True))

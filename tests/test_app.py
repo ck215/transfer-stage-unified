@@ -526,3 +526,18 @@ def test_the_web_offers_at_the_pages_first_read(listening_views, monkeypatch):
 def test_a_view_that_never_subscribes_leaves_the_event_log_as_it_was(fake_views):
     app.launch("tk")
     assert "subscribe" not in vars(events)
+
+
+# -- A4: Switch to stable ends the station through the app -------------------
+
+def test_launch_hands_setup_the_way_to_end_the_station(fake_views):
+    app.launch("tk")
+    assert FakeView.built[0].setup._exit_app is app.exit_process
+
+
+def test_exit_process_closes_the_log_then_exits(monkeypatch):
+    order = []
+    monkeypatch.setattr(events, "close_file", lambda: order.append("closed"))
+    monkeypatch.setattr(app.os, "_exit", lambda code: order.append(("_exit", code)))
+    app.exit_process()
+    assert order == ["closed", ("_exit", 0)]
