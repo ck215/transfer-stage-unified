@@ -331,8 +331,8 @@ Examples:
     parser.add_argument("--font-size", type=int,
                         help="base font size, in points (8-28)")
     parser.add_argument("--map-db", metavar="PATH",
-                        help="the Transfer Map's SQLite file (default: data/transfer_map.sqlite "
-                             "in this checkout; same as STATION_MAP_DB)")
+                        help="the Transfer Map's SQLite file, overriding the store the "
+                             "operator chose (same as STATION_MAP_DB)")
 
     # parse_args, not parse_known_args: an unrecognized flag must be an error.
     # Under parse_known_args a typo like `--pyside6` was silently dropped and

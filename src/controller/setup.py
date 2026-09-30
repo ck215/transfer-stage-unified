@@ -39,6 +39,7 @@ import threading
 import time
 
 import schema as sch
+from controller import user_config
 from controller.firmware import FirmwareCheck
 from controller.updater import Updater
 from devices import gamepad as gamepad_module
@@ -52,6 +53,7 @@ from model.red_monitor import RedMonitor
 from model.rotator import Rotator
 from model.transfer_map import TransferMap
 from panel import Panel
+from param import Param
 from result import NeedsConfirm, Refused
 
 #: The Port dropdown's one fixed entry. Everything else in the list is a
@@ -216,6 +218,11 @@ for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
                   RedMonitor, TransferMap):
     register(_built_in)
 del _built_in
+
+# A3: the Transfer Map remembers the operator's store choice in the one
+# choices file. Wired here, at the composition root: `model/` never imports
+# the controller.
+TransferMap.choices = user_config
 
 
 class PortProbe:
@@ -506,12 +513,24 @@ class Setup(PortProbe, Panel):
     IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
         "idle", "listing", "identifying", "done", "cancelled")
 
+    #: A3: the Trial store row's fields (the same Open/New the Transfer
+    #: Map's own Store section offers).
+    PARAMS = {p.name: p for p in (
+        Param("map_store_path", "text", default="", label="Store file"),
+        Param("map_store_dir", "text", default="", label="Folder for a new store"),
+        Param("map_store_name", "text", default="transfer_map",
+              label="New store name"),
+    )}
+
     def __init__(self, controller, updater=None, firmware=None, restart=None):
         """`firmware` (rb-launch L2) checks and flashes the boards; `restart`
         (rb-restart R3) replaces this process with a fresh one
         (`app.restart_process`); None means this station cannot restart
         itself, and `restart_station` says so."""
         super().__init__()
+        legacy = TransferMap.legacy_store_path()
+        if legacy is not None:
+            self.map_store_path = str(legacy)   # offered, never opened for them
         self.controller = controller
         self._restart = restart
         self._rows = self._build_rows()
@@ -1802,6 +1821,53 @@ class Setup(PortProbe, Panel):
             sch.button("Flash out-of-date boards", "flash_firmware", role="go",
                        confirm=self.FLASH_CONFIRM),
             sch.button("Check firmware", "check_firmware", role="neutral"),
+            layout="row",
+        )
+
+    # -- the trial store (A3) -----------------------------------------------
+    def _transfer_map(self):
+        """The open Transfer Map, if one is: it adopts a store chosen here."""
+        lookup = getattr(self.controller, "_model_or_none", None)
+        model = lookup(TransferMap.NAME) if callable(lookup) else None
+        return model if isinstance(model, TransferMap) else None
+
+    @property
+    def map_store_status(self):
+        model = self._transfer_map()
+        if model is not None:
+            return model.store_status
+        return TransferMap.describe_store(TransferMap.default_db_path())
+
+    def open_map_store(self):
+        """Open store, from Setup: the Transfer Map's own command, on the
+        open map (which then records there) or on a stand-in that only
+        validates and remembers the choice."""
+        target = self._transfer_map() or TransferMap()
+        target.store_path = self.map_store_path
+        return target.open_store()
+
+    def new_map_store(self):
+        target = self._transfer_map() or TransferMap()
+        target.store_dir, target.store_name = self.map_store_dir, self.map_store_name
+        return target.new_store()
+
+    def _store_section(self):
+        """The Trial store row: where the Transfer Map's trials go, and the
+        same Open/New its own Store section offers (owner decision 4,
+        2026-09-30: the operator chooses; nothing is chosen for them).
+        Built, not yet in `_build_schema`: its place is just before Launch,
+        and the section list is pinned by `tests/test_setup_registry.py`,
+        outside this change's write set (handoff fix-dist-app A3)."""
+        P = self.PARAMS
+        return sch.section(
+            "Trial store",
+            sch.readonly("Store", "map_store_status", role="info"),
+            sch.entry("Store file", "map_store_path", P["map_store_path"]),
+            sch.button("Open store", "open_map_store", inputs=("map_store_path",)),
+            sch.entry("Folder for a new store", "map_store_dir", P["map_store_dir"]),
+            sch.entry("New store name", "map_store_name", P["map_store_name"]),
+            sch.button("New store", "new_map_store",
+                       inputs=("map_store_dir", "map_store_name")),
             layout="row",
         )
 

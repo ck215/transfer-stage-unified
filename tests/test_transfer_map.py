@@ -155,13 +155,182 @@ def test_the_class_declares_a_portless_model():
     assert model.is_active is False
 
 
-def test_the_database_defaults_to_the_projects_data_directory(monkeypatch):
-    """Owner ruling 2026-09-27: local to the checkout, derived from the
-    source tree, never a per-user location."""
+# -- A3: the trial store is chosen, remembered, and never inside the install --
+
+@pytest.fixture
+def no_store(tmp_path, monkeypatch):
+    """No STATION_MAP_DB, a private operator-choices file, and an install
+    root in tmp_path (so a store left in the real checkout is not seen)."""
+    from controller import user_config
     monkeypatch.delenv("STATION_MAP_DB", raising=False)
-    root = Path(tm_module.__file__).resolve().parents[2]
-    assert (root / "src").is_dir()
-    assert TransferMap.default_db_path() == root / "data" / "transfer_map.sqlite"
+    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))
+    user_config.forget()
+    monkeypatch.setattr(TransferMap, "choices", user_config)
+    install = tmp_path / "install"
+    (install / "src").mkdir(parents=True)
+    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    yield install
+    user_config.forget()
+
+
+def _store_elements(model):
+    [section] = [s for s in model.schema["sections"] if s["title"] == "Store"]
+    return [(e["type"], e.get("command") or e.get("model_attr"))
+            for e in section["elements"]]
+
+
+def test_with_nothing_chosen_the_map_has_no_store_and_asks(no_store):
+    """Owner decision 4 (2026-09-30): no default. The map comes up without
+    a store, says so in its state, and its schema asks."""
+    assert TransferMap.default_db_path() is None
+    model = TransferMap()
+    assert model.db_path is None and model.output_root is None
+    assert model.state["store"] == {"path": None, "chosen": False}
+    assert _store_elements(model) == [
+        ("readonly", "store_status"),
+        ("entry", "store_path"), ("button", "open_store"),
+        ("entry", "store_dir"), ("entry", "store_name"), ("button", "new_store")]
+    assert model.state["values"]["store_status"].startswith("Not chosen")
+
+
+def test_opening_without_a_store_warns_and_creates_nothing(no_store, tmp_path):
+    seen = []
+    events.subscribe(seen.append)
+    try:
+        model = TransferMap()
+        model.open()
+        model.close()
+    finally:
+        events.unsubscribe(seen.append)
+    [ask] = [e for e in seen if e.title == "Trial Store Not Chosen"]
+    assert "Transfer Map, Store" in ask.message
+    assert not list(tmp_path.rglob("*.sqlite"))
+
+
+@pytest.mark.parametrize("command, inputs", [
+    ("arm_trial", {"tip_id": "tip-A"}),
+    ("new_tip", {"tip_id": "tip-A"}),
+    ("set_tip_note", {"tip_id": "tip-A", "tip_note": "sharp"}),
+    ("retire_tip", {"tip_id": "tip-A"}),
+    ("unretire_tip", {"tip_id": "tip-A"}),
+    ("attach_afm", {"afm_trial_id": "1", "width_um": "2"}),
+    ("set_trial_tilt", {"afm_trial_id": "1", "typed_tilt": "3"}),
+    ("set_trial_speed", {"afm_trial_id": "1", "typed_speed": "3"}),
+    ("delete_trial", {"trial_pick": "1"}),
+    ("new_database", None),
+    ("export_csv", None),
+])
+def test_every_recording_command_is_refused_without_a_store(no_store, tmp_path,
+                                                            command, inputs):
+    model = TransferMap()
+    model.open()
+    try:
+        result = model.run(command, inputs)
+        assert result.status == "refused"
+        assert result.reason == "Choose a trial store first (Transfer Map, Store)."
+    finally:
+        model.close()
+    assert not list(tmp_path.rglob("*.sqlite"))
+
+
+def test_import_is_refused_without_a_store(no_store, tmp_path):
+    csv_path = tmp_path / "in.csv"
+    csv_path.write_text("tilt_deg,speed_steps_s\n10,100\n")
+    model = TransferMap()
+    with pytest.raises(Refused) as refused:
+        model.import_csv(str(csv_path))
+    assert refused.value.reason == "Choose a trial store first (Transfer Map, Store)."
+
+
+def test_a_new_store_is_created_where_the_operator_says_and_remembered(no_store, tmp_path):
+    folder = tmp_path / "lab data"
+    model = TransferMap()
+    result = model.run("new_store", {"store_dir": str(folder), "store_name": "october"})
+    assert result.is_ok, result
+    path = folder / "october.sqlite"
+    assert path.is_file()
+    assert model.db_path == path and model.output_root == folder
+    assert model.state["store"] == {"path": str(path), "chosen": True}
+    assert tm_module.TransferMap.choices.read("map_store") == str(path)
+    # Recording works now.
+    assert model.run("new_tip", {"tip_id": "tip-A"}).is_ok
+    # A new session remembers it: no question.
+    again = TransferMap()
+    assert again.db_path == path and again.state["store"]["chosen"] is True
+
+
+def test_a_new_store_never_overwrites_an_existing_file(no_store, tmp_path):
+    folder = tmp_path / "d"
+    folder.mkdir()
+    (folder / "old.sqlite").write_text("keep me")
+    result = TransferMap().run("new_store", {"store_dir": str(folder), "store_name": "old"})
+    assert result.status == "refused" and "Open store" in result.reason
+    assert (folder / "old.sqlite").read_text() == "keep me"
+
+
+def test_an_existing_store_is_opened_and_remembered(no_store, tmp_path):
+    path = tmp_path / "kept" / "trials.sqlite"
+    tm_module.TrialStore(path).ensure()
+    model = TransferMap()
+    assert model.run("open_store", {"store_path": str(path)}).is_ok
+    assert model.db_path == path
+    assert TransferMap().db_path == path
+
+
+@pytest.mark.parametrize("make, why", [
+    (lambda p: None, "no file"),
+    (lambda p: p.write_text("not a database"), "not a Transfer Map store"),
+])
+def test_opening_what_is_not_a_store_is_refused(no_store, tmp_path, make, why):
+    path = tmp_path / "x.sqlite"
+    make(path)
+    result = TransferMap().run("open_store", {"store_path": str(path)})
+    assert result.status == "refused" and why in result.reason
+    assert tm_module.TransferMap.choices.read("map_store") is None
+
+
+def test_a_store_inside_the_install_is_refused(no_store):
+    """Updates replace the install folder: a store there would go with it."""
+    inside = no_store / "data"
+    tm_module.TrialStore(inside / "transfer_map.sqlite").ensure()
+    model = TransferMap()
+    reason = ("the store cannot live inside the station's own folder; updates "
+              "replace that folder")
+    opened = model.run("open_store", {"store_path": str(inside / "transfer_map.sqlite")})
+    made = model.run("new_store", {"store_dir": str(no_store / "mine"), "store_name": "x"})
+    for result in (opened, made):
+        assert result.status == "refused" and reason in result.reason
+    assert not (no_store / "mine").exists()
+    assert tm_module.TransferMap.choices.read("map_store") is None
+
+
+def test_a_store_left_in_the_install_is_offered_never_taken(no_store):
+    """Migration by choice: the path field is pre-filled with the store a
+    previous build left inside the install; nothing is chosen for the
+    operator."""
+    left = no_store / "data" / "transfer_map.sqlite"
+    tm_module.TrialStore(left).ensure()
+    model = TransferMap()
+    assert model.store_path == str(left)
+    assert model.state["store"]["chosen"] is False
+
+
+def test_the_environment_overrides_the_remembered_choice(no_store, tmp_path, monkeypatch):
+    TransferMap.choices.write("map_store", str(tmp_path / "remembered.sqlite"))
+    override = tmp_path / "override.sqlite"
+    monkeypatch.setenv("STATION_MAP_DB", str(override))
+    model = TransferMap()
+    assert model.db_path == override
+    assert model.state["store"] == {"path": str(override), "chosen": True}
+    assert "STATION_MAP_DB" in model.state["values"]["store_status"]
+
+
+def test_a_chosen_store_is_refused_while_a_trial_is_armed(no_store, tmp_path):
+    model = TransferMap(db_path=tmp_path / "a.sqlite")
+    model._trial = object()
+    result = model.run("new_store", {"store_dir": str(tmp_path / "b"), "store_name": "b"})
+    assert result.status == "refused" and "armed" in result.reason
+    model._trial = None
 
 
 def test_station_map_db_overrides_the_path(private_db):
@@ -1086,7 +1255,9 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     sections = model.schema["sections"]
     tier_one = [s["title"] for s in sections if s.get("tier", 1) == 1
                 and s["title"] != "Safety"]
-    assert tier_one == ["Session", "Trial"]
+    # A3: the Store section, where the operator chooses the trial store,
+    # sits between the session and the trial it would refuse without one.
+    assert tier_one == ["Session", "Store", "Trial"]
     trial = next(s for s in sections if s["title"] == "Trial")
     keys = [e.get("command") if e["type"] in ("button", "region_select")
             else e.get("model_attr") or e.get("command") or e.get("data_command")

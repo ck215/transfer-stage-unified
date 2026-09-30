@@ -2072,3 +2072,78 @@ def test_an_update_waiting_for_the_restart_says_press_restart(fake_types, checki
     assert refused.status == "refused"
     assert refused.reason == ("The station was updated to v1.3.0. Press Restart "
                               "before launching.")
+
+
+# -- A3: the Trial store row -------------------------------------------------
+
+@pytest.fixture
+def store_choice(tmp_path, monkeypatch):
+    """No STATION_MAP_DB, a private choices file, a tmp install root."""
+    from controller import user_config
+    from model import transfer_map as tm_module
+    monkeypatch.delenv("STATION_MAP_DB", raising=False)
+    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))
+    user_config.forget()
+    install = tmp_path / "install"
+    install.mkdir()
+    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    yield install
+    user_config.forget()
+
+
+def test_the_trial_store_row_block_builds_the_brief_shape(panel):
+    """What `_store_section()` builds; the schema inserts it just before
+    Launch once `tests/test_setup_registry.py`'s section pin allows (see
+    the handoff: that file is outside this write set)."""
+    store = panel._store_section()
+    assert store["title"] == "Trial store" and store["layout"] == "row"
+    assert [(e["type"], e.get("command") or e.get("model_attr"))
+            for e in store["elements"]] == [
+        ("readonly", "map_store_status"),
+        ("entry", "map_store_path"), ("button", "open_map_store"),
+        ("entry", "map_store_dir"), ("entry", "map_store_name"),
+        ("button", "new_map_store")]
+
+
+def test_the_store_row_says_nothing_is_chosen_then_what_was(store_choice, tmp_path):
+    from model.transfer_map import TransferMap
+    panel = Setup(RecordingController())
+    assert panel.map_store_status.startswith("Not chosen")
+    panel.map_store_dir, panel.map_store_name = str(tmp_path / "trials"), "lab"
+    path = tmp_path / "trials" / "lab.sqlite"
+    assert panel.new_map_store() == str(path)
+    assert path.is_file()
+    assert panel.map_store_status == str(path)
+    assert TransferMap().db_path == path         # remembered for the map
+
+
+def test_opening_a_store_from_setup_moves_an_open_map_onto_it(store_choice, tmp_path):
+    from model.transfer_map import TransferMap, TrialStore
+    path = tmp_path / "kept.sqlite"
+    TrialStore(path).ensure()
+    controller = RecordingController()
+    model = TransferMap()
+    controller.add(TransferMap.NAME, model, {"model": TransferMap.NAME})
+    try:
+        panel = Setup(controller)
+        assert model.state["store"]["chosen"] is False
+        panel.map_store_path = str(path)
+        assert panel.open_map_store() == str(path)
+        assert model.db_path == path and model.state["store"]["chosen"] is True
+    finally:
+        controller.reset()
+
+
+def test_setup_refuses_a_store_inside_the_install(store_choice):
+    panel = Setup(RecordingController())
+    panel.map_store_dir, panel.map_store_name = str(store_choice / "data"), "x"
+    assert "cannot live inside the station's own folder" in refused(panel.new_map_store)
+
+
+def test_setup_offers_the_store_an_earlier_build_left_in_the_install(store_choice):
+    from model.transfer_map import TrialStore
+    left = store_choice / "data" / "transfer_map.sqlite"
+    TrialStore(left).ensure()
+    panel = Setup(RecordingController())
+    assert panel.map_store_path == str(left)
+    assert panel.map_store_status.startswith("Not chosen")
