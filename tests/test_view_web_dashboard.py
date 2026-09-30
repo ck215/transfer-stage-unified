@@ -937,6 +937,8 @@ _LINK_READ = r"""
       step: button('Step') ? button('Step').disabled : null,
       stop: button('Stop this model') ? button('Stop this model').disabled : null,
       rail: document.getElementById('rail-alert').hidden ? '' : document.getElementById('rail-alert').textContent,
+      railCls: Array.from(document.querySelectorAll('#rail-alert .rail-alert-line'))
+        .map((n) => n.className).join(' '),
       mark: mark ? mark.className : '', markTitle: mark ? mark.title : '',
       text: card.textContent,
     };
@@ -962,6 +964,7 @@ def test_v4_a_reconnecting_link_is_the_danger_tier_on_the_page(linked, tmp_path)
     assert out["stop"] is False, "the stop is never held"
     assert "Fake Probe: Link lost 12:41:07, reconnecting" in out["rail"]
     assert "is-link-lost" in out["mark"] and out["markTitle"].startswith("Link lost")
+    assert "severity-warning" not in out["railCls"]
     assert "1 / 0 / 3 / 0; last loss 12:41:07" in out["text"], "the counters row"
 
 
@@ -979,6 +982,7 @@ def test_v4_a_stalled_link_is_the_attention_tier_on_the_page(linked, tmp_path):
     assert "is-lost" not in out["cls"] and out["bar"] != out["signal"], out
     assert out["auto"] is False and out["step"] is False
     assert "is-attention" in out["mark"] and "is-link-lost" not in out["mark"]
+    assert "severity-warning" in out["railCls"], "the rail line is the attention tier"
     assert "0 / 0 / 0 / 1; last loss never" in out["text"]
 
 

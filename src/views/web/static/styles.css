@@ -1184,7 +1184,8 @@ kbd {
 .card-alert::before { margin-top: 0.1rem; }
 
 /* V4: the attention tier (a stalled link): the glyph in the warning's ink. */
-.card-alert.severity-warning::before { background: var(--warning-mark); }
+.card-alert.severity-warning::before,
+.rail-alert-line.severity-warning::before { background: var(--warning-mark); }
 
 .card-alert[hidden] { display: none; }
 
