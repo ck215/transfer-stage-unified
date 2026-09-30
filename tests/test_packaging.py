@@ -213,9 +213,14 @@ def test_spec_prunes_only_qt_parts_the_view_never_loads(spec_source, path, prune
 
 
 def test_spec_ships_sdl3_beside_an_sdl2_compat_shim_and_clears_uf_hidden(spec_source):
-    assert "def sdl3_for_sdl2_compat" in spec_source
-    assert '("libSDL3.dylib", staged, "BINARY")' in spec_source
-    assert '["chflags", "-R", "nohidden", coll.name]' in spec_source
+    # the helpers are shared with stable.spec (packaging/spec_helpers.py)
+    with open(os.path.join(PACKAGING, "spec_helpers.py"), encoding="utf-8") as f:
+        helpers = f.read()
+    assert "def sdl3_for_sdl2_compat(binaries, workpath)" in helpers
+    assert '("libSDL3.dylib", staged, "BINARY")' in helpers
+    assert '["chflags", "-R", "nohidden", bundle]' in helpers
+    assert "spec_helpers.sdl3_for_sdl2_compat(a.binaries, workpath)" in spec_source
+    assert "spec_helpers.clear_hidden_flags(coll.name)" in spec_source
 
 
 # -- the Qt entry point's plugin path -----------------------------------------
@@ -802,3 +807,101 @@ def test_fetch_refuses_a_teensy_loader_source_that_changed(tools, monkeypatch, t
 def test_an_unpinned_platform_is_refused(tools):
     with pytest.raises(SystemExit):
         tools.platform_key("Plan9", "mips")
+
+
+# -- dist-build B3: the frozen stable app --------------------------------------
+
+@pytest.fixture(scope="module")
+def stable_spec():
+    with open(os.path.join(PACKAGING, "stable.spec"), encoding="utf-8") as f:
+        return f.read()
+
+
+@pytest.fixture
+def entry_stable():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "station_entry_stable", os.path.join(PACKAGING, "entry_stable.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)       # imports nothing from the stable app
+    return module
+
+
+def test_the_stable_spec_freezes_a_checkout_of_the_stable_ref(stable_spec):
+    assert 'os.environ.get("STATION_STABLE_SRC")' in stable_spec
+    assert 'os.path.join(ROOT, "build", "stable-src")' in stable_spec
+    assert 'SRC = os.path.join(STABLE_SRC, "src")' in stable_spec
+    assert "pathex=[SRC]" in stable_spec
+    assert 'os.path.join(HERE, "entry_stable.py")' in stable_spec
+    # a missing checkout is refused, never frozen from somewhere else
+    assert 'raise SystemExit(f"stable.spec: no src/mainGUI.py' in stable_spec
+
+
+def test_the_stable_spec_names_every_stable_module_and_third_party_import(stable_spec,
+                                                                          entry_stable):
+    for module in entry_stable.STABLE_MODULES:
+        assert f'"{module}"' in stable_spec, module
+    for module in ("serial", "serial.tools.list_ports", "pygame", "PIL.Image",
+                   "numpy", "gcodeparser", "tkinter"):
+        assert f'"{module}"' in stable_spec, module
+    assert 'collect_submodules("mss"' in stable_spec
+    # the new station's Qt, plots and encoder stay out of the old app
+    for module in ("PySide6", "matplotlib", "imageio_ffmpeg"):
+        assert f'"{module}"' in stable_spec.split("EXCLUDES = [", 1)[1], module
+
+
+def test_the_stable_spec_outputs_the_contracts_launcher_and_its_firmware(stable_spec,
+                                                                         layout):
+    assert layout.STABLE_NAME == "station-stable"
+    assert "name=layout.STABLE_NAME" in stable_spec
+    assert stable_spec.count("COLLECT(") == 1 and "exclude_binaries=True" in stable_spec
+    assert "layout.copy_firmware(os.path.join(STABLE_SRC, 'firmware'), coll.name)" \
+        in stable_spec
+    assert "spec_helpers.sdl3_for_sdl2_compat(a.binaries, workpath)" in stable_spec
+    assert "spec_helpers.clear_hidden_flags(coll.name)" in stable_spec
+
+
+def test_the_stable_spec_writes_nothing_into_the_stable_sources(stable_spec):
+    writes = re.findall(r"open\(([^)]*)\)", stable_spec)
+    assert writes and all("coll.name" in w for w in writes), writes
+
+
+def test_the_stable_gcode_parser_is_a_pinned_build_requirement():
+    with open(os.path.join(PACKAGING, "requirements-stable.txt"), encoding="utf-8") as f:
+        lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+    assert lines == ["gcodeparser==0.3.0"]
+
+
+def test_entry_stable_runs_maingui_as_main_after_freeze_support(entry_stable, monkeypatch):
+    import multiprocessing
+    import runpy
+    calls = []
+    monkeypatch.setattr(multiprocessing, "freeze_support", lambda: calls.append("freeze"))
+    monkeypatch.setattr(runpy, "run_module",
+                        lambda name, **kw: calls.append(("run", name, kw)))
+    assert entry_stable.main([]) == 0
+    assert calls == ["freeze", ("run", "mainGUI",
+                                {"run_name": "__main__", "alter_sys": True})]
+
+
+def test_entry_stable_self_check_imports_every_module_and_opens_nothing(entry_stable,
+                                                                        monkeypatch,
+                                                                        capsys):
+    import multiprocessing
+    import runpy
+    import types
+    for name in entry_stable.STABLE_MODULES:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setattr(multiprocessing, "freeze_support", lambda: None)
+    monkeypatch.setattr(runpy, "run_module", lambda *a, **k: pytest.fail("ran the app"))
+    assert entry_stable.main(["--self-check"]) == 0
+    assert "station-stable: self-check ok" in capsys.readouterr().out
+
+
+def test_the_stable_spec_is_tracked_despite_the_spec_ignore_rule():
+    import subprocess
+    done = subprocess.run(["git", "ls-files", "--error-unmatch", "packaging/stable.spec"],
+                          cwd=ROOT, capture_output=True, text=True)
+    if done.returncode not in (0, 1):
+        pytest.skip("no git here")
+    assert done.returncode == 0, "packaging/stable.spec is not tracked (*.spec is ignored)"
