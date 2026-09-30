@@ -548,6 +548,59 @@ def test_the_no_coil_kill_notice_is_published_with_no_lock_held():
         probe._stop_threads()
 
 
+def _slow_halt(probe, delay, result=True):
+    real = probe._halt_hardware
+
+    def _halt():
+        time.sleep(delay)
+        real()
+        return result
+
+    probe._halt_hardware = _halt
+
+
+@pytest.mark.estop
+def test_a_stop_that_lands_after_the_budget_is_reported_and_revised(probe, monkeypatch):
+    """L11 (SF-6): a stop whose bytes land after ESTOP_BUDGET stayed "not
+    confirmed" forever. It is still unconfirmed at the budget (the owner's
+    number is not widened), but its landing is logged with its real
+    latency, the state is revised, and the operator is told."""
+    lines = _debug_lines(monkeypatch)
+    _slow_halt(probe, 0.2)
+    with Collected() as seen:
+        assert probe.estop() is False
+        assert probe.stop_confirmed is False
+        deadline = time.monotonic() + 2.0
+        while probe.stop_confirmed is not True and time.monotonic() < deadline:
+            time.sleep(0.01)
+    assert probe.stop_confirmed is True
+    late = [e for e in seen.of("info") if e.title == "Stop Landed Late"]
+    assert len(late) == 1, [e.text for e in seen.seen]
+    assert "ms after the press" in late[0].message
+    assert [m for t, m in lines if t == "Estop Late"], lines
+
+
+@pytest.mark.estop
+def test_a_stop_that_fails_late_is_not_revised(probe):
+    _slow_halt(probe, 0.2, result=False)
+    with Collected() as seen:
+        assert probe.estop() is False
+        time.sleep(0.4)
+    assert probe.stop_confirmed is False
+    assert not [e for e in seen.seen if e.title == "Stop Landed Late"]
+
+
+@pytest.mark.estop
+def test_the_unconfirmed_stop_names_the_real_budget(probe):
+    _slow_halt(probe, 0.2)
+    with Collected() as seen:
+        probe.toggle_estop()
+    error = [e for e in seen.of("error") if e.title == "Stop Not Confirmed"][0]
+    budget = f"{probe.ESTOP_BUDGET * 1000:.0f} ms"
+    assert budget in error.message, error.message
+    assert "1 s" not in error.message
+
+
 @pytest.mark.estop
 def test_a_confirmed_stop_clears_the_fault(probe):
     """L5: `_halt_hardware` set DISABLED when `'d'` landed but kept the

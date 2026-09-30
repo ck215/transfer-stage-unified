@@ -49,6 +49,9 @@ class Model(Panel):
         #: True while `_on_link_lost` runs its stop: a stop that cannot land
         #: on a lost link is that loss, not a fault (L1).
         self._link_loss_in_progress = False
+        #: Set by `close()`: a late stop landing on the way out is logged,
+        #: not announced (nobody is left to read it, and close raises none).
+        self._closing = False
 
     # -- devices and lifecycle --------------------------------------------
     @property
@@ -123,6 +126,7 @@ class Model(Panel):
     def close(self):
         """Stop threads, halt, de-energize, close devices. Each step isolated:
         the hardware steps are never skipped because an earlier step raised."""
+        self._closing = True
         for step in (self._stop_threads, self.halt, self.disable):
             try:
                 step()
@@ -237,10 +241,17 @@ class Model(Panel):
 
     def estop(self):
         """Latch first (cannot fail), then stop the hardware on a worker and
-        wait at most ESTOP_BUDGET. True only if the stop landed in time."""
+        wait at most ESTOP_BUDGET. True only if the stop landed in time.
+
+        L11 (SF-6): the budget is the owner's number and is not widened. A
+        stop that lands after it is logged with its real latency, revises
+        `stop_confirmed` to True for the same latch episode, and is
+        reported with an info line, so "not confirmed" is never left
+        standing for a stop that went out."""
         self._estop.set()
-        self._latched_at = time.time()
-        done, landed = threading.Event(), []
+        latched_at = self._latched_at = time.time()
+        done, landed, decided = threading.Event(), [], threading.Event()
+        started = time.monotonic()
 
         def _stop():
             try:
@@ -254,15 +265,31 @@ class Model(Panel):
                             source=self.NAME, exception=exc)
             finally:
                 done.set()
+            elapsed = (time.monotonic() - started) * 1000
+            decided.wait(1.0)
+            if self._stop_confirmed is not False or not landed[0]:
+                return
+            events.debug("Estop Late", f"the hardware stop landed after "
+                         f"{elapsed:.1f} ms (budget "
+                         f"{self.ESTOP_BUDGET * 1000:.0f} ms)", source=self.NAME)
+            if self._estop.is_set() and self._latched_at == latched_at:
+                self._stop_confirmed = True
+                if self._closing:
+                    return
+                events.info("Stop Landed Late", f"The stop on the {self.NAME} "
+                            f"went out {elapsed:.0f} ms after the press, later "
+                            f"than the {self.ESTOP_BUDGET * 1000:.0f} ms it is "
+                            "given to confirm.", source=self.NAME)
 
-        started = time.monotonic()
         threading.Thread(target=_stop, daemon=True, name=f"estop-{self.NAME}").start()
         in_time = done.wait(self.ESTOP_BUDGET)
         confirmed = bool(in_time and landed and landed[0])
         self._stop_confirmed = confirmed
+        decided.set()
         events.debug("Estop", f"latched; hardware stop "
                      f"{'confirmed' if confirmed else 'still in flight' if not in_time else 'reported failure'}"
-                     f" after {(time.monotonic() - started) * 1000:.1f} ms", source=self.NAME)
+                     f" after {(time.monotonic() - started) * 1000:.1f} ms "
+                     f"(budget {self.ESTOP_BUDGET * 1000:.0f} ms)", source=self.NAME)
         return confirmed
 
     def clear_estop(self, confirmed=False):
@@ -285,8 +312,10 @@ class Model(Panel):
             return self.clear_estop(confirmed)   # raises NeedsConfirm("clear_estop")
         if not self.estop():
             events.error("Stop Not Confirmed", f"The {self.NAME} is stopped, "
-                         "but its hardware did not confirm the stop. Treat it "
-                         "as live.", source=self.NAME)
+                         "but its hardware did not acknowledge the stop "
+                         f"within {self.ESTOP_BUDGET * 1000:.0f} ms. Treat it "
+                         "as live; a stop that lands later is reported.",
+                         source=self.NAME)
 
     @property
     def is_estopped(self):
