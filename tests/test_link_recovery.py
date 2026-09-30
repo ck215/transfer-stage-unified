@@ -393,3 +393,70 @@ def test_the_reconnect_loop_never_holds_the_transaction_lock_or_blocks_a_stop(
     assert time.monotonic() - started < 0.5
     port.close()
     release.set()
+
+
+# --------------------------------------------------------------------------
+# L3 -- dropped packets and stalls are counted, published and warned about
+# --------------------------------------------------------------------------
+
+class Warnings:
+    def __init__(self):
+        self.seen = []
+        events.subscribe(self.seen.append)
+
+    def titled(self, title, severity=None):
+        return [e for e in self.seen if e.title == title
+                and (severity is None or e.severity == severity)]
+
+    def close(self):
+        events.unsubscribe(self.seen.append)
+
+
+def test_a_stalled_position_stream_warns_once_and_counts_on_recovery(rig, monkeypatch):
+    """The link is up but no POS line arrives: one warning per episode,
+    `stalled` true; the first line after it ends the episode and counts
+    it."""
+    monkeypatch.setattr(StepperProbe, "STREAM_STALL_SECONDS", 0.15)
+    events.clear()
+    seen = Warnings()
+    try:
+        probe, port, handle, _ = rig()
+        assert _wait_for(lambda: probe.state["link"]["stalled"], 2.0)
+        time.sleep(0.2)
+        stalled = seen.titled("Position Stream Stalled", "warning")
+        assert len(stalled) == 1, [e.text for e in seen.seen]
+        assert stalled[0].count == 1
+        assert stalled[0].message.startswith("Stepper Probe has sent no position")
+        assert "the link is up. Check the board." in stalled[0].message
+        assert probe.state["link"]["stalls"] == 0
+        handle.feed(b"POS:1,2,3\n")
+        assert _wait_for(lambda: probe.position == (1, 2, 3))
+        link = probe.state["link"]
+        assert link["stalled"] is False and link["stalls"] == 1
+    finally:
+        seen.close()
+
+
+def test_a_simulated_port_never_stalls(monkeypatch):
+    monkeypatch.setattr(StepperProbe, "STREAM_STALL_SECONDS", 0.05)
+    probe = StepperProbe(port="SIM", gamepad=FakePad())
+    probe.open()
+    try:
+        time.sleep(0.2)
+        assert probe.state["link"]["stalled"] is False
+    finally:
+        probe.close()
+
+
+def test_the_link_counters_reach_the_state_after_a_loss_and_a_recovery(
+        rig, monkeypatch):
+    import re
+    h1, h2 = FlakyHandle(), FlakyHandle()
+    probe, port, _, _ = rig(h1, h2)
+    monkeypatch.setattr(port, "_reconnect_sleep", lambda seconds: False)
+    _lose(port, h1)
+    assert _wait_for(lambda: port.state is ConnectionState.UNVERIFIED)
+    link = probe.state["link"]
+    assert link["status"] == "unverified"
+    assert link["losses"] == 1 and link["reconnects"] == 1
+    assert re.fullmatch(r"\d\d:\d\d:\d\d", link["last_loss"])

@@ -484,6 +484,31 @@ def test_a_write_failure_raises_but_reports_nothing_itself(build, monkeypatch):
     assert errors == [], "a transport failure is not an acknowledged popup"
 
 
+def test_the_port_counts_its_failures_and_its_losses(build):
+    """L3: losses, write and read failures, and the wall time of the last
+    loss, kept by the transport."""
+    import re
+    port, handle = build()
+    assert (port.losses, port.reconnects, port.write_failures,
+            port.read_failures, port.last_loss) == (0, 0, 0, 0, None)
+    handle.write_error = OSError("unplugged")
+    for _ in range(3):
+        with pytest.raises(TransportError):
+            port.write(b"x")
+    assert port.write_failures == 1, "only a write that reached the handle fails"
+    assert port.losses == 1
+    assert re.fullmatch(r"\d\d:\d\d:\d\d", port.last_loss), port.last_loss
+
+
+def test_a_failed_read_is_counted(build):
+    port, handle = build()
+    handle.feed(b"x")
+    handle.read_error = OSError("unplugged")
+    with pytest.raises(TransportError):
+        port.read_line(timeout=0.1)
+    assert port.read_failures == 1 and port.losses == 1
+
+
 def test_a_port_with_no_owner_stays_lost_and_does_not_reconnect(build):
     """L2's automatic recovery belongs to a port a model owns. Setup's scan
     and the SMC100's port register no loss handler: they keep D-11's

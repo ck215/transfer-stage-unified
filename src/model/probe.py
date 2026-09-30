@@ -146,6 +146,12 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: considered arrived.
     STEP_SETTLE = 1.0
 
+    #: L3: the firmware prints POS every 100 ms (50 ms on the DC board), so a
+    #: usable link with no POS line for this long is a stalled stream.
+    STREAM_STALL_SECONDS = 1.0
+    #: L3: at most one "Packets Dropped" warning per this many seconds.
+    DROPPED_WARN_INTERVAL = 10.0
+
     # The idle interlock's INTERLOCK_TIMEOUT (300 s), INTERLOCK_POLL_INTERVAL
     # and IDLE_WARN_SECONDS (60 s) come from `model.idle.IdleInterlock`.
 
@@ -168,6 +174,15 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._position_time = None
         self._velocity = (0.0, 0.0, 0.0)
         self._samples_seen = 0
+
+        # L3: the stream's health. `dropped` lines that were not a whole POS
+        # line; `stalls` episodes of a usable link with no POS line.
+        self._dropped = 0
+        self._dropped_warned = 0          # the count at the last warning
+        self._dropped_warned_at = None    # monotonic time of that warning
+        self._stalls = 0
+        self._stalled = False
+        self._stream_since = None         # monotonic: the link became usable
 
         # Autonomous "stepping" is a *timed sub-state*, not a fifth boolean
         # (RC-3 item 2). `is_stepping` used to be set by the step command and
@@ -676,9 +691,12 @@ class Probe(GamepadInput, IdleInterlock, Model):
         counted_from = time.monotonic()
         seen = 0
         while not self._threads_stop.wait(self.SAMPLE_INTERVAL):
-            self._touch()   # the loop is alive; data freshness is position_age
             try:
                 position = self._read_position()
+                # The loop is alive AND its read worked: only now is the
+                # heartbeat honest (L3). Data freshness is position_age.
+                self._touch()
+                self._check_stream(time.monotonic())
                 if position is not None:
                     seen += 1
                     self._note_position(position)
@@ -706,16 +724,71 @@ class Probe(GamepadInput, IdleInterlock, Model):
             if isinstance(line, bytes):
                 line = line.decode("utf-8", errors="ignore")
             line = line.strip()
+            if not line or line.startswith("DEV:"):
+                continue   # the handshake's answer is not a dropped packet
             if not line.startswith("POS:"):
+                self._note_dropped(line)
                 continue
             parts = line[4:].split(",")
             if len(parts) != 3:
+                self._note_dropped(line)
                 continue
             try:
                 latest = tuple(int(part) for part in parts)
             except ValueError:
-                continue   # malformed line, skip
+                self._note_dropped(line)   # malformed line, skip
+                continue
+        self._warn_dropped()
         return latest
+
+    def _note_dropped(self, line):
+        self._dropped += 1
+        events.debug("Packet Dropped", f"#{self._dropped}: {line[:80]!r}",
+                     source=self.NAME)
+
+    def _warn_dropped(self):
+        """One warning when the count has risen, at most one per
+        DROPPED_WARN_INTERVAL."""
+        if self._dropped <= self._dropped_warned:
+            return
+        now = time.monotonic()
+        if (self._dropped_warned_at is not None
+                and now - self._dropped_warned_at < self.DROPPED_WARN_INTERVAL):
+            return
+        new = self._dropped - self._dropped_warned
+        self._dropped_warned, self._dropped_warned_at = self._dropped, now
+        events.warn("Packets Dropped", f"{self.NAME} received {new} garbled "
+                    f"line(s) from its board ({self._dropped} this session). "
+                    "Check the cable if this keeps rising.", source=self.NAME)
+
+    def _check_stream(self, now):
+        """L3: a usable link with no POS line for STREAM_STALL_SECONDS is a
+        stalled stream. One warning per episode; SIM never streams."""
+        status = getattr(self.port, "status", None)
+        if status not in ("verified", "unverified"):
+            self._stream_since = None
+            self._stalled = False
+            return
+        if self._stream_since is None:
+            self._stream_since = now
+        last = max(self._position_time or 0.0, self._stream_since)
+        silent = now - last
+        if self._stalled or silent < self.STREAM_STALL_SECONDS:
+            return
+        self._stalled = True
+        events.debug("Position Stream Stalled", f"no POS line for {silent:.2f} s "
+                     f"with the link {status}", source=self.NAME)
+        events.warn("Position Stream Stalled", f"{self.NAME} has sent no "
+                    f"position for {self.STREAM_STALL_SECONDS:g} s; the link "
+                    "is up. Check the board.", source=self.NAME)
+
+    def _link_stream_state(self):
+        return {"dropped": int(self._dropped), "stalls": int(self._stalls),
+                "stalled": bool(self._stalled)}
+
+    @property
+    def dropped(self):
+        return self._dropped
 
     def _note_position(self, position):
         """Record one sample, and the velocity between it and the last one.
@@ -735,6 +808,13 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._position_time = now
         self._samples_seen += 1
         self._touch()
+        if self._stalled:
+            self._stalled = False
+            self._stalls += 1
+            events.debug("Position Stream Resumed", f"stall #{self._stalls} "
+                         f"ended at {position}", source=self.NAME)
+            events.info("Position Stream Resumed", f"{self.NAME} is sending "
+                        "its position again.", source=self.NAME)
         if moved:
             # Motion *is* activity, so a long move does not age into the idle
             # interlock; arrival starts the idle clock.

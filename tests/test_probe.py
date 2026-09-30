@@ -536,6 +536,52 @@ def test_the_drain_keeps_the_latest_complete_pos_line(probe):
 
 
 @pytest.mark.transport
+def test_malformed_and_non_pos_lines_are_counted_as_dropped(probe):
+    """L3: a line that is not a whole POS line is a dropped packet. The
+    handshake's own `DEV:` answer is not one."""
+    probe.port.lines = ["POS:1,2,3", "junk", "POS:4,5", "POS:bad,,",
+                        "DEV: s", "POS:7,8,9"]
+    assert probe._read_position() == (7, 8, 9)
+    assert probe.dropped == 3
+
+
+@pytest.mark.transport
+def test_dropped_packets_warn_when_the_count_rises_and_not_more_often(probe):
+    with Collected() as seen:
+        probe.port.lines = ["junk"]
+        probe._read_position()
+        probe.port.lines = ["more junk"]
+        probe._read_position()
+    warned = [e for e in seen.of("warning") if e.title == "Packets Dropped"]
+    assert len(warned) == 1, [e.text for e in seen.seen]
+    assert "Stepper Probe" in warned[0].message
+    probe._dropped_warned_at -= probe.DROPPED_WARN_INTERVAL
+    with Collected() as seen:
+        probe.port.lines = ["junk again"]
+        probe._read_position()
+    assert [e.title for e in seen.of("warning")] == ["Packets Dropped"]
+
+
+@pytest.mark.transport
+def test_the_heartbeat_is_not_touched_by_a_read_that_raised(probe):
+    """L3: `_sample_loop` touched the heartbeat BEFORE the read, so `age`
+    never grew while every read failed. It is touched only after a read
+    pass that did not raise."""
+
+    def _broken(timeout=None):
+        raise OSError("the read failed")
+
+    probe.port.read_line = _broken
+    probe._start_threads()
+    try:
+        time.sleep(0.4)
+        age = probe.state["age"]
+    finally:
+        probe._stop_threads()
+    assert age >= 0.3, f"age {age} s: the loop claimed to be alive"
+
+
+@pytest.mark.transport
 def test_the_drain_is_bounded(probe):
     probe.port.lines = ["POS:1,1,1"] * (probe.MAX_DRAIN_LINES + 10)
     probe._read_position()

@@ -391,7 +391,29 @@ class Model(Panel):
         root = getattr(self, "output_root", None)
         if root is not None:
             snapshot["output_root"] = str(root)   # a view checks downloads against it
+        link = self._link_state()
+        if link is not None:
+            snapshot["link"] = link
         return snapshot
+
+    def _link_state(self):
+        """L3: `state["link"]` for a model that owns a SerialPort, else None.
+        EXACTLY these keys (the views are coded against them): status,
+        losses, reconnects, dropped, stalls, stalled, last_loss."""
+        ports = self._link_ports()
+        if not ports:
+            return None
+        port = ports[0]
+        link = {"status": port.status, "losses": int(port.losses),
+                "reconnects": int(port.reconnects), "dropped": 0,
+                "stalls": 0, "stalled": False, "last_loss": port.last_loss}
+        link.update(self._link_stream_state())
+        return link
+
+    def _link_stream_state(self):
+        """What this model's own reader knows about the stream: `dropped`,
+        `stalls`, `stalled`. Nothing by default."""
+        return {}
 
     def _safety_section(self):
         """Every model's schema ends with this. Inherited, so every model has

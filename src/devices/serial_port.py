@@ -13,6 +13,11 @@ import enum
 import threading
 import time
 
+#: Wall-clock stamp for `last_loss`. Bound at import, not looked up through
+#: `time`, so a test that swaps this module's clock for a virtual one does
+#: not take the wall clock with it.
+_wall_stamp = time.strftime
+
 try:
     import serial as pyserial
 except ImportError:  # the station still runs in SIM without pyserial
@@ -299,6 +304,14 @@ class SerialPort(Device):
         self._on_lost = None
         self._on_restored = None
 
+        # L3: what the link has been through, for `Model.state["link"]` and
+        # the log. Plain counters; each only ever grows.
+        self.losses = 0          # transitions into LOST
+        self.reconnects = 0      # recoveries out of RECONNECTING
+        self.write_failures = 0  # handle.write() calls that raised
+        self.read_failures = 0   # handle reads that raised
+        self.last_loss = None    # "HH:MM:SS" of the latest loss
+
         self._lock = threading.RLock()
         self._write_io_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -363,6 +376,14 @@ class SerialPort(Device):
         self._on_restored = on_restored
         if owner is not None:
             self.owner = owner
+
+    @property
+    def link_counters(self):
+        """L3: the counters, one snapshot."""
+        return {"losses": self.losses, "reconnects": self.reconnects,
+                "write_failures": self.write_failures,
+                "read_failures": self.read_failures,
+                "last_loss": self.last_loss}
 
     @property
     def loss_stop_budget(self):
@@ -622,6 +643,7 @@ class SerialPort(Device):
                     with self._lock, self._write_io_lock:
                         handle.write(self.PING)
                 except Exception as exc:
+                    self.write_failures += 1
                     self._mark_lost(exc)
                     return None
                 pings += 1
@@ -636,6 +658,7 @@ class SerialPort(Device):
                     if waiting > 0:
                         buffer += handle.read(waiting).decode("utf-8", errors="ignore")
             except Exception as exc:
+                self.read_failures += 1
                 self._mark_lost(exc)
                 return None
 
@@ -723,6 +746,7 @@ class SerialPort(Device):
                 handle.write(payload)
             except Exception as exc:
                 failure, outcome = exc, f"failed: {exc}"
+                self.write_failures += 1
             else:
                 outcome = "sent"
         finally:
@@ -788,6 +812,8 @@ class SerialPort(Device):
                 return
             was = self._state
             self._state = ConnectionState.LOST
+            self.losses += 1
+            self.last_loss = _wall_stamp("%H:%M:%S")
             handle = self._handle
             recovers = self._on_lost is not None and not self.is_simulated
             if not self.is_simulated and not recovers:
@@ -915,6 +941,7 @@ class SerialPort(Device):
             if is_current and verified is not None:
                 self._state = (ConnectionState.VERIFIED if verified
                                else ConnectionState.UNVERIFIED)
+                self.reconnects += 1
             elif self._handle is handle:
                 self._handle = None
         if not is_current:
@@ -1007,6 +1034,7 @@ class SerialPort(Device):
                             self._read_buffer += handle.read(waiting)
                     except Exception as exc:
                         failure = exc
+                        self.read_failures += 1
                     else:
                         line = self._take_line()
                         if line is not None:
