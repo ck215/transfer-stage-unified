@@ -38,8 +38,10 @@ Tk-specific hazards this file is deliberate about:
 import base64
 import math
 import os
+import queue
 import re
 import shutil
+import threading
 import time
 import tkinter as tk
 from tkinter import ttk, filedialog
@@ -5841,6 +5843,11 @@ class TkDashboard(Dashboard):
         self._ack_dialog = None      # the one acknowledgement shown (rb-ack)
         self._station_text = None
         self._sim_text = None
+        #: V5: what other threads marshal waits here for the Tk thread, which
+        #: is the thread that builds the dashboard.
+        self._inbox = queue.SimpleQueue()
+        self._tk_thread = threading.get_ident()
+        self._inbox_id = None
         #: name -> (tier, line) of what its entry says under its head (the
         #: link, V1): the rail's line for that model shows the same tier.
         self._entry_tiers = {}
@@ -7015,6 +7022,7 @@ class TkDashboard(Dashboard):
         events.debug("View Opening", "Tk dashboard", source=SOURCE)
         self._add_setup_panel()
         super().open()               # subscribe BEFORE anything can publish
+        self._on_inbox_tick()        # V5: the Tk thread drains the inbox
         self._is_opening = True
         try:
             for name in self.controller.model_names:
@@ -7085,6 +7093,12 @@ class TkDashboard(Dashboard):
             except Exception:
                 pass
             self._after_id = None
+        if self._inbox_id is not None:
+            try:
+                self.root.after_cancel(self._inbox_id)
+            except Exception:
+                pass
+            self._inbox_id = None
         super().close()
         self._stop.cancel()
         for name in list(self._panels):
@@ -7599,13 +7613,55 @@ class TkDashboard(Dashboard):
             variable.set(True)      # declined: the model is still open
 
     # -- events ------------------------------------------------------------
+    #: How often the Tk thread drains what other threads marshalled (V5).
+    INBOX_MS = 50
+
     def _marshal(self, fn):
         """Any thread -> the Tk thread. Tk is not thread-safe and an event can
-        be published from a model's worker."""
+        be published from a model's worker.
+
+        SF-4 (V5): a worker never touches Tk. tkinter called from another
+        thread queues the call and WAITS for the Tcl loop, and during the
+        global stop the Tk thread is inside `estop_all`: a model's stop
+        worker that published an event blocked there, missed its budget and
+        the stop read "did not confirm" (M9). Everything goes on one
+        thread-safe queue, in order; the Tk thread drains it on its own tick
+        (`_drain_inbox`), and at once when it marshalled the call itself."""
+        self._inbox.put(fn)
+        if threading.get_ident() != self._tk_thread:
+            return
         try:
-            self.root.after(0, fn)
+            self.root.after(0, self._drain_inbox)
         except Exception as exc:
+            # Debug only: a warn would come straight back here. The call is
+            # already in the inbox; the tick delivers it.
             events.debug("Marshal Failed", str(exc), source=SOURCE, exception=exc)
+
+    def _drain_inbox(self):
+        """Tk thread only: run everything marshalled so far, in order."""
+        while True:
+            try:
+                fn = self._inbox.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                fn()
+            except Exception as exc:
+                events.debug("Marshalled Call Failed", str(exc), source=SOURCE,
+                             exception=exc, every=1.0)
+
+    def _on_inbox_tick(self):
+        """The Tk thread's own tick for the inbox (V5): a worker's event is
+        drawn within `INBOX_MS` of the Tk thread coming back to its loop."""
+        self._inbox_id = None
+        self._drain_inbox()
+        if self._closing:
+            return
+        try:
+            self._inbox_id = self.root.after(self.INBOX_MS, self._on_inbox_tick)
+        except Exception as exc:
+            events.debug("Inbox Tick Failed", str(exc), source=SOURCE,
+                         exception=exc, every=5.0)
 
     def _show_event(self, event):
         """Status by exception (E): a warning or an error is one line in the

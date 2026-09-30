@@ -2679,6 +2679,73 @@ def test_an_event_is_marshalled_onto_the_tk_thread(dashboard):
     assert dashboard._event_text.body != before
 
 
+def test_v5_a_worker_publishing_never_waits_for_the_tk_thread(dashboard):
+    """SF-4 (the M9 bench observation): tkinter, called from a non-Tk
+    thread, queues the call and WAITS until the Tcl loop runs it. During the
+    global stop the Tk thread is inside `estop_all`, so a model's stop worker
+    that publishes ("Power Down Not Supported") blocked there, missed its
+    80 ms budget and the stop read "did not confirm". The root here has
+    tkinter's cross-thread semantics: `after` from another thread blocks
+    until the Tk thread is free. A publisher must return at once, and the
+    event must still be drawn - on the Tk thread's own tick."""
+    import threading
+    import time
+
+    from events import events
+    dashboard.open()
+    before = dashboard._event_text.body
+    tk_thread = threading.current_thread()
+    free = threading.Event()        # the Tk thread is busy inside the stop
+    plain_after = dashboard.root.after
+
+    def after(ms, fn=None):
+        if threading.current_thread() is not tk_thread:
+            free.wait(timeout=3.0)  # Tkapp_ThreadSend: wait for the loop
+        return plain_after(ms, fn)
+    dashboard.root.after = after
+
+    returned = []
+
+    def worker():
+        started = time.monotonic()
+        events.warn("Power Down Not Supported", "the DC board has no coil kill",
+                    source="DC Probe")
+        returned.append(time.monotonic() - started)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout=0.5)
+    try:
+        assert not thread.is_alive(), "the publisher waited for the Tk thread"
+        assert returned and returned[0] < 0.08, returned
+        assert dashboard._event_text.body == before, "drawn straight off the thread"
+    finally:
+        free.set()
+        thread.join(timeout=3.0)
+    # The Tk thread comes back to its loop: the event is delivered then.
+    SCHEDULER.pump()
+    assert dashboard._event_text.body != before
+    assert "coil kill" in dashboard._event_text.body
+
+
+def test_v5_marshalled_calls_keep_their_order_across_threads(dashboard):
+    """The inbox is one queue: what the Tk thread and a worker marshal runs
+    in the order it was marshalled, on the Tk thread."""
+    import threading
+    dashboard.open()
+    ran = []
+    dashboard._marshal(lambda: ran.append(("tk", threading.current_thread().name)))
+    thread = threading.Thread(target=lambda: dashboard._marshal(
+        lambda: ran.append(("worker", threading.current_thread().name))),
+        name="stop-worker")
+    thread.start()
+    thread.join(timeout=1.0)
+    assert ran == []
+    SCHEDULER.pump()
+    assert [who for who, _ in ran] == ["tk", "worker"]
+    assert all(name == threading.current_thread().name for _, name in ran)
+
+
 def test_no_popup_once_close_has_begun(dashboard, tk_harness):
     """A modal raised from inside a close path blocks the exit."""
     dashboard.open()
