@@ -253,3 +253,143 @@ def test_a_jog_write_that_finds_the_link_lost_does_not_fault_the_probe(rig):
     assert probe._send_jog({"axis_x": 0.5}) is False
     assert _wait_for(lambda: probe.mode is ProbeMode.DISABLED), probe.mode
     assert probe.is_faulted is False
+
+
+# --------------------------------------------------------------------------
+# L2 -- the link recovers by itself (reverses D-11 for automatic recovery)
+# --------------------------------------------------------------------------
+
+class Recorder:
+    """The port's state transitions, and the info events published."""
+
+    def __init__(self, port, monkeypatch):
+        self.states = []
+        self.infos = []
+        real = port._note_state
+
+        def _note(old, new, why):
+            self.states.append(new)
+            return real(old, new, why)
+
+        monkeypatch.setattr(port, "_note_state", _note)
+        events.subscribe(self._seen)
+
+    def _seen(self, event):
+        if event.severity == "info":
+            self.infos.append((event.title, event.message, event.source))
+
+    def close(self):
+        events.unsubscribe(self._seen)
+
+
+def _lose(port, handle):
+    handle.fail_writes = 1
+    with pytest.raises(TransportError):
+        port.write(b"1,1,1,0,400.0,0,0,5.0,0,0,0,1\n")
+
+
+def test_the_link_reconnects_by_itself_on_the_backoff_schedule(rig, monkeypatch):
+    """Open fails twice, then succeeds on the third try: the state goes
+    LOST -> RECONNECTING -> UNVERIFIED (this port has no handshake), the
+    waits are 1, 2, 4 s, the owner publishes Connection Restored, and the
+    probe stays DISABLED until the operator re-enters a mode."""
+    h1, h2 = FlakyHandle(), FlakyHandle()
+    probe, port, _, opens = rig(h1, OSError("gone"), OSError("still gone"), h2)
+    probe.set_mode("autonomous")
+    delays = []
+    monkeypatch.setattr(port, "_reconnect_sleep",
+                        lambda seconds: delays.append(seconds) and False)
+    rec = Recorder(port, monkeypatch)
+    try:
+        _lose(port, h1)
+        assert _wait_for(lambda: port.state is ConnectionState.UNVERIFIED), \
+            (port.state, rec.states)
+        assert _wait_for(lambda: any(t == "Connection Restored"
+                                     for t, _, _ in rec.infos)), rec.infos
+    finally:
+        rec.close()
+    assert rec.states[:2] == [ConnectionState.LOST, ConnectionState.RECONNECTING]
+    assert rec.states[-1] is ConnectionState.UNVERIFIED
+    assert delays == [1.0, 2.0, 4.0], delays
+    assert len(opens) == 4, "one initial open and three reconnect attempts"
+    title, message, source = next(i for i in rec.infos
+                                  if i[0] == "Connection Restored")
+    assert message == (f"Stepper Probe is back on {PORT}. Re-enable it when "
+                       "you are ready.")
+    assert source == "Stepper Probe"
+    assert probe.mode is ProbeMode.DISABLED
+    assert port.is_open and port._handle is h2
+    # Nothing restarted by itself: no enable reached the new handle.
+    assert b"e" not in h2.frames
+
+
+def test_the_backoff_goes_on_every_ten_seconds_after_eight(rig, monkeypatch):
+    probe, port, h1, _ = rig(FlakyHandle(), OSError("gone"))
+    delays = []
+
+    def _sleep(seconds):
+        delays.append(seconds)
+        if len(delays) >= 7:
+            port.close()
+            return True
+        return False
+
+    monkeypatch.setattr(port, "_reconnect_sleep", _sleep)
+    _lose(port, h1)
+    assert _wait_for(lambda: len(delays) >= 7 and port.state is ConnectionState.CLOSED)
+    time.sleep(0.05)
+    assert delays == [1.0, 2.0, 4.0, 8.0, 10.0, 10.0, 10.0], delays
+
+
+def test_close_while_reconnecting_stops_the_loop(rig, monkeypatch):
+    """A deliberate `close()` cancels the loop through the generation
+    counter, and wakes it out of its wait at once."""
+    probe, port, h1, opens = rig(FlakyHandle(), OSError("gone"))
+    monkeypatch.setattr(port, "RECONNECT_BACKOFF", (0.01,))
+    monkeypatch.setattr(port, "RECONNECT_EVERY", 0.01)
+    _lose(port, h1)
+    assert _wait_for(lambda: port.state is ConnectionState.RECONNECTING)
+    assert _wait_for(lambda: len(opens) >= 3)
+    port.close()
+    assert port.state is ConnectionState.CLOSED
+    time.sleep(0.05)
+    settled = len(opens)
+    time.sleep(0.1)
+    assert len(opens) == settled, "the reconnect loop outlived close()"
+    assert port.state is ConnectionState.CLOSED
+    assert not any(t.name.startswith("serial-recover") and t.is_alive()
+                   for t in threading.enumerate())
+
+
+def test_a_reconnecting_probe_refuses_motion_and_says_why(rig, monkeypatch):
+    probe, port, h1, _ = rig(FlakyHandle(), OSError("gone"))
+    release = threading.Event()
+    monkeypatch.setattr(port, "_reconnect_sleep",
+                        lambda seconds: release.wait(2.0) and False)
+    _lose(port, h1)
+    assert _wait_for(lambda: port.state is ConnectionState.RECONNECTING)
+    from result import Refused
+    for command in (lambda: probe.set_mode("autonomous"), probe.step):
+        with pytest.raises(Refused) as refused:
+            command()
+        assert "reconnect" in str(refused.value.reason).lower(), refused.value.reason
+    assert probe.mode is ProbeMode.DISABLED
+    port.close()
+    release.set()
+
+
+def test_the_reconnect_loop_never_holds_the_transaction_lock_or_blocks_a_stop(
+        rig, monkeypatch):
+    probe, port, h1, _ = rig(FlakyHandle(), OSError("gone"))
+    release = threading.Event()
+    monkeypatch.setattr(port, "_reconnect_sleep",
+                        lambda seconds: release.wait(2.0) and False)
+    _lose(port, h1)
+    assert _wait_for(lambda: port.state is ConnectionState.RECONNECTING)
+    assert port._lock.acquire(timeout=0.05), "the loop holds the transaction lock"
+    port._lock.release()
+    started = time.monotonic()
+    probe.halt()            # no handle: unconfirmed, but it must not wait
+    assert time.monotonic() - started < 0.5
+    port.close()
+    release.set()

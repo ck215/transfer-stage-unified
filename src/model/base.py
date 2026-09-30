@@ -108,7 +108,12 @@ class Model(Panel):
         default; a model with modes overrides it."""
 
     def _on_link_restored(self):
-        """A port of this model is back. Nothing restarts by itself."""
+        """A port of this model is back (L2). Nothing restarts by itself:
+        the model stays where the loss left it (DISABLED) until the operator
+        enters a mode again, the same rule as `clear_estop`."""
+        names = ", ".join(str(p.port) for p in self._link_ports()) or "its port"
+        events.info("Connection Restored", f"{self.NAME} is back on {names}. "
+                    "Re-enable it when you are ready.", source=self.NAME)
 
     def _is_link_down(self):
         """True while an owned port is lost or reconnecting."""
@@ -316,6 +321,13 @@ class Model(Panel):
             events.debug("Guard", f"{what} refused: latched", source=self.NAME)
             raise Refused(f"{self.NAME} is stopped. Clear the stop, then try "
                           "again.")
+        for port in self._link_ports():
+            if port.status in ("lost", "reconnecting"):
+                events.debug("Guard", f"{what} refused: link {port.status}",
+                             source=self.NAME)
+                raise Refused(f"{self.NAME} lost its connection to {port.port} "
+                              "and is reconnecting by itself. Wait until it is "
+                              "back, then try again.")
 
     # -- fault -------------------------------------------------------------
     def _fault(self, reason):

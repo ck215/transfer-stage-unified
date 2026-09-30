@@ -41,6 +41,7 @@ class ConnectionState(str, enum.Enum):
     VERIFIED = "verified"      # opened AND the device answered
     UNVERIFIED = "unverified"  # opened, but nothing answered: operating blind
     LOST = "lost"              # the open failed, or the link failed after it
+    RECONNECTING = "reconnecting"  # lost, and reopening by itself (L2)
     CLOSED = "closed"          # not opened yet, or deliberately closed
 
     @property
@@ -251,6 +252,12 @@ class SerialPort(Device):
     #: The identity query. Part of the wire contract with the firmware.
     PING = b"s\n"
 
+    #: L2 (owner 2026-09-30, reverses D-11 for automatic recovery only): the
+    #: waits before each reopen of a lost link, then every RECONNECT_EVERY
+    #: seconds for as long as it takes. A deliberate `close()` ends it.
+    RECONNECT_BACKOFF = (1.0, 2.0, 4.0, 8.0)
+    RECONNECT_EVERY = 10.0
+
     _HANDSHAKE_POLL = 0.05
     _READ_POLL = 0.005
     _READ_BUFFER_LIMIT = 4096
@@ -301,6 +308,9 @@ class SerialPort(Device):
         self._read_buffer = b""
         self._connect_thread = None
         self._generation = 0  # bumped by open() and close(); a stale worker quits
+        #: Set by `close()` and `open()` to wake a reconnect loop out of its
+        #: wait; a new one per reconnect episode.
+        self._reconnect_cancel = threading.Event()
 
         # The simulated handle exists from construction and survives close(),
         # so `writes` stays readable for a test asserting on a teardown.
@@ -394,6 +404,7 @@ class SerialPort(Device):
             was = self._state
             self._generation += 1
             generation = self._generation
+            self._reconnect_cancel.set()   # a reconnect loop is now stale
             self._identity = None
             self._read_buffer = b""
             if self.is_simulated:
@@ -457,6 +468,7 @@ class SerialPort(Device):
         """
         with self._state_lock:
             self._generation += 1  # a connect still in flight is now stale
+            self._reconnect_cancel.set()   # and so is a reconnect loop (L2)
             was = self._state
             was_usable = was.is_usable or was == ConnectionState.CONNECTING
         drained = None
@@ -498,8 +510,12 @@ class SerialPort(Device):
             write_timeout=self.write_timeout)
 
     def _is_current(self, generation):
+        """This connect (or reconnect) attempt is still the one that counts.
+        Entering RECONNECTING bumps the generation, so a connect worker of
+        the episode before can never match it."""
         return (self._generation == generation
-                and self._state == ConnectionState.CONNECTING)
+                and self._state in (ConnectionState.CONNECTING,
+                                    ConnectionState.RECONNECTING))
 
     def _connect_loop(self, generation):
         """was serial._connect_worker. Open, wait out the bootloader, ask the
@@ -588,6 +604,7 @@ class SerialPort(Device):
 
     def _handshake(self, handle, generation):
         """Ask the board what it is. True if it answered; sets `identity`.
+        False when nothing answered; None when the handle itself failed.
 
         All SERIAL-17: one ping every `PING_INTERVAL`, not one per poll, and
         none once the board has answered; a *whole* `DEV:` line or nothing;
@@ -606,7 +623,7 @@ class SerialPort(Device):
                         handle.write(self.PING)
                 except Exception as exc:
                     self._mark_lost(exc)
-                    return False
+                    return None
                 pings += 1
                 # In a loop, so rate-limited (Addendum 1): the count carries
                 # the rate, one line per second carries the fact.
@@ -620,7 +637,7 @@ class SerialPort(Device):
                         buffer += handle.read(waiting).decode("utf-8", errors="ignore")
             except Exception as exc:
                 self._mark_lost(exc)
-                return False
+                return None
 
             identity = self._identity_from(buffer)
             if identity is not None:
@@ -695,7 +712,8 @@ class SerialPort(Device):
                 outcome = "port not open"
                 raise TransportError(
                     f"port {self.port} is not open; {payload!r} was not sent")
-            if not priority and self._state is ConnectionState.LOST:
+            if not priority and self._state in (ConnectionState.LOST,
+                                                ConnectionState.RECONNECTING):
                 # The handle of a lost link is kept only for the owner's stop
                 # (L1). Motion must never reach it, not even once.
                 outcome = "link lost"
@@ -762,7 +780,8 @@ class SerialPort(Device):
         else's hands. A deliberate CLOSED is never turned into LOST.
         """
         with self._state_lock:
-            if self._state in (ConnectionState.LOST, ConnectionState.CLOSED):
+            if self._state in (ConnectionState.LOST, ConnectionState.CLOSED,
+                               ConnectionState.RECONNECTING):
                 events.debug("Loss Already Recorded",
                              f"state is {self._state.value}; not reporting "
                              f"again: {why}", source=self._source)
@@ -807,6 +826,119 @@ class SerialPort(Device):
         events.debug("Lost Handle Closed", f"after the owner's stop "
                      f"(landed={stopped})", source=self._source)
         self._report_loss(why, stopped)
+        with self._state_lock:
+            if (self._generation != generation
+                    or self._state is not ConnectionState.LOST):
+                events.debug("Reconnect Not Started", f"the link moved on "
+                             f"({self._state.value})", source=self._source)
+                return
+            self._generation += 1
+            generation = self._generation
+            self._state = ConnectionState.RECONNECTING
+            self._reconnect_cancel = threading.Event()
+        self._note_state(ConnectionState.LOST, ConnectionState.RECONNECTING,
+                         "reconnecting by itself")
+        self._reconnect_loop(generation)
+
+    def _reconnect_sleep(self, seconds):
+        """Wait out one backoff. True when `close()` or `open()` cancelled."""
+        return self._reconnect_cancel.wait(seconds)
+
+    def _reconnect_loop(self, generation):
+        """L2: reopen the port and redo the handshake until it answers, on
+        `RECONNECT_BACKOFF` then every `RECONNECT_EVERY` seconds. Holds no
+        lock across any wait or open, so a stop is never behind it. Ends on
+        success, or when `close()`/`open()` moved the generation on."""
+        attempt = 0
+        while True:
+            delay = (self.RECONNECT_BACKOFF[attempt]
+                     if attempt < len(self.RECONNECT_BACKOFF)
+                     else self.RECONNECT_EVERY)
+            attempt += 1
+            if self._reconnect_sleep(delay) or not self._is_current(generation):
+                events.debug("Reconnect Cancelled", f"after {attempt - 1} "
+                             "attempt(s)", source=self._source)
+                return
+            outcome = self._reconnect_once(generation)
+            if outcome is None:
+                events.debug("Reconnect Cancelled", f"during attempt {attempt}",
+                             source=self._source)
+                return
+            if outcome:
+                return
+            events.debug("Reconnect Attempt Failed", f"attempt {attempt}; next "
+                         f"in {self.RECONNECT_BACKOFF[attempt] if attempt < len(self.RECONNECT_BACKOFF) else self.RECONNECT_EVERY:g} s",
+                         source=self._source)
+
+    def _reconnect_once(self, generation):
+        """One reopen + handshake. -> True (back), False (try again), None
+        (cancelled)."""
+        started = time.monotonic()
+        try:
+            handle = self._open_handle()
+        except Exception as exc:
+            events.debug("Reopen Failed", f"{self.port}: {exc}",
+                         source=self._source)
+            return False
+        with self._state_lock:
+            is_current = self._is_current(generation)
+            if is_current:
+                self._handle = handle
+                self._read_buffer = b""
+                self._identity = None
+        if not is_current:
+            try:
+                handle.close()
+            except Exception:
+                pass
+            return None
+
+        verified = False
+        if self.has_handshake:
+            try:
+                with self._lock:
+                    handle.reset_input_buffer()
+                    handle.reset_output_buffer()
+            except Exception as exc:
+                events.debug("Buffer Reset Failed", str(exc),
+                             source=self._source, exception=exc)
+            if self._reconnect_cancel.wait(self.BOOTLOADER_WAIT):
+                return None
+            try:
+                verified = self._handshake(handle, generation)
+            except Exception as exc:
+                verified = None
+                events.debug("Handshake Raised", str(exc), source=self._source,
+                             exception=exc)
+        with self._state_lock:
+            is_current = self._is_current(generation)
+            if is_current and verified is not None:
+                self._state = (ConnectionState.VERIFIED if verified
+                               else ConnectionState.UNVERIFIED)
+            elif self._handle is handle:
+                self._handle = None
+        if not is_current:
+            return None
+        if verified is None:     # the reopened handle failed at once
+            try:
+                handle.close()
+            except Exception:
+                pass
+            return False
+        events.debug("Reconnected", f"{self.port} back after "
+                     f"{time.monotonic() - started:.3f}s; verified={verified} "
+                     f"identity={self._identity!r}", source=self._source)
+        self._note_state(ConnectionState.RECONNECTING, self._state,
+                         f"reconnected; handshake "
+                         f"{'answered' if verified else 'unanswered'}")
+        handler = self._on_restored
+        if handler is not None:
+            try:
+                handler()
+            except Exception as exc:
+                events.debug("Restore Handler Raised", repr(exc),
+                             source=self._source, exception=exc)
+        return True
 
     def _owner_stop(self, why):
         """Run `on_lost(why)` on its own thread and wait `loss_stop_budget`.
@@ -864,7 +996,8 @@ class SerialPort(Device):
                 handle = self._handle
                 if handle is None or not getattr(handle, "is_open", False):
                     raise TransportError(f"port {self.port} is not open; cannot read")
-                if self._state != ConnectionState.CONNECTING:
+                if self._state not in (ConnectionState.CONNECTING,
+                                       ConnectionState.RECONNECTING):
                     line = self._take_line()
                     if line is not None:
                         return line

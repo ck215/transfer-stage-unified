@@ -484,6 +484,24 @@ def test_a_write_failure_raises_but_reports_nothing_itself(build, monkeypatch):
     assert errors == [], "a transport failure is not an acknowledged popup"
 
 
+def test_a_port_with_no_owner_stays_lost_and_does_not_reconnect(build):
+    """L2's automatic recovery belongs to a port a model owns. Setup's scan
+    and the SMC100's port register no loss handler: they keep D-11's
+    behaviour, LOST at the first failure and no reconnect loop."""
+    port, handle = build()
+    handle.write_error = OSError("unplugged")
+    with pytest.raises(TransportError):
+        port.write(b"x")
+    time.sleep(0.05)
+    assert port.state is ConnectionState.LOST
+    assert not any(t.name.startswith("serial-recover") for t in threading.enumerate())
+
+
+def test_reconnecting_is_not_a_usable_state():
+    assert ConnectionState.RECONNECTING.value == "reconnecting"
+    assert ConnectionState.RECONNECTING.is_usable is False
+
+
 def test_an_open_that_fails_ends_lost_not_unverified(build):
     port, _ = build(OSError("no such device"), open_it=False)
     port.open()

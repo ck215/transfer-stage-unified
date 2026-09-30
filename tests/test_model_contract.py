@@ -229,7 +229,7 @@ def test_idle_countdown_keys_come_as_a_pair(model):
 
 def test_device_status_is_a_word_the_views_know(model):
     known = {"verified", "simulated", "lost", "closed", "unverified",
-             "connecting", "bound", "unbound", "open", "capturing"}
+             "connecting", "reconnecting", "bound", "unbound", "open", "capturing"}
     for kind, status in model.state["devices"].items():
         assert str(status) in known, f"{kind}: {status!r}"
 
