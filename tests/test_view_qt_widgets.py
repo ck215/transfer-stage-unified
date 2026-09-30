@@ -2126,6 +2126,33 @@ def test_v1_a_stalled_link_is_the_attention_tier(dashboard, qapp, controller,
     assert panel_view._widget_for(element_named(panel_view, "is_on")).isEnabled()
 
 
+def test_v3_a_held_input_gate_is_said_on_a_gamepad_driven_entry(
+        dashboard, qapp, controller):
+    """D-4 closes the gamepad gate on focus loss; V3 says so on the entry
+    (attention tier: the rule stays ink) and on the rail, and clears it when
+    focus returns. The Qt dashboard's own focus sync is what calls this."""
+    from views import base as view_base
+    controller.overrides["Fake"] = {"devices": {"SerialPort": "verified",
+                                                "Gamepad": "bound"}}
+    dashboard.open()
+    panel_view = dashboard._panels["Fake"]
+    dashboard._on_focus_change(False)
+    dashboard._sync_states()
+    assert controller.focus_calls[-1] is False
+    assert panel_view.notice.text() == view_base.INPUT_HELD_LINE
+    assert panel_view.notice.isVisibleTo(panel_view)
+    entry = dashboard._entries["Fake"]
+    assert entry.lost_label.text() == view_base.INPUT_HELD_LINE
+    assert entry.link_tier == "warning" and entry.rule.styleSheet() == ""
+    assert dashboard._rail_items["Fake"].stop_mark == "attention"
+
+    dashboard._on_focus_change(True)
+    dashboard._sync_states()
+    assert not panel_view.notice.isVisibleTo(panel_view)
+    assert entry.link_tier == ""
+    assert dashboard._rail_items["Fake"].stop_mark is None
+
+
 class DiagnosedPanel(FakePanel):
     """The Fake with a Diagnostics section of its own (tier 3)."""
 

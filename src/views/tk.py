@@ -6875,6 +6875,10 @@ class TkDashboard(Dashboard):
         if acted and action:
             self.run_action(action)
 
+    def _input_views(self):
+        """V3: every model's entry (not Setup's page) hears the input gate."""
+        return [view for name, view in self._panels.items() if name != self.SETUP_TAB]
+
     def _action_panel(self, name):
         key = self.SETUP_TAB if name == events.SETUP_PANEL else name
         return self._panels.get(key)

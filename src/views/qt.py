@@ -6100,8 +6100,13 @@ class QtDashboard(Dashboard, QMainWindow):
 
     def _entry_notices(self, state):
         """What an entry says under its head (`views.base.entry_notices`),
-        from the model's state: the same function the panel draws from."""
-        return view_base.entry_notices(state)
+        from the model's state and the input gate (V3): the same function
+        the panel draws from."""
+        return view_base.entry_notices(state, self.input_held)
+
+    def _input_views(self):
+        """V3: every model's panel hears the input gate."""
+        return list(self._panels.values())
 
     def _show_lost(self, name, lost, notices=()):
         """A lost device, or the link's own words (V1), said on the rail and
@@ -7038,3 +7043,8 @@ class QtDashboard(Dashboard, QMainWindow):
         events.debug("Focus Gate", f"input gate {'open' if is_focused else 'closed'}",
                      source="QtView")
         self._on_focus_change(is_focused)
+        try:
+            self._sync_states()     # V3: the entry's head says it at once
+        except Exception as exc:
+            events.debug("Held Not Shown", str(exc), source="QtView",
+                         exception=exc, every=5.0)

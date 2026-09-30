@@ -3275,6 +3275,54 @@ def test_v2_the_link_counters_are_a_readout_in_diagnostics(tk_harness):
     view.close()
 
 
+def test_v3_a_held_input_gate_is_said_on_every_gamepad_driven_entry(setup_panel):
+    """D-4: the window closes the gamepad gate on focus loss and the
+    operator was told nothing. Now every entry a gamepad drives says "Input
+    held: window not focused" in the attention tier (the glyph in ink, the
+    rule left ink, the rail's attention mark), and it goes when focus comes
+    back. An entry with no pad says nothing. Asserted on what the view
+    computes and draws into its own widgets, not by iterating the Tk tree."""
+    probe, plain = LinkPanel(), DemoPanel()
+    controller = FakeController(**{"Stepper Probe": probe, "Demo": plain})
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    entry, other = built._panels["Stepper Probe"], built._panels["Demo"]
+
+    built._on_focus_change(False)
+    assert controller.focus_calls == [False]
+    assert entry.notices == [("warning", view_base.INPUT_HELD_LINE)]
+    assert entry._health.cget("text") == "Input held: window not focused"
+    assert entry._health.is_packed
+    assert entry._rule.cget("background") == theme.RULE_STRONG
+    assert _mark_fills(entry._health_mark) == {theme.SEVERITY_MARK["warning"]}
+    assert other.notices == [] and not other._health.is_packed
+    built._on_refresh_tick()
+    assert _mark_fills(built._rail_marks["Stepper Probe"][0]) == {
+        theme.SEVERITY_MARK["warning"]}
+    assert "Input held" in built._station_line.cget("text")
+
+    built._on_focus_change(True)
+    assert controller.focus_calls == [False, True]
+    assert entry.notices == [] and not entry._health.is_packed
+    built._on_refresh_tick()
+    assert _mark_fills(built._rail_marks["Stepper Probe"][0]) == set()
+    built.close()
+
+
+def test_v3_a_model_launched_while_unfocused_opens_held(setup_panel):
+    probe = LinkPanel()
+    controller = FakeController()
+    built = tkmod.TkDashboard(controller, setup_panel)
+    built.open()
+    built._on_focus_change(False)
+    controller.closed["Stepper Probe"] = probe
+    controller.reopen("Stepper Probe")
+    SCHEDULER.pump()
+    assert built._panels["Stepper Probe"].notices == [
+        ("warning", view_base.INPUT_HELD_LINE)]
+    built.close()
+
+
 def test_v1_the_rail_line_of_a_down_link_shows_its_tier(controller, setup_panel):
     """The rail's per-model line takes the entry's tier: the warning glyph
     in signal while the link is down, in ink while it is stalled, nothing
