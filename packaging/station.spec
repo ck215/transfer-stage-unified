@@ -234,11 +234,21 @@ coll = COLLECT(
 if sys.platform == "darwin":
     subprocess.run(["chflags", "-R", "nohidden", coll.name], check=True)
 
+# The bundle layout contract (packaging/layout.py): the repo's firmware/ goes
+# BESIDE the launchers as firmware/ (not under _internal/, so the flasher and
+# the operator find it by path), then tools/ (packaging/tools.py) and
+# stable/ (packaging/stable.spec) when they have been staged. Copied, not
+# declared as datas: PyInstaller 6 puts every data file under _internal/.
+sys.path.insert(0, HERE)
+import layout  # noqa: E402  (packaging/layout.py)
+
+for part, path in layout.assemble(coll.name).items():
+    print(f"[station.spec] {part}/ -> {path}")
+
 # B1: the version the bundle knows. VERSION (tag, commit, build time) and
 # release.json (the repository the frozen updater asks for releases) go beside
 # the launchers. STATION_TAG names the tag (the workflow sets it); a local
 # build gets `git describe`. Written last, after every copy into dist/.
-sys.path.insert(0, HERE)
 import release  # noqa: E402  (packaging/release.py)
 
 print(f"[station.spec] stamped {coll.name}: {release.stamp(coll.name)}")

@@ -508,3 +508,110 @@ def test_spec_collects_the_ffmpeg_binary(spec_source):
     assert '"imageio_ffmpeg.binaries"' in spec_source
     assert 'collect_data_files("imageio_ffmpeg", subdir="binaries")' in spec_source
     assert "FFMPEG_BINARIES" in spec_source.split("def analysis", 1)[1]
+
+
+# -- dist-build B1: firmware beside the launchers ------------------------------
+
+@pytest.fixture(scope="module")
+def layout():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "station_layout", os.path.join(PACKAGING, "layout.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+FIRMWARE = os.path.join(ROOT, "firmware")
+
+
+def _tree(base):
+    """{relative posix path: bytes} for every file under `base`."""
+    out = {}
+    for directory, _, files in os.walk(base):
+        for name in files:
+            path = os.path.join(directory, name)
+            with open(path, "rb") as f:
+                out[os.path.relpath(path, base).replace(os.sep, "/")] = f.read()
+    return out
+
+
+def test_the_layout_reads_the_sketch_table_without_importing_the_flasher(layout):
+    assert layout.sketch_dirs() == sorted(
+        ["stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller"])
+    constants = layout.flash_constants()
+    assert constants["MEGA_FQBN"].startswith("arduino:avr:")
+    assert constants["TEENSY_FQBN"].startswith("teensy:avr:")
+
+
+def test_the_firmware_copy_is_byte_identical_and_skips_caches(layout, tmp_path):
+    source = tmp_path / "firmware"
+    import shutil
+    shutil.copytree(FIRMWARE, source, ignore=shutil.ignore_patterns("__pycache__", "build"))
+    (source / "__pycache__").mkdir()
+    (source / "__pycache__" / "flash_firmware.cpython-313.pyc").write_bytes(b"x")
+    (source / "temp_controller" / "build").mkdir()
+    (source / "temp_controller" / "build" / "temp_controller.ino.hex").write_text(":00")
+    bundle = tmp_path / "station"
+    bundle.mkdir()
+    layout.copy_firmware(str(source), str(bundle))
+    copied = _tree(bundle / "firmware")
+    expected = {k: v for k, v in _tree(source).items()
+                if "__pycache__" not in k and "/build/" not in k}
+    assert copied == expected
+    for sketch in layout.sketch_dirs():
+        assert f"{sketch}/{sketch}.ino" in copied, sketch
+    assert any(k.startswith("libraries/LiquidCrystal_I2C/") for k in copied)
+    assert not (bundle / "_internal" / "firmware").exists()
+
+
+def test_the_spec_assembles_the_layout_after_collect_and_before_the_stamp(spec_source):
+    collect = spec_source.index("coll = COLLECT(")
+    assemble = spec_source.index("layout.assemble(coll.name)")
+    stamp = spec_source.index("release.stamp(coll.name)")
+    assert collect < assemble < stamp
+    # firmware is copied beside the launchers, never declared as data (which
+    # PyInstaller 6 would put under _internal/)
+    datas = spec_source.split("def analysis", 1)[1].split("def executable", 1)[0]
+    assert "firmware" not in datas
+
+
+def test_assemble_copies_what_is_staged_and_warns_about_the_rest(layout, tmp_path):
+    bundle = tmp_path / "station"
+    bundle.mkdir()
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / layout.exe("arduino-cli")).write_text("cli")
+    (tools / "arduino-data").mkdir()
+    warnings = []
+    done = layout.assemble(str(bundle), tools_stage=str(tools),
+                           stable_dist=str(tmp_path / "no-stable"),
+                           require_all=False, log=warnings.append)
+    assert set(done) == {"firmware", "tools"}
+    assert (bundle / "tools" / layout.exe("arduino-cli")).read_text() == "cli"
+    assert (bundle / "firmware" / "stepper_firmware" / "stepper_firmware.ino").is_file()
+    assert len(warnings) == 1 and "stable/" in warnings[0]
+
+
+def test_assemble_refuses_a_partial_bundle_when_the_workflow_asks(layout, tmp_path):
+    bundle = tmp_path / "station"
+    bundle.mkdir()
+    with pytest.raises(SystemExit, match="arduino-cli"):
+        layout.assemble(str(bundle), tools_stage=str(tmp_path / "none"),
+                        stable_dist=str(tmp_path / "none"), require_all=True)
+
+
+def test_assemble_copies_the_stable_bundle_under_stable(layout, tmp_path):
+    bundle = tmp_path / "station"
+    bundle.mkdir()
+    stable = tmp_path / "station-stable"
+    (stable / "_internal").mkdir(parents=True)
+    (stable / "firmware" / "stepper_firmware").mkdir(parents=True)
+    (stable / layout.exe("station-stable")).write_text("exe")
+    done = layout.assemble(str(bundle), tools_stage=str(tmp_path / "none"),
+                           stable_dist=str(stable), require_all=False,
+                           log=lambda *_: None)
+    assert "stable" in done
+    assert (bundle / "stable" / layout.exe("station-stable")).is_file()
+    assert (bundle / "stable" / "_internal").is_dir()
+    assert (bundle / "stable" / "firmware" / "stepper_firmware").is_dir()
