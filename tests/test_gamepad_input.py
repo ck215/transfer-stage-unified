@@ -242,7 +242,9 @@ def test_a_failed_bind_reverts_the_choice_and_drops_the_mode():
     with pytest.raises(Refused):
         stage.set_gamepad("Pad9")
     assert stage._gamepad_name == "Pad0" and not stage.driving
-    assert stage.lost == [GamepadInput.GAMEPAD_BIND_FAILED]
+    # rb-pump P5: the mode is left BEFORE the bind is tried (a swap while
+    # driving), so the failed bind finds nothing left to drop.
+    assert stage.lost == [GamepadInput.GAMEPAD_SWAPPED]
 
 
 def test_a_raising_hook_faults_through_the_mixin_and_the_pump_keeps_running():
@@ -385,6 +387,81 @@ def test_a_probe_jogs_again_after_a_failed_jog_write_and_manual_reentry():
         assert probe._thread("gamepad").is_alive()
     finally:
         probe._stop_threads()
+        probe.disable()
+
+
+def test_swapping_the_pad_while_driving_leaves_the_mode_before_the_bind():
+    """rb-pump P5 (stop path): a rebind while pumping used to set the name
+    and stay in the mode, so the next tick drove from the new pad. The
+    original lab app ran a full stop first. Now: `_on_gamepad_lost(SWAPPED)`
+    first, then the bind; the operator re-enters the mode by hand."""
+    stage, pad = _stage({"axis_x": 0.5})
+    order = []
+    real_bind, real_lost = pad.bind, stage._on_gamepad_lost
+
+    def _bind(name):
+        order.append(("bind", name))
+        return real_bind(name)
+
+    def _lost(reason):
+        order.append(("lost", reason))
+        return real_lost(reason)
+    pad.bind = _bind
+    stage._on_gamepad_lost = _lost
+    stage.set_drive("on")
+    stage._gamepad_tick()
+    assert stage.set_gamepad("Pad1") == "Pad1"
+    assert order == [("lost", GamepadInput.GAMEPAD_SWAPPED), ("bind", "Pad1")]
+    assert not stage.driving, "the swap left the model in its mode"
+    stage.frames.clear()
+    stage._gamepad_tick()
+    stage._gamepad_tick()
+    assert all(frame == {} for frame in stage.frames), stage.frames
+
+
+def test_choosing_a_pad_while_not_driving_does_not_call_the_lost_hook():
+    stage, pad = _stage()
+    assert stage.set_gamepad("Pad1") == "Pad1"
+    assert stage.lost == []
+
+
+def test_a_probe_swapping_its_pad_in_manual_stops_before_any_jog_from_the_new_pad():
+    """rb-pump P5 end to end: bind A, enter Manual, choose B. The probe
+    leaves Manual through its own transition (zero frame and 'd' on the
+    wire) before B is bound, and no jog from B follows. At BASE: the mode
+    stayed Manual and the swap wrote nothing."""
+    from model.probe import PACKET_FORMAT, ProbeMode, StepperProbe
+    import struct
+    jog_size = struct.calcsize(PACKET_FORMAT)
+    port = _JogPort()
+    pad = FakePad({"axis_x": 0.5})
+    probe = StepperProbe(port=port, gamepad=pad)
+    probe.set_gamepad("Pad0")
+    probe.set_mode("manual")
+    probe._gamepad_tick()
+    before = len(port.writes)
+    bound_at = []
+    real_bind = pad.bind
+
+    def _bind(name):
+        bound_at.append(len(port.writes))
+        pad.levels["axis_x"] = -0.75      # pad B is deflected
+        return real_bind(name)
+    pad.bind = _bind
+    try:
+        probe.set_gamepad("Pad1")
+        assert probe.mode is not ProbeMode.MANUAL, probe.mode
+        during = port.writes[before:bound_at[0]]
+        assert b"d" in during, f"no disable before the new pad bound: {during}"
+        assert b"0,0,0,0,0,0,0,0,0,0,0,0\n" in during, "no zero frame first"
+        assert during.index(b"0,0,0,0,0,0,0,0,0,0,0,0\n") < during.index(b"d")
+        for _ in range(3):
+            probe._gamepad_tick()
+        jogs_from_b = [w for w in port.writes[bound_at[0]:]
+                       if len(w) == jog_size
+                       and struct.unpack(PACKET_FORMAT, w)[2] == -0.75]
+        assert jogs_from_b == [], "the new pad jogged without re-entering Manual"
+    finally:
         probe.disable()
 
 

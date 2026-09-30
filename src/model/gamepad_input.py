@@ -46,6 +46,9 @@ class GamepadInput:
     GAMEPAD_LOST = "gamepad lost"
     GAMEPAD_RELEASED = "gamepad released"
     GAMEPAD_BIND_FAILED = "gamepad bind failed"
+    #: A pad chosen while the model was being driven (rb-pump P5): the
+    #: model leaves its mode BEFORE the new pad is bound.
+    GAMEPAD_SWAPPED = "gamepad swapped"
 
     def __init__(self, *args, **kwargs):
         self.gamepad = None
@@ -141,6 +144,16 @@ class GamepadInput:
         """
         previous = self._gamepad_name
         wanted = None if name in (None, "", "None") else str(name)
+        if wanted is not None and self._pumps_gamepad:
+            # rb-pump P5 (stop path): choosing a pad while driven leaves the
+            # mode through the model's own transition FIRST (the probe's
+            # sends the zero frame and disables), and only then binds. The
+            # old order kept the mode and the next tick jogged from the new
+            # pad; the lab's original app ran a full stop first. The
+            # operator re-enters the mode by hand.
+            events.debug("Gamepad", f"swap to {wanted!r} while driven; "
+                         "leaving the mode first", source=self.NAME)
+            self._on_gamepad_lost(self.GAMEPAD_SWAPPED)
         bound = False
         try:
             bound = bool(self.gamepad.bind(wanted))
