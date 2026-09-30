@@ -6,13 +6,22 @@
 # Runs the three launchers FROM the bundle, in SIM, and asserts on exit codes
 # and on lines in each run's own log file, never on timing alone:
 #
+#   0. the layout (packaging/layout.py): VERSION and release.json;
+#      firmware/<every sketch dir the board table names> and libraries/;
+#      tools/arduino-cli runs OFFLINE (a dead proxy is set) and its
+#      `core list` shows arduino:avr and teensy:avr; tools/teensy_loader_cli
+#      knows the Teensy 3.5 MCU; stable/station-stable is executable and its
+#      --self-check resolves every stable module without opening a window;
+#      stable/firmware/ has its sketches. A missing piece fails by name.
 #   1. station-web: /api/state 200; / is the bundle's own index.html;
 #      /api/theme.css served; serial enumeration ran; every Setup row ticked
 #      and set to SIM; Launch builds all six models; /api/estop_all latches
-#      every one; /api/quit exits 0 within 5 s; its log file names the stop,
+#      every one; the station_version Setup reports is VERSION's tag and
+#      build date; /api/quit exits 0 within 5 s; its log file names the stop,
 #      the quit and SDL teardown (the gamepad hub opened and closed).
 #   2. station-tk:  opens its dashboard; SIGTERM -> the Controller's handler
 #      closes, then re-raises the signal: exit status 143 within 5 s.
+#      Skipped (and said so) under STATION_NO_WINDOWS=1: Tk maps a window.
 #   3. station-qt:  same, with QT_QPA_PLATFORM=offscreen (SMOKE_QT_PLATFORM
 #      overrides it; empty = the native platform), and its log names the Qt
 #      plugin path the entry point resolved.
@@ -36,11 +45,17 @@ BASE="http://127.0.0.1:$PORT"
 LOGDIR="${TRANSFER_STAGE_DATA_ROOT:-$HOME/transfer-stage-runs}/logs"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/station-smoke.XXXXXX")"
 QT_PLATFORM="${SMOKE_QT_PLATFORM-offscreen}"
-# The seven Setup rows, in display order. Red Percent is screen capture and
-# the Transfer Map is a store: neither has a port (their choice is "On"), so
-# they are only ticked.
+# The six Setup rows, in display order. The Transfer Map is a store with no
+# port (its choice is "On"), so it is only ticked; red_percent (screen
+# capture) has no row of its own since 2026-09-28: it is drawn on the
+# Transfer Map's page and launches with that row.
 PORT_ROWS="stepper_probe dc_probe chuck_positioner temperature_controller rotator"
-ALL_ROWS="$PORT_ROWS red_percent transfer_map"
+ALL_ROWS="$PORT_ROWS transfer_map"
+# The sketch directories firmware/flash_firmware.py's DEVICES table names
+# (tests/test_packaging.py keeps this list equal to the table).
+SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller"
+# arduino:avr and teensy:avr: the platforms of the flasher's two FQBNs.
+CORES="arduino:avr teensy:avr"
 
 FAILED=0
 pass() { echo "PASS $*"; }
@@ -53,9 +68,9 @@ sleep_s() { sleep "$1" 2>/dev/null || perl -e "select(undef,undef,undef,$1)"; }
 
 get() { curl -s --max-time 10 "$BASE$1"; }
 code() { curl -s --max-time 10 -o /dev/null -w '%{http_code}' "$BASE$1"; }
-post() {  # post <route> <json>; the station wants JSON and a same-origin Host
+post() {  # post <route> <json>; the station wants JSON and an Origin naming it
     curl -s --max-time 30 -X POST -H 'Content-Type: application/json' \
-        --data "$2" "$BASE$1"
+        -H "Origin: $BASE" --data "$2" "$BASE$1"
 }
 run_setup() {  # run_setup <command> [args-json]
     post /api/run "{\"name\":\"__setup__\",\"command\":\"$1\",\"args\":${2:-[]}}"
@@ -103,6 +118,52 @@ for view in tk qt web; do
     [ -x "$BUNDLE/station-$view" ] || fail "station-$view is not in the bundle"
 done
 [ "$FAILED" = 0 ] || exit 1
+# -- 0. the layout --------------------------------------------------------
+echo "== layout"
+for f in VERSION release.json; do
+    check "$f beside the launchers" test -s "$BUNDLE/$f"
+done
+TAG="$(sed -n 1p "$BUNDLE/VERSION" 2>/dev/null)"
+BUILT="$(sed -n 3p "$BUNDLE/VERSION" 2>/dev/null)"
+EXPECTED_VERSION="$TAG, ${BUILT:0:10}"
+for sketch in $SKETCHES; do
+    check "firmware/$sketch/$sketch.ino" test -f "$BUNDLE/firmware/$sketch/$sketch.ino"
+    check "stable/firmware/$sketch/$sketch.ino" test -f "$BUNDLE/stable/firmware/$sketch/$sketch.ino"
+done
+check "firmware/libraries/" test -d "$BUNDLE/firmware/libraries"
+check "tools/arduino-cli is executable" test -x "$BUNDLE/tools/arduino-cli"
+check "tools/arduino-cli.yaml" test -f "$BUNDLE/tools/arduino-cli.yaml"
+check "tools/arduino-data/" test -d "$BUNDLE/tools/arduino-data/packages"
+# Offline: every request through a proxy that is not there. The config's
+# directories are relative to the working directory, so run from tools/.
+offline_cli() {
+    (cd "$BUNDLE/tools" && HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 \
+        ARDUINO_NETWORK_PROXY=http://127.0.0.1:9 \
+        ./arduino-cli --config-file arduino-cli.yaml "$@")
+}
+if [ -x "$BUNDLE/tools/arduino-cli" ]; then
+    offline_cli version > "$OUT/cli-version.txt" 2>&1
+    check "tools/arduino-cli version runs offline ($(head -1 "$OUT/cli-version.txt"))" \
+        grep -q "Version:" "$OUT/cli-version.txt"
+    offline_cli core list > "$OUT/cli-cores.txt" 2>&1
+    for core in $CORES; do
+        check "tools/arduino-cli core list shows $core" grep -q "^$core " "$OUT/cli-cores.txt"
+    done
+fi
+check "tools/teensy_loader_cli is executable" test -x "$BUNDLE/tools/teensy_loader_cli"
+if [ -x "$BUNDLE/tools/teensy_loader_cli" ]; then
+    "$BUNDLE/tools/teensy_loader_cli" --list-mcus > "$OUT/tlc.txt" 2>&1
+    check "tools/teensy_loader_cli knows the Teensy 3.5 (mk64fx512)" grep -qi "mk64fx512" "$OUT/tlc.txt"
+fi
+check "stable/station-stable is executable" test -x "$BUNDLE/stable/station-stable"
+if [ -x "$BUNDLE/stable/station-stable" ]; then
+    "$BUNDLE/stable/station-stable" --self-check > "$OUT/stable.out" 2>&1 &
+    wait_exit $! 60
+    check "stable/station-stable --self-check resolves every stable module (exit $RC)" \
+        grep -q "self-check ok" "$OUT/stable.out"
+    [ "$RC" = 0 ] || tail -15 "$OUT/stable.out"
+fi
+
 if curl -s --max-time 2 -o /dev/null "$BASE/api/state"; then
     echo "FAIL port $PORT is already answering; stop that server or set SMOKE_PORT"
     exit 1
@@ -173,6 +234,18 @@ else
     check "every model latched ($latched latched, $unlatched not)" \
         test "$latched" -ge 7 -a "$unlatched" = 0
 
+    # Setup reads the running version when an update check runs (the startup
+    # check is off here: STATION_NO_UPDATE_CHECK); Check again reads it.
+    run_setup check_updates > /dev/null
+    reported=""
+    for _ in $(seq 1 40); do
+        reported="$(get /api/setup | grep -o '"station_version": "[^"]*"' | sed 's/.*: "//; s/"$//')"
+        [ -n "$reported" ] && [ "$reported" != unknown ] && break
+        sleep_s 0.5
+    done
+    check "station-web reports VERSION ($reported = $EXPECTED_VERSION)" \
+        test "$reported" = "$EXPECTED_VERSION"
+
     r="$(post /api/quit '{}')"
     check "POST /api/quit answered ok" grep -q '"status": "ok"' <<< "$r"
     wait_exit "$WEB" 5
@@ -233,7 +306,15 @@ desktop() {  # desktop <view> <ready-needle> [extra log needles...]
     fi
 }
 
-desktop tk "Dashboard Open: Tk dashboard ready" "[app] View: tk starting"
+# STATION_NO_WINDOWS=1 (someone is working at this machine): Tk has no
+# offscreen platform, so its step would map a real window; it is skipped,
+# said so, and not counted as passed. CI never sets it.
+if [ -n "${STATION_NO_WINDOWS:-}" ] && [ "${STATION_NO_WINDOWS}" != 0 ]; then
+    echo "== station-tk"
+    echo "SKIP station-tk: STATION_NO_WINDOWS is set (Tk would map a real window)"
+else
+    desktop tk "Dashboard Open: Tk dashboard ready" "[app] View: tk starting"
+fi
 
 if [ -n "$QT_PLATFORM" ]; then export QT_QPA_PLATFORM="$QT_PLATFORM"; fi
 desktop qt "Qt dashboard shown" "[app] View: qt starting" \

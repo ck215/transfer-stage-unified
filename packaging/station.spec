@@ -85,8 +85,11 @@ COMMON_EXCLUDES = [
     "matplotlib.backends.backend_gtk4agg", "matplotlib.backends.backend_gtk4cairo",
     "PyQt5", "PyQt6", "PySide2",
 ]
-# The Qt view needs QtCore, QtGui and QtWidgets and nothing else from Qt:
-# every one of these would multiply the bundle (QtWebEngine alone is >150 MB).
+# The Qt view needs QtCore, QtGui, QtWidgets and QtSvg (views/qt.py draws its
+# icons with QSvgRenderer) and nothing else from Qt: every one of these would
+# multiply the bundle (QtWebEngine alone is >150 MB). Excluding QtSvg made
+# views/qt.py's PySide6 import fail as a whole, and station-qt refused to
+# start ("PySide6 is not installed").
 QT_UNUSED = [
     "PySide6." + m for m in (
         "Qt3DAnimation", "Qt3DCore", "Qt3DExtras", "Qt3DInput", "Qt3DLogic",
@@ -98,7 +101,7 @@ QT_UNUSED = [
         "QtPositioning", "QtPrintSupport", "QtQml", "QtQuick", "QtQuick3D",
         "QtQuickControls2", "QtQuickTest", "QtQuickWidgets", "QtRemoteObjects",
         "QtScxml", "QtSensors", "QtSerialBus", "QtSerialPort",
-        "QtSpatialAudio", "QtSql", "QtStateMachine", "QtSvg", "QtSvgWidgets",
+        "QtSpatialAudio", "QtSql", "QtStateMachine", "QtSvgWidgets",
         "QtTest", "QtTextToSpeech", "QtUiTools", "QtWebChannel",
         "QtWebEngineCore", "QtWebEngineQuick", "QtWebEngineWidgets",
         "QtWebSockets", "QtWebView", "QtXml", "QtAxContainer")

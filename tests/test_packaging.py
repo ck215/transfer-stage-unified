@@ -965,3 +965,90 @@ def test_expressions_reach_scripts_only_through_env(workflow):
     for line in workflow.splitlines():
         if "${{" in line and not line.lstrip().startswith("#"):
             assert re.match(r"^\s*(- )?[\w-]+:\s", line), line
+
+
+# -- dist-build B5: the smoke proves the layout --------------------------------
+
+@pytest.fixture(scope="module", params=["smoke.sh", "smoke.ps1"])
+def smoke(request):
+    with open(os.path.join(PACKAGING, request.param), encoding="utf-8") as f:
+        return request.param, f.read()
+
+
+def _smoke_list(name, text, variable):
+    if name == "smoke.sh":
+        found = re.search(rf'^{variable.upper()}="([^"]*)"', text, re.M)
+        return found.group(1).split()
+    found = re.search(rf"^\${variable} = @\(([^)]*)\)", text, re.M)
+    return re.findall(r'"([^"]+)"', found.group(1))
+
+
+def test_the_smokes_check_every_sketch_dir_the_board_table_names(smoke, layout):
+    name, text = smoke
+    assert sorted(_smoke_list(name, text, "Sketches")) == layout.sketch_dirs()
+    for piece in ("firmware", "stable", "libraries"):
+        assert piece in text
+
+
+def test_the_smokes_check_both_cores_offline(smoke, tools):
+    name, text = smoke
+    assert _smoke_list(name, text, "Cores") == list(tools.CORES)
+    assert "core list" in text or '"core", "list"' in text
+    assert "http://127.0.0.1:9" in text                 # a proxy that is not there
+    assert "--config-file arduino-cli.yaml" in text     # run from tools/
+
+
+def test_the_smokes_check_the_stamps_the_loader_and_the_stable_app(smoke):
+    _, text = smoke
+    for needle in ("VERSION", "release.json", "teensy_loader_cli", "mk64fx512",
+                   "station-stable", "--self-check", "station_version", "check_updates"):
+        assert needle in text, needle
+
+
+def test_the_smokes_post_with_an_origin_naming_the_station(smoke):
+    name, text = smoke
+    if name == "smoke.sh":
+        assert '-H "Origin: $BASE"' in text
+    else:
+        assert "-Headers @{ Origin = $Base }" in text
+
+
+def test_the_smokes_drive_exactly_the_setup_rows(smoke):
+    """Rows come from the registry: a hosted model (Red Percent, drawn on the
+    Transfer Map) has no row."""
+    from controller import setup
+    rows = [setup._key_for(n) for n, cls in setup.MODEL_TYPES.items()
+            if not getattr(cls, "HOST", None)]
+    name, text = smoke
+    if name == "smoke.sh":
+        port_rows = _smoke_list(name, text, "Port_Rows")
+        extra = re.search(r'^ALL_ROWS="\$PORT_ROWS ([^"]*)"', text, re.M).group(1).split()
+    else:
+        port_rows = _smoke_list(name, text, "PortRows")
+        extra = re.findall(r'"([^"]+)"', re.search(
+            r"^\$AllRows = \$PortRows \+ @\(([^)]*)\)", text, re.M).group(1))
+    assert port_rows + extra == rows
+
+
+def test_the_spec_keeps_every_qt_module_the_qt_view_imports():
+    """views/qt.py imports its Qt modules in one try block: one excluded
+    module (QtSvg, until 2026-09-30) and station-qt says PySide6 is not
+    installed."""
+    with open(os.path.join(PACKAGING, "station.spec"), encoding="utf-8") as f:
+        source = f.read()
+    unused = source.split("QT_UNUSED = [", 1)[1].split("]\n", 1)[0]
+    unused = set(re.findall(r'"(Qt\w+)"', unused))
+    imported = set()
+    for directory, _, files in os.walk(SRC):
+        for name in files:
+            if name.endswith(".py"):
+                with open(os.path.join(directory, name), encoding="utf-8") as f:
+                    imported.update(re.findall(r"PySide6\.(Qt\w+)", f.read()))
+    assert imported and not imported & unused, imported & unused
+
+
+def test_the_smoke_skips_tk_only_when_asked_and_says_so():
+    with open(os.path.join(PACKAGING, "smoke.sh"), encoding="utf-8") as f:
+        text = f.read()
+    assert 'SKIP station-tk: STATION_NO_WINDOWS is set' in text
+    assert 'desktop tk "Dashboard Open: Tk dashboard ready"' in text
