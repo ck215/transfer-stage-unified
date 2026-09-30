@@ -490,6 +490,64 @@ def test_a_stop_whose_disable_does_not_land_is_a_fault(probe):
     assert probe.is_faulted is True
 
 
+class LockWitness:
+    """Every event published while the block runs, with whether the
+    publishing thread held the probe's `_mode_lock` at that moment."""
+
+    def __init__(self, probe):
+        self.probe, self.seen = probe, []
+
+    def _record(self, event):
+        self.seen.append((event.title, self.probe._mode_lock._is_owned()))
+
+    def __enter__(self):
+        events.clear()     # a repeat inside the dedupe window re-notifies nobody
+        events.subscribe(self._record)
+        return self
+
+    def __exit__(self, *exc):
+        events.unsubscribe(self._record)
+
+
+@pytest.mark.estop
+def test_a_fault_is_published_after_the_mode_lock_is_released(probe):
+    """L10 (SF-4): `_enter_fault` published while holding `_mode_lock`. On
+    Tk a subscriber can block that thread on the UI thread, and a mode
+    toggle pressed then waits on `_mode_lock`: a deadlock that takes the
+    stop with it. Nothing is published while the lock is held."""
+    probe.enable()
+    probe.port.fail_on = lambda payload: payload == b"d"
+    with LockWitness(probe) as witness:
+        probe.set_mode("disabled")
+    assert probe.mode is ProbeMode.FAULT
+    assert ("Fault", False) in witness.seen, witness.seen
+    assert not [t for t, held in witness.seen if held], witness.seen
+
+
+@pytest.mark.estop
+def test_a_failed_enable_is_published_after_the_mode_lock_is_released(probe):
+    probe.port.fail_on = lambda payload: payload == b"e"
+    with LockWitness(probe) as witness:
+        with pytest.raises(Refused):
+            probe.set_mode("autonomous")
+    assert ("Enable Failed", False) in witness.seen, witness.seen
+    assert not [t for t, held in witness.seen if held], witness.seen
+
+
+@pytest.mark.estop
+def test_the_no_coil_kill_notice_is_published_with_no_lock_held():
+    probe, port, _ = make_probe(DCProbe)
+    try:
+        probe.enable()
+        with LockWitness(probe) as witness:
+            probe.estop()
+            time.sleep(0.2)
+        assert ("Power Down Not Supported", False) in witness.seen, witness.seen
+        assert not [t for t, held in witness.seen if held], witness.seen
+    finally:
+        probe._stop_threads()
+
+
 @pytest.mark.estop
 def test_a_confirmed_stop_clears_the_fault(probe):
     """L5: `_halt_hardware` set DISABLED when `'d'` landed but kept the

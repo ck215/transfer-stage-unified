@@ -337,7 +337,14 @@ class Model(Panel):
                       "it and check the device.")
         if reason != self._fault_reason:
             self._fault_reason = reason
-            events.error("Fault", reason, source=self.NAME)
+            self._publish_later(lambda: events.error("Fault", reason,
+                                                     source=self.NAME))
+
+    def _publish_later(self, publish):
+        """Publish an event now, or, in a model that holds a lock around
+        hardware state, once that lock is released (L10, SF-4: a subscriber
+        may block this thread on a UI thread). The base holds no such lock."""
+        publish()
 
     def _clear_fault(self):
         self._fault_reason = ""

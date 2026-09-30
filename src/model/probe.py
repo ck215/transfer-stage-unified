@@ -177,6 +177,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         # which no entry's `disabled_when` names, so nothing is refused here.
         self._mode = ProbeMode.DISABLED
         self._mode_lock = threading.RLock()
+        #: L10 (SF-4): events raised while this thread holds `_mode_lock`
+        #: wait here and are published once `_set_mode` has released it.
+        self._outbox = threading.local()
         self._param_store = {}
         self._gates = {}
         super().__init__()
@@ -310,6 +313,32 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._refuse(f"{target} is not a mode of the {self.NAME}.")
 
     def _set_mode(self, target, reason, quiesce=True):
+        """`_set_mode_locked`, then publish what it raised with no lock held
+        (L10, SF-4)."""
+        depth = getattr(self._outbox, "depth", 0)
+        if depth == 0:
+            self._outbox.pending = []
+        self._outbox.depth = depth + 1
+        try:
+            return self._set_mode_locked(target, reason, quiesce)
+        finally:
+            self._outbox.depth = depth
+            if depth == 0:
+                pending, self._outbox.pending = self._outbox.pending, []
+                for publish in pending:
+                    try:
+                        publish()
+                    except Exception as exc:
+                        events.debug("Publish Failed", repr(exc),
+                                     source=self.NAME, exception=exc)
+
+    def _publish_later(self, publish):
+        if getattr(self._outbox, "depth", 0):
+            self._outbox.pending.append(publish)
+        else:
+            publish()
+
+    def _set_mode_locked(self, target, reason, quiesce=True):
         """Change mode and own the hardware side effects. The only writer.
 
         The ordering is the safety property, and it is why this is one
@@ -401,9 +430,10 @@ class Probe(GamepadInput, IdleInterlock, Model):
         except Exception as exc:
             events.debug("Enable Failed", f"b'e' not written: {exc!r}",
                          source=self.NAME, exception=exc)
-            events.warn("Enable Failed", "The enable did not reach the board. "
-                        "Check the connection and try again.",
-                        source=self.NAME, exception=exc)
+            self._publish_later(lambda exc=exc: events.warn(
+                "Enable Failed", "The enable did not reach the board. Check "
+                "the connection and try again.", source=self.NAME,
+                exception=exc))
             self._refuse("The enable did not reach the board. Check the "
                          "connection and try again.")
         events.debug("Frame", f"enable {b'e'.hex()} written={bool(written)} "
