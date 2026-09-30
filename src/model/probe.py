@@ -489,6 +489,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         if landed["d"]:
             previous = self._mode
             self._mode = ProbeMode.DISABLED
+            # L5: a confirmed 'd' is exactly what a FAULT was waiting for
+            # (the schema's "Fault" comment says the stop is the way out).
+            self._clear_fault()
             if previous is not ProbeMode.DISABLED:
                 events.debug("Mode", f"{previous.value} -> disabled (halt)",
                              source=self.NAME)

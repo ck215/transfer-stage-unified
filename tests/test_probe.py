@@ -491,6 +491,22 @@ def test_a_stop_whose_disable_does_not_land_is_a_fault(probe):
 
 
 @pytest.mark.estop
+def test_a_confirmed_stop_clears_the_fault(probe):
+    """L5: `_halt_hardware` set DISABLED when `'d'` landed but kept the
+    fault, so after Stop + Clear both mode toggles stayed refused."""
+    probe.enable()
+    probe.port.fail_on = lambda payload: payload == b"d"
+    probe.set_mode("disabled")
+    assert probe.is_faulted
+    probe.port.fail_on = None
+    probe.toggle_estop()
+    probe.clear_estop(True)
+    assert probe.is_faulted is False, probe.fault
+    assert probe.gate_mode == "disabled"
+    assert probe.run("set_mode", args=["autonomous"]).is_ok
+
+
+@pytest.mark.estop
 @pytest.mark.parametrize("cls", [StepperProbe, DCProbe, ChuckPositioner])
 def test_estop_returns_inside_the_budget(cls):
     probe, port, _ = make_probe(cls)
