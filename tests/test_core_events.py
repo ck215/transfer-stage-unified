@@ -270,6 +270,25 @@ def test_debug_writes_to_the_file_with_severity_source_and_thread(tmp_path):
     assert threading.current_thread().name in text
 
 
+def test_every_file_line_starts_with_the_date_and_the_time(tmp_path):
+    """L7: a log file read days later must say which day. Pinned exactly:
+    `YYYY-MM-DD HH:MM:SS.mmm SEVERITY`."""
+    import re
+    log = _log()
+    path = log.open_file(str(tmp_path))
+    try:
+        log.debug("Mode", "idle -> auto", source="Probe")
+        log.warn("Slow", "poll late")
+    finally:
+        log.close_file()
+    lines = open(path).read().splitlines()
+    assert len(lines) == 3, lines
+    for line in lines:
+        assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} "
+                        r"(DEBUG|INFO|WARNING) ", line), line
+    assert lines[1].startswith(time.strftime("%Y-%m-%d ")), lines[1]
+
+
 def test_every_severity_is_also_written_to_the_file(tmp_path):
     log = _log()
     path = log.open_file(str(tmp_path))

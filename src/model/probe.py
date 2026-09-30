@@ -149,6 +149,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: L3: the firmware prints POS every 100 ms (50 ms on the DC board), so a
     #: usable link with no POS line for this long is a stalled stream.
     STREAM_STALL_SECONDS = 1.0
+    #: L7: seconds between the sampler's `Health` debug lines.
+    HEALTH_INTERVAL = 5.0
     #: L3: at most one "Packets Dropped" warning per this many seconds.
     DROPPED_WARN_INTERVAL = 10.0
 
@@ -369,7 +371,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
             self._moving_deadline = None
             self._start_interlock()
             self._touch()
-            events.debug("Mode", f"{previous.value} -> {target.value} ({reason})",
+            events.debug("Mode", f"{previous.value} -> {target.value} ({reason}) "
+                         f"at {self._position}",
                          source=self.NAME)
             # Entering a mode starts from rest. `quiesce=False` is for the one
             # caller entering a mode *in order to move* -- `step` -- where a
@@ -447,7 +450,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._mode = ProbeMode.DISABLED
         self._clear_fault()
         self._touch()
-        events.debug("Mode", f"{previous.value} -> disabled ({reason})",
+        events.debug("Mode", f"{previous.value} -> disabled ({reason}) "
+                     f"at {self._position}",
                      source=self.NAME)
         return ProbeMode.DISABLED.value
 
@@ -460,7 +464,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
         previous = self._mode
         self._mode = ProbeMode.FAULT
         self._moving_deadline = None
-        events.debug("Mode", f"{previous.value} -> fault ({reason})",
+        events.debug("Mode", f"{previous.value} -> fault ({reason}) "
+                     f"at {self._position}",
                      source=self.NAME)
         self._fault(reason)
 
@@ -506,7 +511,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
             # (the schema's "Fault" comment says the stop is the way out).
             self._clear_fault()
             if previous is not ProbeMode.DISABLED:
-                events.debug("Mode", f"{previous.value} -> disabled (halt)",
+                events.debug("Mode", f"{previous.value} -> disabled (halt) "
+                             f"at {self._position}",
                              source=self.NAME)
         elif self._link_loss_in_progress:
             # L1: the link itself is gone. The loss is reported by the port,
@@ -532,7 +538,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
             if previous is not ProbeMode.FAULT:
                 self._mode = ProbeMode.DISABLED
         events.debug("Mode", f"{previous.value} -> {self._mode.value} (link "
-                     f"lost; stop {'landed' if landed else 'NOT confirmed'})",
+                     f"lost; stop {'landed' if landed else 'NOT confirmed'}) "
+                     f"at {self._position}",
                      source=self.NAME)
 
     def _write_stop(self, label, payload):
@@ -731,7 +738,11 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """
         counted_from = time.monotonic()
         seen = 0
+        health_at = time.monotonic()
         while not self._threads_stop.wait(self.SAMPLE_INTERVAL):
+            if time.monotonic() - health_at >= self.HEALTH_INTERVAL:
+                health_at = time.monotonic()
+                self._log_health()
             try:
                 position = self._read_position()
                 # The loop is alive AND its read worked: only now is the
@@ -822,6 +833,26 @@ class Probe(GamepadInput, IdleInterlock, Model):
         events.warn("Position Stream Stalled", f"{self.NAME} has sent no "
                     f"position for {self.STREAM_STALL_SECONDS:g} s; the link "
                     "is up. Check the board.", source=self.NAME)
+
+    def _log_health(self):
+        """L7: one line with everything the next bench occurrence needs.
+        Never raises (it runs inside the sampler)."""
+        try:
+            pump = self._thread("gamepad")
+            sampler = self._thread("sample")
+            text = (f"mode={self.mode_name} "
+                    f"link={getattr(self.port, 'status', None)} "
+                    f"position={self._position} "
+                    f"position_age={self.position_age} "
+                    f"idle_remaining={self.idle_remaining} "
+                    f"gate_open={self._is_gate_open} "
+                    f"pad_bound={self._is_gamepad_bound} "
+                    f"sampler_alive={bool(sampler and sampler.is_alive())} "
+                    f"pump_alive={bool(pump and pump.is_alive())} "
+                    f"latched={self.is_estopped} fault={self.fault!r}")
+        except Exception as exc:
+            text = f"unavailable: {exc!r}"
+        events.debug("Health", text, source=self.NAME)
 
     def _check_reset(self, position, previous, previous_time, now):
         """L6: warn when the position snaps to zero while enabled. Warning

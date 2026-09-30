@@ -190,7 +190,10 @@ class EventLog:
         with self._file_lock:
             if not self._file:
                 return
-            stamp = time.strftime("%H:%M:%S") + f".{int((time.time() % 1) * 1000):03d}"
+            # L7: the date too, so a log read days later says which day.
+            now = time.time()
+            stamp = (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+                     + f".{int((now % 1) * 1000):03d}")
             line = (f"{stamp} {severity.upper():7} {threading.current_thread().name:24.24} "
                     f"[{source}] {text}\n")
             if exception is not None:

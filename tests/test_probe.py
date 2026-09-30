@@ -731,6 +731,52 @@ def test_what_is_not_a_board_reset(probe, case):
     assert not [e for e in seen.seen if e.title == "Board Reset Suspected"]
 
 
+def _debug_lines(monkeypatch):
+    lines = []
+    real = events.debug
+
+    def _record(title, message, **kw):
+        lines.append((title, message))
+        return real(title, message, **kw)
+
+    monkeypatch.setattr(events, "debug", _record)
+    return lines
+
+
+@pytest.mark.mode
+def test_every_mode_line_carries_the_position(probe, monkeypatch):
+    """L7: the position at every `Mode:` transition line."""
+    lines = _debug_lines(monkeypatch)
+    probe._note_position((12, -3, 4))
+    probe.enable()
+    probe.set_mode("autonomous")
+    probe.set_mode("disabled")
+    probe.enable()
+    probe.halt()
+    modes = [m for t, m in lines if t == "Mode"]
+    assert len(modes) >= 4, modes
+    assert all("at (12, -3, 4)" in m for m in modes), modes
+
+
+@pytest.mark.loops
+def test_the_sampler_logs_a_health_line_on_its_interval(probe, monkeypatch):
+    """L7: one `Health` debug line per HEALTH_INTERVAL per probe, with
+    everything the next bench occurrence needs."""
+    monkeypatch.setattr(type(probe), "HEALTH_INTERVAL", 0.05)
+    lines = _debug_lines(monkeypatch)
+    probe._start_threads()
+    try:
+        time.sleep(0.3)
+    finally:
+        probe._stop_threads()
+    health = [m for t, m in lines if t == "Health"]
+    assert health, "no Health line"
+    for field in ("mode=", "link=", "position=", "position_age=",
+                  "idle_remaining=", "gate_open=", "pad_bound=",
+                  "sampler_alive=True", "pump_alive=", "latched=", "fault="):
+        assert field in health[-1], (field, health[-1])
+
+
 @pytest.mark.transport
 def test_the_drain_is_bounded(probe):
     probe.port.lines = ["POS:1,1,1"] * (probe.MAX_DRAIN_LINES + 10)
