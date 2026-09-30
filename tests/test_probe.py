@@ -398,6 +398,34 @@ def test_step_is_greyed_on_a_faulted_probe(probe):
 
 
 @pytest.mark.mode
+def test_a_hundred_mode_round_trips_leak_nothing(probe):
+    """L13 (legacy row 20): loop the manual/autonomous transition 100
+    times with a bound pad and the loops running. The last mode wins, the
+    wire ends at rest (the zero frame of the final entry, then at most the
+    pump's one neutral packet for leaving manual, I-4.2), and exactly one
+    interlock and one pump thread are alive."""
+    import struct
+    probe._start_threads()
+    try:
+        for _ in range(100):
+            probe.set_mode("manual")
+            probe.set_mode("autonomous")
+        time.sleep(0.1)          # the pump's exit tick, if any
+        assert probe.mode is ProbeMode.AUTO
+        tail = probe.port.writes[-2:]
+        neutral = lambda p: (len(p) == 42 and p[0] == 0xAA and all(
+            v == 0 for v in struct.unpack("<ffffffffff", p[2:])[:3]))
+        assert tail[-1] == ZERO or (neutral(tail[-1]) and tail[-2] == ZERO), tail
+        alive = [t.name for t in threading.enumerate()
+                 if t.name.endswith(f"-{probe.NAME}") and t.is_alive()]
+        assert alive.count(f"interlock-{probe.NAME}") == 1, alive
+        assert alive.count(f"gamepad-{probe.NAME}") == 1, alive
+        assert alive.count(f"sample-{probe.NAME}") == 1, alive
+    finally:
+        probe._stop_threads()
+
+
+@pytest.mark.mode
 def test_the_toggles_reach_set_mode_through_run(probe):
     """The schema's on_args/off_args are the whole mode API for a view."""
     assert probe.run("set_mode", args=["autonomous"]).is_ok
