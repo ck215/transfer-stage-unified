@@ -43,8 +43,8 @@ Launchers: `run.sh` (macOS and Linux; `uname` picks the macOS PySide6
 repair) and `run.bat` (Windows) find the venv and pass every flag to
 `src/app.py`, printing nothing on success; the firmware check is Setup's
 Firmware row (`src/controller/firmware.py`), `update.sh` / `update.bat` stay.
-`run_macos.sh` / `run_swap_macos.sh` are shims to `run.sh` until 2026-10-31;
-`dev/swap_branch.sh` (was `run_swap.sh`) runs `main`'s app on the same boards,
+`run_macos.sh`, `run_swap_macos.sh` and `run_swap.sh` no longer exist (owner,
+2026-09-28); `dev/swap_branch.sh` runs `main`'s app on the same boards,
 flashing first (`RUN_SWAP_DRY_RUN=1` prints, runs nothing). Agents do not run the Qt pass (a native SIGABRT can kill the
 session); the lead does. **While anyone is working at this Mac, everything runs
 strictly in the background**: `STATION_NO_WINDOWS=1` before every pytest

@@ -75,6 +75,10 @@ HEATER_OFF_NOT_SENT = "Heater Off Not Sent"
 #: rb-restart R2: Setup's two update prompts. Each carries an action.
 UPDATE_READY = "Update Ready"
 RESTART_NEEDED = "Restart Needed"
+#: Owner 2026-09-28 ("Flash should be unattended, as with the prev. script.
+#: It can send a popup first"): the startup firmware check's one question;
+#: its action, Flash now, runs the flash.
+FIRMWARE_OUT_OF_DATE = "Firmware Out of Date"
 
 #: The `name` an action (and the Web's `/api/run`) gives the Setup panel.
 SETUP_PANEL = "__setup__"
@@ -88,7 +92,7 @@ SETUP_PANEL = "__setup__"
 #: is not at the page), and every error (errors ask by default).
 ATTENTION = frozenset({IDLE_TIMEOUT, TEMPERATURE_DISCONNECTED,
                        ROTATOR_UNREACHABLE, HEATER_OFF_NOT_SENT,
-                       UPDATE_READY, RESTART_NEEDED})
+                       UPDATE_READY, RESTART_NEEDED, FIRMWARE_OUT_OF_DATE})
 
 
 def _action(action, needs_ack):
@@ -291,5 +295,5 @@ events = EventLog()
 for _name in ("STOP_NOT_CONFIRMED", "IDLE_TIMEOUT_SOON", "IDLE_TIMEOUT", "BROWSER_SILENT",
               "BROWSER_GONE", "TEMPERATURE_DISCONNECTED", "ROTATOR_UNREACHABLE",
               "HEATER_OFF_NOT_SENT", "UPDATE_READY", "RESTART_NEEDED",
-              "SETUP_PANEL", "ATTENTION"):
+              "FIRMWARE_OUT_OF_DATE", "SETUP_PANEL", "ATTENTION"):
     setattr(events, _name, globals()[_name])

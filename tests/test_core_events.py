@@ -510,9 +510,12 @@ def test_the_attention_set_is_exactly_the_titles_the_lead_named():
     import events as events_module
     # rb-restart R2 (owner 2026-09-28, "should prompt for restart"): the two
     # update prompts ask too; each carries its action.
+    # Owner 2026-09-28 (the launcher's flash, unattended): the startup
+    # firmware check asks once, and Flash now is its action.
     assert events_module.ATTENTION == frozenset({
         "Idle Timeout", "Temperature Disconnected", "Rotator Unreachable",
-        "Heater Off Not Sent", "Update Ready", "Restart Needed"})
+        "Heater Off Not Sent", "Update Ready", "Restart Needed",
+        "Firmware Out of Date"})
     assert isinstance(events_module.ATTENTION, frozenset)
     # The countdown, the silent browser and the map's soft notices stay
     # tray lines.

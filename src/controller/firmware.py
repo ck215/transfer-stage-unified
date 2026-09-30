@@ -15,8 +15,10 @@ arduino-cli and without opening a port:
               from here.
     flash()   runs `firmware/flash_firmware.py --yes --only <boards>` as a
               subprocess, streaming its lines to a callback. Only ever
-              because the operator pressed the key; nothing here flashes on
-              its own.
+              because the operator answered a key - Flash now on the startup
+              dialog (owner 2026-09-28: unattended, as the old launcher's
+              flash, after one popup) or the row's Flash out-of-date boards;
+              nothing here flashes on its own.
 
 Nothing is imported from `firmware/` (nothing under `src/` may import
 outside it). The hash rule is copied from the script and pinned against

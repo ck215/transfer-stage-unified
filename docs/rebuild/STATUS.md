@@ -267,12 +267,16 @@ lands as `palette.py` / `theme.py` tokens.
   **2026-09-28, resumed and landed** (merged `5db7ff7` rb-launch,
   `a8883c5` rb-restart): two launchers (`run.sh` with `uname` for the
   macOS PySide repair, `run.bat`; `run_macos.sh` / `run_swap_macos.sh`
-  are shims until 2026-10-31; `run_swap.sh` is `dev/swap_branch.sh`, a
-  developer tool); the firmware check is Setup's **Firmware** row
+  were shims, removed the same night at the owner's word rather than after
+  2026-10-31; `run_swap.sh` is `dev/swap_branch.sh`, a developer tool);
+  the firmware check is Setup's **Firmware** row
   (`controller/firmware.py`: status per board from the stamp file and the
   sketch hashes, pinned against the script; "Flash out-of-date boards"
   asks and runs the script as a subprocess; Launch refuses during a
-  flash and asks once for an out-of-date board); nothing prints on a
+  flash and asks once for an out-of-date board; later that night the
+  owner asked for the old launcher's unattended flash back, behind one
+  popup: the startup check raises "Firmware Out of Date" with **Flash
+  now** as its action, `tests/test_setup.py`); nothing prints on a
   normal launch (`events.py` echoes only errors unless
   `STATION_ECHO_EVENTS=1`; the Web address is Setup's "Address" and the
   one deliberate line with `--no-browser`); acknowledged notices carry an

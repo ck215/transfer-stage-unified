@@ -1513,12 +1513,15 @@ class Setup(Panel):
     def _init_firmware(self, firmware):
         """The Firmware row's state, then - unless `STATION_NO_FIRMWARE_CHECK`
         is set - the startup check on a daemon thread. The check reads the
-        stamp file and the sketches; it opens no port and never flashes
-        (`controller.firmware`)."""
+        stamp file and the sketches and opens no port; when it finds a board
+        to flash it asks once (`_offer_flash`), and Flash now on that dialog
+        is the flash, unattended, as the old launcher's was (owner 2026-09-28).
+        Nothing flashes without that answer or the row's own key."""
         self._firmware = firmware if firmware is not None else FirmwareCheck()
         self._firmware_thread = self._flash_thread = None
         self._firmware_result = None    # the last check()'s answer
         self._firmware_asked = set()    # stale-board sets Launch already asked about
+        self._flash_offered = set()     # board sets the startup dialog already offered
         self.firmware_progress = ""
         #: The Web view's address, which it fills in once it serves; the
         #: desktop views leave it empty. It used to be a terminal line.
@@ -1529,7 +1532,7 @@ class Setup(Panel):
                          source=self.NAME)
             return
         self.firmware_status = self.FIRMWARE_CHECKING
-        self._start_firmware_thread()
+        self._start_firmware_thread(offer=True)
 
     @property
     def is_flashing(self):
@@ -1597,14 +1600,58 @@ class Setup(Panel):
         events.debug("Firmware Flash", f"started: {', '.join(boards)}", source=self.NAME)
         return True
 
-    def _start_firmware_thread(self):
+    def _start_firmware_thread(self, offer=False):
+        """`offer`: the startup check asks to flash what it finds; a check by
+        hand does not (the Flash key is beside its answer)."""
         self._firmware_thread = threading.Thread(
-            target=self._firmware_check_worker, daemon=True,
+            target=self._firmware_check_worker, args=(offer,), daemon=True,
             name="setup-firmware-check")
         self._firmware_thread.start()
 
-    def _firmware_check_worker(self):
-        self._publish_firmware(self._check_firmware_now())
+    def _firmware_check_worker(self, offer=False):
+        result = self._check_firmware_now()
+        self._publish_firmware(result)
+        if offer:
+            self._offer_flash(result)
+
+    def _offer_flash(self, result):
+        """The startup check found boards to flash and the tool to do it: one
+        acknowledged notice names them, and its Flash now runs
+        `flash_firmware(True)` - the same unattended flash as the row's key,
+        the dialog having been the question. Once per board set per run;
+        Later leaves the row's key. Nothing is offered that the key would
+        refuse for want of the tool (the Boards line says "by hand")."""
+        result = result or {}
+        boards = list(result.get("to_flash") or [])
+        if not boards or result.get("missing_tools"):
+            return
+        script = getattr(self._firmware, "script", None)
+        if script is not None and not os.path.isfile(script):
+            return
+        key = frozenset(boards)
+        with self._lock:
+            if key in self._flash_offered:
+                return
+            self._flash_offered.add(key)
+        if len(boards) == 1:
+            detail = ("This overwrites its running firmware if it is plugged in; "
+                      "otherwise it is skipped.")
+        else:
+            detail = ("This overwrites the running firmware of every one of them "
+                      "that is plugged in; the others are skipped.")
+        # Named here, not from the row's summary: that line says "never
+        # flashed here" alone when it means every board, and a dialog that
+        # is about to overwrite four boards names them.
+        found = []
+        if result.get("stale"):
+            found.append(f"{_and(result['stale'])} out of date")
+        if result.get("never"):
+            found.append(f"{_and(result['never'])} never flashed here")
+        events.warn(events.FIRMWARE_OUT_OF_DATE,
+                    f"{'; '.join(found)}. Flash {'it' if len(boards) == 1 else 'them'} "
+                    f"now? {detail} Launch waits until the flash finishes.",
+                    source=self.NAME, ack=True,
+                    action=("Flash now", events.SETUP_PANEL, "flash_firmware", (True,)))
 
     def _check_firmware_now(self):
         try:

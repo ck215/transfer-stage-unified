@@ -1464,6 +1464,78 @@ def test_the_startup_firmware_check_runs_on_a_thread_and_publishes(
     assert firmware.checks == 1 and firmware.flashes == []
 
 
+# -- the startup check offers the flash (owner 2026-09-28: "Flash should be
+# unattended, as with the prev. script. It can send a popup first") ---------
+
+FLASH_NOW = {"label": "Flash now", "name": "__setup__", "command": "flash_firmware",
+             "args": [True]}
+
+
+def test_the_startup_check_asks_once_and_flash_now_flashes_unattended(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware()
+    panel = Setup(RecordingController(), firmware=firmware)
+    wait_firmware(panel)
+    [offer] = _prompts(warnings, events.FIRMWARE_OUT_OF_DATE)
+    assert offer.severity == "warning" and offer.needs_ack is True
+    assert offer.message == ("Stepper Probe out of date. Flash it now? This "
+                             "overwrites its running firmware if it is plugged "
+                             "in; otherwise it is skipped. Launch waits until "
+                             "the flash finishes.")
+    assert offer.to_dict()["action"] == FLASH_NOW
+    assert firmware.flashes == []            # the dialog is the question
+    # Flash now: the action runs as confirmed, on the flash thread.
+    assert panel.run("flash_firmware", args=(True,)).is_ok
+    wait_firmware(panel)
+    assert firmware.flashes == [["Stepper Probe"]]
+    # The recheck after the flash still says out of date (the fake keeps its
+    # answer): no second question this run.
+    assert panel.firmware_status == "Stepper Probe out of date"
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+
+
+def test_the_startup_offer_names_every_board_the_button_would_flash(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware(result=firmware_result(stale=["Stepper Probe", "DC Probe"],
+                                                   never=["Chuck Positioner"]))
+    panel = Setup(RecordingController(), firmware=firmware)
+    wait_firmware(panel)
+    [offer] = _prompts(warnings, events.FIRMWARE_OUT_OF_DATE)
+    assert offer.message.startswith(
+        "Stepper Probe and DC Probe out of date; Chuck Positioner never flashed "
+        "here. Flash them now? This overwrites the running firmware of every "
+        "one of them that is plugged in; the others are skipped.")
+    assert panel.run("flash_firmware", args=(True,)).is_ok
+    wait_firmware(panel)
+    assert firmware.flashes == [["Stepper Probe", "DC Probe", "Chuck Positioner"]]
+
+
+def test_the_startup_check_asks_nothing_when_every_board_is_current(
+        fake_types, firmware_checking, warnings):
+    panel = Setup(RecordingController(), firmware=FakeFirmware(result=firmware_result()))
+    wait_firmware(panel)
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+
+
+def test_the_startup_check_asks_nothing_it_could_not_do_without_the_tools(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware(result=firmware_result(stale=["DC Probe"],
+                                                   missing=["arduino-cli"]))
+    panel = Setup(RecordingController(), firmware=firmware)
+    wait_firmware(panel)
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    assert "by hand" in refused(lambda: panel.flash_firmware(True))
+
+
+def test_check_firmware_by_hand_asks_nothing_the_button_is_beside_it(
+        fake_types, warnings):
+    firmware = FakeFirmware()
+    panel = checked(firmware)
+    assert panel.firmware_status == "Stepper Probe out of date"
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    assert firmware.flashes == []
+
+
 def test_a_firmware_check_that_raises_warns_and_the_station_runs(
         fake_types, firmware_checking, warnings):
     class Broken(FakeFirmware):
