@@ -905,3 +905,63 @@ def test_the_stable_spec_is_tracked_despite_the_spec_ignore_rule():
     if done.returncode not in (0, 1):
         pytest.skip("no git here")
     assert done.returncode == 0, "packaging/stable.spec is not tracked (*.spec is ignored)"
+
+
+# -- dist-build B4: the workflow builds the whole layout -----------------------
+
+def test_every_action_is_pinned_to_a_commit(workflow):
+    uses = re.findall(r"uses:\s*(\S+)", workflow)
+    assert uses
+    for ref in uses:
+        assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref), ref
+
+
+def test_a_run_by_hand_can_name_the_stable_ref_and_a_tag_freezes_stable(workflow):
+    dispatch = workflow.split("workflow_dispatch:", 1)[1].split("\npermissions:", 1)[0]
+    assert "stable_ref:" in dispatch and "default: stable" in dispatch
+    assert "STABLE_REF: ${{ inputs.stable_ref || 'stable' }}" in workflow
+
+
+def test_the_workflow_checks_out_the_stable_ref_beside_the_tree(workflow):
+    step = workflow.split("Check out the stable app", 1)[1].split("- ", 1)[0]
+    assert "ref: ${{ env.STABLE_REF }}" in step
+    assert "path: build/stable-src" in step
+
+
+def _step_index(workflow, needle):
+    assert needle in workflow, needle
+    return workflow.index(needle)
+
+
+def test_the_workflow_builds_tools_then_stable_then_the_station_then_smokes(workflow):
+    order = [_step_index(workflow, n) for n in (
+        "pip install -r packaging/requirements-stable.txt",
+        "python packaging/tools.py fetch build/tools",
+        "python packaging/tools.py check build/tools",
+        "PyInstaller --noconfirm --clean packaging/stable.spec",
+        "PyInstaller --noconfirm --clean packaging/station.spec",
+        "packaging/smoke.sh dist/station",
+        "release.py zip dist/station")]
+    assert order == sorted(order)
+    assert 'STATION_REQUIRE_FULL: "1"' in workflow
+    assert 'STATION_STABLE_SHA="$(git -C build/stable-src rev-parse HEAD)"' in workflow
+
+
+def test_the_workflow_installs_what_the_teensy_loader_compiles_against(workflow):
+    assert "libusb-dev" in workflow                    # Linux: -DUSE_LIBUSB -lusb
+    assert "choco install mingw" in workflow           # Windows: gcc if absent
+
+
+def test_the_workflow_keeps_the_draft_then_publish_flow_and_the_checksums(workflow):
+    jobs = re.findall(r"^  (\w+):\s*$", workflow.split("\njobs:", 1)[1], re.M)
+    assert jobs == ["draft", "build", "publish"]
+    assert "--draft" in workflow and "--draft=false --latest" in workflow
+    assert "sha256sum station-*.zip" in workflow
+
+
+def test_expressions_reach_scripts_only_through_env(workflow):
+    """`${{ }}` only as a key's value (env:, with:, if:), never inside a
+    run: script, where it would be pasted into the shell."""
+    for line in workflow.splitlines():
+        if "${{" in line and not line.lstrip().startswith("#"):
+            assert re.match(r"^\s*(- )?[\w-]+:\s", line), line
