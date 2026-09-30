@@ -513,3 +513,74 @@ def test_the_restored_and_lost_titles_are_named_once():
     assert events.LINK_LOST == "Connection Lost"
     assert events.LINK_RESTORED == "Connection Restored"
     assert events_module.LINK_RESTORED not in events_module.ATTENTION
+
+
+# --------------------------------------------------------------------------
+# L12 (SF-2) -- the heater's stop is confirmed by its own telemetry
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def heater_rig(monkeypatch):
+    from model.heater import Heater
+    built = []
+
+    def _build(confirm_seconds=0.2):
+        handle = FlakyHandle()
+        monkeypatch.setattr(mod, "pyserial", _pyserial([handle], []))
+        port = SerialPort(PORT, baud_rate=Heater.BAUD_RATE, handshake=False)
+        port.open()
+        assert port.wait_open(2.0)
+        heater = Heater(port=port)
+        monkeypatch.setattr(heater, "OFF_CONFIRM_SECONDS", confirm_seconds,
+                            raising=False)
+        built.append((heater, port))
+        return heater, port, handle
+
+    yield _build
+    for heater, port in built:
+        heater._stop_threads()
+        port.close()
+
+
+def _heating(heater):
+    heater.setpoint = 250.5
+    assert heater.apply_settings() == 250.5
+    assert heater.is_active
+
+
+def test_a_heater_stop_the_board_never_reports_is_marked_unconfirmed(heater_rig):
+    """SF-2: the off frame counted as confirmed once its bytes were
+    written, although the board's own telemetry (its reported setpoint)
+    could confirm it and a truncated earlier frame can turn the off frame
+    into heat-to-the-old-setpoint. Unconfirmed after OFF_CONFIRM_SECONDS:
+    it stays energized, the stop is not confirmed, and the operator is
+    asked to switch it off at the controller."""
+    heater, port, handle = heater_rig()
+    _heating(heater)
+    events.clear()
+    seen = Warnings()
+    try:
+        heater.estop()
+        heater._parse_line("12.0 , 180.00 , 250.50")    # still heating
+        assert _wait_for(lambda: seen.titled("Heater Off Not Sent"), 2.0)
+    finally:
+        seen.close()
+    assert heater.is_active and heater.is_energized
+    assert heater.stop_confirmed is False
+    assert seen.titled("Heater Off Not Sent")[0].needs_ack is True
+
+
+def test_a_heater_stop_the_board_reports_at_zero_is_confirmed(heater_rig):
+    heater, port, handle = heater_rig()
+    _heating(heater)
+    events.clear()
+    seen = Warnings()
+    try:
+        assert heater.estop() is True
+        heater._parse_line("13.0 , 180.00 , 0.00")
+        time.sleep(0.4)
+    finally:
+        seen.close()
+    assert not seen.titled("Heater Off Not Sent")
+    assert heater.is_active is False
+    assert heater.stop_confirmed is True
