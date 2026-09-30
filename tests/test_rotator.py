@@ -426,6 +426,33 @@ def test_a_confirmation_comes_back_as_needs_confirm_through_run():
     assert model.run("move_to", args=(True,)).is_ok
 
 
+def test_the_step_defaults_to_one_degree():
+    """D11: Step defaulted to 0 (`main` had 1.0), so Move +/- on a fresh
+    session did nothing and said nothing."""
+    assert Rotator.PARAMS["step_deg"].default == 1.0
+    model = _rotator(position=0.0)
+    assert float(model.step_deg) == 1.0
+    assert model.move_by(1) is True
+    assert _wait_until(lambda: model.smc.calls)
+    assert model.smc.calls[0] == ("move_relative_deg", 1.0)
+
+
+def test_a_zero_step_is_refused_with_a_reason():
+    """D11: a zero step is not a move. It is refused where the operator
+    sees it, sends nothing, and leaves the reference alone."""
+    model = _rotator(position=5.0)
+    model.step_deg = 0
+    with pytest.raises(Refused) as refused:
+        model.move_by(1)
+    assert "step" in str(refused.value).lower()
+    result = model.run("move_by", inputs={"step_deg": "0"}, args=(-1,))
+    assert result.is_refused
+    assert "step" in result.reason.lower(), result.reason
+    time.sleep(0.05)
+    assert model.smc.calls == [], "a zero step reached the stage"
+    assert model._commanded_target is None
+
+
 def test_an_unparseable_entry_is_refused_by_name():
     model = _rotator(position=0.0)
     result = model.run("move_to", inputs={"target_deg": "nan"})
@@ -456,6 +483,47 @@ def test_a_wedged_poll_does_not_delay_the_stop():
     finally:
         smc.released.set()
         _settle(model)
+
+
+def test_the_stop_does_not_wait_behind_the_drivers_transaction_lock():
+    """D2 put a lock across each SMC100 write+reply. `_halt_hardware` must
+    stay off it: a FULL STOP issued while a real driver's poll is holding the
+    link for a slow reply lands at once, on the priority lane."""
+    from devices.smc100 import SMC100
+
+    class SlowReply:
+        def __init__(self):
+            self.writes, self.is_open = [], True
+            self.reading, self.release = threading.Event(), threading.Event()
+
+        def write(self, payload, *, priority=False, abort_if=None):
+            self.writes.append((bytes(payload), priority))
+            return True
+
+        def read_line(self, timeout=None):
+            self.reading.set()
+            self.release.wait(5)
+            return "1TS000033"
+
+        def flush(self, timeout=None):
+            return True
+
+    port = SlowReply()
+    smc = SMC100(1, "SLOW", transport=port, sleep=lambda seconds: None)
+    model = _rotator(smc)
+    poll = threading.Thread(target=smc.get_status, daemon=True)
+    poll.start()
+    try:
+        assert port.reading.wait(2.0), "the poll never reached its read"
+        started = time.monotonic()
+        landed = model.estop()
+        elapsed = time.monotonic() - started
+    finally:
+        port.release.set()
+        poll.join(2.0)
+    assert landed is True
+    assert elapsed < 0.2, f"FULL STOP waited {elapsed:.3f}s behind a poll"
+    assert (b"1ST\r\n", True) in port.writes, port.writes
 
 
 def test_the_stop_is_confirmed_only_when_it_was_written():
@@ -751,6 +819,58 @@ def test_a_rotator_over_the_real_transport_polls_and_stops():
         finally:
             model.close()
     assert handle.is_open is False
+
+
+class _MovingHandle(_Handle):
+    """`_Handle` whose angle the test can change, so "the position keeps
+    updating" is observable rather than a constant that never moved."""
+
+    def __init__(self):
+        super().__init__()
+        self.angle = "12.5000"
+
+    def write(self, data):
+        before = len(self._pending)
+        written = super().write(data)
+        self._pending = (self._pending[:before] + self._pending[before:]
+                         .replace(b"1TP12.5000", f"1TP{self.angle}".encode()))
+        return written
+
+
+def test_a_stopped_rotator_keeps_polling_and_reports_no_lost_link(seen):
+    """SF-3: the latch was passed as `abort_if` to every SMC100 command,
+    the read-only `TS?`/`TP?` polls included. So every FULL STOP made the
+    next poll abort, and the rotator blanked its angle, said "Communication
+    lost" and raised the acknowledged "Check its cable and power" notice --
+    exactly when the operator needs to see where the stage stopped, and the
+    Transfer Map reads its tilt. Over the real transport."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from devices import serial_port
+
+    handle = _MovingHandle()
+    with patch.object(serial_port, "pyserial",
+                      SimpleNamespace(Serial=lambda **kwargs: handle)):
+        model = Rotator(port="/dev/fake-smc100")
+        model.open()
+        try:
+            assert _wait_until(lambda: model.position == 12.5)
+            assert model.estop() is True
+            assert model.is_estopped
+            handle.angle = "13.2500"          # where the stage coasted to
+            assert _wait_until(lambda: model.position == 13.25), (
+                f"the poll stopped under the latch: position "
+                f"{model.position!r}, {model.motion_state!r}")
+            time.sleep(4 * model.SAMPLE_INTERVAL)
+            assert model.position == 13.25
+            assert model.motion_state == "Ready", model.motion_state
+        finally:
+            model.close()
+    lost = [e for e in seen if e.source == model.NAME
+            and (e.title == events.ROTATOR_UNREACHABLE
+                 or e.severity == "warning")]
+    assert not lost, f"a stop was reported as a lost link: {lost}"
 
 
 def test_a_stop_with_no_controller_is_not_confirmed():
