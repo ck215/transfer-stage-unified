@@ -136,6 +136,18 @@ def test_each_arming_gets_a_fresh_event_and_generation(lamp):
     assert lamp._interlock_generation > generation
 
 
+def test_re_arming_an_armed_interlock_counts_as_activity(lamp):
+    """rb-pump P2: a re-arm is the operator doing something (AUTO -> MANUAL
+    after 4 min 50 s used to leave 10 s on the clock, because the already
+    armed branch returned without touching activity). At BASE: ~0.2 s."""
+    lamp.INTERLOCK_TIMEOUT = 1.0
+    lamp.switch_on()
+    time.sleep(0.8)
+    assert lamp.on, "the clock fired before the re-arm"
+    lamp.switch_on()                      # already armed: a re-arm
+    assert lamp.idle_remaining == pytest.approx(1.0, abs=0.1)
+
+
 def test_the_loop_is_spawned_through_the_base_and_stopped_at_close():
     lamp = Lamp()
     lamp.INTERLOCK_POLL_INTERVAL = 30.0   # parked: only the stop can wake it
