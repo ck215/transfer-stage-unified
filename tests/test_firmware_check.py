@@ -3,12 +3,12 @@
 the terminal to GUI indicators").
 
 `controller.firmware.FirmwareCheck` works out each board's status from the
-stamp file `firmware/flash_firmware.py` writes and the sketch hashes it
-computes, without importing anything from `firmware/`. Its copy of the hash
-rule is pinned here against the script's own function, run as a subprocess,
-so the two cannot drift silently. Flashing is the script run as a
-subprocess; every flash in this file goes through an injected `run=`, and
-the only calls to the real script are `--dry-run --no-detect` (no port is
+stamp file and the sketch hashes `controller.flashing` computes (the one
+copy of the rule since brief rb-dist-app A1). The rule is still pinned here
+against the command line's own function, run as a subprocess. Flashing
+runs in this process through `controller.flashing`; every flash in this
+file goes through an injected `run=` and a fake handshake, and the only
+calls to the real command line are `--dry-run --no-detect` (no port is
 opened, nothing is compiled, nothing is recorded).
 """
 import json
@@ -261,49 +261,79 @@ def test_the_suite_never_reads_the_benchs_real_stamp():
     assert os.environ.get("STATION_NO_FIRMWARE_CHECK") == "1"
 
 
-# -- flashing: the script as a subprocess, mocked -------------------------------
+# -- flashing: in this process, through `controller.flashing` (A1) -----------
 
 class FakeRun:
-    """Stands in for the subprocess: records argv, streams scripted lines."""
+    """Stands in for the tool runner: records argv, streams scripted lines."""
 
-    def __init__(self, lines=("Sketches: x", "Summary:", "  Stepper Probe ok"), code=0):
+    def __init__(self, lines=("compiling", "uploaded"), code=0):
         self.lines, self.code = list(lines), code
         self.calls = []
 
-    def __call__(self, argv, cwd, on_line, timeout):
+    def __call__(self, argv, cwd, on_line, timeout, env=None):
         self.calls.append({"argv": list(argv), "cwd": cwd, "timeout": timeout})
         for line in self.lines:
             on_line(line)
         return self.code
 
 
-def test_flash_runs_the_script_with_yes_and_only_the_named_boards(tree, stamp):
+def on_ports(**found):
+    """identify= and ports= for a checker: {port: board}."""
+    ports = {port.replace("_", "/"): board for port, board in found.items()}
+    return {"identify": ports.get, "ports": list(ports)}
+
+
+def test_flash_runs_in_this_process_never_through_sys_executable(tree, stamp):
+    """Frozen, `sys.executable` is the launcher: spawning it "with the
+    script" started the station again. The flash is the tools only."""
     run = FakeRun()
-    check = checker(tree, stamp, run=run)
+    check = checker(tree, stamp, run=run, **on_ports(COM7="Stepper Probe",
+                                                     COM8="DC Probe"))
     seen = []
     result = check.flash(["Stepper Probe", "DC Probe"], on_line=seen.append)
-    argv = run.calls[0]["argv"]
-    assert argv[:3] == [sys.executable, "-u", str(SCRIPT)]
-    assert argv[3:] == ["--yes", "--sketch-root", str(tree), "--stamp", str(stamp),
-                        "--only", "Stepper Probe", "DC Probe"]
-    assert "--force" not in argv and "--list" not in argv
-    assert seen == run.lines
-    assert result == {"ok": True, "returncode": 0, "last": "Stepper Probe ok",
-                      "lines": run.lines}
+    argvs = [c["argv"] for c in run.calls]
+    assert all(sys.executable not in argv for argv in argvs)
+    assert [argv[0] for argv in argvs] == ["/usr/local/bin/tool"] * 2
+    assert [argv[argv.index("-p") + 1] for argv in argvs] == ["COM7", "COM8"]
+    assert "--force" not in sum(argvs, [])
+    assert "compiling" in seen and seen == result["lines"]
+    assert result["ok"] is True and result["returncode"] == 0
+    assert result["results"] == {"Stepper Probe": "ok", "DC Probe": "ok"}
+    assert result["last"] == "DC Probe                 ok"
+    recorded = json.loads(stamp.read_text())
+    assert recorded["Stepper Probe"]["channel"] == "station"
 
 
 def test_a_failed_flash_is_not_ok_and_keeps_the_last_line(tree, stamp):
-    run = FakeRun(lines=["[ERROR] arduino-cli not found on PATH", ""], code=1)
-    result = checker(tree, stamp, run=run).flash(["Stepper Probe"])
+    run = FakeRun(lines=["avrdude: stk500v2_getsync(): timeout"], code=1)
+    result = checker(tree, stamp, run=run, **on_ports(COM7="Stepper Probe")).flash(
+        ["Stepper Probe"])
     assert result["ok"] is False and result["returncode"] == 1
-    assert result["last"] == "[ERROR] arduino-cli not found on PATH"
+    assert result["results"] == {"Stepper Probe": "FAILED"}
+    assert "avrdude: stk500v2_getsync(): timeout" in result["lines"]
 
 
 def test_a_runner_that_raises_is_a_failed_flash_not_an_exception(tree, stamp):
-    def broken(argv, cwd, on_line, timeout):
-        raise OSError("no python")
-    result = checker(tree, stamp, run=broken).flash(["DC Probe"])
-    assert result["ok"] is False and "no python" in result["last"]
+    def broken(argv, cwd, on_line, timeout, env=None):
+        raise OSError("no arduino-cli")
+    result = checker(tree, stamp, run=broken, **on_ports(COM8="DC Probe")).flash(
+        ["DC Probe"])
+    assert result["ok"] is False
+    assert any("no arduino-cli" in line for line in result["lines"])
+
+
+def test_a_detection_that_raises_is_a_failed_flash_not_an_exception(tree, stamp):
+    def ports():
+        raise RuntimeError("listing gone")
+    result = checker(tree, stamp, run=FakeRun(), identify=lambda p: None,
+                     ports=ports).flash(["DC Probe"])
+    assert result["ok"] is False and "listing gone" in result["last"]
+
+
+def test_a_board_not_plugged_in_says_not_connected(tree, stamp):
+    result = checker(tree, stamp, run=FakeRun(), **on_ports()).flash(["DC Probe"])
+    assert result["ok"] is True and result["absent"] == ["DC Probe"]
+    assert any(l.startswith("Not connected") for l in result["lines"])
 
 
 @pytest.mark.parametrize("boards", [[], ["Rotator"], ["Stepper Probe", "Nope"]])

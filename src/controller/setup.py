@@ -218,7 +218,267 @@ for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
 del _built_in
 
 
-class Setup(Panel):
+class PortProbe:
+    """Setup's port listing and identity handshake, without the panel: the
+    one way a port is identified in this codebase. `Setup` is one; so is
+    what `controller.flashing` uses to find the boards it flashes (the old
+    flash script imported `legacy/src`'s copy and skipped every COM port,
+    OP-12). Holds no port open between calls."""
+
+    NAME = "Setup"
+
+    def __init__(self):
+        super().__init__()
+        self._warned_ports = set()  # one warning per port per scan
+        self._warned_missing = set()
+
+    def scan_ports(self):
+        """Attached serial ports as the wizard shows them.
+        was <app_bootstrap>.discover_ports
+
+        Same filtering and ordering as today: Bluetooth/Wireless out, Linux
+        `/dev/ttyS*` without a hwid out, everything back if that left nothing,
+        USB first. "Off" and "SIM" are added by `port_options`, not here.
+        """
+        listing = getattr(serial_port_module, "list_ports", None)
+        if listing is None:
+            self._warn_missing("list_ports", "serial_port.list_ports() is not "
+                               "available; offering the placeholder port list")
+            return list(FALLBACK_PORTS)
+        try:
+            entries = [self._port_entry(e) for e in listing()]
+        except Exception as exc:
+            events.debug("Port Listing Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            events.warn("Port Listing Failed", "The port list could not be "
+                        "read, so a placeholder list is offered. Press Refresh "
+                        "to try again.", source=self.NAME, exception=exc)
+            return list(FALLBACK_PORTS)
+
+        usable = []
+        for name, hwid in entries:
+            if "Bluetooth" in name or "Wireless" in name:
+                continue
+            if name.startswith("/dev/ttyS") and (not hwid or hwid == "n/a"):
+                continue
+            usable.append(name)
+        if not usable and entries:
+            usable = [name for name, _ in entries]
+
+        ports = sorted(usable, key=self._port_sort_key)
+        events.debug("Ports", f"{len(ports)} port(s): {ports}", source=self.NAME)
+        return ports
+
+    @staticmethod
+    def _port_entry(entry):
+        """(name, hwid) from whatever `list_ports()` yields."""
+        if isinstance(entry, str):
+            return entry, None
+        if isinstance(entry, (tuple, list)):
+            name = str(entry[0])
+            return name, (str(entry[1]) if len(entry) > 1 and entry[1] else None)
+        if isinstance(entry, dict):
+            return str(entry.get("device", entry.get("name", entry))), entry.get("hwid")
+        return str(getattr(entry, "device", entry)), getattr(entry, "hwid", None)
+
+    @staticmethod
+    def _port_sort_key(name):
+        is_usb = ("USB" in name or name.startswith(
+            ("/dev/ttyACM", "/dev/ttyUSB", "/dev/cu.usb", "/dev/tty.usb")))
+        return (0 if is_usb else 1, name)
+
+    def identify(self, port, should_abort=None):
+        """Identify whatever is on `port`, or None.
+        was <app_bootstrap>.probe_device_at
+
+        `should_abort` is an optional zero-argument predicate: return True and
+        the scan gives up at the next check, without opening any further port
+        (MANAGER-20). The check is made between attempts **and inside the
+        waits**, which is where the time actually goes. A predicate that
+        raises is treated as "do not abort": a broken abort hook must not be
+        able to stop the scan working at all.
+
+        Every failure is reported (`events.warn`, once per port). The old
+        implementation wrapped each of its three attempts in a bare
+        `except Exception: pass`, so a port that raised on every open was
+        indistinguishable from a port with nothing attached (SERIAL-17).
+        """
+        def aborted():
+            if should_abort is None:
+                return False
+            try:
+                return bool(should_abort())
+            except Exception:
+                return False
+
+        if aborted():
+            return None
+
+        started = time.monotonic()
+        # 1. The classes' own checks, for devices without a `DEV:` byte (the
+        # SMC100 at 57600): tried first because they are cheap, so the
+        # rotator does not have to burn through both firmware handshake
+        # timeouts before reaching the check that identifies it.
+        name = self._identify_by_class(port, aborted)
+        if name or aborted():
+            self._log_probe(port, name, started)
+            return name
+
+        # 2. and 3. the custom firmware, at its two baud rates.
+        for baud in (500000, 115200):
+            if aborted():
+                break
+            name = self._identify_firmware(port, baud, aborted)
+            if name:
+                break
+        self._log_probe(port, name, started)
+        return name
+
+    def _identify_by_class(self, port, aborted):
+        """Ask each registered class that can identify its own board, in
+        registration order; which check is cheap is the class's business.
+
+        A class opts in with a classmethod `identify_port(port, should_abort)
+        -> bool` (the Rotator's SMC100 query is the one built-in that does).
+        A hook that raises is one "Probe Failed" for that port; the scan
+        goes on.
+        """
+        for name, model_class in list(MODEL_TYPES.items()):
+            if aborted():
+                return None
+            hook = getattr(model_class, "identify_port", None)
+            if not callable(hook):
+                continue
+            try:
+                if hook(port, aborted):
+                    return name
+            except Exception as exc:
+                self._warn_probe(port, exc)
+        return None
+
+    def _identify_firmware(self, port, baud, aborted):
+        device = None
+        try:
+            device = SerialPort(port, baud)
+            device.probe = True   # the scan asks; an unanswered port is information
+            device.open()
+            identity = self._wait_identity(device, aborted)
+            if self._status_of(device) == LOST:
+                # `wait_open()` answers False both for "still connecting" and
+                # for "the open failed"; the state is the honest answer, and
+                # a port that could not be opened at all is worth saying out
+                # loud rather than reporting as an empty socket.
+                self._warn_probe(port, f"could not open at {baud} baud")
+            return self._name_for_identity(identity)
+        except Exception as exc:
+            self._warn_probe(port, exc)
+            return None
+        finally:
+            if device is not None:
+                try:
+                    device.close()
+                except Exception as exc:
+                    events.debug("Probe", f"{port}@{baud} close failed: {exc}",
+                                 source=self.NAME, exception=exc)
+
+    def _wait_identity(self, device, aborted):
+        """`wait_open` in slices, so an abort is noticed inside the wait.
+
+        `wait_open()` returns True once the connect worker has finished and
+        the port is open - verified or not, so the identity it carries is the
+        answer either way. False means "still connecting" *or* "the open
+        failed"; only the state tells those apart, and a failed open is not
+        worth waiting out the rest of the handshake budget for.
+        """
+        deadline = time.monotonic() + PROBE_SECONDS
+        while True:
+            if aborted():
+                return None
+            started = time.monotonic()
+            if device.wait_open(PROBE_SLICE):
+                return device.identity
+            if self._status_of(device) == LOST:
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return device.identity
+            # A `wait_open` that returns early must not turn this into a
+            # busy loop: the port is being polled, not spun on.
+            idle = PROBE_SLICE - (time.monotonic() - started)
+            if idle > 0:
+                time.sleep(min(idle, remaining))
+
+    @staticmethod
+    def _status_of(device):
+        """The port's state as its one word. A test double may carry none."""
+        return str(getattr(device, "status", "") or "")
+
+    @staticmethod
+    def _text(reply):
+        if reply is None:
+            return ""
+        if isinstance(reply, (bytes, bytearray)):
+            return bytes(reply).decode("utf-8", errors="ignore").strip()
+        return str(reply).strip()
+
+    def _name_for_identity(self, identity):
+        """The identity byte, mapped through the model classes themselves.
+
+        `DEVICE_MAP` used to be a separate literal that knew four of the six
+        devices, which is how the sidebar, the builder and the identity map
+        came to disagree (RC-7).
+        """
+        text = self._text(identity)
+        if not text:
+            return None
+        identities = {str(_declared(cls, "IDENTITY")).lower(): name
+                      for name, cls in MODEL_TYPES.items()
+                      if _declared(cls, "IDENTITY")}
+        if text.lower() in identities:
+            return identities[text.lower()]
+        match = IDENTITY_PATTERN.search(text)
+        if match and match.group(1).lower() in identities:
+            return identities[match.group(1).lower()]
+        return None
+
+    def _log_probe(self, port, name, started):
+        events.debug("Probe", f"{port} -> {name or 'nothing'} in "
+                     f"{(time.monotonic() - started) * 1000:.0f} ms",
+                     source=self.NAME)
+
+    def _warn_probe(self, port, exc):
+        """One warning per port per scan; the rest go to the log file."""
+        message = f"{port}: {exc or type(exc).__name__}"
+        events.debug("Probe Failed", message, source=self.NAME, exception=exc)
+        if port in self._warned_ports:
+            return
+        self._warned_ports.add(port)
+        cause = re.sub(r"b'[^']*'|b\"[^\"]*\"", "", str(exc or "")).strip(" :;")
+        events.warn("Probe Failed", f"{port} could not be checked"
+                    f"{f' ({cause})' if cause else ''}. If a device is on it, "
+                    "choose the port by hand.", source=self.NAME, exception=exc)
+
+    def _warn_missing(self, what, message):
+        """One warning per missing collaborator, then silence."""
+        if what in self._warned_missing:
+            return
+        self._warned_missing.add(what)
+        events.debug("Not Available", message, source=self.NAME)
+        events.warn("Not Available", self._MISSING_SENTENCES.get(
+            what, "Part of hardware detection is unavailable. Choose ports "
+            "by hand."), source=self.NAME)
+
+    #: What the operator reads when a collaborator is missing (F19); the
+    #: module-level detail goes to the file log.
+    _MISSING_SENTENCES = {
+        "list_ports": "Ports cannot be listed on this computer, so a "
+                      "placeholder list is offered. Choose ports by hand.",
+        "hub": "Gamepads cannot be listed on this computer, so none can be "
+               "assigned.",
+    }
+
+
+class Setup(PortProbe, Panel):
     """The setup panel. Scans ports and gamepads, validates an assignment,
     constructs Models into the Controller.
 
@@ -508,61 +768,6 @@ class Setup(Panel):
         self.scan()
         return True
 
-    def scan_ports(self):
-        """Attached serial ports as the wizard shows them.
-        was <app_bootstrap>.discover_ports
-
-        Same filtering and ordering as today: Bluetooth/Wireless out, Linux
-        `/dev/ttyS*` without a hwid out, everything back if that left nothing,
-        USB first. "Off" and "SIM" are added by `port_options`, not here.
-        """
-        listing = getattr(serial_port_module, "list_ports", None)
-        if listing is None:
-            self._warn_missing("list_ports", "serial_port.list_ports() is not "
-                               "available; offering the placeholder port list")
-            return list(FALLBACK_PORTS)
-        try:
-            entries = [self._port_entry(e) for e in listing()]
-        except Exception as exc:
-            events.debug("Port Listing Failed", repr(exc), source=self.NAME,
-                         exception=exc)
-            events.warn("Port Listing Failed", "The port list could not be "
-                        "read, so a placeholder list is offered. Press Refresh "
-                        "to try again.", source=self.NAME, exception=exc)
-            return list(FALLBACK_PORTS)
-
-        usable = []
-        for name, hwid in entries:
-            if "Bluetooth" in name or "Wireless" in name:
-                continue
-            if name.startswith("/dev/ttyS") and (not hwid or hwid == "n/a"):
-                continue
-            usable.append(name)
-        if not usable and entries:
-            usable = [name for name, _ in entries]
-
-        ports = sorted(usable, key=self._port_sort_key)
-        events.debug("Ports", f"{len(ports)} port(s): {ports}", source=self.NAME)
-        return ports
-
-    @staticmethod
-    def _port_entry(entry):
-        """(name, hwid) from whatever `list_ports()` yields."""
-        if isinstance(entry, str):
-            return entry, None
-        if isinstance(entry, (tuple, list)):
-            name = str(entry[0])
-            return name, (str(entry[1]) if len(entry) > 1 and entry[1] else None)
-        if isinstance(entry, dict):
-            return str(entry.get("device", entry.get("name", entry))), entry.get("hwid")
-        return str(getattr(entry, "device", entry)), getattr(entry, "hwid", None)
-
-    @staticmethod
-    def _port_sort_key(name):
-        is_usb = ("USB" in name or name.startswith(
-            ("/dev/ttyACM", "/dev/ttyUSB", "/dev/cu.usb", "/dev/tty.usb")))
-        return (0 if is_usb else 1, name)
-
     def scan_gamepads(self):
         """Attached gamepads as `["None", ...]`.
         was <app_bootstrap>.discover_controllers ('controller' now means only
@@ -730,201 +935,12 @@ class Setup(Panel):
         events.debug("Scan", f"{self.scan_status}; {len(targets)} port(s) in "
                      f"{time.monotonic() - started:.1f} s", source=self.NAME)
 
-    def identify(self, port, should_abort=None):
-        """Identify whatever is on `port`, or None.
-        was <app_bootstrap>.probe_device_at
-
-        `should_abort` is an optional zero-argument predicate: return True and
-        the scan gives up at the next check, without opening any further port
-        (MANAGER-20). The check is made between attempts **and inside the
-        waits**, which is where the time actually goes. A predicate that
-        raises is treated as "do not abort": a broken abort hook must not be
-        able to stop the scan working at all.
-
-        Every failure is reported (`events.warn`, once per port). The old
-        implementation wrapped each of its three attempts in a bare
-        `except Exception: pass`, so a port that raised on every open was
-        indistinguishable from a port with nothing attached (SERIAL-17).
-        """
-        def aborted():
-            if should_abort is None:
-                return False
-            try:
-                return bool(should_abort())
-            except Exception:
-                return False
-
-        if aborted():
-            return None
-
-        started = time.monotonic()
-        # 1. The classes' own checks, for devices without a `DEV:` byte (the
-        # SMC100 at 57600): tried first because they are cheap, so the
-        # rotator does not have to burn through both firmware handshake
-        # timeouts before reaching the check that identifies it.
-        name = self._identify_by_class(port, aborted)
-        if name or aborted():
-            self._log_probe(port, name, started)
-            return name
-
-        # 2. and 3. the custom firmware, at its two baud rates.
-        for baud in (500000, 115200):
-            if aborted():
-                break
-            name = self._identify_firmware(port, baud, aborted)
-            if name:
-                break
-        self._log_probe(port, name, started)
-        return name
-
-    def _identify_by_class(self, port, aborted):
-        """Ask each registered class that can identify its own board, in
-        registration order; which check is cheap is the class's business.
-
-        A class opts in with a classmethod `identify_port(port, should_abort)
-        -> bool` (the Rotator's SMC100 query is the one built-in that does).
-        A hook that raises is one "Probe Failed" for that port; the scan
-        goes on.
-        """
-        for name, model_class in list(MODEL_TYPES.items()):
-            if aborted():
-                return None
-            hook = getattr(model_class, "identify_port", None)
-            if not callable(hook):
-                continue
-            try:
-                if hook(port, aborted):
-                    return name
-            except Exception as exc:
-                self._warn_probe(port, exc)
-        return None
-
-    def _identify_firmware(self, port, baud, aborted):
-        device = None
-        try:
-            device = SerialPort(port, baud)
-            device.probe = True   # the scan asks; an unanswered port is information
-            device.open()
-            identity = self._wait_identity(device, aborted)
-            if self._status_of(device) == LOST:
-                # `wait_open()` answers False both for "still connecting" and
-                # for "the open failed"; the state is the honest answer, and
-                # a port that could not be opened at all is worth saying out
-                # loud rather than reporting as an empty socket.
-                self._warn_probe(port, f"could not open at {baud} baud")
-            return self._name_for_identity(identity)
-        except Exception as exc:
-            self._warn_probe(port, exc)
-            return None
-        finally:
-            if device is not None:
-                try:
-                    device.close()
-                except Exception as exc:
-                    events.debug("Probe", f"{port}@{baud} close failed: {exc}",
-                                 source=self.NAME, exception=exc)
-
-    def _wait_identity(self, device, aborted):
-        """`wait_open` in slices, so an abort is noticed inside the wait.
-
-        `wait_open()` returns True once the connect worker has finished and
-        the port is open - verified or not, so the identity it carries is the
-        answer either way. False means "still connecting" *or* "the open
-        failed"; only the state tells those apart, and a failed open is not
-        worth waiting out the rest of the handshake budget for.
-        """
-        deadline = time.monotonic() + PROBE_SECONDS
-        while True:
-            if aborted():
-                return None
-            started = time.monotonic()
-            if device.wait_open(PROBE_SLICE):
-                return device.identity
-            if self._status_of(device) == LOST:
-                return None
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return device.identity
-            # A `wait_open` that returns early must not turn this into a
-            # busy loop: the port is being polled, not spun on.
-            idle = PROBE_SLICE - (time.monotonic() - started)
-            if idle > 0:
-                time.sleep(min(idle, remaining))
-
-    @staticmethod
-    def _status_of(device):
-        """The port's state as its one word. A test double may carry none."""
-        return str(getattr(device, "status", "") or "")
-
-    @staticmethod
-    def _text(reply):
-        if reply is None:
-            return ""
-        if isinstance(reply, (bytes, bytearray)):
-            return bytes(reply).decode("utf-8", errors="ignore").strip()
-        return str(reply).strip()
-
-    def _name_for_identity(self, identity):
-        """The identity byte, mapped through the model classes themselves.
-
-        `DEVICE_MAP` used to be a separate literal that knew four of the six
-        devices, which is how the sidebar, the builder and the identity map
-        came to disagree (RC-7).
-        """
-        text = self._text(identity)
-        if not text:
-            return None
-        identities = {str(_declared(cls, "IDENTITY")).lower(): name
-                      for name, cls in MODEL_TYPES.items()
-                      if _declared(cls, "IDENTITY")}
-        if text.lower() in identities:
-            return identities[text.lower()]
-        match = IDENTITY_PATTERN.search(text)
-        if match and match.group(1).lower() in identities:
-            return identities[match.group(1).lower()]
-        return None
-
-    def _log_probe(self, port, name, started):
-        events.debug("Probe", f"{port} -> {name or 'nothing'} in "
-                     f"{(time.monotonic() - started) * 1000:.0f} ms",
-                     source=self.NAME)
-
-    def _warn_probe(self, port, exc):
-        """One warning per port per scan; the rest go to the log file."""
-        message = f"{port}: {exc or type(exc).__name__}"
-        events.debug("Probe Failed", message, source=self.NAME, exception=exc)
-        if port in self._warned_ports:
-            return
-        self._warned_ports.add(port)
-        cause = re.sub(r"b'[^']*'|b\"[^\"]*\"", "", str(exc or "")).strip(" :;")
-        events.warn("Probe Failed", f"{port} could not be checked"
-                    f"{f' ({cause})' if cause else ''}. If a device is on it, "
-                    "choose the port by hand.", source=self.NAME, exception=exc)
-
     def _refuse(self, reason):
         """Every refusal reaches the log file, even when `build()` was called
         outside `Panel.run` (Addendum 1)."""
         events.debug("Refused", reason, source=self.NAME)
         raise Refused(reason)
 
-    def _warn_missing(self, what, message):
-        """One warning per missing collaborator, then silence."""
-        if what in self._warned_missing:
-            return
-        self._warned_missing.add(what)
-        events.debug("Not Available", message, source=self.NAME)
-        events.warn("Not Available", self._MISSING_SENTENCES.get(
-            what, "Part of hardware detection is unavailable. Choose ports "
-            "by hand."), source=self.NAME)
-
-    #: What the operator reads when a collaborator is missing (F19); the
-    #: module-level detail goes to the file log.
-    _MISSING_SENTENCES = {
-        "list_ports": "Ports cannot be listed on this computer, so a "
-                      "placeholder list is offered. Choose ports by hand.",
-        "hub": "Gamepads cannot be listed on this computer, so none can be "
-               "assigned.",
-    }
 
     # -- assignment --------------------------------------------------------
     def auto_assign(self, force=False):

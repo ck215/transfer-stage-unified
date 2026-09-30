@@ -3,109 +3,52 @@
 setup left in the terminal to GUI indicators").
 
 `FirmwareCheck` answers the question `run_swap.sh` (now `dev/swap_branch.sh`) asked before every
-launch - is each board running the sketch this checkout carries? - without
+launch - is each board running the sketch this install carries? - without
 arduino-cli and without opening a port:
 
-    check()   each board's status from the stamp file and the sketch hashes,
-              exactly as `firmware/flash_firmware.py` decides "already
-              current": the stamp (`~/transfer-stage-runs/flashed.json`, or
-              $STATION_FLASH_STAMP) records the hash of the sketch this
-              machine last put on each board; a board whose recorded hash
-              differs is out of date, one with no record was never flashed
-              from here.
-    flash()   runs `firmware/flash_firmware.py --yes --only <boards>` as a
-              subprocess, streaming its lines to a callback. Only ever
-              because the operator answered a key - Flash now on the startup
-              dialog (owner 2026-09-28: unattended, as the old launcher's
-              flash, after one popup) or the row's Flash out-of-date boards;
-              nothing here flashes on its own.
-
-Nothing is imported from `firmware/` (nothing under `src/` may import
-outside it). The hash rule is copied from the script and pinned against
-the script's own function by `tests/test_firmware_check.py`, so an edit to
-one without the other fails the suite instead of drifting silently.
+    check()   each board's status from the stamp file and the sketch hashes
+              (`controller.flashing`, the one copy of the rule): the stamp
+              (`~/transfer-stage-runs/flashed.json`, or $STATION_FLASH_STAMP)
+              records the hash of the sketch this machine last put on each
+              board; a board whose recorded hash differs is out of date, one
+              with no record was never flashed from here.
+    flash()   `controller.flashing.flash` in this process (brief rb-dist-app
+              A1: a frozen bundle's `sys.executable` is its launcher, so
+              the old "spawn the script with this interpreter" started the
+              station again instead), streaming its lines to a callback. Only
+              ever because the operator answered a key - Flash now on the
+              startup dialog (owner 2026-09-28: unattended, as the old
+              launcher's flash, after one popup) or the row's Flash
+              out-of-date boards; nothing here flashes on its own.
 """
-import hashlib
-import json
 import os
-import re
-import shutil
-import subprocess
-import sys
-import threading
 from pathlib import Path
+
+from controller import flashing
+from controller.flashing import stream_lines  # noqa: F401  (the default runner)
 
 #: The checkout this file lives in: src/controller/firmware.py -> the repo.
 ROOT = Path(__file__).resolve().parents[2]
-#: The flashing tool. Run, never imported.
-SCRIPT = ROOT / "firmware" / "flash_firmware.py"
 #: The script's own default; both branches' checkouts share it.
-DEFAULT_STAMP = Path.home() / "transfer-stage-runs" / "flashed.json"
-STAMP_ENV = "STATION_FLASH_STAMP"
+DEFAULT_STAMP = flashing.DEFAULT_STAMP
+STAMP_ENV = flashing.STAMP_ENV
 
-#: Board -> its sketch directory under the sketch root, in the script's
-#: order (`flash_firmware.DEVICES`). A board's name is also its model's NAME.
-BOARDS = {
-    "Stepper Probe": "stepper_firmware",
-    "DC Probe": "high_polling_rate",
-    "Chuck Positioner": "chuck_firmware",
-    "Temperature Controller": "temp_controller",
-}
-#: What the script refuses to start without (`flash_firmware.check_tools`:
-#: it asks for the Teensy loader whatever boards are named).
-TOOLS = ("arduino-cli", "teensy_loader_cli")
+#: Board -> its sketch directory under the sketch root, in flashing order.
+#: A board's name is also its model's NAME.
+BOARDS = {name: cfg["dir"] for name, cfg in flashing.BOARDS.items()}
+#: What a flash needs (the Teensy loader whatever boards are named, as the
+#: old script asked).
+TOOLS = (flashing.ARDUINO_CLI, flashing.TEENSY_LOADER)
 
-#: A whole flash, compile and upload of four boards, with room for a Teensy
-#: waiting on its bootloader. `teensy_loader_cli -w` waits forever when the
-#: soft reboot fails, and Launch waits for the flash, so it must end.
-FLASH_SECONDS = 900
+FLASH_SECONDS = flashing.FLASH_SECONDS
 
 CURRENT, OUT_OF_DATE, NEVER, NO_SKETCH = "current", "out_of_date", "never_flashed", "no_sketch"
 
-# -- the hash rule: flash_firmware.py's, verbatim in behaviour -----------------
-_SOURCE_SUFFIXES = {".ino", ".pde", ".h", ".hpp", ".c", ".cpp", ".cc", ".s", ".S"}
-_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
-
-
-def _source_files(directory):
-    """Every source file under `directory`, sorted, skipping build output."""
-    out = []
-    for path in sorted(Path(directory).rglob("*")):
-        rel = path.relative_to(directory)
-        if not path.is_file() or path.suffix not in _SOURCE_SUFFIXES:
-            continue
-        if any(part in ("build", ".git") for part in rel.parts[:-1]):
-            continue
-        out.append(path)
-    return out
-
-
-def _local_libraries(sketch, sketch_root):
-    """Library directories under <sketch-root>/libraries whose header the
-    sketch #includes: a vendored library is part of the firmware."""
-    lib_root = Path(sketch_root) / "libraries"
-    if not lib_root.is_dir():
-        return []
-    headers = set()
-    for f in _source_files(sketch):
-        headers.update(Path(h).name for h in _INCLUDE_RE.findall(f.read_text(errors="replace")))
-    return [lib for lib in sorted(p for p in lib_root.iterdir() if p.is_dir())
-            if any((lib / h).is_file() or (lib / "src" / h).is_file() for h in headers)]
-
 
 def sketch_hash(sketch_root, board):
-    """sha256 over the sketch's sources and its vendored libraries, by
-    relative path and content, CRLF read as LF."""
-    root = Path(sketch_root)
-    sketch = root / BOARDS[board]
-    h = hashlib.sha256()
-    parts = [("sketch", sketch)] + [("lib", lib) for lib in _local_libraries(sketch, root)]
-    for kind, base in parts:
-        for f in _source_files(base):
-            rel = f"{kind}/{base.name}/{f.relative_to(base).as_posix()}"
-            h.update(rel.encode() + b"\0")
-            h.update(f.read_bytes().replace(b"\r\n", b"\n") + b"\0")
-    return h.hexdigest()
+    """sha256 over the sketch's sources and its vendored libraries
+    (`flashing.sketch_hash`)."""
+    return flashing.sketch_hash(sketch_root, board)
 
 
 def _names(names):
@@ -113,71 +56,54 @@ def _names(names):
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def stream_lines(argv, cwd, on_line, timeout):
-    """The default runner: start `argv`, hand each output line (stdout and
-    stderr, merged) to `on_line` as it arrives, return the exit code - or
-    None when `timeout` seconds ran out and the process was killed. No
-    stdin: a prompt the script should never reach reads end-of-file."""
-    env = dict(os.environ, PYTHONUNBUFFERED="1")
-    proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, errors="replace", bufsize=1, env=env)
-    expired = threading.Event()
-
-    def kill():
-        expired.set()
-        proc.kill()
-
-    timer = threading.Timer(timeout, kill)
-    timer.daemon = True
-    timer.start()
-    try:
-        for line in proc.stdout:
-            on_line(line.rstrip("\r\n"))
-        code = proc.wait()
-    finally:
-        timer.cancel()
-        proc.stdout.close()
-    return None if expired.is_set() else code
-
-
 class FirmwareCheck:
     """`check()` and `flash()` over one sketch tree and one stamp file.
-    `run=` stands in for `stream_lines` and `which=` for `shutil.which`, so
-    the tests never compile, upload or look at the bench's PATH."""
+    `run=` stands in for the tool runner, `which=` for `shutil.which` (a
+    checkout's PATH), `tools=` for the whole tool lookup, and `identify=` /
+    `ports=` for Setup's handshake and port listing, so the tests never
+    compile, upload, open a port or look at the bench's PATH.
+
+    `channel` is what the stamp records the flash as (`station`, or
+    `stable` for the Switch to stable's flash), `version` the bundle's
+    VERSION (None in a checkout)."""
 
     def __init__(self, root=None, *, sketch_root=None, stamp=None, run=None,
-                 which=None, python=None):
+                 which=None, tools=None, identify=None, ports=None,
+                 channel=flashing.STATION, version=None):
         self.root = Path(root) if root is not None else ROOT
         self.sketch_root = Path(sketch_root) if sketch_root is not None else self.root / "firmware"
-        self.script = self.root / "firmware" / "flash_firmware.py"
         self.stamp = Path(stamp) if stamp is not None else Path(
             os.environ.get(STAMP_ENV) or DEFAULT_STAMP).expanduser()
         self._run = run or stream_lines
-        self._which = which or shutil.which
-        self._python = python or sys.executable
+        self._which = which
+        self._tools = tools
+        self._identify, self._ports = identify, ports
+        self.channel = channel
+        self.version = version
+
+    @property
+    def tools(self):
+        """Looked up on every call: a tool installed while the station runs
+        is found by the next check."""
+        if self._tools is not None:
+            return self._tools
+        return flashing.tools_for(which=self._which)
 
     def sketch_hash(self, board):
         return sketch_hash(self.sketch_root, board)
 
     def _has_sketch(self, board):
-        directory = BOARDS[board]
-        return (self.sketch_root / directory / f"{directory}.ino").is_file()
+        return flashing.has_sketch(board, self.sketch_root)
 
     def _recorded(self):
-        """The stamp as a dict; missing or unreadable is "nothing recorded",
-        as the script reads it."""
-        try:
-            data = json.loads(self.stamp.read_text())
-        except (OSError, ValueError):
-            return {}
-        return data if isinstance(data, dict) else {}
+        """The stamp as a dict; missing or unreadable is "nothing recorded"."""
+        return flashing.load_stamp(self.stamp)
 
     def check(self):
         """-> {"boards": {board: status}, "stale", "never", "to_flash",
         "missing_tools", "summary"}. `stale` has a record that differs;
-        `to_flash` is what the script would flash (stale and never
-        flashed), in the script's order. Reads files only."""
+        `to_flash` is what a flash would flash (stale and never flashed), in
+        flashing order. Reads files only."""
         recorded = self._recorded()
         boards = {}
         for board in BOARDS:
@@ -192,7 +118,7 @@ class FirmwareCheck:
                 boards[board] = CURRENT if theirs == self.sketch_hash(board) else OUT_OF_DATE
         stale = [b for b, s in boards.items() if s == OUT_OF_DATE]
         never = [b for b, s in boards.items() if s == NEVER]
-        missing = [tool for tool in TOOLS if not self._which(tool)]
+        missing = self.tools.missing
         return {"boards": boards, "stale": stale, "never": never,
                 "to_flash": stale + never, "missing_tools": missing,
                 "summary": self._summary(boards, stale, never, missing)}
@@ -214,17 +140,12 @@ class FirmwareCheck:
             parts.append(f"{_names(missing)} not found: flash by hand")
         return "; ".join(parts)
 
-    def command(self, boards):
-        """The one command line: `--yes` because the operator already
-        confirmed on the Setup page, never `--force`."""
-        return [self._python, "-u", str(self.script), "--yes",
-                "--sketch-root", str(self.sketch_root), "--stamp", str(self.stamp),
-                "--only", *boards]
-
-    def flash(self, boards, on_line=None, timeout=FLASH_SECONDS):
-        """Flash `boards` with the script. -> {"ok", "returncode", "last",
-        "lines"}; `last` is the last non-empty line, what the Flashing cell
-        showed at the end. A runner that raises is a failed flash."""
+    def flash(self, boards, on_line=None, timeout=FLASH_SECONDS, force=False):
+        """Flash `boards`, the ones plugged in, unattended (the operator
+        already confirmed on the Setup page). -> {"ok", "returncode", "last",
+        "lines", "results", "absent"}; `last` is the last non-empty line,
+        what the Flashing cell showed at the end. A step that raises is a
+        failed flash, never an exception out of here."""
         boards = list(boards)
         unknown = [b for b in boards if b not in BOARDS]
         if not boards or unknown:
@@ -236,12 +157,18 @@ class FirmwareCheck:
             if on_line is not None:
                 on_line(line)
 
+        answer = {"returncode": -1, "results": {}, "absent": []}
         try:
-            code = self._run(self.command(boards), str(self.root), take, timeout)
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            take(f"The flash tool could not start: {exc}")
-            code = -1
-        if code is None:
-            take(f"The flash took longer than {timeout:g} s and was stopped.")
+            answer = flashing.flash(
+                boards, sketch_root=self.sketch_root, stamp=self.stamp,
+                tools=self.tools, run=self._run, identify=self._identify,
+                ports=self._ports, force=force, channel=self.channel,
+                version=self.version, on_line=take, timeout=timeout,
+                cwd=self.root)
+        except Exception as exc:        # reported, never raised into Setup
+            take(f"The flash could not run: {exc}")
+        code = answer.get("returncode")
         last = next((l.strip() for l in reversed(lines) if l.strip()), "")
-        return {"ok": code == 0, "returncode": code, "last": last, "lines": lines}
+        return {"ok": code == 0, "returncode": code, "last": last, "lines": lines,
+                "results": dict(answer.get("results") or {}),
+                "absent": list(answer.get("absent") or [])}
