@@ -60,8 +60,13 @@ def test_the_hosts_link_shows_the_worse_of_the_two_stop_marks(marks, worst):
 
 
 def test_the_fold_ranks_exactly_the_marks_rail_mark_can_return():
+    # Updated (rb-link-views V1): rail_mark also returns the entry's link
+    # tier - "lost" (a link lost or reconnecting) and "attention" (stalled,
+    # or a held input gate) - so the fold must rank those too.
     stop = {"latched": ["a", "b", "c"], "unconfirmed": ["a"]}
-    kinds = {qt.rail_mark(n, stop, {"b"}) for n in ("a", "b", "c", "d")}
+    tiers = {"e": "error", "f": "warning"}
+    kinds = {qt.rail_mark(n, stop, {"b"}, tiers)
+             for n in ("a", "b", "c", "d", "e", "f")}
     assert kinds - {None} == set(qt.RAIL_MARK_RANK)
 
 
