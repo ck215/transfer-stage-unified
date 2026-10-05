@@ -234,3 +234,105 @@ def test_the_quality_thresholds_are_module_constants():
     assert sf.RECTANGULARITY_ASK_UM == 50.0
     assert sf.MIN_AB_UM == 30.0
     assert (sf.MIN_CORNER_ANGLE_DEG, sf.MAX_CORNER_ANGLE_DEG) == (20.0, 160.0)
+
+
+# -- the Rotator (owner 2026-10-04: it turns the chip; model it now) ------------------
+#
+# The SMC100 turns the chip about a centre c that is not corner A, in the
+# stage's own units: p_now = c + R(s * (phi - phi0)) (p_reg - c), with s the
+# Rotator's sense against the stage axes (-1 when they are mirrored).
+
+def _turn(p, centre, sense, dphi_deg):
+    a = math.radians(sense * dphi_deg)
+    c, s = math.cos(a), math.sin(a)
+    dx, dy = p[0] - centre[0], p[1] - centre[1]
+    return (centre[0] + c * dx - s * dy, centre[1] + s * dx + c * dy)
+
+
+CENTRE = (9_300.0, -1_250.0)     # counts: off the chip's corner, off the origin
+
+
+def test_a_point_turns_about_an_off_origin_centre_and_back():
+    p = (10_000.0, -1_250.0)
+    assert sf.rotate_about(p, CENTRE, 1, 90.0) == pytest.approx((9_300.0, -550.0))
+    assert sf.rotate_about(p, CENTRE, -1, 90.0) == pytest.approx((9_300.0, -1_950.0))
+    back = sf.rotate_about(sf.rotate_about(p, CENTRE, 1, 33.0), CENTRE, 1, -33.0)
+    assert back == pytest.approx(p)
+
+
+@pytest.mark.parametrize("sense", (1, -1))
+def test_three_or_more_marks_find_the_centre_and_the_sense(sense):
+    rng = numpy.random.default_rng(7)
+    feature = (11_200.0, 400.0)                    # the feature at phi = 0
+    angles = (-20.0, -4.0, 9.0, 27.0)
+    marks = [tuple(numpy.add(_turn(feature, CENTRE, sense, a), rng.normal(0, 0.5, 2)))
+             for a in angles]
+    fit = sf.rotation_centre(marks, angles, K)
+    assert fit.sense == sense
+    assert fit.centre == pytest.approx(CENTRE, abs=2.0)
+    assert fit.method == "circle" and fit.n_points == 4
+    assert fit.residual_um < 1.0 and fit.quality == "good"
+
+
+def test_two_marks_need_a_known_sense_and_then_the_chord_gives_the_centre():
+    feature = (11_200.0, 400.0)
+    marks = [_turn(feature, CENTRE, -1, a) for a in (0.0, 25.0)]
+    with pytest.raises(sf.FrameRefused, match="third angle"):
+        sf.rotation_centre(marks, (0.0, 25.0), K)
+    fit = sf.rotation_centre(marks, (0.0, 25.0), K, sense=-1)
+    assert fit.centre == pytest.approx(CENTRE, abs=1e-6)
+    assert fit.sense == -1 and fit.method == "chord" and fit.residual_um is None
+
+
+def test_degenerate_calibrations_are_refused_in_words():
+    feature = (11_200.0, 400.0)
+    with pytest.raises(sf.FrameRefused, match="two"):
+        sf.rotation_centre([feature], (0.0,), K)
+    near = [_turn(feature, CENTRE, 1, a) for a in (0.0, 0.5)]
+    with pytest.raises(sf.FrameRefused, match="Turn the Rotator further"):
+        sf.rotation_centre(near, (0.0, 0.5), K, sense=1)
+    on_centre = [_turn((CENTRE[0] + 5, CENTRE[1]), CENTRE, 1, a) for a in (0.0, 10.0, 20.0)]
+    with pytest.raises(sf.FrameRefused, match="too close"):
+        sf.rotation_centre(on_centre, (0.0, 10.0, 20.0), K)
+    with pytest.raises(sf.FrameRefused, match="angle"):
+        sf.rotation_centre([feature, feature], (0.0,), K)
+
+
+def test_marks_off_a_circle_are_not_a_rotation():
+    """A tilt (or the wrong axes) moves the feature along a line, not round a
+    centre: the fit refuses rather than inventing a centre."""
+    marks = [(11_000.0 + 40.0 * a, 400.0) for a in (-20.0, 0.0, 20.0, 30.0)]
+    with pytest.raises(sf.FrameRefused, match="not a turn"):
+        sf.rotation_centre(marks, (-20.0, 0.0, 20.0, 30.0), K)
+
+
+@pytest.mark.parametrize("remount_deg", (0, 90, 180, 270))
+@pytest.mark.parametrize("flip", (False, True))
+@pytest.mark.parametrize("fit", ("rigid", "affine"))
+def test_the_rotated_frame_follows_the_chip_for_any_remount(remount_deg, flip, fit):
+    theta = math.radians(remount_deg + 3.0)
+    corners = _corners(theta=theta, flip=flip)       # marked at phi0
+    if fit == "rigid":
+        base = sf.rigid_frame(corners["A"], corners["B"], K, d=corners["D"])
+    else:
+        ideal = {"A": (0, 0), "B": (W, 0), "C": (W, H), "D": (0, H)}
+        base = sf.affine_fit([corners[c] for c in "ABCD"], [ideal[c] for c in "ABCD"])
+    frame = sf.RotatedFrame(base, CENTRE, -1, 14.0)
+    for q in ((0.0, 0.0), (1_234.0, 567.0), (W, H), (-300.0, 2_000.0)):
+        physical = _turn(_stage(q, theta, ORIGIN, K, flip), CENTRE, -1, 14.0)
+        assert frame.to_stage(q) == pytest.approx(physical, abs=1e-6)
+        assert frame.to_sample(frame.to_stage(q)) == pytest.approx(q, abs=1e-6)
+
+
+def test_no_turn_is_the_registered_frame():
+    base = sf.rigid_frame(*(_corners()[c] for c in "AB"), K)
+    frame = sf.RotatedFrame(base, CENTRE, 1, 0.0)
+    assert frame.to_stage((100.0, 200.0)) == pytest.approx(base.to_stage((100.0, 200.0)))
+
+
+def test_rotator_closure_words_and_thresholds():
+    assert sf.ROTATOR_CLOSURE_GOOD_UM == 10.0 and sf.ROTATOR_CLOSURE_CHECK_UM == 30.0
+    assert sf.rotator_closure_word(3.0) == "good"
+    assert sf.rotator_closure_word(12.0) == "check"
+    assert sf.rotator_closure_word(31.0) == "poor"
+    assert sf.ROTATOR_SAME_DEG > 0 and sf.MIN_CALIBRATION_TURN_DEG >= 2.0

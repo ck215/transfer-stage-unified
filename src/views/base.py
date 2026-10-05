@@ -90,6 +90,8 @@ GATE_WORDS = {
     # chip's frame, or a locating axis to read.
     "unregistered": ("Mark corners A and B first", None),
     "no_source": ("No locating axes", None),
+    # The Rotator turns the chip (owner 2026-10-04): no angle, no marks.
+    "rotator_unknown": ("Rotator angle unknown: home or reconnect it", None),
     "launched": (None, "Nothing launched yet"),
 }
 

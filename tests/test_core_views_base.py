@@ -696,6 +696,11 @@ def test_the_sample_maps_gate_words():
     from views.base import GATE_WORDS, gate_reason
     assert GATE_WORDS["unregistered"] == ("Mark corners A and B first", None)
     assert GATE_WORDS["no_source"] == ("No locating axes", None)
+    # The Rotator turns the chip (owner 2026-10-04): with its angle unknown the
+    # marks and the guidance wait, a disabled-direction word like the others.
+    assert GATE_WORDS["rotator_unknown"] == ("Rotator angle unknown: home or reconnect it", None)
+    assert gate_reason({"disabled_when": ["no_source", "rotator_unknown"]},
+                       "rotator_unknown") == "Rotator angle unknown: home or reconnect it"
     assert gate_reason({"disabled_when": ["no_source", "unregistered"]},
                        "unregistered") == "Mark corners A and B first"
     assert gate_reason({"disabled_when": ["no_source"]}, "no_source") == "No locating axes"
