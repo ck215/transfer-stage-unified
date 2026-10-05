@@ -614,7 +614,38 @@ def test_the_calibration_expires_with_the_stage_epoch(sample_map, stage, rotator
     assert sample_map._calibration() is not None
     stage.position_epoch = 2                   # the probe reconnected
     assert sample_map._calibration() is None
-    assert "expired" in sample_map.rotator_text or "Calibrate" in sample_map.rotator_text
+    # "expired", not "not calibrated": both sentences say "Calibrate".
+    assert "calibration expired" in sample_map.rotator_text
+
+
+def test_an_extent_marked_across_a_turn_places_each_press_when_it_is_made(
+        sample_map, stage, rotator):
+    """The Rotator may turn between the two presses of Mark extent: each is
+    placed on the chip at its own angle, so the box is the flake's, not a
+    smear of two angles."""
+    _register(sample_map, stage, corners="AB")
+    _calibrate(sample_map, stage, rotator)
+    _go(stage, (1_000.0, 1_000.0), rotator)
+    assert sample_map.run("flag_flake").is_ok
+    _go(stage, (990.0, 990.0), rotator)
+    assert "the opposite corner" in str(sample_map.run("mark_extent").value)
+    rotator.position_deg = 20.0
+    _go(stage, (1_050.0, 1_030.0), rotator)
+    assert sample_map.run("mark_extent").is_ok
+    points = sample_map.selected_flake["extent_points_um"]
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    assert (min(xs), max(xs)) == pytest.approx((990.0, 1_050.0), abs=5.0)
+    assert (min(ys), max(ys)) == pytest.approx((990.0, 1_030.0), abs=5.0)
+
+
+def test_a_mark_waits_while_the_rotator_is_turning(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    rotator.motion_state = "Moving"
+    assert "turning" in sample_map.run("mark_corner", None, ("D",)).reason
+    assert "turning" in sample_map.run("flag_flake").reason
+    assert "turning" in sample_map.run("mark_rotation_point").reason
+    rotator.motion_state = "Ready"
+    assert sample_map.run("mark_rotation_point").is_ok
 
 
 def test_two_marks_reuse_the_sense_of_an_earlier_calibration(sample_map, stage, rotator):
