@@ -456,3 +456,254 @@ def test_owner_follows_the_signed_in_user(sample_map, stage):
     sample_map.owner = "ialbinog"
     sample_map.run("flag_flake")
     assert sample_map.flakes[0]["owner"] == "ialbinog"
+
+
+# -- the Rotator turns the chip (owner 2026-10-04: model it now) -----------------------
+
+class FakeRotator:
+    """The SMC100 Rotator, duck-typed as the Sample Map reads it: the angle
+    (`position_deg`, None for no reading) and its `motion_state` words."""
+
+    def __init__(self, angle=0.0):
+        self.NAME = "Rotator"
+        self.position_deg = angle
+        self.motion_state = "Ready"
+
+
+ROT_CENTRE = (6_500.0, 4_100.0)       # counts: where the Rotator turns the chip
+ROT_SENSE = -1                         # its sense against the stage axes
+
+
+def _turned(p, dphi):
+    a = math.radians(ROT_SENSE * dphi)
+    c, s = math.cos(a), math.sin(a)
+    dx, dy = p[0] - ROT_CENTRE[0], p[1] - ROT_CENTRE[1]
+    return (ROT_CENTRE[0] + c * dx - s * dy, ROT_CENTRE[1] + s * dx + c * dy)
+
+
+def _go(stage, q, rotator):
+    """Put the crosshair on chip point `q` with the chip turned to the
+    Rotator's angle (registered at 0)."""
+    stage.move_to(*_turned(_stage_of(q), rotator.position_deg))
+
+
+@pytest.fixture
+def rotator(sample_map):
+    rot = FakeRotator(0.0)
+    sample_map.on_model_added(rot.NAME, rot)
+    return rot
+
+
+def _calibrate(model, stage, rotator, angles=(-15.0, 0.0, 12.0)):
+    feature = (2_000.0, 1_500.0)               # any feature on the chip
+    for a in angles:
+        rotator.position_deg = a
+        _go(stage, feature, rotator)
+        result = model.run("mark_rotation_point")
+        assert result.is_ok, result
+    result = model.run("fit_rotation_centre")
+    assert result.is_ok, result
+    rotator.position_deg = 0.0
+
+
+def test_a_registration_records_the_rotator_angle(sample_map, stage, rotator):
+    rotator.position_deg = 5.0
+    _register(sample_map, stage, corners="AB")
+    reg = sample_map.registration
+    assert reg["rotator_phi0_deg"] == 5.0 and reg["rotator_name"] == "Rotator"
+    assert sample_map.mode_name == "registered"
+
+
+@pytest.mark.parametrize("state", (None, "Not referenced - run Home",
+                                   "Communication lost", "Homing"))
+def test_an_unknown_rotator_angle_blocks_marks_and_guidance(sample_map, stage, rotator, state):
+    _register(sample_map, stage, corners="AB")
+    stage.move_to(*_stage_of((1_000, 1_000)))
+    assert sample_map.run("flag_flake").is_ok
+    if state is None:
+        rotator.position_deg = None
+    else:
+        rotator.motion_state = state
+    assert sample_map.mode_name == "rotator_unknown"
+    assert sample_map.guidance == ""
+    assert not sample_map.run("mark_corner", None, ("C",)).is_ok
+    assert not sample_map.run("flag_flake").is_ok
+    assert "rotator_unknown" in SampleMap.GATE_REASONS
+    from views.base import GATE_WORDS
+    assert GATE_WORDS["rotator_unknown"][0] and GATE_WORDS["rotator_unknown"][1] is None
+
+
+def test_a_registration_made_with_the_rotator_waits_while_it_is_closed(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    sample_map.on_model_removed(rotator.NAME, rotator)
+    assert sample_map.mode_name == "rotator_unknown"
+    sample_map.on_model_added(rotator.NAME, rotator)
+    assert sample_map.mode_name == "registered"
+
+
+def test_an_uncalibrated_turn_ends_the_registration(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    first = sample_map.registration["registration_id"]
+    rotator.position_deg = 10.0
+    valid, reason = sample_map._validity()
+    assert not valid and "Rotator turned" in reason and "calibrate" in reason
+    assert sample_map.mode_name == "unregistered"
+    assert sample_map.guidance == ""
+    _go(stage, (0, 0), rotator)
+    assert sample_map.run("mark_corner", None, ("A",)).is_ok
+    old = sample_map._store.registration(first)
+    assert old["invalidated_at"] and "Rotator turned" in old["invalidated_reason"]
+    assert sample_map.registration["rotator_phi0_deg"] == 10.0
+
+
+def test_turning_back_to_phi0_without_a_command_is_still_valid(sample_map, stage, rotator):
+    """The SMC100's angle is absolute after homing: back at phi0 the marks
+    are right again, so a read alone never ends a registration."""
+    _register(sample_map, stage, corners="AB")
+    rotator.position_deg = 10.0
+    assert sample_map.mode_name == "unregistered"
+    rotator.position_deg = 0.0
+    assert sample_map.mode_name == "registered"
+
+
+def test_a_calibrated_turn_keeps_guidance_on_the_flake(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    _calibrate(sample_map, stage, rotator)
+    cal = sample_map._calibration()
+    assert cal is not None and cal["sense"] == ROT_SENSE
+    assert (cal["centre_x"], cal["centre_y"]) == pytest.approx(ROT_CENTRE, abs=3.0)
+    q = (3_000.0, 1_000.0)
+    stage.move_to(*_stage_of(q))
+    assert sample_map.run("flag_flake").is_ok
+    rotator.position_deg = 20.0
+    assert sample_map.mode_name == "registered"
+    _go(stage, q, rotator)                     # the crosshair on the turned flake
+    assert sample_map.guidance.startswith("On F01")
+    here = sample_map.frame().to_sample(stage.position[:2])
+    assert here == pytest.approx(q, abs=5.0)
+    stage.move_to(*_turned(_stage_of((0, 0)), 20.0))
+    target = sample_map.frame().to_stage(q)
+    assert target == pytest.approx(_turned(_stage_of(q), 20.0), abs=3.0)
+
+
+def test_a_flake_flagged_after_a_turn_lands_in_the_chip_frame(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    _calibrate(sample_map, stage, rotator)
+    rotator.position_deg = -12.0
+    q = (2_500.0, 800.0)
+    _go(stage, q, rotator)
+    assert sample_map.run("flag_flake").is_ok
+    flake = sample_map.selected_flake
+    assert (flake["sample_x_um"], flake["sample_y_um"]) == pytest.approx(q, abs=5.0)
+
+
+def test_a_corner_marked_after_a_calibrated_turn_is_stored_at_phi0(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    _calibrate(sample_map, stage, rotator)
+    rotator.position_deg = 15.0
+    _go(stage, (0, 4_000), rotator)
+    assert sample_map.run("mark_corner", None, ("D",)).is_ok
+    corners = sample_map._corner_points(sample_map.registration)
+    assert corners["D"] == pytest.approx(_stage_of((0, 4_000)), abs=3.0)
+    assert sample_map.registration["rotator_phi0_deg"] == 0.0
+
+
+def test_the_calibration_expires_with_the_stage_epoch(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    _calibrate(sample_map, stage, rotator)
+    assert sample_map._calibration() is not None
+    stage.position_epoch = 2                   # the probe reconnected
+    assert sample_map._calibration() is None
+    # "expired", not "not calibrated": both sentences say "Calibrate".
+    assert "calibration expired" in sample_map.rotator_text
+
+
+def test_an_extent_marked_across_a_turn_places_each_press_when_it_is_made(
+        sample_map, stage, rotator):
+    """The Rotator may turn between the two presses of Mark extent: each is
+    placed on the chip at its own angle, so the box is the flake's, not a
+    smear of two angles."""
+    _register(sample_map, stage, corners="AB")
+    _calibrate(sample_map, stage, rotator)
+    _go(stage, (1_000.0, 1_000.0), rotator)
+    assert sample_map.run("flag_flake").is_ok
+    _go(stage, (990.0, 990.0), rotator)
+    assert "the opposite corner" in str(sample_map.run("mark_extent").value)
+    rotator.position_deg = 20.0
+    _go(stage, (1_050.0, 1_030.0), rotator)
+    assert sample_map.run("mark_extent").is_ok
+    points = sample_map.selected_flake["extent_points_um"]
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    assert (min(xs), max(xs)) == pytest.approx((990.0, 1_050.0), abs=5.0)
+    assert (min(ys), max(ys)) == pytest.approx((990.0, 1_030.0), abs=5.0)
+
+
+def test_a_mark_waits_while_the_rotator_is_turning(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    rotator.motion_state = "Moving"
+    assert "turning" in sample_map.run("mark_corner", None, ("D",)).reason
+    assert "turning" in sample_map.run("flag_flake").reason
+    assert "turning" in sample_map.run("mark_rotation_point").reason
+    rotator.motion_state = "Ready"
+    assert sample_map.run("mark_rotation_point").is_ok
+
+
+def test_two_marks_reuse_the_sense_of_an_earlier_calibration(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    feature = (2_000.0, 1_500.0)
+
+    def two_marks():
+        for a in (0.0, 20.0):
+            rotator.position_deg = a
+            _go(stage, feature, rotator)
+            assert sample_map.run("mark_rotation_point").is_ok
+        rotator.position_deg = 0.0
+    two_marks()                                # no earlier calibration: refused
+    refused = sample_map.run("fit_rotation_centre")
+    assert not refused.is_ok and "third angle" in str(refused)
+    assert sample_map.run("clear_rotation_points").is_ok
+    _calibrate(sample_map, stage, rotator)     # three marks: the sense is known now
+    two_marks()
+    assert sample_map.run("fit_rotation_centre").is_ok
+    cal = sample_map._calibration()
+    assert cal["method"] == "chord" and cal["sense"] == ROT_SENSE
+    assert (cal["centre_x"], cal["centre_y"]) == pytest.approx(ROT_CENTRE, abs=3.0)
+
+
+@pytest.mark.parametrize("offset_um, word", ((3.0, "good"), (50.0, "poor")))
+def test_a_check_after_a_turn_reports_the_rotator_closure(sample_map, stage, rotator,
+                                                          offset_um, word):
+    _register(sample_map, stage, corners="AB")
+    _calibrate(sample_map, stage, rotator)
+    rotator.position_deg = 18.0
+    predicted = _turned(_stage_of((0, 0)), 18.0)
+    stage.move_to(predicted[0] + offset_um / K, predicted[1])
+    assert sample_map.run("check_corner").is_ok
+    reg = sample_map.registration
+    assert reg["rotator_closure_um"] == pytest.approx(offset_um, abs=3.0)
+    assert reg["rotator_quality"] == word
+    assert reg["rotator_calibration_uid"] == sample_map._calibration()["calibration_uid"]
+    assert reg["closure_um"] is None           # the unrotated closure is untouched
+    assert "Rotator closure" in sample_map.check_text
+
+
+def test_a_registration_made_without_a_rotator_is_stale_once_one_opens(sample_map, stage):
+    _register(sample_map, stage, corners="AB")
+    assert sample_map.registration["rotator_phi0_deg"] is None
+    sample_map.on_model_added("Rotator", FakeRotator(3.0))
+    valid, reason = sample_map._validity()
+    assert not valid and "without the Rotator" in reason
+
+
+def test_the_rotator_fields_are_exported(sample_map, stage, rotator):
+    _register(sample_map, stage, corners="AB")
+    _calibrate(sample_map, stage, rotator)
+    rotator.position_deg = 18.0
+    stage.move_to(*_turned(_stage_of((0, 0)), 18.0))
+    assert sample_map.run("check_corner").is_ok
+    doc = sample_map._store.export_document("bench", "dev")
+    reg = doc["registrations"][-1]
+    for key in ("rotator_phi0_deg", "rotator_name", "rotator_calibration_uid",
+                "rotator_closure_um", "rotator_quality"):
+        assert key in reg
+    assert "rotator_calibrations" not in doc        # station-only (Q4)

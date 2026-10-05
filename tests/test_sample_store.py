@@ -51,10 +51,10 @@ def test_construction_creates_nothing_and_reads_answer_empty(store):
     assert not store.exists
 
 
-def test_a_fresh_store_is_version_one_with_an_identity(store):
+def test_a_fresh_store_is_version_two_with_an_identity(store):
     assert store.ensure() is True
     with sqlite3.connect(store.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 1
+        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 2
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"samples", "registrations", "corners", "flakes", "meta"} <= tables
     meta = store.meta()
@@ -335,3 +335,49 @@ def test_a_registrations_fit_is_updated_in_place(store):
         store.update_registration(rid, {"quality": "great"})
     with pytest.raises(ss.StoreRefused, match="No registration"):
         store.update_registration(999, {"quality": "good"})
+
+
+# -- version 2: the Rotator (owner 2026-10-04) --------------------------------------
+
+def test_a_version_one_file_gains_the_rotator_columns_and_table(tmp_path):
+    import sqlite3
+    path = tmp_path / "v1.sqlite"
+    db = sqlite3.connect(str(path))
+    v1 = [c for c in ss.REGISTRATION_COLUMNS if not c[0].startswith("rotator_")]
+    db.execute("CREATE TABLE registrations (" + ", ".join(n + " " + k for n, k in v1) + ")")
+    db.execute("PRAGMA user_version = 1")
+    db.commit()
+    db.close()
+    store = ss.SampleStore(path)
+    store.ensure()
+    db = sqlite3.connect(str(path))
+    try:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 2
+        have = {r[1] for r in db.execute("PRAGMA table_info(registrations)")}
+        assert {"rotator_name", "rotator_phi0_deg", "rotator_calibration_uid",
+                "rotator_closure_um", "rotator_quality"} <= have
+        assert db.execute("SELECT name FROM sqlite_master WHERE name = "
+                          "'rotator_calibrations'").fetchone()
+    finally:
+        db.close()
+
+
+def test_a_rotator_calibration_round_trips_and_can_be_ended(store):
+    uid = store.add_rotator_calibration({
+        "rotator_name": "Rotator", "frame_source": "stage:Stepper Probe",
+        "position_epoch": 3, "centre_x": 1.5, "centre_y": -2.0, "sense": -1,
+        "n_points": 3, "method": "circle", "residual_um": 0.4, "quality": "good",
+        "points": [[1.0, 2.0, 0.0], [3.0, 4.0, 10.0], [5.0, 6.0, 20.0]],
+        "k_um": 0.625})
+    cal = store.rotator_calibration(uid)
+    assert cal["points"] == [[1.0, 2.0, 0.0], [3.0, 4.0, 10.0], [5.0, 6.0, 20.0]]
+    assert cal["sense"] == -1 and cal["calibrated_at"]
+    assert [c["calibration_uid"] for c in store.rotator_calibrations()] == [uid]
+    store.invalidate_rotator_calibration(uid, "the probe reconnected")
+    assert store.rotator_calibration(uid)["invalidated_reason"] == "the probe reconnected"
+    with pytest.raises(ss.StoreRefused):
+        store.add_rotator_calibration({"frame_source": "elsewhere", "sense": 1,
+                                       "centre_x": 0, "centre_y": 0})
+    with pytest.raises(ss.StoreRefused):
+        store.add_rotator_calibration({"frame_source": "stage:X", "sense": 2,
+                                       "centre_x": 0, "centre_y": 0})

@@ -20,6 +20,17 @@ when open, gives the red reading and the picture at the flag.
 Bench facts (section 11) are never guessed: the chuck's and the DC probe's
 um per count raise `BenchFactMissing` until the owner measures them (or the
 chip's typed dimensions let the affine fit absorb the scale).
+
+**The Rotator turns the chip** (owner 2026-10-04). Read by duck type
+(`position_deg`, `motion_state`), never by class, like the Transfer Map's
+tilt. A registration records the Rotator's angle at its marks (phi0). Back
+at phi0 the marks hold; away from it they hold only through the station's
+rotation-centre calibration (one feature marked at several angles,
+`sample_frame.rotation_centre`), which lives in the store and expires with
+the stage's `position_epoch`. Uncalibrated, a turn makes the registration
+unusable and the next mark ends it. With the angle unknown (no reading, not
+referenced, homing, the Rotator closed) the marks and the guidance wait:
+the `rotator_unknown` gate. Nothing here moves the Rotator.
 """
 import datetime
 import math
@@ -51,6 +62,11 @@ STAGE_KINDS = {"Stepper Probe": "stepper", "Chuck Positioner": "chuck",
                "DC Probe": "dc"}
 CORNERS = ("A", "B", "C", "D")
 CHECK = "A'"
+#: Corner A re-marked after a calibrated turn: the Rotator closure's mark.
+ROT_CHECK = "A'turned"
+#: The Rotator's `motion_state` words under which its angle is not usable.
+ROTATOR_UNKNOWN_STATES = ("Communication lost", "Disconnected", "Homing")
+ROTATOR_UNKNOWN_PREFIX = "Not referenced"
 
 
 def _number(value):
@@ -75,6 +91,9 @@ class SampleMap(Model):
                      "Positioner, or pick Typed readings.",
         "unregistered": "the chip's frame is not set. Mark corners A and B "
                         "first.",
+        "rotator_unknown": "the Rotator's angle is unknown (no reading, not "
+                           "referenced, homing, or closed). Home or reconnect it; "
+                           "the marks and the guidance wait for an angle.",
     }
 
     PARAMS = {p.name: p for p in (
@@ -116,7 +135,11 @@ class SampleMap(Model):
         self._source = None            # a stage name, TYPED, or None
         self._red = None
         self._red_name = None
-        self._extent_first = None      # (flake_uid, stage point) between presses
+        self._rotator = None           # duck-typed: position_deg, motion_state
+        self._rotator_name = None
+        self._cal_points = []          # [(x, y, phi_deg)] for the centre fit
+        self._cal_context = None       # (frame_source, epoch) they were made in
+        self._extent_first = None      # (flake_uid, sample point) between presses
         self._selected = None          # flake_uid
         self._shape = ss.SHAPES[0]
         self._thickness_method = ss.THICKNESS_APPROX_METHODS[0]
@@ -166,6 +189,8 @@ class SampleMap(Model):
     def mode_name(self):
         if self._source is None:
             return "no_source"
+        if self._needs_phi() and self._phi() is None:
+            return "rotator_unknown"
         return "registered" if self._validity()[0] else "unregistered"
 
     # -- peers -----------------------------------------------------------------------
@@ -179,10 +204,16 @@ class SampleMap(Model):
         if callable(getattr(model, "grab_frame", None)) and \
                 hasattr(model, "current_red"):
             self._red, self._red_name = model, name
+        if hasattr(model, "position_deg") and model is not self:
+            self._rotator, self._rotator_name = model, name
+            self._touch()
 
     def on_model_removed(self, name, model=None):
         if name == self._red_name:
             self._red, self._red_name = None, None
+        if name == self._rotator_name:
+            self._rotator, self._rotator_name = None, None
+            self._touch()
         if name in self._stages:
             del self._stages[name]
             reg = self.registration
@@ -258,6 +289,85 @@ class SampleMap(Model):
         k = sf.um_per_count(kind, typed=typed)
         return (k, k)
 
+    # -- the Rotator (owner 2026-10-04: it turns the chip) -----------------------------
+    def _phi(self):
+        """The Rotator's angle in degrees, or None when it has no usable one
+        (no Rotator, no reading, not referenced, homing, link lost)."""
+        rotator = self._rotator
+        if rotator is None:
+            return None
+        state = str(getattr(rotator, "motion_state", "") or "")
+        if state in ROTATOR_UNKNOWN_STATES or state.startswith(ROTATOR_UNKNOWN_PREFIX):
+            return None
+        try:
+            value = rotator.position_deg
+        except Exception:
+            return None
+        value = _number(value) if value is not None else None
+        return value
+
+    def _needs_phi(self):
+        """The marks and the guidance need the Rotator's angle: one is open,
+        or the open registration was marked with one."""
+        if self._rotator is not None:
+            return True
+        reg = self.registration
+        return reg is not None and reg["rotator_phi0_deg"] is not None
+
+    def _require_phi(self):
+        """The angle for a mark, or Refused in the operator's words."""
+        if not self._needs_phi():
+            return None
+        phi = self._phi()
+        if phi is None:
+            raise Refused("The Rotator's angle is unknown. Home or reconnect it, "
+                          "then mark: the chip turns with it.")
+        if str(getattr(self._rotator, "motion_state", "")) == "Moving":
+            raise Refused("The Rotator is turning. Wait for it to stop, then mark.")
+        return phi
+
+    def _current_epoch(self):
+        if self._source in (None, TYPED):
+            return None
+        return getattr(self._stages.get(self._source), "position_epoch", None)
+
+    def _calibration(self):
+        """The newest rotation-centre calibration usable now: made against the
+        current locating source, in its current epoch, for this Rotator."""
+        if self._source is None:
+            return None
+        source, epoch = self._frame_source(), self._current_epoch()
+        for cal in reversed(self._store.rotator_calibrations()):
+            if cal["invalidated_at"] or cal["frame_source"] != source:
+                continue
+            if cal["rotator_name"] and self._rotator_name and \
+                    cal["rotator_name"] != self._rotator_name:
+                continue
+            return cal if cal["position_epoch"] == epoch else None
+        return None
+
+    def _end_stale_calibrations(self):
+        """Record why calibrations of this source can no longer be used (its
+        counter restarted). Commands only, like registrations."""
+        if self._source is None:
+            return
+        source, epoch = self._frame_source(), self._current_epoch()
+        for cal in self._store.rotator_calibrations():
+            if not cal["invalidated_at"] and cal["frame_source"] == source and \
+                    cal["position_epoch"] != epoch:
+                self._store.invalidate_rotator_calibration(
+                    cal["calibration_uid"],
+                    f"the {self._source}'s position counter restarted")
+
+    def _turn(self, reg):
+        """(dphi, calibration) for the open registration now: dphi is 0.0
+        when it was not marked with a Rotator or has not turned."""
+        phi0 = reg["rotator_phi0_deg"] if reg is not None else None
+        phi = self._phi()
+        if phi0 is None or phi is None or abs(phi - phi0) <= sf.ROTATOR_SAME_DEG:
+            return 0.0, None
+        return phi - phi0, self._calibration()
+
     # -- the sample ------------------------------------------------------------------
     def _sample(self):
         sample_id = str(self.sample_id or "").strip()
@@ -324,6 +434,9 @@ class SampleMap(Model):
         stale = self._stale_reason(reg)
         if stale:
             return False, "Not valid: " + stale
+        if reg["rotator_phi0_deg"] is not None and self._phi() is None:
+            return False, ("Not valid now: the Rotator's angle is unknown. Home or "
+                           "reconnect it.")
         if reg["fit_kind"] is None:
             corners = self._corner_points(reg)
             missing = [c for c in "AB" if c not in corners]
@@ -352,13 +465,33 @@ class SampleMap(Model):
         if source != self._frame_source():
             return (f"it was marked with {source}, and {self.source or 'no source'} "
                     "is picked now.")
+        phi0 = reg["rotator_phi0_deg"]
+        if phi0 is None and self._rotator is not None:
+            return ("the corners were marked without the Rotator open, and it is "
+                    "open now. Mark the corners again.")
+        dphi, cal = self._turn(reg)
+        if dphi and cal is None:
+            return (f"the Rotator turned from {phi0:.3f} to {phi0 + dphi:.3f} degrees "
+                    "since the corners were marked, and its centre is not "
+                    "calibrated. Turn it back, calibrate the centre, or mark the "
+                    "corners again.")
         return ""
 
     def frame(self):
-        """The open registration's transform (sample <-> stage), or None."""
+        """The open registration's transform (sample <-> stage) at the
+        Rotator's angle now, or None."""
         if not self._validity()[0]:
             return None
         reg = self.registration
+        base = self._base_frame(reg)
+        dphi, cal = self._turn(reg)
+        if not dphi:
+            return base
+        return sf.RotatedFrame(base, (cal["centre_x"], cal["centre_y"]), cal["sense"], dphi)
+
+    @staticmethod
+    def _base_frame(reg):
+        """The transform as registered, at the Rotator's angle of the marks."""
         if reg["fit_kind"] == "rigid":
             return sf.RigidFrame((reg["origin_stage_x"], reg["origin_stage_y"]),
                                  reg["theta_rad"], (reg["k_x_um"], reg["k_y_um"]),
@@ -451,8 +584,15 @@ class SampleMap(Model):
             raise Refused(f"{label!r} is not a corner: use A, B, C or D.")
         with self._lock:
             sample = self._sample()
+            phi = self._require_phi()
             x, y, z, epoch = self._read_position()
+            self._end_stale_calibrations()
             reg = self._end_stale_registration()
+            if reg is not None:
+                dphi, cal = self._turn(reg)
+                if dphi:               # a calibrated turn: store the mark at phi0
+                    x, y = sf.rotate_about((x, y), (cal["centre_x"], cal["centre_y"]),
+                                           cal["sense"], -dphi)
             corners = self._corner_points(reg) if reg is not None else {}
             if label in corners and not confirmed:
                 old = corners[label]
@@ -473,9 +613,14 @@ class SampleMap(Model):
                       "method": "typed" if self._source == TYPED else "crosshair",
                       "image_path": self._picture(sample["sample_id"], f"corner_{label}")}
             if reg is None:
+                cal = self._calibration()
                 rid = self._store.add_registration(
                     {"sample_id": sample["sample_id"], "frame_source": self._frame_source(),
-                     "position_epoch": epoch, **fields}, [corner])
+                     "position_epoch": epoch, **fields,
+                     "rotator_name": self._rotator_name if phi is not None else None,
+                     "rotator_phi0_deg": phi,
+                     "rotator_calibration_uid": cal["calibration_uid"] if cal else None},
+                    [corner])
             else:
                 rid = reg["registration_id"]
                 self._store.put_corner(rid, corner)
@@ -487,14 +632,20 @@ class SampleMap(Model):
 
     def check_corner(self):
         """Return to corner A and mark it again: the closure measures stage
-        repeatability plus pointing (section 3.2)."""
+        repeatability plus pointing (section 3.2). After a calibrated turn of
+        the Rotator it measures the turn instead: where A was predicted to be
+        against where it is marked (the Rotator closure)."""
         with self._lock:
             sample = self._sample()
             reg = self.registration
             if reg is None or not self._validity()[0]:
                 raise Refused("Mark corners A and B first.")
+            self._require_phi()
             x, y, z, _epoch = self._read_position()
             corners = self._corner_points(reg)
+            dphi, cal = self._turn(reg)
+            if dphi:
+                return self._check_turned(reg, corners, (x, y, z), dphi, cal)
             corners[CHECK] = (x, y)
             fields = self._fit(corners, sample)
             self._store.put_corner(reg["registration_id"], {
@@ -503,6 +654,97 @@ class SampleMap(Model):
             self._store.update_registration(reg["registration_id"], fields)
         self._touch()
         return fields.get("closure_um")
+
+    def _check_turned(self, reg, corners, point, dphi, cal):
+        x, y, z = point
+        predicted = sf.rotate_about(corners["A"], (cal["centre_x"], cal["centre_y"]),
+                                    cal["sense"], dphi)
+        try:
+            k = (reg["k_x_um"], reg["k_y_um"]) if reg["k_x_um"] else self._k()
+        except sf.BenchFactMissing as missing:
+            raise Refused(str(missing))
+        closure = float(math.dist((x * k[0], y * k[1]),
+                                  (predicted[0] * k[0], predicted[1] * k[1])))
+        self._store.put_corner(reg["registration_id"], {
+            "label": ROT_CHECK, "stage_x": x, "stage_y": y, "stage_z": z,
+            "method": "typed" if self._source == TYPED else "crosshair"})
+        self._store.update_registration(reg["registration_id"], {
+            "rotator_closure_um": closure,
+            "rotator_quality": sf.rotator_closure_word(closure),
+            "rotator_calibration_uid": cal["calibration_uid"]})
+        self._touch()
+        events.info("Rotator Checked", f"{reg['sample_id']}: corner A {closure:.0f} um "
+                    f"from where the turn of {dphi:+.3f} degrees put it "
+                    f"({sf.rotator_closure_word(closure)}).", source=self.NAME)
+        return closure
+
+    # -- the Rotator's calibration (station-only, Q4) ------------------------------------
+    def mark_rotation_point(self):
+        """The crosshair on one feature at the Rotator's current angle: a mark
+        for the rotation-centre fit (two with a known sense, three or more to
+        find the sense). Turning is the operator's: nothing here moves it."""
+        with self._lock:
+            if self._rotator is None:
+                raise Refused("Open the Rotator first: it is what turns the chip.")
+            phi = self._require_phi()
+            x, y, _z, epoch = self._read_position()
+            context = (self._frame_source(), epoch)
+            if self._cal_context != context:
+                self._cal_points = []
+                self._cal_context = context
+            self._cal_points.append((x, y, phi))
+            count = len(self._cal_points)
+        self._touch()
+        return f"Calibration mark {count} at {phi:.3f} degrees."
+
+    def clear_rotation_points(self):
+        self._cal_points = []
+        self._cal_context = None
+        self._touch()
+        return "Calibration marks cleared."
+
+    def fit_rotation_centre(self):
+        """Fit the Rotator's centre and sense from the marks and keep it for
+        this locating source until its counter restarts."""
+        with self._lock:
+            if self._source is None or self._cal_context != (self._frame_source(),
+                                                             self._current_epoch()):
+                self._cal_points, self._cal_context = [], None
+            points = list(self._cal_points)
+            if len(points) < 2:
+                raise Refused("Mark the same feature at two Rotator angles at least "
+                              "(three tell which way it turns).")
+            try:
+                k = self._k()
+            except sf.BenchFactMissing as missing:
+                raise Refused(str(missing))
+            sense = None
+            if len(points) == 2:
+                earlier = [c for c in self._store.rotator_calibrations()
+                           if c["frame_source"] == self._frame_source()
+                           and (not c["rotator_name"] or c["rotator_name"] == self._rotator_name)]
+                sense = earlier[-1]["sense"] if earlier else None
+            try:
+                fit = sf.rotation_centre([p[:2] for p in points], [p[2] for p in points],
+                                         k, sense=sense)
+            except sf.FrameRefused as refusal:
+                raise Refused(str(refusal))
+            self._end_stale_calibrations()
+            uid = self._store.add_rotator_calibration({
+                "rotator_name": self._rotator_name, "frame_source": self._frame_source(),
+                "position_epoch": self._current_epoch(),
+                "centre_x": fit.centre[0], "centre_y": fit.centre[1],
+                "sense": fit.sense, "n_points": fit.n_points, "method": fit.method,
+                "residual_um": fit.residual_um, "quality": fit.quality,
+                "points": [list(p) for p in points], "k_um": k[0]})
+            self._cal_points, self._cal_context = [], None
+        self._touch()
+        residual = ("" if fit.residual_um is None
+                    else f", {fit.residual_um:.1f} um ({fit.quality})")
+        events.info("Rotator Calibrated", f"Centre ({fit.centre[0]:.0f}, "
+                    f"{fit.centre[1]:.0f}), sense {fit.sense:+d}, {fit.method} from "
+                    f"{fit.n_points} marks{residual}.", source=self.NAME)
+        return uid
 
     def clear_corners(self, confirmed=False):
         reg = self.registration
@@ -595,6 +837,7 @@ class SampleMap(Model):
         chip when the frame is set (else stage only, placed later)."""
         with self._lock:
             sample = self._sample()
+            self._require_phi()
             x, y, z, _epoch = self._read_position()
             layers = str(self.flake_layers or "").strip()
             if layers and not layers.isdigit():
@@ -643,13 +886,15 @@ class SampleMap(Model):
             if frame is None:
                 raise Refused("Mark corners A and B first: the extent is drawn in "
                               "the chip's frame.")
+            self._require_phi()
             x, y, _z, _epoch = self._read_position()
+            here = frame.to_sample((x, y))
             first = self._extent_first
             if first is None or first[0] != flake["flake_uid"]:
-                self._extent_first = (flake["flake_uid"], (x, y))
+                self._extent_first = (flake["flake_uid"], here)
                 return (f"{flake['label']}: first corner of its extent marked. Move to "
                         "the opposite corner and press Mark extent again.")
-            box = sf.bbox_extent(frame, first[1], (x, y))
+            box = sf.bbox_from_sample(first[1], here)
             self._extent_first = None
             self._store.update_flake(flake["flake_uid"], {
                 "extent_kind": "bbox", "extent_source": box["source"],
@@ -764,7 +1009,13 @@ class SampleMap(Model):
         reg = self.registration
         epoch = (f", epoch {reg['position_epoch']}"
                  if reg["position_epoch"] is not None else "")
-        return f"Registered ({reg['quality']}): {reg['frame_source']}{epoch}"
+        rotator = ""
+        if reg["rotator_phi0_deg"] is not None:
+            dphi, _cal = self._turn(reg)
+            rotator = f"; Rotator {reg['rotator_phi0_deg']:.3f} deg at the marks"
+            if dphi:
+                rotator += f", turned {dphi:+.3f} (calibrated)"
+        return f"Registered ({reg['quality']}): {reg['frame_source']}{epoch}{rotator}"
 
     @property
     def corners_text(self):
@@ -799,7 +1050,42 @@ class SampleMap(Model):
                 parts[-1] += " (is the chip a quad?)"
         if reg["closure_um"] is not None:
             parts.append(f"Closure: {reg['closure_um']:.0f} um ({reg['quality']})")
+        if reg["rotator_closure_um"] is not None:
+            parts.append(f"Rotator closure: {reg['rotator_closure_um']:.0f} um "
+                         f"({reg['rotator_quality']})")
         return "; ".join(parts)
+
+    @property
+    def rotator_text(self):
+        """The Rotator's angle and whether its centre is calibrated now."""
+        if self._rotator is None:
+            return "No Rotator open"
+        phi = self._phi()
+        if phi is None:
+            state = str(getattr(self._rotator, "motion_state", "") or "no reading")
+            angle = f"angle unknown ({state})"
+        else:
+            angle = f"{phi:.3f} deg"
+        cal = self._calibration()
+        if cal is not None:
+            residual = ("" if cal["residual_um"] is None
+                        else f", {cal['residual_um']:.1f} um ({cal['quality']})")
+            centre = (f"centre calibrated ({cal['method']}, {cal['n_points']} marks"
+                      f"{residual})")
+        elif self._source is not None and any(
+                c["frame_source"] == self._frame_source() for c in self._store.rotator_calibrations()):
+            centre = ("calibration expired (the locating axes reconnected or were "
+                      "ended): Calibrate the centre again")
+        else:
+            centre = "centre not calibrated: Calibrate it before turning a registered chip"
+        return f"Rotator: {angle}; {centre}"
+
+    @property
+    def calibration_points_text(self):
+        if not self._cal_points:
+            return ""
+        angles = ", ".join(f"{p[2]:.1f}" for p in self._cal_points)
+        return f"Calibration marks: {len(self._cal_points)} (at {angles} deg)"
 
     def registration_shape(self):
         sample = self._store.sample(str(self.sample_id or "").strip())
@@ -847,6 +1133,8 @@ class SampleMap(Model):
         if not str(self.sample_id or "").strip() or \
                 self._store.sample(str(self.sample_id).strip()) is None:
             return "Type the sample ID and press Save sample"
+        if self.mode_name == "rotator_unknown":
+            return "Home or reconnect the Rotator: the marks and the guidance wait for its angle"
         valid, reason = self._validity()
         if not valid:
             if "um per count" in reason:
@@ -869,7 +1157,8 @@ class SampleMap(Model):
             return b""
         frame = self.frame()
         corners = self._corner_points(reg)
-        placed = {label: frame.to_sample(p) for label, p in corners.items()
+        base = self._base_frame(reg) if frame is not None else None
+        placed = {label: base.to_sample(p) for label, p in corners.items()
                   if label in CORNERS} if frame is not None else {}
         if frame is None or not placed:
             return b""
@@ -964,8 +1253,8 @@ class SampleMap(Model):
     def schema(self):
         P = self.PARAMS
         configure = "Configure Sample Map"
-        needs_source = ("no_source",)
-        needs_frame = ("no_source", "unregistered")
+        needs_source = ("no_source", "rotator_unknown")
+        needs_frame = ("no_source", "unregistered", "rotator_unknown")
         return sch.schema(
             sch.section(
                 "Sample",
@@ -1012,6 +1301,16 @@ class SampleMap(Model):
                            inputs=("um_per_count",)),
                 sch.entry("X reading (mm)", "reading_x_mm", P["reading_x_mm"]),
                 sch.entry("Y reading (mm)", "reading_y_mm", P["reading_y_mm"]),
+                tier=2, disclosure=configure,
+            ),
+            sch.section(
+                "Rotator",
+                sch.readonly("Rotator", "rotator_text"),
+                sch.readonly("Calibration marks", "calibration_points_text"),
+                sch.button("Mark calibration point", "mark_rotation_point",
+                           disabled_when=needs_source),
+                sch.button("Fit rotation centre", "fit_rotation_centre"),
+                sch.button("Clear calibration marks", "clear_rotation_points"),
                 tier=2, disclosure=configure,
             ),
             sch.section(

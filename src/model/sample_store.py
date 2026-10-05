@@ -35,8 +35,12 @@ from pathlib import Path
 
 SCHEMA = "flake-coords/1"
 #: `PRAGMA user_version`. 1: the first store (2026-10-04), with the Q11
-#: additive fields from the start (no store existed before).
-SCHEMA_VERSION = 1
+#: additive fields from the start (no store existed before). 2: the Rotator
+#: turns the chip (owner 2026-10-04): each registration records the
+#: Rotator's angle phi0 and the closure of a corner re-marked after a turn,
+#: and the station keeps its rotation-centre calibrations (station-only,
+#: Q4: never exported). Additive, like every migration here.
+SCHEMA_VERSION = 2
 
 SHAPES = ("rectangle", "quad", "irregular")
 SAMPLE_STATUSES = ("active", "stored", "consumed", "discarded")
@@ -57,9 +61,13 @@ THICKNESS_APPROX_METHODS = ("optical_contrast", "colour", "eye", "raman")
 FRAME_SOURCE_PREFIX = "stage:"
 FRAME_SOURCES = ("manual:micrometer", "legacy")
 
+#: The Rotator's sense against the stage axes, and how its centre was found.
+ROTATOR_SENSES = (1, -1)
+ROTATOR_METHODS = ("chord", "circle")
+
 #: Columns stored as JSON text and handed out as lists.
 _JSON = {"extent_points_um", "image_region_px", "defects", "trial_ids",
-         "run_ids", "tip_ids", "tags"}
+         "run_ids", "tip_ids", "tags", "points"}
 
 SAMPLE_COLUMNS = (
     ("sample_id", "TEXT PRIMARY KEY"), ("uid", "TEXT NOT NULL UNIQUE"),
@@ -85,6 +93,23 @@ REGISTRATION_COLUMNS = (
     ("registered_at", "TEXT"), ("invalidated_at", "TEXT"),
     ("invalidated_reason", "TEXT"), ("legacy_ref", "TEXT"),
     ("created_at", "TEXT"), ("updated_at", "TEXT"),
+    # Version 2: the Rotator's angle at the marks (None: no Rotator open),
+    # the calibration a turned check used, and that check's closure.
+    ("rotator_name", "TEXT"), ("rotator_phi0_deg", "REAL"),
+    ("rotator_calibration_uid", "TEXT"), ("rotator_closure_um", "REAL"),
+    ("rotator_quality", "TEXT"),
+)
+#: Station-only (Q4): one feature marked at several Rotator angles gives the
+#: centre (stage units of `frame_source`) and the sense; valid while that
+#: source's `position_epoch` holds. `points` is [[x, y, phi_deg], ...].
+ROTATOR_CALIBRATION_COLUMNS = (
+    ("calibration_uid", "TEXT PRIMARY KEY"), ("rotator_name", "TEXT"),
+    ("frame_source", "TEXT NOT NULL"), ("position_epoch", "INTEGER"),
+    ("centre_x", "REAL NOT NULL"), ("centre_y", "REAL NOT NULL"),
+    ("sense", "INTEGER NOT NULL"), ("n_points", "INTEGER"), ("method", "TEXT"),
+    ("residual_um", "REAL"), ("quality", "TEXT"), ("points", "TEXT"),
+    ("k_um", "REAL"), ("calibrated_at", "TEXT"), ("invalidated_at", "TEXT"),
+    ("invalidated_reason", "TEXT"), ("created_at", "TEXT"), ("updated_at", "TEXT"),
 )
 CORNER_COLUMNS = (
     ("registration_id", "INTEGER NOT NULL"), ("label", "TEXT NOT NULL"),
@@ -116,7 +141,8 @@ FLAKE_COLUMNS = (
     ("created_at", "TEXT"), ("updated_at", "TEXT"), ("deleted_at", "TEXT"),
 )
 _TABLES = {"samples": SAMPLE_COLUMNS, "registrations": REGISTRATION_COLUMNS,
-           "corners": CORNER_COLUMNS, "flakes": FLAKE_COLUMNS}
+           "corners": CORNER_COLUMNS, "flakes": FLAKE_COLUMNS,
+           "rotator_calibrations": ROTATOR_CALIBRATION_COLUMNS}
 _NAMES = {table: frozenset(n for n, _k in cols) for table, cols in _TABLES.items()}
 
 _CREATE = tuple(
@@ -192,7 +218,7 @@ def _decode(row):
 def _one_of(value, allowed, what):
     if value is not None and value not in allowed:
         raise StoreRefused(f"{value!r} is not a {what}: use one of "
-                           + ", ".join(allowed) + ".")
+                           + ", ".join(map(str, allowed)) + ".")
 
 
 def _sha256(path):
@@ -372,6 +398,7 @@ class SampleStore:
         """Write a refitted transform and its checks onto a registration."""
         _one_of(fields.get("fit_kind"), FIT_KINDS, "fit kind")
         _one_of(fields.get("quality"), REGISTRATION_QUALITY, "registration quality")
+        _one_of(fields.get("rotator_quality"), REGISTRATION_QUALITY, "Rotator closure word")
         values = _encode("registrations", {k: v for k, v in fields.items()
                                            if k not in ("registration_id",
                                                         "registration_uid")})
@@ -389,6 +416,41 @@ class SampleStore:
             "UPDATE registrations SET invalidated_at = ?, invalidated_reason = ?, "
             "updated_at = ? WHERE registration_id = ?",
             (stamp, reason, stamp, registration_id)))
+
+    # -- the Rotator's calibrations (station-only, Q4) ---------------------------------
+    def add_rotator_calibration(self, fields):
+        """A rotation-centre fit for `frame_source`'s stage units; its uid."""
+        source = str(fields.get("frame_source") or "")
+        if not (source.startswith(FRAME_SOURCE_PREFIX) or source == "manual:micrometer"):
+            raise StoreRefused(f"{source!r} is not a frame source a Rotator can be "
+                               "calibrated against.")
+        _one_of(fields.get("sense"), ROTATOR_SENSES, "Rotator sense")
+        _one_of(fields.get("method"), ROTATOR_METHODS, "calibration method")
+        _one_of(fields.get("quality"), REGISTRATION_QUALITY, "calibration word")
+        stamp = now()
+        values = _encode("rotator_calibrations", fields)
+        values.setdefault("calibration_uid", str(uuid.uuid4()))
+        values.setdefault("calibrated_at", stamp)
+        values.setdefault("created_at", stamp)
+        values.setdefault("updated_at", stamp)
+        self.write(lambda db: _insert(db, "rotator_calibrations", values))
+        return values["calibration_uid"]
+
+    def rotator_calibration(self, calibration_uid):
+        rows = self.read("SELECT * FROM rotator_calibrations WHERE calibration_uid = ?",
+                         (calibration_uid,))
+        return rows[0] if rows else None
+
+    def rotator_calibrations(self):
+        """Every calibration, oldest first (ended ones too)."""
+        return self.read("SELECT * FROM rotator_calibrations ORDER BY calibrated_at, rowid")
+
+    def invalidate_rotator_calibration(self, calibration_uid, reason):
+        stamp = now()
+        self.write(lambda db: db.execute(
+            "UPDATE rotator_calibrations SET invalidated_at = ?, invalidated_reason = ?, "
+            "updated_at = ? WHERE calibration_uid = ?",
+            (stamp, reason, stamp, calibration_uid)))
 
     # -- flakes -----------------------------------------------------------------
     @staticmethod

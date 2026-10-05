@@ -19,6 +19,16 @@ affine fit the default (3.3). Degenerate input is refused in the
 operator's words (`FrameRefused`, 3.4). Extent metrics (3.5) are computed
 from a polygon in um at read time; `lateral_um` is the longest chord
 (owner, 2026-10-04, Q16).
+
+**The Rotator turns the chip** (owner, 2026-10-04): the SMC100 spins it about
+a centre c that is neither corner A nor the stage origin. A registration is
+fitted at the Rotator's angle phi0; at phi the chip has turned by
+s (phi - phi0) about c, with s the Rotator's sense against the stage axes
+(-1 when they are mirrored), so the current frame is the registered one
+followed by that turn (`RotatedFrame`). c and s come from one feature marked
+at several angles (`rotation_centre`). Turns are done in the stage's own
+units, which assumes square axes (k_x = k_y, as every locating source has
+today); a skewed stage shows up as the calibration's residual.
 """
 import math
 
@@ -36,6 +46,20 @@ RECTANGULARITY_ASK_UM = 50.0
 MIN_AB_UM = 30.0
 MIN_CORNER_ANGLE_DEG = 20.0
 MAX_CORNER_ANGLE_DEG = 160.0
+
+#: The Rotator (owner 2026-10-04: it turns the chip). Under ROTATOR_SAME_DEG
+#: is no turn (about 1 um at 5 mm). A calibration's marks must span at least
+#: MIN_CALIBRATION_TURN_DEG and lie MIN_CALIBRATION_CHORD_UM apart; its
+#: residual, and the closure of a corner re-marked after a turn, use the
+#: good/check words below. A three-point fit whose two senses fit within
+#: SENSE_MARGIN of each other cannot tell which way the Rotator turns.
+#: Owner-adjustable, like the corner closure.
+ROTATOR_SAME_DEG = 0.01
+MIN_CALIBRATION_TURN_DEG = 2.0
+MIN_CALIBRATION_CHORD_UM = 30.0
+ROTATOR_CLOSURE_GOOD_UM = 10.0
+ROTATOR_CLOSURE_CHECK_UM = 30.0
+SENSE_MARGIN = 3.0
 
 #: um per count of each locating axis. The stepper's lead screw gives
 #: 0.625; the chuck's and the DC probe's are bench facts the owner has not
@@ -277,7 +301,13 @@ def default_fit(dimensions_typed):
 def bbox_extent(frame, p1, p2):
     """The MVP extent: two opposite corners of the flake marked on the stage,
     as an axis-aligned box in the sample frame."""
-    (x1, y1), (x2, y2) = frame.to_sample(p1), frame.to_sample(p2)
+    return bbox_from_sample(frame.to_sample(p1), frame.to_sample(p2))
+
+
+def bbox_from_sample(q1, q2):
+    """The same box from two points already in the sample frame (the Rotator
+    may turn between the two presses, so each is placed when it is made)."""
+    (x1, y1), (x2, y2) = q1, q2
     x0, x3 = float(min(x1, x2)), float(max(x1, x2))
     y0, y3 = float(min(y1, y2)), float(max(y1, y2))
     return {"source": "stage_corners",
@@ -332,3 +362,126 @@ def extent_metrics(polygon):
     long_side, short_side = max(best), min(best)
     return {"area_um2": abs(shoelace(polygon)), "lateral_um": float(lateral),
             "aspect_ratio": long_side / short_side if short_side > 0 else math.inf}
+
+
+# -- the Rotator (owner 2026-10-04) ------------------------------------------------
+
+def _turn_matrix(sense, dphi_deg):
+    a = math.radians((1 if sense >= 0 else -1) * float(dphi_deg))
+    c, s = math.cos(a), math.sin(a)
+    return numpy.array([[c, -s], [s, c]])
+
+
+def rotate_about(p, centre, sense, dphi_deg):
+    """Where stage point `p` goes when the Rotator turns `dphi_deg` about
+    `centre` (stage units) with sense `sense`."""
+    p, c = _vec(p), _vec(centre)
+    q = c + _turn_matrix(sense, dphi_deg) @ (p - c)
+    return (float(q[0]), float(q[1]))
+
+
+def rotator_closure_word(um):
+    if um < ROTATOR_CLOSURE_GOOD_UM:
+        return "good"
+    if um < ROTATOR_CLOSURE_CHECK_UM:
+        return "check"
+    return "poor"
+
+
+class RotationCentre:
+    """The Rotator's centre (stage units), sense, and how they were found:
+    "chord" (two marks and a known sense, no residual) or "circle" (three
+    or more, least squares, with its residual in um and its word)."""
+
+    def __init__(self, centre, sense, method, n_points, residual_um=None):
+        self.centre = (float(centre[0]), float(centre[1]))
+        self.sense = 1 if sense >= 0 else -1
+        self.method = method
+        self.n_points = int(n_points)
+        self.residual_um = None if residual_um is None else float(residual_um)
+        self.quality = ("unchecked" if residual_um is None
+                        else rotator_closure_word(self.residual_um))
+
+
+def _fit_turn(points, angles, sense):
+    """Least squares for p_i = c + R(s phi_i) u: (c, u, rms in stage units)."""
+    rows, rhs = [], []
+    for p, phi in zip(points, angles):
+        m = _turn_matrix(sense, phi)
+        rows.append([1.0, 0.0, m[0, 0], m[0, 1]])
+        rows.append([0.0, 1.0, m[1, 0], m[1, 1]])
+        rhs.extend(p)
+    design, rhs = numpy.array(rows), numpy.array(rhs)
+    solution = numpy.linalg.lstsq(design, rhs, rcond=None)[0]
+    residual = (design @ solution - rhs).reshape(-1, 2)
+    rms = float(math.sqrt(numpy.mean(numpy.sum(residual ** 2, axis=1))))
+    return solution[:2], solution[2:], rms
+
+
+def rotation_centre(points, angles_deg, k, sense=None):
+    """The Rotator's centre from one feature marked at several angles.
+
+    `points` are the stage positions (stage units) of the same feature,
+    `angles_deg` the Rotator's angle at each, `k` the um per stage unit (for
+    the thresholds and the residual). Two marks fix the centre only with a
+    known `sense` (the chord's perpendicular bisector has two candidates,
+    mirror images); three or more fit both senses and keep the one that
+    fits, refusing a set that fits neither (not a turn) or both (ambiguous).
+    """
+    points = [tuple(float(v) for v in p) for p in points]
+    angles = [float(a) for a in angles_deg]
+    if len(points) != len(angles):
+        raise FrameRefused("Each calibration mark needs the Rotator's angle "
+                           "when it was made.")
+    if len(points) < 2:
+        raise FrameRefused("Mark the same feature at two Rotator angles at least "
+                           "(three tell which way it turns).")
+    if max(angles) - min(angles) < MIN_CALIBRATION_TURN_DEG:
+        raise FrameRefused(f"Turn the Rotator further between marks: at least "
+                           f"{MIN_CALIBRATION_TURN_DEG:g} degrees.")
+    scale = float(numpy.mean(_vec(k)))
+    pts = numpy.array(points)
+    spread = max(math.dist(a, b) for a in points for b in points) * scale
+    if spread < MIN_CALIBRATION_CHORD_UM:
+        raise FrameRefused("The marks are too close together: pick a feature "
+                           "farther from the Rotator's centre, or turn further.")
+    if len(points) == 2:
+        if sense is None:
+            raise FrameRefused("Two marks cannot tell which way the Rotator turns: "
+                               "mark the feature at a third angle.")
+        m = _turn_matrix(sense, angles[1] - angles[0])
+        centre = numpy.linalg.solve(numpy.eye(2) - m, pts[1] - m @ pts[0])
+        return RotationCentre(centre, sense, "chord", 2)
+    fits = {s: _fit_turn(points, angles, s) for s in (1, -1)}
+    best = min(fits, key=lambda s: fits[s][2])
+    other = -best
+    rms_um = fits[best][2] * scale
+    if rotator_closure_word(rms_um) == "poor":     # a tilt, a wobble, unequal axes
+        raise FrameRefused(f"These marks are not a turn about one centre (they miss "
+                           f"by {rms_um:.0f} um): check it is the same feature, and "
+                           "that the Rotator spins the chip rather than tilting it.")
+    if sense is not None and best != (1 if sense >= 0 else -1):
+        raise FrameRefused("These marks turn the other way from the sense given.")
+    if fits[other][2] * scale <= max(SENSE_MARGIN * rms_um, 1e-9) and sense is None:
+        raise FrameRefused("These marks fit both senses: mark the feature at more "
+                           "widely spread angles.")
+    return RotationCentre(fits[best][0], best, "circle", len(points), rms_um)
+
+
+class RotatedFrame:
+    """The registered frame (at phi0) followed by the Rotator's turn
+    dphi = phi - phi0 about `centre` with `sense`: stage <- sample is
+    p = c + R(s dphi)(base.to_stage(q) - c), and back the same way."""
+
+    def __init__(self, base, centre, sense, dphi_deg):
+        self.base = base
+        self.kind = base.kind
+        self.centre = (float(centre[0]), float(centre[1]))
+        self.sense = 1 if sense >= 0 else -1
+        self.dphi_deg = float(dphi_deg)
+
+    def to_stage(self, q):
+        return rotate_about(self.base.to_stage(q), self.centre, self.sense, self.dphi_deg)
+
+    def to_sample(self, p):
+        return self.base.to_sample(rotate_about(p, self.centre, self.sense, -self.dphi_deg))
