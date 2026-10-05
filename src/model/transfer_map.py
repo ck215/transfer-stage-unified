@@ -966,7 +966,13 @@ class TransferMap(Model):
                       f"{self._store.next_id()} on tip {tip}"
                       f"{tilt_words}{speed_words}.")
             doubt = self._tip_doubt(tip)
-            raise NeedsConfirm(doubt + "\n\n" + prompt if doubt else prompt,
+            if doubt:
+                prompt = doubt + "\n\n" + prompt
+            # Bench 2026-10-04: trials were cut with the sample vacuum off.
+            # The station cannot sense it, so every Arm asks, first, in
+            # this same prompt: still one question, one Continue.
+            prompt = "Is the sample vacuum ON? Check it now.\n\n" + prompt
+            raise NeedsConfirm(prompt,
                                "arm_trial",
                                inputs={"tip_id": self.tip_id or "",
                                        "typed_tilt": self.typed_tilt or ""})

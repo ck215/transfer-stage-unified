@@ -947,7 +947,8 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     model, red = idle_station
     result = model.run("arm_trial", {"tip_id": "T7", "typed_tilt": ""})
     assert result.needs_confirm, result
-    assert result.reason == ("Frame the sample now. Continue takes the "
+    assert result.reason == ("Is the sample vacuum ON? Check it now.\n\n"
+                             "Frame the sample now. Continue takes the "
                              "whole-screen picture, starts the video and arms "
                              "trial 1 on tip T7, with NO tilt recorded, 300 "
                              "steps/s (Stepper Probe).")
@@ -1634,10 +1635,38 @@ def test_arming_on_a_broken_tip_asks_once(station):
     result = model.run("arm_trial", {"tip_id": "T7"})
     assert result.needs_confirm
     assert result.reason == (
+        "Is the sample vacuum ON? Check it now.\n\n"
         f"Tip T7 broke on trial {broke}. Arm on it anyway?\n\nFrame the sample "
         "now. Continue takes the whole-screen picture, starts the video and "
         f"arms trial {broke + 1} on tip T7 at 22.5 deg (Rotator), 300 steps/s "
         "(Stepper Probe).")
+    again = model.run(result.command, result.inputs, (*result.args, True))
+    assert again.is_ok and model.is_armed         # one Continue, not two
+
+
+VACUUM = "Is the sample vacuum ON? Check it now."
+
+
+def test_every_arm_asks_that_the_sample_vacuum_is_on(station):
+    """Bench 2026-10-04: two trials were cut with the sample vacuum off. The
+    station cannot sense it, so every Arm asks, first, in the one prompt it
+    already raises: still one question and one Continue, and nothing is
+    armed until the operator answers. A broken tip's question stays."""
+    model, red, *_ = station
+    model.tip_id = "T7"
+    for _ in range(2):                            # every Arm, not the first
+        result = model.run("arm_trial", {"tip_id": "T7"})
+        assert result.needs_confirm and result.command == "arm_trial"
+        assert result.reason.startswith(VACUUM + "\n\nFrame the sample now.")
+        assert result.reason.count(VACUUM) == 1
+        assert not model.is_armed
+        _record(model, red)
+    model.mark_broke(True)
+    result = model.run("arm_trial", {"tip_id": "T7"})
+    assert result.needs_confirm and not model.is_armed
+    reason = result.reason
+    assert reason.startswith(VACUUM + "\n\nTip T7 broke on trial ")
+    assert reason.index("Arm on it anyway?") < reason.index("Frame the sample now.")
     again = model.run(result.command, result.inputs, (*result.args, True))
     assert again.is_ok and model.is_armed         # one Continue, not two
 
@@ -1649,7 +1678,8 @@ def test_arming_on_a_retired_tip_asks_once(station):
     assert _confirmed(model, "retire_tip", {"tip_id": "T7"}) == "T7"
     result = model.run("arm_trial", {"tip_id": "T7"})
     assert result.needs_confirm
-    assert result.reason.startswith("Tip T7 is retired. Arm on it anyway?\n\n"
+    assert result.reason.startswith("Is the sample vacuum ON? Check it now.\n\n"
+                                    "Tip T7 is retired. Arm on it anyway?\n\n"
                                     "Frame the sample now.")
     again = model.run(result.command, result.inputs, (*result.args, True))
     assert again.is_ok and model.is_armed
