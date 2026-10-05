@@ -221,3 +221,19 @@ def test_gp_with_one_point_or_none_answers_prior():
     mean, var = tma.gp_predict(numpy.zeros((0, 2)), numpy.zeros(0),
                                numpy.array([[0.0, 0.0]]))
     assert var[0] > 0
+
+
+# -- store v6: which width a figure uses (one rule, every figure) ------------
+
+def test_pick_width_prefers_afm_then_optical():
+    afm = {"width_um": 1.8, "width_sigma_um": 0.1, "width_optical_um": 2.4,
+           "width_optical_sigma_um": 0.5}
+    assert tma.pick_width(afm) == (1.8, 0.1, "afm")
+    optical = {"width_um": None, "width_sigma_um": None,
+               "width_optical_um": 2.1, "width_optical_sigma_um": None}
+    assert tma.pick_width(optical) == (2.1, None, "optical")
+    assert tma.pick_width({"width_um": None, "width_optical_um": None}) == \
+        (None, None, None)
+    # A store row from before version 6 has no optical columns at all.
+    assert tma.pick_width({"width_um": 3.0, "width_sigma_um": None}) == \
+        (3.0, None, "afm")
