@@ -432,3 +432,76 @@ def test_the_map3d_axes_are_padded_so_one_tilt_does_not_read_as_a_wrong_one():
     assert limits["z"] is not None
     assert plot_data.render_transfer_figure("map3d", one, "shadow_vs_peak")[:8] == b"\x89PNG\r\n\x1a\n"
     assert plot_data.map3d_limits({"x": [], "y": [], "z": []}) == {"x": None, "y": None, "z": None}
+
+
+# -- store v6: the width's source is always visible (owner, 2026-10-04) ------
+
+def _mixed():
+    """Three AFM-measured trials, one optical only, one with no width."""
+    rows = _trials()[:3]
+    for row in rows:
+        row["width_source"] = "afm"
+    rows.append({"id": 4, "tilt": 25.0, "speed": 150.0,
+                 "force": {"shadow_vs_peak": 0.6, "dip_area": 1.2},
+                 "width": 8.0, "width_sigma": None, "width_source": "optical"})
+    rows.append({"id": 5, "tilt": 15.0, "speed": 250.0,
+                 "force": {"shadow_vs_peak": 0.3, "dip_area": 0.6},
+                 "width": None, "width_sigma": None, "width_source": None})
+    return rows
+
+
+def test_map3d_fills_afm_rings_optical_and_says_so():
+    request = plot_data.transfer_request("map3d", _mixed(), "shadow_vs_peak")
+    assert request["measured"] == [True, True, True, False, False]
+    assert request["optical"] == [False, False, False, True, False]
+    assert request["c"][3] == 8.0
+    assert request["title"] == ("Transfer map\n(filled: AFM width; ringed: "
+                                "optical width; hollow: no width yet)")
+
+
+def test_the_slice_uses_afm_only_by_default():
+    request = plot_data.transfer_request("slice", _mixed(), "shadow_vs_peak")
+    assert sorted(request["points_c"]) == [5.0, 7.0, 9.0]
+    assert request["points_optical"] == [False, False, False]
+    assert "3 AFM" in request["title"] and "optical" not in request["title"]
+
+
+def test_the_slice_takes_optical_on_request_with_a_wider_noise():
+    request = plot_data.transfer_request("slice", _mixed(), "shadow_vs_peak",
+                                         width_source="AFM, else optical")
+    assert sorted(request["points_c"]) == [5.0, 7.0, 8.0, 9.0]
+    assert request["points_optical"].count(True) == 1
+    assert "3 AFM, 1 optical" in request["title"]
+    assert plot_data.OPTICAL_SIGMA_FACTOR == 3
+    import numpy
+    widths = numpy.array([5.0, 7.0, 9.0, 8.0])
+    spread = float(widths.std())
+    noise = plot_data.width_noise(_mixed()[:4], spread)
+    assert noise[:3] == [0.25, 0.25, 0.25]           # the AFM sigma, squared
+    assert noise[3] == pytest.approx((3 * 0.05 * spread) ** 2)
+
+
+def test_compare_follows_the_width_source_and_rings_optical():
+    afm_only = plot_data.transfer_request(
+        "compare", _mixed(), "shadow_vs_peak", definitions=("dip_area",))
+    assert afm_only["panels"][0]["y"] == [5.0, 7.0, 9.0]
+    both = plot_data.transfer_request(
+        "compare", _mixed(), "shadow_vs_peak", definitions=("dip_area",),
+        width_source="AFM, else optical")
+    assert both["panels"][0]["y"] == [5.0, 7.0, 9.0, 8.0]
+    assert both["panels"][0]["optical"] == [False, False, False, True]
+    assert "optical" in both["title"]
+
+
+def test_an_unknown_width_source_is_refused():
+    with pytest.raises(ValueError):
+        plot_data.transfer_request("slice", _mixed(), "shadow_vs_peak",
+                                   width_source="optical only")
+
+
+def test_mixed_figures_render():
+    for kind in ("map3d", "slice", "compare"):
+        png = plot_data.render_transfer_figure(
+            kind, _mixed(), "shadow_vs_peak", definitions=("dip_area",),
+            width_source="AFM, else optical", size=(4.0, 3.0), dpi=50)
+        assert png[:8] == b"\x89PNG\r\n\x1a\n", kind

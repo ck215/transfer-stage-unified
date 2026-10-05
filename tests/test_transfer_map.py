@@ -18,6 +18,7 @@ import pytest
 
 import schema as sch
 from controller.controller import Controller
+from model import plot_data
 from model import transfer_map as tm_module
 from model.red_monitor import RedMonitor
 from model.rotator import Rotator
@@ -111,6 +112,11 @@ def _rows(path, sql, *args):
     with sqlite3.connect(path) as db:
         db.row_factory = sqlite3.Row
         return [dict(r) for r in db.execute(sql, args)]
+
+
+def _rows_raw(path, sql, *args):
+    with sqlite3.connect(path) as db:
+        return [tuple(r) for r in db.execute(sql, args)]
 
 
 def _confirmed(model, command, inputs=None):
@@ -1101,7 +1107,8 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     later = [(s["title"], s.get("tier")) for s in sections
              if s.get("tier", 1) != 1]
     assert later == [("Context", 2), ("Tip", 2), ("Figure", 2),
-                     ("AFM measurement", 2), ("Data", 2),
+                     ("AFM measurement", 2), ("Optical measurement", 2),
+                     ("Data", 2),
                      ("Diagnostics", 3), ("Safety", 3)]
     diagnostics = next(s for s in sections if s["title"] == "Diagnostics")
     assert [e.get("model_attr") or e.get("source_command") or e.get("command")
@@ -1273,6 +1280,13 @@ V2_COLUMNS = ("before_full_path", "after_full_path")
 V3_COLUMNS = ("mark_path", "mark_full_path")
 V5_COLUMNS = ("video_path", "video_index_path", "video_frames",
               "video_dropped")
+#: Version 6 (2026-10-04, both proposals' one migration): the trial names
+#: its chip and flake and operator, and the cut descriptors.
+V6_COLUMNS = ("sample_id", "flake_uid", "operator_id", "camera_profile_id",
+              "channel_height_nm", "channel_height_sigma_nm",
+              "trench_depth_nm", "trench_depth_sigma_nm",
+              "width_optical_um", "width_optical_sigma_um",
+              "width_optical_method")
 
 
 def _version(path):
@@ -1285,11 +1299,13 @@ def _columns(path):
         return [r[1] for r in db.execute("PRAGMA table_info(trials)")]
 
 
-def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS + V5_COLUMNS, version=1):
+def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS,
+                      version=1):
     """A database as an earlier round wrote it: the version-1 trials table
     (no whole-screen columns; with `version=2` and `drop=V3_COLUMNS +
     V5_COLUMNS`, the version-2 table; with `version=4` and
-    `drop=V5_COLUMNS`, the version-4 table, no video columns), no tips
+    `drop=V5_COLUMNS + V6_COLUMNS`, the version-4 table, no video columns;
+    with `version=5` and `drop=V6_COLUMNS`, the version-5 table), no tips
     table before version 3, one measured trial on tip T7 with a profile,
     `user_version = version`."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1325,12 +1341,12 @@ def _tables(path):
 
 def test_a_fresh_database_is_version_three_with_the_picture_columns_and_tips(
         private_db):
-    assert tm_module.SCHEMA_VERSION == 5
+    assert tm_module.SCHEMA_VERSION == 6
     model = TransferMap()
     model.open()
     model.close()
-    assert _version(private_db) == 5
-    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 6
+    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
     assert "tips" in _tables(private_db)
 
 
@@ -1345,8 +1361,8 @@ def test_a_version_one_database_gains_the_columns_and_keeps_its_trial(
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 5
-        assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 6
+        assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]   # untouched
@@ -1389,7 +1405,7 @@ def test_the_first_write_migrates_too(private_db):
     store.insert({"tip_id": "T8", "status": "recorded",
                   "before_full_path": "/x.png", "mark_path": "/m.png",
                   "video_path": "/v.mp4"})
-    assert _version(private_db) == 5
+    assert _version(private_db) == 6
     assert [r["tip_id"] for r in store.trials()] == ["T7", "T8"]
 
 
@@ -1397,11 +1413,11 @@ def test_a_half_done_upgrade_finishes(private_db):
     """A version-1 file that already has some of the new columns (an upgrade
     cut short between the ALTERs) gets the rest and the current version."""
     _version_one_file(private_db, drop=("after_full_path",) + V3_COLUMNS
-                      + V5_COLUMNS)
+                      + V5_COLUMNS + V6_COLUMNS[3:])
     assert _version(private_db) == 1
     assert tm_module.TrialStore(private_db).ensure() is False
-    assert _version(private_db) == 5
-    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 6
+    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
 
 
 def test_a_version_three_database_is_left_alone(private_db):
@@ -1416,7 +1432,7 @@ def test_a_version_three_database_is_left_alone(private_db):
     with sqlite3.connect(private_db) as db:
         assert db.execute("SELECT sql FROM sqlite_master ORDER BY name"
                           ).fetchall() == schema
-    assert _version(private_db) == 5
+    assert _version(private_db) == 6
     assert not _titled("Database Upgraded", since)
 
 
@@ -1424,7 +1440,8 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
     """M1/M2: the owner's bench file is version 2 and holds trials. It gains
     the Mark columns and a tip record per tip its trials name; every trial
     and profile row is kept."""
-    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS, version=2)
+    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS,
+                      version=2)
     before = _rows(private_db, "SELECT * FROM trials")
     assert _version(private_db) == 2 and "tips" not in _tables(private_db)
     assert set(V2_COLUMNS) <= set(_columns(private_db))
@@ -1434,8 +1451,8 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 5
-        assert set(V3_COLUMNS + V5_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 6
+        assert set(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
@@ -1449,8 +1466,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
                          "note": None}]
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert ("mark_path, mark_full_path, video_path, video_index_path, "
-                "video_frames, video_dropped, tips (version 5)"
+        assert (", ".join(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) + ", tips (version 6)"
                 in upgraded[0].message), upgraded[0].message
         model.tip_id = "T7"
         assert model.tip_status == "in use since trial 1"
@@ -1460,7 +1476,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
 
 
 def test_a_migrated_version_two_database_records_a_marked_trial(red, private_db):
-    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS, version=2)
+    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS, version=2)
     model = TransferMap()
     model.open()
     model.on_model_added("Red Percent", red)
@@ -1480,7 +1496,7 @@ def test_a_migrated_version_two_database_records_a_marked_trial(red, private_db)
 
 
 def test_a_version_two_file_with_a_broken_tip_backfills_it(private_db):
-    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS, version=2)
+    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS, version=2)
     with sqlite3.connect(private_db) as db:
         db.execute("INSERT INTO trials (tip_id, broke, status) VALUES "
                    "('T7', 1, 'recorded'), ('T7', 1, 'recorded'), "
@@ -2361,7 +2377,7 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
     """The owner's bench file after the tips round is version 4 and holds
     trials: it gains the four video columns, keeps every trial, profile row
     and tip, and records a trial with its video."""
-    _version_one_file(private_db, drop=V5_COLUMNS, version=4)
+    _version_one_file(private_db, drop=V5_COLUMNS + V6_COLUMNS, version=4)
     before = _rows(private_db, "SELECT * FROM trials")
     tips_before = _rows(private_db, "SELECT * FROM tips")
     assert _version(private_db) == 4
@@ -2373,8 +2389,8 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
     model.on_model_added("Red Percent", red)
     model.tip_id = "T7"
     try:
-        assert _version(private_db) == 5
-        assert set(V5_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 6
+        assert set(V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
@@ -2383,8 +2399,8 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
         assert _rows(private_db, "SELECT * FROM tips") == tips_before
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert ("now has video_path, video_index_path, video_frames, "
-                "video_dropped (version 5)" in upgraded[0].message), \
+        assert ("now has " + ", ".join(V5_COLUMNS + V6_COLUMNS) + " (version 6)"
+                in upgraded[0].message), \
             upgraded[0].message
         assert model.video_status == "No video for this trial."
         trial = _record(model, red)
@@ -2497,3 +2513,206 @@ def test_arm_taking_over_the_polling_keeps_the_rows_from_arm_on(sheet,
     times = [p["t_s"] for p in _rows(private_db, "SELECT t_s FROM profile "
                                      "WHERE trial_id=? ORDER BY rowid", trial)]
     assert times and times[0] >= 0
+
+
+# -- store version 6 (owner, 2026-10-04): trials name their flake; the cut
+# descriptors (two AFM heights, an optical width); the store's identity ------
+
+def test_a_fresh_database_is_version_six_with_an_identity(private_db):
+    model = TransferMap()
+    model.open()
+    model.close()
+    assert _version(private_db) == 6
+    assert set(V6_COLUMNS) <= set(_columns(private_db))
+    meta = dict(_rows_raw(private_db, "SELECT key, value FROM meta"))
+    assert set(meta) == {"map_db_uuid", "created_at"}
+    import uuid
+    assert uuid.UUID(meta["map_db_uuid"]).version == 4
+    assert tm_module.TrialStore(private_db).meta() == meta
+    tm_module.TrialStore(private_db).ensure()                # written once
+    assert dict(_rows_raw(private_db, "SELECT key, value FROM meta")) == meta
+
+
+def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
+        red, private_db):
+    """The owner's bench file is version 5 and holds trials: it gains the
+    v6 columns (NULL = not measured, nothing backfilled) and a store id, and
+    keeps every trial, profile row and tip."""
+    _version_one_file(private_db, drop=V6_COLUMNS, version=5)
+    before = _rows(private_db, "SELECT * FROM trials")
+    assert "meta" not in _tables(private_db)
+    events.forget("Database Upgraded")
+    since = events.latest_id
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    model.tip_id = "T7"
+    try:
+        assert _version(private_db) == 6
+        after = _rows(private_db, "SELECT * FROM trials")
+        assert len(after) == 1
+        assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
+        assert all(after[0][c] is None for c in V6_COLUMNS)
+        assert len(_rows(private_db, "SELECT * FROM profile")) == 5
+        assert "map_db_uuid" in tm_module.TrialStore(private_db).meta()
+        upgraded = _titled("Database Upgraded", since)
+        assert len(upgraded) == 1
+        assert ("now has " + ", ".join(V6_COLUMNS) + " (version 6)"
+                in upgraded[0].message), upgraded[0].message
+        trial = _record(model, red)
+        assert _row(private_db, trial)["operator_id"] == "station"
+    finally:
+        model.close()
+
+
+def test_attach_afm_takes_the_two_heights_and_names_what_it_attached(
+        station, private_db):
+    """Q17: the AFM step from substrate to channel top (positive up) and the
+    depth the tip cut into the flake (positive down), two nullable columns."""
+    model, red, *_ = station
+    trial = _record(model, red)
+    since = events.latest_id
+    result = model.run("attach_afm", {
+        "afm_trial_id": str(trial), "width_um": "1.8", "width_sigma_um": "0.1",
+        "channel_height_nm": "12", "channel_height_sigma_nm": "0.5",
+        "trench_depth_nm": "3.5", "trench_depth_sigma_nm": "0"})
+    assert result.is_ok, result
+    row = _row(private_db, trial)
+    assert row["status"] == "measured" and row["width_um"] == 1.8
+    assert row["channel_height_nm"] == 12 and row["channel_height_sigma_nm"] == 0.5
+    assert row["trench_depth_nm"] == 3.5 and row["trench_depth_sigma_nm"] is None
+    attached = _titled("AFM Attached", since)[0].message
+    assert attached == (f"Trial {trial}: width 1.8 um, channel height 12 nm, "
+                        "trench depth 3.5 nm attached."), attached
+
+
+def test_attach_afm_without_heights_leaves_them_unmeasured(station, private_db):
+    model, red, *_ = station
+    trial = _record(model, red)
+    assert model.run("attach_afm", {"afm_trial_id": str(trial),
+                                    "width_um": "2"}).is_ok
+    row = _row(private_db, trial)
+    assert row["channel_height_nm"] is None and row["trench_depth_nm"] is None
+
+
+def test_attach_optical_writes_the_three_columns_and_keeps_the_status(
+        station, private_db):
+    """Q19: pixels on the capture-region picture times the Sample Map's
+    um_per_px (`capture_px`); an optical width never makes a trial
+    `measured` (that stays "an AFM width exists")."""
+    model, red, *_ = station
+    trial = _record(model, red)
+    assert model.width_optical_method == "capture_px"
+    assert model.width_optical_method_options == list(tm_module.WIDTH_OPTICAL_METHODS)
+    since = events.latest_id
+    result = model.run("attach_optical", {
+        "afm_trial_id": str(trial), "width_optical_um": "2.1",
+        "width_optical_sigma_um": "0.4"})
+    assert result.is_ok, result
+    row = _row(private_db, trial)
+    assert row["width_optical_um"] == 2.1 and row["width_optical_sigma_um"] == 0.4
+    assert row["width_optical_method"] == "capture_px"
+    assert row["status"] == "recorded" and row["width_um"] is None
+    assert _titled("Optical Width Attached", since)[0].message == \
+        f"Trial {trial}: optical width 2.1 um (capture_px) attached."
+    assert model.run("set_width_optical_method", None, ("reticle",)).is_ok
+    assert model.run("set_width_optical_method", None, ("ruler",)).is_refused
+
+
+def test_attach_optical_refuses_an_unknown_trial_no_width_or_an_armed_one(
+        station):
+    model, red, *_ = station
+    trial = _record(model, red)
+    assert "No trial 99" in model.run("attach_optical", {
+        "afm_trial_id": "99", "width_optical_um": "3"}).reason
+    assert model.run("attach_optical", {"afm_trial_id": str(trial),
+                                        "width_optical_um": "0"}).is_refused
+    armed = _arm(model)
+    try:
+        assert "armed" in model.run("attach_optical", {
+            "afm_trial_id": str(armed), "width_optical_um": "3"}).reason
+    finally:
+        model.abort_trial()
+
+
+def test_the_trials_log_names_each_widths_source(station, private_db):
+    model, red, *_ = station
+    afm, optical, both, none = (_record(model, red) for _ in range(4))
+    store = model._store
+    store.update(afm, {"width_um": 1.8, "status": "measured",
+                       "channel_height_nm": 12.0})
+    store.update(optical, {"width_optical_um": 2.1})
+    store.update(both, {"width_um": 1.5, "width_optical_um": 2.0,
+                        "status": "measured", "trench_depth_nm": 3.0})
+    lines = {int(line.split()[0]): line for line in model.trials_log}
+    assert "1.8 um (AFM)" in lines[afm] and "height 12 nm" in lines[afm]
+    assert "~2.1 um (optical)" in lines[optical]
+    assert "1.5 um (AFM), optical 2 um" in lines[both]
+    assert "trench 3 nm" in lines[both]
+    assert "no width" in lines[none]
+
+
+def test_an_import_reads_the_v6_columns_and_only_afm_makes_measured(
+        tmp_path, private_db):
+    typed = tmp_path / "typed.csv"
+    typed.write_text(
+        "tilt_deg,speed_steps_s,force_index,width_um,width_optical_um,"
+        "width_optical_sigma_um,width_optical_method,channel_height_nm,"
+        "trench_depth_nm,sample_id,flake_uid,operator_id\n"
+        "10,100,0.2,,2.5,0.3,reticle,11,2,S1,F1,ian\n"
+        "20,200,0.4,1.9,,,,,,,,\n")
+    model = TransferMap()
+    assert model.import_csv(str(typed))["imported"] == 2
+    first, second = _rows(private_db, "SELECT * FROM trials ORDER BY id")
+    assert first["status"] == "recorded" and first["width_optical_um"] == 2.5
+    assert first["width_optical_method"] == "reticle"
+    assert (first["channel_height_nm"], first["trench_depth_nm"]) == (11, 2)
+    assert (first["sample_id"], first["flake_uid"], first["operator_id"]) == \
+        ("S1", "F1", "ian")
+    assert second["status"] == "measured" and second["width_optical_um"] is None
+
+
+def test_the_map_rows_carry_both_widths_and_the_chosen_one(station):
+    model, red, *_ = station
+    afm, optical = _record(model, red), _record(model, red)
+    model._store.update(afm, {"width_um": 1.8, "width_sigma_um": 0.1,
+                              "width_optical_um": 2.4, "status": "measured"})
+    model._store.update(optical, {"width_optical_um": 2.1})
+    rows = {r["id"]: r for r in model._map_rows()}
+    assert (rows[afm]["width"], rows[afm]["width_sigma"],
+            rows[afm]["width_source"]) == (1.8, 0.1, "afm")
+    assert rows[afm]["width_optical"] == 2.4 and rows[afm]["width_afm"] == 1.8
+    assert (rows[optical]["width"], rows[optical]["width_source"]) == (2.1, "optical")
+
+
+def test_the_width_source_dropdown_reaches_the_figure(station):
+    model, red, *_ = station
+    _record(model, red)
+    assert model.width_source == "AFM only"
+    assert model.width_source_options == list(plot_data.WIDTH_SOURCES)
+    model.set_figure_type("Slice at a force band")
+    first = model.figure
+    assert model.run("set_width_source", None, ("AFM, else optical",)).is_ok
+    assert model.figure is not first
+    assert model.run("set_width_source", None, ("optical only",)).is_refused
+
+
+def test_the_v6_controls_are_tier_two():
+    model = TransferMap()
+    tiers = {}
+    for section in model.schema["sections"]:
+        for element in section["elements"]:
+            key = element.get("model_attr") or element.get("command")
+            tiers[key] = (section.get("tier", 1), section["title"])
+    for key in ("channel_height_nm", "trench_depth_nm"):
+        assert tiers[key] == (2, "AFM measurement"), key
+    for key in ("width_optical_um", "width_optical_sigma_um", "attach_optical",
+                "width_optical_method"):
+        assert tiers[key] == (2, "Optical measurement"), key
+    assert tiers["width_source"][0] == 2
+    afm = next(s for s in model.schema["sections"] if s["title"] == "AFM measurement")
+    button = next(e for e in afm["elements"] if e.get("command") == "attach_afm")
+    assert {"channel_height_nm", "channel_height_sigma_nm", "trench_depth_nm",
+            "trench_depth_sigma_nm"} <= set(button["inputs"])
+    labels = [e.get("text") for e in afm["elements"]]
+    assert "Channel width (AFM)" in labels

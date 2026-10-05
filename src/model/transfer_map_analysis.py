@@ -326,3 +326,16 @@ def cut_speed(t, z, after_t=None, window=5):
                 for i in range(len(speeds))]
     best = max(smoothed)
     return best if best > 0 else None
+
+
+def pick_width(row):
+    """The width a figure, the log and the export use for one trial, and
+    where it came from: `(width, sigma, source)` with source `"afm"` when an
+    AFM channel width exists, else `"optical"` when an optical one does
+    (store version 6, owner 2026-10-04), else `(None, None, None)`. `row` is
+    a trials-table row; a row from before version 6 has no optical columns."""
+    if row.get("width_um") is not None:
+        return row["width_um"], row.get("width_sigma_um"), "afm"
+    if row.get("width_optical_um") is not None:
+        return row["width_optical_um"], row.get("width_optical_sigma_um"), "optical"
+    return None, None, None

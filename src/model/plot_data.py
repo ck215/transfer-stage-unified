@@ -411,8 +411,11 @@ def _number(row, index):
 # Same split as the analysis plot: `transfer_request` decides what to draw
 # from plain rows, without matplotlib, and `render_transfer_figure` draws it.
 # A trial row is `{"id", "tilt", "speed", "force": {definition: value|None},
-# "width", "width_sigma"}`; the model builds the rows from its store and
-# computes the force indices from each trial's raw profile.
+# "width", "width_sigma", "width_source"}`; the model builds the rows from
+# its store and computes the force indices from each trial's raw profile.
+# `width` is the chosen one (`transfer_map_analysis.pick_width`: AFM when
+# present, else optical) and `width_source` says which: "afm", "optical" or
+# None (a row without the key and with a width is AFM, as before version 6).
 
 #: The figure types, in dropdown order.
 TRANSFER_FIGURES = ("map3d", "slice", "compare", "profile")
@@ -426,17 +429,63 @@ SLICE_GRID = 25
 SLICE_LENGTH = 0.35
 TILT_LABEL, SPEED_LABEL = "tilt (deg)", "speed (steps/s)"
 WIDTH_LABEL = "channel width (um)"
+#: Which widths the slice and the comparison fit (store v6, owner
+#: 2026-10-04: AFM only by default; optical on request, trusted less).
+WIDTH_SOURCES = ("AFM only", "AFM, else optical")
+#: An optical width with no sigma of its own gets this many times the AFM
+#: default noise (0.05 x the widths' spread) in the slice's GP (Q19).
+OPTICAL_SIGMA_FACTOR = 3
+#: Two lines: one would be clipped at the station's figure size.
+MAP3D_TITLE = ("Transfer map\n(filled: AFM width; ringed: optical width; "
+               "hollow: no width yet)")
+
+
+def _source(row):
+    """A row's width source; rows from before version 6 carry none."""
+    if "width_source" in row:
+        return row["width_source"]
+    return "afm" if row.get("width") is not None else None
+
+
+def with_width(rows, width_source):
+    """The rows whose width the chosen width source admits."""
+    if width_source not in WIDTH_SOURCES:
+        raise ValueError(f"not a width source: {width_source!r}")
+    admitted = ("afm",) if width_source == WIDTH_SOURCES[0] else ("afm", "optical")
+    return [row for row in rows if _source(row) in admitted]
+
+
+def width_noise(rows, spread):
+    """The GP's per-point noise variance: the width's own sigma, or 0.05 x
+    the spread for AFM and `OPTICAL_SIGMA_FACTOR` times that for optical."""
+    out = []
+    for row in rows:
+        default = 0.05 * spread * (OPTICAL_SIGMA_FACTOR
+                                   if _source(row) == "optical" else 1)
+        out.append((row.get("width_sigma") or default) ** 2)
+    return out
+
+
+def _sources_note(rows):
+    """"3 AFM" or "3 AFM, 1 optical": a figure says which widths it used."""
+    afm = sum(1 for row in rows if _source(row) == "afm")
+    optical = sum(1 for row in rows if _source(row) == "optical")
+    return f"{afm} AFM" + (f", {optical} optical" if optical else "")
 
 
 def transfer_request(kind, trials, definition, *, band="All forces",
-                     profile=None, marks=None, definitions=None):
+                     profile=None, marks=None, definitions=None,
+                     width_source=WIDTH_SOURCES[0]):
     """What a Transfer Map figure of `kind` asks for, or why it cannot be
-    drawn. Pure; `kind` is one of `TRANSFER_FIGURES`."""
+    drawn. Pure; `kind` is one of `TRANSFER_FIGURES`; `width_source` (one of
+    `WIDTH_SOURCES`) picks the widths the slice and the comparison use."""
     trials = list(trials or ())
+    if width_source not in WIDTH_SOURCES:
+        raise ValueError(f"not a width source: {width_source!r}")
     if kind == "profile":
         return _profile_request(profile, marks or {})
     if kind == "compare":
-        return _compare_request(trials, definitions or (definition,))
+        return _compare_request(trials, definitions or (definition,), width_source)
     if not trials:
         return _message("No trials yet. Arm a trial, lower the tip, then "
                         "Finish; or import trials.")
@@ -452,13 +501,14 @@ def transfer_request(kind, trials, definition, *, band="All forces",
                 "y": [row["speed"] for row in placed],
                 "z": [row["force"][definition] for row in placed],
                 "c": [row.get("width") for row in placed],
-                "measured": [row.get("width") is not None for row in placed],
+                "measured": [_source(row) == "afm" for row in placed],
+                "optical": [_source(row) == "optical" for row in placed],
                 "x_label": TILT_LABEL, "y_label": SPEED_LABEL,
                 "z_label": f"force index ({definition})",
                 "c_label": WIDTH_LABEL,
-                "title": "Transfer map (hollow: no AFM width yet)"}
+                "title": MAP3D_TITLE}
     if kind == "slice":
-        return _slice_request(placed, definition, band)
+        return _slice_request(placed, definition, band, width_source)
     return _message(f"Unknown figure type: {kind!r}.")
 
 
@@ -497,13 +547,13 @@ def map3d_limits(request):
     return limits
 
 
-def _slice_request(placed, definition, band):
+def _slice_request(placed, definition, band, width_source=WIDTH_SOURCES[0]):
     """Width over tilt x speed at a force band: the Gaussian process mean,
-    its sigma (drawn as the confidence contours), and the measured trials."""
+    its sigma (drawn as the confidence contours), and the measured trials
+    (AFM only, or AFM else optical: `width_source`)."""
     import numpy
     from model import transfer_map_analysis as tma
-    measured = [row for row in _in_band(placed, definition, band)
-                if row.get("width") is not None]
+    measured = with_width(_in_band(placed, definition, band), width_source)
     if len(measured) < 2:
         return _message(f"Measure the width of at least two trials in "
                         f"{band.lower()} to draw a slice.")
@@ -516,8 +566,7 @@ def _slice_request(placed, definition, band):
                                  unit([r["speed"] for r in measured], y0, y1)])
     widths = numpy.array([r["width"] for r in measured], dtype=float)
     spread = float(widths.std()) or 1.0
-    noise = numpy.array([(r.get("width_sigma") or 0.05 * spread) ** 2
-                         for r in measured])
+    noise = numpy.array(width_noise(measured, spread))
     gx, gy = numpy.meshgrid(unit(grid_x, x0, x1), unit(grid_y, y0, y1))
     query = numpy.column_stack([gx.ravel(), gy.ravel()])
     mean, variance = tma.gp_predict(points, widths, query, length=SLICE_LENGTH,
@@ -530,32 +579,41 @@ def _slice_request(placed, definition, band):
             "points_x": [r["tilt"] for r in measured],
             "points_y": [r["speed"] for r in measured],
             "points_c": [r["width"] for r in measured],
+            "points_optical": [_source(r) == "optical" for r in measured],
             "x_label": TILT_LABEL, "y_label": SPEED_LABEL,
             "c_label": WIDTH_LABEL,
             "title": f"Width, {definition}: {band.lower()} "
-                     f"({len(measured)} trials; contours: sigma)"}
+                     f"({_sources_note(measured)}; contours: sigma)"}
 
 
-def _compare_request(trials, definitions):
-    """One panel per definition: force index against width, same trials.
-    Before any AFM width exists, against the trial number instead."""
+def _compare_request(trials, definitions, width_source=WIDTH_SOURCES[0]):
+    """One panel per definition: force index against width, same trials
+    (the widths `width_source` admits). Before any such width exists,
+    against the trial number instead."""
     if not trials:
         return _message("No trials to compare yet.")
-    any_width = any(row.get("width") is not None for row in trials)
+    widths = {id(row) for row in with_width(trials, width_source)}
+    any_width = bool(widths)
     panels = []
+    used = []
     for name in definitions:
         rows = [row for row in trials
                 if (row.get("force") or {}).get(name) is not None
-                and (row.get("width") is not None or not any_width)]
+                and (id(row) in widths or not any_width)]
+        used += rows
         panels.append({
             "name": name,
             "x": [row["force"][name] for row in rows],
             "y": [row["width"] if any_width else row.get("id") for row in rows],
             "yerr": [row.get("width_sigma") or 0.0 for row in rows]
-                    if any_width else None})
+                    if any_width else None,
+            "optical": [_source(row) == "optical" for row in rows]})
+    title = "Force definitions compared"
+    if any_width and any(_source(row) == "optical" for row in used):
+        title += " (ringed: optical width)"
     return {"kind": "compare", "panels": panels,
             "y_label": WIDTH_LABEL if any_width else "trial",
-            "title": "Force definitions compared"}
+            "title": title}
 
 
 def _profile_request(profile, marks):
@@ -576,11 +634,12 @@ def _profile_request(profile, marks):
 
 def render_transfer_figure(kind, trials, definition, *, band="All forces",
                            profile=None, marks=None, definitions=None,
-                           size=None, dpi=None):
+                           size=None, dpi=None, width_source=WIDTH_SOURCES[0]):
     """PNG bytes of a Transfer Map figure, drawn once for all three views."""
     request = transfer_request(kind, trials, definition, band=band,
                                profile=profile, marks=marks,
-                               definitions=definitions)
+                               definitions=definitions,
+                               width_source=width_source)
     if request["kind"] == "message":
         return _draw(request, size=size, dpi=dpi)
     return _draw_transfer(request, size=size, dpi=dpi)
@@ -598,13 +657,31 @@ def _draw_transfer(request, size=None, dpi=None):
     kind = request["kind"]
     if kind == "map3d":
         axes = figure.add_subplot(111, projection="3d")
+        optical_flags = request.get("optical") or [False] * len(request["measured"])
         done = [i for i, m in enumerate(request["measured"]) if m]
-        pending = [i for i, m in enumerate(request["measured"]) if not m]
+        ringed = [i for i, o in enumerate(optical_flags) if o]
+        pending = [i for i, (m, o) in enumerate(zip(request["measured"],
+                                                     optical_flags))
+                   if not m and not o]
         pick = lambda key, idx: [request[key][i] for i in idx]  # noqa: E731
+        coloured = pick("c", done + ringed)
+        scale = ({"vmin": min(coloured), "vmax": max(coloured)}
+                 if coloured else {})
+        drawn = None
         if done:
             drawn = axes.scatter(pick("x", done), pick("y", done),
                                  pick("z", done), c=pick("c", done),
-                                 cmap=_colormap(), marker="o", s=30)
+                                 cmap=_colormap(), marker="o", s=30, **scale)
+        if ringed:
+            # Optical width (store v6): the same colour scale, ringed so it
+            # never reads as an AFM measurement.
+            shown = axes.scatter(pick("x", ringed), pick("y", ringed),
+                                 pick("z", ringed), c=pick("c", ringed),
+                                 cmap=_colormap(), marker="o", s=45,
+                                 edgecolors=palette.TEXT, linewidths=1.6,
+                                 **scale)
+            drawn = drawn or shown
+        if drawn is not None:
             _colorbar(figure, drawn, axes, request["c_label"], pad=0.14)
         if pending:
             axes.scatter(pick("x", pending), pick("y", pending),
@@ -630,9 +707,17 @@ def _draw_transfer(request, size=None, dpi=None):
                              request["sigma"], colors=palette.TEXT,
                              linewidths=0.6, levels=4)
         axes.clabel(lines, fontsize=TICK_SIZE - 2, fmt="%.2g")
-        axes.scatter(request["points_x"], request["points_y"],
-                     c=request["points_c"], cmap=_colormap(),
-                     edgecolors=palette.TEXT, s=30)
+        flags = request.get("points_optical") or [False] * len(request["points_c"])
+        values = request["points_c"]
+        scale = {"vmin": min(values), "vmax": max(values)} if values else {}
+        for optical, size, ring in ((False, 30, 0.6), (True, 45, 1.6)):
+            idx = [i for i, f in enumerate(flags) if f == optical]
+            if idx:
+                axes.scatter([request["points_x"][i] for i in idx],
+                             [request["points_y"][i] for i in idx],
+                             c=[values[i] for i in idx], cmap=_colormap(),
+                             edgecolors=palette.TEXT, linewidths=ring, s=size,
+                             **scale)
         panels = [axes]
     elif kind == "compare":
         count = max(1, len(request["panels"]))
@@ -642,9 +727,21 @@ def _draw_transfer(request, size=None, dpi=None):
         for index, panel in enumerate(request["panels"]):
             axes = figure.add_subplot(rows, cols, index + 1)
             if panel["x"]:
-                axes.errorbar(panel["x"], panel["y"], yerr=panel["yerr"],
-                              fmt="o", color=palette.ACCENT, markersize=3,
-                              elinewidth=0.8)
+                flags = panel.get("optical") or [False] * len(panel["x"])
+                for optical in (False, True):
+                    idx = [i for i, f in enumerate(flags) if f == optical]
+                    if not idx:
+                        continue
+                    yerr = ([panel["yerr"][i] for i in idx]
+                            if panel["yerr"] is not None else None)
+                    axes.errorbar([panel["x"][i] for i in idx],
+                                  [panel["y"][i] for i in idx], yerr=yerr,
+                                  fmt="o", color=palette.ACCENT,
+                                  markersize=5 if optical else 3,
+                                  markeredgecolor=palette.TEXT if optical
+                                  else palette.ACCENT,
+                                  markeredgewidth=1.4 if optical else 0.8,
+                                  elinewidth=0.8)
             else:
                 axes.text(0.5, 0.5, "no values", ha="center", va="center",
                           transform=axes.transAxes, fontsize=TICK_SIZE)
