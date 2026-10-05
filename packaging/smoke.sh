@@ -45,12 +45,12 @@ BASE="http://127.0.0.1:$PORT"
 LOGDIR="${TRANSFER_STAGE_DATA_ROOT:-$HOME/transfer-stage-runs}/logs"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/station-smoke.XXXXXX")"
 QT_PLATFORM="${SMOKE_QT_PLATFORM-offscreen}"
-# The six Setup rows, in display order. The Transfer Map is a store with no
-# port (its choice is "On"), so it is only ticked; red_percent (screen
+# The Setup rows, in display order. The Transfer Map and the Sample Map are
+# stores with no port (their choice is "On"), so they are only ticked; red_percent (screen
 # capture) has no row of its own since 2026-09-28: it is drawn on the
 # Transfer Map's page and launches with that row.
 PORT_ROWS="stepper_probe dc_probe chuck_positioner temperature_controller rotator"
-ALL_ROWS="$PORT_ROWS transfer_map"
+ALL_ROWS="$PORT_ROWS transfer_map sample_map"
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
 SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller"
@@ -199,7 +199,7 @@ else
     run_setup cancel_scan > /dev/null
     get /api/setup > "$OUT/setup.json"
     keys="$(grep -o '"key": "[a-z_]*"' "$OUT/setup.json" | sed 's/.*: "//; s/"$//' | tr '\n' ' ' | sed 's/ $//')"
-    check "Setup rows are the six this script drives ($keys)" test "$keys" = "$ALL_ROWS"
+    check "Setup rows are the ones this script drives ($keys)" test "$keys" = "$ALL_ROWS"
     check "serial enumeration ran (Setup lists a ports key)" grep -q '"ports": \[' "$OUT/setup.json"
     # The gamepad list comes from the SDL hub (pygame). A bundle whose SDL
     # cannot load never gets this far: it hangs at `import pygame`.

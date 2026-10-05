@@ -794,3 +794,83 @@ def _colorbar(figure, drawn, axes, label, pad=0.05):
     bar.ax.yaxis.label.set_color(palette.TEXT)
     bar.outline.set_edgecolor(palette.MUTED)
     return bar
+
+
+# -- the Sample Map's figure (flake-coords section 2, Phase 1) ---------------
+#
+# The chip in its own frame (um): the marked corners, the rectangle the
+# derived width and height describe, the flakes (the selected one marked and
+# its extent drawn), and the crosshair where the stage is now. Pure request,
+# then one renderer, as the Transfer Map's figures are.
+
+def sample_map_request(corners, flakes, crosshair, size_um):
+    """What the Sample Map's figure draws, or why it cannot. `corners` maps
+    a label to its sample-frame point (um); `flakes` are dicts with
+    `label`, `x`, `y` (None when not placed), `selected`, `extent`;
+    `crosshair` is the stage now in the sample frame, or None; `size_um`
+    is the derived (width, height), or None."""
+    if not corners:
+        return _message("No corners yet. Mark corner A, then B, with the "
+                        "crosshair on each corner.")
+    placed = [f for f in flakes if f.get("x") is not None and f.get("y") is not None]
+    unplaced = len(flakes) - len(placed)
+    rectangle = None
+    if size_um:
+        w, h = size_um
+        rectangle = [(0, 0), (w, 0), (w, h), (0, h)]
+    title = f"Sample map ({len(placed)} flake{'s' if len(placed) != 1 else ''}"
+    if unplaced:
+        title += f"; {unplaced} flake{'s' if unplaced != 1 else ''} not placed"
+    return {"kind": "sample", "corners": dict(corners), "flakes": placed,
+            "unplaced": unplaced, "crosshair": crosshair, "rectangle": rectangle,
+            "x_label": "x along A to B (um)", "y_label": "y toward the chip (um)",
+            "title": title + ")"}
+
+
+def render_sample_figure(request, size=None, dpi=None):
+    """PNG bytes of the Sample Map's figure, drawn once for all three views."""
+    if request["kind"] == "message":
+        return _draw(request, size=size, dpi=dpi)
+    from matplotlib.figure import Figure
+    figure = Figure(figsize=tuple(size or FIGURE_SIZE), dpi=dpi or FIGURE_DPI,
+                    facecolor=palette.SURFACE)
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        FigureCanvasAgg(figure)
+    except ImportError:
+        pass
+    axes = figure.add_subplot(111)
+    if request["rectangle"]:
+        xs, ys = zip(*(request["rectangle"] + request["rectangle"][:1]))
+        axes.plot(xs, ys, color=palette.MUTED, linewidth=1, linestyle="--")
+    for label, (x, y) in sorted(request["corners"].items()):
+        axes.plot([x], [y], marker="s", color=palette.TEXT, markersize=6,
+                  linestyle="none")
+        axes.annotate(label, (x, y), textcoords="offset points", xytext=(5, 5),
+                      color=palette.TEXT, fontsize=TICK_SIZE)
+    for flake in request["flakes"]:
+        if flake.get("extent"):
+            ex, ey = zip(*(list(map(tuple, flake["extent"])) + [tuple(flake["extent"][0])]))
+            axes.plot(ex, ey, color=palette.ACCENT, linewidth=1)
+        axes.plot([flake["x"]], [flake["y"]], marker="o", linestyle="none",
+                  color=palette.ACCENT, markersize=8 if flake.get("selected") else 5,
+                  markeredgecolor=palette.TEXT if flake.get("selected") else palette.ACCENT,
+                  markeredgewidth=1.6 if flake.get("selected") else 0.8)
+        axes.annotate(flake["label"], (flake["x"], flake["y"]), textcoords="offset points",
+                      xytext=(5, -10), color=palette.TEXT, fontsize=TICK_SIZE - 1)
+    if request["crosshair"] is not None:
+        cx, cy = request["crosshair"]
+        axes.plot([cx], [cy], marker="+", color=palette.TEXT, markersize=14,
+                  markeredgewidth=1.4, linestyle="none")
+    axes.set_aspect("equal", adjustable="datalim")
+    axes.set_xlabel(request["x_label"])
+    axes.set_ylabel(request["y_label"])
+    axes.set_title(request["title"])
+    _style_axes(axes)
+    try:
+        figure.tight_layout()
+    except Exception:
+        pass
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format="png", facecolor=figure.get_facecolor())
+    return buffer.getvalue()

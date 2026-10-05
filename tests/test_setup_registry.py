@@ -20,6 +20,7 @@ from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
 from model.red_monitor import RedMonitor
 from model.rotator import Rotator
+from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from result import Refused
 
@@ -93,7 +94,8 @@ def warnings():
 
 BUILT_INS = ["Stepper Probe", "DC Probe", "Chuck Positioner",
              "Temperature Controller", "Rotator", "Red Percent",
-             "Transfer Map"]   # Tier S (2026-09-27)
+             "Transfer Map",   # Tier S (2026-09-27)
+             "Sample Map"]     # flake-coords (2026-10-04)
 #: The built-in Setup rows: Red Percent is registered but has no row of its
 #: own, being drawn on the Transfer Map's page and launched by its row
 #: (Model.HOST, owner ruling 2026-09-28).
@@ -104,7 +106,7 @@ def test_the_six_built_ins_are_registered_in_todays_display_order():
     assert list(station_setup.MODEL_TYPES) == BUILT_INS
     assert list(station_setup.MODEL_TYPES.values()) == [
         StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, RedMonitor,
-        TransferMap]   # Tier S
+        TransferMap, SampleMap]   # Tier S; flake-coords
 
 
 def test_register_is_reachable_as_setup_register():

@@ -357,6 +357,29 @@ class SampleStore:
         return self.read("SELECT * FROM corners WHERE registration_id = ? "
                          "ORDER BY label", (registration_id,))
 
+    def put_corner(self, registration_id, corner):
+        """Add a corner to a registration, or replace the one with its label
+        (a re-mark): one transaction, so a mark is never unsaved state."""
+        _one_of(corner.get("method"), CORNER_METHODS, "corner method")
+        row = _encode("corners", {**corner, "registration_id": registration_id})
+        row.setdefault("marked_at", now())
+        self.write(lambda db: _insert(db, "corners", row, verb="INSERT OR REPLACE"))
+
+    def update_registration(self, registration_id, fields):
+        """Write a refitted transform and its checks onto a registration."""
+        _one_of(fields.get("fit_kind"), FIT_KINDS, "fit kind")
+        _one_of(fields.get("quality"), REGISTRATION_QUALITY, "registration quality")
+        values = _encode("registrations", {k: v for k, v in fields.items()
+                                           if k not in ("registration_id",
+                                                        "registration_uid")})
+        values.setdefault("updated_at", now())
+
+        def _do(db):
+            if not _update(db, "registrations", values, "registration_id",
+                           registration_id).rowcount:
+                raise StoreRefused(f"No registration {registration_id} in the store.")
+        self.write(_do)
+
     def invalidate_registration(self, registration_id, reason):
         stamp = now()
         self.write(lambda db: db.execute(

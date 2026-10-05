@@ -304,3 +304,34 @@ def test_the_csv_export_writes_the_four_tables(store, tmp_path):
         (row,) = list(csv.DictReader(handle))
     assert json.loads(row["extent_points_um"]) == [[0, 0], [10, 0], [10, 5], [0, 5]]
     assert row["quality"] == "5"
+
+
+# -- the Sample Map's incremental writes (each mark is its own transaction) ------
+
+def test_a_corner_is_added_or_replaced_on_a_registration(store):
+    store.put_sample({"sample_id": "S1"})
+    rid = _registration(store)
+    store.put_corner(rid, {"label": "D", "stage_x": 1.0, "stage_y": 9.0,
+                           "method": "crosshair"})
+    store.put_corner(rid, {"label": "A", "stage_x": 5.0, "stage_y": 5.0,
+                           "method": "crosshair"})
+    corners = {c["label"]: c for c in store.corners(rid)}
+    assert sorted(corners) == ["A", "B", "D"]
+    assert (corners["A"]["stage_x"], corners["A"]["stage_y"]) == (5.0, 5.0)
+    with pytest.raises(ss.StoreRefused, match="corner method"):
+        store.put_corner(rid, {"label": "C", "method": "guess"})
+
+
+def test_a_registrations_fit_is_updated_in_place(store):
+    store.put_sample({"sample_id": "S1"})
+    rid = _registration(store, quality="unchecked")
+    before = store.registration(rid)
+    store.update_registration(rid, {"theta_rad": 0.2, "quality": "check",
+                                    "closure_um": 12.0})
+    after = store.registration(rid)
+    assert (after["theta_rad"], after["quality"], after["closure_um"]) == (0.2, "check", 12.0)
+    assert after["registration_uid"] == before["registration_uid"]
+    with pytest.raises(ss.StoreRefused, match="registration quality"):
+        store.update_registration(rid, {"quality": "great"})
+    with pytest.raises(ss.StoreRefused, match="No registration"):
+        store.update_registration(999, {"quality": "good"})

@@ -34,7 +34,7 @@ $Out = Join-Path ([IO.Path]::GetTempPath()) ("station-smoke-" + [guid]::NewGuid(
 New-Item -ItemType Directory -Force -Path $Out, $LogDir | Out-Null
 $PortRows = @("stepper_probe", "dc_probe", "chuck_positioner", "temperature_controller", "rotator")
 # red_percent has no row since 2026-09-28: it launches with the Transfer Map.
-$AllRows = $PortRows + @("transfer_map")
+$AllRows = $PortRows + @("transfer_map", "sample_map")
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
 $Sketches = @("stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller")
@@ -159,7 +159,7 @@ if (-not $up) {
     Run-Setup "cancel_scan" @() | Out-Null
     $setup = Invoke-RestMethod -Uri "$Base/api/setup" -TimeoutSec 10
     $keys = @($setup.state.rows | ForEach-Object key)
-    Check "Setup rows are the six this script drives ($($keys -join ' '))" (($keys -join " ") -eq ($AllRows -join " "))
+    Check "Setup rows are the ones this script drives ($($keys -join ' '))" (($keys -join " ") -eq ($AllRows -join " "))
     Check "serial enumeration ran ($(@($setup.state.ports).Count) port(s))" ($null -ne $setup.state.PSObject.Properties["ports"])
     foreach ($row in $AllRows) {
         Check "tick $row" ((Run-Setup "set_${row}_enabled" @($true)).status -eq "ok")

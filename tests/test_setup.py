@@ -152,8 +152,9 @@ def test_the_per_baud_probe_budget_is_the_one_probe_device_at_spent():
 def test_model_types_is_every_model_class_keyed_by_its_name():
     assert list(MODEL_TYPES) == ["Stepper Probe", "DC Probe",
                                  "Chuck Positioner", "Temperature Controller",
-                                 "Rotator", "Red Percent", "Transfer Map"]   # Tier S
-    assert len(set(MODEL_TYPES.values())) == 7   # Tier S: the Transfer Map
+                                 "Rotator", "Red Percent", "Transfer Map",   # Tier S
+                                 "Sample Map"]   # flake-coords (2026-10-04)
+    assert len(set(MODEL_TYPES.values())) == 8   # + the Sample Map
 
 
 def test_model_types_is_the_only_list_of_models(panel, fake_types):
