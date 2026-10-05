@@ -95,6 +95,10 @@ wire is pinned by `tests/golden/`.
 - No platform-specific UI (2026-09-25): one stop chord (Ctrl+.), no ⌘
   variants, no macOS-only commands or copy in any view.
 - Names: "Red Percent", "Rotator", "Temperature Controller".
+- 2026-10-04: **the Rotator turns the chip** (in-plane, about a centre that
+  is neither corner A nor the stage origin); the Sample Map models it
+  (`rb-rotator-frame`, 2026-10-05). The Transfer Map still calls the angle
+  `tilt_deg`; renaming it is the owner's call.
 - Web = candidate primary frontend ("instrument console"); Tk/Qt persist as
   backups. Making Web the default is `VIEW_MODE` in the launchers.
 
@@ -112,6 +116,58 @@ component strip each) was published for the owner the same day; the choice
 lands as `palette.py` / `theme.py` tokens.
 
 ## Open items
+
+### The Rotator turns the chip: the Sample Map follows it (2026-10-05)
+
+Landed (merged 1710d18; not pushed: the repository is public, the owner
+pushes). Gates on the branch tip 6368de5, whose tree the merge equals:
+fast **3478** (3433 + 45) / golden 78 / Qt 255 / legacy 1038 / launch 200;
+the fast gate re-run on the merged tree: 3478 passed, 12 skipped,
+1 xfailed, 255 deselected. The verify skill's baseline still says 3433
+(`.claude/` was left alone); today's fast count is 3478.
+
+- `rb-rotator-frame` (owner ruling 2026-10-04: the SMC100 spins the chip
+  in-plane about a centre c that is neither corner A nor the stage origin).
+  A registration records the Rotator's angle phi0; at phi the frame is the
+  registered one followed by the turn, p = c + R(s(phi - phi0))(p_reg - c)
+  (`sample_frame.RotatedFrame`). c and the sense s come from one feature
+  marked at several angles (`rotation_centre`: two marks with a known
+  sense by the chord, three or more by least squares over both senses; a
+  set that is not a turn, a tilt for one, is refused). The calibration is
+  station-only (sample store version 2, `rotator_calibrations`, never
+  exported) and expires with the stage's `position_epoch`. Uncalibrated, a
+  turn makes the registration unusable and the next mark ends it; back at
+  phi0 it holds. Corner A re-marked after a turn reports the **Rotator
+  closure**. Angle unknown (no reading, not referenced, homing, closed):
+  the gate word `rotator_unknown` greys the marks; a mark while the Rotator
+  moves is refused. Guidance only: nothing moves the Rotator or the stage.
+- Lead review: the base proof re-run (all 45 new or changed tests fail on
+  the base); two tests added (an extent marked across a turn, which fails
+  on the old `mark_extent`; a mark refused while the Rotator turns) and the
+  calibration-expiry test tightened to assert "calibration expired".
+  `src/views/base.py` (lead-only) carries the one `GATE_WORDS` line, the
+  lead's own edit. Not hand-driven here: there is no Rotator simulator and
+  a SIM probe sends no positions, so the bench run is the first drive.
+- Bench procedure: `docs/rebuild/BENCH_ROTATOR.md` (back up, the bench
+  facts, one calibration, spin not tilt, the map follows a turn, roll back).
+
+Open, for the lead or the owner:
+- A flake flagged while the chip is turned keeps its raw stage position
+  without the angle it was taken at (corners are stored at phi0, flakes are
+  not). Harmless today (nothing re-places a flake from its stage position),
+  but the stage half of "both frames" is ambiguous once the Rotator turns:
+  a flake `rotator_deg` column, or the stage position stored at phi0.
+- The `A'turned` check corner is stored at the turned angle, while every
+  other corner row is at phi0.
+- The turn is computed in stage counts, which assumes equal X and Y um per
+  count (true of every locating source today; a skewed stage shows up as
+  the calibration's residual).
+- The Transfer Map records the Rotator's angle as each trial's `tilt_deg`;
+  under the ruling it is the chip's in-plane turn. Renaming is the owner's
+  call.
+- Owner facts still open as before (axes, um per count of the chuck and
+  the DC probe, backlash, mounting, objectives, the manual rig, the gamepad
+  mark button; Q7, Q10, Q20-Q22).
 
 ### Phase 1 continued: core changes, the Sample Map, profiles (2026-10-04, night)
 
