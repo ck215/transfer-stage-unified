@@ -505,3 +505,37 @@ def test_mixed_figures_render():
             kind, _mixed(), "shadow_vs_peak", definitions=("dip_area",),
             width_source="AFM, else optical", size=(4.0, 3.0), dpi=50)
         assert png[:8] == b"\x89PNG\r\n\x1a\n", kind
+
+
+# -- the Sample Map's figure (flake-coords Phase 1, section 2) ------------------
+
+def test_the_sample_request_carries_corners_flakes_and_the_crosshair():
+    request = plot_data.sample_map_request(
+        corners={"A": (0.0, 0.0), "B": (5000.0, 0.0), "D": (0.0, 4000.0)},
+        flakes=[{"label": "F01", "x": 1000.0, "y": 500.0, "selected": True,
+                 "extent": [[990, 490], [1010, 490], [1010, 510], [990, 510]]},
+                {"label": "F02", "x": None, "y": None, "selected": False, "extent": None}],
+        crosshair=(200.0, 300.0), size_um=(5000.0, 4000.0))
+    assert request["kind"] == "sample"
+    assert request["corners"] == {"A": (0.0, 0.0), "B": (5000.0, 0.0), "D": (0.0, 4000.0)}
+    assert [f["label"] for f in request["flakes"]] == ["F01"]      # placed ones only
+    assert request["unplaced"] == 1
+    assert request["rectangle"] == [(0, 0), (5000.0, 0), (5000.0, 4000.0), (0, 4000.0)]
+    assert "1 flake not placed" in request["title"]
+
+
+def test_the_sample_request_without_corners_is_a_message():
+    assert plot_data.sample_map_request({}, [], None, None)["kind"] == "message"
+
+
+def test_the_sample_figure_renders_and_never_in_the_stop_red():
+    import inspect
+    import palette
+    request = plot_data.sample_map_request(
+        {"A": (0.0, 0.0), "B": (100.0, 0.0)},
+        [{"label": "F01", "x": 10.0, "y": 20.0, "selected": True, "extent": None}],
+        (5.0, 5.0), None)
+    png = plot_data.render_sample_figure(request, size=(4.0, 3.0), dpi=50)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    source = inspect.getsource(plot_data.render_sample_figure)
+    assert "SIGNAL" not in source and palette.SIGNAL.lower() not in source.lower()

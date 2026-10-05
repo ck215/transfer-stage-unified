@@ -50,6 +50,7 @@ from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
 from model.red_monitor import RedMonitor
 from model.rotator import Rotator
+from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from panel import Panel
 from result import NeedsConfirm, Refused
@@ -211,9 +212,10 @@ def _key_for(name):
     return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_") or "model"
 
 
-# The six built-ins, in today's display order.
+# The built-ins, in today's display order. The Sample Map (flake-coords,
+# 2026-10-04) follows the Transfer Map: its own page, no port.
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  RedMonitor, TransferMap):
+                  RedMonitor, TransferMap, SampleMap):
     register(_built_in)
 del _built_in
 

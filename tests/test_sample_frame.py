@@ -82,7 +82,10 @@ def test_the_derived_dimensions_and_the_angle_at_a():
 
 def test_a_and_b_too_close_is_refused():
     with pytest.raises(sf.FrameRefused, match="Corners A and B are the same point"):
-        sf.rigid_frame((100, 100), (130, 120), K)
+        sf.rigid_frame((100, 100), (130, 120), K)                 # 22 um
+    # The rule is a distance on the chip: 5 mm of typed micrometer reading
+    # is far apart, though the numbers differ by 5.
+    assert sf.rigid_frame((10.0, 20.0), (15.0, 20.0), (1000.0, 1000.0)).theta == 0
 
 
 def test_d_nearly_in_line_with_a_and_b_is_refused():
@@ -191,7 +194,7 @@ def test_the_stage_bounding_box_extent_in_the_sample_frame():
     flat = [v for point in box["polygon_um"] for v in point]
     assert flat == pytest.approx([100.0, 200.0, 160.0, 200.0, 160.0, 240.0,
                                   100.0, 240.0], abs=1e-6)
-    assert box["source"] == "stage_bbox"
+    assert box["source"] == "stage_corners"      # the record vocabulary (4.1)
     metrics = sf.extent_metrics(box["polygon_um"])
     assert metrics["area_um2"] == pytest.approx(60.0 * 40.0)
     assert metrics["lateral_um"] == pytest.approx(math.hypot(60.0, 40.0))
@@ -229,5 +232,5 @@ def test_the_stepper_scale_is_known_and_the_others_fail_loud():
 def test_the_quality_thresholds_are_module_constants():
     assert (sf.CLOSURE_GOOD_UM, sf.CLOSURE_CHECK_UM) == (10.0, 30.0)
     assert sf.RECTANGULARITY_ASK_UM == 50.0
-    assert sf.MIN_AB_COUNTS == 50
+    assert sf.MIN_AB_UM == 30.0
     assert (sf.MIN_CORNER_ANGLE_DEG, sf.MAX_CORNER_ANGLE_DEG) == (20.0, 160.0)

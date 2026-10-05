@@ -30,9 +30,10 @@ import numpy
 CLOSURE_GOOD_UM = 10.0
 CLOSURE_CHECK_UM = 30.0
 RECTANGULARITY_ASK_UM = 50.0
-#: Degenerate corners (3.4): A and B closer than this many counts, or an
-#: angle at A outside these bounds.
-MIN_AB_COUNTS = 50
+#: Degenerate corners (3.4): A and B closer than this (um: about the
+#: proposal's 50 stepper counts, and the same rule for typed micrometer mm),
+#: or an angle at A outside these bounds.
+MIN_AB_UM = 30.0
 MIN_CORNER_ANGLE_DEG = 20.0
 MAX_CORNER_ANGLE_DEG = 160.0
 
@@ -115,7 +116,7 @@ def rigid_frame(a, b, k, d=None):
     """The default frame from corners A and B (stage counts), with the
     handedness from D when it is marked (3.2). Refuses degenerate corners."""
     a, b = _vec(a), _vec(b)
-    if float(numpy.linalg.norm(b - a)) < MIN_AB_COUNTS:
+    if float(numpy.linalg.norm(_um(b, k) - _um(a, k))) < MIN_AB_UM:
         raise FrameRefused("Corners A and B are the same point: mark B further "
                            "from A.")
     ab = _um(b, k) - _um(a, k)
@@ -279,7 +280,7 @@ def bbox_extent(frame, p1, p2):
     (x1, y1), (x2, y2) = frame.to_sample(p1), frame.to_sample(p2)
     x0, x3 = float(min(x1, x2)), float(max(x1, x2))
     y0, y3 = float(min(y1, y2)), float(max(y1, y2))
-    return {"source": "stage_bbox",
+    return {"source": "stage_corners",
             "polygon_um": [(x0, y0), (x3, y0), (x3, y3), (x0, y3)]}
 
 
