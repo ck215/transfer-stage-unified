@@ -296,6 +296,9 @@ Examples:
     parser.add_argument("--map-db", metavar="PATH",
                         help="the Transfer Map's SQLite file (default: data/transfer_map.sqlite "
                              "in this checkout; same as STATION_MAP_DB)")
+    parser.add_argument("--sample-db", metavar="PATH",
+                        help="the Sample Map's SQLite file (default: data/sample_map.sqlite "
+                             "in this checkout; same as STATION_SAMPLE_DB)")
 
     # parse_args, not parse_known_args: an unrecognized flag must be an error.
     # Under parse_known_args a typo like `--pyside6` was silently dropped and
@@ -307,6 +310,8 @@ Examples:
         os.environ["STATION_NO_MOTION"] = "1"
     if args.map_db:
         os.environ["STATION_MAP_DB"] = args.map_db
+    if args.sample_db:
+        os.environ["STATION_SAMPLE_DB"] = args.sample_db
 
     view_name = pick_view(args.view)
     if args.view is None:

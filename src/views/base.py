@@ -86,6 +86,10 @@ GATE_WORDS = {
     # The Transfer Map (Tier S): a trial is armed until Finish or Abort.
     "armed": ("A trial is armed: finish or abort it first", "Arm a trial first"),
     "ready": (None, "Nothing to launch yet"),
+    # The Sample Map (flake-coords section 5.3): a control that needs the
+    # chip's frame, or a locating axis to read.
+    "unregistered": ("Mark corners A and B first", None),
+    "no_source": ("No locating axes", None),
     "launched": (None, "Nothing launched yet"),
 }
 

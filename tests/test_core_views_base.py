@@ -687,3 +687,15 @@ def test_mod5_a_state_without_the_key_falls_back_to_the_old_class_names():
     assert hardware_links(state) == {"SerialPort": "simulated", "SMC100": "verified"}
     assert hardware_links(state, fallback=None) == state["devices"]
     assert hardware_links({}) == {} and hardware_links(None) == {}
+
+
+def test_the_sample_maps_gate_words():
+    """flake-coords section 5.3: the Sample Map's two tokens. A control
+    that needs the frame is `disabled_when=("unregistered",)`, so the
+    sentence is the disabled-direction word (the `armed` convention)."""
+    from views.base import GATE_WORDS, gate_reason
+    assert GATE_WORDS["unregistered"] == ("Mark corners A and B first", None)
+    assert GATE_WORDS["no_source"] == ("No locating axes", None)
+    assert gate_reason({"disabled_when": ["no_source", "unregistered"]},
+                       "unregistered") == "Mark corners A and B first"
+    assert gate_reason({"disabled_when": ["no_source"]}, "no_source") == "No locating axes"

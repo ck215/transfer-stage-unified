@@ -215,6 +215,16 @@ def test_main_defaults_the_view_from_the_platform(fake_views, monkeypatch):
     assert picked == ["qt"]
 
 
+def test_sample_db_sets_the_sample_maps_store(fake_views, monkeypatch, tmp_path):
+    """flake-coords section 10 item 5: `--sample-db PATH`, like `--map-db`."""
+    monkeypatch.setattr(app, "launch", lambda name, **kwargs: None)
+    monkeypatch.delenv("STATION_SAMPLE_DB", raising=False)
+    target = tmp_path / "s.sqlite"
+    app.main(["--web", "--sample-db", str(target)])
+    import os
+    assert os.environ["STATION_SAMPLE_DB"] == str(target)
+
+
 def test_the_view_flags_are_mutually_exclusive(fake_views):
     with pytest.raises(SystemExit):
         app.main(["--web", "--qt"])

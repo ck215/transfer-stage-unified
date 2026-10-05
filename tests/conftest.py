@@ -230,6 +230,8 @@ def _transfer_map_db_in_tmp(monkeypatch, tmp_path):
     store. Every test's store lives under its own tmp_path instead. A test
     that sets `STATION_MAP_DB` itself still wins: it runs after this."""
     monkeypatch.setenv("STATION_MAP_DB", str(tmp_path / "map" / "transfer_map.sqlite"))
+    # The Sample Map's store likewise (flake-coords, 2026-10-04).
+    monkeypatch.setenv("STATION_SAMPLE_DB", str(tmp_path / "map" / "sample_map.sqlite"))
 
 
 @pytest.fixture(autouse=True)

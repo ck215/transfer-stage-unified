@@ -168,6 +168,11 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._position_time = None
         self._velocity = (0.0, 0.0, 0.0)
         self._samples_seen = 0
+        # flake-coords section 6: the firmware's position counter restarts
+        # every time the port comes up, so a stage position is meaningful
+        # only within one epoch. Counted here, from the port's status.
+        self._position_epoch = 0
+        self._link_up = False
 
         # Autonomous "stepping" is a *timed sub-state*, not a fifth boolean
         # (RC-3 item 2). `is_stepping` used to be set by the step command and
@@ -665,10 +670,29 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 events.debug("Sample Failed", str(exc), source=self.NAME,
                              exception=exc, every=5.0)
 
+    #: Port statuses under which the firmware is running a counter.
+    LINK_UP = ("verified", "unverified", "simulated")
+
+    def _track_epoch(self):
+        """A new `position_epoch` each time the port comes up again (a
+        reconnect restarts the firmware's counter). Called on every sample."""
+        up = getattr(self.port, "status", None) in self.LINK_UP
+        if up and not self._link_up:
+            self._position_epoch += 1
+        self._link_up = up
+
+    @property
+    def position_epoch(self):
+        """How many times the link has come up since construction: positions
+        from different epochs are not comparable (the Sample Map invalidates
+        a registration when it changes)."""
+        return self._position_epoch
+
     def _read_position(self):
         """The latest complete `POS:x,y,z` line, or None. Never blocks."""
         if self.port is None:
             return None
+        self._track_epoch()
         latest = None
         for _ in range(self.MAX_DRAIN_LINES):
             line = self.port.read_line(timeout=0)
@@ -967,6 +991,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
             "position": list(self._position),
             "position_time": self._position_time,
             "position_age": self.position_age,
+            "position_epoch": self._position_epoch,
             "velocity": list(self._velocity),
             "is_moving": self.is_moving,
             "is_enabled": self.is_enabled,
