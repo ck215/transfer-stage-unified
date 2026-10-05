@@ -71,6 +71,11 @@ _ENERGIZED = frozenset({ProbeMode.IDLE, ProbeMode.AUTO, ProbeMode.MANUAL,
 #: Modes reached only through a *confirmed* enable (invariant I-3.1).
 _ARMED = frozenset({ProbeMode.IDLE, ProbeMode.AUTO, ProbeMode.MANUAL})
 
+#: Modes in which the host is driving the axes, so a board that stops
+#: answering is a stop (bench incident 2026-10-04). IDLE is armed but
+#: commands no motion; arming a silent board is refused instead.
+_DRIVEN = frozenset({ProbeMode.AUTO, ProbeMode.MANUAL})
+
 #: The modes in which a motion parameter may not be edited. One tuple, read by
 #: the schema entries and by the property setters, so what a view greys out and
 #: what the model refuses cannot drift apart (DC-6).
@@ -146,6 +151,21 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: considered arrived.
     STEP_SETTLE = 1.0
 
+    #: Seconds without a POS line after which the board is "not answering".
+    #: Every probe sketch prints POS unasked from `loop()` in every mode,
+    #: disabled included (stepper/chuck every 100 ms, DC every 50 ms), so
+    #: silence means the loop is not running -- the host's bytes are landing
+    #: in a buffer nothing reads. Bench incident 2026-10-04 17:40: the
+    #: Stepper Probe's loop hung mid-jog, the host streamed jog frames into
+    #: the silence for 4 s, and FULL STOP reported "confirmed" because its
+    #: bytes were written. 1.0 s is ten stepper/chuck periods (twenty DC):
+    #: on that day every steady 5-s window read 9.8-10.2 lines/s, and the
+    #: only dips were the ~1.5 s handshake at open, when the probe is
+    #: DISABLED and nothing watches. At the incident it would have stopped
+    #: the probe at ~17:40:15.0, before the full-deflection frame at 15.7.
+    #: At 3200 steps/s, a second is the travel this costs before it trips.
+    BOARD_SILENT_AFTER = 1.0
+
     # The idle interlock's INTERLOCK_TIMEOUT (300 s), INTERLOCK_POLL_INTERVAL
     # and IDLE_WARN_SECONDS (60 s) come from `model.idle.IdleInterlock`.
 
@@ -176,6 +196,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         # energized probe sat idle indefinitely (STEPPER-6, DC-1).
         self._moving_deadline = None
         self._coil_kill_reported = False
+        #: (mode, seconds silent) when the watchdog is the one stopping the
+        #: probe, so the halt's report says why. None otherwise.
+        self._silent_trip = None
 
     # -- devices ----------------------------------------------------------
     def _build_port(self, port, sim):
@@ -306,6 +329,15 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 self._refuse("Manual mode needs a gamepad. Choose one under "
                              "Gamepad first.")
             self._guard(f"Mode change to {target.value}")
+            silent_for = self._silent_for()
+            if silent_for is not None:
+                # 2026-10-04 17:41:30: after clearing the stop, manual mode
+                # was entered again on the still-hung board and the host
+                # jogged it. A board that is not answering is never armed.
+                self._refuse(f"The {self.NAME} is not answering: no position "
+                             f"report for {silent_for:.0f} s. Reset the board "
+                             "(or cut its power and reconnect it), then try "
+                             "again.")
 
             self._energize(reason)
             if target is ProbeMode.MANUAL and previous is not ProbeMode.MANUAL:
@@ -435,6 +467,11 @@ class Probe(GamepadInput, IdleInterlock, Model):
         operator to ignore the one signal meant to mean something.
         """
         started = time.monotonic()
+        # Read before the writes: whether the board was answering when the
+        # stop went out. Every byte below is still sent; silence changes what
+        # is reported, never what is attempted.
+        silent_for = self._silent_for()
+        trip, self._silent_trip = self._silent_trip, None
         self._moving_deadline = None
         self._stop_interlock()
         landed = {}
@@ -458,7 +495,32 @@ class Probe(GamepadInput, IdleInterlock, Model):
                               "and check the connection.")
         if not self.can_kill_coils:
             self._report_no_coil_kill()
+        if silent_for is not None:
+            # "Written" is the host's half only. A board whose loop is not
+            # running has not read the stop, so it is not confirmed.
+            self._report_not_answering(silent_for, trip)
+            return False
         return all(landed.values())
+
+    def _report_not_answering(self, silent_for, trip):
+        if trip is not None:
+            mode, _ = trip
+            why = (f"The {self.NAME} stopped reporting its position while in "
+                   f"{mode} mode (nothing for {silent_for:.1f} s), so the "
+                   "station stopped it.")
+        else:
+            why = (f"The stop was sent to the {self.NAME}, but it has not "
+                   f"reported its position for {silent_for:.1f} s.")
+        events.debug("Board Not Answering",
+                     f"no POS for {silent_for:.2f} s (threshold "
+                     f"{self.BOARD_SILENT_AFTER} s); stop bytes written, not "
+                     f"acknowledged; watchdog={trip is not None}",
+                     source=self.NAME)
+        events.error("Board Not Answering",
+                     f"{why} The board is not answering, so nothing confirms "
+                     "the stop and it may still be moving. Cut its power or "
+                     "reset the board, then clear the stop.",
+                     source=self.NAME)
 
     def _write_stop(self, label, payload):
         if self.port is None:
@@ -664,6 +726,49 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # loop, or positions freeze silently for the rest of the run.
                 events.debug("Sample Failed", str(exc), source=self.NAME,
                              exception=exc, every=5.0)
+            # Outside the try: a read that raises (the port went away) is
+            # silence too, and the watchdog must still see it.
+            try:
+                self._watch_board()
+            except Exception as exc:
+                events.debug("Board Watch Failed", repr(exc), source=self.NAME,
+                             exception=exc, every=5.0)
+
+    def _silent_for(self):
+        """Seconds since the last POS line when that exceeds
+        BOARD_SILENT_AFTER, else None.
+
+        None as well before the first line: a board that has never reported
+        (just opened, a sketch without the stream, SIM) has no silence to
+        measure, and calling it silent would refuse every mode."""
+        last = self._position_time
+        if last is None:
+            return None
+        age = time.monotonic() - last
+        return age if age > self.BOARD_SILENT_AFTER else None
+
+    @property
+    def board_silent(self):
+        """True while the board has stopped reporting its position."""
+        return self._silent_for() is not None
+
+    def _watch_board(self):
+        """Stop the probe if the board stops answering while it is driven.
+
+        Run by the sampler right after a drain, so a stall of the sampler
+        itself cannot trip it: what was buffered has just been read. The
+        stop is the model's own latch (`estop`): an explicit, confirmed
+        operator clear, and while the board stays silent no mode can be
+        entered again (`_set_mode`)."""
+        if self._mode not in _DRIVEN or self._estop.is_set():
+            return
+        silent_for = self._silent_for()
+        if silent_for is None:
+            return
+        self._silent_trip = (self._mode.value, silent_for)
+        events.debug("Board Silent", f"no POS for {silent_for:.2f} s in "
+                     f"{self._mode.value} mode; stopping", source=self.NAME)
+        self.estop()
 
     def _read_position(self):
         """The latest complete `POS:x,y,z` line, or None. Never blocks."""
@@ -756,7 +861,15 @@ class Probe(GamepadInput, IdleInterlock, Model):
 
     def _on_gamepad(self, levels, edges):
         """D-pad and bumper steps (D3) travel in this packet, one per press:
-        `levels` arrives with the drained edges already merged in."""
+        `levels` arrives with the drained edges already merged in.
+
+        A board that is not answering is sent neutral, never the stick: the
+        sampler's watchdog is what stops the probe, and this keeps a
+        non-zero frame off the wire even if that watchdog has not run."""
+        if levels and self.board_silent:
+            events.debug("Jog Held", "board not answering; sending neutral",
+                         source=self.NAME, every=1.0)
+            levels = {}
         self._send_jog(levels)
 
     def _on_gamepad_lost(self, reason):
@@ -971,6 +1084,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
             "is_moving": self.is_moving,
             "is_enabled": self.is_enabled,
             "can_kill_coils": self.can_kill_coils,
+            "board_silent": self.board_silent,
         })
         return snapshot
 
