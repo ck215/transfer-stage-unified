@@ -455,7 +455,7 @@ def test_map3d_fills_afm_rings_optical_and_says_so():
     assert request["measured"] == [True, True, True, False, False]
     assert request["optical"] == [False, False, False, True, False]
     assert request["c"][3] == 8.0
-    assert request["title"] == ("Transfer map (filled: AFM width; ringed: "
+    assert request["title"] == ("Transfer map\n(filled: AFM width; ringed: "
                                 "optical width; hollow: no width yet)")
 
 

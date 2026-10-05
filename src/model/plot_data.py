@@ -435,7 +435,8 @@ WIDTH_SOURCES = ("AFM only", "AFM, else optical")
 #: An optical width with no sigma of its own gets this many times the AFM
 #: default noise (0.05 x the widths' spread) in the slice's GP (Q19).
 OPTICAL_SIGMA_FACTOR = 3
-MAP3D_TITLE = ("Transfer map (filled: AFM width; ringed: optical width; "
+#: Two lines: one would be clipped at the station's figure size.
+MAP3D_TITLE = ("Transfer map\n(filled: AFM width; ringed: optical width; "
                "hollow: no width yet)")
 
 
