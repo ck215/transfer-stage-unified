@@ -865,6 +865,41 @@ def test_state_carries_the_position_names_the_monitor_reads(probe):
 
 
 @pytest.mark.schema
+def test_position_epoch_counts_each_time_the_link_comes_up(probe):
+    """flake-coords section 6: the firmware's counter restarts at every port
+    open, so a stage position means something only within one epoch. The
+    epoch is the number of times the port has come up (simulated, verified
+    or unverified) since construction, published in state."""
+    probe.port.status = "closed"
+    probe._track_epoch()
+    assert probe.position_epoch == 0
+    probe.port.status = "verified"
+    probe._track_epoch()
+    assert probe.position_epoch == 1
+    probe._track_epoch()                       # still up: the same epoch
+    assert probe.position_epoch == 1
+    for down in ("lost", "connecting"):
+        probe.port.status = down
+        probe._track_epoch()
+        assert probe.position_epoch == 1
+    probe.port.status = "unverified"           # back up: a new counter
+    probe._track_epoch()
+    assert probe.position_epoch == 2
+    assert probe.state["position_epoch"] == 2
+
+
+@pytest.mark.schema
+def test_every_position_sample_checks_the_epoch(probe):
+    probe.port.status = "closed"
+    probe._track_epoch()
+    probe.port.status = "simulated"
+    probe.port.lines = ["POS:5,6,7"]
+    position = probe._read_position()
+    probe._note_position(position)
+    assert probe.position_epoch == 1
+
+
+@pytest.mark.schema
 def test_a_command_the_schema_does_not_declare_is_refused(probe):
     assert probe.run("_halt_hardware").is_refused
     assert probe.run("_energize").is_refused
