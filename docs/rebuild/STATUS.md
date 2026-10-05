@@ -113,6 +113,42 @@ lands as `palette.py` / `theme.py` tokens.
 
 ## Open items
 
+### Phase 1 of the flake-coordinates and user-system proposals (2026-10-04, evening)
+
+Owner answers of 2026-10-04 are in `handoff/proposal-user-system.md` §10.1a
+(git-ignored). Landed, gates on the merged tree: fast 3337 (3269 + 18
+store-v6 + 44 new + 6 architecture parametrisations of the two new
+modules) / golden 78 / Qt 255 / legacy 1038 / launch 200. Not pushed.
+
+- `rb-store-v6` (8ab88fa): Transfer Map store **version 6**, the one
+  migration of both proposals: `sample_id`, `flake_uid`, `operator_id`
+  ("station" until profiles), `camera_profile_id`, the two AFM heights
+  (`channel_height_nm`: substrate to channel top, positive up;
+  `trench_depth_nm`: tip cut depth, positive down; Q17), the optical width
+  with its method (`capture_px` default; Q19), and `meta(map_db_uuid)`.
+  Attach optical width never makes a trial measured; `pick_width` (AFM,
+  else optical) feeds every figure; the 3D map rings optical, the slice /
+  compare / gradient are AFM-only unless **Width source** says otherwise
+  (optical at 3x noise); titles name their sources. Proven on copies of
+  the two inventory stores (v4 and v5, both empty) and on seeded v1/v2/v4/v5
+  files; hand-driven through the Web API (found and fixed a clipped title).
+- `rb-sample-frame` (7286a58): flake-coords Phase 0, `model/sample_frame.py`.
+  The chuck's and DC probe's um per count raise `BenchFactMissing` until
+  measured or typed.
+- `rb-sample-store` (6482e6c): `model/sample_store.py`, the
+  `data/sample_map.sqlite` store and the `flake-coords/1` export/import
+  (Q11 additive fields, Q16 no red-percent thickness, Q18 quality/defects).
+
+Next, not started: the `SampleMap` model and its sheet (needs the lead's
+core changes: `Setup.register`, the two `GATE_WORDS` lines, the probe's
+`position_epoch`), then user-system Phase 1 (`ProfileService`, local
+profiles). Owner facts still open: axes, um per count (chuck, DC),
+backlash, chip mounting, objectives, the manual rig's pitch, the gamepad
+mark button; Q7, Q10, Q20-Q22. Known flake, not new:
+`test_mark_appears_in_the_index_and_the_label_from_the_mark_on` failed
+1 of 3 runs on the unchanged base (a 1 ms timing bound). The verify
+skill's counts (2290 / 212) are stale: today's base is 3269 / 255.
+
 ### Resume here (handoff written 2026-09-26, late; Tier R added 2026-09-27)
 
 - **2026-09-27, night: the first real trial, and its findings.** The owner
