@@ -120,9 +120,10 @@ class SampleMap(Model):
         self._selected = None          # flake_uid
         self._shape = ss.SHAPES[0]
         self._thickness_method = ss.THICKNESS_APPROX_METHODS[0]
-        #: Who flags (`flakes.owner`): "station" until the user system's
-        #: profiles set the signed-in operator.
+        #: Who flags (`flakes.owner`) and how that was established
+        #: (`owner_auth`): Setup sets both from the signed-in profile.
         self.owner = "station"
+        self.owner_auth = "station"
 
     @staticmethod
     def default_db_path():
@@ -614,7 +615,7 @@ class SampleMap(Model):
                 "material": (self.flake_material or "").strip() or sample.get("material"),
                 "red_percent": getattr(red, "current_red", None) if red else None,
                 "red_run_id": getattr(red, "run_id", None) if red else None,
-                "owner": self.owner,
+                "owner": self.owner, "owner_auth": self.owner_auth,
                 "note": (self.flake_note or "").strip() or None,
             }
             try:

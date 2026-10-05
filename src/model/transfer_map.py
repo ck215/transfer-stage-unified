@@ -104,6 +104,10 @@ TRIAL_COLUMNS = (
     # Q17/Q19 as answered): the chip and flake being cut, who cut it, the
     # colour profile, and the cut descriptors. NULL = not measured.
     ("sample_id", "TEXT"), ("flake_uid", "TEXT"), ("operator_id", "TEXT"),
+    # How operator_id was established (user-system Q1): "station" (nobody
+    # signed in), "offline-unverified" (no lab server checked a PIN), later
+    # "verified".
+    ("operator_auth", "TEXT"),
     ("camera_profile_id", "TEXT"),
     # The AFM step from the substrate to the channel's top (positive up) and
     # the depth the tip cut into the flake (positive down), each optional.
@@ -605,9 +609,10 @@ class TransferMap(Model):
         self._band = plot_data.FORCE_BANDS[0]
         self._width_source = plot_data.WIDTH_SOURCES[0]
         self._width_optical_method = WIDTH_OPTICAL_METHODS[0]
-        #: Who cuts (store v6 `operator_id`): "station" until the user
-        #: system's profiles set the signed-in operator.
+        #: Who cuts (store v6 `operator_id`) and how that was established
+        #: (`operator_auth`): Setup sets both from the signed-in profile.
         self.operator_id = "station"
+        self.operator_auth = "station"
         self._revision = 0
         self._figure_cache = None
         self._indices = {}             # trial id -> force indices
@@ -1057,7 +1062,8 @@ class TransferMap(Model):
                 "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
                 "origin": "recorded", "tilt_source": tilt_source,
                 "speed_source": speed_source, "note": "",
-                "operator_id": self.operator_id})
+                "operator_id": self.operator_id,
+                "operator_auth": self.operator_auth})
             if full:
                 self._store.update(trial_id, {"before_full_path": self._write_picture(
                     trial_id, "before_full", full)})
@@ -1969,7 +1975,7 @@ class TransferMap(Model):
                     "width_optical_um", "width_optical_sigma_um")},
                 **{name: (row.get(name) or "").strip() or None for name in (
                     "width_optical_method", "sample_id", "flake_uid",
-                    "operator_id", "camera_profile_id")},
+                    "operator_id", "operator_auth", "camera_profile_id")},
                 "broke": 1 if broke else 0,
                 "note": row.get("note") or "",
                 "status": "measured" if width is not None else "recorded",

@@ -319,5 +319,5 @@ def test_a_headless_web_launch_prints_only_its_address(tmp_path):
     assert out.strip().splitlines() == [f"Station served at http://127.0.0.1:{port}"]
     assert err == ""
     titles = [s["title"] for s in setup["schema"]["sections"]]
-    assert titles[:3] == ["Update", "Firmware", "Devices"]
+    assert titles[:4] == ["Profile", "Update", "Firmware", "Devices"]
     assert setup["state"]["values"]["web_address"] == f"http://127.0.0.1:{port}"
