@@ -22,6 +22,9 @@ class Panel:
     UNGATED_COMMANDS = frozenset({"toggle_estop", "estop", "clear_estop", "halt",
                                   "stop_run", "extend_idle"})
     PARAMS = {}     # {name: Param}; subclasses: PARAMS = {**Base.PARAMS, ...}
+    #: Inputs whose values never reach the log (a PIN, when the lab server
+    #: can check one; user-system section 6.1): `run` writes `<redacted>`.
+    SECRET_INPUTS = frozenset()
 
     def __init__(self):
         for name, value in self._defaults().items():
@@ -107,9 +110,11 @@ class Panel:
             # A data source (`series`, `figure`, `log`) may be a property.
             value = found(*args) if callable(found) else found
             if command not in self._QUIET and not self._is_data_command(command):
+                shown = {k: ("<redacted>" if k in self.SECRET_INPUTS else v)
+                         for k, v in (inputs or {}).items()}
                 events.debug("Command", f"{command}{tuple(args)} ok in "
                              f"{(time.monotonic() - started) * 1000:.1f} ms "
-                             f"inputs={inputs or {}}", source=source)
+                             f"inputs={shown}", source=source)
             return Result(Result.OK, value=value)
         except Refused as refusal:
             events.info("Refused", refusal.reason, source=source)
@@ -199,6 +204,27 @@ class Panel:
             return True
         return any(e.get("stop") and e.get("command") == command
                    for e in sch.elements(self.schema))
+
+    def apply_defaults(self, values):
+        """Preferences from a profile (user-system section 3.5): each value
+        parsed by its Param, as `run` parses an input, then assigned through
+        the same attribute (a gated setter may still refuse). Never raises;
+        returns `{name: reason}` for what it did not apply."""
+        refused = {}
+        for name, raw in (values or {}).items():
+            param = self.PARAMS.get(name)
+            if param is None:
+                refused[name] = f"not a parameter of {self.NAME}"
+                continue
+            ok, value = param.parse(raw)
+            if not ok:
+                refused[name] = value
+                continue
+            try:
+                setattr(self, name, value)
+            except (Refused, ValueError) as refusal:
+                refused[name] = str(getattr(refusal, "reason", refusal))
+        return refused
 
     def _apply_inputs(self, inputs):
         """All or nothing. Refusal names the field."""

@@ -45,6 +45,7 @@ from devices import gamepad as gamepad_module
 from devices import serial_port as serial_port_module
 from devices.serial_port import ConnectionState, SerialPort
 from events import events
+from model import profile as profiles_module
 from model.base import Model
 from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
@@ -53,6 +54,7 @@ from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from panel import Panel
+from param import Param
 from result import NeedsConfirm, Refused
 
 #: The Port dropdown's one fixed entry. Everything else in the list is a
@@ -256,6 +258,12 @@ class Setup(Panel):
         super().__init__()
         self.controller = controller
         self._restart = restart
+        # User-system Phase 1: local profiles. Setup is the composition root,
+        # the one place the service is built (section 5.4).
+        self.profiles = profiles_module.ProfileService(
+            profiles_module.LocalFilesSource(profiles_module.profiles_root()),
+            lambda name: getattr(MODEL_TYPES.get(name), "PARAMS", {}))
+        self._profile_pick = profiles_module.STATION_DISPLAY
         self._rows = self._build_rows()
         self._schema = self._build_schema()
         self._lock = threading.RLock()
@@ -1177,6 +1185,147 @@ class Setup(Panel):
         events.info("Launched", ", ".join(built), source=self.NAME)
         return built
 
+    # -- profiles (user-system Phase 1) -------------------------------------------
+    PARAMS = {"profile_new_name": Param("profile_new_name", "text", default="",
+                                        label="New profile")}
+
+    @property
+    def profile_user(self):
+        return self._profile_pick
+
+    def profile_options(self):
+        """Station first, then the local profiles (an options source is a
+        method on Setup, as `port_options` is)."""
+        return [u["display_name"] if u["username"] == profiles_module.STATION
+                else u["username"] for u in self.profiles.users]
+
+    def set_profile_user(self, name):
+        if name not in self.profile_options():
+            raise Refused(f"No profile named {name} on this station.")
+        self._profile_pick = name
+        return name
+
+    @property
+    def profile_status(self):
+        return self.profiles.status
+
+    def add_profile(self):
+        """A local profile: a name only. No PIN is kept on a station (Q1)."""
+        name = str(self.profile_new_name or "").strip()
+        try:
+            self.profiles.add_profile(name)
+        except profiles_module.ProfileError as refusal:
+            raise Refused(str(refusal))
+        self.profile_new_name = ""
+        self._profile_pick = name
+        return name
+
+    def sign_in(self):
+        """Sign in as the picked profile (offline-unverified: no lab server
+        yet) and apply its effective preferences to every open model."""
+        pick = self._profile_pick
+        try:
+            if pick == profiles_module.STATION_DISPLAY:
+                self.profiles.sign_out()
+            else:
+                self.profiles.sign_in(pick)
+        except profiles_module.ProfileError as refusal:
+            raise Refused(str(refusal))
+        self._apply_profile_everywhere()
+        return self.profiles.status
+
+    def sign_out(self):
+        self.profiles.sign_out()
+        self._profile_pick = profiles_module.STATION_DISPLAY
+        self._apply_profile_everywhere()
+        return self.profiles.status
+
+    def _apply_profile_everywhere(self):
+        for model in self.controller.models.values():
+            self._apply_profile(model)
+
+    def _apply_profile(self, model):
+        """The effective model parameters (Q4 split) and who is working."""
+        apply = getattr(model, "apply_defaults", None)
+        name = getattr(model, "NAME", None)
+        if callable(apply) and name:
+            effective, _ = self.profiles.effective_model_params()
+            for param, reason in apply(effective.get(name, {})).items():
+                events.warn("Profile Value Not Applied", f"{name}.{param}: {reason}",
+                            source=self.NAME)
+        user, auth = self.profiles.current_user, self.profiles.auth
+        if hasattr(model, "operator_id"):
+            model.operator_id, model.operator_auth = user, auth
+        if hasattr(model, "owner"):
+            model.owner, model.owner_auth = user, auth
+
+    def _open_values(self, names):
+        out = {}
+        for model in self.controller.models.values():
+            params = getattr(model, "PARAMS", None) or {}
+            if not getattr(model, "NAME", None):
+                continue
+            values = {}
+            for name in sorted(names & set(params)):
+                found = getattr(type(model), name, None)
+                if isinstance(found, property) and found.fset is None:
+                    continue
+                value = getattr(model, name, None)
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    continue
+                values[name] = value
+            if values:
+                out[model.NAME] = values
+        return out
+
+    def remember_settings(self):
+        """"Remember for me": the open models' user parameters (Q4) into the
+        signed-in profile. Station-only and brake fields are never taken."""
+        values = self._open_values(profiles_module.USER_PARAMS)
+        try:
+            self.profiles.remember(values)
+        except profiles_module.ProfileError as refusal:
+            raise Refused(str(refusal))
+        events.info("Settings Remembered", f"{self.profiles.current_user}: "
+                    f"{', '.join(values) or 'nothing open'}.", source=self.NAME)
+        return sorted(values)
+
+    def save_station_settings(self, confirmed=False):
+        """The station's defaults: user and station-only parameters of the
+        open models (never the brakes). Everyone at this station gets them."""
+        if not confirmed:
+            raise NeedsConfirm("Save the open models' settings as this station's "
+                               "defaults? Everyone who signs in here starts from "
+                               "them; the brake fields are never saved.",
+                               "save_station_settings")
+        values = self._open_values(profiles_module.USER_PARAMS
+                                   | profiles_module.STATION_PARAMS)
+        try:
+            self.profiles.save_station(values)
+        except profiles_module.ProfileError as refusal:
+            raise Refused(str(refusal))
+        return sorted(values)
+
+    def _profile_section(self):
+        """User-system section 2.4, first on the page. No PIN box in Phase 1:
+        nothing could check a PIN without the lab server, and none is ever
+        cached on a station (Q1); it arrives with the server."""
+        P = self.PARAMS
+        return sch.section(
+            "Profile",
+            sch.dropdown("Profile", "profile_user", "set_profile_user",
+                         "profile_options"),
+            sch.button("Sign in", "sign_in", role="go"),
+            sch.button("Sign out", "sign_out", role="neutral"),
+            sch.readonly("Signed in", "profile_status", role="info"),
+            sch.button("Remember my settings", "remember_settings", role="neutral"),
+            sch.button("Save station settings", "save_station_settings",
+                       role="neutral"),
+            sch.entry("New profile", "profile_new_name", P["profile_new_name"]),
+            sch.button("Add profile", "add_profile", inputs=("profile_new_name",)),
+            layout="row",
+        )
+
     def model_from_config(self, config):
         """One config -> one Model. `Controller.factory`, so `reopen(name)`
         reconstructs a closed tab's model from the remembered config."""
@@ -1192,7 +1341,9 @@ class Setup(Panel):
             if _kind(resource) == "port" and is_sim:
                 value = SIM
             resources[resource] = value
-        return model_class(sim=is_sim, **resources)
+        model = model_class(sim=is_sim, **resources)
+        self._apply_profile(model)
+        return model
 
     def _check_identities(self, configs):
         """A row pointed at a port that answered as something else is a wiring
@@ -1793,7 +1944,7 @@ class Setup(Panel):
         runs, whether GitHub has something newer, and the one press that
         takes it. `sch.button` has no `enabled_by`, so Update now is gated by
         refusal (nothing to apply, a model running, a check under way)."""
-        sections = [sch.section(
+        sections = [self._profile_section(), sch.section(
             "Update",
             sch.readonly("Station", "station_version"),
             sch.readonly("Updates", "update_status", role="info"),

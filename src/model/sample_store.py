@@ -107,7 +107,10 @@ FLAKE_COLUMNS = (
     ("thickness_afm_nm", "REAL"), ("thickness_afm_sigma_nm", "REAL"),
     ("afm_measured_at", "TEXT"), ("afm_by", "TEXT"), ("afm_file", "TEXT"),
     ("material", "TEXT"), ("status", "TEXT NOT NULL DEFAULT 'candidate'"),
-    ("owner", "TEXT"), ("searched_at", "TEXT"), ("transferred_at", "TEXT"),
+    # owner_auth: how `owner` was established (user-system Q1): "station",
+    # "offline-unverified" (no lab server checked a PIN), later "verified".
+    ("owner", "TEXT"), ("owner_auth", "TEXT"), ("searched_at", "TEXT"),
+    ("transferred_at", "TEXT"),
     ("note", "TEXT"), ("trial_ids", "TEXT"), ("run_ids", "TEXT"),
     ("tip_ids", "TEXT"), ("tags", "TEXT"), ("legacy_ref", "TEXT"),
     ("created_at", "TEXT"), ("updated_at", "TEXT"), ("deleted_at", "TEXT"),

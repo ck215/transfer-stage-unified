@@ -1282,7 +1282,8 @@ V5_COLUMNS = ("video_path", "video_index_path", "video_frames",
               "video_dropped")
 #: Version 6 (2026-10-04, both proposals' one migration): the trial names
 #: its chip and flake and operator, and the cut descriptors.
-V6_COLUMNS = ("sample_id", "flake_uid", "operator_id", "camera_profile_id",
+V6_COLUMNS = ("sample_id", "flake_uid", "operator_id", "operator_auth",
+              "camera_profile_id",
               "channel_height_nm", "channel_height_sigma_nm",
               "trench_depth_nm", "trench_depth_sigma_nm",
               "width_optical_um", "width_optical_sigma_um",
@@ -2560,7 +2561,8 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
         assert ("now has " + ", ".join(V6_COLUMNS) + " (version 6)"
                 in upgraded[0].message), upgraded[0].message
         trial = _record(model, red)
-        assert _row(private_db, trial)["operator_id"] == "station"
+        row = _row(private_db, trial)
+        assert (row["operator_id"], row["operator_auth"]) == ("station", "station")
     finally:
         model.close()
 
