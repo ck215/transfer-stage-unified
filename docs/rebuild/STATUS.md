@@ -113,6 +113,51 @@ lands as `palette.py` / `theme.py` tokens.
 
 ## Open items
 
+### Phase 1 continued: core changes, the Sample Map, profiles (2026-10-04, night)
+
+Landed (merged aa5e68f, cb85d47, 4a7bfef; not pushed: the repository is
+public, the owner pushes). Gates on the gated tip, byte-identical to the
+merged tree: fast **3433** / golden 78 / Qt 255 / legacy 1038 / launch 200.
+Hand-driven through the Web API on scratch stores (profile, sign-in,
+typed-readings registration, flag, extent, rate, figure, Remember my
+settings).
+
+- `rb-core-sample` (lead, flake-coords section 10 items 2, 3, 5):
+  `probe.position_epoch` (a new epoch each time the port comes up),
+  `GATE_WORDS` `unregistered` / `no_source` (the proposal had
+  `unregistered`'s sentence in the enabled slot; it is the disabled-direction
+  word, as `armed`), `--sample-db`.
+- `rb-sample-map`: `model/sample_map.py`, registered after the Transfer Map
+  (its own page; Setup rows, smokes and the Web tests count eight models).
+  Crosshair marks, the frame refit per mark, closure and rectangularity,
+  registration ended by an epoch change or the axes closing, flakes with both
+  frames, Red Percent's reading and picture, quality/defects, the bbox
+  extent, thickness approx/AFM apart, guidance only (nothing moves), typed
+  micrometer readings for a rig without probes, flake-coords/1 export/import.
+  Fixed on the way: `sample_frame` said `stage_bbox` (the vocabulary is
+  `stage_corners`); the A-B minimum is now 30 um on the chip (was raw
+  units, so typed mm read as too close). A SIM probe sends no POS lines, so
+  marking with it is refused as stale: correct, by design.
+- `rb-profiles`: `model/profile.py` (merge with provenance, the Q4 lists,
+  local files, sign-in by name), `Panel.apply_defaults`,
+  `Panel.SECRET_INPUTS`, `Controller.models`, the Profile row first on
+  Setup. Every session is `offline-unverified` until a lab server exists;
+  no PIN or hash is stored, and no PIN box is shown yet (nothing could check
+  it; it comes with the server and a masked entry type). Trials gain
+  `operator_auth` (still the one v6 migration, unreleased) and flakes
+  `owner_auth`.
+
+Not done yet: the `launch`, `default_controller` and `controller_binds`
+namespaces (gamepad identity and binds touch the jog path), the Transfer
+Map's "Flake being cut" dropdown (flake-coords Phase 2), the viewfinder and
+um-per-px calibration (Phase 2), the lab server (user-system Phase 2).
+Owner facts still open: axes, um per count (chuck, DC), backlash, chip
+mounting, objectives, the manual rig's pitch and knob sense, the gamepad
+mark button; Q7, Q10, Q20-Q22. **Known flaky test (pre-existing):**
+`test_transfer_map.py::test_mark_appears_in_the_index_and_the_label_from_the_mark_on`
+fails about 1 run in 3 on an unchanged tree (a 1 ms timing bound); the
+verify skill now says so and gives today's counts.
+
 ### Phase 1 of the flake-coordinates and user-system proposals (2026-10-04, evening)
 
 Owner answers of 2026-10-04 are in `handoff/proposal-user-system.md` §10.1a
