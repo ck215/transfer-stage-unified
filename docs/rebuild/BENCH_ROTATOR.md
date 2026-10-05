@@ -49,7 +49,9 @@ probe's are not: marking with them is refused until typed.
 
 ## 2. One Rotator calibration run
 
-1. Launch the Rotator (real port; there is no Rotator simulator) and the locating axes.
+1. On Setup, tick the Rotator (real port; there is no Rotator simulator), the
+   locating axes (real ports: a SIM probe sends no positions, so its marks
+   are refused as stale) and the **Sample Map** row (no port), then Launch.
    Press **Home** on the Rotator page. Its Motion state must read `Ready`, not
    `Not referenced - run Home`; until then the Sample Map's marks are greyed out
    with "Rotator angle unknown: home or reconnect it".
