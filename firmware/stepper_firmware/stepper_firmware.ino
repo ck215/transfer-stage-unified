@@ -1,5 +1,6 @@
 #include <AccelStepper.h>
 #include <TMCStepper.h>
+#include <avr/wdt.h>
 
 // define pins
 #define yStep 22
@@ -83,6 +84,73 @@ AxisState current_state = IDLE;
 unsigned long previous_print_millis = 0;
 #define PRINT_INTERVAL 100
 
+// ---- Runaway guards (bench incidents 2026-10-04 17:40 and 17:59: the board
+// kept stepping on its last jog command while ignoring every byte the host
+// sent, and only a hard reset stopped it).
+// 1. Jog dead-man: in manual (and during a D-pad step) the host streams a
+//    packet every 20 ms, neutral included. No packet for JOG_TIMEOUT_MS stops
+//    the motion; coils keep holding (the host stops streaming when its window
+//    loses focus, and that must not drop the Z axis).
+// 2. Hardware watchdog: petted only while millis() advances (interrupts
+//    alive) and the host UART is still enabled; otherwise the board resets
+//    within ~1 s and setup() boots with the driver outputs off.
+// 3. Every stop is unconditional and cancels a D-pad step; 'd' also pulls the
+//    EN pins high, a disable that needs no UART to the drivers.
+// 4. 'e' no longer blocks for 30 ms (that stall overflowed the 64-byte RX
+//    buffer on every manual entry); motion is held for ENABLE_SETTLE_MS.
+#define JOG_TIMEOUT_MS 250
+#define ENABLE_SETTLE_MS 30
+unsigned long last_packet_ms = 0;
+unsigned long enable_settle_until = 0;
+bool settling = false;
+unsigned long wdt_last_millis = 0;
+
+void driversOutputsOff() {
+  digitalWrite(xEN, HIGH);
+  digitalWrite(yEN, HIGH);
+  digitalWrite(zEN, HIGH);
+}
+
+void driversOutputsOn() {
+  digitalWrite(xEN, LOW);
+  digitalWrite(yEN, LOW);
+  digitalWrite(zEN, LOW);
+}
+
+void holdPosition() {
+  x_axis.setSpeed(0);
+  y_axis.setSpeed(0);
+  z_axis.setSpeed(0);
+  x_axis.moveTo(x_axis.currentPosition());
+  y_axis.moveTo(y_axis.currentPosition());
+  z_axis.moveTo(z_axis.currentPosition());
+}
+
+void haltMotion() {
+  MANUAL_ON = false;
+  AUTONOMOUS_ON = false;
+  DPAD_STEP = false;
+  current_state = IDLE;
+  manual_x_value = 0.0; manual_y_value = 0.0; manual_z_value = 0.0;
+  dpad_LR = 0; dpad_UD = 0; bumpers = 0;
+  holdPosition();
+}
+
+// A jog packet is applied only if every field is plausible. A byte dropped
+// from the RX buffer shifts the next packet into the one after it, and the
+// shifted bytes decode as arbitrary floats (a huge speed, a NaN, a D-pad
+// press); such a packet is ignored, and does not feed the jog dead-man.
+#define MAX_JOG_SPEED 6400.0
+bool fieldIsStep(float v) {
+  return isfinite(v) && v >= 0.0 && v <= 100000.0 && v == (float)(long)v;
+}
+bool fieldIsUnit(float v) {
+  return isfinite(v) && v >= -1.0001 && v <= 1.0001;
+}
+bool fieldIsTri(float v) {
+  return v == -1.0 || v == 0.0 || v == 1.0;
+}
+
 // Struct for packet format
 struct __attribute__((packed)) ManualControlPacket {
     uint8_t start_marker;       // 0xAA
@@ -101,6 +169,21 @@ struct __attribute__((packed)) ManualControlPacket {
 
 const size_t BINARY_PACKET_SIZE = sizeof(ManualControlPacket);
 ManualControlPacket incomingPacket;
+unsigned long rejected_packets = 0;
+
+// Checks the global incomingPacket (a struct parameter would break the
+// Arduino prototype generator, which places prototypes above the struct).
+bool packetIsValid() {
+  const ManualControlPacket &p = incomingPacket;
+  return fieldIsUnit(p.x_axisStatus) && fieldIsUnit(p.y_axisStatus)
+      && fieldIsUnit(p.z_axisStatus)
+      && fieldIsStep(p.x_stepSize) && fieldIsStep(p.y_stepSize)
+      && fieldIsStep(p.z_stepSize)
+      && p.x_stepSize >= 1.0 && p.y_stepSize >= 1.0 && p.z_stepSize >= 1.0
+      && fieldIsTri(p.dpad_LR) && fieldIsTri(p.dpad_UD) && fieldIsTri(p.bumpers)
+      && isfinite(p.manual_jog_speed) && p.manual_jog_speed >= 0.0
+      && p.manual_jog_speed <= MAX_JOG_SPEED;
+}
 
 String getValue(String data, char separator, int index)
 {
@@ -259,23 +342,9 @@ void parseSerialAuto() // only run if there is new information in the buffer
             // CASE 3: A "STOP" command (neither mode is 1)
             else 
             {
-                 if (MANUAL_ON || AUTONOMOUS_ON) 
-                 {
-                    // Serial2.println("ALL MODES DISENGAGED. HALTING.");
-
-                    // // Reset timers whenever a mode is engaged
-                    // resetTimers();
-
-                    MANUAL_ON = false;
-                    AUTONOMOUS_ON = false;
-                    current_state = IDLE;
-                    manual_x_value = 0.0;
-                    manual_y_value = 0.0;
-                    manual_z_value = 0.0;
-                    x_axis.setSpeed(0);
-                    y_axis.setSpeed(0);
-                    z_axis.setSpeed(0);
-                }  
+                // Unconditional (2026-10-04): a stop must also land during a
+                // D-pad step, when MANUAL_ON and AUTONOMOUS_ON are both false.
+                haltMotion();
             }
         }
     }
@@ -289,6 +358,13 @@ void parseHybridSerial() {
         if (peekChar == 0xAA) {
             if (Serial.available() >= BINARY_PACKET_SIZE) {
                 Serial.readBytes((char*)&incomingPacket, BINARY_PACKET_SIZE);
+                if (incomingPacket.mode == 1 && !packetIsValid()) {
+                    incomingPacket.mode = 255;     // ignored below
+                    rejected_packets++;
+                }
+                if (incomingPacket.mode == 0 || incomingPacket.mode == 1) {
+                    last_packet_ms = millis();
+                }
 
                 // Binary mode 1: Engage Manual
                 if (incomingPacket.mode == 1) {
@@ -331,6 +407,8 @@ void parseHybridSerial() {
             // system_enabled belief: a stale/desynced flag must never be
             // able to block the one command that actually kills power.
             system_enabled = false;
+            haltMotion();
+            driversOutputsOff();
             xUART.toff(0);
             yUART.toff(0);
             zUART.toff(0);
@@ -351,7 +429,11 @@ void parseHybridSerial() {
                 xUART.toff(4);
                 yUART.toff(4);
                 zUART.toff(4);
-                delay(30); // Gives drivers a clean 30ms window to power up cleanly
+                driversOutputsOn();
+                // Was delay(30): the blocking stall dropped incoming bytes.
+                // Motion is held for the same window, non-blocking.
+                enable_settle_until = millis() + ENABLE_SETTLE_MS;
+                settling = true;
             }
         }
 
@@ -373,16 +455,8 @@ void parseHybridSerial() {
 }
 
 void handleAllStop() {
-    if (MANUAL_ON || AUTONOMOUS_ON) {
-        Serial2.println("ALL MODES DISENGAGED. HALTING.");
-        MANUAL_ON = false;
-        AUTONOMOUS_ON = false;
-        current_state = IDLE;
-        manual_x_value = 0.0; manual_y_value = 0.0; manual_z_value = 0.0;
-        x_axis.setSpeed(0);
-        y_axis.setSpeed(0);
-        z_axis.setSpeed(0);
-    }
+    // Unconditional, and cancels a D-pad step (2026-10-04).
+    haltMotion();
 }
 
 // IMPLEMENT DEBUG INFO HERE
@@ -483,6 +557,10 @@ void runManualMode()
 }
 
 void setup() {
+  // A watchdog reset leaves the watchdog running: clear it before anything
+  // slow, or setup() itself would be reset over and over.
+  MCUSR = 0;
+  wdt_disable();
   // configure serial
   Serial.begin(500000);
 
@@ -495,9 +573,8 @@ void setup() {
   pinMode(yEN, OUTPUT);
   pinMode(zEN, OUTPUT);
 
-  digitalWrite(xEN, LOW);
-  digitalWrite(yEN, LOW);
-  digitalWrite(zEN, LOW);
+  // Boot with the driver outputs off (2026-10-04); 'e' turns them on.
+  driversOutputsOff();
 
   Serial1.begin(115200);
   Serial2.begin(115200);
@@ -551,6 +628,40 @@ void setup() {
   }
 
   delay(5); // TODO: don't know why this is here but might be important so I'm keeping it
+
+  wdt_last_millis = millis();
+  wdt_enable(WDTO_1S);
+}
+
+// Pet the watchdog only while the board is demonstrably healthy: millis()
+// advancing (timer interrupts alive) and the host UART receiver, transmitter
+// and RX interrupt still enabled. If either fails, the host can no longer be
+// heard: cut the motors here and let the watchdog reset the board.
+void watchdogCheck() {
+  const uint8_t uart_ok = _BV(RXEN0) | _BV(TXEN0) | _BV(RXCIE0);
+  if ((UCSR0B & uart_ok) != uart_ok) {
+    haltMotion();
+    driversOutputsOff();
+    return;   // no pet: reset within ~1 s
+  }
+  unsigned long m = millis();
+  if (m != wdt_last_millis) {
+    wdt_last_millis = m;
+    wdt_reset();
+  }
+}
+
+// Jog dead-man: manual motion (and a D-pad step) needs a packet at least every
+// JOG_TIMEOUT_MS. Stops the motion, keeps the coils holding, stays in manual
+// so the next packet resumes from neutral.
+void jogDeadman() {
+  if (!(MANUAL_ON || DPAD_STEP)) return;
+  if (millis() - last_packet_ms <= JOG_TIMEOUT_MS) return;
+  manual_x_value = 0.0; manual_y_value = 0.0; manual_z_value = 0.0;
+  dpad_LR = 0; dpad_UD = 0; bumpers = 0;
+  DPAD_STEP = false;
+  MANUAL_ON = true;
+  holdPosition();
 }
 
 void status_update_print_serial() 
@@ -602,13 +713,19 @@ void loop() {
   // put your main code here, to run repeatedly:
   // Change direction once the motor reaches target position
   // Move the motor one step
+  watchdogCheck();
   parseHybridSerial();
+  jogDeadman();
 
-  if (MANUAL_ON) runManualMode();
+  if (settling && (long)(millis() - enable_settle_until) >= 0) settling = false;
 
-  if (AUTONOMOUS_ON) runAutoMode();
+  if (!settling) {
+    if (MANUAL_ON) runManualMode();
 
-  if (DPAD_STEP) runDpadStep();
+    if (AUTONOMOUS_ON) runAutoMode();
+
+    if (DPAD_STEP) runDpadStep();
+  }
 
   status_update_print_serial();
 }
