@@ -95,6 +95,10 @@ wire is pinned by `tests/golden/`.
 - No platform-specific UI (2026-09-25): one stop chord (Ctrl+.), no ⌘
   variants, no macOS-only commands or copy in any view.
 - Names: "Red Percent", "Rotator", "Temperature Controller".
+- 2026-10-04: **the Rotator turns the chip** (in-plane, about a centre that
+  is neither corner A nor the stage origin); the Sample Map models it
+  (`rb-rotator-frame`, 2026-10-05). The Transfer Map still calls the angle
+  `tilt_deg`; renaming it is the owner's call.
 - Web = candidate primary frontend ("instrument console"); Tk/Qt persist as
   backups. Making Web the default is `VIEW_MODE` in the launchers.
 
@@ -112,6 +116,139 @@ component strip each) was published for the owner the same day; the choice
 lands as `palette.py` / `theme.py` tokens.
 
 ## Open items
+
+### The Rotator turns the chip: the Sample Map follows it (2026-10-05)
+
+Landed (merged 1710d18; not pushed: the repository is public, the owner
+pushes). Gates on the branch tip 6368de5, whose tree the merge equals:
+fast **3478** (3433 + 45) / golden 78 / Qt 255 / legacy 1038 / launch 200;
+the fast gate re-run on the merged tree: 3478 passed, 12 skipped,
+1 xfailed, 255 deselected. The verify skill's baseline still says 3433
+(`.claude/` was left alone); today's fast count is 3478.
+
+- `rb-rotator-frame` (owner ruling 2026-10-04: the SMC100 spins the chip
+  in-plane about a centre c that is neither corner A nor the stage origin).
+  A registration records the Rotator's angle phi0; at phi the frame is the
+  registered one followed by the turn, p = c + R(s(phi - phi0))(p_reg - c)
+  (`sample_frame.RotatedFrame`). c and the sense s come from one feature
+  marked at several angles (`rotation_centre`: two marks with a known
+  sense by the chord, three or more by least squares over both senses; a
+  set that is not a turn, a tilt for one, is refused). The calibration is
+  station-only (sample store version 2, `rotator_calibrations`, never
+  exported) and expires with the stage's `position_epoch`. Uncalibrated, a
+  turn makes the registration unusable and the next mark ends it; back at
+  phi0 it holds. Corner A re-marked after a turn reports the **Rotator
+  closure**. Angle unknown (no reading, not referenced, homing, closed):
+  the gate word `rotator_unknown` greys the marks; a mark while the Rotator
+  moves is refused. Guidance only: nothing moves the Rotator or the stage.
+- Lead review: the base proof re-run (all 45 new or changed tests fail on
+  the base); two tests added (an extent marked across a turn, which fails
+  on the old `mark_extent`; a mark refused while the Rotator turns) and the
+  calibration-expiry test tightened to assert "calibration expired".
+  `src/views/base.py` (lead-only) carries the one `GATE_WORDS` line, the
+  lead's own edit. Not hand-driven here: there is no Rotator simulator and
+  a SIM probe sends no positions, so the bench run is the first drive.
+- Bench procedure: `docs/rebuild/BENCH_ROTATOR.md` (back up, the bench
+  facts, one calibration, spin not tilt, the map follows a turn, roll back).
+
+Open, for the lead or the owner:
+- A flake flagged while the chip is turned keeps its raw stage position
+  without the angle it was taken at (corners are stored at phi0, flakes are
+  not). Harmless today (nothing re-places a flake from its stage position),
+  but the stage half of "both frames" is ambiguous once the Rotator turns:
+  a flake `rotator_deg` column, or the stage position stored at phi0.
+- The `A'turned` check corner is stored at the turned angle, while every
+  other corner row is at phi0.
+- The turn is computed in stage counts, which assumes equal X and Y um per
+  count (true of every locating source today; a skewed stage shows up as
+  the calibration's residual).
+- The Transfer Map records the Rotator's angle as each trial's `tilt_deg`;
+  under the ruling it is the chip's in-plane turn. Renaming is the owner's
+  call.
+- Owner facts still open as before (axes, um per count of the chuck and
+  the DC probe, backlash, mounting, objectives, the manual rig, the gamepad
+  mark button; Q7, Q10, Q20-Q22).
+
+### Phase 1 continued: core changes, the Sample Map, profiles (2026-10-04, night)
+
+Landed (merged aa5e68f, cb85d47, 4a7bfef; not pushed: the repository is
+public, the owner pushes). Gates on the gated tip, byte-identical to the
+merged tree: fast **3433** / golden 78 / Qt 255 / legacy 1038 / launch 200.
+Hand-driven through the Web API on scratch stores (profile, sign-in,
+typed-readings registration, flag, extent, rate, figure, Remember my
+settings).
+
+- `rb-core-sample` (lead, flake-coords section 10 items 2, 3, 5):
+  `probe.position_epoch` (a new epoch each time the port comes up),
+  `GATE_WORDS` `unregistered` / `no_source` (the proposal had
+  `unregistered`'s sentence in the enabled slot; it is the disabled-direction
+  word, as `armed`), `--sample-db`.
+- `rb-sample-map`: `model/sample_map.py`, registered after the Transfer Map
+  (its own page; Setup rows, smokes and the Web tests count eight models).
+  Crosshair marks, the frame refit per mark, closure and rectangularity,
+  registration ended by an epoch change or the axes closing, flakes with both
+  frames, Red Percent's reading and picture, quality/defects, the bbox
+  extent, thickness approx/AFM apart, guidance only (nothing moves), typed
+  micrometer readings for a rig without probes, flake-coords/1 export/import.
+  Fixed on the way: `sample_frame` said `stage_bbox` (the vocabulary is
+  `stage_corners`); the A-B minimum is now 30 um on the chip (was raw
+  units, so typed mm read as too close). A SIM probe sends no POS lines, so
+  marking with it is refused as stale: correct, by design.
+- `rb-profiles`: `model/profile.py` (merge with provenance, the Q4 lists,
+  local files, sign-in by name), `Panel.apply_defaults`,
+  `Panel.SECRET_INPUTS`, `Controller.models`, the Profile row first on
+  Setup. Every session is `offline-unverified` until a lab server exists;
+  no PIN or hash is stored, and no PIN box is shown yet (nothing could check
+  it; it comes with the server and a masked entry type). Trials gain
+  `operator_auth` (still the one v6 migration, unreleased) and flakes
+  `owner_auth`.
+
+Not done yet: the `launch`, `default_controller` and `controller_binds`
+namespaces (gamepad identity and binds touch the jog path), the Transfer
+Map's "Flake being cut" dropdown (flake-coords Phase 2), the viewfinder and
+um-per-px calibration (Phase 2), the lab server (user-system Phase 2).
+Owner facts still open: axes, um per count (chuck, DC), backlash, chip
+mounting, objectives, the manual rig's pitch and knob sense, the gamepad
+mark button; Q7, Q10, Q20-Q22. **Known flaky test (pre-existing):**
+`test_transfer_map.py::test_mark_appears_in_the_index_and_the_label_from_the_mark_on`
+fails about 1 run in 3 on an unchanged tree (a 1 ms timing bound); the
+verify skill now says so and gives today's counts.
+
+### Phase 1 of the flake-coordinates and user-system proposals (2026-10-04, evening)
+
+Owner answers of 2026-10-04 are in `handoff/proposal-user-system.md` §10.1a
+(git-ignored). Landed, gates on the merged tree: fast 3337 (3269 + 18
+store-v6 + 44 new + 6 architecture parametrisations of the two new
+modules) / golden 78 / Qt 255 / legacy 1038 / launch 200. Not pushed.
+
+- `rb-store-v6` (8ab88fa): Transfer Map store **version 6**, the one
+  migration of both proposals: `sample_id`, `flake_uid`, `operator_id`
+  ("station" until profiles), `camera_profile_id`, the two AFM heights
+  (`channel_height_nm`: substrate to channel top, positive up;
+  `trench_depth_nm`: tip cut depth, positive down; Q17), the optical width
+  with its method (`capture_px` default; Q19), and `meta(map_db_uuid)`.
+  Attach optical width never makes a trial measured; `pick_width` (AFM,
+  else optical) feeds every figure; the 3D map rings optical, the slice /
+  compare / gradient are AFM-only unless **Width source** says otherwise
+  (optical at 3x noise); titles name their sources. Proven on copies of
+  the two inventory stores (v4 and v5, both empty) and on seeded v1/v2/v4/v5
+  files; hand-driven through the Web API (found and fixed a clipped title).
+- `rb-sample-frame` (7286a58): flake-coords Phase 0, `model/sample_frame.py`.
+  The chuck's and DC probe's um per count raise `BenchFactMissing` until
+  measured or typed.
+- `rb-sample-store` (6482e6c): `model/sample_store.py`, the
+  `data/sample_map.sqlite` store and the `flake-coords/1` export/import
+  (Q11 additive fields, Q16 no red-percent thickness, Q18 quality/defects).
+
+Next, not started: the `SampleMap` model and its sheet (needs the lead's
+core changes: `Setup.register`, the two `GATE_WORDS` lines, the probe's
+`position_epoch`), then user-system Phase 1 (`ProfileService`, local
+profiles). Owner facts still open: axes, um per count (chuck, DC),
+backlash, chip mounting, objectives, the manual rig's pitch, the gamepad
+mark button; Q7, Q10, Q20-Q22. Known flake, not new:
+`test_mark_appears_in_the_index_and_the_label_from_the_mark_on` failed
+1 of 3 runs on the unchanged base (a 1 ms timing bound). The verify
+skill's counts (2290 / 212) are stale: today's base is 3269 / 255.
 
 ### Resume here (handoff written 2026-09-26, late; Tier R added 2026-09-27)
 
@@ -267,12 +404,16 @@ lands as `palette.py` / `theme.py` tokens.
   **2026-09-28, resumed and landed** (merged `5db7ff7` rb-launch,
   `a8883c5` rb-restart): two launchers (`run.sh` with `uname` for the
   macOS PySide repair, `run.bat`; `run_macos.sh` / `run_swap_macos.sh`
-  are shims until 2026-10-31; `run_swap.sh` is `dev/swap_branch.sh`, a
-  developer tool); the firmware check is Setup's **Firmware** row
+  were shims, removed the same night at the owner's word rather than after
+  2026-10-31; `run_swap.sh` is `dev/swap_branch.sh`, a developer tool);
+  the firmware check is Setup's **Firmware** row
   (`controller/firmware.py`: status per board from the stamp file and the
   sketch hashes, pinned against the script; "Flash out-of-date boards"
   asks and runs the script as a subprocess; Launch refuses during a
-  flash and asks once for an out-of-date board); nothing prints on a
+  flash and asks once for an out-of-date board; later that night the
+  owner asked for the old launcher's unattended flash back, behind one
+  popup: the startup check raises "Firmware Out of Date" with **Flash
+  now** as its action, `tests/test_setup.py`); nothing prints on a
   normal launch (`events.py` echoes only errors unless
   `STATION_ECHO_EVENTS=1`; the Web address is Setup's "Address" and the
   one deliberate line with `--no-browser`); acknowledged notices carry an

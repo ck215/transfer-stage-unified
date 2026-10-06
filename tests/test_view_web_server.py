@@ -1717,7 +1717,7 @@ def test_the_unconfirmed_stop_line_goes_when_the_latch_clears(station, tmp_path)
 # --------------------------------------------------------------------------
 @pytest.fixture
 def sim_station():
-    """The real six models, every one in SIM, behind a real Setup."""
+    """The real models, every one in SIM, behind a real Setup."""
     from controller.setup import Setup, SIM
     controller = Controller()
     setup = Setup(controller)
@@ -1725,7 +1725,7 @@ def sim_station():
         getattr(setup, f"set_{key}_enabled")(True)
         if row["needs_port"]:
             getattr(setup, f"set_{key}_port")(SIM)
-    assert len(setup.launch()) == 7   # the six plus the Transfer Map (Tier S)
+    assert len(setup.launch()) == 8   # + the Transfer Map (Tier S) and the Sample Map
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open(), "the server did not bind an ephemeral port"
     try:
@@ -2630,8 +2630,9 @@ def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path)
     assert out["device"]["shown"] == ["Rotator"], out
     after = out["after"]
     assert after["current"] == ["Overview"] and "Rotator" not in after["nav"], after
-    # Seven models, one closed (Tier S); Red Percent is on the Map's entry (D).
-    assert len(after["shown"]) == 5 and after["wells"] == 0, after
+    # Eight models (Tier S, the Sample Map), one closed; Red Percent is on
+    # the Map's entry (D).
+    assert len(after["shown"]) == 6 and after["wells"] == 0, after
 
 
 # --------------------------------------------------------------------------
@@ -3979,9 +3980,9 @@ def test_o16_under_640_the_chord_hint_and_every_stop_mark_stay_visible(sim_stati
       });
     """, tmp_path)
     assert out["hint"], out
-    # Seven models (Tier S), six links: Red Percent's stop is folded into
-    # the Transfer Map's link (D, 2026-09-28).
-    assert len(out["marks"]) == 6 and all(out["marks"]), out
+    # Eight models (Tier S, the Sample Map), seven links: Red Percent's stop
+    # is folded into the Transfer Map's link (D, 2026-09-28).
+    assert len(out["marks"]) == 7 and all(out["marks"]), out
     assert not out["sideways"], out
 
 

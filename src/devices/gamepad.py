@@ -183,9 +183,11 @@ class GamepadHub:
     # -- enumeration ---------------------------------------------------
 
     def _enumerate(self):
-        """[(index, name)] for every attached pad. Constructs one Joystick per
-        device, so it is too expensive for a poll tick -- `count` is what the
-        tick reads."""
+        """[(index, name)] for every attached pad, or **None when the scan
+        itself failed** (unknown, not "no pads": rb-pump P4 -- an empty list
+        here once read as "pad gone" on macOS and dropped Manual). Constructs
+        one Joystick per device, so it is too expensive for a poll tick --
+        `count` is what the tick reads."""
         if not self.open():
             return []
         with self._lock:
@@ -201,12 +203,13 @@ class GamepadHub:
             except Exception as exc:
                 events.debug("Enumeration failed", str(exc), source=self.SOURCE,
                              exception=exc, every=5.0)
-                return []
+                return None
 
     @property
     def names(self):
         """Attached pads as the operator-facing `"ID 0: <name>"` strings."""
-        return [_label_for(index, name) for index, name in self._enumerate()]
+        return [_label_for(index, name)
+                for index, name in self._enumerate() or ()]
 
     @property
     def count(self):
@@ -582,7 +585,7 @@ class Gamepad(Device):
         self._tick_count = 0
         self._rate_mark = 0.0
         self._darwin_scan_mark = 0.0
-        self._darwin_scan = {}
+        self._darwin_scan = None   # None = no good scan yet ("unknown")
 
         self._gate = threading.Event()
         self._gate.set()
@@ -646,7 +649,7 @@ class Gamepad(Device):
         taken = {index for owner, index in self._hub.claims.items()
                  if owner != self._owner_id}
         return ["None"] + [_label_for(index, name)
-                           for index, name in self._hub._enumerate()
+                           for index, name in self._hub._enumerate() or ()
                            if index not in taken]
 
     @property
@@ -880,18 +883,42 @@ class Gamepad(Device):
         return True
 
     def _darwin_devices(self, rescan):
-        """{index: name} for macOS presence, cached for DARWIN_RESCAN_SECONDS."""
+        """{index: name} for macOS presence, cached for DARWIN_RESCAN_SECONDS.
+
+        A failed enumeration (None) is "no change" (rb-pump P4): the last
+        good scan stands, or None ("unknown", read as present) when there
+        has not been one yet. It used to become `{}`, "every pad gone".
+        """
         now = time.monotonic()
         if rescan or now - self._darwin_scan_mark >= self.DARWIN_RESCAN_SECONDS:
-            self._darwin_scan = dict(self._hub._enumerate())
+            found = self._hub._enumerate()
             self._darwin_scan_mark = now
+            if found is None:
+                events.debug("Gamepad presence",
+                             f"{self._owner_id}: enumeration failed; keeping "
+                             "the last good scan", source=self._source,
+                             every=5.0)
+            else:
+                self._darwin_scan = dict(found)
         return self._darwin_scan
 
     def _handle_disconnect(self, reason="device gone"):
-        """The pad went away. Stop, release, and say so exactly once."""
+        """The pad went away. Stop, release, and say so exactly once.
+
+        rb-pump P3: the operator reads what happened and what to do; the
+        owner id and the internal reason go to the file log only. (The lead
+        is to add "Gamepad Disconnected" to events.ATTENTION.)
+        """
         label = self._label or "gamepad"
+        events.debug("Gamepad Disconnected",
+                     f"{self._owner_id}: {label} is gone ({reason})",
+                     source=self._source)
+        pad = f"The gamepad {self._label}" if self._label else "The gamepad"
         events.warn("Gamepad Disconnected",
-                    f"{self._owner_id}: {label} is gone ({reason})", source=self._source)
+                    f"{pad} disconnected. {self._owner_id} left manual mode "
+                    "and its motors were disabled. Plug it back in and choose "
+                    "it again under Gamepad, then press Manual.",
+                    source=self._source)
         self._note(f"Disconnected: {label} ({reason})")
         self._stop_poll_loop("disconnect")
         self._release_binding(f"disconnect: {reason}")
@@ -999,8 +1026,11 @@ class Gamepad(Device):
                     return False
                 self._read_hardware(joystick)
         except Exception as exc:
-            events.warn("Gamepad Polling Error",
-                        f"{self._owner_id}: {exc}", source=self._source, exception=exc)
+            # File only, like the hardware-error path: the disconnect below
+            # is the one operator line (rb-pump P3).
+            events.debug("Gamepad Polling Error",
+                         f"{self._owner_id}: {exc}", source=self._source,
+                         exception=exc)
             self._handle_disconnect(f"poll failed: {exc}")
             return False
 
@@ -1106,9 +1136,12 @@ class Gamepad(Device):
         try:
             return self._read_layout()
         except (pygame.error if pygame else ()) as exc:
-            events.warn("Gamepad Disconnected",
-                        f"{self._owner_id}: hardware error during poll: {exc}",
-                        source=self._source, exception=exc)
+            # File only: `_handle_disconnect` tells the operator, once
+            # (rb-pump P3; this used to be a second warn under the same
+            # title, carrying the owner id and the exception).
+            events.debug("Gamepad Disconnected",
+                         f"{self._owner_id}: hardware error during poll: {exc}",
+                         source=self._source, exception=exc)
             self._handle_disconnect(f"hardware error: {exc}")
             return None
 

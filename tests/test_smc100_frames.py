@@ -12,6 +12,12 @@ That is a difference in *calls*, not in bytes, which is why the comparison is
 on the concatenated stream -- and why it is also asserted frame by frame,
 splitting on the terminator, so a failure names the command that drifted
 rather than printing two long byte strings.
+
+A byte stream carries no timing, so these comparisons cannot see pacing.
+The vendor's inter-command delay is pinned separately, by a timeline of
+frames and pauses taken with each driver's clock frozen
+(`test_a_whole_session_is_paced_the_same_way`). Reply latency and
+cross-thread ordering are not pinned here; see `test_smc100.py` (D2).
 """
 import importlib.util
 import pathlib
@@ -261,20 +267,96 @@ def test_reset_and_configure_sends_the_same_bytes():
                     b"1ZX1\r\n1ZX2\r\n1PW0\r\n1TS?\r\n"), wire
 
 
-def test_a_whole_session_matches_frame_for_frame():
-    """Every command in one run, so an ordering or pacing change shows up."""
-    def script(smc):
-        smc.get_status()
-        smc.get_position_deg()
-        smc.home()
-        smc.move_absolute_deg(30.0)
-        smc.move_relative_deg(1.5)
-        smc.move_relative_mdeg(-2500)
-        smc.move_absolute_mdeg(1250)
-        smc.stop()
-        smc.stop(priority=True)
+def _session(smc):
+    smc.get_status()
+    smc.get_position_deg()
+    smc.home()
+    smc.move_absolute_deg(30.0)
+    smc.move_relative_deg(1.5)
+    smc.move_relative_mdeg(-2500)
+    smc.move_absolute_mdeg(1250)
+    smc.stop()
+    smc.stop(priority=True)
 
-    _assert_identical(script, states=("32", "33"))
+
+def test_a_whole_session_matches_frame_for_frame():
+    """Every command in one run, so an ordering change shows up. Pacing is
+    not on the wire, so this byte comparison cannot see it; the next test
+    pins pacing on its own."""
+    _assert_identical(_session, states=("32", "33"))
+
+
+class _FrozenClock:
+    """`time` for a driver module with the clock stopped. Both drivers pace
+    on elapsed time (`COMMAND_WAIT_TIME_SEC` minus the time since the last
+    reply-less command), so with the clock frozen every pause they ask for is
+    exact and repeatable instead of depending on how fast the test ran."""
+
+    NOW = 1000.0
+
+    def time(self):
+        return self.NOW
+
+    def monotonic(self):
+        return self.NOW
+
+    def sleep(self, seconds):
+        raise AssertionError("a driver slept through `time.sleep`, not its "
+                             "injected sleep, so the pause is unrecorded")
+
+
+def _paced(script, states=("32", "33"), position="12.5000"):
+    """Run `script` on each driver and return each one's TIMELINE: every
+    frame and every pause it asked for, in the order they happened."""
+    import devices.smc100 as new_module
+
+    timelines = []
+    for build in ("old", "new"):
+        stage = Stage(states, position)
+        timeline = []
+        feed = stage.feed
+
+        def recording_feed(data, feed=feed, stage=stage, timeline=timeline):
+            before = len(stage.frames)
+            feed(data)
+            timeline.extend(("frame", frame) for frame in stage.frames[before:])
+
+        stage.feed = recording_feed
+
+        def sleep(seconds, timeline=timeline):
+            timeline.append(("sleep", round(seconds, 9)))
+
+        if build == "old":
+            driver = _old(stage)
+            driver._sleepfunc = sleep
+            module_globals = type(driver).sendcmd.__globals__
+            with patch.dict(module_globals, {"time": _FrozenClock()}):
+                script(driver)
+        else:
+            with patch.object(new_module, "time", _FrozenClock()):
+                driver = _new(stage)
+                driver._sleep = sleep
+                script(driver)
+        timelines.append(timeline)
+    return timelines
+
+
+def test_a_whole_session_is_paced_the_same_way():
+    """The vendor's inter-command delay, pinned: the same pauses, of the
+    same length, between the same frames. A byte comparison is blind to a
+    dropped or reordered `_pace`; this timeline is not."""
+    old_timeline, new_timeline = _paced(_session)
+    assert any(kind == "sleep" for kind, _ in old_timeline), (
+        "the old driver paused nowhere; the comparison would be vacuous")
+    assert old_timeline == new_timeline, (
+        f"the pacing changed:\n  old {old_timeline}\n  new {new_timeline}")
+
+
+def test_the_pacing_comparison_can_fail():
+    """A guard on the harness: a driver that stopped pacing must be seen."""
+    with patch.object(SMC100, "_pace", lambda self: None):
+        old_timeline, new_timeline = _paced(_session)
+    assert old_timeline != new_timeline
 
 
 def test_the_comparison_can_fail():

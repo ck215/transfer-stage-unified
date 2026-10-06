@@ -105,7 +105,8 @@ class Rotator(Model):
         "target_deg": Param("target_deg", "float", default=0, minimum=-175,
                             maximum=175, decimals=2, unit="deg",
                             label="Target (deg)"),
-        "step_deg": Param("step_deg", "float", default=0, minimum=-175,
+        # D11: 1.0, as on `main`. A default of 0 made Move +/- do nothing.
+        "step_deg": Param("step_deg", "float", default=1.0, minimum=-175,
                           maximum=175, decimals=2, unit="deg",
                           label="Step (deg)"),
     }
@@ -303,9 +304,15 @@ class Rotator(Model):
         commanded target when there is one -- the sum of every move this
         model has accepted, and so the only value that can see a stack of
         clicks.
+
+        A zero step is refused, not sent (D11): a `PR0` that moves nothing
+        and says nothing reads to the operator as a dead button.
         """
         sign = 1 if float(sign) >= 0 else -1
         step = self.PARAMS["step_deg"].coerce(self.step_deg) * sign
+        if step == 0:
+            raise Refused("Move refused: Step (deg) is 0. Enter a step size, "
+                          "then Move - or Move +.")
         reference, is_known = self._reference_position()
         return self._move_guarded(reference + step,
                                   lambda: self.smc.move_relative_deg(step),
@@ -422,8 +429,9 @@ class Rotator(Model):
 
         The check that counts now happens **inside the port lock**: the
         SMC100 carries `abort_if=self._estop.is_set` into every
-        `SerialPort.write`, so a stop that lands while this command is queued
-        on the lock aborts it before its bytes go out. What is left here is
+        `SerialPort.write` that is not a read-only `TS?`/`TP?` poll (SF-3),
+        so a stop that lands while this command is queued on the lock aborts
+        it before its bytes go out. What is left here is
         dispatch and what to do when a move does not finish.
 
         **The caller holds `_motion_lock`**; this releases it when the move

@@ -45,13 +45,16 @@ from devices import gamepad as gamepad_module
 from devices import serial_port as serial_port_module
 from devices.serial_port import ConnectionState, SerialPort
 from events import events
+from model import profile as profiles_module
 from model.base import Model
 from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
 from model.red_monitor import RedMonitor
 from model.rotator import Rotator
+from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from panel import Panel
+from param import Param
 from result import NeedsConfirm, Refused
 
 #: The Port dropdown's one fixed entry. Everything else in the list is a
@@ -211,9 +214,10 @@ def _key_for(name):
     return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_") or "model"
 
 
-# The six built-ins, in today's display order.
+# The built-ins, in today's display order. The Sample Map (flake-coords,
+# 2026-10-04) follows the Transfer Map: its own page, no port.
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  RedMonitor, TransferMap):
+                  RedMonitor, TransferMap, SampleMap):
     register(_built_in)
 del _built_in
 
@@ -254,6 +258,12 @@ class Setup(Panel):
         super().__init__()
         self.controller = controller
         self._restart = restart
+        # User-system Phase 1: local profiles. Setup is the composition root,
+        # the one place the service is built (section 5.4).
+        self.profiles = profiles_module.ProfileService(
+            profiles_module.LocalFilesSource(profiles_module.profiles_root()),
+            lambda name: getattr(MODEL_TYPES.get(name), "PARAMS", {}))
+        self._profile_pick = profiles_module.STATION_DISPLAY
         self._rows = self._build_rows()
         self._schema = self._build_schema()
         self._lock = threading.RLock()
@@ -1175,6 +1185,147 @@ class Setup(Panel):
         events.info("Launched", ", ".join(built), source=self.NAME)
         return built
 
+    # -- profiles (user-system Phase 1) -------------------------------------------
+    PARAMS = {"profile_new_name": Param("profile_new_name", "text", default="",
+                                        label="New profile")}
+
+    @property
+    def profile_user(self):
+        return self._profile_pick
+
+    def profile_options(self):
+        """Station first, then the local profiles (an options source is a
+        method on Setup, as `port_options` is)."""
+        return [u["display_name"] if u["username"] == profiles_module.STATION
+                else u["username"] for u in self.profiles.users]
+
+    def set_profile_user(self, name):
+        if name not in self.profile_options():
+            raise Refused(f"No profile named {name} on this station.")
+        self._profile_pick = name
+        return name
+
+    @property
+    def profile_status(self):
+        return self.profiles.status
+
+    def add_profile(self):
+        """A local profile: a name only. No PIN is kept on a station (Q1)."""
+        name = str(self.profile_new_name or "").strip()
+        try:
+            self.profiles.add_profile(name)
+        except profiles_module.ProfileError as refusal:
+            raise Refused(str(refusal))
+        self.profile_new_name = ""
+        self._profile_pick = name
+        return name
+
+    def sign_in(self):
+        """Sign in as the picked profile (offline-unverified: no lab server
+        yet) and apply its effective preferences to every open model."""
+        pick = self._profile_pick
+        try:
+            if pick == profiles_module.STATION_DISPLAY:
+                self.profiles.sign_out()
+            else:
+                self.profiles.sign_in(pick)
+        except profiles_module.ProfileError as refusal:
+            raise Refused(str(refusal))
+        self._apply_profile_everywhere()
+        return self.profiles.status
+
+    def sign_out(self):
+        self.profiles.sign_out()
+        self._profile_pick = profiles_module.STATION_DISPLAY
+        self._apply_profile_everywhere()
+        return self.profiles.status
+
+    def _apply_profile_everywhere(self):
+        for model in self.controller.models.values():
+            self._apply_profile(model)
+
+    def _apply_profile(self, model):
+        """The effective model parameters (Q4 split) and who is working."""
+        apply = getattr(model, "apply_defaults", None)
+        name = getattr(model, "NAME", None)
+        if callable(apply) and name:
+            effective, _ = self.profiles.effective_model_params()
+            for param, reason in apply(effective.get(name, {})).items():
+                events.warn("Profile Value Not Applied", f"{name}.{param}: {reason}",
+                            source=self.NAME)
+        user, auth = self.profiles.current_user, self.profiles.auth
+        if hasattr(model, "operator_id"):
+            model.operator_id, model.operator_auth = user, auth
+        if hasattr(model, "owner"):
+            model.owner, model.owner_auth = user, auth
+
+    def _open_values(self, names):
+        out = {}
+        for model in self.controller.models.values():
+            params = getattr(model, "PARAMS", None) or {}
+            if not getattr(model, "NAME", None):
+                continue
+            values = {}
+            for name in sorted(names & set(params)):
+                found = getattr(type(model), name, None)
+                if isinstance(found, property) and found.fset is None:
+                    continue
+                value = getattr(model, name, None)
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    continue
+                values[name] = value
+            if values:
+                out[model.NAME] = values
+        return out
+
+    def remember_settings(self):
+        """"Remember for me": the open models' user parameters (Q4) into the
+        signed-in profile. Station-only and brake fields are never taken."""
+        values = self._open_values(profiles_module.USER_PARAMS)
+        try:
+            self.profiles.remember(values)
+        except profiles_module.ProfileError as refusal:
+            raise Refused(str(refusal))
+        events.info("Settings Remembered", f"{self.profiles.current_user}: "
+                    f"{', '.join(values) or 'nothing open'}.", source=self.NAME)
+        return sorted(values)
+
+    def save_station_settings(self, confirmed=False):
+        """The station's defaults: user and station-only parameters of the
+        open models (never the brakes). Everyone at this station gets them."""
+        if not confirmed:
+            raise NeedsConfirm("Save the open models' settings as this station's "
+                               "defaults? Everyone who signs in here starts from "
+                               "them; the brake fields are never saved.",
+                               "save_station_settings")
+        values = self._open_values(profiles_module.USER_PARAMS
+                                   | profiles_module.STATION_PARAMS)
+        try:
+            self.profiles.save_station(values)
+        except profiles_module.ProfileError as refusal:
+            raise Refused(str(refusal))
+        return sorted(values)
+
+    def _profile_section(self):
+        """User-system section 2.4, first on the page. No PIN box in Phase 1:
+        nothing could check a PIN without the lab server, and none is ever
+        cached on a station (Q1); it arrives with the server."""
+        P = self.PARAMS
+        return sch.section(
+            "Profile",
+            sch.dropdown("Profile", "profile_user", "set_profile_user",
+                         "profile_options"),
+            sch.button("Sign in", "sign_in", role="go"),
+            sch.button("Sign out", "sign_out", role="neutral"),
+            sch.readonly("Signed in", "profile_status", role="info"),
+            sch.button("Remember my settings", "remember_settings", role="neutral"),
+            sch.button("Save station settings", "save_station_settings",
+                       role="neutral"),
+            sch.entry("New profile", "profile_new_name", P["profile_new_name"]),
+            sch.button("Add profile", "add_profile", inputs=("profile_new_name",)),
+            layout="row",
+        )
+
     def model_from_config(self, config):
         """One config -> one Model. `Controller.factory`, so `reopen(name)`
         reconstructs a closed tab's model from the remembered config."""
@@ -1190,7 +1341,9 @@ class Setup(Panel):
             if _kind(resource) == "port" and is_sim:
                 value = SIM
             resources[resource] = value
-        return model_class(sim=is_sim, **resources)
+        model = model_class(sim=is_sim, **resources)
+        self._apply_profile(model)
+        return model
 
     def _check_identities(self, configs):
         """A row pointed at a port that answered as something else is a wiring
@@ -1513,12 +1666,15 @@ class Setup(Panel):
     def _init_firmware(self, firmware):
         """The Firmware row's state, then - unless `STATION_NO_FIRMWARE_CHECK`
         is set - the startup check on a daemon thread. The check reads the
-        stamp file and the sketches; it opens no port and never flashes
-        (`controller.firmware`)."""
+        stamp file and the sketches and opens no port; when it finds a board
+        to flash it asks once (`_offer_flash`), and Flash now on that dialog
+        is the flash, unattended, as the old launcher's was (owner 2026-09-28).
+        Nothing flashes without that answer or the row's own key."""
         self._firmware = firmware if firmware is not None else FirmwareCheck()
         self._firmware_thread = self._flash_thread = None
         self._firmware_result = None    # the last check()'s answer
         self._firmware_asked = set()    # stale-board sets Launch already asked about
+        self._flash_offered = set()     # board sets the startup dialog already offered
         self.firmware_progress = ""
         #: The Web view's address, which it fills in once it serves; the
         #: desktop views leave it empty. It used to be a terminal line.
@@ -1529,7 +1685,7 @@ class Setup(Panel):
                          source=self.NAME)
             return
         self.firmware_status = self.FIRMWARE_CHECKING
-        self._start_firmware_thread()
+        self._start_firmware_thread(offer=True)
 
     @property
     def is_flashing(self):
@@ -1597,14 +1753,58 @@ class Setup(Panel):
         events.debug("Firmware Flash", f"started: {', '.join(boards)}", source=self.NAME)
         return True
 
-    def _start_firmware_thread(self):
+    def _start_firmware_thread(self, offer=False):
+        """`offer`: the startup check asks to flash what it finds; a check by
+        hand does not (the Flash key is beside its answer)."""
         self._firmware_thread = threading.Thread(
-            target=self._firmware_check_worker, daemon=True,
+            target=self._firmware_check_worker, args=(offer,), daemon=True,
             name="setup-firmware-check")
         self._firmware_thread.start()
 
-    def _firmware_check_worker(self):
-        self._publish_firmware(self._check_firmware_now())
+    def _firmware_check_worker(self, offer=False):
+        result = self._check_firmware_now()
+        self._publish_firmware(result)
+        if offer:
+            self._offer_flash(result)
+
+    def _offer_flash(self, result):
+        """The startup check found boards to flash and the tool to do it: one
+        acknowledged notice names them, and its Flash now runs
+        `flash_firmware(True)` - the same unattended flash as the row's key,
+        the dialog having been the question. Once per board set per run;
+        Later leaves the row's key. Nothing is offered that the key would
+        refuse for want of the tool (the Boards line says "by hand")."""
+        result = result or {}
+        boards = list(result.get("to_flash") or [])
+        if not boards or result.get("missing_tools"):
+            return
+        script = getattr(self._firmware, "script", None)
+        if script is not None and not os.path.isfile(script):
+            return
+        key = frozenset(boards)
+        with self._lock:
+            if key in self._flash_offered:
+                return
+            self._flash_offered.add(key)
+        if len(boards) == 1:
+            detail = ("This overwrites its running firmware if it is plugged in; "
+                      "otherwise it is skipped.")
+        else:
+            detail = ("This overwrites the running firmware of every one of them "
+                      "that is plugged in; the others are skipped.")
+        # Named here, not from the row's summary: that line says "never
+        # flashed here" alone when it means every board, and a dialog that
+        # is about to overwrite four boards names them.
+        found = []
+        if result.get("stale"):
+            found.append(f"{_and(result['stale'])} out of date")
+        if result.get("never"):
+            found.append(f"{_and(result['never'])} never flashed here")
+        events.warn(events.FIRMWARE_OUT_OF_DATE,
+                    f"{'; '.join(found)}. Flash {'it' if len(boards) == 1 else 'them'} "
+                    f"now? {detail} Launch waits until the flash finishes.",
+                    source=self.NAME, ack=True,
+                    action=("Flash now", events.SETUP_PANEL, "flash_firmware", (True,)))
 
     def _check_firmware_now(self):
         try:
@@ -1744,7 +1944,7 @@ class Setup(Panel):
         runs, whether GitHub has something newer, and the one press that
         takes it. `sch.button` has no `enabled_by`, so Update now is gated by
         refusal (nothing to apply, a model running, a check under way)."""
-        sections = [sch.section(
+        sections = [self._profile_section(), sch.section(
             "Update",
             sch.readonly("Station", "station_version"),
             sch.readonly("Updates", "update_status", role="info"),

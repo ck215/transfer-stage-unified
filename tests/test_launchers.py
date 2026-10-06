@@ -4,9 +4,10 @@ using OS detection, and retire any system that doesn't use the SWAP check").
 Two launchers: `run.sh` for every POSIX OS (`uname -s` picks the macOS
 PySide6 repair, a toolkit-forced branch) and `run.bat` for Windows. Both
 find the venv and run `src/app.py` with every argument, and print nothing
-when all is well: the firmware check is a Setup row now. `run_macos.sh` and
-`run_swap_macos.sh` are shims kept for old desktop shortcuts; `run_swap.sh`
-is `dev/swap_branch.sh`, a developer tool.
+when all is well: the firmware check is a Setup row now. The old names
+(`run_macos.sh`, `run_swap_macos.sh`, `run_swap.sh`) are gone (owner,
+2026-09-28: consolidate now, not after a grace period); `dev/swap_branch.sh`
+is the developer tool that runs `main`'s app.
 
 Every script here runs against stubs: a `python3` that records its argv and
 runs nothing, a `uname` that says what the test wants, a `chflags` that
@@ -50,8 +51,7 @@ def bench(tmp_path):
     python3 records its argv, and stub `uname` / `chflags` first on PATH."""
     tree = tmp_path / "tree"
     (tree / "dev").mkdir(parents=True)
-    for name in ("run.sh", "run_macos.sh", "run_swap_macos.sh"):
-        shutil.copy2(REPO / name, tree / name)
+    shutil.copy2(REPO / "run.sh", tree / "run.sh")
     shutil.copy2(REPO / "dev" / "swap_branch.sh", tree / "dev" / "swap_branch.sh")
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents=True)
@@ -91,8 +91,7 @@ APP_HELP = ["python3", "src/app.py", "--help"]
 
 # -- the files --------------------------------------------------------------
 
-@pytest.mark.parametrize("script", ["run.sh", "run_macos.sh", "run_swap_macos.sh",
-                                    "dev/swap_branch.sh", "update.sh"])
+@pytest.mark.parametrize("script", ["run.sh", "dev/swap_branch.sh", "update.sh"])
 def test_every_launcher_parses(script):
     done = subprocess.run([BASH, "-n", str(REPO / script)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
@@ -100,18 +99,9 @@ def test_every_launcher_parses(script):
 
 def test_two_launchers_and_the_updaters_are_all_that_is_left_at_the_root():
     scripts = {p.name for p in REPO.iterdir() if p.suffix in (".sh", ".bat")}
-    assert scripts == {"run.sh", "run.bat", "update.sh", "update.bat",
-                       "run_macos.sh", "run_swap_macos.sh"}
-    assert not (REPO / "run_swap.sh").exists()
-
-
-@pytest.mark.parametrize("shim", ["run_macos.sh", "run_swap_macos.sh"])
-def test_the_old_names_are_shims_that_exec_run_sh(shim):
-    lines = [l for l in (REPO / shim).read_text().splitlines() if l.strip()]
-    code = [l for l in lines if not l.startswith("#")]
-    assert code == ['exec "$(dirname "$0")/run.sh" "$@"']
-    assert any("delete after 2026-10-31" in l for l in lines)
-    assert os.access(REPO / shim, os.X_OK)
+    assert scripts == {"run.sh", "run.bat", "update.sh", "update.bat"}
+    for old in ("run_swap.sh", "run_macos.sh", "run_swap_macos.sh"):
+        assert not (REPO / old).exists(), old
 
 
 def test_the_launchers_are_executable():
@@ -222,13 +212,6 @@ def test_the_launcher_runs_from_any_directory(bench):
     assert calls == [APP_HELP]
 
 
-@pytest.mark.parametrize("shim", ["run_macos.sh", "run_swap_macos.sh"])
-def test_a_shim_lands_in_run_sh_with_its_arguments(bench, shim):
-    done, calls = bench.run(shim, "--help", FAKE_UNAME="Darwin")
-    assert (done.stdout, done.stderr) == ("", "")
-    assert calls == [APP_HELP]
-
-
 # -- dev/swap_branch.sh ------------------------------------------------------
 
 def test_swap_branch_dry_run_says_what_it_would_do_and_runs_nothing(bench):
@@ -336,5 +319,5 @@ def test_a_headless_web_launch_prints_only_its_address(tmp_path):
     assert out.strip().splitlines() == [f"Station served at http://127.0.0.1:{port}"]
     assert err == ""
     titles = [s["title"] for s in setup["schema"]["sections"]]
-    assert titles[:3] == ["Update", "Firmware", "Devices"]
+    assert titles[:4] == ["Profile", "Update", "Firmware", "Devices"]
     assert setup["state"]["values"]["web_address"] == f"http://127.0.0.1:{port}"

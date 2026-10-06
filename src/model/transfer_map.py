@@ -56,6 +56,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import schema as sch
@@ -99,6 +100,23 @@ TRIAL_COLUMNS = (
     # frame index, how many frames it holds and how many were dropped.
     ("video_path", "TEXT"), ("video_index_path", "TEXT"),
     ("video_frames", "INTEGER"), ("video_dropped", "INTEGER"),
+    # Version 6 (owner 2026-10-04; proposal-user-system.md section 7.3 with
+    # Q17/Q19 as answered): the chip and flake being cut, who cut it, the
+    # colour profile, and the cut descriptors. NULL = not measured.
+    ("sample_id", "TEXT"), ("flake_uid", "TEXT"), ("operator_id", "TEXT"),
+    # How operator_id was established (user-system Q1): "station" (nobody
+    # signed in), "offline-unverified" (no lab server checked a PIN), later
+    # "verified".
+    ("operator_auth", "TEXT"),
+    ("camera_profile_id", "TEXT"),
+    # The AFM step from the substrate to the channel's top (positive up) and
+    # the depth the tip cut into the flake (positive down), each optional.
+    ("channel_height_nm", "REAL"), ("channel_height_sigma_nm", "REAL"),
+    ("trench_depth_nm", "REAL"), ("trench_depth_sigma_nm", "REAL"),
+    # The approximate channel width by optical microscopy. `width_um` stays
+    # the AFM width: only it makes a trial `measured`.
+    ("width_optical_um", "REAL"), ("width_optical_sigma_um", "REAL"),
+    ("width_optical_method", "TEXT"),
 )
 _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
 PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y")
@@ -119,10 +137,16 @@ _TIP_NAMES = frozenset(name for name, _kind in TIP_COLUMNS)
 #: `speed_measured_steps_s`. 5: the video (`video_path`, `video_index_path`,
 #: `video_frames`, `video_dropped`); the region stills and the Mark and
 #: After whole-screen pictures are no longer taken, their columns stay for
-#: the rows that have them. An older file gains the columns by `ALTER
-#: TABLE ... ADD COLUMN` and a tip record for every tip its trials name,
-#: the first time it is opened or written, and keeps every trial it holds.
-SCHEMA_VERSION = 5
+#: the rows that have them. 6: the trial names its chip, flake and operator,
+#: the cut descriptors (two AFM heights, an optical width with its method),
+#: and the `meta` table with the store's identity (`map_db_uuid`, written
+#: once). An older file gains the columns by `ALTER TABLE ... ADD COLUMN`,
+#: a tip record for every tip its trials name and its identity, the first
+#: time it is opened or written, and keeps every trial it holds.
+SCHEMA_VERSION = 6
+#: How an optical width was measured (Q19, owner 2026-10-04: pixels on the
+#: capture-region picture at the Sample Map's um_per_px, the default).
+WIDTH_OPTICAL_METHODS = ("capture_px", "reticle", "vendor_tool", "estimate")
 
 _CREATE = (
     "CREATE TABLE IF NOT EXISTS trials ("
@@ -133,6 +157,7 @@ _CREATE = (
     "CREATE INDEX IF NOT EXISTS profile_trial ON profile(trial_id)",
     "CREATE TABLE IF NOT EXISTS tips ("
     + ", ".join(name + " " + kind for name, kind in TIP_COLUMNS) + ")",
+    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
 )
 
 #: A version-2 (or older) file's tips, from its trials: first and last
@@ -231,6 +256,12 @@ class TrialStore:
             # record per tip the file's trials already name.
             db.execute(_BACKFILL_TIPS)
             added.append("tips")
+        if version < 6:
+            # The store's identity (for the lab server's trial links): new
+            # in 6, written once and never changed.
+            db.executemany("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
+                           [("map_db_uuid", str(uuid.uuid4())),
+                            ("created_at", _now())])
         db.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
         return None if fresh else added
 
@@ -371,6 +402,13 @@ class TrialStore:
 
     def trials(self):
         return self.read("SELECT * FROM trials ORDER BY id")
+
+    def meta(self):
+        """The store's identity (`map_db_uuid`, `created_at`); empty for a
+        file that does not exist yet or is not upgraded yet (a read never
+        writes)."""
+        return {row["key"]: row["value"]
+                for row in self.read("SELECT key, value FROM meta")}
 
     def trial(self, trial_id):
         rows = self.read("SELECT * FROM trials WHERE id = ?", (trial_id,))
@@ -522,6 +560,20 @@ class TransferMap(Model):
               unit="nm", label="Sample thickness"),
         Param("thickness_sigma_nm", "float", default=0.0, minimum=0,
               decimals=1, unit="nm", label="Thickness uncertainty"),
+        # Store v6, Q17: two AFM heights of the cut, each optional.
+        Param("channel_height_nm", "float", default=0.0, minimum=0, decimals=1,
+              unit="nm", label="Channel height"),
+        Param("channel_height_sigma_nm", "float", default=0.0, minimum=0,
+              decimals=1, unit="nm", label="Channel height uncertainty"),
+        Param("trench_depth_nm", "float", default=0.0, minimum=0, decimals=1,
+              unit="nm", label="Trench depth"),
+        Param("trench_depth_sigma_nm", "float", default=0.0, minimum=0,
+              decimals=1, unit="nm", label="Trench depth uncertainty"),
+        # Store v6, Q19: the approximate width by optical microscopy.
+        Param("width_optical_um", "float", default=0.0, minimum=0, decimals=3,
+              unit="um", label="Channel width (optical)"),
+        Param("width_optical_sigma_um", "float", default=0.0, minimum=0,
+              decimals=3, unit="um", label="Optical width uncertainty"),
         Param("trial_pick", "int", default=0, minimum=0,
               label="Trial to show (0 = latest)"),
         # Readouts: declared for their type and unit only.
@@ -555,6 +607,12 @@ class TransferMap(Model):
         self._figure_type = next(iter(FIGURES))
         self._definition = next(iter(analysis.FORCE_DEFINITIONS))
         self._band = plot_data.FORCE_BANDS[0]
+        self._width_source = plot_data.WIDTH_SOURCES[0]
+        self._width_optical_method = WIDTH_OPTICAL_METHODS[0]
+        #: Who cuts (store v6 `operator_id`) and how that was established
+        #: (`operator_auth`): Setup sets both from the signed-in profile.
+        self.operator_id = "station"
+        self.operator_auth = "station"
         self._revision = 0
         self._figure_cache = None
         self._indices = {}             # trial id -> force indices
@@ -1003,7 +1061,9 @@ class TransferMap(Model):
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "tip_id": tip,
                 "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
                 "origin": "recorded", "tilt_source": tilt_source,
-                "speed_source": speed_source, "note": ""})
+                "speed_source": speed_source, "note": "",
+                "operator_id": self.operator_id,
+                "operator_auth": self.operator_auth})
             if full:
                 self._store.update(trial_id, {"before_full_path": self._write_picture(
                     trial_id, "before_full", full)})
@@ -1704,11 +1764,60 @@ class TransferMap(Model):
             "width_sigma_um": given(self.width_sigma_um),
             "thickness_nm": given(self.thickness_nm),
             "thickness_sigma_nm": given(self.thickness_sigma_nm),
+            "channel_height_nm": given(self.channel_height_nm),
+            "channel_height_sigma_nm": given(self.channel_height_sigma_nm),
+            "trench_depth_nm": given(self.trench_depth_nm),
+            "trench_depth_sigma_nm": given(self.trench_depth_sigma_nm),
             "status": "aborted" if row["status"] == "aborted" else "measured"})
         self._changed()
-        events.info("AFM Attached", f"Trial {trial_id}: width "
-                    f"{self.width_um:g} um attached.", source=self.NAME)
+        parts = [f"width {self.width_um:g} um"]
+        if given(self.channel_height_nm) is not None:
+            parts.append(f"channel height {self.channel_height_nm:g} nm")
+        if given(self.trench_depth_nm) is not None:
+            parts.append(f"trench depth {self.trench_depth_nm:g} nm")
+        events.info("AFM Attached", f"Trial {trial_id}: {', '.join(parts)} "
+                    "attached.", source=self.NAME)
         return trial_id
+
+    def attach_optical(self):
+        """Store v6 (Q19): the approximate channel width by optical
+        microscopy. It never makes a trial `measured`: that stays "an AFM
+        width exists", so the 3D map's filled marker keeps its meaning."""
+        trial_id = int(self.afm_trial_id or 0)
+        if trial_id <= 0:
+            raise Refused("Type the trial number the optical width belongs to.")
+        row = self._store.trial(trial_id)
+        if row is None:
+            raise Refused(f"No trial {trial_id} in the database.")
+        if row["status"] == "armed":
+            raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
+        if not self.width_optical_um or self.width_optical_um <= 0:
+            raise Refused("Type the channel width read by optical microscopy.")
+        sigma = self.width_optical_sigma_um
+        self._store.update(trial_id, {
+            "width_optical_um": float(self.width_optical_um),
+            "width_optical_sigma_um": float(sigma) if sigma else None,
+            "width_optical_method": self._width_optical_method})
+        self._changed()
+        events.info("Optical Width Attached", f"Trial {trial_id}: optical width "
+                    f"{self.width_optical_um:g} um ({self._width_optical_method}) "
+                    "attached.", source=self.NAME)
+        return trial_id
+
+    @property
+    def width_optical_method(self):
+        return self._width_optical_method
+
+    @property
+    def width_optical_method_options(self):
+        return list(WIDTH_OPTICAL_METHODS)
+
+    def set_width_optical_method(self, method):
+        if method not in WIDTH_OPTICAL_METHODS:
+            raise Refused(f"{method!r} is not an optical width method.")
+        self._width_optical_method = method
+        self._touch()
+        return method
 
     def delete_trial(self, confirmed=False):
         trial_id = self._picked_id()
@@ -1860,6 +1969,13 @@ class TransferMap(Model):
                 "width_sigma_um": _number(row.get("width_sigma_um")),
                 "thickness_nm": _number(row.get("thickness_nm")),
                 "thickness_sigma_nm": _number(row.get("thickness_sigma_nm")),
+                **{name: _number(row.get(name)) for name in (
+                    "channel_height_nm", "channel_height_sigma_nm",
+                    "trench_depth_nm", "trench_depth_sigma_nm",
+                    "width_optical_um", "width_optical_sigma_um")},
+                **{name: (row.get(name) or "").strip() or None for name in (
+                    "width_optical_method", "sample_id", "flake_uid",
+                    "operator_id", "operator_auth", "camera_profile_id")},
                 "broke": 1 if broke else 0,
                 "note": row.get("note") or "",
                 "status": "measured" if width is not None else "recorded",
@@ -1905,11 +2021,16 @@ class TransferMap(Model):
         for row in self._store.trials():
             if row["status"] in ("armed", "aborted"):
                 continue
+            width, sigma, source = analysis.pick_width(row)
             rows.append({"id": row["id"], "tilt": row["tilt_deg"],
                          "speed": row["speed_steps_s"],
                          "force": self._force_of(row),
-                         "width": row["width_um"],
-                         "width_sigma": row["width_sigma_um"]})
+                         "width": width, "width_sigma": sigma,
+                         "width_source": source,
+                         "width_afm": row["width_um"],
+                         "width_afm_sigma": row["width_sigma_um"],
+                         "width_optical": row.get("width_optical_um"),
+                         "width_optical_sigma": row.get("width_optical_sigma_um")})
         return rows
 
     def _changed(self):
@@ -1919,7 +2040,8 @@ class TransferMap(Model):
     @property
     def figure(self):
         key = (self._revision, self._figure_type, self._definition, self._band,
-               self.trial_pick, self.FIGURE_SIZE, self.FIGURE_DPI)
+               self._width_source, self.trial_pick, self.FIGURE_SIZE,
+               self.FIGURE_DPI)
         cached = self._figure_cache
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -1934,7 +2056,8 @@ class TransferMap(Model):
                 kind, self._map_rows(), self._definition, band=self._band,
                 profile=profile, marks=marks,
                 definitions=self.force_definition_options,
-                size=self.FIGURE_SIZE, dpi=self.FIGURE_DPI)
+                size=self.FIGURE_SIZE, dpi=self.FIGURE_DPI,
+                width_source=self._width_source)
         self._figure_cache = (key, png)
         return png
 
@@ -1999,6 +2122,23 @@ class TransferMap(Model):
         self._touch()
         return band
 
+    @property
+    def width_source(self):
+        """Which widths the slice, the comparison and the gradient use: AFM
+        only (the default), or AFM else optical (store v6, Q19)."""
+        return self._width_source
+
+    @property
+    def width_source_options(self):
+        return list(plot_data.WIDTH_SOURCES)
+
+    def set_width_source(self, source):
+        if source not in plot_data.WIDTH_SOURCES:
+            raise Refused(f"{source!r} is not a width source.")
+        self._width_source = source
+        self._touch()
+        return source
+
     # -- readouts ------------------------------------------------------------
     @property
     def trial_count(self):
@@ -2035,8 +2175,7 @@ class TransferMap(Model):
     def trials_log(self):
         lines = []
         for row in self._store.trials():
-            width = (f"{row['width_um']:g} um" if row["width_um"] is not None
-                     else "no width")
+            width = _width_text(row)
             tilt = "?" if row["tilt_deg"] is None else f"{row['tilt_deg']:g} deg"
             speed = ("?" if row["speed_steps_s"] is None
                      else f"{row['speed_steps_s']:g} steps/s")
@@ -2074,8 +2213,8 @@ class TransferMap(Model):
         with one sigma, from the Gaussian process over the measured trials
         (all force bands)."""
         import numpy
-        rows = [r for r in self._map_rows() if r["width"] is not None
-                and r["tilt"] is not None and r["speed"] is not None]
+        rows = [r for r in plot_data.with_width(self._map_rows(), self._width_source)
+                if r["tilt"] is not None and r["speed"] is not None]
         if len(rows) < 3:
             return ""
         tilt = numpy.array([r["tilt"] for r in rows], dtype=float)
@@ -2085,8 +2224,7 @@ class TransferMap(Model):
                                 (speed - speed.min()) / spans[1]])
         widths = numpy.array([r["width"] for r in rows], dtype=float)
         spread = float(widths.std()) or 1.0
-        noise = numpy.array([(r["width_sigma"] or 0.05 * spread) ** 2
-                             for r in rows])
+        noise = numpy.array(plot_data.width_noise(rows, spread))
         grad, var = analysis.gp_gradient(x, widths, numpy.array([[0.5, 0.5]]),
                                          length=plot_data.SLICE_LENGTH,
                                          noise=noise)
@@ -2180,6 +2318,8 @@ class TransferMap(Model):
                              "set_force_definition", "force_definition_options"),
                 sch.dropdown("Force band", "force_band", "set_force_band",
                              "force_band_options"),
+                sch.dropdown("Width source", "width_source", "set_width_source",
+                             "width_source_options"),
                 sch.entry("Trial to show (0 = latest)", "trial_pick",
                           P["trial_pick"]),
                 tier=2, disclosure=configure,
@@ -2187,19 +2327,43 @@ class TransferMap(Model):
             sch.section(
                 "AFM measurement",
                 sch.entry("Trial", "afm_trial_id", P["afm_trial_id"]),
-                sch.entry("Channel width", "width_um", P["width_um"]),
+                sch.entry("Channel width (AFM)", "width_um", P["width_um"]),
                 sch.entry("Width uncertainty", "width_sigma_um",
                           P["width_sigma_um"]),
                 sch.entry("Sample thickness", "thickness_nm", P["thickness_nm"]),
                 sch.entry("Thickness uncertainty", "thickness_sigma_nm",
                           P["thickness_sigma_nm"]),
+                sch.entry("Channel height", "channel_height_nm",
+                          P["channel_height_nm"]),
+                sch.entry("Channel height uncertainty", "channel_height_sigma_nm",
+                          P["channel_height_sigma_nm"]),
+                sch.entry("Trench depth", "trench_depth_nm", P["trench_depth_nm"]),
+                sch.entry("Trench depth uncertainty", "trench_depth_sigma_nm",
+                          P["trench_depth_sigma_nm"]),
                 sch.button("Attach AFM", "attach_afm",
                            inputs=("afm_trial_id", "width_um", "width_sigma_um",
-                                   "thickness_nm", "thickness_sigma_nm")),
+                                   "thickness_nm", "thickness_sigma_nm",
+                                   "channel_height_nm", "channel_height_sigma_nm",
+                                   "trench_depth_nm", "trench_depth_sigma_nm")),
                 sch.button("Set tilt for trial", "set_trial_tilt",
                            inputs=("afm_trial_id", "typed_tilt")),
                 sch.button("Set speed for trial", "set_trial_speed",
                            inputs=("afm_trial_id", "typed_speed")),
+                tier=2, disclosure=configure,
+            ),
+            sch.section(
+                "Optical measurement",
+                sch.entry("Trial", "afm_trial_id", P["afm_trial_id"]),
+                sch.entry("Channel width (optical)", "width_optical_um",
+                          P["width_optical_um"]),
+                sch.entry("Uncertainty", "width_optical_sigma_um",
+                          P["width_optical_sigma_um"]),
+                sch.dropdown("Method", "width_optical_method",
+                             "set_width_optical_method",
+                             "width_optical_method_options"),
+                sch.button("Attach optical width", "attach_optical",
+                           inputs=("afm_trial_id", "width_optical_um",
+                                   "width_optical_sigma_um")),
                 tier=2, disclosure=configure,
             ),
             sch.section(
@@ -2225,6 +2389,25 @@ class TransferMap(Model):
             ),
             self._safety_section(),
         )
+
+
+def _width_text(row):
+    """The trials log's width: "1.8 um (AFM)", "~2.1 um (optical)", both
+    ("1.8 um (AFM), optical 2.1 um"), or "no width"; the two AFM heights
+    after it when measured."""
+    afm, optical = row.get("width_um"), row.get("width_optical_um")
+    if afm is not None:
+        text = f"{afm:g} um (AFM)" + (f", optical {optical:g} um"
+                                       if optical is not None else "")
+    elif optical is not None:
+        text = f"~{optical:g} um (optical)"
+    else:
+        text = "no width"
+    if row.get("channel_height_nm") is not None:
+        text += f", height {row['channel_height_nm']:g} nm"
+    if row.get("trench_depth_nm") is not None:
+        text += f", trench {row['trench_depth_nm']:g} nm"
+    return text
 
 
 def _ordinal(n):

@@ -124,6 +124,13 @@ class Controller:
             return list(self._models)
 
     @property
+    def models(self):
+        """A snapshot `{name: model}` of what is open, for the composition
+        root (Setup applies a signed-in profile to every open model)."""
+        with self._lock:
+            return dict(self._models)
+
+    @property
     def closed_names(self):
         """Configured models whose tab is closed; reopen() brings one back."""
         with self._lock:

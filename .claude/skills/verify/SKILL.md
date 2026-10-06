@@ -14,15 +14,20 @@ on this Mac); `$S` is the session scratch directory.
 $PY -m pytest tests -q -p no:cacheprovider -m "not qt"
 ```
 
-~240 s. Run after every edit. Baseline **2290 passed, 11 skipped (window), 1 xfailed, 212 deselected** (the
-212 are the Qt tests). A count that moved is a finding, not noise.
+~380 s. Run after every edit. Baseline (2026-10-04, after Phase 1 of the
+flake-coordinates and user-system proposals) **3433 passed, 12 skipped
+(window), 1 xfailed, 255 deselected** (the 255 are the Qt tests). A count
+that moved is a finding, not noise. Known flake, not a regression:
+`test_transfer_map.py::test_mark_appears_in_the_index_and_the_label_from_the_mark_on`
+fails about one run in three on an unchanged tree (a 1 ms timing bound);
+rerun it alone before calling a red fast gate.
 
 ## Before a merge: four gates and a launch
 
 ```
-$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                          # 2290 passed (STATION_NO_WINDOWS=1 while anyone is at the Mac)
+$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                          # 3433 passed (STATION_NO_WINDOWS=1 while anyone is at the Mac)
 $PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                  # 78 passed; recaptures from legacy/src in a subprocess
-QT_QPA_PLATFORM=offscreen $PY -m pytest tests -q -p no:cacheprovider -m qt      # 212 passed; lead only, see below
+QT_QPA_PLATFORM=offscreen $PY -m pytest tests -q -p no:cacheprovider -m qt      # 255 passed; lead only, see below
 cd legacy && $PY -m pytest tests -q -p no:cacheprovider -m "not slow and not order_dependent and not qt"
                                                                                 # 1038 passed, 1 skipped, 89 deselected, 1 xfailed
 $PY src/app.py --web --no-browser --port 8081 &  sleep 8;  curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/setup;  kill %1

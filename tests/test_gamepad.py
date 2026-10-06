@@ -694,6 +694,58 @@ def test_an_index_that_renumbers_onto_another_device_counts_as_a_disconnect(hub,
         pad.close()
 
 
+def _pump_raises_once(fake_sdl):
+    """SDL's event pump raises on its next call only: one failed enumeration
+    (`GamepadHub.count` does not pump, so the cheap index check still
+    answers)."""
+    real = fake_sdl.event.pump
+    armed = [True]
+
+    def _pump():
+        if armed[0]:
+            armed[0] = False
+            raise FakeError("SDL hiccup")
+        return real()
+    fake_sdl.event.pump = _pump
+    return armed
+
+
+def test_a_failed_enumeration_is_unknown_and_keeps_a_bound_pad(hub, fake_sdl):
+    """rb-pump P4: `_enumerate` returned [] on an exception, and the macOS
+    presence check read that empty scan as "pad gone": it released the
+    binding and dropped Manual. A failed scan is "unknown": the last good
+    scan stands, and a later good scan is honoured."""
+    with platform_as("darwin"):
+        pad = make_pad(hub, "StepperProbe", bind_to=0)
+        armed = _pump_raises_once(fake_sdl)
+        pad._darwin_scan_mark = 0.0          # the next check re-enumerates
+        pad.poll_once()
+        assert not armed[0], "the enumeration never ran"
+        assert pad.is_bound, "a failed enumeration released the binding"
+        assert pad.status == "bound"
+
+        # A later good scan that says the pad is gone is honoured.
+        del fake_sdl.joystick.devices[1]
+        fake_sdl.joystick.devices[0] = FakeJoystick(name="Thrustmaster T.16000M")
+        pad._darwin_scan_mark = 0.0
+        pad.poll_once()
+        assert pad.is_bound is False, "a good scan was ignored"
+        pad.close()
+
+
+def test_a_failed_enumeration_returns_none_and_the_option_list_survives(hub, fake_sdl):
+    """rb-pump P4: the hub says "unknown" (None), not "no pads"; `names`
+    and a Gamepad's `options` still read as lists."""
+    _pump_raises_once(fake_sdl)
+    assert hub._enumerate() is None
+    _pump_raises_once(fake_sdl)
+    assert hub.names == []
+    pad = make_pad(hub, "StepperProbe")
+    _pump_raises_once(fake_sdl)
+    assert pad.options == ["None"]
+    pad.close()
+
+
 def test_losing_the_pad_stops_the_loop_and_releases_the_claim(hub, fake_sdl):
     """The model reads `is_bound`: losing the pad while MANUAL is what makes
     it halt and disable (STEPPER-5, DC-17, VIEW-TKINTER-4)."""
@@ -709,6 +761,73 @@ def test_losing_the_pad_stops_the_loop_and_releases_the_claim(hub, fake_sdl):
     assert hub.claims == {}, "a lost pad kept its claim"
     assert pad.levels == {}
     assert pad.status == "lost"
+    pad.close()
+
+
+class _FileSpy:
+    """What `events` would write to the log file, captured in memory."""
+
+    def __init__(self, monkeypatch):
+        self.lines = []
+        real = events._write_file
+
+        def _spy(severity, source, text, exception):
+            self.lines.append((severity, source, text))
+            return real(severity, source, text, exception)
+        monkeypatch.setattr(events, "_write_file", _spy)
+
+    def debug(self, prefix):
+        return [text for severity, _source, text in self.lines
+                if severity == "debug" and text.startswith(prefix)]
+
+
+def test_a_disconnect_tells_the_operator_what_happened_and_what_to_do(
+        hub, fake_sdl, monkeypatch):
+    """rb-pump P3: "StepperProbe: ID 0: ... is gone (poll failed: ...)" named
+    the owner id and an internal reason. The operator reads what happened
+    and what to do; the reason stays in the file log."""
+    from test_core_fakes import EventRecorder
+    spy = _FileSpy(monkeypatch)
+    pad = make_pad(hub, "Stepper Probe", bind_to=0)
+    label = pad._label
+    with EventRecorder() as log:
+        pad._handle_disconnect("poll failed: device removed")
+    warnings = [e for e in log.titled("Gamepad Disconnected")
+                if e.severity == "warning"]
+    assert len(warnings) == 1, [e.message for e in log.seen]
+    assert warnings[0].message == (
+        f"The gamepad {label} disconnected. Stepper Probe left manual mode "
+        "and its motors were disabled. Plug it back in and choose it again "
+        "under Gamepad, then press Manual.")
+    for jargon in ("poll failed", "device removed", "is gone"):
+        assert jargon not in warnings[0].message, jargon
+    assert any("poll failed: device removed" in text
+               for text in spy.debug("Gamepad Disconnected")), spy.lines
+    pad.close()
+
+
+def test_a_hardware_error_during_poll_is_told_once_in_operator_words(
+        hub, fake_sdl, monkeypatch):
+    """rb-pump P3: the pygame.error path warned "Gamepad Disconnected" with
+    the owner id and the exception, then `_handle_disconnect` warned again.
+    One operator line; the exception goes to the file."""
+    from test_core_fakes import EventRecorder
+    spy = _FileSpy(monkeypatch)
+    pad = make_pad(hub, "Stepper Probe", bind_to=0)
+
+    def _raise():
+        raise FakeError("usb reset")
+    monkeypatch.setattr(pad, "_read_layout", _raise)
+    with EventRecorder() as log:
+        assert pad._read_raw() is None
+    assert pad.is_bound is False
+    shown = [e for e in log.seen if e.severity != "debug"]
+    assert len(log.titled("Gamepad Disconnected")) == 1, \
+        [e.message for e in shown]
+    for event in shown:
+        assert "usb reset" not in event.message, event.message
+        assert "Stepper Probe:" not in event.message, event.message
+    assert any("usb reset" in text for _s, _src, text in spy.lines), spy.lines
     pad.close()
 
 

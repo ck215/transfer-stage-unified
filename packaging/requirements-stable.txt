@@ -1,0 +1,4 @@
+# What freezing the `stable` branch (packaging/stable.spec) needs beyond the
+# station's own dependencies (pyproject.toml: pyserial, pygame, Pillow, mss,
+# numpy): the stable stepper and chuck frames import the G-code parser.
+gcodeparser==0.3.0

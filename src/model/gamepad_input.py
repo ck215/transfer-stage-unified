@@ -46,6 +46,9 @@ class GamepadInput:
     GAMEPAD_LOST = "gamepad lost"
     GAMEPAD_RELEASED = "gamepad released"
     GAMEPAD_BIND_FAILED = "gamepad bind failed"
+    #: A pad chosen while the model was being driven (rb-pump P5): the
+    #: model leaves its mode BEFORE the new pad is bound.
+    GAMEPAD_SWAPPED = "gamepad swapped"
 
     def __init__(self, *args, **kwargs):
         self.gamepad = None
@@ -141,6 +144,16 @@ class GamepadInput:
         """
         previous = self._gamepad_name
         wanted = None if name in (None, "", "None") else str(name)
+        if wanted is not None and self._pumps_gamepad:
+            # rb-pump P5 (stop path): choosing a pad while driven leaves the
+            # mode through the model's own transition FIRST (the probe's
+            # sends the zero frame and disables), and only then binds. The
+            # old order kept the mode and the next tick jogged from the new
+            # pad; the lab's original app ran a full stop first. The
+            # operator re-enters the mode by hand.
+            events.debug("Gamepad", f"swap to {wanted!r} while driven; "
+                         "leaving the mode first", source=self.NAME)
+            self._on_gamepad_lost(self.GAMEPAD_SWAPPED)
         bound = False
         try:
             bound = bool(self.gamepad.bind(wanted))
@@ -238,12 +251,18 @@ class GamepadInput:
         self._was_pumping = False
         interval = 1.0 / float(self.GAMEPAD_RATE_HZ)
         while not self._threads_stop.wait(interval):
-            if not self._gamepad_tick():
-                return
+            # rb-pump P1: a fault does not end the loop. It used to: the pump
+            # returned on the first raise and only `open()` spawns it, so
+            # after one failed jog write the operator could re-enter Manual,
+            # energize the coils, and never send a jog frame again. The
+            # model's fault latch is the safety response; while faulted,
+            # `_pumps_gamepad` is False and a tick is idle anyway.
+            self._gamepad_tick()
 
     def _gamepad_tick(self):
         """One pump tick: the body of `_gamepad_loop`, driven directly by
-        tests. Returns False only when the pump has faulted and must stop.
+        tests. Always returns True: a raise faults the model through
+        `_on_gamepad_fault` and the pump keeps running (rb-pump P1).
 
         Edges travel one per press: the Gamepad parks each press and zeroes
         those keys in `levels`, so the levels alone never carry one. They are
@@ -281,8 +300,17 @@ class GamepadInput:
                          every=1.0)
             self._was_pumping = False
         except Exception as exc:
+            # Rate-limited: a hook that raises on every tick is one line a
+            # second with a suppressed count, never 50 lines a second.
             events.debug("Gamepad Pump Failed", repr(exc), source=self.NAME,
-                         exception=exc)
-            self._on_gamepad_fault(repr(exc))
-            return False
+                         exception=exc, every=1.0)
+            # No neutral-on-exit retry into whatever just raised: the fault
+            # hook below owns the hardware response.
+            self._was_pumping = False
+            try:
+                self._on_gamepad_fault(repr(exc))
+            except Exception as hook_exc:
+                # A raising fault hook must not kill the pump either.
+                events.debug("Gamepad Fault Hook Failed", repr(hook_exc),
+                             source=self.NAME, exception=hook_exc, every=1.0)
         return True

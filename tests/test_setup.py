@@ -152,8 +152,9 @@ def test_the_per_baud_probe_budget_is_the_one_probe_device_at_spent():
 def test_model_types_is_every_model_class_keyed_by_its_name():
     assert list(MODEL_TYPES) == ["Stepper Probe", "DC Probe",
                                  "Chuck Positioner", "Temperature Controller",
-                                 "Rotator", "Red Percent", "Transfer Map"]   # Tier S
-    assert len(set(MODEL_TYPES.values())) == 7   # Tier S: the Transfer Map
+                                 "Rotator", "Red Percent", "Transfer Map",   # Tier S
+                                 "Sample Map"]   # flake-coords (2026-10-04)
+    assert len(set(MODEL_TYPES.values())) == 8   # + the Sample Map
 
 
 def test_model_types_is_the_only_list_of_models(panel, fake_types):
@@ -161,7 +162,7 @@ def test_model_types_is_the_only_list_of_models(panel, fake_types):
     builds. Four copies of this list disagreed before RC-7."""
     assert panel.model_types == list(fake_types)
     titles = [section["title"] for section in panel.schema["sections"]]
-    assert titles == ["Update", "Firmware", "Devices", *fake_types, "Launch"]
+    assert titles == ["Profile", "Update", "Firmware", "Devices", *fake_types, "Launch"]
 
 
 # -- the table (Addendum 2) ------------------------------------------------
@@ -545,7 +546,8 @@ def test_the_row_commands_are_named_after_the_model(panel, fake_types):
     contract: `set_<row>_port` / `set_<row>_gamepad`, one per row."""
     assert {e.get("command") for e in _elements(panel) if e["type"] == "dropdown"} == {
         "set_alpha_port", "set_alpha_gamepad",
-        "set_beta_port", "set_beta_gamepad", "set_screen_port"}
+        "set_beta_port", "set_beta_gamepad", "set_screen_port",
+        "set_profile_user"}        # the Profile row (user-system Phase 1)
 
 
 def test_auto_assign_points_each_row_at_the_port_that_answered(panel):
@@ -1048,8 +1050,10 @@ def checking(monkeypatch):
     monkeypatch.delenv("STATION_NO_UPDATE_CHECK", raising=False)
 
 
-def test_the_update_section_is_first_and_a_tier_one_row(panel):
-    section = panel.schema["sections"][0]
+def test_the_update_section_follows_the_profile_row_and_is_a_tier_one_row(panel):
+    """The Profile row is first (user-system section 2.4); Update next."""
+    assert panel.schema["sections"][0]["title"] == "Profile"
+    section = panel.schema["sections"][1]
     assert section["title"] == "Update"
     assert section["layout"] == "row" and section["tier"] == 1
     assert [(e["type"], e.get("text"), e.get("command") or e.get("model_attr"))
@@ -1424,8 +1428,8 @@ def test_the_firmware_row_block_builds_the_brief_shape(panel):
 
 def test_the_firmware_row_is_second_right_after_update(panel):
     sections = panel.schema["sections"]
-    assert [s["title"] for s in sections[:3]] == ["Update", "Firmware", "Devices"]
-    assert sections[1] == panel._firmware_section()
+    assert [s["title"] for s in sections[:4]] == ["Profile", "Update", "Firmware", "Devices"]
+    assert sections[2] == panel._firmware_section()
 
 
 def test_the_firmware_row_reaches_the_views_through_run_and_state(fake_types):
@@ -1462,6 +1466,78 @@ def test_the_startup_firmware_check_runs_on_a_thread_and_publishes(
     wait_firmware(panel)
     assert panel.firmware_status == "Stepper Probe out of date"
     assert firmware.checks == 1 and firmware.flashes == []
+
+
+# -- the startup check offers the flash (owner 2026-09-28: "Flash should be
+# unattended, as with the prev. script. It can send a popup first") ---------
+
+FLASH_NOW = {"label": "Flash now", "name": "__setup__", "command": "flash_firmware",
+             "args": [True]}
+
+
+def test_the_startup_check_asks_once_and_flash_now_flashes_unattended(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware()
+    panel = Setup(RecordingController(), firmware=firmware)
+    wait_firmware(panel)
+    [offer] = _prompts(warnings, events.FIRMWARE_OUT_OF_DATE)
+    assert offer.severity == "warning" and offer.needs_ack is True
+    assert offer.message == ("Stepper Probe out of date. Flash it now? This "
+                             "overwrites its running firmware if it is plugged "
+                             "in; otherwise it is skipped. Launch waits until "
+                             "the flash finishes.")
+    assert offer.to_dict()["action"] == FLASH_NOW
+    assert firmware.flashes == []            # the dialog is the question
+    # Flash now: the action runs as confirmed, on the flash thread.
+    assert panel.run("flash_firmware", args=(True,)).is_ok
+    wait_firmware(panel)
+    assert firmware.flashes == [["Stepper Probe"]]
+    # The recheck after the flash still says out of date (the fake keeps its
+    # answer): no second question this run.
+    assert panel.firmware_status == "Stepper Probe out of date"
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+
+
+def test_the_startup_offer_names_every_board_the_button_would_flash(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware(result=firmware_result(stale=["Stepper Probe", "DC Probe"],
+                                                   never=["Chuck Positioner"]))
+    panel = Setup(RecordingController(), firmware=firmware)
+    wait_firmware(panel)
+    [offer] = _prompts(warnings, events.FIRMWARE_OUT_OF_DATE)
+    assert offer.message.startswith(
+        "Stepper Probe and DC Probe out of date; Chuck Positioner never flashed "
+        "here. Flash them now? This overwrites the running firmware of every "
+        "one of them that is plugged in; the others are skipped.")
+    assert panel.run("flash_firmware", args=(True,)).is_ok
+    wait_firmware(panel)
+    assert firmware.flashes == [["Stepper Probe", "DC Probe", "Chuck Positioner"]]
+
+
+def test_the_startup_check_asks_nothing_when_every_board_is_current(
+        fake_types, firmware_checking, warnings):
+    panel = Setup(RecordingController(), firmware=FakeFirmware(result=firmware_result()))
+    wait_firmware(panel)
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+
+
+def test_the_startup_check_asks_nothing_it_could_not_do_without_the_tools(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware(result=firmware_result(stale=["DC Probe"],
+                                                   missing=["arduino-cli"]))
+    panel = Setup(RecordingController(), firmware=firmware)
+    wait_firmware(panel)
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    assert "by hand" in refused(lambda: panel.flash_firmware(True))
+
+
+def test_check_firmware_by_hand_asks_nothing_the_button_is_beside_it(
+        fake_types, warnings):
+    firmware = FakeFirmware()
+    panel = checked(firmware)
+    assert panel.firmware_status == "Stepper Probe out of date"
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    assert firmware.flashes == []
 
 
 def test_a_firmware_check_that_raises_warns_and_the_station_runs(

@@ -36,6 +36,7 @@ MANIFEST
 *.manifest
 *.spec
 !packaging/station.spec
+!packaging/stable.spec
 
 # Installer logs
 pip-log.txt
