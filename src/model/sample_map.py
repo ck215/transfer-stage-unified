@@ -10,6 +10,15 @@ commands, tables and tests stay, its schema is `_dormant_schema`, and
 `FLAKES_ACTIVE` switches the mode word back. What follows is that machinery's
 original description.
 
+**The hierarchy and the procedure (owner ruling 2026-10-07).** A sample, its
+chips and their flakes are one tree in the store (`sample_store` v4). The
+sheet is a short procedure (`PHASES`): "browse" holds three cascading
+dropdowns (sample, its chips, that chip's flakes), the pictures and the
+trials of the picked level; "new_sample", "new_chip" and "new_flake" are the
+prompts, each drawing only its own section. A sample and a flake need at
+least one photo, a chip may have none. The Panel refuses a command whose
+control the current step hides.
+
 Where on the chip each flake is (proposal-flake-coordinates.md).
 
 The operator marks the chip's corners with the optical **crosshair** (owner
@@ -104,6 +113,10 @@ class SampleMap(Model):
     #: Shown newest first in the image log and the trial listing.
     LOG_LIMIT = 200
     TRANSFER_MAP = "Transfer Map"
+    #: The sheet's steps (see the module docstring).
+    PHASES = ("browse", "new_sample", "new_chip", "new_flake")
+    #: What a dropdown shows between a sample's label and its material.
+    SEP = " \u00b7 "
 
     GATE_REASONS = {
         **Model.GATE_REASONS,
@@ -126,6 +139,13 @@ class SampleMap(Model):
               unit="um", label="Chip height (typed)"),
         Param("orientation_note", "text", default="", label="How to find corner A"),
         Param("image_note", "text", default="", label="Image note"),
+        Param("new_sample_id", "text", default="", label="Sample ID"),
+        Param("new_sample_note", "text", default="", label="Note"),
+        Param("new_material_name", "text", default="", label="New material"),
+        Param("new_chip_id", "text", default="", label="Chip ID"),
+        Param("new_chip_note", "text", default="", label="Note"),
+        Param("new_flake_id", "text", default="", label="Flake ID"),
+        Param("new_flake_note", "text", default="", label="Note"),
         Param("storage_location", "text", default="", label="Stored at"),
         # Station-only (Q4): blank = the table's value for the locating axes.
         Param("um_per_count", "text", default="", label="um per count"),
@@ -162,6 +182,11 @@ class SampleMap(Model):
         self._cal_context = None       # (frame_source, epoch) they were made in
         self._extent_first = None      # (flake_uid, sample point) between presses
         self._selected = None          # flake_uid
+        self._phase = "browse"
+        self._chip = None              # the picked chip / flake of the hierarchy
+        self._flake_id = None
+        self._new_material = ""        # the New sample prompt's material
+        self._staged = []              # photo paths chosen in a prompt
         self._shape = ss.SHAPES[0]
         self._thickness_method = ss.THICKNESS_APPROX_METHODS[0]
         self._image_instrument = ss.IMAGE_INSTRUMENTS[1]      # microscope
@@ -1275,65 +1300,314 @@ class SampleMap(Model):
         self._touch()
         return self.image_magnification
 
+    @property
+    def phase(self):
+        return self._phase
+
+    def _go(self, phase):
+        self._phase = phase
+        self._touch()
+
+    def _picked(self):
+        """(sample, chip, flake) of the pick, each None when not picked. A
+        chip or flake only counts under the sample it was picked in."""
+        sample = str(self.sample_id or "").strip() or None
+        chip = self._chip if sample else None
+        flake = self._flake_id if chip else None
+        return sample, chip, flake
+
+    def _level_text(self):
+        return self.SEP.join(x for x in self._picked() if x)
+
     def add_image(self, path):
-        """Copy the chosen picture, unmodified, into the store under the typed
-        sample ID with the instrument and magnification picked above."""
-        sample_id = str(self.sample_id or "").strip()
+        """Copy the chosen picture, unmodified, into the store at the picked
+        level (the flake, else the chip, else the sample) with the instrument
+        and magnification picked above."""
+        sample_id, chip, flake = self._picked()
         if not sample_id:
-            raise Refused("Type or pick the sample ID the picture belongs to, "
-                          "then add it.")
+            raise Refused("Pick the sample the picture belongs to, then add it.")
         try:
             row = self._store.add_image(sample_id, path, self._image_instrument,
                                         self._image_magnification,
-                                        note=self.image_note)
+                                        note=self.image_note,
+                                        chip_id=chip, flake_id=flake)
         except ss.StoreRefused as refusal:
             raise Refused(str(refusal))
         self.image_note = ""
         self._touch()
-        events.info("Image Added", f"{sample_id}: {row['instrument']} "
+        events.info("Image Added", f"{self._level_text()}: {row['instrument']} "
                     f"{row['magnification']}x, {row['path']}", source=self.NAME)
         return row["path"]
 
-    @property
-    def sample_options(self):
-        """Sample IDs to pick: the saved samples, those with pictures, and the
-        labels the Transfer Map's trials carry."""
-        ids = {s["sample_id"] for s in self._store.samples()}
+    # -- the pickers: sample > chip > flake -----------------------------------------
+    def _sample_entries(self):
+        """[(shown text, sample ID)] for every sample: the saved ones, those
+        with pictures, and the labels the Transfer Map's trials carry (older
+        data has pictures and trials under labels with no sample row)."""
+        material = {s["sample_id"]: s["material"] for s in self._store.samples()}
+        ids = set(material)
         ids |= {i["sample_id"] for i in self._store.images()}
         ids |= set(self._trial_labels())
-        return sorted(ids, key=str.lower)
+        return [(f"{i}{self.SEP}{material[i]}" if material.get(i) else i, i)
+                for i in sorted(ids, key=str.lower)]
+
+    @property
+    def sample_options(self):
+        return [shown for shown, _i in self._sample_entries()]
 
     @property
     def sample_pick(self):
-        return str(self.sample_id or "")
+        current = str(self.sample_id or "").strip()
+        return next((shown for shown, i in self._sample_entries() if i == current), "")
 
     def select_sample(self, sample_id):
-        """Make a listed sample the current one (its saved details load)."""
-        self.sample_id = str(sample_id or "").strip()
-        saved = self._store.sample(self.sample_id) if self.sample_id else None
+        """Pick a sample (its listed text or its bare ID); the chip and flake
+        picks are cleared. A saved sample's details load."""
+        text = str(sample_id or "").strip()
+        found = dict(self._sample_entries()).get(text, text)
+        self.sample_id = found
+        self._chip = self._flake_id = None
+        saved = self._store.sample(found) if found else None
         if saved is not None:
             self.material = saved["material"] or ""
             self.substrate = saved["substrate"] or ""
             self.storage_location = saved["storage_location"] or ""
         self._touch()
-        return self.sample_id
+        return found
 
     @property
+    def chip_options(self):
+        sample, _c, _f = self._picked()
+        return [c["chip_id"] for c in self._store.chips(sample)] if sample else []
+
+    @property
+    def chip_pick(self):
+        return self._picked()[1] or ""
+
+    def select_chip(self, chip_id):
+        sample = self._picked()[0]
+        text = str(chip_id or "").strip()
+        if not sample or text not in self.chip_options:
+            raise Refused(f"Chip {text or '(blank)'} is not one of "
+                          f"{sample or 'a picked sample'}'s chips.")
+        self._chip, self._flake_id = text, None
+        self._touch()
+        return text
+
+    @property
+    def flake_id_options(self):
+        sample, chip, _f = self._picked()
+        return [f["flake_id"] for f in self._store.flakes(sample, chip)] if chip else []
+
+    @property
+    def flake_id_pick(self):
+        return self._picked()[2] or ""
+
+    def select_flake_id(self, flake_id):
+        _s, chip, _f = self._picked()
+        text = str(flake_id or "").strip()
+        if not chip or text not in self.flake_id_options:
+            raise Refused(f"Flake {text or '(blank)'} is not one of "
+                          f"{chip or 'a picked chip'}'s flakes.")
+        self._flake_id = text
+        self._touch()
+        return text
+
+    # -- the prompts: New sample / New chip / New flake -----------------------------
+    def begin_new_sample(self):
+        self._clear_prompt()
+        self._go("new_sample")
+
+    def begin_new_chip(self):
+        sample = self._picked()[0]
+        if not sample:
+            raise Refused("Pick the sample the chip belongs to first.")
+        if self._store.sample(sample) is None:
+            raise Refused(f"Sample {sample} is not in the sample list yet: add "
+                          "it with New sample first.")
+        self._clear_prompt()
+        self._go("new_chip")
+
+    def begin_new_flake(self):
+        chip = self._picked()[1]
+        if not chip:
+            raise Refused("Pick the chip the flake is on first.")
+        self._clear_prompt()
+        self._go("new_flake")
+
+    def _clear_prompt(self):
+        self.new_sample_id = self.new_sample_note = self.new_material_name = ""
+        self.new_chip_id = self.new_chip_note = ""
+        self.new_flake_id = self.new_flake_note = ""
+        self._new_material = ""
+        self._staged = []
+
+    def cancel_new(self):
+        """Discard what the prompt collected (the photos were never copied)
+        and go back to browsing."""
+        self._clear_prompt()
+        self._go("browse")
+
+    @property
+    def material_options(self):
+        return self._store.materials()
+
+    @property
+    def new_material(self):
+        return self._new_material
+
+    def set_new_material(self, material):
+        known = {m.lower(): m for m in self._store.materials()}
+        if str(material or "").strip().lower() not in known:
+            raise Refused(f"{material!r} is not a material: pick one or add it "
+                          "under New material.")
+        self._new_material = known[str(material).strip().lower()]
+        self._touch()
+        return self._new_material
+
+    def add_new_material(self):
+        """Add the typed name to the material list and pick it."""
+        try:
+            name = self._store.add_material(self.new_material_name)
+        except ss.StoreRefused as refusal:
+            raise Refused("Type the new material's name first."
+                          if "material ID" in str(refusal) else str(refusal))
+        self.new_material_name = ""
+        self._new_material = name
+        self._touch()
+        return name
+
+    def stage_photo(self, path):
+        """Remember a picture for the Add button (nothing is copied yet)."""
+        source = Path(str(path))
+        if not source.is_file():
+            raise Refused(f"Could not find the picture {source.name or source}.")
+        self._staged.append(str(source))
+        self._touch()
+        return len(self._staged)
+
+    def clear_photos(self):
+        self._staged = []
+        self._touch()
+
+    @property
+    def staged_text(self):
+        if not self._staged:
+            return "No photo chosen yet"
+        return f"{len(self._staged)} photo(s): " + ", ".join(
+            Path(p).name for p in self._staged)
+
+    def _check_staged(self, what, required):
+        missing = [Path(p).name for p in self._staged if not Path(p).is_file()]
+        if missing:
+            raise Refused("Could not find the picture " + ", ".join(missing)
+                          + ". Clear the photos and choose it again.")
+        if required and not self._staged:
+            raise Refused(f"Add at least one photo of the {what} first.")
+
+    def _copy_staged(self, sample, chip=None, flake=None):
+        done = 0
+        try:
+            for source in self._staged:
+                self._store.add_image(sample, source, self._image_instrument,
+                                      self._image_magnification, chip_id=chip,
+                                      flake_id=flake)
+                done += 1
+        except ss.StoreRefused as refusal:
+            raise Refused(f"Added, but picture {done + 1} could not be copied: "
+                          f"{refusal} The rest were not added.")
+
+    def _finish_new(self, sample, chip=None, flake=None):
+        self.select_sample(sample)
+        if chip:
+            self._chip = chip
+        if flake:
+            self._flake_id = flake
+        self._clear_prompt()
+        self._go("browse")
+
+    def create_sample(self):
+        sample = str(self.new_sample_id or "").strip()
+        if not sample:
+            raise Refused("Type the sample ID first.")
+        if any(r["sample_id"].lower() == sample.lower()
+               for r in self._store.samples()):
+            raise Refused(f"Sample {sample} is already in the store.")
+        if not self._new_material:
+            raise Refused("Pick the material first.")
+        self._check_staged("sample", True)
+        try:
+            self._store.add_sample(sample, self._new_material, self.new_sample_note)
+        except ss.StoreRefused as refusal:
+            raise Refused(str(refusal))
+        try:
+            self._copy_staged(sample)
+        finally:
+            self._finish_new(sample)
+        events.info("Sample Added", f"Sample {sample} added.", source=self.NAME)
+        return sample
+
+    def create_chip(self):
+        sample = self._picked()[0]
+        chip = str(self.new_chip_id or "").strip()
+        if not chip:
+            raise Refused("Type the chip ID first.")
+        if any(c.lower() == chip.lower() for c in self.chip_options):
+            raise Refused(f"Chip {chip} is already on sample {sample}.")
+        self._check_staged("chip", False)
+        try:
+            self._store.add_chip(sample, chip, self.new_chip_note)
+        except ss.StoreRefused as refusal:
+            raise Refused(str(refusal))
+        try:
+            self._copy_staged(sample, chip)
+        finally:
+            self._finish_new(sample, chip)
+        events.info("Chip Added", f"Chip {chip} added to {sample}.", source=self.NAME)
+        return chip
+
+    def create_flake(self):
+        sample, chip, _f = self._picked()
+        flake = str(self.new_flake_id or "").strip()
+        if not flake:
+            raise Refused("Type the flake ID first.")
+        if any(f.lower() == flake.lower() for f in self.flake_id_options):
+            raise Refused(f"Flake {flake} is already on chip {chip} of {sample}.")
+        self._check_staged("flake", True)
+        try:
+            self._store.add_flake(sample, chip, flake, self.new_flake_note)
+        except ss.StoreRefused as refusal:
+            raise Refused(str(refusal))
+        try:
+            self._copy_staged(sample, chip, flake)
+        finally:
+            self._finish_new(sample, chip, flake)
+        events.info("Flake Added", f"Flake {flake} added to {sample} {self.SEP} "
+                    f"{chip}.", source=self.NAME)
+        return flake
+
+    # -- the pictures of the picked level -----------------------------------------------
+    @property
     def image_log(self):
-        """Every picture, newest first: sample, instrument, magnification,
-        when, note."""
-        rows = sorted(self._store.images(), key=lambda r: r["id"], reverse=True)
-        return [f"{r['sample_id']}  {r['instrument']}  {r['magnification']}x  "
+        """The picked level's own pictures, newest first: where, instrument,
+        magnification, when, note."""
+        sample, chip, flake = self._picked()
+        if not sample:
+            return []
+        rows = sorted(self._store.images(sample, chip, flake),
+                      key=lambda r: r["id"], reverse=True)
+        return [f"{self._level_text()}  {r['instrument']}  {r['magnification']}x  "
                 f"{r['captured_at']}{'  ' + r['note'] if r['note'] else ''}"
                 for r in rows[:self.LOG_LIMIT]]
 
     @property
     def image_text(self):
-        sample_id = str(self.sample_id or "").strip()
-        if not sample_id:
-            return "Type or pick a sample ID"
-        n = len(self._store.images(sample_id))
-        return f"{n} picture(s) of {sample_id}" if n else f"No pictures of {sample_id} yet"
+        sample, chip, flake = self._picked()
+        if not sample:
+            return "Pick a sample"
+        n = len(self._store.images(sample, chip, flake))
+        where = self._level_text()
+        return f"{n} picture(s) of {where}" if n else f"No pictures of {where} yet"
 
     # -- trials for this sample: a READ-ONLY look at the Transfer Map's store --------
     def _trial_connection(self):
@@ -1360,11 +1634,15 @@ class SampleMap(Model):
         except sqlite3.Error:
             return []
 
-    def trials_for(self, sample_id):
+    def trials_for(self, sample_id, chip_id=None, flake_id=None):
         """The Transfer Map's trials stamped with `sample_id` (the free-text
-        label, compared trimmed and case-insensitively), newest first. Rows
-        are whatever columns that file has (`SELECT *`); a missing file, a
-        store without `trials.sample_id`, or a locked one answers []."""
+        label, compared trimmed and case-insensitively), newest first; with
+        `chip_id` only that chip's, with `flake_id` (and its chip) only that
+        flake's. Rows are whatever columns that file has (`SELECT *`): a
+        trial without `chip_id` / `flake_id` (this repo's v6 store has none)
+        matches no chip or flake but is still listed at sample level. A
+        missing file, a store without `trials.sample_id`, or a locked one
+        answers []."""
         label = str(sample_id or "").strip()
         if not label:
             return []
@@ -1380,17 +1658,31 @@ class SampleMap(Model):
                 db.close()
         except sqlite3.Error:
             return []
+
+        def same(row, key, wanted):
+            return str(row.get(key) or "").strip().lower() == str(wanted).strip().lower()
+        if chip_id:
+            rows = [r for r in rows if same(r, "chip_id", chip_id)]
+            if flake_id:
+                rows = [r for r in rows if same(r, "flake_id", flake_id)]
         rows.sort(key=lambda r: (str(r.get("started_at") or ""), r.get("id") or 0),
                   reverse=True)
         return rows[:self.LOG_LIMIT]
 
     @property
+    def trials_level(self):
+        """"flake", "chip" or "sample": how deep the pick goes."""
+        sample, chip, flake = self._picked()
+        return "flake" if flake else "chip" if chip else "sample"
+
+    def _picked_trials(self):
+        sample, chip, flake = self._picked()
+        return self.trials_for(sample, chip, flake)
+
+    @property
     def sample_trials_log(self):
-        sample_id = str(self.sample_id or "").strip()
-        if not sample_id:
-            return []
         lines = []
-        for t in self.trials_for(sample_id):
+        for t in self._picked_trials():
             parts = [f"#{t.get('id')}", str(t.get("started_at") or "-"),
                      str(t.get("status") or "-")]
             if t.get("force_class"):
@@ -1400,14 +1692,15 @@ class SampleMap(Model):
 
     @property
     def trials_text(self):
-        sample_id = str(self.sample_id or "").strip()
-        if not sample_id:
-            return "Type or pick a sample ID"
+        sample = self._picked()[0]
+        if not sample:
+            return "Pick a sample"
         if self._trial_store is None:
             return "The Transfer Map is not open: no trials to list"
-        n = len(self.trials_for(sample_id))
-        return f"{n} trial(s) recorded for {sample_id}" if n else \
-            f"No trial is recorded for {sample_id}"
+        n = len(self._picked_trials())
+        where = self._level_text()
+        return f"{n} trial(s) recorded for {where}" if n else \
+            f"No trial is recorded for {where}"
 
     @property
     def samples_log(self):
@@ -1476,56 +1769,103 @@ class SampleMap(Model):
     # -- schema -------------------------------------------------------------------------
     @property
     def schema(self):
-        """The image sheet (2026-10-07). The flake-coordinate sections are
-        `_dormant_schema`: out of the allow-list, so a view cannot call them."""
+        """The image sheet as a procedure (2026-10-07): the browse sheet and
+        one prompt per New button, each drawn only in its step. The
+        flake-coordinate sections are `_dormant_schema`: out of the allow-list,
+        so a view cannot call them."""
         P = self.PARAMS
         configure = "Configure Sample Map"
+        sample, chip, _flake = self._picked()
+        where = self._level_text()
+        browse = ("browse",)
+        photo = [sch.file_open("Add photo\u2026", "stage_photo",
+                               extensions=self.IMAGE_EXTENSIONS),
+                 sch.readonly("Photos", "staged_text"),
+                 sch.button("Clear photos", "clear_photos")]
         return sch.schema(
             sch.section(
                 "Sample",
-                sch.dropdown("Pick a sample", "sample_pick", "select_sample",
-                             "sample_options"),
-                sch.entry("Sample ID", "sample_id", P["sample_id"]),
-                sch.entry("Material", "material", P["material"]),
-                sch.button("Save sample", "save_sample",
-                           inputs=("sample_id", "material"), role="go"),
+                sch.dropdown("Sample", "sample_pick", "select_sample", "sample_options"),
+                sch.button("New sample\u2026", "begin_new_sample"),
+                sch.dropdown("Chip", "chip_pick", "select_chip", "chip_options"),
+                sch.button("New chip\u2026", "begin_new_chip"),
+                sch.dropdown("Flake", "flake_id_pick", "select_flake_id",
+                             "flake_id_options"),
+                sch.button("New flake\u2026", "begin_new_flake"),
+                phases=browse,
             ),
             sch.section(
-                "Images",
+                "Pictures" + (f" of {where}" if where else ""),
                 sch.dropdown("Taken with", "image_instrument", "set_image_instrument",
                              "image_instrument_options"),
                 sch.dropdown("Magnification", "image_magnification",
                              "set_image_magnification", "image_magnification_options"),
                 sch.entry("Image note", "image_note", P["image_note"]),
-                sch.file_open("Add image", "add_image", extensions=self.IMAGE_EXTENSIONS,
-                              role="go"),
-                sch.readonly("This sample", "image_text"),
+                sch.file_open("Add photo\u2026", "add_image",
+                              extensions=self.IMAGE_EXTENSIONS, role="go"),
+                sch.readonly("Pictures", "image_text"),
                 sch.log_stream("Image log", "image_log"),
+                phases=browse,
             ),
             sch.section(
-                "Trials for this sample",
+                f"Trials on this {self.trials_level}",
                 sch.readonly("Trials", "trials_text"),
                 sch.log_stream("Trials (newest first)", "sample_trials_log"),
+                phases=browse,
             ),
             sch.section(
                 "Sample details",
                 sch.entry("Substrate", "substrate", P["substrate"]),
                 sch.entry("Stored at", "storage_location", P["storage_location"]),
                 sch.button("Save sample details", "save_sample",
-                           inputs=("sample_id", "material", "substrate",
-                                   "storage_location")),
-                tier=2, disclosure=configure,
+                           inputs=("substrate", "storage_location")),
+                tier=2, disclosure=configure, phases=browse,
             ),
             sch.section(
                 "Data",
                 sch.file_save("Export sample map", "export_json", extensions=("json",)),
                 sch.file_open("Import sample map", "import_json", extensions=("json",)),
-                tier=2, disclosure=configure,
+                tier=2, disclosure=configure, phases=browse,
             ),
             sch.section(
                 "Diagnostics",
                 sch.log_stream("Samples", "samples_log"),
-                tier=3, disclosure="Diagnostics",
+                tier=3, disclosure="Diagnostics", phases=browse,
+            ),
+            sch.section(
+                "New sample",
+                sch.entry("Sample ID", "new_sample_id", P["new_sample_id"]),
+                sch.dropdown("Material", "new_material", "set_new_material",
+                             "material_options"),
+                sch.entry("New material", "new_material_name", P["new_material_name"]),
+                sch.button("Add material", "add_new_material",
+                           inputs=("new_material_name",)),
+                sch.entry("Note", "new_sample_note", P["new_sample_note"]),
+                *photo,
+                sch.button("Add sample", "create_sample", role="go",
+                           inputs=("new_sample_id", "new_sample_note")),
+                sch.button("Cancel", "cancel_new"),
+                phases=("new_sample",),
+            ),
+            sch.section(
+                f"New chip on {sample or '?'}",
+                sch.entry("Chip ID", "new_chip_id", P["new_chip_id"]),
+                sch.entry("Note", "new_chip_note", P["new_chip_note"]),
+                *photo,
+                sch.button("Add chip", "create_chip", role="go",
+                           inputs=("new_chip_id", "new_chip_note")),
+                sch.button("Cancel", "cancel_new"),
+                phases=("new_chip",),
+            ),
+            sch.section(
+                f"New flake on {sample or '?'}{self.SEP}{chip or '?'}",
+                sch.entry("Flake ID", "new_flake_id", P["new_flake_id"]),
+                sch.entry("Note", "new_flake_note", P["new_flake_note"]),
+                *photo,
+                sch.button("Add flake", "create_flake", role="go",
+                           inputs=("new_flake_id", "new_flake_note")),
+                sch.button("Cancel", "cancel_new"),
+                phases=("new_flake",),
             ),
             self._safety_section(),
         )

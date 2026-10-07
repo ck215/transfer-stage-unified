@@ -811,20 +811,24 @@ def test_add_image_stores_the_original_under_the_typed_sample(images, tmp_path):
     assert images.image_text == "1 picture(s) of 4oct26"
 
 
-def test_the_image_log_is_newest_first_across_samples(images, tmp_path):
+def test_the_image_log_is_the_picked_samples_newest_first(images, tmp_path):
     for sample in ("A1", "B2", "A1"):
         images.sample_id = sample
         images.add_image(str(_shot(tmp_path, payload=PNG + sample.encode())))
-    assert [l.split()[0] for l in images.image_log] == ["A1", "B2", "A1"]
-    ids = [r["id"] for r in images._store.images()]
-    assert ids == sorted(ids)
-    assert "A1" in images.image_log[0] and images._store.images()[-1]["sample_id"] == "A1"
+    # Reason: the log follows the pick now; the store still holds all three.
+    assert [r["sample_id"] for r in images._store.images()] == ["A1", "B2", "A1"]
+    images.select_sample("A1")
+    assert [l.split()[0] for l in images.image_log] == ["A1", "A1"]
+    ids = [r["id"] for r in images._store.images("A1")]
+    assert ids == [1, 3] and images.image_text == "2 picture(s) of A1"
+    images.select_sample("B2")
+    assert len(images.image_log) == 1
 
 
 def test_add_image_needs_a_sample_and_refuses_bad_vocabulary_in_words(images, tmp_path):
     source = _shot(tmp_path)
     blank = images.run("add_image", None, (str(source),))
-    assert not blank.is_ok and "sample ID" in str(blank)
+    assert not blank.is_ok and "Pick the sample" in str(blank)
     images.sample_id = "S1"
     assert not images.run("set_image_magnification", None, ("40x",)).is_ok
     assert "40x" in str(images.run("set_image_magnification", None, ("40x",)))
@@ -896,10 +900,12 @@ def test_pick_a_sample_offers_the_saved_ones_and_the_trial_labels(images, tmp_pa
     _with_trials(images, tmp_path, [{"id": 1, "started_at": "t", "status": "x",
                                      "sample_id": "Riki's Gift 8March26"}],
                  columns=("id", "started_at", "status", "sample_id"))
-    images.run("save_sample", {"sample_id": "S1", "material": "WSe2"})
-    assert images.sample_options == ["Riki's Gift 8March26", "S1"]
-    images.run("select_sample", None, ("S1",))
+    images._store.add_material("WSe2")
+    images._store.add_sample("S1", "WSe2")
+    assert images.sample_options == ["Riki's Gift 8March26", "S1 \u00b7 WSe2"]
+    images.run("select_sample", None, ("S1 \u00b7 WSe2",))
     assert (images.sample_id, images.material) == ("S1", "WSe2")
+    assert images.sample_pick == "S1 \u00b7 WSe2"
 
 
 def test_the_image_sheet_exports_its_pictures(images, tmp_path):
@@ -910,3 +916,272 @@ def test_the_image_sheet_exports_its_pictures(images, tmp_path):
     assert document["schema"] == "flake-coords/1"
     (entry,) = document["images"]
     assert entry["sample_id"] == "S1" and not entry["path"].startswith("/")
+
+
+# -- the hierarchy and the procedure (2026-10-07) -------------------------------------
+
+import schema as sch
+
+
+def _tree(images, tmp_path):
+    """4oct26 (hBN) with chips 1 and 2; chip 2 has flakes F1 and F2."""
+    st = images._store
+    st.add_sample("4oct26", "hBN")
+    st.add_sample("7/27/26", "MoS2")
+    st.add_chip("4oct26", "1")
+    st.add_chip("4oct26", "2")
+    st.add_chip("7/27/26", "A")
+    st.add_flake("4oct26", "2", "F1")
+    st.add_flake("4oct26", "2", "F2")
+    return images
+
+
+def _shown_commands(model):
+    return {e.get("command") for e in sch.shown_elements(model.schema, model.phase)
+            if e.get("command")}
+
+
+def _titles(model):
+    return [sec["title"] for sec in model.schema["sections"]
+            if sch.is_shown(sec, model.phase)]
+
+
+def test_the_sheet_declares_its_phases_and_starts_in_browse(images):
+    assert images.PHASES == ("browse", "new_sample", "new_chip", "new_flake")
+    assert images.phase == "browse"
+    assert images.state["phase"] == "browse" and images.state["phases"] == list(images.PHASES)
+    assert images.schema["sections"][-1] == images._safety_section()
+    assert _titles(images) == ["Sample", "Pictures", "Trials on this sample",
+                               "Sample details", "Data", "Diagnostics", "Safety"]
+
+
+def test_the_cascade_filters_and_a_new_sample_pick_clears_the_rest(images, tmp_path):
+    _tree(images, tmp_path)
+    assert images.sample_options == ["4oct26 \u00b7 hBN", "7/27/26 \u00b7 MoS2"]
+    assert images.chip_options == [] and images.flake_id_options == []   # nothing picked
+    assert images.run("select_sample", None, ("4oct26 \u00b7 hBN",)).is_ok
+    assert images.chip_options == ["1", "2"] and images.flake_id_options == []
+    assert images.run("select_chip", None, ("2",)).is_ok
+    assert images.flake_id_options == ["F1", "F2"]
+    assert images.run("select_flake_id", None, ("F2",)).is_ok
+    assert (images.chip_pick, images.flake_id_pick) == ("2", "F2")
+    images.run("select_chip", None, ("1",))                  # a new chip clears the flake
+    assert images.flake_id_pick == "" and images.flake_id_options == []
+    images.run("select_chip", None, ("2",))
+    images.run("select_flake_id", None, ("F1",))
+    images.run("select_sample", None, ("7/27/26 \u00b7 MoS2",))
+    assert (images.chip_pick, images.flake_id_pick) == ("", "")
+    assert images.chip_options == ["A"]
+    for command, arg in (("select_chip", "2"), ("select_flake_id", "F1")):
+        result = images.run(command, None, (arg,))           # not this sample's / chip's
+        assert not result.is_ok and arg in str(result)
+
+
+def test_pictures_follow_the_picked_level(images, tmp_path):
+    _tree(images, tmp_path)
+    images.select_sample("4oct26")
+    assert images.run("add_image", None, (str(_shot(tmp_path, "s.png")),)).is_ok
+    images.select_chip("2")
+    assert images.run("add_image", None, (str(_shot(tmp_path, "c.png", PNG + b"c")),)).is_ok
+    images.select_flake_id("F1")
+    images.run("set_image_magnification", None, ("100x",))
+    assert images.run("add_image", None, (str(_shot(tmp_path, "f.png", PNG + b"f")),)).is_ok
+    st = images._store
+    assert [(r["chip_id"], r["flake_id"]) for r in st.images("4oct26", any=True)] == \
+        [(None, None), ("2", None), ("2", "F1")]
+    (line,) = images.image_log
+    assert line.startswith("4oct26 \u00b7 2 \u00b7 F1  microscope  100x  ")
+    assert images.image_text == "1 picture(s) of 4oct26 \u00b7 2 \u00b7 F1"
+    images.select_chip("2")
+    assert images.image_text == "1 picture(s) of 4oct26 \u00b7 2"
+    images.select_flake_id("F2")
+    assert images.image_log == [] and "No pictures of 4oct26 \u00b7 2 \u00b7 F2" in images.image_text
+
+
+# -- each prompt, through run() ------------------------------------------------------
+
+def test_new_sample_shows_only_its_own_section_and_hides_the_browse_commands(images, tmp_path):
+    _tree(images, tmp_path)
+    assert images.run("begin_new_sample").is_ok
+    assert images.phase == "new_sample" and images.state["phase"] == "new_sample"
+    assert _titles(images) == ["New sample", "Safety"]
+    shown = _shown_commands(images)
+    assert {"stage_photo", "create_sample", "cancel_new", "add_new_material",
+            "set_new_material", "clear_photos"} <= shown
+    for hidden in ("begin_new_chip", "select_sample", "add_image", "create_chip",
+                   "create_flake", "export_json"):
+        result = images.run(hidden)
+        assert not result.is_ok and "not part of the new_sample step" in str(result), hidden
+
+
+def test_browse_commands_are_refused_in_a_prompt_and_prompt_commands_in_browse(images, tmp_path):
+    _tree(images, tmp_path)
+    for command in ("create_sample", "create_chip", "create_flake", "cancel_new",
+                    "stage_photo", "set_new_material", "add_new_material"):
+        result = images.run(command, None, ("x",) if command in ("stage_photo", "set_new_material") else ())
+        assert not result.is_ok and "not part of the browse step" in str(result), command
+    assert images.phase == "browse"
+
+
+def test_add_sample_refusals_each_one_sentence_and_nothing_is_stored(images, tmp_path):
+    _tree(images, tmp_path)
+    images.run("begin_new_sample")
+    photo = str(_shot(tmp_path, "p.png"))
+
+    def add(sample_id="", **_):
+        return images.run("create_sample", {"new_sample_id": sample_id})
+    assert "sample ID" in str(add(""))                       # empty ID
+    assert "material" in str(add("N1"))                      # no material yet
+    images.run("set_new_material", None, ("hBN",))
+    assert "photo" in str(add("N1"))                         # no photo yet
+    images.run("stage_photo", None, (photo,))
+    assert "already" in str(add("4OCT26"))                   # repeats (any case)
+    assert not images.run("stage_photo", None, (str(tmp_path / "nope.png"),)).is_ok
+    assert [s["sample_id"] for s in images._store.samples()] == ["4oct26", "7/27/26"]
+    assert images.phase == "new_sample"                      # a refusal stays in the prompt
+    assert not list(images._store.directory.glob("images/N1*"))
+
+
+def test_add_sample_inserts_copies_photos_selects_and_returns_to_browse(images, tmp_path):
+    images.run("begin_new_sample")
+    images.run("set_new_material", None, ("graphite",))
+    hidden = images.run("set_image_instrument", None, ("transfer_stage",))
+    assert not hidden.is_ok and images._image_instrument == "microscope"
+    for n in (1, 2):
+        assert images.run("stage_photo", None, (str(_shot(tmp_path, f"{n}.png", PNG + bytes([n]))),)).is_ok
+    assert images.staged_text.startswith("2 photo(s): 1.png, 2.png")
+    result = images.run("create_sample", {"new_sample_id": " NEW1 ", "new_sample_note": "hello"})
+    assert result.is_ok, result
+    assert images.phase == "browse" and images.sample_id == "NEW1"
+    row = images._store.sample("NEW1")
+    assert (row["material"], row["note"]) == ("graphite", "hello")
+    assert len(images._store.images("NEW1")) == 2
+    assert images.sample_pick == "NEW1 \u00b7 graphite" and images._staged == []
+    assert images.image_text == "2 picture(s) of NEW1"
+    assert images.new_sample_id == ""                        # the prompt resets
+
+
+def test_a_new_material_is_typed_added_and_picked(images):
+    images.run("begin_new_sample")
+    assert "name" in str(images.run("add_new_material"))
+    assert images.run("add_new_material", {"new_material_name": "WSe2"}).is_ok
+    assert images.new_material == "WSe2" and "WSe2" in images.material_options
+    assert not images.run("set_new_material", None, ("unobtainium",)).is_ok
+
+
+def test_cancel_discards_the_staged_photos_and_copies_nothing(images, tmp_path):
+    images.run("begin_new_sample")
+    images.run("stage_photo", None, (str(_shot(tmp_path)),))
+    images.run("set_new_material", None, ("hBN",))
+    assert images.run("cancel_new").is_ok
+    assert images.phase == "browse" and images._staged == [] and images.new_material == ""
+    assert images._store.images() == [] and not (images._store.directory / "images").exists()
+    images.run("begin_new_sample")
+    assert images.staged_text == "No photo chosen yet"       # nothing carried over
+
+
+def test_new_chip_needs_a_picked_sample_and_names_it_in_the_title(images, tmp_path):
+    _tree(images, tmp_path)
+    assert "Pick the sample" in str(images.run("begin_new_chip"))
+    images.select_sample("4oct26")
+    assert images.run("begin_new_chip").is_ok
+    assert _titles(images) == ["New chip on 4oct26", "Safety"]
+    assert "chip ID" in str(images.run("create_chip"))
+    assert "already" in str(images.run("create_chip", {"new_chip_id": "2"}))
+    result = images.run("create_chip", {"new_chip_id": "3", "new_chip_note": "n"})
+    assert result.is_ok, result                              # a photo is optional here
+    assert images.phase == "browse" and images.chip_pick == "3"
+    assert [c["chip_id"] for c in images._store.chips("4oct26")] == ["1", "2", "3"]
+    assert images._store.chips("4oct26")[2]["note"] == "n"
+
+
+def test_new_chip_may_carry_a_photo(images, tmp_path):
+    _tree(images, tmp_path)
+    images.select_sample("4oct26")
+    images.run("begin_new_chip")
+    images.run("stage_photo", None, (str(_shot(tmp_path)),))
+    assert images.run("create_chip", {"new_chip_id": "9"}).is_ok
+    assert len(images._store.images("4oct26", "9")) == 1 and images.image_text.startswith("1 picture")
+
+
+def test_a_label_with_no_sample_row_cannot_take_a_chip(images, tmp_path):
+    images.sample_id = "only-pictures"
+    images.add_image(str(_shot(tmp_path)))
+    images.select_sample("only-pictures")
+    assert images.sample_options == ["only-pictures"]
+    assert "New sample" in str(images.run("begin_new_chip"))
+
+
+def test_new_flake_needs_a_chip_a_photo_and_a_fresh_id(images, tmp_path):
+    _tree(images, tmp_path)
+    images.select_sample("4oct26")
+    assert "Pick the chip" in str(images.run("begin_new_flake"))
+    images.select_chip("2")
+    assert images.run("begin_new_flake").is_ok
+    assert _titles(images) == ["New flake on 4oct26 \u00b7 2", "Safety"]
+    assert "flake ID" in str(images.run("create_flake"))
+    images.run("stage_photo", None, (str(_shot(tmp_path)),))
+    assert "already" in str(images.run("create_flake", {"new_flake_id": "f1"}))
+    images.run("clear_photos")
+    assert "photo" in str(images.run("create_flake", {"new_flake_id": "F3"}))
+    assert [f["flake_id"] for f in images._store.flakes("4oct26", "2")] == ["F1", "F2"]
+    images.run("stage_photo", None, (str(_shot(tmp_path)),))
+    assert images.run("create_flake", {"new_flake_id": "F3", "new_flake_note": "x"}).is_ok
+    assert images.phase == "browse"
+    assert (images.chip_pick, images.flake_id_pick) == ("2", "F3")
+    assert len(images._store.images("4oct26", "2", "F3")) == 1
+
+
+# -- the trial listing at each level, against a read-only Transfer Map store -------------
+
+TRIALS = [
+    {"id": 1, "started_at": "2026-10-01", "status": "recorded", "sample_id": "4oct26",
+     "chip_id": "2", "flake_id": "F1"},
+    {"id": 2, "started_at": "2026-10-02", "status": "recorded", "sample_id": "4oct26",
+     "chip_id": "2", "flake_id": "F2"},
+    {"id": 3, "started_at": "2026-10-03", "status": "aborted", "sample_id": "4oct26",
+     "chip_id": "1", "flake_id": None},
+    {"id": 4, "started_at": "2026-10-04", "status": "recorded", "sample_id": "4oct26",
+     "chip_id": None, "flake_id": None},
+    {"id": 5, "started_at": "2026-10-05", "status": "recorded", "sample_id": "other",
+     "chip_id": "2", "flake_id": "F1"},
+]
+COLUMNS = ("id", "started_at", "status", "sample_id", "chip_id", "flake_id")
+
+
+def test_trials_narrow_from_the_sample_to_the_chip_to_the_flake(images, tmp_path):
+    _tree(images, tmp_path)
+    path = _with_trials(images, tmp_path, TRIALS, columns=COLUMNS)
+    before = _digest(path)
+    images.select_sample("4oct26")
+    assert [t["id"] for t in images.trials_for("4oct26")] == [4, 3, 2, 1]
+    assert images.trials_level == "sample" and len(images.sample_trials_log) == 4
+    assert images.trials_text == "4 trial(s) recorded for 4oct26"
+    assert _titles(images)[2] == "Trials on this sample"
+    images.select_chip("2")
+    assert [t["id"] for t in images._picked_trials()] == [2, 1]
+    assert images.trials_text == "2 trial(s) recorded for 4oct26 \u00b7 2"
+    assert _titles(images)[2] == "Trials on this chip"
+    images.select_flake_id("F2")
+    assert [t["id"] for t in images._picked_trials()] == [2]
+    assert images.trials_text == "1 trial(s) recorded for 4oct26 \u00b7 2 \u00b7 F2"
+    assert _titles(images)[2] == "Trials on this flake"
+    images.select_chip("1")
+    assert [t["id"] for t in images._picked_trials()] == [3]
+    assert _digest(path) == before                           # read-only, untouched
+
+
+def test_a_trial_store_without_chip_and_flake_columns_lists_at_sample_level_only(images, tmp_path):
+    # Reason: this repo's v6 Transfer Map store has neither column.
+    _tree(images, tmp_path)
+    _with_trials(images, tmp_path,
+                 [{k: t[k] for k in ("id", "started_at", "status", "sample_id")}
+                  for t in TRIALS[:2]],
+                 columns=("id", "started_at", "status", "sample_id"))
+    images.select_sample("4oct26")
+    assert [t["id"] for t in images._picked_trials()] == [2, 1]
+    images.select_chip("2")
+    assert images._picked_trials() == [] and images.trials_text == \
+        "No trial is recorded for 4oct26 \u00b7 2"
+    images.select_flake_id("F1")
+    assert images.sample_trials_log == []
