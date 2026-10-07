@@ -44,7 +44,7 @@ Abort trial and any stop work from the region step on, and the stop overrides ev
    since trial 3", "broke on trial 12" or "retired"), the **Tilt for this trial**
    and the **Speed for this trial** (a rotator's reading fills the tilt when one is
    connected; without one, type it; the tilt is collected with the trial and
-   not drawn on the map), and, for a sample, its free-text sample ID, which the Sample Map uses to list the trials made on that sample.
+   not drawn on the map). Red Percent must not be running a run of its own (Arm refuses; the trial starts its own run). Trials carry a free-text `sample_id` column, and the Sample Map's "Trials for this sample" listing reads it; the Transfer Map sheet has no entry for it in this tree.
 2. **Arm trial.** The station asks for confirmation, then takes a
    **full-display, full-resolution still of the stage**: the trial's first
    asset (`before_full.png`) and the frame the region is picked on. There is
@@ -68,8 +68,9 @@ Abort trial and any stop work from the region step on, and the stop overrides ev
    **Finish trial** to keep it (the video closes: "screen.mp4, 1240 frames, 3 dropped"; the event log says
    "Trial 12 recorded, the 3rd on tip T7"), and the page returns to setup. If the video
    stops during a trial (a full disk, say) the event log says "Video Stopped" once and the trial
-   goes on: the profile is the measurement, the video is the record. A full-display
-   recording needs ffmpeg (`devices.video.ffmpeg_exe`, the one the wheel ships); without it Arm is refused, not degraded.
+   goes on: the profile is the measurement, the video is the record. The
+   full-display recording uses the ffmpeg the wheel ships (`devices.video.ffmpeg_exe`); with no encoder, Diagnostics
+   says "No encoder" and the trial records without a video.
 7. **Abort trial**, or any stop, ends the trial as "aborted" without asking. Its profile is
    kept, and the video and telemetry are closed on a worker so the stop never waits
    for the disk. If the tip broke, press **Tip broke** (it applies to the armed trial or to
