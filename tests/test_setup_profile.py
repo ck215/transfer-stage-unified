@@ -84,7 +84,7 @@ def test_built_models_carry_the_operator_and_how_it_was_established(setup, tmp_p
     smap.set_source("Typed readings")
     smap.reading_x_mm, smap.reading_y_mm = 1.0, 2.0
     smap.flag_flake()
-    flake = smap._store.flakes()[0]
+    flake = smap._store.coord_flakes()[0]
     assert (flake["owner"], flake["owner_auth"]) == ("ialbinog", "offline-unverified")
 
 

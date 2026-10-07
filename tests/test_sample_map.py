@@ -435,7 +435,7 @@ def test_export_and_import_round_trip(sample_map, stage, tmp_path):
     try:
         counts = other.run("import_json", None, (path,)).value
         assert counts["added"] == 3
-        assert other._store.flakes()[0]["flake_uid"] == sample_map.flakes[0]["flake_uid"]
+        assert other._store.coord_flakes()[0]["flake_uid"] == sample_map.flakes[0]["flake_uid"]
     finally:
         other.close()
 

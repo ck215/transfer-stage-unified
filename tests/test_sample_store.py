@@ -47,14 +47,14 @@ def _aware(stamp):
 
 def test_construction_creates_nothing_and_reads_answer_empty(store):
     assert not store.exists
-    assert store.samples() == [] and store.flakes() == []
+    assert store.samples() == [] and store.coord_flakes() == []
     assert not store.exists
 
 
-def test_a_fresh_store_is_version_three_with_an_identity(store):
+def test_a_fresh_store_is_version_four_with_an_identity(store):
     assert store.ensure() is True
     with sqlite3.connect(store.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 3   # v3: the sample_images table
+        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 4   # v4: the hierarchy tables
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"samples", "registrations", "corners", "flakes", "meta", "sample_images"} <= tables
     meta = store.meta()
@@ -130,42 +130,42 @@ def test_a_registration_names_a_known_frame_source_and_fit(store):
 def test_flakes_are_labelled_per_sample(store):
     for sid in ("S1", "S2"):
         store.put_sample({"sample_id": sid})
-    a = store.add_flake({"sample_id": "S1"})
-    b = store.add_flake({"sample_id": "S1"})
-    c = store.add_flake({"sample_id": "S2"})
-    assert [store.flake(u)["label"] for u in (a, b, c)] == ["F01", "F02", "F01"]
-    flake = store.flake(a)
+    a = store.add_coord_flake({"sample_id": "S1"})
+    b = store.add_coord_flake({"sample_id": "S1"})
+    c = store.add_coord_flake({"sample_id": "S2"})
+    assert [store.coord_flake(u)["label"] for u in (a, b, c)] == ["F01", "F02", "F01"]
+    flake = store.coord_flake(a)
     assert flake["sample_uid"] == store.sample("S1")["uid"]       # Q11, C7
     assert flake["status"] == "candidate"
 
 
 def test_a_flake_needs_a_known_sample(store):
     with pytest.raises(ss.StoreRefused, match="No sample S9"):
-        store.add_flake({"sample_id": "S9"})
+        store.add_coord_flake({"sample_id": "S9"})
 
 
 def test_quality_is_one_to_five_and_rateable_before_an_extent(store):
     """Q18: accepted scale; a flake may be rated before it has an extent."""
     store.put_sample({"sample_id": "S1"})
-    uid = store.add_flake({"sample_id": "S1", "quality": 4})
-    assert store.flake(uid)["quality"] == 4 and store.flake(uid)["extent_kind"] == "none"
+    uid = store.add_coord_flake({"sample_id": "S1", "quality": 4})
+    assert store.coord_flake(uid)["quality"] == 4 and store.coord_flake(uid)["extent_kind"] == "none"
     for bad in (0, 6, "great", 3.5):
         with pytest.raises(ss.StoreRefused, match="Quality"):
-            store.update_flake(uid, {"quality": bad})
-    store.update_flake(uid, {"quality": None})
-    assert store.flake(uid)["quality"] is None
+            store.update_coord_flake(uid, {"quality": bad})
+    store.update_coord_flake(uid, {"quality": None})
+    assert store.coord_flake(uid)["quality"] is None
 
 
 def test_defects_are_the_six_tags_and_empty_means_inspected(store):
     store.put_sample({"sample_id": "S1"})
-    uid = store.add_flake({"sample_id": "S1", "defects": ["bubbles", "folds"]})
-    assert store.flake(uid)["defects"] == ["bubbles", "folds"]
-    store.update_flake(uid, {"defects": []})
-    assert store.flake(uid)["defects"] == []                 # inspected, clean
-    store.update_flake(uid, {"defects": None})
-    assert store.flake(uid)["defects"] is None               # not inspected
+    uid = store.add_coord_flake({"sample_id": "S1", "defects": ["bubbles", "folds"]})
+    assert store.coord_flake(uid)["defects"] == ["bubbles", "folds"]
+    store.update_coord_flake(uid, {"defects": []})
+    assert store.coord_flake(uid)["defects"] == []                 # inspected, clean
+    store.update_coord_flake(uid, {"defects": None})
+    assert store.coord_flake(uid)["defects"] is None               # not inspected
     with pytest.raises(ss.StoreRefused, match="scratches"):
-        store.update_flake(uid, {"defects": ["scratches"]})
+        store.update_coord_flake(uid, {"defects": ["scratches"]})
     assert ss.DEFECTS == ("cracks", "bubbles", "residue", "folds", "wrinkles", "tears")
 
 
@@ -173,44 +173,44 @@ def test_approximate_and_afm_thickness_never_mix(store):
     """4.1a and Q16: the AFM fields fill the AFM columns only; there is no
     red-percent estimate, so `red_percent` is not an approximate method."""
     store.put_sample({"sample_id": "S1"})
-    uid = store.add_flake({"sample_id": "S1", "layers_estimate": 2,
+    uid = store.add_coord_flake({"sample_id": "S1", "layers_estimate": 2,
                            "thickness_approx_nm": 0.7,
                            "thickness_approx_method": "optical_contrast",
                            "red_percent": 12.5})
-    store.update_flake(uid, {"thickness_afm_nm": 1.1, "thickness_afm_sigma_nm": 0.1,
+    store.update_coord_flake(uid, {"thickness_afm_nm": 1.1, "thickness_afm_sigma_nm": 0.1,
                              "afm_by": "ian"})
-    flake = store.flake(uid)
+    flake = store.coord_flake(uid)
     assert (flake["thickness_approx_nm"], flake["thickness_afm_nm"]) == (0.7, 1.1)
     assert flake["red_percent"] == 12.5 and flake["layers_estimate"] == 2
     with pytest.raises(ss.StoreRefused, match="red_percent"):
-        store.update_flake(uid, {"thickness_approx_method": "red_percent"})
+        store.update_coord_flake(uid, {"thickness_approx_method": "red_percent"})
 
 
 def test_a_flake_status_is_from_the_vocabulary(store):
     store.put_sample({"sample_id": "S1"})
-    uid = store.add_flake({"sample_id": "S1"})
-    store.update_flake(uid, {"status": "selected"})
+    uid = store.add_coord_flake({"sample_id": "S1"})
+    store.update_coord_flake(uid, {"status": "selected"})
     with pytest.raises(ss.StoreRefused, match="status"):
-        store.update_flake(uid, {"status": "reserved"})        # C5: server-derived
+        store.update_coord_flake(uid, {"status": "reserved"})        # C5: server-derived
 
 
 def test_extent_points_and_tags_round_trip_as_lists(store):
     store.put_sample({"sample_id": "S1"})
-    uid = store.add_flake({"sample_id": "S1", "extent_kind": "bbox",
+    uid = store.add_coord_flake({"sample_id": "S1", "extent_kind": "bbox",
                            "extent_source": "stage_corners",
                            "extent_points_um": [[1, 2], [3, 2], [3, 4], [1, 4]],
                            "tags": ["hBN-capped"], "trial_ids": [12]})
-    flake = store.flake(uid)
+    flake = store.coord_flake(uid)
     assert flake["extent_points_um"] == [[1, 2], [3, 2], [3, 4], [1, 4]]
     assert flake["tags"] == ["hBN-capped"] and flake["trial_ids"] == [12]
 
 
 def test_delete_is_soft_and_the_export_carries_it(store):
     store.put_sample({"sample_id": "S1"})
-    uid = store.add_flake({"sample_id": "S1"})
-    store.delete_flake(uid)
-    assert store.flakes() == []
-    assert store.flakes(include_deleted=True)[0]["deleted_at"]
+    uid = store.add_coord_flake({"sample_id": "S1"})
+    store.delete_coord_flake(uid)
+    assert store.coord_flakes() == []
+    assert store.coord_flakes(include_deleted=True)[0]["deleted_at"]
     doc = store.export_document("bench", "test")
     assert doc["flakes"][0]["deleted_at"]
 
@@ -218,7 +218,7 @@ def test_delete_is_soft_and_the_export_carries_it(store):
 def test_updating_an_unknown_flake_is_refused(store):
     store.ensure()
     with pytest.raises(ss.StoreRefused, match="No flake"):
-        store.update_flake(str(uuid.uuid4()), {"note": "x"})
+        store.update_coord_flake(str(uuid.uuid4()), {"note": "x"})
 
 
 # -- the flake-coords/1 document -----------------------------------------------------
@@ -228,7 +228,7 @@ def _populated(store, tmp_path):
     rid = _registration(store)
     picture = tmp_path / "f.png"
     picture.write_bytes(b"\x89PNG fake")
-    uid = store.add_flake({"sample_id": "S1", "registration_id": rid,
+    uid = store.add_coord_flake({"sample_id": "S1", "registration_id": rid,
                            "sample_x_um": 120.0, "sample_y_um": 340.0,
                            "extent_kind": "bbox",
                            "extent_points_um": [[0, 0], [10, 0], [10, 5], [0, 5]],
@@ -262,7 +262,7 @@ def test_an_export_imports_into_another_store(store, tmp_path):
     other = ss.SampleStore(tmp_path / "other.sqlite")
     counts = other.import_document(doc)
     assert counts == {"added": 3, "updated": 0, "kept": 0}
-    flake = other.flakes()[0]
+    flake = other.coord_flakes()[0]
     reg = other.registrations()[0]
     assert flake["registration_id"] == reg["registration_id"]
     assert reg["registration_uid"] == doc["registrations"][0]["registration_uid"]
@@ -279,12 +279,12 @@ def test_the_newer_record_wins_a_merge(store, tmp_path):
     newer["flakes"][0]["note"] = "edited on the other rig"
     newer["flakes"][0]["updated_at"] = "2099-01-01T00:00:00+00:00"
     assert other.import_document(newer)["updated"] == 1
-    assert other.flake(uid)["note"] == "edited on the other rig"
+    assert other.coord_flake(uid)["note"] == "edited on the other rig"
     older = json.loads(json.dumps(doc))
     older["flakes"][0]["note"] = "stale"
     older["flakes"][0]["updated_at"] = "2000-01-01T00:00:00+00:00"
     other.import_document(older)
-    assert other.flake(uid)["note"] == "edited on the other rig"
+    assert other.coord_flake(uid)["note"] == "edited on the other rig"
 
 
 def test_an_import_refuses_another_schema(store):
@@ -352,8 +352,8 @@ def test_a_version_one_file_gains_the_rotator_columns_and_table(tmp_path):
     store.ensure()
     db = sqlite3.connect(str(path))
     try:
-        # a v1 file is walked all the way to the current version (now 3)
-        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 3
+        # a v1 file is walked all the way to the current version (now 4)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 4
         have = {r[1] for r in db.execute("PRAGMA table_info(registrations)")}
         assert {"rotator_name", "rotator_phi0_deg", "rotator_calibration_uid",
                 "rotator_closure_um", "rotator_quality"} <= have
@@ -517,11 +517,11 @@ def test_a_version_two_file_keeps_every_row_and_gains_the_image_table(tmp_path):
         assert db.execute("PRAGMA user_version").fetchone()[0] == 2
     store.ensure()
     with sqlite3.connect(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert db.execute("SELECT name FROM sqlite_master WHERE name = 'sample_images_sample'"
                           ).fetchone()
     assert [s["sample_id"] for s in store.samples()] == ["S1"]
-    assert len(store.registrations()) == 1 and len(store.flakes()) == 1
+    assert len(store.registrations()) == 1 and len(store.coord_flakes()) == 1
     assert store.corners(1)[0]["image_path"] == "/abs/corner.png"
     assert store.meta()["store_uuid"] == "u-1"               # identity untouched
     store.add_image("S1", _picture(tmp_path), "microscope", 10)
@@ -534,7 +534,7 @@ def test_old_absolute_paths_are_left_alone_and_counted(tmp_path):
     store = ss.SampleStore(path)
     store.ensure()
     assert store.absolute_image_paths() == 2
-    assert store.flakes()[0]["image_path"] == "/abs/flake.png"
+    assert store.coord_flakes()[0]["image_path"] == "/abs/flake.png"
     store.add_image("S1", _picture(tmp_path), "microscope", 10)
     assert store.absolute_image_paths() == 2                 # new rows are relative
 
@@ -549,3 +549,206 @@ def test_the_export_lists_the_sample_images_by_relative_path(store, tmp_path):
                      "captured_at": row["captured_at"], "note": "n"}
     assert not entry["path"].startswith("/")
     json.dumps(doc)
+
+
+# -- the hierarchy: sample > chip > flake (v4, 2026-10-07) -------------------------
+
+def _tree(store):
+    store.add_sample("4oct26", "hBN", note="first")
+    store.add_chip("4oct26", "2")
+    store.add_flake("4oct26", "2", "F1", note="thin")
+    return store
+
+
+def test_materials_are_seeded_on_first_write_and_may_grow(store):
+    assert store.materials() == ["hBN", "graphite", "MoS2"]  # a missing file: the seed
+    assert not store.exists                                  # and the read created nothing
+    store.add_sample("S1", "hBN")
+    assert store.materials() == ["hBN", "graphite", "MoS2"]
+    assert store.add_material("WSe2") == "WSe2"
+    assert store.add_material("wse2") == "WSe2"              # idempotent, one spelling
+    assert store.materials()[-1] == "WSe2" and len(store.materials()) == 4
+    store.add_sample("S2", "wse2")                           # stored with the canonical spelling
+    assert store.sample("S2")["material"] == "WSe2"
+    with pytest.raises(ss.StoreRefused):
+        store.add_material("  ")
+
+
+def test_a_sample_row_has_material_note_created_and_photo_count(store, tmp_path):
+    _tree(store)
+    (row,) = store.samples()
+    assert (row["sample_id"], row["material"], row["note"], row["photo_count"]) == \
+        ("4oct26", "hBN", "first", 0)
+    assert _aware(row["created_at"])
+    store.add_image("4oct26", _picture(tmp_path), "microscope", 10)
+    store.add_image("4oct26", _picture(tmp_path, payload=b"c"), "microscope", 10,
+                    chip_id="2")
+    assert store.samples()[0]["photo_count"] == 1            # the sample's OWN pictures
+
+
+@pytest.mark.parametrize("call,word", [
+    (lambda s: s.add_sample("", "hBN"), "sample ID"),
+    (lambda s: s.add_sample("  ", "hBN"), "sample ID"),
+    (lambda s: s.add_sample("4oct26", "hBN"), "already"),
+    (lambda s: s.add_sample("4OCT26", "hBN"), "already"),
+    (lambda s: s.add_sample("S9", "unobtainium"), "unobtainium"),
+    (lambda s: s.add_sample("S9", ""), "material"),
+    (lambda s: s.add_chip("4oct26", "", ), "chip ID"),
+    (lambda s: s.add_chip("4oct26", "2"), "already"),
+    (lambda s: s.add_chip("nope", "1"), "no sample"),
+    (lambda s: s.add_flake("4oct26", "2", ""), "flake ID"),
+    (lambda s: s.add_flake("4oct26", "2", "f1"), "already"),
+    (lambda s: s.add_flake("4oct26", "9", "F2"), "no chip"),
+    (lambda s: s.add_flake("nope", "2", "F2"), "no sample"),
+])
+def test_the_hierarchy_refuses_in_words(store, call, word):
+    _tree(store)
+    with pytest.raises(ss.StoreRefused) as refusal:
+        call(store)
+    assert word in str(refusal.value)
+    assert [s["sample_id"] for s in store.samples()] == ["4oct26"]
+    assert len(store.chips("4oct26")) == 1 and len(store.flakes("4oct26", "2")) == 1
+
+
+def test_the_same_id_is_fine_under_another_parent(store):
+    _tree(store)
+    store.add_sample("S2", "graphite")
+    store.add_chip("S2", "2")                                 # chip 2 of another sample
+    store.add_chip("4oct26", "3")
+    store.add_flake("4oct26", "3", "F1")                      # F1 of another chip
+    assert [c["chip_id"] for c in store.chips("4oct26")] == ["2", "3"]
+    assert [c["chip_id"] for c in store.chips("S2")] == ["2"]
+    assert len(store.flakes("4oct26", "2")) == len(store.flakes("4oct26", "3")) == 1
+
+
+def test_chips_and_flakes_carry_their_counts(store, tmp_path):
+    _tree(store)
+    store.add_flake("4oct26", "2", "F2")
+    store.add_image("4oct26", _picture(tmp_path), "microscope", 20, chip_id="2")
+    store.add_image("4oct26", _picture(tmp_path, payload=b"f"), "microscope", 50,
+                    chip_id="2", flake_id="F1")
+    (chip,) = store.chips("4oct26")
+    assert (chip["chip_id"], chip["flake_count"], chip["photo_count"]) == ("2", 2, 1)
+    assert set(chip) == {"chip_id", "note", "created_at", "photo_count", "flake_count"}
+    f1, f2 = store.flakes("4oct26", "2")
+    assert (f1["flake_id"], f1["note"], f1["photo_count"], f2["photo_count"]) == \
+        ("F1", "thin", 1, 0)
+    assert set(f1) == {"flake_id", "note", "created_at", "photo_count"}
+    assert store.chips("nope") == [] and store.flakes("4oct26", "9") == []
+
+
+def test_images_belong_to_one_level_and_land_in_its_folder(store, tmp_path):
+    _tree(store)
+    s = store.add_image("4oct26", _picture(tmp_path), "microscope", 10)
+    c = store.add_image("4oct26", _picture(tmp_path, payload=b"c"), "microscope", 10,
+                        chip_id="2")
+    f = store.add_image("4oct26", _picture(tmp_path, payload=b"f"), "microscope", 10,
+                        chip_id="2", flake_id="F1")
+    assert (s["chip_id"], s["flake_id"]) == (None, None)
+    assert (c["chip_id"], c["flake_id"]) == ("2", None)
+    assert (f["chip_id"], f["flake_id"]) == ("2", "F1")
+    assert s["path"].count("/") == 2 and c["path"].count("/") == 3 and f["path"].count("/") == 4
+    assert store.images("4oct26") == [s]                      # that level's own
+    assert store.images("4oct26", "2") == [c]
+    assert store.images("4oct26", "2", "F1") == [f]
+    assert store.images("4oct26", any=True) == [s, c, f]
+    assert store.images("4oct26", "2", any=True) == [c, f]
+    assert store.images() == [s, c, f]
+
+
+def test_a_picture_of_a_missing_chip_or_flake_copies_nothing(store, tmp_path):
+    _tree(store)
+    for kw in ({"chip_id": "9"}, {"chip_id": "2", "flake_id": "F9"}, {"flake_id": "F1"}):
+        with pytest.raises(ss.StoreRefused):
+            store.add_image("4oct26", _picture(tmp_path), "microscope", 10, **kw)
+    assert store.images() == []
+    assert not list((store.path.parent / "images").rglob("*.png"))
+
+
+def test_open_readonly_reads_and_never_writes(store, tmp_path):
+    _tree(store)
+    ro = ss.SampleStore.open_readonly(store.path)
+    assert [s["sample_id"] for s in ro.samples()] == ["4oct26"]
+    assert ro.chips("4oct26")[0]["flake_count"] == 1 and ro.flakes("4oct26", "2")
+    assert ro.materials() == ["hBN", "graphite", "MoS2"]
+    for call in (lambda: ro.add_sample("X", "hBN"), lambda: ro.add_material("x"),
+                 lambda: ro.ensure()):
+        with pytest.raises(ss.StoreRefused):
+            call()
+    with pytest.raises(ss.StoreRefused) as missing:
+        ss.SampleStore.open_readonly(tmp_path / "nope.sqlite")
+    assert "nope.sqlite" in str(missing.value) and not (tmp_path / "nope.sqlite").exists()
+    db = ro._connect()
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            db.execute("DELETE FROM samples")
+    finally:
+        db.close()
+
+
+def _v3_file(path):
+    """A version-3 store as the repo wrote it: sample_images without the
+    level columns, no hierarchy tables."""
+    db = sqlite3.connect(str(path))
+    for table in ("samples", "registrations", "corners", "flakes",
+                  "rotator_calibrations", "sample_images"):
+        cols = dict(ss._TABLES)[table]
+        if table == "sample_images":
+            cols = tuple(c for c in cols if c[0] not in ("chip_id", "flake_id"))
+        extra = ", PRIMARY KEY (registration_id, label)" if table == "corners" else ""
+        db.execute("CREATE TABLE " + table + " (" + ", ".join(n + " " + k for n, k in cols)
+                   + extra + ")")
+    db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    db.execute("INSERT INTO meta VALUES ('store_uuid', 'u-3')")
+    db.execute("INSERT INTO samples (sample_id, uid, material, status, note) VALUES "
+               "('S1', 'uid-1', 'WSe2', 'active', 'old')")
+    db.execute("INSERT INTO flakes (flake_uid, label, sample_id) VALUES ('f-1','F01','S1')")
+    db.execute("INSERT INTO sample_images (sample_id, instrument, magnification, path,"
+               " sha256, captured_at) VALUES ('S1','microscope',10,'images/S1/a.png','h','t')")
+    db.execute("PRAGMA user_version = 3")
+    db.commit()
+    db.close()
+
+
+def test_a_version_three_file_reads_unchanged_and_migrates_on_first_write(tmp_path):
+    path = tmp_path / "v3.sqlite"
+    _v3_file(path)
+    ro = ss.SampleStore.open_readonly(path)                  # an un-migrated file
+    (row,) = ro.samples()
+    assert (row["sample_id"], row["material"], row["photo_count"]) == ("S1", "WSe2", 1)
+    assert ro.chips("S1") == [] and ro.flakes("S1", "1") == []
+    assert len(ro.images("S1")) == 1 and ro.images("S1", "1") == []
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3   # a read migrated nothing
+    store = ss.SampleStore(path)
+    store.add_chip("S1", "1")
+    store.add_flake("S1", "1", "F1")
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 4
+        have = {r[1] for r in db.execute("PRAGMA table_info(sample_images)")}
+    assert {"chip_id", "flake_id"} <= have
+    assert store.materials() == ["hBN", "graphite", "MoS2"]
+    # Every v3 row survived, the old picture is still the sample's own.
+    (old,) = store.images("S1")
+    assert old["path"] == "images/S1/a.png" and (old["chip_id"], old["flake_id"]) == (None, None)
+    assert store.sample("S1")["note"] == "old" and store.coord_flake("f-1")["label"] == "F01"
+    assert store.meta()["store_uuid"] == "u-3"
+    assert store.samples()[0]["photo_count"] == 1
+
+
+def test_the_export_stays_additive_and_carries_the_hierarchy(store, tmp_path):
+    _tree(store)
+    row = store.add_image("4oct26", _picture(tmp_path), "microscope", 10, chip_id="2",
+                          flake_id="F1")
+    doc = store.export_document("bench-pc", "1")
+    assert doc["schema"] == "flake-coords/1"
+    assert doc["materials"] == ["hBN", "graphite", "MoS2"]
+    assert [c["chip_id"] for c in doc["chips"]] == ["2"]
+    assert [f["flake_id"] for f in doc["sample_flakes"]] == ["F1"]
+    assert doc["flakes"] == []                               # the dormant records, apart
+    (entry,) = doc["images"]
+    assert (entry["chip_id"], entry["flake_id"], entry["path"]) == ("2", "F1", row["path"])
+    json.dumps(doc)
+    other = ss.SampleStore(tmp_path / "other" / "s.sqlite")
+    other.import_document(doc)
+    assert other.chips("4oct26")[0]["chip_id"] == "2" and other.flakes("4oct26", "2")

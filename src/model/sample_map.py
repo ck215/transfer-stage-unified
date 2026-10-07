@@ -824,11 +824,11 @@ class SampleMap(Model):
     @property
     def flakes(self):
         sample_id = str(self.sample_id or "").strip()
-        return self._store.flakes(sample_id) if sample_id else []
+        return self._store.coord_flakes(sample_id) if sample_id else []
 
     @property
     def selected_flake(self):
-        return self._store.flake(self._selected) if self._selected else None
+        return self._store.coord_flake(self._selected) if self._selected else None
 
     @property
     def flake_pick(self):
@@ -912,13 +912,13 @@ class SampleMap(Model):
                 "note": (self.flake_note or "").strip() or None,
             }
             try:
-                uid = self._store.add_flake(fields)
+                uid = self._store.add_coord_flake(fields)
             except ss.StoreRefused as refusal:
                 raise Refused(str(refusal))
-            label = self._store.flake(uid)["label"]
+            label = self._store.coord_flake(uid)["label"]
             picture = self._picture(sample["sample_id"], label)
             if picture:
-                self._store.update_flake(uid, {"image_path": picture})
+                self._store.update_coord_flake(uid, {"image_path": picture})
             self._selected = uid
             self._extent_first = None
         self._touch()
@@ -947,7 +947,7 @@ class SampleMap(Model):
                         "the opposite corner and press Mark extent again.")
             box = sf.bbox_from_sample(first[1], here)
             self._extent_first = None
-            self._store.update_flake(flake["flake_uid"], {
+            self._store.update_coord_flake(flake["flake_uid"], {
                 "extent_kind": "bbox", "extent_source": box["source"],
                 "extent_points_um": [list(p) for p in box["polygon_um"]]})
         self._touch()
@@ -959,7 +959,7 @@ class SampleMap(Model):
         A rating with no defects typed means "inspected, none seen"."""
         flake = self._require_flake()
         try:
-            self._store.update_flake(flake["flake_uid"], {
+            self._store.update_coord_flake(flake["flake_uid"], {
                 "quality": int(self.flake_quality) or None,
                 "defects": self._defects(self.flake_defects, [])})
         except ss.StoreRefused as refusal:
@@ -996,7 +996,7 @@ class SampleMap(Model):
                   "thickness_afm_sigma_nm": float(self.thickness_afm_sigma_nm) or None}
         if afm is not None and flake.get("thickness_afm_nm") != afm:
             fields.update(afm_measured_at=ss.now(), afm_by=self.owner)
-        self._store.update_flake(flake["flake_uid"], fields)
+        self._store.update_coord_flake(flake["flake_uid"], fields)
         self._touch()
         return flake["label"]
 
@@ -1014,7 +1014,7 @@ class SampleMap(Model):
         flake = self._require_flake()
         if status not in ss.FLAKE_STATUSES:
             raise Refused(f"{status!r} is not a flake status.")
-        self._store.update_flake(flake["flake_uid"], {"status": status})
+        self._store.update_coord_flake(flake["flake_uid"], {"status": status})
         self._touch()
         return status
 
@@ -1025,7 +1025,7 @@ class SampleMap(Model):
             raise NeedsConfirm(f"Delete flake {flake['label']}? It stays in the store "
                                "as deleted, so an export tells the lab server.",
                                "delete_flake")
-        self._store.delete_flake(flake["flake_uid"])
+        self._store.delete_coord_flake(flake["flake_uid"])
         self._selected = None
         self._touch()
         return flake["label"]
