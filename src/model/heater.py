@@ -102,6 +102,14 @@ class Heater(Model):
     #: port's own priority wait still fits inside `Model.ESTOP_BUDGET`.
     WRITE_LOCK_TIMEOUT = 0.02
     FLUSH_TIMEOUT = 1.0
+    #: L12 (SF-2): the bytes of an off frame reaching the port prove little
+    #: (a truncated earlier frame turns it into heat-to-the-old-setpoint on
+    #: the board). The board reports its setpoint as the third telemetry
+    #: field and drops it to 0 within ~0.6 s of a real off; a heating stop
+    #: is confirmed only when a reading at or below OFF_SETPOINT_MAX arrives
+    #: within OFF_CONFIRM_SECONDS. SIM has no telemetry and is not checked.
+    OFF_CONFIRM_SECONDS = 1.5
+    OFF_SETPOINT_MAX = 0.5
 
     def __init__(self, port=None, gamepad=None, sim=False, clock=time.monotonic):
         """was TemperatureSystem.__init__
@@ -153,6 +161,8 @@ class Heater(Model):
         # close() asks, or it would outlive the join and the port would shut
         # underneath a thread about to read it (TEMP-2 seam).
         self._is_link_lost = False
+        #: L12: the heating stop awaiting the board's word, or None.
+        self._off_pending = None
 
     # -- devices and lifecycle ---------------------------------------------
     @property
@@ -339,11 +349,52 @@ class Heater(Model):
         and not two spellings of one.
         """
         started = time.monotonic()
+        heating = self._commanded_setpoint
         is_off = self._send_heater_off(self._heater_off_frame)
+        if is_off and heating:
+            self._await_off_by_telemetry(heating)
         events.debug("Halt", f"heater-off {'landed' if is_off else 'DID NOT LAND'} "
                      f"in {(time.monotonic() - started) * 1000:.1f} ms",
                      source=self.NAME)
         return is_off
+
+    def _await_off_by_telemetry(self, heating):
+        """L12 (SF-2): confirm a heating stop from the board's own reported
+        setpoint, on a worker, within OFF_CONFIRM_SECONDS. Only on a real
+        port (SIM and a test double have no telemetry to wait for)."""
+        port = self.port
+        if not isinstance(port, SerialPort) or port.is_simulated:
+            return
+        pending = {"generation": self._stop_generation, "heating": heating,
+                   "landed": threading.Event(),
+                   "latched_at": self._latched_at}
+        self._off_pending = pending
+        threading.Thread(target=self._confirm_off, args=(pending,), daemon=True,
+                         name=f"heater-off-confirm-{self.NAME}").start()
+
+    def _confirm_off(self, pending):
+        if pending["landed"].wait(self.OFF_CONFIRM_SECONDS):
+            events.debug("Heater Off Confirmed", "the board reported its "
+                         "setpoint at 0", source=self.NAME)
+            return
+        if (self._off_pending is not pending
+                or self._stop_generation != pending["generation"]
+                or self._closing):
+            return
+        self._off_pending = None
+        if self._commanded_setpoint is None:
+            # Still possibly heating: say so (is_active, the watchdog).
+            self._commanded_setpoint = pending["heating"]
+        if self._estop.is_set() and self._latched_at == pending["latched_at"]:
+            self._stop_confirmed = False
+        events.debug("Heater Off Unconfirmed", f"no reported setpoint <= "
+                     f"{self.OFF_SETPOINT_MAX} within {self.OFF_CONFIRM_SECONDS} s "
+                     f"of the off frame (was {pending['heating']})",
+                     source=self.NAME)
+        events.warn(events.HEATER_OFF_NOT_SENT, "The heater did not report its "
+                    f"setpoint at 0 within {self.OFF_CONFIRM_SECONDS:g} s of the "
+                    "stop, so it may still be heating. Switch it off at the "
+                    "controller.", source=self.NAME, ack=True)
 
     def disable(self):
         """De-energize and drain. `Model.close()` runs this after `halt()`.
@@ -664,6 +715,10 @@ class Heater(Model):
                 series.append(value)
                 del series[:-self.HISTORY_LENGTH]
             self._latest = temperature
+        pending = self._off_pending
+        if pending is not None and setpoint <= self.OFF_SETPOINT_MAX:
+            self._off_pending = None
+            pending["landed"].set()
         self._touch()
         events.debug("Reading", f"t={seconds:g}s temp={temperature:.2f}C "
                      f"sp={setpoint:.2f}C", source=self.NAME, every=5.0)

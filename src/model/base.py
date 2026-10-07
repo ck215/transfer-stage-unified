@@ -8,6 +8,7 @@ import threading
 import time
 
 import schema as sch
+from devices.serial_port import SerialPort
 from events import events
 from panel import Panel
 from result import Refused, NeedsConfirm
@@ -45,6 +46,12 @@ class Model(Panel):
         self._threads_stop = threading.Event()
         self._spawned = []           # [(name, thread, stop_event)], newest last
         self._spawn_lock = threading.Lock()
+        #: True while `_on_link_lost` runs its stop: a stop that cannot land
+        #: on a lost link is that loss, not a fault (L1).
+        self._link_loss_in_progress = False
+        #: Set by `close()`: a late stop landing on the way out is logged,
+        #: not announced (nobody is left to read it, and close raises none).
+        self._closing = False
 
     # -- devices and lifecycle --------------------------------------------
     @property
@@ -53,14 +60,73 @@ class Model(Panel):
         return []
 
     def open(self):
-        """Open every owned Device, then start this model's threads."""
+        """Open every owned Device, then start this model's threads.
+
+        Each owned SerialPort is told who owns it and how the owner reacts
+        to a loss, before it opens (L1): the one place for every model."""
+        for port in self._link_ports():
+            port.set_link_handlers(on_lost=self._on_link_lost,
+                                   on_restored=self._on_link_restored,
+                                   owner=self.NAME)
         for device in self.devices:
             device.open()
         self._start_threads()
 
+    # -- the serial link -------------------------------------------------
+    def _link_ports(self):
+        """The hardware SerialPorts this model owns directly (a recording
+        double in a test is not one)."""
+        return [d for d in self.devices if isinstance(d, SerialPort)]
+
+    def _on_link_lost(self, why):
+        """A port of this model lost its link (L1). Runs on the port's loss
+        worker while the handle is still open, bounded by the port.
+
+        The model's strongest stop first, on the priority lane, then the
+        model leaves its mode through `_leave_mode_for_link_loss`: to
+        DISABLED, never to FAULT, since FAULT is the needs-a-person latch
+        and the link recovers by itself. -> True when the stop landed."""
+        events.debug("Link Lost", f"{why}; stopping before the handle closes",
+                     source=self.NAME)
+        self._link_loss_in_progress = True
+        try:
+            try:
+                landed = bool(self._halt_hardware())
+            except Exception as exc:
+                landed = False
+                events.debug("Link Loss Stop Raised", repr(exc),
+                             source=self.NAME, exception=exc)
+            try:
+                self._leave_mode_for_link_loss(landed)
+            except Exception as exc:
+                events.debug("Link Loss Mode Change Raised", repr(exc),
+                             source=self.NAME, exception=exc)
+        finally:
+            self._link_loss_in_progress = False
+        events.debug("Link Loss Stop", f"landed={landed}", source=self.NAME)
+        return landed
+
+    def _leave_mode_for_link_loss(self, landed):
+        """Leave whatever mode the model is in, without faulting. Nothing by
+        default; a model with modes overrides it."""
+
+    def _on_link_restored(self):
+        """A port of this model is back (L2). Nothing restarts by itself:
+        the model stays where the loss left it (DISABLED) until the operator
+        enters a mode again, the same rule as `clear_estop`."""
+        names = ", ".join(str(p.port) for p in self._link_ports()) or "its port"
+        events.info(events.LINK_RESTORED, f"{self.NAME} is back on {names}. "
+                    "Re-enable it when you are ready.", source=self.NAME)
+
+    def _is_link_down(self):
+        """True while an owned port is lost or reconnecting."""
+        return any(p.status in ("lost", "reconnecting")
+                   for p in self._link_ports())
+
     def close(self):
         """Stop threads, halt, de-energize, close devices. Each step isolated:
         the hardware steps are never skipped because an earlier step raised."""
+        self._closing = True
         for step in (self._stop_threads, self.halt, self.disable):
             try:
                 step()
@@ -175,10 +241,17 @@ class Model(Panel):
 
     def estop(self):
         """Latch first (cannot fail), then stop the hardware on a worker and
-        wait at most ESTOP_BUDGET. True only if the stop landed in time."""
+        wait at most ESTOP_BUDGET. True only if the stop landed in time.
+
+        L11 (SF-6): the budget is the owner's number and is not widened. A
+        stop that lands after it is logged with its real latency, revises
+        `stop_confirmed` to True for the same latch episode, and is
+        reported with an info line, so "not confirmed" is never left
+        standing for a stop that went out."""
         self._estop.set()
-        self._latched_at = time.time()
-        done, landed = threading.Event(), []
+        latched_at = self._latched_at = time.time()
+        done, landed, decided = threading.Event(), [], threading.Event()
+        started = time.monotonic()
 
         def _stop():
             try:
@@ -192,15 +265,31 @@ class Model(Panel):
                             source=self.NAME, exception=exc)
             finally:
                 done.set()
+            elapsed = (time.monotonic() - started) * 1000
+            decided.wait(1.0)
+            if self._stop_confirmed is not False or not landed[0]:
+                return
+            events.debug("Estop Late", f"the hardware stop landed after "
+                         f"{elapsed:.1f} ms (budget "
+                         f"{self.ESTOP_BUDGET * 1000:.0f} ms)", source=self.NAME)
+            if self._estop.is_set() and self._latched_at == latched_at:
+                self._stop_confirmed = True
+                if self._closing:
+                    return
+                events.info("Stop Landed Late", f"The stop on the {self.NAME} "
+                            f"went out {elapsed:.0f} ms after the press, later "
+                            f"than the {self.ESTOP_BUDGET * 1000:.0f} ms it is "
+                            "given to confirm.", source=self.NAME)
 
-        started = time.monotonic()
         threading.Thread(target=_stop, daemon=True, name=f"estop-{self.NAME}").start()
         in_time = done.wait(self.ESTOP_BUDGET)
         confirmed = bool(in_time and landed and landed[0])
         self._stop_confirmed = confirmed
+        decided.set()
         events.debug("Estop", f"latched; hardware stop "
                      f"{'confirmed' if confirmed else 'still in flight' if not in_time else 'reported failure'}"
-                     f" after {(time.monotonic() - started) * 1000:.1f} ms", source=self.NAME)
+                     f" after {(time.monotonic() - started) * 1000:.1f} ms "
+                     f"(budget {self.ESTOP_BUDGET * 1000:.0f} ms)", source=self.NAME)
         return confirmed
 
     def clear_estop(self, confirmed=False):
@@ -223,8 +312,10 @@ class Model(Panel):
             return self.clear_estop(confirmed)   # raises NeedsConfirm("clear_estop")
         if not self.estop():
             events.error("Stop Not Confirmed", f"The {self.NAME} is stopped, "
-                         "but its hardware did not confirm the stop. Treat it "
-                         "as live.", source=self.NAME)
+                         "but its hardware did not acknowledge the stop "
+                         f"within {self.ESTOP_BUDGET * 1000:.0f} ms. Treat it "
+                         "as live; a stop that lands later is reported.",
+                         source=self.NAME)
 
     @property
     def is_estopped(self):
@@ -259,6 +350,13 @@ class Model(Panel):
             events.debug("Guard", f"{what} refused: latched", source=self.NAME)
             raise Refused(f"{self.NAME} is stopped. Clear the stop, then try "
                           "again.")
+        for port in self._link_ports():
+            if port.status in ("lost", "reconnecting"):
+                events.debug("Guard", f"{what} refused: link {port.status}",
+                             source=self.NAME)
+                raise Refused(f"{self.NAME} lost its connection to {port.port} "
+                              "and is reconnecting by itself. Wait until it is "
+                              "back, then try again.")
 
     # -- fault -------------------------------------------------------------
     def _fault(self, reason):
@@ -268,7 +366,14 @@ class Model(Panel):
                       "it and check the device.")
         if reason != self._fault_reason:
             self._fault_reason = reason
-            events.error("Fault", reason, source=self.NAME)
+            self._publish_later(lambda: events.error("Fault", reason,
+                                                     source=self.NAME))
+
+    def _publish_later(self, publish):
+        """Publish an event now, or, in a model that holds a lock around
+        hardware state, once that lock is released (L10, SF-4: a subscriber
+        may block this thread on a UI thread). The base holds no such lock."""
+        publish()
 
     def _clear_fault(self):
         self._fault_reason = ""
@@ -322,7 +427,29 @@ class Model(Panel):
         root = getattr(self, "output_root", None)
         if root is not None:
             snapshot["output_root"] = str(root)   # a view checks downloads against it
+        link = self._link_state()
+        if link is not None:
+            snapshot["link"] = link
         return snapshot
+
+    def _link_state(self):
+        """L3: `state["link"]` for a model that owns a SerialPort, else None.
+        EXACTLY these keys (the views are coded against them): status,
+        losses, reconnects, dropped, stalls, stalled, last_loss."""
+        ports = self._link_ports()
+        if not ports:
+            return None
+        port = ports[0]
+        link = {"status": port.status, "losses": int(port.losses),
+                "reconnects": int(port.reconnects), "dropped": 0,
+                "stalls": 0, "stalled": False, "last_loss": port.last_loss}
+        link.update(self._link_stream_state())
+        return link
+
+    def _link_stream_state(self):
+        """What this model's own reader knows about the stream: `dropped`,
+        `stalls`, `stalled`. Nothing by default."""
+        return {}
 
     def _safety_section(self):
         """Every model's schema ends with this. Inherited, so every model has
