@@ -2194,6 +2194,8 @@ V6_COLUMNS = ("sample_id", "flake_uid", "operator_id", "operator_auth",
               "trench_depth_nm", "trench_depth_sigma_nm",
               "width_optical_um", "width_optical_sigma_um",
               "width_optical_method")
+#: TR-5 (2026-10-07): the profile's colour channels, added by presence.
+CHANNELS = tm_module.PROFILE_CHANNELS
 
 
 def _version(path):
@@ -2377,7 +2379,9 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
                          "note": None}]
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert (", ".join(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) + ", tips (version 6)"
+        # TR-5 (2026-10-07): the profile gains its colour channels too.
+        assert (", ".join(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + CHANNELS)
+                + ", tips (version 6)"
                 in upgraded[0].message), upgraded[0].message
         model.tip_id = "T7"
         assert model.tip_status == "in use since trial 1"
@@ -3284,7 +3288,8 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
         assert _rows(private_db, "SELECT * FROM tips") == tips_before
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert ("now has " + ", ".join(V5_COLUMNS + V6_COLUMNS) + " (version 6)"
+        assert ("now has " + ", ".join(V5_COLUMNS + V6_COLUMNS + CHANNELS)
+                + " (version 6)"
                 in upgraded[0].message), \
             upgraded[0].message
         assert model.video_status == "No video for this trial."
@@ -3408,7 +3413,7 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
         assert "map_db_uuid" in tm_module.TrialStore(private_db).meta()
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert ("now has " + ", ".join(V6_COLUMNS) + " (version 6)"
+        assert ("now has " + ", ".join(V6_COLUMNS + CHANNELS) + " (version 6)"
                 in upgraded[0].message), upgraded[0].message
         trial = _record(model, red)
         row = _row(private_db, trial)
@@ -3842,6 +3847,10 @@ def test_a_bench_v8_file_gains_nothing_it_has_and_keeps_version_eight(
     try:
         assert _schema_sql(private_db, "trials") == trials_sql   # untouched
         assert _version(private_db) == 8
+        # TR-5: the profile gains the colour channels it lacks, nothing else.
+        with sqlite3.connect(private_db) as db:
+            profile = [r[1] for r in db.execute("PRAGMA table_info(profile)")]
+        assert profile == ["trial_id", "t_s", "red", "z", "x", "y", *CHANNELS]
         assert _rows(private_db, "SELECT * FROM trials") == before
         assert model.cut_next == 2                     # the bench's cut 1 counts
         trial = _record(model, red)
@@ -4168,3 +4177,84 @@ def test_the_page_draws_only_its_guests_details(red):
         controller._models.pop("Red Percent", None)    # the fixture closes it
         controller._models.pop("Transfer Map", None)
         model.close()
+
+
+# -- TR-5 (2026-10-07): the profile keeps the colour channels, by presence -----
+# Red Percent's rows gain r_mean, g_mean, b_mean, green and blue beside red
+# (its RGB analysis); the profile stores them when a row carries them and
+# NULL when it does not, and never fails either way.
+
+#: One row's channels, as Red Percent's RGB analysis will publish them.
+ROW = {"red": 12.5, "r_mean": 180.0, "g_mean": 40.5, "b_mean": 33.0,
+       "green": 1.25, "blue": 0.5}
+
+
+def _profile_rows(path, trial):
+    return _rows(path, "SELECT t_s, red, " + ", ".join(CHANNELS)
+                 + " FROM profile WHERE trial_id=? ORDER BY rowid", trial)
+
+
+def test_a_fresh_store_has_the_channel_columns(private_db):
+    model = TransferMap()
+    model.open()
+    model.close()
+    with sqlite3.connect(private_db) as db:
+        kinds = {r[1]: r[2] for r in db.execute("PRAGMA table_info(profile)")}
+    assert all(kinds[name] == "REAL" for name in CHANNELS), kinds
+
+
+def test_the_profile_stores_the_channels_a_row_carries(scripted, private_db):
+    model, red, clock = scripted
+    trial = _arm(model)
+    armed = model._trial.armed
+    clock.now = armed + 0.1
+    red.row(clock.now, 12.5, ROW)                     # in the row's dict
+    clock.now = armed + 0.2
+    model._on_sample(clock.now, 13.0, {"Z": 5.0},     # as a row dict after
+                     {**ROW, "red": 13.0, "green": "n/a"})   # positions
+    clock.now = armed + 0.3
+    red.row(clock.now, 13.5)                          # a row without them
+    model.end_recording()
+    _confirmed(model, "finish_trial", {"note": ""})
+    rows = _profile_rows(private_db, trial)
+    assert len(rows) == 3
+    assert {k: rows[0][k] for k in CHANNELS} == {k: ROW[k] for k in CHANNELS}
+    assert rows[1]["green"] is None and rows[1]["r_mean"] == 180.0
+    assert all(rows[2][k] is None for k in CHANNELS)
+    assert [r["red"] for r in rows] == [12.5, 13.0, 13.5]
+
+
+def test_a_row_without_the_channels_never_fails_and_stores_null(station,
+                                                                private_db):
+    """Red Percent before its RGB analysis: (t_s, red, positions) only."""
+    model, red, *_ = station
+    trial = _record(model, red)
+    rows = _profile_rows(private_db, trial)
+    assert rows and all(r[k] is None for r in rows for k in CHANNELS)
+    assert all(r["red"] is not None for r in rows)
+
+
+def test_an_older_profile_gains_the_channels_and_keeps_its_rows(private_db):
+    _version_one_file(private_db, drop=V6_COLUMNS, version=5)
+    before = _rows(private_db, "SELECT * FROM profile")
+    model = TransferMap()
+    model.open()
+    model.close()
+    after = _rows(private_db, "SELECT * FROM profile")
+    assert len(after) == len(before) == 5
+    for old, new in zip(before, after):
+        assert {k: new[k] for k in old} == old
+        assert all(new[k] is None for k in CHANNELS)
+
+
+def test_the_profile_export_carries_the_channels(scripted):
+    model, red, clock = scripted
+    _arm(model)
+    clock.now = model._trial.armed + 0.1
+    red.row(clock.now, 12.5, ROW)
+    model.end_recording()
+    _confirmed(model, "finish_trial", {"note": ""})
+    path = Path(model.export_profile_csv())
+    rows = list(csv.DictReader(path.open()))
+    assert list(rows[0]) == list(tm_module.PROFILE_COLUMNS)
+    assert rows[0]["r_mean"] == "180.0" and rows[0]["blue"] == "0.5"

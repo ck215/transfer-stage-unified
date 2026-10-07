@@ -179,7 +179,16 @@ TRIAL_COLUMNS = (
     ("chip_id", "TEXT"), ("flake_id", "TEXT"), ("cut_id", "TEXT"),
 )
 _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
-PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y")
+#: The colour channels Red Percent's rows carry beside `red` (its RGB
+#: analysis, 2026-10-07): the region's mean R, G and B and its green and
+#: blue fractions. Kept per profile row when the row has them (NULL
+#: otherwise, and for every row recorded before them); added BY PRESENCE.
+PROFILE_CHANNELS = ("r_mean", "g_mean", "b_mean", "green", "blue")
+PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y") + PROFILE_CHANNELS
+#: One stored profile row: (t_s, red, z, x, y, *PROFILE_CHANNELS).
+_PROFILE_WIDTH = 5 + len(PROFILE_CHANNELS)
+_PROFILE_INSERT = ("INSERT INTO profile (" + ", ".join(PROFILE_COLUMNS)
+                   + ") VALUES (" + ", ".join("?" for _ in PROFILE_COLUMNS) + ")")
 #: The tips table (version 3): one record per tip, created on demand (the
 #: first Arm on a tip it has not seen, or an import naming one). Usage is
 #: derived from `trials.tip_id`, never stored twice: `TrialStore.tip`
@@ -216,7 +225,7 @@ _CREATE = (
     + ", ".join(name + " " + kind for name, kind in TRIAL_COLUMNS) + ")",
     "CREATE TABLE IF NOT EXISTS profile (trial_id INTEGER NOT NULL "
     "REFERENCES trials(id), t_s REAL NOT NULL, red REAL, z REAL, x REAL, "
-    "y REAL)",
+    "y REAL, " + ", ".join(f"{name} REAL" for name in PROFILE_CHANNELS) + ")",
     "CREATE INDEX IF NOT EXISTS profile_trial ON profile(trial_id)",
     "CREATE TABLE IF NOT EXISTS tips ("
     + ", ".join(name + " " + kind for name, kind in TIP_COLUMNS) + ")",
@@ -385,6 +394,11 @@ class TrialStore:
                 # Names and kinds are this module's own, never input.
                 db.execute(f"ALTER TABLE trials ADD COLUMN {name} {kind}")
                 added.append(name)
+        have = {row[1] for row in db.execute("PRAGMA table_info(profile)")}
+        for name in PROFILE_CHANNELS:
+            if name not in have:
+                db.execute(f"ALTER TABLE profile ADD COLUMN {name} REAL")
+                added.append(name)
         if version >= SCHEMA_VERSION:
             return None if fresh or not added else added
         if version < 3 and not fresh:
@@ -436,9 +450,11 @@ class TrialStore:
             if names:
                 db.execute(sql, [fields[n] for n in names] + [trial_id])
             if profile:
-                db.executemany("INSERT INTO profile (trial_id, t_s, red, z, x, y) "
-                               "VALUES (?, ?, ?, ?, ?, ?)",
-                               [(trial_id, *row) for row in profile])
+                # A row without the colour channels (t_s, red, z, x, y)
+                # stores them as NULL.
+                db.executemany(_PROFILE_INSERT, [
+                    (trial_id, *(tuple(row) + (None,) * _PROFILE_WIDTH)
+                     [:_PROFILE_WIDTH]) for row in profile])
         return self.write(_do)
 
     def delete(self, trial_id):
@@ -1328,15 +1344,22 @@ class TransferMap(Model):
         return snapshot
 
     # -- the samples, on Red Percent's run thread ------------------------------
-    def _on_sample(self, t_s, red, positions):
+    def _on_sample(self, t_s, red, positions, *row):
         """One row of Red Percent's log. Appends and returns; never raises
-        into the run loop (Red Percent catches it anyway)."""
+        into the run loop (Red Percent catches it anyway). The colour
+        channels (`PROFILE_CHANNELS`) are read with `.get` from a row dict
+        passed after `positions`, else from `positions` itself; a row
+        without them stores NULL."""
         trial = self._trial or self._arming
         if trial is None or trial.closed or trial.ended:
             return
         if len(trial.samples) >= MAX_SAMPLES:
             trial.dropped += 1
             return
+        positions = positions if isinstance(positions, dict) else {}
+        carrier = next((r for r in row if isinstance(r, dict)), positions)
+        channels = tuple(_number_or_none(carrier.get(name))
+                         for name in PROFILE_CHANNELS)
         x, y, z = positions.get("X"), positions.get("Y"), positions.get("Z")
         if x is None or y is None or z is None:
             px, py, pz = self._probe_axes()
@@ -1344,7 +1367,7 @@ class TransferMap(Model):
             y = py if y is None else y
             z = pz if z is None else z
         t = time.monotonic() - trial.armed
-        trial.samples.append((t, red, z, x, y))
+        trial.samples.append((t, red, z, x, y, *channels))
         # The Force estimate moves here, at the row rate, on this thread;
         # never on a poll (TR-3).
         try:
@@ -2656,7 +2679,7 @@ class TransferMap(Model):
             writer = csv.writer(handle)
             writer.writerow(PROFILE_COLUMNS)
             for row in self._store.profile_rows():
-                writer.writerow([row[c] for c in PROFILE_COLUMNS])
+                writer.writerow([row.get(c) for c in PROFILE_COLUMNS])
         tip_columns = [name for name, _kind in TIP_COLUMNS]
         with open(tips_path, "w", newline="") as handle:
             writer = csv.writer(handle)
@@ -3298,6 +3321,18 @@ def _ordinal(n):
 
 def _now():
     return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _number_or_none(value):
+    """A channel value as a float, or None (absent, not a number, or not
+    finite): a row never fails for a channel it does not carry."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _number(value):
