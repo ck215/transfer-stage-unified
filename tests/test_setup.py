@@ -1478,8 +1478,7 @@ FLASH_NOW = {"label": "Flash now", "name": "__setup__", "command": "flash_firmwa
 def test_the_startup_check_asks_once_and_flash_now_flashes_unattended(
         fake_types, firmware_checking, warnings):
     firmware = FakeFirmware()
-    panel = Setup(RecordingController(), firmware=firmware)
-    wait_firmware(panel)
+    panel = _listening(Setup(RecordingController(), firmware=firmware))
     [offer] = _prompts(warnings, events.FIRMWARE_OUT_OF_DATE)
     assert offer.severity == "warning" and offer.needs_ack is True
     assert offer.message == ("Stepper Probe out of date. Flash it now? This "
@@ -1502,8 +1501,7 @@ def test_the_startup_offer_names_every_board_the_button_would_flash(
         fake_types, firmware_checking, warnings):
     firmware = FakeFirmware(result=firmware_result(stale=["Stepper Probe", "DC Probe"],
                                                    never=["Chuck Positioner"]))
-    panel = Setup(RecordingController(), firmware=firmware)
-    wait_firmware(panel)
+    panel = _listening(Setup(RecordingController(), firmware=firmware))
     [offer] = _prompts(warnings, events.FIRMWARE_OUT_OF_DATE)
     assert offer.message.startswith(
         "Stepper Probe and DC Probe out of date; Chuck Positioner never flashed "
@@ -1514,10 +1512,77 @@ def test_the_startup_offer_names_every_board_the_button_would_flash(
     assert firmware.flashes == [["Stepper Probe", "DC Probe", "Chuck Positioner"]]
 
 
+def _listening(panel):
+    """What `app.launch` does once the view has subscribed (A2)."""
+    wait_firmware(panel)
+    starting = getattr(panel, "startup_checks", None)
+    if starting is not None:
+        starting()
+    return panel
+
+
+def test_a_view_that_subscribes_after_setup_is_built_still_gets_the_offer(
+        fake_types, firmware_checking):
+    """OP-4: the startup check finished before any view had subscribed, so
+    its Firmware Out of Date dialog went to nobody and Flash now was
+    unreachable. The offer waits for `startup_checks()`, which the app
+    calls once the view listens."""
+    events.clear()
+    firmware = FakeFirmware()
+    panel = Setup(RecordingController(), firmware=firmware)
+    wait_firmware(panel)                 # the check is done; no view yet
+    seen = []
+    events.subscribe(seen.append)        # the view subscribes
+    try:
+        _listening(panel)
+        [offer] = _prompts(seen, events.FIRMWARE_OUT_OF_DATE)
+        assert offer.needs_ack and offer.to_dict()["action"] == FLASH_NOW
+    finally:
+        events.unsubscribe(seen.append)
+        events.clear()
+
+
+def test_the_offer_waits_for_a_check_still_running_when_the_view_listens(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware()
+    firmware.gate = threading.Event()
+    panel = Setup(RecordingController(), firmware=firmware)
+    panel.startup_checks()               # the view listens before the answer
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    firmware.gate.set()
+    wait_firmware(panel)
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+    panel.startup_checks()               # a second call offers nothing new
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+
+
+def test_nothing_is_offered_before_the_view_listens(
+        fake_types, firmware_checking, warnings):
+    panel = Setup(RecordingController(), firmware=FakeFirmware())
+    wait_firmware(panel)
+    assert panel.firmware_status == "Stepper Probe out of date"
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+
+
+def test_on_next_read_the_offer_goes_out_with_the_first_state_read(
+        fake_types, firmware_checking, warnings):
+    """The Web: the page replays older events as history (no dialog), so
+    the offer goes out when the page first reads Setup, after it has
+    taken its place in the event stream."""
+    panel = Setup(RecordingController(), firmware=FakeFirmware())
+    wait_firmware(panel)
+    panel.startup_checks(on_next_read=True)
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    panel.state
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+    panel.state
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+
+
 def test_the_startup_check_asks_nothing_when_every_board_is_current(
         fake_types, firmware_checking, warnings):
-    panel = Setup(RecordingController(), firmware=FakeFirmware(result=firmware_result()))
-    wait_firmware(panel)
+    panel = _listening(Setup(RecordingController(),
+                             firmware=FakeFirmware(result=firmware_result())))
     assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
 
 
@@ -1525,8 +1590,7 @@ def test_the_startup_check_asks_nothing_it_could_not_do_without_the_tools(
         fake_types, firmware_checking, warnings):
     firmware = FakeFirmware(result=firmware_result(stale=["DC Probe"],
                                                    missing=["arduino-cli"]))
-    panel = Setup(RecordingController(), firmware=firmware)
-    wait_firmware(panel)
+    panel = _listening(Setup(RecordingController(), firmware=firmware))
     assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
     assert "by hand" in refused(lambda: panel.flash_firmware(True))
 
@@ -2012,3 +2076,206 @@ def test_an_update_waiting_for_the_restart_says_press_restart(fake_types, checki
     assert refused.status == "refused"
     assert refused.reason == ("The station was updated to v1.3.0. Press Restart "
                               "before launching.")
+
+
+# -- A3: the Trial store row -------------------------------------------------
+
+@pytest.fixture
+def store_choice(tmp_path, monkeypatch):
+    """No STATION_MAP_DB, a private choices file, a tmp install root."""
+    from controller import user_config
+    from model import transfer_map as tm_module
+    monkeypatch.delenv("STATION_MAP_DB", raising=False)
+    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))
+    user_config.forget()
+    install = tmp_path / "install"
+    install.mkdir()
+    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    yield install
+    user_config.forget()
+
+
+def test_the_trial_store_row_block_builds_the_brief_shape(panel):
+    """What `_store_section()` builds; the schema inserts it just before
+    Launch once `tests/test_setup_registry.py`'s section pin allows (see
+    the handoff: that file is outside this write set)."""
+    store = panel._store_section()
+    assert store["title"] == "Trial store" and store["layout"] == "row"
+    assert [(e["type"], e.get("command") or e.get("model_attr"))
+            for e in store["elements"]] == [
+        ("readonly", "map_store_status"),
+        ("entry", "map_store_path"), ("button", "open_map_store"),
+        ("entry", "map_store_dir"), ("entry", "map_store_name"),
+        ("button", "new_map_store")]
+
+
+def test_the_store_row_says_nothing_is_chosen_then_what_was(store_choice, tmp_path):
+    from model.transfer_map import TransferMap
+    panel = Setup(RecordingController())
+    assert panel.map_store_status.startswith("Not chosen")
+    panel.map_store_dir, panel.map_store_name = str(tmp_path / "trials"), "lab"
+    path = tmp_path / "trials" / "lab.sqlite"
+    assert panel.new_map_store() == str(path)
+    assert path.is_file()
+    assert panel.map_store_status == str(path)
+    assert TransferMap().db_path == path         # remembered for the map
+
+
+def test_opening_a_store_from_setup_moves_an_open_map_onto_it(store_choice, tmp_path):
+    from model.transfer_map import TransferMap, TrialStore
+    path = tmp_path / "kept.sqlite"
+    TrialStore(path).ensure()
+    controller = RecordingController()
+    model = TransferMap()
+    controller.add(TransferMap.NAME, model, {"model": TransferMap.NAME})
+    try:
+        panel = Setup(controller)
+        assert model.state["store"]["chosen"] is False
+        panel.map_store_path = str(path)
+        assert panel.open_map_store() == str(path)
+        assert model.db_path == path and model.state["store"]["chosen"] is True
+    finally:
+        controller.reset()
+
+
+def test_setup_refuses_a_store_inside_the_install(store_choice):
+    panel = Setup(RecordingController())
+    panel.map_store_dir, panel.map_store_name = str(store_choice / "data"), "x"
+    assert "cannot live inside the station's own folder" in refused(panel.new_map_store)
+
+
+def test_setup_offers_the_store_an_earlier_build_left_in_the_install(store_choice):
+    from model.transfer_map import TrialStore
+    left = store_choice / "data" / "transfer_map.sqlite"
+    TrialStore(left).ensure()
+    panel = Setup(RecordingController())
+    assert panel.map_store_path == str(left)
+    assert panel.map_store_status.startswith("Not chosen")
+
+
+# -- A4: Switch to stable (frozen bundles only; owner decision 3) ---------------
+
+STABLE_CONFIRM = ("Switch to the stable station? The boards will be flashed with "
+                  "the stable firmware, every model is closed, and the stable app "
+                  "opens. To come back, start the station again and accept Flash now.")
+
+
+class StableFirmware(FakeFirmware):
+    """The stable sketches' FirmwareCheck: `failed` names the boards whose
+    upload fails."""
+
+    def __init__(self, failed=(), **kwargs):
+        super().__init__(**kwargs)
+        self.failed = list(failed)
+        self.order = None
+
+    def flash(self, boards, on_line=None, timeout=None):
+        if self.order is not None:
+            self.order.append("flash")
+        answer = super().flash(boards, on_line=on_line, timeout=timeout)
+        answer["results"] = {b: "FAILED" if b in self.failed else "ok" for b in boards}
+        if self.failed:
+            answer.update(ok=False, returncode=1)
+        return answer
+
+
+@pytest.fixture
+def stable(tmp_path):
+    """A bundle's stable/ folder: its launcher and its sketches."""
+    import os as _os
+    root = tmp_path / "stable"
+    (root / "firmware").mkdir(parents=True)
+    (root / ("station-stable.exe" if _os.name == "nt" else "station-stable")).write_text("")
+    return root
+
+
+def switching(stable, firmware, order, controller=None):
+    return Setup(controller or RecordingController(), stable_root=stable,
+                 stable_firmware=firmware,
+                 launch_stable=lambda argv, cwd: order.append(("launch", argv, cwd)),
+                 exit_app=lambda: order.append("exit"))
+
+
+def wait_stable(panel):
+    thread = panel._flash_thread
+    if thread is not None:
+        thread.join(5.0)
+        assert not thread.is_alive()
+
+
+def test_a_checkout_has_no_switch_to_stable(panel):
+    assert "Stable" not in [s["title"] for s in panel.schema["sections"]]
+    assert "no stable app" in refused(lambda: panel.switch_to_stable(True))
+
+
+def test_a_bundle_with_stable_beside_it_offers_the_switch(fake_types, stable):
+    panel = switching(stable, StableFirmware(), [])
+    titles = [s["title"] for s in panel.schema["sections"]]
+    assert titles[:4] == ["Update", "Firmware", "Stable", "Devices"]
+    [button] = [e for e in panel.schema["sections"][2]["elements"]
+                if e["type"] == "button"]
+    assert button["command"] == "switch_to_stable"
+    assert button["confirm"] == STABLE_CONFIRM
+    question = asked(panel.switch_to_stable)
+    assert question.prompt == STABLE_CONFIRM and question.command == "switch_to_stable"
+
+
+def test_the_switch_closes_flashes_stable_launches_it_then_exits(fake_types, stable):
+    order = []
+    firmware = StableFirmware(lines=["Sketches: stable", "Summary:", "  DC Probe ok"])
+    firmware.order = order
+    controller = RecordingController()
+    panel = switching(stable, firmware, order, controller)
+    tick(panel, "alpha")
+    assert panel.run("launch").is_ok
+    assert controller.model_names == ["Alpha"]
+    assert panel.run("switch_to_stable", args=(True,)).is_ok
+    wait_stable(panel)
+    assert controller.model_names == [] and "reset" in controller.calls
+    assert firmware.flashes == [["Stepper Probe", "DC Probe", "Chuck Positioner",
+                                 "Temperature Controller"]]
+    exe = stable / ("station-stable.exe" if __import__("os").name == "nt" else "station-stable")
+    assert order == ["flash", ("launch", [str(exe)], str(stable)), "exit"]
+
+
+def test_a_board_that_fails_to_flash_stops_the_switch(fake_types, stable, warnings):
+    order = []
+    firmware = StableFirmware(failed=["Chuck Positioner"],
+                              lines=["  Chuck Positioner FAILED"])
+    panel = switching(stable, firmware, order)
+    assert panel.switch_to_stable(True)
+    wait_stable(panel)
+    assert [o for o in order if o != "flash"] == [], "nothing launched, no exit"
+    [failed] = [e for e in warnings if e.title == "Switch to Stable Failed"]
+    assert "Chuck Positioner" in failed.message
+    assert "keeps running" in failed.message
+    assert panel.firmware_progress == ""
+
+
+def test_the_switch_waits_for_a_scan_and_a_flash(fake_types, stable, monkeypatch):
+    panel = switching(stable, StableFirmware(), [])
+    monkeypatch.setattr(Setup, "is_scanning", property(lambda self: True))
+    assert "scan" in refused(lambda: panel.switch_to_stable(True))
+
+
+# -- A5: no release yet --------------------------------------------------------
+
+def test_no_release_yet_reads_as_such_on_the_update_line(panel):
+    panel._publish_check({"status": "no_release", "behind": 0, "log": [],
+                          "reason": "No release has been published yet.",
+                          "tag": "v1.2.0"})
+    assert panel.update_status == "No release has been published yet."
+    assert panel.has_update is False
+
+
+def test_a_failed_flash_warns_with_what_to_do(fake_types, warnings):
+    class Hinting(FakeFirmware):
+        def flash(self, boards, on_line=None, timeout=None):
+            answer = super().flash(boards, on_line=on_line, timeout=timeout)
+            answer["hints"] = ["Install Rosetta 2, then flash again."]
+            return answer
+    panel = checked(Hinting(flash_ok=False, lines=["  DC Probe FAILED"]))
+    assert panel.flash_firmware(True)
+    wait_firmware(panel)
+    [failed] = [e for e in warnings if e.title == "Firmware Flash Failed"]
+    assert "Install Rosetta 2, then flash again." in failed.message
