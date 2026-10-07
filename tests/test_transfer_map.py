@@ -844,14 +844,17 @@ def test_import_typed_trials_and_they_reach_the_map(tmp_path, private_db):
     typed.write_text("tilt_deg,speed_steps_s,force_index,width_um,tip_id\n"
                      "10,100,0.2,5.0,t1\n20,200,0.5,,t1\n,300,0.7,6,t1\n")
     model = TransferMap()
-    assert model.import_csv(str(typed)) == {"imported": 2, "skipped": 1}
+    # TM-3 (2026-10-07): a row without a tilt is imported (tilt collected,
+    # never demanded); only a row without a speed would be skipped.
+    assert model.import_csv(str(typed)) == {"imported": 3, "skipped": 0}
     rows = _rows(private_db, "SELECT * FROM trials ORDER BY id")
-    assert [r["origin"] for r in rows] == ["imported", "imported"]
-    assert [r["status"] for r in rows] == ["measured", "recorded"]
+    assert [r["origin"] for r in rows] == ["imported"] * 3
+    assert [r["status"] for r in rows] == ["measured", "recorded", "measured"]
+    assert [r["tilt_deg"] for r in rows] == [10, 20, None]
     assert "given" in model.force_definition_options
     model.set_force_definition("given")
     trials = model._map_rows()
-    assert [t["force"]["given"] for t in trials] == [0.2, 0.5]
+    assert [t["force"]["given"] for t in trials] == [0.2, 0.5, 0.7]
 
 
 def test_an_export_imports_back(station, tmp_path):
@@ -867,8 +870,18 @@ def test_an_export_imports_back(station, tmp_path):
 def test_import_refuses_a_file_without_tilt_and_speed(tmp_path):
     bad = tmp_path / "bad.csv"
     bad.write_text("a,b\n1,2\n")
-    with pytest.raises(Refused, match="tilt"):
+    with pytest.raises(Refused, match="speed_steps_s"):     # TM-3: speed only
         TransferMap().import_csv(str(bad))
+
+
+def test_import_takes_a_file_with_no_tilt_column(tmp_path, private_db):
+    """TM-3: the tilt is collected when a file has it, never demanded."""
+    typed = tmp_path / "speeds.csv"
+    typed.write_text("speed_steps_s,width_um\n100,2.0\n,3.0\n300,4.0\n")
+    model = TransferMap()
+    assert model.import_csv(str(typed)) == {"imported": 2, "skipped": 1}
+    assert [r["tilt_deg"] for r in _rows(private_db, "SELECT tilt_deg FROM "
+                                          "trials ORDER BY id")] == [None, None]
 
 
 # -- the figure and the schema ---------------------------------------------------
@@ -1088,7 +1101,7 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     model.tip_id = " "
     assert step() == "Type a tip ID"
     model.tip_id = "tip-A"
-    assert step() == "Type the tilt for this trial"
+    assert step() == "Press Arm trial"            # TM-3: no tilt demanded
     model.typed_tilt = "6.5"
     assert step() == "Press Arm trial"
     red.start_run(confirmed=True)                 # a run of the operator's own
@@ -1149,6 +1162,68 @@ def test_the_review_shows_the_trial_just_recorded(station):
     assert model.trial_figure is shown.value         # drawn once
     _confirmed(model, "finish_trial", {"note": ""})
     assert model.trial_figure == b""
+
+
+# -- TM-3: the tilt is collected, never demanded or drawn ----------------------
+
+def test_a_trial_without_a_tilt_is_armed_recorded_and_mapped(idle_station,
+                                                             private_db):
+    """No rotator and no typed tilt: nothing asks for one, the trial records
+    a NULL tilt (never a default 0), and it still reaches the map rows."""
+    model, red = idle_station
+    assert model.tilt_now is None
+    assert model.next_step == "Press Arm trial"
+    asked = model.run("arm_trial", {"tip_id": "tip-A", "typed_tilt": ""})
+    assert asked.needs_confirm and "tilt" not in asked.reason.lower()
+    trial = _arm(model)
+    assert _wait_for(lambda: len(model._trial.samples) >= 5)
+    _finish(model)
+    row = _rows(private_db, "SELECT tilt_deg, tilt_source FROM trials "
+                "WHERE id=?", trial)[0]
+    assert row == {"tilt_deg": None, "tilt_source": None}
+    assert [r["tilt"] for r in model._map_rows()] == [None]
+
+
+def test_a_typed_tilt_is_still_collected(station, private_db):
+    model, red, rotator, probe = station
+    model.on_model_removed("Rotator")
+    model.typed_tilt = "7.5"
+    trial = _record(model, red)
+    row = _rows(private_db, "SELECT tilt_deg, tilt_source FROM trials "
+                "WHERE id=?", trial)[0]
+    assert row == {"tilt_deg": 7.5, "tilt_source": "typed"}
+
+
+def test_the_map_rows_carry_the_tilt_and_the_force_class(station, private_db):
+    """`plot_data` draws speed by force class: the rows carry the bench's
+    `force_class` (read with .get: this store's v6 has no such column) and
+    the tilt, which nothing draws."""
+    model, red, *_ = station
+    trial = _record(model, red)
+    [row] = model._map_rows()
+    assert row["tilt"] == 22.5 and row["force_class"] is None
+    with sqlite3.connect(private_db) as db:       # a bench file has the column
+        db.execute("ALTER TABLE trials ADD COLUMN force_class TEXT")
+        db.execute("UPDATE trials SET force_class='High' WHERE id=?", (trial,))
+    [row] = model._map_rows()
+    assert row["force_class"] == "High" and row["tilt"] == 22.5
+    assert plot_data.force_class(row) == "High"
+
+
+def test_the_width_gradient_is_over_speed_only(tmp_path, private_db):
+    """TM-3: with no tilt axis the gradient is d(width)/d(speed); trials
+    without a tilt count."""
+    typed = tmp_path / "w.csv"
+    typed.write_text("speed_steps_s,width_um\n100,1.0\n200,2.0\n300,3.0\n"
+                     "400,4.0\n")
+    model = TransferMap()
+    assert model.width_gradient == ""
+    model.import_csv(str(typed))
+    words = model.width_gradient
+    assert words.startswith("At the centre of the speeds: +")
+    assert words.endswith("um per step/s") and "deg" not in words
+    slope = float(words.split(": ")[1].split(" ")[0])
+    assert 0.002 < slope < 0.02                   # ~0.01 um per step/s
 
 
 # -- the procedure (owner ruling 2026-10-07) ---------------------------------
@@ -1518,11 +1593,11 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     result = model.run("arm_trial", {"tip_id": "T7", "typed_tilt": ""})
     assert result.needs_confirm, result
     # 2026-10-07: Continue takes the stage still; the region comes next.
+    # TM-3: without a tilt the prompt says nothing of one (never demanded).
     assert result.reason == ("Frame the sample now. Continue takes the "
-                             "picture of the stage for trial 1 on tip T7, with "
-                             "NO tilt recorded, 300 steps/s (Stepper Probe); "
-                             "you then pick the capture region on it, and the "
-                             "recording starts.")
+                             "picture of the stage for trial 1 on tip T7, "
+                             "300 steps/s (Stepper Probe); you then pick the "
+                             "capture region on it, and the recording starts.")
     assert result.command == "arm_trial"
     assert result.inputs == {"tip_id": "T7", "typed_tilt": ""}
     assert not model.is_armed and model.trial_count == 0

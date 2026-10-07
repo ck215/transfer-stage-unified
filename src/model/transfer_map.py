@@ -1,7 +1,10 @@
 """The Transfer Map: the heatmap this project exists for.
 
-A 3D map over **tilt angle, speed and force** whose value of interest is the
-**channel width** of the transferred sample (owner, 2026-09-27). It builds
+A map over **speed and force** whose value of interest is the **channel
+width** of the transferred sample (owner, 2026-09-27; since 2026-10-07 the
+map draws no tilt: the tilt is collected with every trial, never demanded
+and never plotted, and `_map_rows` carries it and the bench's
+`force_class` for the figures to use). It builds
 itself as trials are recorded: the operator arms a trial, lowers the tip,
 presses Mark force at the force they want, and finishes; the station keeps
 the red-percent slice of the lowering, a labelled video of the capture
@@ -1170,8 +1173,6 @@ class TransferMap(Model):
             return "Open Red Percent"
         if not (self.tip_id or "").strip():
             return "Type a tip ID"
-        if self._read_tilt()[0] is None:
-            return "Type the tilt for this trial"
         if getattr(red, "is_running", False):
             return "Stop Red Percent's run, then press Arm trial"
         return "Press Arm trial"
@@ -1234,9 +1235,10 @@ class TransferMap(Model):
             # T3: the picture is taken on the operator's word, with the
             # stage framed. A broken or retired tip is asked in the same
             # prompt (M2): one question, one Continue.
+            # TM-3: a tilt is collected when there is one, never demanded.
             tilt_now, tilt_from = self._read_tilt()
             tilt_words = (f" at {tilt_now:g} deg" + (f" ({tilt_from})" if tilt_from != "typed" else "")
-                          if tilt_now is not None else ", with NO tilt recorded")
+                          if tilt_now is not None else "")
             speed_now, speed_from = self._read_speed()
             speed_words = (f", {speed_now:g} steps/s"
                            + ("" if speed_from == "typed" else f" ({speed_from})")
@@ -2284,27 +2286,26 @@ class TransferMap(Model):
         return self._export()[2]
 
     def import_csv(self, path):
-        """Trials measured elsewhere: tilt and speed, and the force index
-        given directly (`force_index`, optionally named by
+        """Trials measured elsewhere: the speed (and the tilt, when the file
+        has one: collected, never demanded since 2026-10-07), and the force
+        index given directly (`force_index`, optionally named by
         `force_definition`; or `force_<name>` columns, as an export writes).
-        No profile. Rows without a tilt or a speed are skipped."""
+        No profile. Rows without a speed are skipped."""
         self._need_store()
         try:
             with open(path, newline="") as handle:
                 rows = list(csv.DictReader(handle))
         except OSError:
             raise Refused(f"Could not read {Path(path).name}.")
-        if not rows or not ({"tilt_deg", "tilt"} & set(rows[0])) or \
-                not ({"speed_steps_s", "speed"} & set(rows[0])):
-            raise Refused(f"{Path(path).name} needs a tilt_deg and a "
-                          "speed_steps_s column.")
+        if not rows or not ({"speed_steps_s", "speed"} & set(rows[0])):
+            raise Refused(f"{Path(path).name} needs a speed_steps_s column.")
         reserved = {"force_given", "force_index", "force_definition"}
         imported = skipped = 0
         new_tips = []
         for row in rows:
             tilt = _number(row.get("tilt_deg", row.get("tilt")))
             speed = _number(row.get("speed_steps_s", row.get("speed")))
-            if tilt is None or speed is None:
+            if speed is None:
                 skipped += 1
                 continue
             given = {key[len("force_"):]: _number(value)
@@ -2377,7 +2378,10 @@ class TransferMap(Model):
             if row["status"] in ("armed", "aborted"):
                 continue
             width, sigma, source = analysis.pick_width(row)
+            # TM-3: the tilt rides along (never drawn); `force_class` is the
+            # bench store's column, absent from this one's v6 (None then).
             rows.append({"id": row["id"], "tilt": row["tilt_deg"],
+                         "force_class": row.get("force_class"),
                          "speed": row["speed_steps_s"],
                          "force": self._force_of(row),
                          "width": width, "width_sigma": sigma,
@@ -2581,29 +2585,27 @@ class TransferMap(Model):
 
     @property
     def width_gradient(self):
-        """d(width)/d(tilt) and d(width)/d(speed) at the centre of the map,
-        with one sigma, from the Gaussian process over the measured trials
-        (all force bands)."""
+        """d(width)/d(speed) at the centre of the speed range, with one
+        sigma, from the Gaussian process over the measured trials (all
+        force bands). Speed only since 2026-10-07: the map has no tilt
+        axis, and a trial without a tilt still counts."""
         import numpy
         rows = [r for r in plot_data.with_width(self._map_rows(), self._width_source)
-                if r["tilt"] is not None and r["speed"] is not None]
+                if r["speed"] is not None]
         if len(rows) < 3:
             return ""
-        tilt = numpy.array([r["tilt"] for r in rows], dtype=float)
         speed = numpy.array([r["speed"] for r in rows], dtype=float)
-        spans = numpy.array([max(v.max() - v.min(), 1e-9) for v in (tilt, speed)])
-        x = numpy.column_stack([(tilt - tilt.min()) / spans[0],
-                                (speed - speed.min()) / spans[1]])
+        span = max(speed.max() - speed.min(), 1e-9)
+        x = ((speed - speed.min()) / span).reshape(-1, 1)
         widths = numpy.array([r["width"] for r in rows], dtype=float)
         spread = float(widths.std()) or 1.0
         noise = numpy.array(plot_data.width_noise(rows, spread))
-        grad, var = analysis.gp_gradient(x, widths, numpy.array([[0.5, 0.5]]),
+        grad, var = analysis.gp_gradient(x, widths, numpy.array([[0.5]]),
                                          length=plot_data.SLICE_LENGTH,
                                          noise=noise)
-        g = grad[0] / spans
-        s = numpy.sqrt(var[0]) / spans
-        return (f"At the map centre: {g[0]:+.3g} ± {s[0]:.2g} um/deg, "
-                f"{g[1]:+.3g} ± {s[1]:.2g} um per step/s")
+        g = grad[0][0] / span
+        s = numpy.sqrt(var[0][0]) / span
+        return f"At the centre of the speeds: {g:+.3g} ± {s:.2g} um per step/s"
 
     # -- schema --------------------------------------------------------------
     @property
@@ -2657,7 +2659,7 @@ class TransferMap(Model):
                 sch.readonly("Tip", "tip_status"),
                 # Bench 2026-09-28: the tilt varies between trials of one
                 # tip and was buried two tiers down; it is asked here, per
-                # trial, and Next step insists on it when no rotator reads.
+                # trial. Collected, never demanded (TM-3, 2026-10-07).
                 sch.entry("Tilt for this trial (deg)", "typed_tilt",
                           P["typed_tilt"]),
                 sch.entry("Speed for this trial (steps/s)", "typed_speed",
