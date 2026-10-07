@@ -22,51 +22,70 @@ if ROOT not in sys.path:
 # aborts immediately on macOS when no display server is available.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-_qt_probe_ok = True  # non-macOS, or PySide6 absent: no known issue, never skip
+_qt_probe_ok = None  # not probed yet: the probe runs lazily, see _qt_available()
 
-if sys.platform == "darwin":
-    # macOS marks pip-downloaded PySide6 .dylib files UF_HIDDEN, which makes
-    # Qt's plugin scanner silently skip them — QApplication() then aborts
-    # with a native SIGABRT (qt_check_pointer) instead of raising a Python
-    # exception, which looks like pytest hanging/crashing. Same class of fix
-    # as run_macos.sh's launcher self-heal — but unlike that script, the
-    # chflags call alone is NOT self-verifying: confirmed via repeated
-    # full-suite runs that qt_check_pointer still aborts non-deterministically
-    # even with chflags already applied (two back-to-back runs of identical
-    # code/suite produced one clean pass and one crash at the same qapp
-    # fixture — not order- or composition-dependent). A crash here takes the
-    # *entire* pytest session down with it, discarding every already-passed
-    # test's result along with it, which is the actual problem worth fixing
-    # regardless of the exact race underneath.
-    #
-    # So: verify in a throwaway *subprocess* (mirroring run_macos.sh's own
-    # verify-before-use pattern) that constructing a real QApplication
-    # actually survives, before the real session ever risks it. A crash in
-    # that subprocess only ends the subprocess — pytest itself keeps running.
-    # If it fails, retry chflags once (the flag may have been reasserted, or
-    # raced the first pass) and probe again. If it still fails, mark Qt as
-    # unavailable for this session so pytest_collection_modifyitems below can
-    # skip qapp/qtbot-dependent tests gracefully instead of letting the real
-    # fixture crash the whole run later.
+
+def _qt_available():
+    """Whether a real QApplication survives in a throwaway subprocess.
+
+    Lazy since the Qt view was retired (2026-10-07): the probe used to run at
+    conftest import, so every pytest run (the fast gate included) spawned a
+    PySide6 child. Now it runs only when a selected test needs Qt, and never
+    imports PySide6 here (a find_spec, not an import).
+
+    macOS marks pip-downloaded PySide6 .dylib files UF_HIDDEN, which makes
+    Qt's plugin scanner skip them and QApplication() abort natively (SIGABRT),
+    which would take the whole pytest session down. So construct one in a
+    subprocess first (a crash there only ends the subprocess), retry once
+    after clearing the flag, and mark Qt unavailable if it still fails.
+    PySide6 absent: no known issue, never skip.
+    """
+    global _qt_probe_ok
+    if _qt_probe_ok is not None:
+        return _qt_probe_ok
+    _qt_probe_ok = True
+    if sys.platform != "darwin":
+        return _qt_probe_ok
+    import importlib.util
+    import subprocess
     try:
-        import subprocess
-        import PySide6
-        pyside6_dir = os.path.dirname(PySide6.__file__)
+        spec = importlib.util.find_spec("PySide6")
+    except (ValueError, ImportError):
+        spec = None
+    if spec is None or not spec.submodule_search_locations:
+        return _qt_probe_ok
+    pyside6_dir = list(spec.submodule_search_locations)[0]
 
-        def _probe_qapplication():
+    def _probe_qapplication():
+        try:
             result = subprocess.run(
                 [sys.executable, "-c",
                  "from PySide6.QtWidgets import QApplication; QApplication([])"],
                 env=os.environ.copy(), capture_output=True, timeout=30,
             )
-            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+        return result.returncode == 0
 
+    subprocess.run(["chflags", "-R", "nohidden", pyside6_dir], check=False)
+    if not _probe_qapplication():
         subprocess.run(["chflags", "-R", "nohidden", pyside6_dir], check=False)
-        if not _probe_qapplication():
-            subprocess.run(["chflags", "-R", "nohidden", pyside6_dir], check=False)
-            _qt_probe_ok = _probe_qapplication()
-    except ImportError:
-        pass
+        _qt_probe_ok = _probe_qapplication()
+    return _qt_probe_ok
+
+
+def _pyside6_installed():
+    import importlib.util
+    try:
+        return importlib.util.find_spec("PySide6") is not None
+    except (ValueError, ImportError):
+        return False
+
+
+#: The frozen Qt view's tests import PySide6 at module top. With PySide6 absent
+#: (the default install since 2026-10-07: it is the optional `qt` extra) they
+#: are not collected at all, instead of erroring the whole fast gate.
+collect_ignore_glob = [] if _pyside6_installed() else ["test_view_qt*.py"]
 
 
 def pytest_configure(config):
@@ -106,11 +125,14 @@ def pytest_collection_modifyitems(config, items):
     skip_window = pytest.mark.skip(
         reason="maps a real Tk window; STATION_NO_WINDOWS=1 is set (someone is "
                "working at the display). Run without the variable to cover it.")
+    # `-m "not qt"` (the fast gate) deselects every Qt test: no probe then.
+    markexpr = (config.getoption("markexpr", "") or "").replace(" ", "")
+    qt_wanted = "notqt" not in markexpr
     for item in items:
         needs_qt = "qapp" in item.fixturenames or "qtbot" in item.fixturenames
         if needs_qt:
             item.add_marker(pytest.mark.qt)
-            if not _qt_probe_ok:
+            if qt_wanted and not _qt_available():
                 item.add_marker(skip_qt)
         if _maps_a_window(item):
             item.add_marker(pytest.mark.window)

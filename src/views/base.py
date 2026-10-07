@@ -66,6 +66,192 @@ def hardware_links(state, fallback=LEGACY_LINK_DEVICES):
     return {device: status for device, status in devices.items() if device in names}
 
 
+# -- the link (F3 / HC-1, rb-link-views) --------------------------------------
+#
+# A model that owns a hardware serial port publishes `state["link"]`:
+#   {"status": "verified" | "unverified" | "simulated" | "lost" |
+#              "reconnecting" | "closed" | "connecting",
+#    "losses": int, "reconnects": int, "dropped": int, "stalls": int,
+#    "stalled": bool, "last_loss": "HH:MM:SS" | None}
+# The key is absent for a model without a port. Everything a view says about
+# it is decided here, once, from the state alone; no model is named.
+
+#: The link statuses under which the model's numbers are not live and its
+#: modes are held: the entry turns the danger tier.
+LINK_DOWN = ("lost", "reconnecting")
+#: The statuses under which "stalled" is news: the link itself is up.
+LINK_UP = ("verified", "unverified", "simulated")
+#: The device classes that drive a model by hand (D-4's input gate). An
+#: entry whose state carries one that is bound is "gamepad-driven".
+INPUT_DEVICES = ("Gamepad",)
+#: An input device in one of these statuses drives nothing.
+INPUT_IDLE = ("unbound", "closed")
+#: What a gamepad-driven entry says while the window gate is closed (V3).
+INPUT_HELD_LINE = "Input held: window not focused"
+#: The commands that ARE the stop; a down link never greys them.
+STOP_COMMANDS = ("toggle_estop", "clear_estop", "estop", "estop_all",
+                 "clear_estop_all")
+
+
+def link_of(state):
+    """The model's `link` dict, or None when it has no port."""
+    link = (state or {}).get("link") if isinstance(state, dict) else None
+    return link if isinstance(link, dict) else None
+
+
+def link_is_down(state):
+    """True while the model's link is lost or reconnecting."""
+    link = link_of(state)
+    return bool(link) and str(link.get("status") or "") in LINK_DOWN
+
+
+def _stall_seconds(state):
+    """How long the model has had no position, in whole seconds, from the
+    reading the model already publishes (`position_age`, else its `age`)."""
+    values = (state or {}).get("values") or {}
+    for raw in (values.get("position_age"), (state or {}).get("age")):
+        try:
+            seconds = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if seconds >= 0:
+            return int(round(seconds))
+    return None
+
+
+def link_notice(state):
+    """(severity, line) for the link, in operator words; ("", "") when there
+    is nothing to say. Severity is `theme.SEVERITY_*`'s vocabulary: "error"
+    is the danger tier (the signal rule), "warning" the attention tier."""
+    link = link_of(state)
+    if not link:
+        return "", ""
+    status = str(link.get("status") or "")
+    at = str(link.get("last_loss") or "").strip()
+    lost = f"Link lost {at}" if at else "Link lost"
+    if status == "reconnecting":
+        return "error", f"{lost}, reconnecting…"
+    if status == "lost":
+        return "error", f"{lost}; not reconnecting"
+    if link.get("stalled") and status in LINK_UP:
+        seconds = _stall_seconds(state)
+        span = f" for {seconds} s" if seconds is not None else ""
+        return "warning", f"No position{span}; link up, check the board"
+    return "", ""
+
+
+def link_gate_reason(state):
+    """Why a down link greys a mode control, or ""."""
+    link = link_of(state)
+    status = str((link or {}).get("status") or "")
+    if status == "reconnecting":
+        return "Link lost: wait for it to reconnect"
+    if status == "lost":
+        return "Link lost: press Stop, check the cable, then relaunch from Setup"
+    return ""
+
+
+#: The Diagnostics line a view adds for a linked model (V2, `with_link_row`).
+#: Its attribute is not a model's: `link_counters` fills it from the state.
+LINK_ATTR = "_link_counters"
+LINK_CAPTION = "Losses / reconnects / dropped / stalls:"
+
+
+def link_counters(state):
+    """The compact Diagnostics line: `losses / reconnects / dropped / stalls`
+    and when the link was last lost. "" for a model without a link."""
+    link = link_of(state)
+    if not link:
+        return ""
+
+    def count(key):
+        try:
+            return str(int(link.get(key) or 0))
+        except (TypeError, ValueError):
+            return "0"
+    at = str(link.get("last_loss") or "").strip() or "never"
+    return (f"{count('losses')} / {count('reconnects')} / {count('dropped')} / "
+            f"{count('stalls')}; last loss {at}")
+
+
+def link_row_element():
+    """The readonly that carries `link_counters` in a Diagnostics section."""
+    return {"type": "readonly", "text": LINK_CAPTION, "model_attr": LINK_ATTR,
+            "writable": False, "role": "info"}
+
+
+def with_link_row(schema, state, element):
+    """`schema` with `element` (the link counters readout) at the end of the
+    model's Diagnostics section when its state has a link: the section
+    titled "Diagnostics", else its first tier-3 section. The schema is the
+    model's (src/schema.py is not the views'), so the row is added here, to
+    a copy; the model's own dicts are never touched."""
+    if not link_of(state) or not isinstance(schema, dict):
+        return schema
+    sections = list(schema.get("sections") or [])
+    at = next((i for i, s in enumerate(sections)
+               if str(s.get("title") or "").strip().lower() == "diagnostics"), None)
+    if at is None:
+        at = next((i for i, s in enumerate(sections) if s.get("tier") == 3), None)
+    if at is None:
+        return schema
+    section = dict(sections[at])
+    elements = list(section.get("elements") or [])
+    if any(e is element for e in elements):
+        return schema
+    section["elements"] = elements + [element]
+    sections[at] = section
+    return dict(schema, sections=sections)
+
+
+def is_stop_control(element):
+    """The stop itself (a per-model stop toggle, a stop button)."""
+    return bool(element.get("stop")) or element.get("command") in STOP_COMMANDS
+
+
+def link_holds(element):
+    """Whether a down link greys `element`: a mode toggle or a `go` command,
+    never the stop. Read from the element's own type and role."""
+    if is_stop_control(element):
+        return False
+    return element.get("type") == "toggle" or element.get("role") == "go"
+
+
+def is_input_driven(state):
+    """The model has a bound manual-input device (a gamepad), so D-4's
+    window gate holds it."""
+    devices = (state or {}).get("devices") or {}
+    return any(str(devices[name]) not in INPUT_IDLE
+               for name in INPUT_DEVICES if name in devices)
+
+
+def held_notice(state, is_held):
+    """(severity, line) for D-4's input gate (V3): the attention tier, never
+    danger, and only on an entry a gamepad drives. Whether the gate SHOULD
+    close is D-4's (the owner's); this only says that it is closed."""
+    if is_held and is_input_driven(state):
+        return "warning", INPUT_HELD_LINE
+    return "", ""
+
+
+def entry_notices(state, is_held=False):
+    """Every standing line an entry shows under its head, worst first:
+    [(severity, line), ...]: the link (V1), the held input gate (V3)."""
+    notices = [n for n in (link_notice(state), held_notice(state, is_held)) if n[1]]
+    return sorted(notices, key=lambda n: SEVERITY_RANK.get(n[0], 9))
+
+
+#: Worst first.
+SEVERITY_RANK = {"error": 0, "warning": 1, "info": 2}
+
+
+def worst_severity(notices):
+    """The tier an entry's rule and its rail line take: "error", "warning"
+    or ""."""
+    severities = [n[0] for n in notices or () if n and n[0]]
+    return min(severities, key=lambda s: SEVERITY_RANK.get(s, 9)) if severities else ""
+
+
 #: Why a control is greyed, by the mode word that greys it, in two
 #: directions (round 8, IMP8-1: Web and Tk said "Not in manual mode" while the
 #: probe WAS in manual mode). Index 0: the mode is in the element's
@@ -167,10 +353,26 @@ class PanelView:
             raise TypeError(f"{type(self).__name__} cannot render: {', '.join(missing)}")
         self._elements = []     # every built element, for refresh and gating
         self._data_last = {}    # id(element) -> monotonic time of the last data call
+        #: What the entry says under its head now: [(severity, line)], worst
+        #: first (`entry_notices`), and whether its link is down.
+        self.notices = []
+        self.link_down, self._link_reason = False, ""
+        self._link_row = link_row_element()
+        #: D-4: the window's input gate is closed (the Dashboard says so, V3).
+        self.input_held = False
 
     # -- the three calls a view makes -------------------------------------
     def _schema(self):
-        return self._panel.schema if self._panel else self.controller.schema(self.name)
+        if self._panel:
+            return self._panel.schema
+        schema = self.controller.schema(self.name)
+        # V2: a linked model's Diagnostics carries its link counters, drawn
+        # by each toolkit's own readonly. Read at build time only.
+        try:
+            state = self.controller.state(self.name)
+        except Exception:
+            return schema
+        return with_link_row(schema, state, self._link_row)
 
     def _state(self):
         return self._panel.state if self._panel else self.controller.state(self.name)
@@ -243,11 +445,17 @@ class PanelView:
     def _refresh(self):
         state = self._state()
         values, mode = state["values"], state["mode"]
+        # F3 / HC-1: a lost or reconnecting link holds the mode controls and
+        # the `go` commands (never the stop) and mutes the numbers.
+        down = link_is_down(state)
+        self.link_down, self._link_reason = down, link_gate_reason(state)
         for element in self._elements:
             kind, attr = element["type"], element.get("model_attr")
             if kind == "entry":
                 if not self._entry_is_dirty(element):
                     self._set_text(element, values.get(attr, ""))
+            elif kind == "readonly" and attr == LINK_ATTR:
+                self._set_text(element, link_counters(state))
             elif kind in ("readonly", "region_select", "dropdown") and attr:
                 self._set_text(element, values.get(attr, ""))
             elif kind in ("toggle", "indicator", "checkbox"):
@@ -258,9 +466,14 @@ class PanelView:
                     data = self._call(element[key])
                     if data.is_ok:
                         self._set_data(element, data.value)
-            self._set_enabled(element, sch.is_enabled(element, mode, values))
+            is_enabled = sch.is_enabled(element, mode, values)
+            if down and is_enabled and link_holds(element):
+                is_enabled = False
+            self._set_enabled(element, is_enabled)
         age = state.get("age")
-        self._set_stale(age is not None and age > 1.0)
+        self._set_stale((age is not None and age > 1.0) or down)
+        self.notices = entry_notices(state, self.input_held)
+        self._set_notices(self.notices)
 
     def _data_is_due(self, element, kind):
         interval = self.DATA_REFRESH_MS.get(kind, 0) / 1000.0
@@ -295,12 +508,39 @@ class PanelView:
     def _show_refused(self, reason): raise NotImplementedError        # non-modal status line
     def _apply_theme(self): raise NotImplementedError
 
+    def _set_notices(self, notices):
+        """The entry's standing lines under its head, [(severity, line)],
+        worst first (`entry_notices`): the link (V1). A toolkit draws them;
+        the base only computes them."""
+
+    def set_input_held(self, is_held):
+        """D-4's gate closed or opened (V3): the entry says so at once, not a
+        tick later. Called on the UI thread by the Dashboard."""
+        is_held = bool(is_held)
+        if is_held == self.input_held:
+            return
+        self.input_held = is_held
+        try:
+            self._refresh()
+        except Exception as exc:
+            events.debug("Held Not Shown", f"{self.name}: {exc}", source="View",
+                         exception=exc, every=5.0)
+
+    def _gate_words(self, element):
+        """Why a down link greys `element`, or "" (the toolkit's own gate
+        reason comes after this one)."""
+        if self.link_down and link_holds(element):
+            return self._link_reason
+        return ""
+
 
 class Dashboard:
     def __init__(self, controller, setup):
         self.controller, self.setup = controller, setup
         self._closing = False
         self._launched = False
+        #: D-4's input gate is closed: the window is not focused (V3).
+        self.input_held = False
 
     def open(self):
         events.subscribe(self._on_event)
@@ -383,6 +623,7 @@ class Dashboard:
         def apply():
             if change == "added":
                 self._add_panel(name)
+                self._push_input_held()
                 if not self._launched:
                     self._launched = True
                     self._collapse_setup()   # the wizard gives way to the models
@@ -391,7 +632,25 @@ class Dashboard:
         self._marshal(apply)
 
     def _on_focus_change(self, is_focused):
+        """D-4: the window's focus opens or closes the manual-input gate.
+        V3: the gate's state is shown on every gamepad-driven entry; when it
+        closes and when it opens is D-4's, not this method's."""
         self.controller.set_input_focus(is_focused)
+        self.input_held = not is_focused
+        self._push_input_held()
+
+    def _push_input_held(self):
+        for view in list(self._input_views()):
+            try:
+                view.set_input_held(self.input_held)
+            except Exception as exc:
+                events.debug("Held Not Pushed", str(exc), source="View",
+                             exception=exc, every=5.0)
+
+    def _input_views(self):
+        """The drawn PanelViews of the models (not Setup). A toolkit
+        overrides this; the base has none."""
+        return ()
 
     # -- a toolkit subclass supplies these ---------------------------------
     def _marshal(self, fn): raise NotImplementedError      # run fn on the UI thread

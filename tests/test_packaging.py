@@ -47,11 +47,11 @@ def _requirement_names(specs):
 
 # -- P2: pyproject ------------------------------------------------------------
 
-VIEW_SCRIPTS = {"station-tk": "main_tk", "station-qt": "main_qt",
-                "station-web": "main_web"}
+#: The Web view is the only frontend (owner ruling 2026-10-07): one script.
+VIEW_SCRIPTS = {"station-web": "main_web"}
 
 
-def test_pyproject_declares_one_script_per_view(pyproject):
+def test_pyproject_declares_the_one_web_script(pyproject):
     scripts = pyproject["project"]["scripts"]
     assert scripts == {name: f"app:{func}" for name, func in VIEW_SCRIPTS.items()}
 
@@ -67,7 +67,8 @@ def test_pyproject_runtime_dependencies_exclude_legacy_and_dev_tools(pyproject):
     runtime = _requirement_names(pyproject["project"]["dependencies"])
     assert "gcodeparser" not in runtime
     assert not {"pytest", "pytest-qt", "pyinstaller"} & runtime
-    # Qt is an extra: only `station-qt` needs it.
+    # Qt is an optional extra, never installed by default: the Qt view is
+    # retired (frozen at 413f504); the extra only re-runs its frozen tests.
     assert "pyside6" not in runtime
     assert "pyside6" in _requirement_names(
         pyproject["project"]["optional-dependencies"]["qt"])
@@ -141,22 +142,27 @@ def test_spec_is_tracked_despite_the_spec_ignore_rule():
     assert lines.index("!packaging/station.spec") > lines.index("*.spec")
 
 
-def test_spec_builds_one_folder_with_three_launchers(spec_source):
-    assert 'VIEWS = ("tk", "qt", "web")' in spec_source
-    assert 'name=f"station-{view}"' in spec_source
+def test_spec_builds_one_folder_with_one_launcher(spec_source):
+    """Owner ruling 2026-10-07: Web is the only frontend; one Analysis, one EXE."""
+    assert 'name="station-web"' in spec_source
+    assert spec_source.count("Analysis(") == 1 and spec_source.count("EXE(") == 1
+    assert "VIEWS" not in spec_source and "entry_tk" not in spec_source
+    assert "entry_qt" not in spec_source and "QT_PRUNE" not in spec_source
+    assert "QT_UNUSED" not in spec_source
     assert spec_source.count("COLLECT(") == 1
     # one-folder: binaries stay out of the executables
     assert "exclude_binaries=True" in spec_source
 
 
-@pytest.mark.parametrize("view", ["tk", "qt", "web"])
-def test_spec_entry_scripts_call_the_matching_main(view):
-    with open(os.path.join(PACKAGING, f"entry_{view}.py"), encoding="utf-8") as f:
+def test_the_web_entry_script_calls_main_web_and_the_retired_entries_are_gone():
+    with open(os.path.join(PACKAGING, "entry_web.py"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
     imported = {(node.module, alias.name) for node in ast.walk(tree)
                 if isinstance(node, ast.ImportFrom) for alias in node.names}
-    assert ("app", f"main_{view}") in imported
-    assert callable(getattr(app, f"main_{view}"))
+    assert ("app", "main_web") in imported
+    assert callable(app.main_web)
+    for retired in ("entry_tk.py", "entry_qt.py"):
+        assert not os.path.exists(os.path.join(PACKAGING, retired)), retired
 
 
 def test_spec_hidden_imports_name_every_view_module_app_loads_by_name(spec_source):
@@ -177,39 +183,9 @@ def test_spec_excludes_tests_legacy_and_gui_matplotlib_backends(spec_source):
                  '"matplotlib.backends.backend_tkagg"',
                  '"matplotlib.backends.backend_macosx"'):
         assert name in spec_source, name
-    assert '"QtWebEngineCore"' in spec_source
-
-
-def _spec_namespace(spec_source):
-    """The spec's QT_PRUNE, without running PyInstaller."""
-    start = spec_source.index("QT_PRUNE = re.compile(")
-    end = spec_source.index("\n\n\ndef pruned")
-    namespace = {"re": re}
-    exec(spec_source[start:end], namespace)
-    return namespace
-
-
-@pytest.mark.parametrize("path, pruned", [
-    ("PySide6/Qt/lib/QtNetwork.framework/Versions/A/QtNetwork", True),
-    ("PySide6/Qt/lib/QtQuick.framework/QtQuick", True),
-    ("PySide6/Qt/plugins/platforminputcontexts/libqtvirtualkeyboardplugin.dylib", True),
-    ("PySide6/Qt/plugins/imageformats/libqpdf.dylib", True),
-    ("PySide6/Qt/translations/qtbase_de.qm", True),
-    ("PySide6/Qt6Network.dll", True),
-    ("PySide6/Qt/lib/libQt6Quick.so.6", True),
-    # what the Qt view needs must survive
-    ("PySide6/Qt/lib/QtCore.framework/Versions/A/QtCore", False),
-    ("PySide6/Qt/lib/QtGui.framework/QtGui", False),
-    ("PySide6/Qt/lib/QtWidgets.framework/QtWidgets", False),
-    ("PySide6/Qt/lib/QtDBus.framework/QtDBus", False),
-    ("PySide6/Qt/plugins/platforms/libqcocoa.dylib", False),
-    ("PySide6/Qt/plugins/platforms/libqoffscreen.dylib", False),
-    ("PySide6/plugins/platforms/qwindows.dll", False),
-    ("PySide6/Qt6Core.dll", False),
-    ("PySide6/QtWidgets.abi3.so", False),
-])
-def test_spec_prunes_only_qt_parts_the_view_never_loads(spec_source, path, pruned):
-    assert bool(_spec_namespace(spec_source)["QT_PRUNE"].match(path)) is pruned
+    # the retired views' toolkits stay out of the Web bundle
+    for name in ('"PySide6"', '"shiboken6"', '"tkinter"', '"views.tk"', '"views.qt"'):
+        assert name in spec_source, name
 
 
 def test_spec_ships_sdl3_beside_an_sdl2_compat_shim_and_clears_uf_hidden(spec_source):
@@ -221,65 +197,6 @@ def test_spec_ships_sdl3_beside_an_sdl2_compat_shim_and_clears_uf_hidden(spec_so
     assert '["chflags", "-R", "nohidden", bundle]' in helpers
     assert "spec_helpers.sdl3_for_sdl2_compat(a.binaries, workpath)" in spec_source
     assert "spec_helpers.clear_hidden_flags(coll.name)" in spec_source
-
-
-# -- the Qt entry point's plugin path -----------------------------------------
-
-@pytest.fixture
-def entry_qt():
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "station_entry_qt", os.path.join(PACKAGING, "entry_qt.py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)       # imports nothing from Qt at load
-    return module
-
-
-def test_entry_qt_changes_nothing_from_source(entry_qt, monkeypatch):
-    monkeypatch.delenv("QT_QPA_PLATFORM_PLUGIN_PATH", raising=False)
-    monkeypatch.delattr(sys, "frozen", raising=False)
-    assert entry_qt._bundle_plugin_dirs() == (None, None)
-    resolved = entry_qt._set_plugin_path()
-    assert "QT_QPA_PLATFORM_PLUGIN_PATH" not in os.environ
-    assert resolved["frozen"] is False
-
-
-@pytest.mark.parametrize("layout", [("PySide6", "Qt", "plugins"),     # macOS, Linux
-                                    ("PySide6", "plugins")])          # Windows
-def test_entry_qt_points_qt_at_the_bundles_platform_plugins(entry_qt, monkeypatch,
-                                                            tmp_path, layout):
-    platforms = tmp_path.joinpath(*layout, "platforms")
-    platforms.mkdir(parents=True)
-    (platforms / "libqoffscreen.dylib").write_bytes(b"")
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
-    monkeypatch.delenv("QT_QPA_PLATFORM_PLUGIN_PATH", raising=False)
-    resolved = entry_qt._set_plugin_path()
-    assert os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] == str(platforms)
-    assert resolved["platform_plugins"] == "libqoffscreen.dylib"
-
-
-def test_entry_qt_keeps_a_plugin_path_the_caller_set(entry_qt, monkeypatch, tmp_path):
-    tmp_path.joinpath("PySide6", "Qt", "plugins", "platforms").mkdir(parents=True)
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
-    monkeypatch.setenv("QT_QPA_PLATFORM_PLUGIN_PATH", "/elsewhere")
-    entry_qt._set_plugin_path()
-    assert os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] == "/elsewhere"
-
-
-def test_entry_qt_writes_the_plugin_path_into_the_station_log(entry_qt, monkeypatch,
-                                                              tmp_path):
-    from events import events
-    monkeypatch.setattr(events, "open_file", events.open_file)   # restored after
-    entry_qt._log_when_the_log_opens("QT_QPA_PLATFORM_PLUGIN_PATH=/x")
-    path = events.open_file(str(tmp_path))
-    try:
-        with open(path, encoding="utf-8") as f:
-            text = f.read()
-    finally:
-        events.close_file()
-    assert "[packaging] Qt Plugin Path: QT_QPA_PLATFORM_PLUGIN_PATH=/x" in text
 
 
 # -- P4: the smoke scripts ----------------------------------------------------
@@ -440,14 +357,14 @@ def test_the_workflow_names_the_four_runners_and_their_assets(workflow):
 def test_the_workflow_pins_python_313_from_setup_python_and_builds_the_spec(workflow):
     assert "actions/setup-python@" in workflow
     assert re.search(r"python-version:\s*[\"']3\.13[\"']", workflow)
-    assert "pip install -e \".[qt,dev]\"" in workflow
+    assert "pip install -e \".[dev]\"" in workflow and "[qt" not in workflow
     assert "PyInstaller --noconfirm --clean packaging/station.spec" in workflow
 
 
 def test_the_workflow_smokes_the_bundle_headless(workflow):
     assert "packaging/smoke.sh" in workflow and "packaging/smoke.ps1" in workflow
-    assert "xvfb-run" in workflow                      # Tk on Linux
-    assert "SMOKE_QT_PLATFORM: offscreen" in workflow
+    assert "xvfb" not in workflow                      # no desktop view to host
+    assert "SMOKE_QT_PLATFORM" not in workflow
 
 
 def test_the_workflow_uploads_to_the_tags_release_and_publishes_last(workflow):
@@ -481,7 +398,8 @@ def test_requirements_pin_the_video_encoder_as_pyproject_does(pyproject):
         lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
     pinned = [l for l in lines if l.lower().startswith("imageio-ffmpeg")]
     assert pinned == [IMAGEIO_FFMPEG]
-    assert "-e .[qt]" in lines
+    assert "-e ." in lines
+    assert not any("pyside" in l.lower() for l in lines)
 
 
 def test_imageio_ffmpeg_is_imported_lazily_and_only_by_the_video_device():
@@ -690,8 +608,9 @@ def test_the_teensy_loader_is_pinned_by_commit_and_checksum(tools):
     assert tools.TEENSY_LOADER_COMMIT in tools.TEENSY_LOADER_URL
     assert tools.TEENSY_LOADER_SHA256 == \
         "8e10e19d51244699b003a0a8614bc7bb9cf5d21938748c05efd8fd79e54efa7d"
-    # flash_firmware.py uploads the Teensy with teensy_loader_cli
-    with open(os.path.join(ROOT, "firmware", "flash_firmware.py"), encoding="utf-8") as f:
+    # A1: the flashing lives in src/controller/flashing.py now (the script
+    # is a thin front over it); it uploads the Teensy with teensy_loader_cli
+    with open(os.path.join(ROOT, "src", "controller", "flashing.py"), encoding="utf-8") as f:
         assert '"teensy_loader_cli"' in f.read()
 
 
@@ -1030,25 +949,17 @@ def test_the_smokes_drive_exactly_the_setup_rows(smoke):
     assert port_rows + extra == rows
 
 
-def test_the_spec_keeps_every_qt_module_the_qt_view_imports():
-    """views/qt.py imports its Qt modules in one try block: one excluded
-    module (QtSvg, until 2026-09-30) and station-qt says PySide6 is not
-    installed."""
-    with open(os.path.join(PACKAGING, "station.spec"), encoding="utf-8") as f:
-        source = f.read()
-    unused = source.split("QT_UNUSED = [", 1)[1].split("]\n", 1)[0]
-    unused = set(re.findall(r'"(Qt\w+)"', unused))
-    imported = set()
-    for directory, _, files in os.walk(SRC):
-        for name in files:
-            if name.endswith(".py"):
-                with open(os.path.join(directory, name), encoding="utf-8") as f:
-                    imported.update(re.findall(r"PySide6\.(Qt\w+)", f.read()))
-    assert imported and not imported & unused, imported & unused
+def test_the_smokes_check_only_station_web():
+    for name, exe in (("smoke.sh", "station-web"), ("smoke.ps1", "station-web.exe")):
+        with open(os.path.join(PACKAGING, name), encoding="utf-8") as f:
+            text = f.read()
+        assert exe in text, name
+        for retired in ("station-tk", "station-qt", "desktop tk", "desktop qt",
+                        "Desktop \"", "QT_QPA_PLATFORM"):
+            assert retired not in text, (name, retired)
 
 
-def test_the_smoke_skips_tk_only_when_asked_and_says_so():
-    with open(os.path.join(PACKAGING, "smoke.sh"), encoding="utf-8") as f:
+def test_the_layout_names_only_the_web_launcher():
+    with open(os.path.join(PACKAGING, "layout.py"), encoding="utf-8") as f:
         text = f.read()
-    assert 'SKIP station-tk: STATION_NO_WINDOWS is set' in text
-    assert 'desktop tk "Dashboard Open: Tk dashboard ready"' in text
+    assert "station-web" in text and "station-qt" not in text and "station-tk" not in text

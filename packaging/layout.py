@@ -2,7 +2,7 @@
 
 Relative to the bundle root `dist/station/`:
 
-    station-web  station-qt  station-tk   (.exe on Windows)   the launchers
+    station-web   (.exe on Windows)                          the launcher
     _internal/                                               PyInstaller's
     VERSION  release.json                                    release.py's stamps
     firmware/<sketch dirs>/  firmware/libraries/             the repo's firmware/

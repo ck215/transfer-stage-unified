@@ -37,15 +37,20 @@ disarms the trial in memory, tells its video to close and returns at once;
 the aborted trial is written on a worker, and the video closed on the
 map's picture thread, so a stop is never held by the disk or the encoder.
 
-**The store is local** (owner ruling 2026-09-27): one SQLite file inside the
-project checkout, `<repo root>/data/transfer_map.sqlite` (the repo root is
-the directory holding `src/`), created with its schema when the model opens
-(the event log says where, and how many trials it holds). `STATION_MAP_DB=
-<path>` overrides it. Pictures sit beside it in `data/<database name>/
-<trial_id>/` (`data/transfer_map/` for the default file), exports in
-`data/exports/`. "New session database" starts another file in the same
-folder. Building the model creates nothing (the contract test builds every
-registered class).
+**The store is chosen by the operator** (owner decision 4, 2026-09-30,
+replacing the 2026-09-27 "inside the checkout" default): with no choice
+recorded the map has NO store - its state says `store: {"path": None,
+"chosen": False}`, its Store section asks (Open store: an existing file;
+New store: a folder and a name) and every recording command is refused
+until one is chosen. The choice is remembered in the operator's choices
+file (`controller.user_config`, wired in as `TransferMap.choices` by the
+composition root; the model never imports the controller). A store inside
+the station's own folder (the bundle root, or this checkout) is refused:
+updates replace that folder. `STATION_MAP_DB=<path>` / `--map-db` override
+the choice and skip the question. Pictures sit beside the file in
+`<folder>/<database name>/<trial_id>/`, exports in `<folder>/exports/`.
+"New session database" starts another file in the same folder. Building the
+model creates nothing (the contract test builds every registered class).
 
 Live sources are duck-typed from `on_model_added`, never a class name: tilt
 from a model with `position_deg` (the Rotator), else the operator's typed
@@ -76,6 +81,27 @@ from model import transfer_map_analysis as analysis
 from model.base import Model
 from param import Param
 from result import NeedsConfirm, Refused
+
+#: Every recording command's refusal while no store is chosen (A3).
+NO_STORE = "Choose a trial store first (Transfer Map, Store)."
+INSIDE_INSTALL = ("the store cannot live inside the station's own folder; "
+                  "updates replace that folder")
+#: The file the SQLite library writes first in every database.
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _install_root():
+    """The station's own folder: beside the launchers in a PyInstaller
+    bundle, else the checkout (the directory holding `src/`)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
+def _inside(root, path):
+    root, path = Path(root).resolve(), Path(path).resolve()
+    return path == root or root in path.parents
+
 
 #: The figure dropdown, in the operator's words -> `plot_data` kind.
 FIGURES = {
@@ -483,6 +509,22 @@ class TrialStore:
         return names
 
 
+class _NoStore(TrialStore):
+    """The store while none is chosen: every read answers empty, every
+    write is refused with `NO_STORE`. Never touches the disk."""
+
+    def __init__(self):
+        self.path = None
+        self._lock = threading.Lock()
+
+    @property
+    def exists(self):
+        return False
+
+    def write(self, fn):
+        raise Refused(NO_STORE)
+
+
 class _Pending:
     """Armed and waiting for the capture region (the `region` step): the
     stage still is taken, nothing else exists yet (no row, no run, no
@@ -625,7 +667,17 @@ class TransferMap(Model):
         Param("red_now", "float", default=0.0, decimals=2, unit="%",
               label="Red"),
         Param("trial_count", "int", default=0, label="Trials"),
+        # A3: the trial store the operator chooses.
+        Param("store_path", "text", default="", label="Store file"),
+        Param("store_dir", "text", default="", label="Folder for a new store"),
+        Param("store_name", "text", default="transfer_map",
+              label="New store name"),
     )}
+
+    #: Where the operator's store choice is remembered: an object with
+    #: `read(key)` / `write(key, value)` (`controller.user_config`, set by
+    #: the composition root). None remembers nothing.
+    choices = None
 
     def __init__(self, port=None, gamepad=None, sim=False, db_path=None, *,
                  recorder_factory=None, monitor=STAGE_MONITOR):
@@ -636,12 +688,17 @@ class TransferMap(Model):
         self._recorder_factory = recorder_factory
         #: The display the stage still is taken of.
         self.monitor = monitor
-        self.db_path = Path(db_path) if db_path else self.default_db_path()
-        #: Pictures, exports and uploads all live beside the database, so a
-        #: Web download is checked against the same folder (CON-5).
-        self.output_root = self.db_path.parent
-        self._store = TrialStore(self.db_path)
         self._lock = threading.Lock()
+        path = Path(db_path) if db_path else self.default_db_path()
+        if path is None:
+            self._no_store()
+        else:
+            self._adopt(path)
+        # Migration by choice: a store a previous build left inside the
+        # install is offered in the path field, never opened for the operator.
+        legacy = self.legacy_store_path()
+        if legacy is not None and not self.store_path:
+            self.store_path = str(legacy)
         self._trial = None
         #: Armed and waiting for the capture region (`_Pending`, the
         #: `region` step), or None.
@@ -674,19 +731,145 @@ class TransferMap(Model):
         self._wake = threading.Event()    # a frame or a close is waiting
         self._encoder = None              # `TrialRecorder.probe()`, once read
 
-    @staticmethod
-    def default_db_path():
-        """`STATION_MAP_DB`, else `<repo root>/data/transfer_map.sqlite`,
-        the repo root being the directory that holds `src/`."""
+    @classmethod
+    def default_db_path(cls):
+        """`STATION_MAP_DB` (the `--map-db` flag), else the store the
+        operator chose and the choices file remembers, else None: no store
+        until one is chosen (owner decision 4, 2026-09-30: no default)."""
         configured = os.environ.get("STATION_MAP_DB")
         if configured:
             return Path(configured).expanduser().resolve()
-        if getattr(sys, "frozen", False):
-            # A PyInstaller bundle: `__file__` points inside the bundle, so
-            # "local" means beside the executable (owner ruling 2026-09-27:
-            # the store is local to the installation, never global).
-            return Path(sys.executable).resolve().parent / "data" / "transfer_map.sqlite"
-        return Path(__file__).resolve().parents[2] / "data" / "transfer_map.sqlite"
+        chosen = cls.choices.read("map_store") if cls.choices is not None else None
+        return Path(chosen) if chosen else None
+
+    @staticmethod
+    def install_root():
+        """The station's own folder: no store may live under it."""
+        return _install_root()
+
+    @classmethod
+    def legacy_store_path(cls):
+        """`<install>/data/transfer_map.sqlite`, where builds before
+        2026-09-30 kept the store, when one is there; else None."""
+        left = cls.install_root() / "data" / "transfer_map.sqlite"
+        return left if left.is_file() else None
+
+    # -- the store (A3) ------------------------------------------------------
+    def _adopt(self, path):
+        self.db_path = Path(path)
+        #: Pictures, exports and uploads all live beside the database, so a
+        #: Web download is checked against the same folder (CON-5).
+        self.output_root = self.db_path.parent
+        self._store = TrialStore(self.db_path)
+        self._store_chosen = True
+
+    def _no_store(self):
+        self.db_path = None
+        self.output_root = None          # no download is served
+        self._store = _NoStore()
+        self._store_chosen = False
+
+    @property
+    def has_store(self):
+        return self._store_chosen
+
+    def _need_store(self):
+        if not self._store_chosen:
+            raise Refused(NO_STORE)
+
+    #: What the Store line says while nothing is chosen.
+    NOT_CHOSEN = ("Not chosen. Open an existing store, or make a new one in "
+                  "a folder of your choice.")
+
+    @classmethod
+    def describe_store(cls, path):
+        """The Store line for `path` (None: nothing chosen)."""
+        if path is None:
+            return cls.NOT_CHOSEN
+        if os.environ.get("STATION_MAP_DB"):
+            return f"{path} (set by STATION_MAP_DB / --map-db)"
+        return str(path)
+
+    @property
+    def store_status(self):
+        return self.describe_store(self.db_path if self._store_chosen else None)
+
+    def _refuse_inside_install(self, path):
+        if _inside(self.install_root(), path):
+            raise Refused(f"{path}: {INSIDE_INSTALL}. Choose a folder outside "
+                          f"{self.install_root()}.")
+
+    def open_store(self):
+        """Open store: the SQLite file typed in Store file becomes the
+        trial store, and is remembered."""
+        typed = (self.store_path or "").strip()
+        if not typed:
+            raise Refused("Type the path of an existing store under Store file.")
+        path = Path(typed).expanduser().resolve()
+        self._refuse_inside_install(path)
+        if not path.is_file():
+            raise Refused(f"{path}: no file there. Check the path, or press "
+                          "New store to make one.")
+        try:
+            with open(path, "rb") as handle:
+                magic = handle.read(len(_SQLITE_MAGIC))
+        except OSError as exc:
+            raise Refused(f"{path} could not be read ({exc}).")
+        if magic != _SQLITE_MAGIC:
+            raise Refused(f"{path} is not a Transfer Map store (not a "
+                          "database file).")
+        return self._choose(path, created=False)
+
+    def new_store(self):
+        """New store: `<folder>/<name>.sqlite`, created now with its schema
+        (the folder too), and remembered. Never over an existing file."""
+        folder = (self.store_dir or "").strip()
+        name = (self.store_name or "").strip() or "transfer_map"
+        if not folder:
+            raise Refused("Type the folder for the new store under Folder for "
+                          "a new store.")
+        if any(sep in name for sep in ("/", "\\")) or name in (".", ".."):
+            raise Refused("The store name is a file name, not a path.")
+        if not name.endswith(".sqlite"):
+            name += ".sqlite"
+        path = (Path(folder).expanduser() / name).resolve()
+        self._refuse_inside_install(path)
+        if path.exists():
+            raise Refused(f"{path} already exists. Press Open store to use it.")
+        return self._choose(path, created=True)
+
+    def _choose(self, path, created):
+        if self.is_armed or self._pending is not None:
+            raise Refused("A trial is armed. Finish or abort it before choosing "
+                          "another store.")
+        store = TrialStore(path)
+        try:
+            store.ensure()          # a new file's schema, an old one's upgrade
+        except (OSError, sqlite3.Error) as exc:
+            raise Refused(f"The store could not be {'created' if created else 'opened'} "
+                          f"at {path} ({exc}).")
+        self.adopt_store(path)
+        if self.choices is not None:
+            try:
+                self.choices.write("map_store", str(path))
+            except OSError as exc:
+                events.warn("Store Not Remembered", f"Trials go to {path}, but "
+                            f"the choice could not be saved ({exc}); the station "
+                            "will ask again next time.", source=self.NAME)
+        events.info("Trial Store", f"Trials go to {path}: {store.count()} "
+                    "trial(s).", source=self.NAME)
+        return str(path)
+
+    def adopt_store(self, path):
+        """Use `path` from now on (Setup's Open/New store tells an open map
+        through this). The previous store, if any, stays on disk untouched."""
+        for writer in list(self._persisting):      # an abort still being written
+            writer.join(self.THREAD_JOIN_TIMEOUT)
+        self._adopt(Path(path))
+        self._indices = {}
+        self._figure_cache = None
+        self._changed()
+        return str(path)
 
     # -- the Model contract ------------------------------------------------
     @property
@@ -705,6 +888,17 @@ class TransferMap(Model):
         self._announce_store()
 
     def _announce_store(self):
+        if not self._store_chosen:
+            legacy = self.legacy_store_path()
+            events.warn("Trial Store Not Chosen", "Choose where the Transfer "
+                        "Map keeps its trials: Transfer Map, Store - Open store "
+                        "for an existing file, or New store in a folder of your "
+                        "choice." + (f" A store from an earlier version is at "
+                                     f"{legacy}; move it out of the station's "
+                                     "folder and open it there to keep its "
+                                     "trials." if legacy else ""),
+                        source=self.NAME)
+            return False
         try:
             self._store.ensure()
         except Exception as exc:
@@ -984,6 +1178,8 @@ class TransferMap(Model):
     def state(self):
         snapshot = super().state
         snapshot["has_region"] = self.has_region
+        snapshot["store"] = {"path": str(self.db_path) if self._store_chosen else None,
+                             "chosen": self._store_chosen}
         return snapshot
 
     # -- the samples, on Red Percent's run thread ------------------------------
@@ -1011,6 +1207,7 @@ class TransferMap(Model):
         and waits for the capture region to be picked on it. Nothing else is
         started or written: no row, no run, no video (`_start_trial` does
         those when the region lands)."""
+        self._need_store()
         self._guard("Arm")
         if self.is_armed or self._pending is not None:
             raise Refused("A trial is already armed. Finish or abort it first.")
@@ -1762,6 +1959,7 @@ class TransferMap(Model):
     def new_tip(self):
         """A tip record made on demand from the typed ID, before any trial
         (bench 2026-09-28: "I can't create new tips")."""
+        self._need_store()
         tip = (self.tip_id or "").strip()
         if not tip:
             raise Refused("Type the new tip's ID in Tip ID first, then press "
@@ -1786,6 +1984,7 @@ class TransferMap(Model):
         return tip, record
 
     def retire_tip(self, confirmed=False):
+        self._need_store()
         tip, record = self._typed_tip()
         if record["retired_at"]:
             raise Refused(f"Tip {tip} is already retired.")
@@ -1805,6 +2004,7 @@ class TransferMap(Model):
         return tip
 
     def unretire_tip(self):
+        self._need_store()
         tip, record = self._typed_tip()
         if not record["retired_at"]:
             raise Refused(f"Tip {tip} is not retired.")
@@ -1814,6 +2014,7 @@ class TransferMap(Model):
         return tip
 
     def set_tip_note(self):
+        self._need_store()
         tip = (self.tip_id or "").strip()
         if not tip:
             raise Refused("Type the tip ID first.")
@@ -1850,6 +2051,7 @@ class TransferMap(Model):
     def set_trial_tilt(self):
         """Correct a recorded trial's tilt from the sheet (bench 2026-09-28:
         two trials were armed before the tilt was asked for)."""
+        self._need_store()
         trial_id = int(self.afm_trial_id or 0)
         if trial_id <= 0:
             raise Refused("Type the trial number under AFM measurement, Trial.")
@@ -1871,6 +2073,7 @@ class TransferMap(Model):
 
     def set_trial_speed(self):
         """Correct a recorded trial's intended speed from the sheet."""
+        self._need_store()
         trial_id = int(self.afm_trial_id or 0)
         if trial_id <= 0:
             raise Refused("Type the trial number under AFM measurement, Trial.")
@@ -1891,6 +2094,7 @@ class TransferMap(Model):
         return trial_id
 
     def attach_afm(self):
+        self._need_store()
         trial_id = int(self.afm_trial_id or 0)
         if trial_id <= 0:
             raise Refused("Type the trial number the AFM measurement belongs to.")
@@ -1963,6 +2167,7 @@ class TransferMap(Model):
         return method
 
     def delete_trial(self, confirmed=False):
+        self._need_store()
         trial_id = self._picked_id()
         if trial_id is None:
             raise Refused("There is no trial to delete.")
@@ -1993,6 +2198,7 @@ class TransferMap(Model):
         file stays on disk untouched; pictures and exports stay in the same
         folder (`output_root`), the pictures under the new file's own name
         so trial 1 of the new database never overwrites trial 1 of the old."""
+        self._need_store()
         if self.is_armed or self._pending is not None:
             raise Refused("A trial is armed. Finish or abort it before starting "
                           "a new database.")
@@ -2018,11 +2224,14 @@ class TransferMap(Model):
     @property
     def pictures_root(self):
         """`<output_root>/<database name>/`: `transfer_map/` for the default
-        file, so one folder of pictures per database."""
+        file, so one folder of pictures per database. None without a store."""
+        if self.db_path is None:
+            return None
         return self.output_root / self.db_path.stem
 
     # -- export and import -------------------------------------------------
     def _export(self):
+        self._need_store()
         rows = self._store.trials()
         if not rows:
             raise Refused("No trials yet; there is nothing to export.")
@@ -2077,6 +2286,7 @@ class TransferMap(Model):
         given directly (`force_index`, optionally named by
         `force_definition`; or `force_<name>` columns, as an export writes).
         No profile. Rows without a tilt or a speed are skipped."""
+        self._need_store()
         try:
             with open(path, newline="") as handle:
                 rows = list(csv.DictReader(handle))
@@ -2391,6 +2601,23 @@ class TransferMap(Model):
                 sch.button("New session database", "new_database",
                            confirm="Start a new database beside this one? The "
                                    "current one stays on disk.",
+                           disabled_when=("armed",)),
+                phases=("setup",),
+            ),
+            # Where the trials go (A3): chosen on the start screen.
+            sch.section(
+                "Store",
+                sch.readonly("Trial store", "store_status", role="info"),
+                sch.entry("Store file", "store_path", P["store_path"],
+                          disabled_when=("armed",)),
+                sch.button("Open store", "open_store", inputs=("store_path",),
+                           disabled_when=("armed",)),
+                sch.entry("Folder for a new store", "store_dir", P["store_dir"],
+                          disabled_when=("armed",)),
+                sch.entry("New store name", "store_name", P["store_name"],
+                          disabled_when=("armed",)),
+                sch.button("New store", "new_store",
+                           inputs=("store_dir", "store_name"),
                            disabled_when=("armed",)),
                 phases=("setup",),
             ),

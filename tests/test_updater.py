@@ -581,27 +581,54 @@ def test_the_login_falls_back_to_git_credential_fill(bundle, gh):
     assert fill["env"]["GCM_INTERACTIVE"] == "never"
 
 
-def test_no_login_at_all_is_unauthorised_and_asks_nothing_of_github(bundle):
+def test_no_login_asks_github_anonymously(bundle):
+    """Owner decision 5 (2026-09-30): the repository is public, so a machine
+    with no GitHub sign-in still checks - without an Authorization header."""
     github = FakeGitHub()
     result = _bundle_updater(bundle, github, FakeLogin(gh=None, git=None)).check()
-    assert result["status"] == "unauthorised"
-    assert result["reason"] == ("Sign in to GitHub on this machine first: "
-                                "`gh auth login`, or open the repository once with git.")
-    assert github.calls == []
+    assert result["status"] == "behind" and result["latest"] == "v1.3.0"
+    [call] = github.calls
+    assert "Authorization" not in call["headers"]
+    assert call["headers"]["Accept"] == "application/vnd.github+json"
+
+
+def test_no_login_downloads_anonymously_too(bundle):
+    github = FakeGitHub()
+    result = _bundle_updater(bundle, github, FakeLogin(gh=None, git=None)).apply()
+    assert result["updated"] is True, result["reason"]
+    assert all("Authorization" not in c["headers"] for c in github.calls)
+    assert (bundle / "VERSION").read_text().startswith("v1.3.0\n")
 
 
 def test_a_login_command_that_hangs_is_no_login_not_a_hang(bundle):
     def stuck(argv, **kwargs):
         raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
-    result = Updater(root=bundle, run=stuck, fetch=FakeGitHub()).check()
-    assert result["status"] == "unauthorised"
+    github = FakeGitHub()
+    result = Updater(root=bundle, run=stuck, fetch=github).check()
+    assert result["status"] == "behind"
+    assert "Authorization" not in github.calls[0]["headers"]
 
 
-@pytest.mark.parametrize("code", [401, 404])
-def test_github_refusing_the_login_is_unauthorised(bundle, code):
-    result = _bundle_updater(bundle, FakeGitHub(status=code)).check()
+def test_github_refusing_the_login_is_unauthorised(bundle):
+    result = _bundle_updater(bundle, FakeGitHub(status=401)).check()
     assert result["status"] == "unauthorised"
     assert "gh auth login" in result["reason"]
+
+
+@pytest.mark.parametrize("login", [FakeLogin(), FakeLogin(gh=None, git=None)],
+                         ids=["signed-in", "anonymous"])
+def test_no_release_yet_says_so_not_a_refused_sign_in(bundle, login):
+    """`/releases/latest` answers 404 while the repository has no published
+    release; it used to read as "GitHub did not accept this machine's
+    sign-in"."""
+    result = _bundle_updater(bundle, FakeGitHub(status=404), login).check()
+    assert result["status"] == "no_release"
+    assert result["reason"] == "No release has been published yet."
+    assert "sign" not in result["reason"].lower()
+    applied = _bundle_updater(bundle, FakeGitHub(status=404), login).apply()
+    assert applied["updated"] is False
+    assert applied["reason"] == "No release has been published yet."
+    _untouched(bundle)
 
 
 @pytest.mark.parametrize("error", [OSError("no route"), TimeoutError("slow"),
@@ -816,6 +843,10 @@ def test_the_swap_script_waits_swaps_starts_and_deletes_itself(tmp_path):
     assert "station-tk.exe\" \"--font-size\" \"14\"" in text
     assert text.index("ren \"") < text.index('start ""')
     assert 'del "%~f0"' in text
+    # A swap that fails still starts the station: the marker goes first, so
+    # the startup swap (A5) is not tried again on every start.
+    assert f'del /q "{esc}\\UPDATE_PENDING"' in text
+    assert text.index("UPDATE_PENDING") < text.index('start ""')
 
 
 def test_the_login_is_never_logged_or_returned(bundle, tmp_path):
@@ -824,7 +855,8 @@ def test_the_login_is_never_logged_or_returned(bundle, tmp_path):
     log = events.open_file(str(tmp_path / "logs"))
     try:
         said = []
-        for github in (FakeGitHub(), FakeGitHub(status=401), FakeGitHub(status=500),
+        for github in (FakeGitHub(), FakeGitHub(status=401), FakeGitHub(status=404),
+                       FakeGitHub(status=500),
                        FakeGitHub(size=3), FakeGitHub(error=OSError("down"))):
             updater = _bundle_updater(bundle, github)
             said.append(updater.check())
@@ -865,3 +897,33 @@ def test_an_install_in_a_folder_it_cannot_write_is_refused_in_words(bundle, monk
     result = _bundle_updater(bundle).apply()
     assert result["updated"] is False and "cannot write" in result["reason"]
     _untouched(bundle)
+
+
+# -- A5: the swap stays inside the install -----------------------------------
+
+def test_the_swap_never_touches_a_store_outside_the_install(bundle, tmp_path):
+    """The Transfer Map's store is chosen outside the install (A3): an
+    update replaces the install folder and nothing else."""
+    outside = tmp_path / "lab data" / "trials.sqlite"
+    outside.parent.mkdir()
+    outside.write_bytes(b"SQLite format 3\x00 the lab's trials")
+    beside = bundle.parent / "trials-beside.sqlite"
+    beside.write_bytes(b"beside")
+    before = sorted(p.name for p in bundle.parent.iterdir())
+    assert _bundle_updater(bundle).apply()["updated"] is True
+    assert outside.read_bytes() == b"SQLite format 3\x00 the lab's trials"
+    assert beside.read_bytes() == b"beside"
+    after = sorted(p.name for p in bundle.parent.iterdir())
+    assert after == sorted(before + ["station.previous"])
+
+
+def test_a_store_inside_the_install_is_the_only_thing_at_risk(bundle):
+    """What A3 refuses, and why: a store inside the install leaves with the
+    old version into `.previous`; the new install does not carry it."""
+    inside = bundle / "data" / "transfer_map.sqlite"
+    inside.parent.mkdir()
+    inside.write_bytes(b"trials")
+    assert _bundle_updater(bundle).apply()["updated"] is True
+    assert not inside.exists()
+    assert (bundle.with_name("station.previous") / "data" / "transfer_map.sqlite"
+            ).read_bytes() == b"trials"

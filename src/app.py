@@ -3,7 +3,7 @@ to the view.
 
 Replaces `app.py` (948 lines, three ~390-line launchers each nesting its own
 setup wizard), `app_bootstrap.py`, `lifecycle.py` and `model/devices.py`.
-What is left is a table of three views and one `launch()`, because everything
+What is left is a table of views (the Web alone since 2026-10-07) and one `launch()`, because everything
 the three launchers used to duplicate now lives in exactly one place:
 
     the wizard        -> `Setup`, a Panel every view renders from its schema
@@ -33,17 +33,20 @@ from events import events
 from controller.setup import Setup
 from views import theme
 
-#: view name -> (module, attribute). Imported lazily: starting the Tk view
-#: must not import PySide6, and none of the three may import the other two.
+#: view name -> (module, attribute), imported lazily. The Web view is the
+#: station's only frontend (owner ruling 2026-10-07): the Tk and Qt views are
+#: frozen at 413f504 in `views/tk.py` / `views/qt.py` and are not registered.
 VIEWS = {
-    "tk": ("views.tk", "TkDashboard"),
-    "qt": ("views.qt", "QtDashboard"),
     "web": ("views.web.server", "WebView"),
 }
 
-#: The old spellings, still accepted. `--view legacy` and `--pyside` are what
-#: `run.sh`, the lab notes and three years of muscle memory say.
-ALIASES = {"legacy": "tk", "tkinter": "tk", "pyside": "qt", "pyside6": "qt"}
+#: No aliases remain. The old spellings of the retired views are in RETIRED.
+ALIASES = {}
+
+#: Every spelling of a retired view: choosing one prints RETIRED_MESSAGE and
+#: exits 2 (one message, on every platform).
+RETIRED = ("tk", "tkinter", "legacy", "qt", "pyside", "pyside6")
+RETIRED_MESSAGE = "The Tk/Qt view was retired on 2026-10-07; use --web."
 
 DEFAULT_PORT = 8080
 
@@ -56,12 +59,9 @@ CHECKOUT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESTART_DELAY = 0.5
 
 
-#: Owner decision D-9, amended 2026-09-25: an unqualified launch opens the
-#: Tkinter view on EVERY platform ("simple and lightweight and local"). It
-#: used to be Tk on macOS and Qt-or-Web elsewhere, which made the operator's
-#: first screen depend on the OS (audit P8) against the no-platform-specific-UI
-#: ruling. `--web` / `--qt` / `--tk` still choose explicitly.
-DEFAULT_VIEW = "qt"      # owner ruling 2026-09-28: Qt is the default view (was Tk, D-9 amended 2026-09-25)
+#: An unqualified launch opens the Web view on every platform (owner ruling
+#: 2026-10-07: Web is the only frontend; before it Qt was the default).
+DEFAULT_VIEW = "web"
 
 
 def pick_view(requested, platform=None, pyside_available=None):
@@ -69,6 +69,7 @@ def pick_view(requested, platform=None, pyside_available=None):
     was <app>.select_view ('select' is reserved for operator selections)
 
     `requested` is the parsed --view value, or None for "no flag given".
+    A retired view's name is refused by `main` before it gets here.
     `platform` and `pyside_available` are accepted for the callers and tests
     that pass them; neither changes the answer any more.
     """
@@ -177,6 +178,31 @@ def restart_process(args=None, extra_args=(), delay=0.0):
     return None
 
 
+def _swap_in_pending_update():
+    """True when a pending update was handed to `restart_process`: this
+    start has then been replaced (or, where `execv` returns in a test,
+    must not go on). A checkout never has one."""
+    if not getattr(sys, "frozen", False):
+        return False
+    if updater.pending_update(os.path.dirname(sys.executable)) is None:
+        return False
+    restart_process()
+    return True
+
+
+def exit_process():
+    """End the station now: Setup's Switch to stable has closed every model
+    and started the stable app. `os._exit`, not `sys.exit`: it is called from
+    Setup's worker thread, where `sys.exit` would end only that thread."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    events.close_file()
+    os._exit(0)
+
+
 def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
     """Build the one Controller and the one Setup, then open the view.
     was <app>.run_legacy_app, <app>.run_pyside_app, <app>.run_web_app
@@ -226,7 +252,7 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
                                extra_args=("--no-browser", "--port", str(serving)),
                                delay=RESTART_DELAY)
 
-    setup = Setup(controller, restart=restart)
+    setup = Setup(controller, restart=restart, exit_app=exit_process)
     module_name, attribute = VIEWS[view_name]
     view_class = getattr(importlib.import_module(module_name), attribute)
     # --port / --no-browser are the Web view's alone; the desktop views take
@@ -247,13 +273,50 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
     # `setup.state`, so this never delays the window by the handshake budget.
     setup.start()
     events.info("View", f"{view_name} starting", source="app")
-    view.open()
-    # A desktop view's open() runs its event loop and returns at close; the
-    # Web view serves on a thread and waits here for the same reason.
-    wait = getattr(view, "wait", None)
-    if wait is not None:
-        wait()
+    # A2 (OP-4): Setup's startup dialogs go out once the view listens, not
+    # at construction. A desktop view subscribes to the event log inside
+    # open(), just before its loop: the first subscription is the moment.
+    # The Web page subscribes by polling; Setup offers at its first read.
+    listening = None
+    if view_name != "web":
+        listening = _after_first_subscriber(events, setup.startup_checks)
+    try:
+        view.open()
+        if view_name == "web":
+            setup.startup_checks(on_next_read=True)
+        # A desktop view's open() runs its event loop and returns at close;
+        # the Web view serves on a thread and waits here for the same reason.
+        wait = getattr(view, "wait", None)
+        if wait is not None:
+            wait()
+    finally:
+        if listening is not None:
+            listening()
     return view
+
+
+def _after_first_subscriber(log, then):
+    """Run `then()` once, right after the first `log.subscribe(fn)` - the
+    moment a view starts to listen. The hook is on this one instance and
+    goes away at the first subscription; the returned function removes it
+    if nothing ever subscribed (a view that failed to open)."""
+    original = log.subscribe
+
+    def remove():
+        if vars(log).get("subscribe") is subscribe:
+            del log.subscribe
+
+    def subscribe(fn):
+        remove()
+        original(fn)
+        try:
+            then()
+        except Exception as exc:        # never fail the view's own open()
+            events.debug("Startup Checks Failed", repr(exc), source="app",
+                         exception=exc)
+
+    log.subscribe = subscribe
+    return remove
 
 
 def main(argv=None):
@@ -264,27 +327,21 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Views:
-  tk        Tkinter interface
-  qt        Native Qt desktop GUI (PySide6): the default on every platform (owner ruling 2026-09-28)
-  web       Browser-based dashboard, served on localhost
+  web       Browser-based dashboard, served on localhost (the only view; the
+            default). The Tk and Qt views were retired on 2026-10-07.
 
 Examples:
-  python3 src/app.py --web --port 8080 --no-browser
-  python3 src/app.py --qt --font-size 14
+  python3 src/app.py --port 8080 --no-browser
+  python3 src/app.py --web --font-size 14
 """)
     views = parser.add_mutually_exclusive_group()
-    views.add_argument("--view", choices=sorted(set(VIEWS) | set(ALIASES)),
-                       help="which view to launch")
-    views.add_argument("--tk", action="store_const", dest="view", const="tk",
-                       help="launch the Tkinter view")
-    views.add_argument("--tkinter", action="store_const", dest="view",
-                       const="tk", help=argparse.SUPPRESS)
-    views.add_argument("--qt", action="store_const", dest="view", const="qt",
-                       help="launch the PySide6 view")
-    views.add_argument("--pyside", action="store_const", dest="view",
-                       const="qt", help=argparse.SUPPRESS)
+    views.add_argument("--view", choices=sorted(set(VIEWS) | set(RETIRED)),
+                       help="which view to launch (only web remains)")
+    for flag in ("--tk", "--tkinter", "--qt", "--pyside"):     # retired
+        views.add_argument(flag, action="store_const", dest="view",
+                           const=flag.lstrip("-"), help=argparse.SUPPRESS)
     views.add_argument("--web", action="store_const", dest="view", const="web",
-                       help="launch the web dashboard")
+                       help="launch the web dashboard (the default)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"web dashboard port (default: {DEFAULT_PORT})")
     parser.add_argument("--no-motion", action="store_true",
@@ -294,8 +351,8 @@ Examples:
     parser.add_argument("--font-size", type=int,
                         help="base font size, in points (8-28)")
     parser.add_argument("--map-db", metavar="PATH",
-                        help="the Transfer Map's SQLite file (default: data/transfer_map.sqlite "
-                             "in this checkout; same as STATION_MAP_DB)")
+                        help="the Transfer Map's SQLite file, overriding the store the "
+                             "operator chose (same as STATION_MAP_DB)")
     parser.add_argument("--sample-db", metavar="PATH",
                         help="the Sample Map's SQLite file (default: data/sample_map.sqlite "
                              "in this checkout; same as STATION_SAMPLE_DB)")
@@ -306,6 +363,16 @@ Examples:
     # hardware-capable web server instead of the view the operator asked for
     # (MANAGER-14).
     args = parser.parse_args(argv)
+    if args.view in RETIRED:
+        sys.stderr.write(RETIRED_MESSAGE + "\n")      # not print(): see test_architecture
+        sys.exit(2)
+    # A5: an update staged for the restart (Windows locks a running
+    # install, so it waits in <install>.next) is swapped in now, before any
+    # view, model or log file opens - also when the operator quit instead
+    # of pressing Restart. The swap re-executes the new version (or, on
+    # Windows, hands over to the swap script) and this start ends here.
+    if _swap_in_pending_update():
+        return 0
     if args.no_motion:
         os.environ["STATION_NO_MOTION"] = "1"
     if args.map_db:
@@ -325,20 +392,11 @@ Examples:
     return 0
 
 
-# -- packaged entry points (PACKAGING_PLAN P2) ------------------------------
-# One function per view for `[project.scripts]` and the PyInstaller EXEs, so
-# a bundle's `station-web` cannot start anything but the Web view. Each one
-# forwards the remaining command-line flags (--port, --no-browser,
-# --font-size, --no-motion) and refuses a second view flag the way `main`
-# does.
-
-def main_tk(argv=None):
-    return main(["--tk", *(sys.argv[1:] if argv is None else argv)])
-
-
-def main_qt(argv=None):
-    return main(["--qt", *(sys.argv[1:] if argv is None else argv)])
-
+# -- packaged entry point (PACKAGING_PLAN P2) -------------------------------
+# One function for `[project.scripts]` and the PyInstaller EXE, so a bundle's
+# `station-web` cannot start anything but the Web view. It forwards the
+# remaining command-line flags (--port, --no-browser, --font-size,
+# --no-motion) and refuses a second view flag the way `main` does.
 
 def main_web(argv=None):
     return main(["--web", *(sys.argv[1:] if argv is None else argv)])

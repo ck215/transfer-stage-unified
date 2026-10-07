@@ -441,3 +441,23 @@ def test_silence_while_energized_but_not_active_still_stops(watched, captured):
     clock.now += view.STOP_SECONDS + 0.1
     view._check_heartbeat()
     assert controller.estop_calls == 1
+
+
+# --------------------------------------------------------------------------
+# V4 (rb-link-views): the warning says why a healthy tab goes silent
+# --------------------------------------------------------------------------
+def test_v4_browser_silent_tells_the_operator_how_to_recover(watched, captured):
+    """A background tab is throttled or slept by the browser: the station
+    is fine, the page is not checking in. The warning says so and says what
+    to do - keep the station in its own window - before the stop fires."""
+    view, controller, clock = watched
+    controller.is_active = True
+    view.beat()
+    clock.advance(view.WARN_SECONDS + 0.2)
+    view._check_heartbeat()
+    warning = next(e for e in captured if e.severity == "warning")
+    assert warning.title == events.BROWSER_SILENT
+    message = warning.message.lower()
+    assert "throttl" in message and "sleep" in message
+    assert "keep the station in its own window" in message
+    assert f"at {view.STOP_SECONDS:.0f} s" in warning.message

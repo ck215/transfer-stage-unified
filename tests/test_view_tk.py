@@ -293,13 +293,6 @@ class FakeCanvas(FakeWidget):
         self.items.append(("arc", coords, options))
         return len(self.items)
 
-    def create_image(self, x, y, **options):
-        self.items.append(("image", (x, y), options))
-        return len(self.items)
-
-    def tag_raise(self, _item, _above=None):
-        pass
-
     def coords(self, _item, *values):
         self.items.append(("coords", values, {}))
 
@@ -1757,7 +1750,7 @@ def test_region_select_runs_the_command_with_four_args(view, panel, monkeypatch)
         def __init__(self, _master):
             pass
 
-        def pick(self, screenshot=None):
+        def pick(self):
             return (10, 20, 30, 40)
 
     monkeypatch.setattr(tkmod, "_RegionPicker", Picked)
@@ -1771,7 +1764,7 @@ def test_a_cancelled_region_shows_the_reason_and_runs_nothing(view, panel,
         def __init__(self, _master):
             self.reason = "Region selection cancelled."
 
-        def pick(self, screenshot=None):
+        def pick(self):
             return None
 
     monkeypatch.setattr(tkmod, "_RegionPicker", Cancelled)
@@ -1786,369 +1779,6 @@ def test_the_captured_region_is_drawn_not_announced(view, panel, tk_harness):
     element = element_of(view, "region_select")
     assert view._widgets[id(element)]["var"].get() == sch.format_region(panel.region)
     assert tk_harness.errors == []
-
-
-# -- the picker draws on a screenshot (bench 2026-09-27, bare X11) ---------
-#
-# "A white view covered the whole display during selection": on an X11
-# session with no compositor `-alpha` is accepted and never honoured, so the
-# 0.3-alpha overlay was an opaque sheet of `theme.BACKGROUND`. With a
-# picture of the desktop the overlay is opaque on purpose and shows it.
-
-def _desktop_png(width=800, height=450):
-    """A synthetic two-colour desktop: red on the left, blue on the right."""
-    import io
-    from PIL import Image
-    image = Image.new("RGB", (width, height), (0, 0, 255))
-    image.paste((255, 0, 0), (0, 0, width // 2, height))
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-def _screenshot(**bounds):
-    shot = {"image": _desktop_png(), "left": 0, "top": 0,
-            "width": 3200, "height": 1800}
-    shot.update(bounds)
-    return shot
-
-
-def _items(picker, kind):
-    return [item for item in picker.canvas.items if item[0] == kind]
-
-
-def _alpha_requests(picker):
-    return [args for args in picker.top.attrs if args and args[0] == "-alpha"]
-
-
-from views import picking
-
-
-def _under_pointer(bounds, desktop, overlay, pointer):
-    """The capture pixel drawn under a pointer at logical desktop `pointer`,
-    by the placement: overlay pixel -> picture pixel -> capture units."""
-    scale, x, y = picking.picture_placement(bounds, desktop, overlay)
-    return ((pointer[0] - overlay[0] - x) / scale,
-            (pointer[1] - overlay[1] - y) / scale)
-
-
-def _capture_pixel(bounds, desktop, pointer):
-    """What the pointer names, in the screenshot's own pixels."""
-    ratio = bounds[2] / desktop[2]
-    return (pointer[0] * ratio - bounds[0], pointer[1] * ratio - bounds[1])
-
-
-def test_placement_ratio_one_overlay_equal_to_the_desktop_is_unscaled_at_the_origin():
-    desktop = (0, 0, 1920, 1080)
-    assert picking.picture_placement(desktop, desktop, desktop) == (1.0, 0.0, 0.0)
-    assert picking.drawn_size(desktop, 1.0) == (1920, 1080)
-
-
-def test_placement_an_overlay_shrunk_by_a_panel_offsets_the_picture_not_squashes_it():
-    """The bench (2026-09-28, Linux, Qt): the window manager kept the overlay
-    out of a 40-px top panel. The picture stays desktop-sized and moves up
-    40 px, so the desktop still lines up under the pointer."""
-    bounds = desktop = (0, 0, 1920, 1080)
-    overlay = (0, 40, 1920, 1040)
-    scale, x, y = picking.picture_placement(bounds, desktop, overlay)
-    assert (scale, x, y) == (1.0, 0.0, -40.0)
-    assert picking.drawn_size(bounds, scale) == (1920, 1080)     # NOT 1920x1040
-    for pointer in [(0, 40), (960, 540), (1919, 1079), (300, 700)]:
-        assert _under_pointer(bounds, desktop, overlay, pointer) == \
-            _capture_pixel(bounds, desktop, pointer)
-    # A panel on the left is the same rule, sideways.
-    assert picking.picture_placement(bounds, desktop, (48, 0, 1872, 1080)) == \
-        (1.0, -48.0, 0.0)
-
-
-def test_placement_ratio_two_halves_the_picture():
-    """A Retina Mac: the capture is twice the logical desktop."""
-    bounds = (0, 0, 5120, 2880)
-    desktop = overlay = (0, 0, 2560, 1440)
-    scale, x, y = picking.picture_placement(bounds, desktop, overlay)
-    assert (scale, x, y) == (0.5, 0.0, 0.0)
-    assert picking.drawn_size(bounds, scale) == (2560, 1440)
-    for pointer in [(0, 0), (1280, 720), (2559, 1439)]:
-        assert _under_pointer(bounds, desktop, overlay, pointer) == \
-            _capture_pixel(bounds, desktop, pointer)
-
-
-def test_placement_a_second_monitor_at_negative_x():
-    bounds = desktop = (-1920, 0, 3840, 1080)
-    # The overlay over the whole virtual desktop: the picture at its origin.
-    assert picking.picture_placement(bounds, desktop, desktop) == (1.0, 0.0, 0.0)
-    # The overlay kept to the primary monitor: the left monitor's half hangs
-    # off the overlay to the left, and the primary's half is under it.
-    overlay = (0, 0, 1920, 1080)
-    assert picking.picture_placement(bounds, desktop, overlay) == (1.0, -1920.0, 0.0)
-    for pointer in [(0, 0), (100, 500), (1919, 1079)]:
-        assert _under_pointer(bounds, desktop, overlay, pointer) == \
-            _capture_pixel(bounds, desktop, pointer)
-
-
-def test_placement_takes_the_screenshot_dict_and_never_divides_by_zero():
-    shot = {"image": b"x", "left": 0, "top": 0, "width": 3200, "height": 1800}
-    assert picking.picture_placement(shot, (0, 0, 1600, 900), (0, 0, 1600, 900)) == \
-        (0.5, 0.0, 0.0)
-    # An unmeasured desktop is taken to be the bounds: unscaled, never stretched.
-    assert picking.picture_placement(shot, (0, 0, 0, 0), (0, 0, 0, 0)) == (1.0, 0.0, 0.0)
-    assert picking.picture_placement(None, None, None) == (1.0, 0.0, 0.0)
-    assert picking.drawn_size({}, 1.0) == (1, 1)
-    assert picking.drawn_size({"width": "bad", "height": None}, 1.0) == (1, 1)
-    assert "ratio=2" in picking.placement_line(shot, (0, 0, 1600, 900), (0, 40, 1600, 860))
-
-
-class _PlacedTop(FakeRoot):
-    """The overlay as the window manager actually placed it."""
-    box = (0, 40, 2560, 1400)
-
-    def winfo_rootx(self):
-        return self.box[0]
-
-    def winfo_rooty(self):
-        return self.box[1]
-
-    def winfo_width(self):
-        return self.box[2]
-
-    def winfo_height(self):
-        return self.box[3]
-
-
-def test_an_overlay_the_window_manager_moved_moves_the_picture_and_keeps_its_size(monkeypatch):
-    """Tk's half of the bench fix: on `<Configure>` the picture is re-anchored
-    where the desktop's origin now falls, and it is never resized to the
-    overlay."""
-    monkeypatch.setattr(tkmod.tk, "Toplevel", _PlacedTop)
-    picker = tkmod._RegionPicker(FakeWidget())
-    picker._build(screenshot=_screenshot(width=2560, height=1440))
-    import io
-    from PIL import Image
-    drawn = Image.open(io.BytesIO(base64.b64decode(picker.photo.data)))
-    assert drawn.size == (2560, 1440)
-    assert _items(picker, "image")[0][1] == (0.0, 0.0)
-    picker.top.fire("<Configure>")
-    assert ("coords", (0.0, -40.0), {}) in picker.canvas.items
-    assert Image.open(io.BytesIO(base64.b64decode(picker.photo.data))).size == (2560, 1440)
-    # A second Configure at the same place draws nothing new.
-    moves = len(picker.canvas.items)
-    picker.top.fire("<Configure>")
-    assert len(picker.canvas.items) == moves
-
-
-def test_the_picture_is_drawn_at_the_logical_desktop_size_not_the_overlays():
-    """A capture 1.25x the logical virtual root (FakeWidget's 2560x1440) is
-    drawn at 2560x1440; a downscaled capture (the old 1600-px picture) is
-    brought back up to the desktop it was taken of."""
-    picker = tkmod._RegionPicker(FakeWidget())
-    picker._build(screenshot=_screenshot(image=_desktop_png(1600, 900),
-                                         width=2560, height=1440))
-    import io
-    from PIL import Image
-    drawn = Image.open(io.BytesIO(base64.b64decode(picker.photo.data)))
-    assert drawn.size == (2560, 1440)
-
-
-def test_with_a_screenshot_the_picker_shows_it_and_requests_no_alpha():
-    picker = tkmod._RegionPicker(FakeWidget())
-    picker._build(screenshot=_screenshot())
-    assert _alpha_requests(picker) == []
-    images = _items(picker, "image")
-    assert len(images) == 1
-    assert images[0][1] == (0, 0) and images[0][2]["image"] is picker.photo
-    # The picture is the overlay's size (FakeWidget's virtual desktop), and
-    # it is the desktop - dimmed, not replaced: the left half still reads red.
-    import io
-    from PIL import Image
-    drawn = Image.open(io.BytesIO(base64.b64decode(picker.photo.data)))
-    assert drawn.size == (2560, 1440)
-    red, green, blue = drawn.convert("RGB").getpixel((10, 10))
-    assert red > 150 and red > blue + 100 and red > green + 100
-    red, green, blue = drawn.convert("RGB").getpixel((2550, 10))
-    assert blue > 150 and blue > red + 100
-
-
-def test_over_a_picture_the_instruction_line_is_drawn_on_the_canvas():
-    picker = tkmod._RegionPicker(FakeWidget())
-    picker._build(screenshot=_screenshot())
-    texts = [item[2].get("text") for item in _items(picker, "text")]
-    assert "Drag a box around the area to watch. Esc cancels." in texts
-    (x, y), = [item[1] for item in _items(picker, "text")]
-    assert x == 2560 // 2          # top centre of the overlay
-
-
-def test_without_a_screenshot_the_alpha_overlay_says_it_could_not_picture():
-    picker = tkmod._RegionPicker(FakeWidget())
-    picker._build(screenshot=None)
-    assert _alpha_requests(picker) == [("-alpha", 0.3)]
-    assert _items(picker, "image") == []
-    texts = " ".join(str(item[2].get("text")) for item in _items(picker, "text"))
-    assert "Drag a box around the area to watch. Esc cancels." in texts
-    assert "(the screen could not be pictured)" in texts
-
-
-def test_a_screenshot_that_will_not_decode_falls_back_to_the_alpha_overlay():
-    picker = tkmod._RegionPicker(FakeWidget())
-    picker._build(screenshot=_screenshot(image=b"not a png"))
-    assert _alpha_requests(picker) == [("-alpha", 0.3)]
-    assert _items(picker, "image") == []
-    assert picker.photo is None
-
-
-def test_over_a_picture_the_drag_still_reports_screen_coordinates():
-    picker = tkmod._RegionPicker(FakeWidget())
-    picker._build(screenshot=_screenshot())
-    _drag(picker, (400, 500), (100, 200))
-    assert picker.region == (100, 200, 300, 300)
-    assert picker.top.is_destroyed
-
-
-def test_pick_hands_the_screenshot_to_the_overlay(monkeypatch):
-    built = []
-    picker = tkmod._RegionPicker(FakeWidget())
-    original = picker._build
-    monkeypatch.setattr(picker, "_build",
-                        lambda screenshot=None: (built.append(screenshot),
-                                                 original(screenshot=screenshot)))
-    shot = _screenshot()
-    picker.pick(screenshot=shot)
-    assert built == [shot]
-
-
-class ShotPanel(DemoPanel):
-    """A region picker whose element declares the desktop picture, as Red
-    Percent's does (`data_command="screen_image"`)."""
-
-    def __init__(self, shot):
-        super().__init__()
-        self.shot = shot
-        self.shots_taken = 0
-
-    @property
-    def schema(self):
-        return sch.schema(sch.section(
-            "Controls",
-            sch.region_select("Pick area", "set_region", model_attr="region",
-                              data_command="screen_image")))
-
-    @property
-    def screen_image(self):
-        self.shots_taken += 1
-        return self.shot
-
-
-def _region_view(shot, monkeypatch):
-    seen = []
-
-    class Recording:
-        reason = ""
-
-        def __init__(self, _master):
-            seen.append(("built", shot_panel.shots_taken))
-
-        def pick(self, screenshot=None):
-            seen.append(("picked", screenshot))
-            return (10, 20, 30, 40)
-
-    shot_panel = ShotPanel(shot)
-    monkeypatch.setattr(tkmod, "_RegionPicker", Recording)
-    built = tkmod.TkPanelView(FakeWidget(), FakeController(Demo=shot_panel), "Demo")
-    return built, shot_panel, seen
-
-
-def test_the_region_click_takes_the_picture_before_the_overlay_opens(monkeypatch):
-    shot = _screenshot()
-    built, shot_panel, seen = _region_view(shot, monkeypatch)
-    try:
-        click(built, element_of(built, "region_select"))
-        assert seen == [("built", 1), ("picked", shot)]
-        assert shot_panel.region == {"left": 10, "top": 20, "width": 30, "height": 40}
-    finally:
-        built.close()
-
-
-def test_with_no_picture_the_region_click_still_opens_the_picker(monkeypatch):
-    built, shot_panel, seen = _region_view(None, monkeypatch)
-    try:
-        click(built, element_of(built, "region_select"))
-        assert seen[-1] == ("picked", None)
-        assert shot_panel.region == {"left": 10, "top": 20, "width": 30, "height": 40}
-    finally:
-        built.close()
-
-
-def test_a_region_select_with_no_data_command_takes_no_picture(view, panel,
-                                                               controller,
-                                                               monkeypatch):
-    shots = []
-
-    class Recording:
-        reason = ""
-
-        def __init__(self, _master):
-            pass
-
-        def pick(self, screenshot=None):
-            shots.append(screenshot)
-            return (1, 2, 30, 40)
-
-    monkeypatch.setattr(tkmod, "_RegionPicker", Recording)
-    before = len(controller.calls)
-    click(view, element_of(view, "region_select"))
-    assert shots == [None]
-    assert [c[1] for c in controller.calls[before:]][0] == "set_region"
-
-
-_REAL_PICKER = r'''
-import base64, io, json, os, sys
-sys.path.insert(0, os.path.join(sys.argv[1], "src"))
-import tkinter as tk
-from PIL import Image
-import views.tk as tkv
-try:
-    root = tk.Tk()
-except Exception as exc:        # no display
-    print(json.dumps({"skip": repr(exc)})); sys.exit(0)
-root.withdraw()
-requested = []
-original = tk.Toplevel.attributes
-def recording(self, *args):
-    requested.append([str(a) for a in args])
-    return original(self, *args)
-tk.Toplevel.attributes = recording
-image = Image.new("RGB", (800, 450), (0, 0, 255))
-image.paste((255, 0, 0), (0, 0, 400, 450))
-buffer = io.BytesIO(); image.save(buffer, format="PNG")
-shot = {"image": buffer.getvalue(), "left": 0, "top": 0, "width": 800, "height": 450}
-picker = tkv._RegionPicker(root)
-picker._build(screenshot=shot)
-root.update_idletasks()
-kinds = [picker.canvas.type(item) for item in picker.canvas.find_all()]
-alpha = [args for args in requested if args and args[0] == "-alpha"]
-picker._finish(); root.update(); root.destroy()
-print(json.dumps({"kinds": kinds, "alpha": alpha}))
-'''
-
-
-@pytest.mark.window
-def test_a_real_picker_over_a_screenshot_holds_an_image_and_no_alpha():
-    """P3: the real toolkit, in a child process - the picture is a canvas
-    image item and `-alpha` is never requested of the overlay."""
-    import json
-    import subprocess
-    import sys
-    tree = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
-        tkmod.__file__))))
-    done = subprocess.run([sys.executable, "-c", _REAL_PICKER, tree,
-                           "-ApplePersistenceIgnoreState", "YES"],
-                          capture_output=True, text=True, timeout=120)
-    lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
-    assert done.returncode == 0 and lines, done.stderr[-2000:]
-    result = json.loads(lines[-1])
-    if "skip" in result:
-        pytest.skip(f"no display for a real Tk picker: {result['skip']}")
-    assert "image" in result["kinds"], result
-    assert result["alpha"] == [], result
 
 
 def test_file_save_copies_the_written_file_to_the_destination(view, panel,
@@ -2850,12 +2480,11 @@ def test_the_stop_disc_keeps_its_size_at_the_default_font(monkeypatch):
     assert tkmod.STOP_DIAMETER <= disc.diameter <= tkmod.STOP_DIAMETER * 1.1
 
 
-def test_a_fault_is_a_dialog_beside_the_stop_never_a_modal(dashboard, tk_harness):
+def test_a_fault_is_a_band_beside_the_stop_never_a_modal(dashboard, tk_harness):
     """F1 / HC-2 / UXPM-1. `messagebox.showerror` was application-modal:
     five queued errors were five dialogs and the stop took no click while
-    one was up. Updated (rb-restart R6, owner 2026-09-28): the alert band is
-    gone; the errors queue behind ONE modeless dialog, nothing grabs, and
-    the stop still works."""
+    one was up. An error that needs acknowledging now joins a band packed
+    directly above the stop bar; nothing grabs, and the stop still works."""
     dashboard.open()
     for index in range(3):
         dashboard._on_event(Event(index, "error", "Rotator", f"Fault {index}",
@@ -2863,29 +2492,32 @@ def test_a_fault_is_a_dialog_beside_the_stop_never_a_modal(dashboard, tk_harness
     SCHEDULER.pump()
     assert tk_harness.errors == [] and GRABS == []
     assert len(dashboard._alerts) == 3, "stacked, not overwritten"
-    dialog = dashboard._ack_dialog
-    assert dialog.title_label.cget("text") == "Fault 0"
-    assert dialog.count.cget("text") == "2 more waiting"
+    band = dashboard._band
+    assert band.is_packed
+    packed = [options for widget, options in PACK_ORDER if widget is band][-1]
+    # Updated for E: the band sits over the tray under the sheet; the stop
+    # is in the rail, which the band never reaches.
+    assert packed["after"] is dashboard._tray and packed["side"] == "bottom"
+    assert band.master is dashboard._main is not dashboard._rail
+    text = dashboard._band_text.cget("text")
+    assert "3 errors" in text and all(f"Fault {i}" in text for i in range(3))
+    assert text.count("Error") >= 3, "a word beside the colour"
 
     dashboard._stop_button.fire("<Button-1>")          # the stop still works
     assert tk_harness.errors == [] and dashboard.controller.estop_calls == 1
-    assert not dialog.top.is_destroyed, "the stop does not answer it"
 
-    for index in range(3):
-        assert dashboard._ack_dialog.title_label.cget("text") == f"Fault {index}"
-        dashboard._ack_dialog.key.widget.fire("<Button-1>")
-    assert dashboard._alerts == [] and dashboard._ack_dialog is None
+    dashboard._band_ack.widget.fire("<Button-1>")      # one press clears all
+    assert dashboard._alerts == [] and not band.is_packed
 
 
-def test_r6_the_alert_band_is_gone(dashboard):
-    """rb-restart R6: no band beside the dialog; the dialog is the
-    acknowledgement and the log keeps the history."""
+def test_the_band_is_never_placed_over_anything(dashboard):
+    """It is packed into the window's strips, never `place`d or a Toplevel,
+    so it can take space but never cover the stop."""
     dashboard.open()
     dashboard._show_popup(_event("error", needs_ack=True))
-    assert not hasattr(dashboard, "_band")
-    assert not hasattr(dashboard, "_band_text")
-    assert not hasattr(tkmod, "BAND_LINES")
-    assert dashboard.is_alert_shown and dashboard._ack_dialog is not None
+    # Updated for E: packed into the main column, beside the rail.
+    assert dashboard._band.master is dashboard._main
+    assert not hasattr(dashboard._band, "place_info_called")
 
 
 def test_the_clear_confirmation_defaults_to_no():
@@ -4843,13 +4475,13 @@ def test_l2_the_stop_not_confirmed_line_goes_when_the_latch_opens(tk_harness,
     built._on_event(_event("error", needs_ack=True))
     built._on_event(_stop_not_confirmed())
     SCHEDULER.pump()
-    # Updated (R6): the dialog, not a band, says it.
-    assert built._ack_dialog.title_label.cget("text") == "Error-event"
-    assert [e.title for e in built._alerts] == ["error-event", "Stop Not Confirmed"]
+    assert built._band.is_packed
+    assert "did not confirm" in built._band_text.cget("text")
     assert "did not confirm" in built._latest_text.cget("text")
     controller.is_estopped = False
     built._sync_stop_button()
     assert [event.title for event in built._alerts] == ["error-event"]
+    assert "did not confirm" not in built._band_text.cget("text")
     assert "did not confirm" not in built._latest_text.cget("text")
     assert "did not confirm" not in built._event_text.body
     assert "Error-event" in built._latest_text.cget("text"), "the one before it"
@@ -4864,12 +4496,10 @@ def test_l11_band_and_tray_lines_are_sentences_without_a_source(tk_harness,
     built._on_event(Event(8, "warning", "DC Probe", "Power Down Not Supported",
                           "The DC board has no coil kill.", None, False, 0.0))
     SCHEDULER.pump()
-    # Updated (R6): the band is gone; the dialog says the title in sentence
-    # case and the message, never the source.
-    dialog = built._ack_dialog
-    assert dialog.title_label.cget("text") == "Stop not confirmed"
-    assert dialog.body.cget("text").startswith("Rotator did not confirm")
-    assert "[" not in dialog.body.cget("text")
+    band = built._band_text.cget("text")
+    # Updated for ARCH-3: "Title: message" is `views.base.event_line`'s.
+    assert band.startswith("Error: Stop not confirmed: Rotator did not confirm")
+    assert "[" not in band and "Stop Not Confirmed" not in band
     assert built._latest_text.cget("text") == (
         "Warning: Power down not supported: The DC board has no coil kill.")
     # One mark in both places, drawn, not a text glyph. Signature: the
@@ -4918,7 +4548,7 @@ def test_l2_the_acknowledgement_stays_required_while_latched(tk_harness,
     SCHEDULER.pump()
     built._sync_stop_button()
     assert [event.title for event in built._alerts] == ["Stop Not Confirmed"]
-    assert built._ack_dialog is not None
+    assert built._band.is_packed
     built.close()
 
 
@@ -5270,8 +4900,8 @@ def test_l20_tab_order_models_before_setup_and_the_sheet_before_the_tray(
     foot = built._setup_press.frame.master
     assert rail.index(built._model_list) < rail.index(foot)
     assert configured.get("takefocus") == 0, "the hidden tab strip takes no focus"
-    # Updated (R6): no band; the tray comes after the sheet.
-    assert built._tray in lifted, "sheet, then the tray"
+    assert lifted.index(built._band) < lifted.index(built._tray), \
+        "sheet, then the band, then the tray"
     built.close()
 
 
@@ -6172,683 +5802,3 @@ def test_signature_the_slider_is_a_fader_cap(dashboard, monkeypatch):
     assert trough.colours == [theme.KEY_RIM, theme.SURFACE]
     well = style.elements["StationWell.Scale.trough"][0]
     assert well.colours == [theme.KEY_RIM, theme.DEEP]
-
-
-# ---------------------------------------------------------------------------
-# One dashboard (owner ruling 2026-09-28): a hosted model is drawn on its
-# host's page (`Model.HOST`, `state()["models"][name]["host"]`)
-# ---------------------------------------------------------------------------
-
-class MapPanel(DemoPanel):
-    NAME = "Map"
-
-
-class HostedPanel(DemoPanel):
-    NAME = "Hosted"
-    HOST = "Map"
-
-    @property
-    def schema(self):
-        """Demo's sections as tier 1, plus a tier-2 section with its own
-        disclosure words (Red Percent's "Red Percent details")."""
-        built = super().schema
-        built["sections"].append(sch.section(
-            "Details", sch.entry("Note", "note", self.PARAMS["note"]),
-            tier=2, disclosure="Hosted details"))
-        return built
-
-
-class HostController(FakeController):
-    """`Controller.state()` publishes `host` per model: the host's NAME
-    while the host is open, else None, never itself (as the real one)."""
-
-    def state(self, name=None):
-        station = super().state(name)
-        if name is not None:
-            return station
-        for model, state in station["models"].items():
-            host = getattr(self.panels[model], "HOST", None)
-            state["host"] = host if host in self.panels and host != model else None
-        return station
-
-
-@pytest.fixture
-def pack_chain(monkeypatch):
-    """Tk's packing order per master, `after=`/`before=` honoured, and the
-    stacking order `lift(above)` sets (the focus order): the stand-in's own
-    `pack` only records that a widget was packed."""
-    plain_pack = FakeWidget.pack
-
-    def pack(self, **kwargs):
-        plain_pack(self, **kwargs)
-        master = kwargs.get("in_") or self.master
-        chain = master.__dict__.setdefault("packed", [])
-        anchor = kwargs.get("after") or kwargs.get("before")
-        if self in chain and anchor is None:
-            return
-        if self in chain:
-            chain.remove(self)
-        if anchor is None:
-            chain.append(self)
-            return
-        assert anchor in chain, "packed after a widget that is not packed there"
-        index = chain.index(anchor) + (1 if kwargs.get("after") is not None else 0)
-        chain.insert(index, self)
-
-    def pack_forget(self):
-        self.is_packed = False
-        chain = getattr(self.master, "packed", None)
-        if chain and self in chain:
-            chain.remove(self)
-
-    def lift(self, above=None):
-        siblings = getattr(self.master, "children", None)
-        if not siblings or self not in siblings:
-            return
-        siblings.remove(self)
-        if above is not None and above in siblings:
-            siblings.insert(siblings.index(above) + 1, self)
-        else:
-            siblings.append(self)
-
-    monkeypatch.setattr(FakeWidget, "pack", pack)
-    monkeypatch.setattr(FakeWidget, "pack_forget", pack_forget)
-    monkeypatch.setattr(FakeWidget, "lift", lift, raising=False)
-    monkeypatch.setattr(FakeWidget, "tkraise", lift, raising=False)
-
-
-def _on_screen(widget):
-    """Every widget on screen under `widget`, in the order the eye meets
-    them: packed children in packing order, then gridded ones."""
-    out = [widget]
-    packed = list(getattr(widget, "packed", ()))
-    gridded = [child for child in widget.children
-               if child not in packed and child.grid_info and not child.is_destroyed]
-    for child in packed + gridded:
-        if not child.is_destroyed:
-            out.extend(_on_screen(child))
-    return out
-
-
-def _is_inside(widget, ancestor):
-    node = widget
-    while node is not None:
-        if node is ancestor:
-            return True
-        node = getattr(node, "master", None)
-    return False
-
-
-@pytest.fixture
-def host_pair():
-    return MapPanel(), HostedPanel()
-
-
-@pytest.fixture
-def host_dashboard(host_pair, setup_panel, pack_chain):
-    host, hosted = host_pair
-    controller = HostController(Map=host, Hosted=hosted)
-    built = tkmod.TkDashboard(controller, setup_panel)
-    built.open()
-    yield built
-    if not built._closing:
-        built.close()
-
-
-def test_host_a_hosted_model_has_no_page_of_its_own(host_dashboard):
-    """The page list has one link: the host's. The overview has one entry."""
-    assert list(host_dashboard._rail_items) == ["Map"]
-    host_dashboard.show_overview()
-    placed = [name for name, view in host_dashboard._panels.items()
-              if name != host_dashboard.SETUP_TAB and view.frame.grid_info]
-    assert placed == ["Map"]
-
-
-def test_host_page_holds_the_hosted_group_in_the_contract_order(host_dashboard):
-    """M's tier 1, the group (H's name, then H's tier 1), M's tier-2
-    disclosure, H's tier-2 disclosure with H's own words."""
-    host_dashboard.show_model("Map")
-    host = host_dashboard._panels["Map"]
-    hosted = host_dashboard._panels["Hosted"]
-    shown = _on_screen(host.frame)
-    marks = [host._tiers[1], hosted._title, hosted._tiers[1],
-             host._disclosures[2].frame, hosted._disclosures[2].frame]
-    assert all(mark in shown for mark in marks), "part of the page is not shown"
-    assert [shown.index(mark) for mark in marks] == sorted(
-        shown.index(mark) for mark in marks)
-    assert hosted._title.cget("text") == "Hosted"
-    assert hosted._disclosures[2].text == "Hosted details"
-
-
-def test_host_a_hosted_group_follows_the_hosts_tier_one_in_the_tab_order(
-        host_dashboard):
-    """Tk traverses siblings in stacking order: the group's slot sits just
-    above the host's tier 1, before the host's own disclosure."""
-    host_dashboard.show_model("Map")
-    host = host_dashboard._panels["Map"]
-    hosted = host_dashboard._panels["Hosted"]
-    body = host._body.children
-    slot = next(child for child in body if _is_inside(hosted.frame, child))
-    assert (body.index(host._tiers[1]) < body.index(slot)
-            < body.index(host._disclosures[2].frame))
-
-
-def test_host_the_group_heading_is_the_name_one_step_down_and_the_mode(
-        host_dashboard, host_pair):
-    host_dashboard.show_model("Map")
-    host = host_dashboard._panels["Map"]
-    hosted = host_dashboard._panels["Hosted"]
-    assert host._title.cget("font") == tkmod._font(tkmod.STEP_2, bold=True)
-    assert hosted._title.cget("font") == tkmod._font(tkmod.STEP_1, bold=True)
-    word = hosted._state_word
-    assert word.cget("text") == "Idle"
-    host_pair[1].mode = "no_region"
-    hosted._refresh()
-    assert word.cget("text") == "No region"
-    assert word.cget("foreground") == theme.MUTED
-    host_pair[1].mode = "running"
-    hosted._refresh()
-    assert word.cget("text") == "Running"
-    assert host._state_word is None, "the host's own head is unchanged"
-
-
-def test_host_a_command_in_the_group_reaches_the_hosted_model(host_dashboard,
-                                                            host_pair):
-    host_dashboard.show_model("Map")
-    host = host_dashboard._panels["Map"]
-    hosted = host_dashboard._panels["Hosted"]
-    go = next(e for e in hosted._elements if e.get("command") == "go")
-    assert _is_inside(widget_of(hosted, go), host.frame)
-    click(hosted, go)
-    controller = host_dashboard.controller
-    assert [call[:2] for call in controller.calls if call[1] == "go"] == [("Hosted", "go")]
-    assert host_pair[1].commands == [("go", 1.0)]
-    assert host_pair[0].commands == []
-
-
-def test_host_a_refusal_in_the_group_lands_at_its_control(host_dashboard):
-    host_dashboard.show_model("Map")
-    hosted = host_dashboard._panels["Hosted"]
-    host = host_dashboard._panels["Map"]
-    refuse = next(e for e in hosted._elements if e.get("command") == "refuse_me")
-    click(hosted, refuse)
-    assert hosted._notice is not None
-    assert hosted._notice.cget("text") == "the bench is busy"
-    assert _is_inside(hosted._notice, host.frame)
-    assert host._notice is None
-
-
-def test_host_closing_the_host_gives_the_hosted_model_its_page_back(
-        host_dashboard):
-    controller = host_dashboard.controller
-    host_dashboard.show_model("Map")
-    assert _is_inside(host_dashboard._panels["Hosted"].frame,
-                      host_dashboard._panels["Map"].frame)
-    controller.remove("Map")
-    SCHEDULER.pump()
-    assert "Map" not in host_dashboard._panels
-    hosted = host_dashboard._panels["Hosted"]
-    assert not hosted.frame.is_destroyed
-    assert list(host_dashboard._rail_items) == ["Hosted"]
-    host_dashboard.show_overview()
-    assert hosted.frame.grid_info, "the hosted model is an overview entry again"
-    assert host_dashboard.show_model("Hosted")
-    assert host_dashboard._opened == "Hosted"
-    go = next(e for e in hosted._elements if e.get("command") == "go")
-    click(hosted, go)
-    assert [c[:2] for c in controller.calls if c[1] == "go"] == [("Hosted", "go")]
-
-
-def test_host_launched_after_the_hosted_model_takes_it_onto_its_page(
-        host_dashboard):
-    controller = host_dashboard.controller
-    controller.remove("Map")
-    SCHEDULER.pump()
-    assert list(host_dashboard._rail_items) == ["Hosted"]
-    controller.reopen("Map")
-    SCHEDULER.pump()
-    assert list(host_dashboard._rail_items) == ["Map"]
-    host_dashboard.show_model("Map")
-    hosted = host_dashboard._panels["Hosted"]
-    assert _is_inside(hosted._title, host_dashboard._panels["Map"].frame)
-
-
-def test_host_closing_the_hosted_model_leaves_the_host_untouched(host_dashboard):
-    controller = host_dashboard.controller
-    host_dashboard.show_model("Map")
-    host = host_dashboard._panels["Map"]
-    hosted = host_dashboard._panels["Hosted"]
-    opener = hosted._disclosures[2].frame
-    assert hosted._title in _on_screen(host.frame) and opener in _on_screen(host.frame)
-    controller.remove("Hosted")
-    SCHEDULER.pump()
-    assert "Hosted" not in host_dashboard._panels
-    shown = _on_screen(host.frame)
-    assert hosted._title not in shown and opener not in shown
-    assert host._tiers[1] in shown and host._disclosures[2].frame in shown
-    assert host_dashboard._panels["Map"] is host
-    assert list(host_dashboard._rail_items) == ["Map"]
-
-
-def test_host_navigating_to_the_hosted_model_lands_on_the_hosts_page(
-        host_dashboard, monkeypatch):
-    scrolled = []
-    monkeypatch.setattr(host_dashboard._sheet, "scroll_into_view", scrolled.append)
-    host_dashboard.show_overview()
-    assert host_dashboard.show_model("Hosted")
-    assert host_dashboard._opened == "Map"
-    assert scrolled == [host_dashboard._panels["Hosted"].frame]
-
-
-def test_host_the_hosted_stop_state_is_folded_into_the_hosts_link(
-        host_dashboard):
-    controller = host_dashboard.controller
-    controller.stop = {"latched": ["Hosted"], "unconfirmed": [], "every": False}
-    host_dashboard._sync_stop_button()
-    canvas, tooltip = host_dashboard._rail_marks["Map"]
-    assert [item[0] for item in canvas.items] == ["rect"]
-    assert tooltip.text == tkmod.RAIL_MARK_WORDS["latched"]
-    controller.stop = {"latched": ["Hosted"], "unconfirmed": ["Hosted"],
-                       "every": False}
-    host_dashboard._sync_stop_button()
-    canvas, tooltip = host_dashboard._rail_marks["Map"]
-    assert tooltip.text == tkmod.RAIL_MARK_WORDS["unconfirmed"]
-    assert host_dashboard._rail_lamp_state("Map") == "unconfirmed"
-
-
-def test_host_the_hosted_stop_state_is_folded_into_the_hosts_overview_entry(
-        host_dashboard, host_pair):
-    host_dashboard.show_overview()
-    host = host_dashboard._panels["Map"]
-    host_pair[1].stop_confirmed = False
-    host._refresh()
-    assert host._is_unconfirmed, "the host's entry marks the hosted model's stop"
-    host_pair[1].stop_confirmed = None
-    host._refresh()
-    assert not host._is_unconfirmed
-
-
-def test_host_the_real_pair_in_sim_is_one_dashboard(setup_panel, pack_chain,
-                                                    tmp_path, monkeypatch):
-    """Red Percent on the Transfer Map page, through the real Controller."""
-    monkeypatch.setenv("STATION_MAP_DB", str(tmp_path / "map.sqlite"))
-    from controller.controller import Controller
-    from model.red_monitor import RedMonitor
-    from model.transfer_map import TransferMap
-    controller = Controller()
-    red_model = RedMonitor(sim=True)
-    red_model.output_root = tmp_path / "runs"
-    controller.add("Red Percent", red_model, {})
-    controller.add("Transfer Map", TransferMap(sim=True), {})
-    runs = []
-    real_run = controller.run
-
-    def run(name, command, inputs=None, args=()):
-        runs.append((name, command))
-        return real_run(name, command, inputs, args)
-
-    monkeypatch.setattr(controller, "run", run)
-    built = tkmod.TkDashboard(controller, setup_panel)
-    try:
-        built.open()
-        assert list(built._rail_items) == ["Transfer Map"]
-        built.show_model("Red Percent")
-        assert built._opened == "Transfer Map"
-        page = built._panels["Transfer Map"]
-        red = built._panels["Red Percent"]
-        shown = _on_screen(page.frame)
-        marks = [page._tiers[1], red._title, red._tiers[1],
-                 page._disclosures[2].frame, red._disclosures[2].frame]
-        assert [shown.index(m) for m in marks] == sorted(shown.index(m) for m in marks)
-        assert page._disclosures[2].text == "Configure Transfer Map"
-        assert red._disclosures[2].text == "Red Percent details"
-        start = next(e for e in red._elements if e.get("command") == "start_run")
-        assert _is_inside(widget_of(red, start), page.frame)
-        # Gated by Red Percent's own mode (no region yet), not the page's.
-        red._refresh()
-        assert red._gate_reason(start) == "Set a capture region first"
-        controller.run("Red Percent", "set_region", args=(0, 0, 10, 10))
-        red._refresh()
-        click(red, start)
-        # (asked, then confirmed: both against Red Percent's name)
-        assert {r[0] for r in runs if r[1] == "start_run"} == {"Red Percent"}
-        assert red_model.is_running
-        controller.run("Red Percent", "end_run")
-        controller.remove("Transfer Map")
-        SCHEDULER.pump()
-        assert list(built._rail_items) == ["Red Percent"]
-        assert not built._panels["Red Percent"].frame.is_destroyed
-    finally:
-        if not built._closing:
-            built.close()
-        controller.close()
-
-
-def test_host_the_wheel_over_the_hosted_well_scrolls_that_well(host_dashboard):
-    host_dashboard.show_model("Map")
-    host = host_dashboard._panels["Map"]
-    hosted = host_dashboard._panels["Hosted"]
-    hosted.set_disclosure(2, True)
-    try:
-        assert hosted.well_canvas is not None
-        assert _is_inside(hosted._well, host.frame)
-        assert _is_inside(hosted._well_holder, host._tail_slot)
-        assert host_dashboard._scroll_device_well(1, hosted._tiers[2])
-        assert hosted.well_canvas.scrolled == [(1, "units")]
-        assert host.well_canvas is None or host.well_canvas.scrolled == []
-    finally:
-        hosted.set_disclosure(2, False)
-
-
-# ---------------------------------------------------------------------------
-# rb-ack (A3): the acknowledgement is a dialog like the latch-release one
-# ---------------------------------------------------------------------------
-
-def _attention(index, title="Idle Timeout", message="Stepper Probe was idle "
-               "for 300 s, so it was powered down.", severity="warning"):
-    return Event(index, severity, "Stepper Probe", title, message, None, True,
-                 0.0)
-
-
-def _ack_texts(dialog):
-    return dialog.title_label.cget("text"), dialog.body.cget("text")
-
-
-def test_ack_an_acknowledged_event_opens_a_titled_dialog_with_one_key(
-        dashboard, tk_harness):
-    """The event's title is the dialog's title (and its heading), its
-    message the body, in the confirm dialog's type; one key, Understood,
-    holds the focus; nothing grabs."""
-    dashboard.open()
-    dashboard._on_event(_attention(1))
-    SCHEDULER.pump()
-    dialog = dashboard._ack_dialog
-    assert dialog is not None and not dialog.top.is_destroyed
-    assert dialog.top.titles == ["Idle timeout"]
-    assert _ack_texts(dialog) == (
-        "Idle timeout",
-        "Stepper Probe was idle for 300 s, so it was powered down.")
-    assert dialog.body.cget("font") == tkmod._font()
-    assert dialog.body.cget("wraplength") == 420
-    assert dialog.key.widget.cget("text") == "Understood"
-    presses = [w for w in _all_widgets(dialog.top)
-               if w.cget("takefocus") == 1]
-    assert presses == [dialog.key.widget], "one key, and only one"
-    assert Focus.current is dialog.key.widget, "Understood is the default"
-    assert GRABS == [], "an application-modal grab takes the stop away"
-    assert tk_harness.errors == []
-
-
-def _all_widgets(widget):
-    out = []
-    for child in getattr(widget, "children", []):
-        out.append(child)
-        out.extend(_all_widgets(child))
-    return out
-
-
-def test_ack_return_escape_and_the_close_button_all_acknowledge(dashboard):
-    dashboard.open()
-    for index, gesture in enumerate(("<Return>", "<Escape>", "close")):
-        dashboard._on_event(_attention(index, title=f"Fault {index}"))
-        SCHEDULER.pump()
-        dialog = dashboard._ack_dialog
-        if gesture == "close":
-            dialog.top.protocols["WM_DELETE_WINDOW"]()
-        else:
-            dialog.top.fire(gesture)
-        assert dialog.top.is_destroyed, gesture
-        assert dashboard._alerts == [] and dashboard._ack_dialog is None, gesture
-
-
-def test_ack_a_second_alert_queues_behind_the_first(dashboard):
-    """Queue, not stack: the second waits for the first's Understood."""
-    dashboard.open()
-    dashboard._on_event(_attention(1))
-    dashboard._on_event(_attention(2, title="Rotator Unreachable",
-                                   message="The stage stopped answering."))
-    SCHEDULER.pump()
-    first = dashboard._ack_dialog
-    assert _ack_texts(first)[0] == "Idle timeout"
-    assert first.count.cget("text") == "1 more waiting"
-    assert [e.title for e in dashboard._alerts] == ["Idle Timeout",
-                                                   "Rotator Unreachable"]
-    first.key.widget.fire("<Button-1>")
-    assert first.top.is_destroyed
-    second = dashboard._ack_dialog
-    assert second is not first and not second.top.is_destroyed
-    assert _ack_texts(second) == ("Rotator unreachable",
-                                  "The stage stopped answering.")
-    assert second.count.cget("text") == ""
-    second.key.widget.fire("<Button-1>")
-    assert dashboard._ack_dialog is None and dashboard._alerts == []
-    assert Focus.current is dashboard._stop_button, "focus goes back to the stop"
-
-
-def test_ack_a_repeat_of_the_open_title_counts_and_does_not_reopen(dashboard):
-    dashboard.open()
-    dashboard._on_event(_attention(1))
-    SCHEDULER.pump()
-    dialog = dashboard._ack_dialog
-    dashboard._on_event(_attention(2, message="Stepper Probe was idle for "
-                                   "301 s, so it was powered down."))
-    SCHEDULER.pump()
-    assert dashboard._ack_dialog is dialog and not dialog.top.is_destroyed
-    assert len(dashboard._alerts) == 2, "both are kept (HC-2)"
-    assert dialog.body.cget("text") == ("Stepper Probe was idle for 301 s, so "
-                                        "it was powered down. (x2)")
-    dialog.key.widget.fire("<Button-1>")
-    assert dashboard._ack_dialog is None and dashboard._alerts == []
-
-
-def test_ack_the_stop_still_fires_while_the_dialog_is_open(dashboard,
-                                                          controller):
-    dashboard.open()
-    dashboard._on_event(_attention(1))
-    SCHEDULER.pump()
-    dialog = dashboard._ack_dialog
-    ALL_BINDINGS["<Control-period>"](FakeEvent())
-    assert controller.estop_calls == 1 and controller.is_estopped
-    assert not dialog.top.is_destroyed, "the stop does not answer for the operator"
-    assert GRABS == []
-
-
-def test_ack_the_acknowledgement_is_logged_at_debug(dashboard, monkeypatch):
-    said = []
-    monkeypatch.setattr(tkmod.events, "debug",
-                        lambda title, message, **kw: said.append((title, message)))
-    dashboard.open()
-    dashboard._on_event(_attention(1))
-    SCHEDULER.pump()
-    dashboard._ack_dialog.key.widget.fire("<Button-1>")
-    assert ("Alert Acknowledged", "warning/Idle Timeout") in said, said
-
-
-def test_ack_close_takes_the_dialog_down(dashboard):
-    dashboard.open()
-    dashboard._on_event(_attention(1))
-    SCHEDULER.pump()
-    dialog = dashboard._ack_dialog
-    dashboard.close()
-    assert dialog.top.is_destroyed
-
-
-# ---------------------------------------------------------------------------
-# rb-restart R1/R6: an action on an acknowledged notice
-# ---------------------------------------------------------------------------
-
-class ActionSetup(Panel):
-    """A Setup stand-in with the two update commands the prompts name."""
-    NAME = "Setup"
-
-    def __init__(self):
-        super().__init__()
-        self.restarts, self.applies = [], []
-        self.refuse = ""
-
-    @property
-    def schema(self):
-        return sch.schema(sch.section(
-            "Update",
-            sch.button("Update now", "apply_update", role="go"),
-            sch.button("Restart", "restart_station"),
-            layout="row"))
-
-    def apply_update(self, confirmed=False):
-        if self.refuse:
-            raise Refused(self.refuse)
-        if not confirmed:
-            raise NeedsConfirm("Update the station now?", "apply_update")
-        self.applies.append(confirmed)
-        return True
-
-    def restart_station(self, confirmed=False):
-        if not confirmed:
-            raise NeedsConfirm("Restart the station now?", "restart_station")
-        self.restarts.append(confirmed)
-        return True
-
-
-RESTART_ACTION = {"label": "Restart now", "name": "__setup__",
-                  "command": "restart_station", "args": [True]}
-UPDATE_ACTION = {"label": "Update now", "name": "__setup__",
-                 "command": "apply_update", "args": []}
-
-
-def _prompt(index, action, title="Restart Needed",
-            message="Updated to def5678. Restart the station to run it."):
-    return Event(index, "warning", "Setup", title, message, None, True, 0.0,
-                 action)
-
-
-@pytest.fixture
-def action_board(controller):
-    setup = ActionSetup()
-    built = tkmod.TkDashboard(controller, setup)
-    built.open()
-    yield built, setup
-    if not built._closing:
-        built.close()
-
-
-def test_restart_an_action_shows_two_keys_and_return_runs_it(action_board,
-                                                             tk_harness):
-    board, setup = action_board
-    board._on_event(_prompt(1, RESTART_ACTION))
-    SCHEDULER.pump()
-    dialog = board._ack_dialog
-    assert dialog.key.widget.cget("text") == "Restart now"
-    assert dialog.later.widget.cget("text") == "Later"
-    presses = [w for w in _all_widgets(dialog.top) if w.cget("takefocus") == 1]
-    assert sorted(w.cget("text") for w in presses) == ["Later", "Restart now"]
-    assert Focus.current is dialog.key.widget, "the action is the default"
-    dialog.top.fire("<Return>")
-    assert dialog.top.is_destroyed and board._ack_dialog is None
-    # The dialog was the question: confirmed, and nothing asked again.
-    assert setup.restarts == [True]
-    assert tk_harness.asked == []
-
-
-def test_restart_escape_and_the_close_button_are_later(action_board):
-    board, setup = action_board
-    for index, gesture in enumerate(("<Escape>", "close", "click")):
-        board._on_event(_prompt(index, RESTART_ACTION, message=f"Updated {index}."))
-        SCHEDULER.pump()
-        dialog = board._ack_dialog
-        if gesture == "close":
-            dialog.top.protocols["WM_DELETE_WINDOW"]()
-        elif gesture == "click":
-            dialog.later.widget.fire("<Button-1>")
-        else:
-            dialog.top.fire(gesture)
-        assert dialog.top.is_destroyed and board._alerts == [], gesture
-    assert setup.restarts == []
-
-
-def test_restart_the_action_key_click_runs_it_too(action_board):
-    board, setup = action_board
-    board._on_event(_prompt(1, RESTART_ACTION))
-    SCHEDULER.pump()
-    board._ack_dialog.key.widget.fire("<Button-1>")
-    assert setup.restarts == [True]
-
-
-def test_restart_an_action_that_asks_asks_as_a_button_press_does(action_board,
-                                                                tk_harness):
-    """Update now from the Update Ready dialog is the panel's own press:
-    its confirmation is asked, and a No runs nothing."""
-    board, setup = action_board
-    tk_harness.confirm_answer = False
-    board._on_event(_prompt(1, UPDATE_ACTION, title="Update Ready",
-                            message="2 new commits are ready: x."))
-    SCHEDULER.pump()
-    board._ack_dialog.key.widget.fire("<Button-1>")
-    assert tk_harness.asked == [("confirm", "Update the station now?")]
-    assert setup.applies == []
-    tk_harness.confirm_answer = True
-    board._on_event(_prompt(2, UPDATE_ACTION, title="Update Ready",
-                            message="3 new commits are ready: y."))
-    SCHEDULER.pump()
-    board._ack_dialog.key.widget.fire("<Button-1>")
-    assert setup.applies == [True]
-
-
-def test_restart_a_refused_action_shows_on_its_panel(action_board, monkeypatch):
-    board, setup = action_board
-    setup.refuse = "Close every model first."
-    shown = []
-    view = board._panels[board.SETUP_TAB]
-    monkeypatch.setattr(view, "_show_refused", lambda reason, *a: shown.append(reason))
-    board._on_event(_prompt(1, UPDATE_ACTION, title="Update Ready"))
-    SCHEDULER.pump()
-    board._ack_dialog.key.widget.fire("<Button-1>")
-    assert "Close every model first." in shown
-
-
-def test_restart_the_dialog_stays_over_the_window_without_a_grab(
-        action_board, monkeypatch):
-    """R6: transient for the main window and lifted on every show."""
-    board, _ = action_board
-    transient = []
-    monkeypatch.setattr(FakeWidget, "winfo_toplevel", lambda self: self,
-                        raising=False)
-    monkeypatch.setattr(FakeRoot, "transient",
-                        lambda self, master=None: transient.append(master),
-                        raising=False)
-    board._on_event(_prompt(1, RESTART_ACTION))
-    SCHEDULER.pump()
-    dialog = board._ack_dialog
-    assert transient == [board.root] and dialog.top.lifted >= 1
-    before = dialog.top.lifted
-    board._on_event(_prompt(2, RESTART_ACTION, message="Updated again."))
-    SCHEDULER.pump()
-    assert board._ack_dialog is dialog and dialog.top.lifted > before
-    assert GRABS == []
-
-
-def test_restart_a_notice_without_an_action_keeps_one_key(action_board):
-    board, _ = action_board
-    board._on_event(_attention(1))
-    SCHEDULER.pump()
-    dialog = board._ack_dialog
-    assert dialog.later is None and dialog.key.widget.cget("text") == "Understood"
-
-
-def test_restart_the_base_runs_an_action_without_a_drawn_panel(tk_harness):
-    """`Dashboard.run_action` with no PanelView for the name: the same call,
-    the Dashboard's own confirmation, a refusal as a tray warning."""
-    from views.base import Dashboard
-    setup = ActionSetup()
-
-    class Bare(Dashboard):
-        asked = []
-
-        def _confirm(self, prompt):
-            self.asked.append(prompt)
-            return True
-
-    board = Bare(FakeController(), setup)
-    assert board.run_action(UPDATE_ACTION).is_ok
-    assert board.asked == ["Update the station now?"] and setup.applies == [True]
-    assert board.run_action(RESTART_ACTION).is_ok and setup.restarts == [True]
-    assert board.run_action(None) is None

@@ -270,9 +270,32 @@ def test_idle_countdown_keys_come_as_a_pair(model):
 
 def test_device_status_is_a_word_the_views_know(model):
     known = {"verified", "simulated", "lost", "closed", "unverified",
-             "connecting", "bound", "unbound", "open", "capturing"}
+             "connecting", "reconnecting", "bound", "unbound", "open", "capturing"}
     for kind, status in model.state["devices"].items():
         assert str(status) in known, f"{kind}: {status!r}"
+
+
+#: L3: the `link` contract the views are coded against (agent C). EXACTLY
+#: these keys; do not rename.
+LINK_KEYS = {"status": str, "losses": int, "reconnects": int, "dropped": int,
+             "stalls": int, "stalled": bool, "last_loss": (str, type(None))}
+
+
+def test_a_model_with_a_serial_port_publishes_its_link(model):
+    from devices.serial_port import SerialPort
+    owns_port = any(isinstance(d, SerialPort) for d in model.devices)
+    state = model.state
+    if not owns_port:
+        assert "link" not in state
+        return
+    link = state["link"]
+    assert set(link) == set(LINK_KEYS), set(link) ^ set(LINK_KEYS)
+    for key, kind in LINK_KEYS.items():
+        assert isinstance(link[key], kind), (key, link[key])
+        if kind is int:
+            assert not isinstance(link[key], bool), key
+    assert link["status"] in {"verified", "unverified", "simulated", "lost",
+                              "reconnecting", "closed", "connecting"}
 
 
 def test_file_save_output_root_is_published_at_the_top_of_state(model):

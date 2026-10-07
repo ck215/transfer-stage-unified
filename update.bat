@@ -49,7 +49,7 @@ echo [update] updated to %NEW:~0,7%
 git diff --name-only %OLD% %NEW% -- pyproject.toml requirements.txt | findstr . >nul && (
     echo [update] dependencies changed: reinstalling ...
     call .venv\Scripts\activate.bat
-    python -m pip install --quiet -e ".[qt]" || (echo [update] pip install failed. Run: pip install -e ".[qt]" & exit /b 1)
+    python -m pip install --quiet -e "." || (echo [update] pip install failed. Run: pip install -e "." & exit /b 1)
 )
 git diff --name-only %OLD% %NEW% -- firmware | findstr . >nul && (
     echo [update] firmware changed: the Setup page's Firmware row flashes the boards that are out of date.

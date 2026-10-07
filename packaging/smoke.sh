@@ -3,7 +3,7 @@
 #
 #     packaging/smoke.sh [BUNDLE_DIR]          (default: dist/station)
 #
-# Runs the three launchers FROM the bundle, in SIM, and asserts on exit codes
+# Runs the launcher (station-web, the only one: Tk and Qt retired 2026-10-07) FROM the bundle, in SIM, and asserts on exit codes
 # and on lines in each run's own log file, never on timing alone:
 #
 #   0. the layout (packaging/layout.py): VERSION and release.json;
@@ -19,17 +19,6 @@
 #      every one; the station_version Setup reports is VERSION's tag and
 #      build date; /api/quit exits 0 within 5 s; its log file names the stop,
 #      the quit and SDL teardown (the gamepad hub opened and closed).
-#   2. station-tk:  opens its dashboard; SIGTERM -> the Controller's handler
-#      closes, then re-raises the signal: exit status 143 within 5 s.
-#      Skipped (and said so) under STATION_NO_WINDOWS=1: Tk maps a window.
-#   3. station-qt:  same, with QT_QPA_PLATFORM=offscreen (SMOKE_QT_PLATFORM
-#      overrides it; empty = the native platform), and its log names the Qt
-#      plugin path the entry point resolved.
-#
-# The exit code of a SIGTERM'd launcher is 143 (128 + 15), not 0: the
-# Controller's handler runs close() and then re-raises the signal with the
-# default action, the conventional way to report "ended by SIGTERM".
-#
 # Needs: bash, curl. Uses port 8099 (SMOKE_PORT). Logs land where the station
 # puts them ($TRANSFER_STAGE_DATA_ROOT or ~/transfer-stage-runs, /logs); each
 # step finds ITS log as the new file naming its view, so other stations
@@ -44,7 +33,6 @@ PORT="${SMOKE_PORT:-8099}"
 BASE="http://127.0.0.1:$PORT"
 LOGDIR="${TRANSFER_STAGE_DATA_ROOT:-$HOME/transfer-stage-runs}/logs"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/station-smoke.XXXXXX")"
-QT_PLATFORM="${SMOKE_QT_PLATFORM-offscreen}"
 # The Setup rows, in display order. The Transfer Map and the Sample Map are
 # stores with no port (their choice is "On"), so they are only ticked; red_percent (screen
 # capture) has no row of its own since 2026-09-28: it is drawn on the
@@ -114,9 +102,7 @@ log_has() { grep -qF -- "$2" "$1"; }
 echo "bundle:  $BUNDLE"
 echo "logs:    $LOGDIR"
 echo "scratch: $OUT"
-for view in tk qt web; do
-    [ -x "$BUNDLE/station-$view" ] || fail "station-$view is not in the bundle"
-done
+[ -x "$BUNDLE/station-web" ] || fail "station-web is not in the bundle"
 [ "$FAILED" = 0 ] || exit 1
 # -- 0. the layout --------------------------------------------------------
 echo "== layout"
@@ -267,60 +253,6 @@ else
         fail "a new log file names view=web port=$PORT in $LOGDIR"
     fi
 fi
-
-# -- 2 and 3. the desktop launchers ----------------------------------------
-desktop() {  # desktop <view> <ready-needle> [extra log needles...]
-    local view=$1 ready=$2 pid rc log=; shift 2
-    echo "== station-$view"
-    snapshot_logs
-    "$BUNDLE/station-$view" > "$OUT/$view.out" 2>&1 &
-    pid=$!
-    if log="$(wait_log 30 "view=$view" "$ready")"; then
-        pass "station-$view opened ($ready) - log $log"
-    else
-        fail "station-$view opened within 30 s"
-        tail -20 "$OUT/$view.out"
-    fi
-    sleep_s 5
-    kill -TERM "$pid" 2>/dev/null
-    wait_exit "$pid" 5
-    rc=$RC
-    check "station-$view: SIGTERM -> Controller handler -> exit 143 within 5 s (exit $rc)" \
-        test "$rc" = 143
-    if [ -n "${log:-}" ]; then
-        local needle
-        for needle in "$@"; do
-            check "log: $needle" log_has "$log" "$needle"
-        done
-        if grep -q "Traceback" "$log"; then
-            fail "log: no traceback"; grep -n -A3 "Traceback" "$log" | head -20
-        else pass "log: no traceback"; fi
-    fi
-    if [ "$rc" = 1 ]; then
-        echo "     exit 1 with no SIGTERM handler run: a toolkit's own handler ended the"
-        echo "     process past Controller.close() (Tk 9 on Aqua does this; see the"
-        echo "     rb-pack handoff, CORE CHANGE REQUESTS). Nothing was stopped or closed."
-    fi
-    if [ "$rc" != 143 ]; then
-        echo "     --- station-$view output (tail)"; tail -15 "$OUT/$view.out"
-    fi
-}
-
-# STATION_NO_WINDOWS=1 (someone is working at this machine): Tk has no
-# offscreen platform, so its step would map a real window; it is skipped,
-# said so, and not counted as passed. CI never sets it.
-if [ -n "${STATION_NO_WINDOWS:-}" ] && [ "${STATION_NO_WINDOWS}" != 0 ]; then
-    echo "== station-tk"
-    echo "SKIP station-tk: STATION_NO_WINDOWS is set (Tk would map a real window)"
-else
-    desktop tk "Dashboard Open: Tk dashboard ready" "[app] View: tk starting"
-fi
-
-if [ -n "$QT_PLATFORM" ]; then export QT_QPA_PLATFORM="$QT_PLATFORM"; fi
-desktop qt "Qt dashboard shown" "[app] View: qt starting" \
-    "[packaging] Qt Plugin Path:" \
-    "QT_QPA_PLATFORM_PLUGIN_PATH=$BUNDLE/_internal/PySide6/Qt/plugins/platforms"
-unset QT_QPA_PLATFORM
 
 echo
 if [ "$FAILED" = 0 ]; then

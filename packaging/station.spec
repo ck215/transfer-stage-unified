@@ -1,22 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec: one bundle, three launchers (PACKAGING_PLAN P3).
+"""PyInstaller spec: one bundle, one launcher (PACKAGING_PLAN P3).
 
     pyinstaller --noconfirm --clean packaging/station.spec     (from the repo root)
 
-produces ONE folder, dist/station/, holding station-tk, station-qt and
-station-web side by side over one shared _internal/. One-folder mode only:
-one-file mode would unpack ~250 MB to a temp dir on every launch and trips
-antivirus (refused in the plan).
+produces ONE folder, dist/station/, holding station-web over one _internal/.
+The Tk and Qt launchers were retired 2026-10-07 (owner ruling: Web is the only
+frontend); their views stay frozen at 413f504 in the source tree but are not
+bundled. One-folder mode only: one-file mode would unpack ~250 MB to a temp
+dir on every launch and trips antivirus (refused in the plan).
 
-One Analysis per entry, so each launcher's own module archive holds only its
-view: station-tk carries no PySide6, station-web neither PySide6 nor
-tkinter. The three COLLECT into one folder; shared libraries are stored once.
+One Analysis, one executable: station-web carries neither PySide6 nor tkinter.
 
 `STATION_SRC` (optional) builds from another copy of src/ - used to prove a
 proposed core change against the bundle without touching the tree.
 """
 import os
-import re
 import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -41,8 +39,8 @@ WEB_STATIC = [(os.path.join(SRC, "views", "web", "static"),
 FFMPEG_BINARIES = collect_data_files("imageio_ffmpeg", subdir="binaries")
 
 # -- imports ----------------------------------------------------------------
-# app.launch() imports the view with importlib (by name, so no view imports
-# another): static analysis cannot see it, so each entry names its own.
+# app.launch() imports the view with importlib (by name): static analysis
+# cannot see it, so the entry names it.
 # pygame is imported lazily inside devices/gamepad.py; modulegraph follows
 # function-level imports, and pygame ships its own PyInstaller hook for the
 # SDL2 libraries - named here anyway so a refactor to importlib cannot drop it.
@@ -57,20 +55,14 @@ COMMON_HIDDEN = (
     # mss picks its backend per OS at run time (mss.darwin / linux / windows).
     + collect_submodules("mss", filter=lambda name: not name.endswith("__main__"))
 )
-VIEW_HIDDEN = {
-    "tk": ["views.tk", "tkinter", "tkinter.ttk", "tkinter.font",
-           "tkinter.filedialog", "tkinter.messagebox"],
-    "qt": ["views.qt", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets"],
-    "web": ["views.web.server"],
-}
+WEB_HIDDEN = ["views.web.server"]
 
 # Never shipped: the test suites, the old tree, dev tools.
 COMMON_EXCLUDES = [
     "tests", "legacy", "pytest", "_pytest", "pytestqt", "IPython",
     "gcodeparser", "PyInstaller", "setuptools", "pkg_resources", "pip",
     # matplotlib draws through Agg ONLY (model/plot_data.py); every GUI
-    # backend would drag in a toolkit - Qt into station-web, Tk into
-    # station-qt.
+    # backend would drag in a toolkit (Qt or Tk) the Web bundle never uses.
     "matplotlib.backends.backend_qt", "matplotlib.backends.backend_qtagg",
     "matplotlib.backends.backend_qtcairo", "matplotlib.backends.backend_qt5",
     "matplotlib.backends.backend_qt5agg", "matplotlib.backends.backend_qt5cairo",
@@ -84,59 +76,35 @@ COMMON_EXCLUDES = [
     "matplotlib.backends.backend_gtk3cairo", "matplotlib.backends.backend_gtk4",
     "matplotlib.backends.backend_gtk4agg", "matplotlib.backends.backend_gtk4cairo",
     "PyQt5", "PyQt6", "PySide2",
+    # The retired views' toolkits (views/tk.py, views/qt.py are not bundled).
+    "PySide6", "shiboken6", "tkinter", "_tkinter", "views.tk", "views.qt",
 ]
-# The Qt view needs QtCore, QtGui, QtWidgets and QtSvg (views/qt.py draws its
-# icons with QSvgRenderer) and nothing else from Qt: every one of these would
-# multiply the bundle (QtWebEngine alone is >150 MB). Excluding QtSvg made
-# views/qt.py's PySide6 import fail as a whole, and station-qt refused to
-# start ("PySide6 is not installed").
-QT_UNUSED = [
-    "PySide6." + m for m in (
-        "Qt3DAnimation", "Qt3DCore", "Qt3DExtras", "Qt3DInput", "Qt3DLogic",
-        "Qt3DRender", "QtBluetooth", "QtCharts", "QtConcurrent",
-        "QtDataVisualization", "QtDBus", "QtDesigner", "QtGraphs",
-        "QtGraphsWidgets", "QtHelp", "QtHttpServer", "QtLocation",
-        "QtMultimedia", "QtMultimediaWidgets", "QtNetwork", "QtNetworkAuth",
-        "QtNfc", "QtOpenGL", "QtOpenGLWidgets", "QtPdf", "QtPdfWidgets",
-        "QtPositioning", "QtPrintSupport", "QtQml", "QtQuick", "QtQuick3D",
-        "QtQuickControls2", "QtQuickTest", "QtQuickWidgets", "QtRemoteObjects",
-        "QtScxml", "QtSensors", "QtSerialBus", "QtSerialPort",
-        "QtSpatialAudio", "QtSql", "QtStateMachine", "QtSvgWidgets",
-        "QtTest", "QtTextToSpeech", "QtUiTools", "QtWebChannel",
-        "QtWebEngineCore", "QtWebEngineQuick", "QtWebEngineWidgets",
-        "QtWebSockets", "QtWebView", "QtXml", "QtAxContainer")
-]
-VIEW_EXCLUDES = {
-    "tk": ["PySide6", "shiboken6"],
-    "qt": ["tkinter", "_tkinter"] + QT_UNUSED,
-    "web": ["PySide6", "shiboken6", "tkinter", "_tkinter"],
-}
 
 
-def analysis(view):
+def analysis():
     return Analysis(
-        [os.path.join(HERE, f"entry_{view}.py")],
+        [os.path.join(HERE, "entry_web.py")],
         pathex=[SRC],
         binaries=[],
-        datas=(WEB_STATIC if view == "web" else []) + FFMPEG_BINARIES,
-        hiddenimports=COMMON_HIDDEN + VIEW_HIDDEN[view],
+        datas=WEB_STATIC + FFMPEG_BINARIES,
+        hiddenimports=COMMON_HIDDEN + WEB_HIDDEN,
         hookspath=[p for p in [os.path.join(HERE, "hooks")] if os.path.isdir(p)],
         hooksconfig={"matplotlib": {"backends": "Agg"}},
         runtime_hooks=[],
-        excludes=COMMON_EXCLUDES + VIEW_EXCLUDES[view],
+        excludes=COMMON_EXCLUDES,
         noarchive=False,
         optimize=0,
     )
 
 
-def executable(view, a):
+def executable(a):
     pyz = PYZ(a.pure)
     return EXE(
         pyz,
         a.scripts,
         [],
         exclude_binaries=True,
-        name=f"station-{view}",
+        name="station-web",
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
@@ -152,30 +120,7 @@ def executable(view, a):
     )
 
 
-# What PySide6's hooks still collect that the Qt view never loads: the
-# virtual-keyboard input plugin (it drags in QtQuick, QtQml, QtOpenGL and
-# QtNetwork), the PDF image plugin (QtPdf), the TUIO touch plugin
-# (QtNetwork) and Qt's own translations (the station is English-only).
-# About 28 MB on macOS. Matched on the bundle path, so it is OS-neutral:
-# a framework on macOS, QtX.dll on Windows, libQt6X.so.6 on Linux.
-QT_PRUNE = re.compile(
-    r"^PySide6[/\\](Qt[/\\])?("       # macOS/Linux: PySide6/Qt/..., Windows: PySide6/...
-    r"plugins[/\\](platforminputcontexts|generic)[/\\]"
-    r"|plugins[/\\]imageformats[/\\][^/\\]*qpdf"
-    r"|translations[/\\]"
-    r"|((lib|bin)[/\\])?(lib)?Qt6?(Quick|Qml|QmlModels|QmlMeta|QmlWorkerScript"
-    r"|VirtualKeyboard|VirtualKeyboardQml|Pdf|OpenGL|Network)\b)")
-
-
-def pruned(toc):
-    return [entry for entry in toc if not QT_PRUNE.match(entry[0])]
-
-
-VIEWS = ("tk", "qt", "web")
-analyses = {view: analysis(view) for view in VIEWS}
-for a in analyses.values():
-    a.binaries = pruned(a.binaries)
-    a.datas = pruned(a.datas)
+a = analysis()
 
 
 # pygame on macOS / Python 3.14 is built on sdl2-compat, which dlopen()s SDL3
@@ -185,21 +130,20 @@ sys.path.insert(0, HERE)
 import spec_helpers  # noqa: E402  (packaging/spec_helpers.py)
 
 if sys.platform == "darwin":
-    for a in analyses.values():
-        a.binaries = a.binaries + spec_helpers.sdl3_for_sdl2_compat(a.binaries, workpath)
-executables = {view: executable(view, analyses[view]) for view in VIEWS}
+    a.binaries = a.binaries + spec_helpers.sdl3_for_sdl2_compat(a.binaries, workpath)
+exe_web = executable(a)
 
 coll = COLLECT(
-    *[executables[v] for v in VIEWS],
-    *[analyses[v].binaries for v in VIEWS],
-    *[analyses[v].datas for v in VIEWS],
+    exe_web,
+    a.binaries,
+    a.datas,
     strip=False,
     upx=False,
     name="station",
 )
 
-# macOS: pip-installed dylibs carry UF_HIDDEN into dist/ and Qt's plugin
-# scanner skips hidden files; clear it on the whole bundle after the copy.
+# macOS: pip-installed dylibs carry UF_HIDDEN into dist/ and the loader skips
+# hidden files; clear it on the whole bundle after the copy.
 spec_helpers.clear_hidden_flags(coll.name)
 
 # The bundle layout contract (packaging/layout.py): the repo's firmware/ goes
