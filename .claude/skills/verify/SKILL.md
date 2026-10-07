@@ -14,13 +14,10 @@ on this Mac); `$S` is the session scratch directory.
 $PY -m pytest tests -q -p no:cacheprovider -m "not qt"
 ```
 
-Minutes, not seconds; run after every edit. Baseline: the lead's last full
-run was **3796 passed, 10 skipped, 227 deselected, 1 xfailed at `79ae0bd`**
-(2026-10-07); 474 web-view tests were added after it. A collect-only count at
-`7f509cb` (`--collect-only -q -m "not qt"`) reads **3831/4058 collected,
-227 deselected** (the 227 are the Qt tests of the frozen view). Re-measure
-with that command and use the number you get; the two figures above were not
-reconciled by the docs pass. A count
+Minutes, not seconds; run after every edit. Baseline (2026-10-07, the merged
+round, lead's full run on the final tree): **3841 passed, 10 skipped, 227
+deselected, 1 xfailed** (the 227 are the Qt tests of the frozen view);
+golden 78; legacy 1038 passed, 1 skipped, 89 deselected, 1 xfailed. A count
 that moved is a finding, not noise. Known flake, not a regression:
 `test_transfer_map.py::test_mark_appears_in_the_index_and_the_label_from_the_mark_on`
 fails about one run in three on an unchanged tree (a 1 ms timing bound);

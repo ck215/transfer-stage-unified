@@ -206,9 +206,11 @@ bench PC runs code not yet in this repo; the owner is pushing a branch, and
 recovering it is a gate). The next repo version will be v9, with
 column-presence migration and a `.v8.bak` backup. v9 is NOT done.
 
-**Gates** (the lead's last full run): 3796 passed, 10 skipped, 227 deselected,
-1 xfailed at `79ae0bd`; 474 web-view tests added after (collected
-without the `qt` marker at this docs commit: 3831 of 4058, 227 deselected).
+**Gates** (the lead's full run on the merged round, after rb-tmap part 1 and
+the docs pass): 3841 passed, 10 skipped, 227 deselected, 1 xfailed; legacy
+1038 passed; a SIM end-to-end trial (setup -> region with the stage still ->
+live -> marked -> finish) produced screen.mp4, frames.csv, telemetry.csv,
+before_full.png, mark_full.png and a recorded row.
 Golden 78. The Qt pass is optional now and needs `.[qt]`.
 
 **Bench-only, the owner's (Phase 4)**: the transient mechanism on the Mint box,
