@@ -1161,6 +1161,8 @@ def test_a_missing_full_picture_warns_and_the_trial_is_recorded(
     warned = _titled("No Full Picture", since)
     assert len(warned) == 1 and warned[0].severity == "warning"
     assert f"Trial {trial}" in warned[0].message
+    # A settled frame takes >= 5 ms (CAP-1): Finish waits for one.
+    assert _wait_for(lambda: model._trial.recording.frames >= 1)
     _finish(model)
     assert len(_titled("No Full Picture", since)) == 1     # Finish takes none
     row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
@@ -1390,6 +1392,8 @@ def test_a_migrated_database_records_a_trial_with_its_full_pictures(
     try:
         trial = _arm(model)
         assert trial == 2
+        # A settled frame takes >= 5 ms (CAP-1): Finish waits for one.
+        assert _wait_for(lambda: model._trial.recording.frames >= 1)
         _finish(model)
         row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
         assert row["before_full_path"] and row["video_path"]
@@ -2155,7 +2159,10 @@ def test_the_rate_cap_writes_at_most_video_fps_and_counts_what_it_drops(
     started = time.monotonic()
     time.sleep(1.0)
     elapsed = time.monotonic() - started
-    assert red._run.frames - grabbed > 3 * tm_module.VIDEO_FPS * elapsed
+    # 2026-10-07: Red Percent samples settled frames at the source rate
+    # (CAP-1), so it offers only a little more than the video takes; the
+    # cap still drops what it cannot write.
+    assert red._run.frames - grabbed > tm_module.VIDEO_FPS * elapsed
     accepted = rec.frames + rec.queue.qsize()
     assert accepted <= tm_module.VIDEO_FPS * (elapsed + 0.3) + 2
     assert accepted >= 0.5 * tm_module.VIDEO_FPS * elapsed
