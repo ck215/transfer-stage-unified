@@ -4083,3 +4083,88 @@ def test_the_status_names_the_trial_and_the_sample_count_is_diagnostics(scripted
         f"Trial {trial} on 4oct26 · 2 · F3, force marked at")
     model.abort_trial()
     assert model.state["values"]["trial_samples"] == ""
+
+
+# -- TR-4 (approved proposal 2026-10-07): the procedure strip's data -----------
+# `state` carries phase and phases; it also carries the Next-step sentence
+# (`step_text`) and one word for the analysis (`analysis_health`), and says
+# which tiers of a hosted model the page draws (`guest_tiers`: Red Percent's
+# details and Diagnostics, never its tier-1 group).
+
+@pytest.mark.parametrize("step", TransferMap.PHASES)
+def test_the_state_carries_the_step_text_in_every_step(station, step):
+    model, red, *_ = station
+    _to_step(model, step)
+    state = model.state
+    assert state["phase"] == step and state["phases"] == list(TransferMap.PHASES)
+    assert state["step_text"] == state["values"]["next_step"] == model.next_step
+    assert state["step_text"]
+    assert state["analysis_health"] in ("settled", "unsettled", "stalled",
+                                        "no region", "")
+    if step == "new_tip":
+        model.cancel_new_tip()
+    elif step != "setup":
+        model.abort_trial()
+    model.estop()
+    assert model.state["step_text"] == ""            # latched: the stop says
+
+
+def test_the_analysis_health_is_one_word_from_red_percents_counters(scripted):
+    model, red, clock = scripted
+    health = lambda: model.state["analysis_health"]   # noqa: E731
+    assert health() == "no region"                   # Red Percent has none
+    model.on_model_removed("Red Percent")
+    assert health() == "no region"                   # nor a Red Percent
+    model.on_model_added("Red Percent", red)
+    red.set_region(0, 0, 10, 10)
+    assert health() == ""                            # setup: no run expected
+    red.region = None
+    _arm(model)
+    assert model.phase == "live"
+    assert health() == "settled"                     # a window opens
+    clock.now += tm_module.HEALTH_WINDOW_S
+    red.frames_accepted += 14
+    red.rejected_unsettled += 2
+    assert health() == "settled"
+    clock.now += tm_module.HEALTH_WINDOW_S / 2
+    red.rejected_black += 50
+    assert health() == "settled"                     # the window is not over
+    clock.now += tm_module.HEALTH_WINDOW_S / 2
+    assert health() == "unsettled"                   # most reads rejected
+    clock.now += tm_module.HEALTH_WINDOW_S
+    assert health() == "stalled"                     # nothing read at all
+    clock.now += tm_module.HEALTH_WINDOW_S
+    red.frames_accepted += 15
+    assert health() == "settled"
+    red.end_run()                                    # the run went away
+    assert health() == "stalled"
+    model.abort_trial()
+    assert health() == ""
+
+
+def test_the_page_draws_only_its_guests_details(red):
+    """Red Percent is drawn on the Transfer Map's page (Model.HOST); the page
+    asks for its tiers 2 and 3 only, so its tier-1 group (Current red, Red
+    change, Running, Start run, Stop run) is not on the page, and "RGB
+    analysis details" / Diagnostics stay reachable."""
+    controller = Controller()
+    model = TransferMap()
+    try:
+        controller.add("Transfer Map", model, {})
+        controller.add("Red Percent", red, {})
+        states = controller.state()["models"]
+        assert states["Red Percent"]["host"] == "Transfer Map"
+        assert states["Transfer Map"]["guest_tiers"] == [2, 3]
+        tiers = {}
+        for section in red.schema["sections"]:
+            tiers.setdefault(section.get("tier", 1), []).append(section)
+        dropped = [e for s in tiers[1] for e in s["elements"]]
+        assert {e.get("command") or e.get("model_attr") for e in dropped} >= {
+            "current_red", "red_change", "is_running", "start_run", "end_run"}
+        kept = [s for t in model.GUEST_TIERS for s in tiers.get(t, [])]
+        assert kept and {s.get("disclosure") for s in kept} >= {"Diagnostics"}
+        assert 1 not in model.GUEST_TIERS
+    finally:
+        controller._models.pop("Red Percent", None)    # the fixture closes it
+        controller._models.pop("Transfer Map", None)
+        model.close()
