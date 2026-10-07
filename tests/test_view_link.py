@@ -216,3 +216,65 @@ def test_v2_without_a_diagnostics_title_the_first_tier_three_section_takes_it():
     assert view_base.with_link_row(out, {"link": _link()}, element) is out
     flat = sch.schema(sch.section("A", sch.readonly("X", "x")))
     assert view_base.with_link_row(flat, {"link": _link()}, element) is flat
+
+
+# -- V3: a held input gate is visible ------------------------------------------
+
+def test_v3_only_a_gamepad_driven_entry_says_its_input_is_held():
+    driven = {"devices": {"SerialPort": "verified", "Gamepad": "bound"}}
+    unbound = {"devices": {"SerialPort": "verified", "Gamepad": "unbound"}}
+    no_pad = {"devices": {"SerialPort": "verified"}}
+    held = ("warning", view_base.INPUT_HELD_LINE)
+    assert view_base.held_notice(driven, True) == held
+    assert view_base.held_notice(driven, False) == ("", "")
+    assert view_base.held_notice(unbound, True) == ("", "")
+    assert view_base.held_notice(no_pad, True) == ("", "")
+    assert view_base.INPUT_HELD_LINE == "Input held: window not focused"
+    # The link outranks the gate: danger first, attention after.
+    down = dict(driven, link=_link(status="lost", last_loss="12:00:00"))
+    assert [n[0] for n in view_base.entry_notices(down, True)] == ["error", "warning"]
+
+
+class _Dashboard(view_base.Dashboard):
+    def __init__(self, controller, views):
+        super().__init__(controller, None)
+        self.views = views
+
+    def _input_views(self):
+        return list(self.views)
+
+    def _marshal(self, fn):
+        fn()
+
+
+class _FocusStation(LinkedStation):
+    def __init__(self):
+        super().__init__()
+        self.focus_calls = []
+
+    def set_input_focus(self, is_focused):
+        self.focus_calls.append(is_focused)
+
+
+def test_v3_the_focus_change_is_shown_on_every_gamepad_driven_entry_and_cleared():
+    """D-4 closes the gamepad gate on focus loss; the operator was told
+    nothing. The Dashboard still only forwards the focus (when the gate
+    closes is D-4's), and now every gamepad-driven entry says so in the
+    attention tier until focus returns."""
+    driven, plain = _FocusStation(), _FocusStation()
+    plain.devices = {"SerialPort": "verified"}
+    views = [FakePanelView(driven, "Probe"), FakePanelView(plain, "Heater")]
+    for built in views:
+        built._build()
+    dashboard = _Dashboard(driven, views)
+
+    dashboard._on_focus_change(False)
+    assert driven.focus_calls == [False], "the gate itself is still D-4's"
+    assert views[0].notices == [("warning", view_base.INPUT_HELD_LINE)]
+    assert views[1].notices == []
+    assert views[0].enabled["is_auto"] is True, "held is shown, nothing is greyed"
+    assert views[0].stale is False
+
+    dashboard._on_focus_change(True)
+    assert driven.focus_calls == [False, True]
+    assert views[0].notices == [] and views[0].input_held is False
