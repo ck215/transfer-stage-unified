@@ -76,7 +76,10 @@ def test_built_models_carry_the_operator_and_how_it_was_established(setup, tmp_p
     setup.run("sign_in")
     assert (tmap.operator_id, tmap.operator_auth) == ("ialbinog", "offline-unverified")
     assert (smap.owner, smap.owner_auth) == ("ialbinog", "offline-unverified")
-    smap.run("save_sample", {"sample_id": "S1"})
+    # Reason: the live sheet has no Sample ID entry (the sample is picked), so
+    # the dormant flake path below is driven with the method.
+    smap.sample_id = "S1"
+    smap.save_sample()
     # The flake commands are dormant since 2026-10-07 (the Sample Map is an
     # image store; flake-coordinate homing is retired for now), so they are
     # off the allow-list: drive the method directly. The provenance under
@@ -84,7 +87,7 @@ def test_built_models_carry_the_operator_and_how_it_was_established(setup, tmp_p
     smap.set_source("Typed readings")
     smap.reading_x_mm, smap.reading_y_mm = 1.0, 2.0
     smap.flag_flake()
-    flake = smap._store.flakes()[0]
+    flake = smap._store.coord_flakes()[0]
     assert (flake["owner"], flake["owner_auth"]) == ("ialbinog", "offline-unverified")
 
 

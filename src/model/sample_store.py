@@ -45,8 +45,16 @@ SCHEMA = "flake-coords/1"
 #: Map becomes microscope-image storage (owner 2026-10-07): the
 #: `sample_images` table, keyed to the same free-text `sample_id` the
 #: Transfer Map stamps on its trials. A new table only, so a v2 file keeps
-#: every row it has.
-SCHEMA_VERSION = 3
+#: every row it has. 4: the sample / chip / flake hierarchy (owner 2026-10-07):
+#: `chips`, `sample_flakes` and `materials` tables, and `sample_images` gains
+#: `chip_id` / `flake_id` (NULL = the sample's own picture). `samples.material`
+#: already existed. The dormant flake-coordinate table keeps the name `flakes`
+#: (and its methods are `coord_*`), so the hierarchy's flakes live in
+#: `sample_flakes` and are reached by `flakes(sample_id, chip_id)`.
+SCHEMA_VERSION = 4
+
+#: Seeded into `materials` when the store is first written.
+DEFAULT_MATERIALS = ("hBN", "graphite", "MoS2")
 
 SHAPES = ("rectangle", "quad", "irregular")
 SAMPLE_STATUSES = ("active", "stored", "consumed", "discarded")
@@ -159,17 +167,32 @@ IMAGE_COLUMNS = (
     ("magnification", "INTEGER NOT NULL CHECK (magnification IN (10, 20, 50, 100))"),
     ("path", "TEXT NOT NULL"), ("sha256", "TEXT NOT NULL"),
     ("captured_at", "TEXT NOT NULL"), ("note", "TEXT"),
+    # Version 4: NULL chip_id and flake_id = the sample's own picture.
+    ("chip_id", "TEXT"), ("flake_id", "TEXT"),
 )
+CHIP_COLUMNS = (
+    ("sample_id", "TEXT NOT NULL"), ("chip_id", "TEXT NOT NULL"),
+    ("note", "TEXT"), ("created_at", "TEXT"),
+)
+SAMPLE_FLAKE_COLUMNS = (
+    ("sample_id", "TEXT NOT NULL"), ("chip_id", "TEXT NOT NULL"),
+    ("flake_id", "TEXT NOT NULL"), ("note", "TEXT"), ("created_at", "TEXT"),
+)
+MATERIAL_COLUMNS = (("name", "TEXT PRIMARY KEY"),)
 _TABLES = {"samples": SAMPLE_COLUMNS, "registrations": REGISTRATION_COLUMNS,
            "corners": CORNER_COLUMNS, "flakes": FLAKE_COLUMNS,
            "rotator_calibrations": ROTATOR_CALIBRATION_COLUMNS,
-           "sample_images": IMAGE_COLUMNS}
+           "sample_images": IMAGE_COLUMNS, "chips": CHIP_COLUMNS,
+           "sample_flakes": SAMPLE_FLAKE_COLUMNS, "materials": MATERIAL_COLUMNS}
+_KEYS = {"chips": ("sample_id", "chip_id"),
+         "sample_flakes": ("sample_id", "chip_id", "flake_id")}
 _NAMES = {table: frozenset(n for n, _k in cols) for table, cols in _TABLES.items()}
 
 _CREATE = tuple(
     "CREATE TABLE IF NOT EXISTS " + table + " ("
     + ", ".join(n + " " + k for n, k in cols)
     + (", PRIMARY KEY (registration_id, label)" if table == "corners" else "")
+    + (", PRIMARY KEY (" + ", ".join(_KEYS[table]) + ")" if table in _KEYS else "")
     + ")" for table, cols in _TABLES.items()
 ) + (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
@@ -286,17 +309,37 @@ class SampleStore:
     def __init__(self, path=None):
         self.path = Path(path) if path else default_path()
         self._lock = threading.Lock()
+        self._readonly = False
+
+    @classmethod
+    def open_readonly(cls, path):
+        """A store that only reads: each call opens a `?mode=ro` connection,
+        nothing is created, migrated or written (`write` refuses). Another
+        model's look at this file (the Transfer Map's pickers). A file that is
+        not there raises `StoreRefused` in words; a file from an older
+        version reads what it has (`chips()` of a v3 file is `[]`)."""
+        found = cls(path)
+        if not found.exists:
+            raise StoreRefused(f"There is no sample database at {found.path}.")
+        found._readonly = True
+        return found
 
     @property
     def exists(self):
         return self.path.is_file()
 
     def _connect(self):
-        db = sqlite3.connect(str(self.path), timeout=5.0)
+        if self._readonly:
+            db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro",
+                                 uri=True, timeout=5.0)
+        else:
+            db = sqlite3.connect(str(self.path), timeout=5.0)
         db.row_factory = sqlite3.Row
         return db
 
     def write(self, fn):
+        if self._readonly:
+            raise StoreRefused("This sample database was opened read-only.")
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             db = self._connect()
@@ -321,6 +364,10 @@ class SampleStore:
             for name, kind in cols:
                 if name not in have:
                     db.execute("ALTER TABLE " + table + " ADD COLUMN " + name + " " + kind)
+        db.executemany("INSERT OR IGNORE INTO materials (name) VALUES (?)",
+                       [(m,) for m in DEFAULT_MATERIALS])
+        db.execute("CREATE INDEX IF NOT EXISTS sample_images_level "
+                   "ON sample_images(sample_id, chip_id, flake_id)")
         db.executemany("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
                        [("store_uuid", str(uuid.uuid4())), ("created_at", now())])
         db.execute("PRAGMA user_version = " + str(int(SCHEMA_VERSION)))
@@ -377,9 +424,179 @@ class SampleStore:
         rows = self.read("SELECT * FROM samples WHERE sample_id = ?", (sample_id,))
         return rows[0] if rows else None
 
+    def _has_column(self, table, column):
+        """Whether the file on disk has the column (an older file or a missing
+        one does not): a read-only store never migrates, so it asks."""
+        _checked(table, [])
+        return column in {r["name"] for r in self.read(
+            "PRAGMA table_info(" + table + ")")}
+
     def samples(self):
-        return self.read("SELECT * FROM samples WHERE deleted_at IS NULL "
-                         "ORDER BY sample_id")
+        """Every sample (not soft-deleted) by ID, with `photo_count`: the
+        pictures of the sample ITSELF (not its chips' or flakes'). The columns
+        are the `samples` table's, so `sample_id`, `material`, `created_at`
+        and `note` are all there."""
+        level = " AND i.chip_id IS NULL" if self._has_column(
+            "sample_images", "chip_id") else ""
+        return self.read(
+            "SELECT s.*, (SELECT COUNT(*) FROM sample_images i WHERE "
+            "i.sample_id = s.sample_id" + level + ") AS photo_count "
+            "FROM samples s WHERE s.deleted_at IS NULL ORDER BY s.sample_id")
+
+    # -- the hierarchy: sample > chip > flake (v4, owner 2026-10-07) -----------------
+    # IDs are free text, trimmed; "4OCT26" and "4oct26" are the same ID (the
+    # Transfer Map compares sample labels that way). Every refusal is a
+    # `StoreRefused` (a ValueError) in the operator's words.
+    @staticmethod
+    def _id(value, what):
+        text = str(value if value is not None else "").strip()
+        if not text:
+            raise StoreRefused(f"Type the {what} ID.")
+        return text
+
+    def materials(self):
+        """The materials to pick from, in the order they were added. Seeded
+        with hBN, graphite and MoS2 the first time the store is written; a
+        file with no such table (or none yet) answers the seed."""
+        rows = self.read("SELECT name FROM materials ORDER BY rowid")
+        return [r["name"] for r in rows] or list(DEFAULT_MATERIALS)
+
+    def add_material(self, name):
+        """Add a material (idempotent, case-insensitive); returns the stored
+        spelling."""
+        name = self._id(name, "material")
+        found = {m.lower(): m for m in self.materials()}
+        if name.lower() in found and self._has_column("materials", "name"):
+            return found[name.lower()]
+
+        def _do(db):
+            db.execute("INSERT OR IGNORE INTO materials (name) VALUES (?)", (name,))
+            return name
+        return self.write(_do)
+
+    def add_sample(self, sample_id, material, note=""):
+        """A new sample. Refused: a blank ID, an ID already in the store, a
+        material not in `materials()`."""
+        sample_id = self._id(sample_id, "sample")
+        material = self._known_material(material)
+        stamp = now()
+
+        def _do(db):
+            if db.execute("SELECT 1 FROM samples WHERE lower(sample_id) = lower(?)",
+                          (sample_id,)).fetchone():
+                raise StoreRefused(f"Sample {sample_id} is already in the store.")
+            _insert(db, "samples", {
+                "sample_id": sample_id, "uid": str(uuid.uuid4()),
+                "material": material, "status": "active",
+                "note": str(note or "").strip() or None,
+                "created_at": stamp, "updated_at": stamp})
+            return sample_id
+        return self.write(_do)
+
+    def _known_material(self, material):
+        text = str(material or "").strip()
+        if not text:
+            raise StoreRefused("Pick the material.")
+        found = {m.lower(): m for m in self.materials()}
+        if text.lower() not in found:
+            raise StoreRefused(f"{text} is not a known material: use "
+                               + ", ".join(found.values()) + " or add it first.")
+        return found[text.lower()]
+
+    @staticmethod
+    def _sample_row(db, sample_id):
+        row = db.execute("SELECT sample_id FROM samples WHERE lower(sample_id) = "
+                         "lower(?) AND deleted_at IS NULL", (sample_id,)).fetchone()
+        if row is None:
+            raise StoreRefused(f"There is no sample {sample_id} in the store.")
+        return row["sample_id"]
+
+    @staticmethod
+    def _chip_row(db, sample_id, chip_id):
+        row = db.execute("SELECT chip_id FROM chips WHERE sample_id = ? AND "
+                         "lower(chip_id) = lower(?)", (sample_id, chip_id)).fetchone()
+        if row is None:
+            raise StoreRefused(f"There is no chip {chip_id} on sample {sample_id}.")
+        return row["chip_id"]
+
+    @staticmethod
+    def _flake_row(db, sample_id, chip_id, flake_id):
+        row = db.execute("SELECT flake_id FROM sample_flakes WHERE sample_id = ? "
+                         "AND chip_id = ? AND lower(flake_id) = lower(?)",
+                         (sample_id, chip_id, flake_id)).fetchone()
+        if row is None:
+            raise StoreRefused(f"There is no flake {flake_id} on chip {chip_id} "
+                               f"of sample {sample_id}.")
+        return row["flake_id"]
+
+    def add_chip(self, sample_id, chip_id, note=""):
+        """A chip of a stored sample. Refused: a blank ID, a missing sample, a
+        chip ID the sample already has."""
+        sample_id = self._id(sample_id, "sample")
+        chip_id = self._id(chip_id, "chip")
+
+        def _do(db):
+            sample = self._sample_row(db, sample_id)
+            if db.execute("SELECT 1 FROM chips WHERE sample_id = ? AND "
+                          "lower(chip_id) = lower(?)", (sample, chip_id)).fetchone():
+                raise StoreRefused(f"Chip {chip_id} is already on sample {sample}.")
+            _insert(db, "chips", {"sample_id": sample, "chip_id": chip_id,
+                                  "note": str(note or "").strip() or None,
+                                  "created_at": now()})
+            return chip_id
+        return self.write(_do)
+
+    def add_flake(self, sample_id, chip_id, flake_id, note=""):
+        """A flake of a stored chip. Refused: a blank ID, a missing sample or
+        chip, a flake ID the chip already has. (The dormant flake-coordinate
+        records are `add_coord_flake`.)"""
+        sample_id = self._id(sample_id, "sample")
+        chip_id = self._id(chip_id, "chip")
+        flake_id = self._id(flake_id, "flake")
+
+        def _do(db):
+            sample = self._sample_row(db, sample_id)
+            chip = self._chip_row(db, sample, chip_id)
+            if db.execute("SELECT 1 FROM sample_flakes WHERE sample_id = ? AND "
+                          "chip_id = ? AND lower(flake_id) = lower(?)",
+                          (sample, chip, flake_id)).fetchone():
+                raise StoreRefused(f"Flake {flake_id} is already on chip {chip} "
+                                   f"of sample {sample}.")
+            _insert(db, "sample_flakes", {
+                "sample_id": sample, "chip_id": chip, "flake_id": flake_id,
+                "note": str(note or "").strip() or None, "created_at": now()})
+            return flake_id
+        return self.write(_do)
+
+    def chips(self, sample_id):
+        """One sample's chips by ID: chip_id, note, created_at, `photo_count`
+        (the chip's own pictures) and `flake_count`."""
+        if not self._has_column("sample_images", "chip_id"):
+            photos = "0"
+        else:
+            photos = ("(SELECT COUNT(*) FROM sample_images i WHERE i.sample_id = "
+                      "c.sample_id AND i.chip_id = c.chip_id AND i.flake_id IS NULL)")
+        return [{k: v for k, v in r.items() if k != "sample_id"} for r in self.read(
+            "SELECT c.*, " + photos + " AS photo_count, (SELECT COUNT(*) FROM "
+            "sample_flakes f WHERE f.sample_id = c.sample_id AND f.chip_id = "
+            "c.chip_id) AS flake_count FROM chips c WHERE c.sample_id = ? "
+            "ORDER BY c.chip_id", (str(sample_id or "").strip(),))] \
+            if self._has_column("chips", "chip_id") else []
+
+    def flakes(self, sample_id, chip_id):
+        """One chip's flakes by ID: flake_id, note, created_at, `photo_count`.
+        (The dormant flake-coordinate records are `coord_flakes`.)"""
+        if not self._has_column("sample_flakes", "flake_id"):
+            return []
+        photos = ("(SELECT COUNT(*) FROM sample_images i WHERE i.sample_id = "
+                  "f.sample_id AND i.chip_id = f.chip_id AND i.flake_id = "
+                  "f.flake_id)") if self._has_column("sample_images", "flake_id") \
+            else "0"
+        return [{k: v for k, v in r.items() if k not in ("sample_id", "chip_id")}
+                for r in self.read(
+                    "SELECT f.*, " + photos + " AS photo_count FROM sample_flakes f "
+                    "WHERE f.sample_id = ? AND f.chip_id = ? ORDER BY f.flake_id",
+                    (str(sample_id or "").strip(), str(chip_id or "").strip()))]
 
     # -- registrations and corners -------------------------------------------------
     def add_registration(self, fields, corners):
@@ -518,7 +735,7 @@ class SampleStore:
                 "approximate-thickness method (red_percent is not one: no "
                 "red-percent estimate is made)")
 
-    def add_flake(self, fields):
+    def add_coord_flake(self, fields):
         """A flake on a known sample, labelled F01.. per sample unless named."""
         self._validate_flake(fields)
         sample_id = fields.get("sample_id")
@@ -546,7 +763,7 @@ class SampleStore:
             return values["flake_uid"]
         return self.write(_do)
 
-    def update_flake(self, flake_uid, fields):
+    def update_coord_flake(self, flake_uid, fields):
         self._validate_flake(fields)
         values = _encode("flakes", {k: v for k, v in fields.items()
                                     if k not in ("flake_uid", "created_at")})
@@ -557,16 +774,16 @@ class SampleStore:
                 raise StoreRefused(f"No flake {flake_uid} in the store.")
         self.write(_do)
 
-    def delete_flake(self, flake_uid):
+    def delete_coord_flake(self, flake_uid):
         """Soft: `deleted_at` is set (Q11), so an export tells the server."""
         stamp = now()
-        self.update_flake(flake_uid, {"deleted_at": stamp, "updated_at": stamp})
+        self.update_coord_flake(flake_uid, {"deleted_at": stamp, "updated_at": stamp})
 
-    def flake(self, flake_uid):
+    def coord_flake(self, flake_uid):
         rows = self.read("SELECT * FROM flakes WHERE flake_uid = ?", (flake_uid,))
         return rows[0] if rows else None
 
-    def flakes(self, sample_id=None, include_deleted=False):
+    def coord_flakes(self, sample_id=None, include_deleted=False):
         sql, args = "SELECT * FROM flakes WHERE 1 = 1", []
         if sample_id is not None:
             sql += " AND sample_id = ?"
@@ -580,13 +797,30 @@ class SampleStore:
     def directory(self):
         return self.path.parent
 
-    def add_image(self, sample_id, source_path, instrument, magnification, note=""):
-        """Copy the ORIGINAL file, unmodified, to `images/<sample>/<time>_
-        <instrument>_<mag>x<ext>` beside the store and record it. A name that
-        is taken gets a numeric suffix; nothing is overwritten. Returns the row."""
+    def add_image(self, sample_id, source_path, instrument, magnification, note="",
+                  *, chip_id=None, flake_id=None):
+        """Copy the ORIGINAL file, unmodified, to `images/<sample>[/<chip>
+        [/<flake>]]/<time>_<instrument>_<mag>x<ext>` beside the store and
+        record it. A name that is taken gets a numeric suffix; nothing is
+        overwritten. Returns the row. The picture belongs to the sample, or
+        (`chip_id`) to that chip, or (`chip_id` and `flake_id`) to that flake;
+        a flake without its chip is refused, and a named chip or flake must
+        already be in the store. A bare sample need not be (older stores)."""
         sample_id = str(sample_id or "").strip()
         if not sample_id:
             raise StoreRefused("Type the sample ID the picture belongs to.")
+        chip_id = str(chip_id).strip() if chip_id is not None else None
+        flake_id = str(flake_id).strip() if flake_id is not None else None
+        if flake_id and not chip_id:
+            raise StoreRefused("A flake's picture needs its chip ID too.")
+        if chip_id == "" or flake_id == "":
+            raise StoreRefused("A chip or flake ID cannot be blank.")
+        if chip_id:
+            def _check(db):
+                chip = self._chip_row(db, sample_id, chip_id)
+                flake = self._flake_row(db, sample_id, chip, flake_id) if flake_id else None
+                return chip, flake
+            chip_id, flake_id = self._read_check(_check)
         _one_of(instrument, IMAGE_INSTRUMENTS, "picture source")
         if instrument is None:
             raise StoreRefused("Say which instrument took the picture: "
@@ -597,6 +831,10 @@ class SampleStore:
             raise StoreRefused(f"Could not find the picture {source.name or source}.")
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         folder = Path("images") / _slug(sample_id)
+        if chip_id:
+            folder = folder / _slug(chip_id)
+        if flake_id:
+            folder = folder / _slug(flake_id)
         (self.directory / folder).mkdir(parents=True, exist_ok=True)
         base = f"{stamp}_{instrument}_{mag}x"
         digest = hashlib.sha256()
@@ -620,7 +858,8 @@ class SampleStore:
         values = {"sample_id": sample_id, "instrument": instrument,
                   "magnification": mag, "path": relative,
                   "sha256": digest.hexdigest(), "captured_at": now(),
-                  "note": str(note or "").strip() or None}
+                  "note": str(note or "").strip() or None,
+                  "chip_id": chip_id or None, "flake_id": flake_id or None}
 
         def _do(db):
             return _insert(db, "sample_images", values).lastrowid
@@ -631,16 +870,51 @@ class SampleStore:
             raise
         return self.image(new_id)
 
+    def _read_check(self, fn):
+        """Run `fn(db)` on a plain connection (no migration): the parent rows
+        a picture hangs from must exist before a file is copied."""
+        if not self.exists:
+            raise StoreRefused("There is no sample database yet.")
+        db = self._connect()
+        try:
+            return fn(db)
+        except sqlite3.OperationalError:
+            raise StoreRefused("That chip or flake is not in the store.")
+        finally:
+            db.close()
+
     def image(self, image_id):
         rows = self.read("SELECT * FROM sample_images WHERE id = ?", (image_id,))
         return rows[0] if rows else None
 
-    def images(self, sample_id=None):
-        """One sample's pictures, oldest first; no argument: every picture."""
+    def images(self, sample_id=None, chip_id=None, flake_id=None, *, any=False):
+        """Pictures, oldest first. No `sample_id`: every picture in the store.
+        With one, THAT LEVEL'S OWN pictures: the sample's (`chip_id` None), the
+        chip's (`chip_id` given), the flake's (both given). `any=True` widens
+        to everything under the level named: `images("S1", any=True)` is the
+        sample's, its chips' and its flakes' pictures; with a chip, that
+        chip's and its flakes'."""
         if sample_id is None:
             return self.read("SELECT * FROM sample_images ORDER BY id")
-        return self.read("SELECT * FROM sample_images WHERE sample_id = ? "
-                         "ORDER BY id", (str(sample_id).strip(),))
+        sql, args = "SELECT * FROM sample_images WHERE sample_id = ?", \
+            [str(sample_id).strip()]
+        if chip_id is not None:
+            sql += " AND chip_id = ?"
+            args.append(str(chip_id).strip())
+        if flake_id is not None:
+            sql += " AND flake_id = ?"
+            args.append(str(flake_id).strip())
+        if not any:
+            if chip_id is None:
+                sql += " AND chip_id IS NULL"
+            if flake_id is None:
+                sql += " AND flake_id IS NULL"
+        if not self._has_column("sample_images", "chip_id"):
+            # A v3 file read as it is: every picture is the sample's own.
+            return [] if chip_id is not None or flake_id is not None else \
+                self.read("SELECT * FROM sample_images WHERE sample_id = ? "
+                          "ORDER BY id", (args[0],))
+        return self.read(sql + " ORDER BY id", tuple(args))
 
     def image_file(self, row):
         """The picture's file: its relative path resolved against the store's
@@ -681,7 +955,7 @@ class SampleStore:
                          for r in self.registrations()]
         flakes = [{**f, "registration_uid": uids.get(f["registration_id"]),
                    "observations": []}
-                  for f in self.flakes(include_deleted=True)]
+                  for f in self.coord_flakes(include_deleted=True)]
         images = []
         for flake in flakes:
             if flake.get("image_path"):
@@ -697,15 +971,24 @@ class SampleStore:
                                               "label": corner["label"]}})
         for row in self.images():
             # Additive (v3): the sample's pictures, by relative path and hash.
-            images.append({"sample_id": row["sample_id"], "path": row["path"],
-                           "sha256": row["sha256"], "instrument": row["instrument"],
-                           "magnification": row["magnification"],
-                           "captured_at": row["captured_at"], "note": row["note"]})
+            entry = {"sample_id": row["sample_id"], "path": row["path"],
+                     "sha256": row["sha256"], "instrument": row["instrument"],
+                     "magnification": row["magnification"],
+                     "captured_at": row["captured_at"], "note": row["note"]}
+            for level in ("chip_id", "flake_id"):      # additive (v4): only when set
+                if row.get(level):
+                    entry[level] = row[level]
+            images.append(entry)
         return {"schema": SCHEMA, "exported_at": now(),
                 "station": {"name": station_name, "software_version": software_version,
                             "store_uuid": self.meta().get("store_uuid")},
                 "samples": self.read("SELECT * FROM samples ORDER BY sample_id"),
-                "registrations": registrations, "flakes": flakes, "images": images}
+                "registrations": registrations, "flakes": flakes, "images": images,
+                # Additive (v4): the sample > chip > flake hierarchy.
+                "chips": self.read("SELECT * FROM chips ORDER BY sample_id, chip_id"),
+                "sample_flakes": self.read("SELECT * FROM sample_flakes ORDER BY "
+                                           "sample_id, chip_id, flake_id"),
+                "materials": self.materials()}
 
     def import_document(self, document):
         """Merge a `flake-coords/1` document: records are matched by uid
@@ -751,6 +1034,13 @@ class SampleStore:
                           if k not in ("observations", "registration_uid")}
                 fields["registration_id"] = local_reg.get(flake.get("registration_uid"))
                 merge(db, "flakes", "flake_uid", flake, _encode("flakes", fields))
+            # Additive (v4): the hierarchy is merged by key, existing rows kept.
+            for name in document.get("materials", []):
+                db.execute("INSERT OR IGNORE INTO materials (name) VALUES (?)",
+                           (str(name),))
+            for table in ("chips", "sample_flakes"):
+                for record in document.get(table, []):
+                    _insert(db, table, _encode(table, record), verb="INSERT OR IGNORE")
             return counts
         return self.write(_do)
 
@@ -763,7 +1053,7 @@ class SampleStore:
             "samples": self.read("SELECT * FROM samples ORDER BY sample_id"),
             "registrations": self.registrations(),
             "corners": self.read("SELECT * FROM corners ORDER BY registration_id, label"),
-            "flakes": self.flakes(include_deleted=True),
+            "flakes": self.coord_flakes(include_deleted=True),
         }
         for table, rows in tables.items():
             path = folder / ("sample_map_" + stamp + "_" + table + ".csv")
