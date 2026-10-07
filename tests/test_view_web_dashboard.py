@@ -7,7 +7,7 @@ heartbeat now runs in a dedicated Worker whose timer the page's hidden-tab
 throttling does not reach; it stops on `pagehide` and at shutdown only.
 
 D: Red Percent is drawn on the Transfer Map's page (`host` in state,
-docs/rebuild/MODEL_CONTRACT.md step 1; handoff/brief-dashboard-contract.md):
+docs/rebuild/MODEL_CONTRACT.md step 1; docs/archive/handoff/brief-dashboard-contract.md):
 no page or Overview entry of its own, a group after the host's tier 1,
 its disclosures after the host's, every control bound to its own name.
 

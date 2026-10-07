@@ -61,8 +61,8 @@ if [ "$BRANCH" = "main" ]; then
     TREE="$MAIN_TREE"
     if [ ! -f "$TREE/src/mainGUI.py" ]; then
         echo "[swap_branch] The main worktree is missing: $TREE" >&2
-        echo "[swap_branch] It is a plain checkout of origin/main; refresh it with:" >&2
-        echo "    git -C \"$HERE\" worktree add \"$TREE\" main" >&2
+        echo "[swap_branch] It is a plain checkout of origin/main (not a worktree); refresh it with:" >&2
+        echo "    git -C \"$TREE\" pull --ff-only" >&2
         exit 2
     fi
     APP=(python3 src/mainGUI.py)
