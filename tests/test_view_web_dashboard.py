@@ -14,8 +14,10 @@ its disclosures after the host's, every control bound to its own name.
 Driven in headless Chrome through the harness in test_view_web_server.py
 (skipped where node or puppeteer is absent), plus static reads of app.js.
 """
+import json
 import re
 import threading
+import urllib.parse
 import time
 
 import pytest
@@ -1184,3 +1186,113 @@ def test_web3_each_overview_device_is_bounded_and_the_guest_stays_inside_its_hos
         assert left == right == bottom and left in ("1px", "1.5px") and is_edge, shot
         assert top == "2px", f"the head rule changed weight: {shot}"
         assert shot["guestInside"], shot
+
+
+# ==========================================================================
+# WEB-5: an image upload carries its inputs; thumbnails by relative path
+# ==========================================================================
+from param import Param  # noqa: E402
+
+
+class FakeImages(_Plain):
+    """The Sample Map's "Add image" as the contract allows it: a `file_open`
+    whose `inputs` (instrument, magnification) travel with the command."""
+    NAME = "Fake Images"
+    PARAMS = {"instrument": Param("instrument", "text", default="", label="Instrument"),
+              "magnification": Param("magnification", "float", default=1.0, label="Magnification")}
+
+    def __init__(self, root):
+        super().__init__()
+        self.root = root
+        self.instrument = ""
+        self.magnification = 1.0
+        self.added = []
+
+    @property
+    def schema(self):
+        opener = sch.file_open("Add image", "add_image", extensions=("png",))
+        opener["inputs"] = ["instrument", "magnification"]
+        return sch.schema(sch.section(
+            "Images",
+            sch.entry("Instrument", "instrument", self.PARAMS["instrument"]),
+            sch.entry("Magnification", "magnification", self.PARAMS["magnification"]),
+            opener))
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["output_root"] = self.root
+        snapshot["values"].update({"instrument": self.instrument,
+                                   "magnification": self.magnification})
+        return snapshot
+
+    def add_image(self, path):
+        self.added.append((path, self.instrument, self.magnification))
+        return {"path": path}
+
+
+@pytest.fixture
+def images_station(tmp_path):
+    controller = Controller()
+    model = FakeImages(str(tmp_path))
+    controller.add("Fake Images", model, {"kind": "Fake Images"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, model
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_web5_a_file_open_forwards_its_declared_inputs(images_station, tmp_path):
+    view, controller, model = images_station
+    chosen = tmp_path / "tip.png"
+    chosen.write_bytes(b"\x89PNG\r\n\x1a\nnot really")
+    out = _browse(view, _PHASE_READ.split("const drawn")[0] + r"""
+      const inputs = await page.$$('#cards .card-body input.input:not(.path-input)');
+      for (const [box, text] of [[inputs[0], 'SEM'], [inputs[1], '250']]) {
+        await box.evaluate((el) => { el.focus(); el.select(); });
+        await page.keyboard.press('Backspace');
+        await box.type(text);
+      }
+      // Typed path, then an uploaded file: both run the command with the
+      // entries, uncommitted as they are.
+      await page.type('.path-input', '/data/typed.png');
+      await page.evaluate(() => Array.from(document.querySelectorAll('.file-open button'))
+        .find((b) => b.textContent === 'Add image').click());
+      await sleep(700);
+      const picker = await page.$('.file-picker');
+      await picker.uploadFile(%s);
+      await sleep(1500);
+      return true;
+    """ % json.dumps(str(chosen)), tmp_path)
+    assert out is True
+    assert [(a[1], a[2]) for a in model.added] == [("SEM", 250.0), ("SEM", 250.0)], model.added
+    assert model.added[0][0] == "/data/typed.png"
+    assert model.added[1][0].endswith("uploads/tip.png"), model.added
+
+
+def test_web5_a_thumbnail_is_served_by_relative_path_under_the_output_root(images_station, tmp_path):
+    from test_view_web_server import _request
+    view, controller, model = images_station
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "a.png").write_bytes(b"\x89PNGa")
+    outside = tmp_path.parent / "secret.png"
+    outside.write_bytes(b"\x89PNGsecret")
+    (tmp_path / "images" / "link.png").symlink_to(outside)
+    (tmp_path / "notes.txt").write_text("x")
+
+    def get(path):
+        return _request(view, "/api/image?name=Fake%20Images&path=" + urllib.parse.quote(path))[::2]
+
+    status, body = get("images/a.png")
+    assert status == 200 and body == b"\x89PNGa"
+    assert _request(view, "/api/image?name=Fake%20Images&path=images/a.png")[1]["Content-Type"] == "image/png"
+    assert get("../secret.png")[0] == 403
+    assert get(str(outside))[0] == 403, "an absolute path is never taken"
+    assert get("images/link.png")[0] == 403, "a symlink out of the root is outside it"
+    assert get("notes.txt")[0] == 403, "only image types"
+    assert get("images/missing.png")[0] == 404
+    status, _, _ = _request(view, "/api/image?name=Nobody&path=images/a.png")
+    assert status == 404

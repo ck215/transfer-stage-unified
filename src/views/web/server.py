@@ -216,6 +216,10 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                                    self._one(query, "command"),
                                    inputs if isinstance(inputs, dict) else {})
 
+        if route == "/api/image":
+            return self._send_image(self._one(query, "name"),
+                                    self._one(query, "path"))
+
         if route == "/api/screen":
             return self._send_screen(self._one(query, "name"))
 
@@ -457,6 +461,48 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         name_only = os.path.basename(full).replace('"', "")
         return self._send_bytes(200, content_type, payload, headers={
             "Content-Disposition": f'attachment; filename="{name_only}"'})
+
+    #: What `/api/image` will serve: pictures a browser draws itself.
+    IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                   "gif": "image/gif", "webp": "image/webp"}
+
+    def _send_image(self, name, relative):
+        """A picture under the model's output root, by RELATIVE path, for a
+        thumbnail (WEB-5). The browser never names a station path: the same
+        root check as `/api/file` (realpath inside the model's root), a
+        relative path only, and only an image type a browser draws. Nothing
+        is run; this reads a file."""
+        if name not in self.controller.model_names:
+            return self._send_json(404, {"status": "error",
+                                         "reason": f"{name} is not open."})
+        root = self._output_root(name)
+        if not root:
+            return self._send_json(409, {
+                "status": "error",
+                "reason": f"{name} does not declare an output root, so an "
+                          f"image cannot be checked against one"})
+        relative = str(relative or "")
+        normal = relative.replace("\\", "/")
+        if (not relative or os.path.isabs(relative) or normal.startswith("/")
+                or ".." in normal.split("/")):
+            return self._send_json(403, {"status": "refused",
+                                         "reason": "an image is named relative to the output root"})
+        extension = relative.rsplit(".", 1)[-1].lower() if "." in relative else ""
+        if extension not in self.IMAGE_TYPES:
+            return self._send_json(403, {"status": "refused",
+                                         "reason": "that is not an image type the page draws"})
+        root = os.path.realpath(root)
+        full = os.path.realpath(os.path.join(root, relative))
+        if not self._inside(full, root):
+            events.warn("Image Refused", f"{relative} resolves outside {name}'s "
+                        f"output root", source=SOURCE)
+            return self._send_json(403, {"status": "refused",
+                                         "reason": "the image is outside the model's output root"})
+        if not os.path.isfile(full):
+            return self._send_json(404, {"status": "error", "reason": "the image is not there"})
+        with open(full, "rb") as handle:
+            payload = handle.read()
+        return self._send_bytes(200, self.IMAGE_TYPES[extension], payload)
 
     def _receive_upload(self, body):
         """A file chosen in the browser, for a `file_open` command (F13).
