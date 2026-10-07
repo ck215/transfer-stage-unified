@@ -117,7 +117,7 @@ P1–P8 with routes. Since 2026-10-07 the bundle has ONE launcher,
 2026-09-25, both superseded). P1–P4 landed 2026-09-25: `pyproject.toml`
 (`[project.scripts]` is `station-web` alone; PySide6 is the `qt` extra, needed
 only to run the frozen Qt tests); `packaging/station.spec`; `packaging/smoke.sh`. The smoke found and the lead fixed a safety hole: Tk 9 on macOS
-swallowed SIGTERM past `close()` (A10; the Tk view is retired). Next: P5 (CI matrix), then the lab's
+swallowed SIGTERM past `close()` (A10; the Tk view is retired). P5 (CI matrix) was written 2026-09-28; then the lab's
 Windows PC. A design-language proposal (four boards rendered in HTML, one
 component strip each) was published for the owner the same day; the choice
 lands as `palette.py` / `theme.py` tokens.

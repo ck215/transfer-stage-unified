@@ -1,8 +1,14 @@
 # Design brief — "Bench sheet, tiered" (owner ruling 2026-09-25)
 
 Supersedes `WEB_DESIGN_BRIEF.md` (the 2026-09-22 "instrument console"),
-which stays in the tree as history. This brief binds all three views: Tk,
-Qt and Web render the same instrument from one `palette.py` / `theme.py`.
+which stays in the tree as history. **Since 2026-10-07 the Web view is the
+only frontend** (owner ruling): this brief binds the Web view. It used to bind
+all three views (Tk, Qt and Web, one `palette.py` / `theme.py`); `views/tk.py`
+and `qt.py` are frozen at `413f504`, unregistered, and no longer follow it.
+Where a sentence below names Tk or Qt it records what those views did, and the
+"What each view owes this round" section is history. The Web renders the
+instrument from `palette.py` / `theme.py`; the procedure rules are in "The
+procedure (2026-10-07)" at the end.
 The reference is canvas row E and its source:
 `handoff/design-Tiered.md` (the tiers, the stop, what each toolkit does),
 `handoff/design-Sheet.md` (tokens, type, spacing, radii, per-toolkit
@@ -30,7 +36,7 @@ files differ, the artboards win.
 | Tier | Drawn | Holds |
 |---|---|---|
 | 1 | always | a device's X/Y/Z position; its speeds as a **slider beside an exact entry** (`entry(..., slider=(low, high))`), the gamepad choice (Tier K: picked every session), the mode toggles, Step; the heater's temperature and setpoint; the rotator's angle, step and moves; Red Percent's Red, Change, Start run, Stop run |
-| 2 | behind one disclosure per model in a panel-toned well; the disclosure names the device (`disclosure`: "Configure Stepper Probe", "Configure Temperature Controller", "Red Percent details" …, Tier K 2026-09-26) | step sizes, targets, brakes; PID/ramp and the heater plot; the rotator's target and reset; **all of Red Percent's statistics, live plot, annotations, region, save/load, analysis** |
+| 2 | behind one disclosure per model in a panel-toned well; the disclosure names the device (`disclosure`: "Configure Stepper Probe", "Configure Temperature Controller", "Red Percent details" …, Tier K 2026-09-26) | step sizes, targets, brakes; PID/ramp and the heater plot; the rotator's target and reset; **all of Red Percent's statistics, annotations, region, save/load, analysis** (its live plots left the live view on 2026-10-07; the trace is drawn once, at review) |
 | 3 | behind a second disclosure ("Diagnostics") inside the tier-2 well | velocity, position age, the gamepad log button, fault and fault reason, the per-model stop as a small switch |
 
 Tier 1 never scrolls away. Tiers 2 and 3 remember their open state per
@@ -85,7 +91,7 @@ rule and the words "Stop not confirmed. Treat as live."
   buttons outlined; disabled = sheet fill, 45 % ink, dashed muted edge;
   radii from `theme.RADIUS`.
 - **Setup** keeps its one table with the Launch checkbox first; it is a
-  drawer (Web), a tab (Tk) or a dock (Qt) as today, restyled.
+  drawer in the Web (it was a tab in Tk and a dock in Qt).
 - Under 1000 px the entries stack in one column; the rail narrows.
 
 ## Type
@@ -97,7 +103,7 @@ Archivo at stretch 118 %, weight 600, tabular figures
 installed, else the text face bold). Sizes per `theme.READING_SIZES`,
 `CAPTION_SIZE`, and `theme.size()` for text steps.
 
-## What each view owes this round
+## What each view owed that round (history: Tk and Qt are retired)
 
 Render `tier` and `disclosure`; render `slider` beside its entry; the rail
 with the disc; entries instead of cards; status by exception; the tray
@@ -141,9 +147,32 @@ an unconfirmed model). The eight rule changes it proposed are ratified:
 Type: Figtree for text, Rubik 600 for numerals and the two headlines,
 tabular figures; readings 60/44/36/30. Tokens in `src/palette.py` and
 `src/views/theme.py`; every view reads them and names nothing of its own.
-Tk draws the same parts by tone and lip (1 px rims, square corners, no
-blur); Qt keeps radii and per-side borders; the Web adds the garnish.
+(Tk drew the same parts by tone and lip, Qt kept radii and per-side
+borders; both are retired. The Web adds the garnish.)
 
 ## Notices: tray line or acknowledgement (2026-09-28)
 
 A notice is a tray line by default: status by exception, warnings and errors, history in the log. A notice asks for an acknowledgement only when missing it would leave the operator wrong about what the station is doing. That means every error (a failed command, a fault, an unconfirmed stop) and the few warnings in `events.ATTENTION`: the idle timeout that ended a mode, a temperature link or rotator still lost after its boot grace, and a heater-off that was never sent. Countdowns that carry their own affordance (Idle Timeout Soon and its Extend), notices nobody is present to read (Browser Silent), and soft advice (No Picture, Empty Trial) stay tray lines. An acknowledgement has the latch-release dialog's shape in every view. It never takes the stop away. It shows one title at a time with that title as its heading and the message as its body. It has one key, Understood, answered by Return and Escape. Further titles queue behind it, and a repeat of its own title counts in place.
+
+## The procedure (2026-10-07)
+
+Owner ruling 2026-10-07, rendered by the Web (WEB-1..5) from the model's
+`phase` (`MODEL_CONTRACT.md`, "Phases: the interactive procedure"). The sheet
+shows the step the operator is in and hides what the step does not need.
+
+- **Phases.** A model with a procedure declares `PHASES`; the Transfer Map's
+  are setup (preliminary info), region (a full-resolution still of the stage
+  is taken and the capture region is picked on it), live, marked (after Mark
+  force), finish (review). A section or element drawn only in some steps names
+  them (`phases=`); the page marks the shown step on the sections and rows,
+  moves focus to the step's first control, and shows a procedure strip on the
+  Overview. Hidden is not disabled: `enabled_when` still greys a control where
+  it stands. The stop is never phased and stays reachable in every step.
+- **The region picker** draws on the model's still at full resolution, maps
+  the drag to source pixels and outlines the held region.
+- **Dividers.** On the Overview each device sits inside an explicit hairline
+  boundary in every reflow (three across, two, one column), not whitespace
+  alone. This amends "entries are separated by whitespace" above for the
+  Overview.
+- **Thumbnails.** Images reach the page through `GET /api/image` (a relative
+  path under the output root).
