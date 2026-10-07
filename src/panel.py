@@ -94,6 +94,9 @@ class Panel:
                 values[attr] = self._text_for(element)
         return {"name": self.NAME, "mode": self.gate_mode,
                 "model_mode": self.mode_name, "phase": self.phase,
+                # The procedure's steps in order, so a view can draw a step
+                # strip for any phased model without a new element type.
+                "phases": list(self.PHASES),
                 "values": values}
 
     def _text_for(self, element):

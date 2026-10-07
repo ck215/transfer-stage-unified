@@ -153,7 +153,8 @@ retired Tk and Qt views ignore the key and draw everything.
 - `PHASES = ("setup", "region", "live", "marked", "finish")` on the class: the
   step names, in order. Empty (the default) means no procedure.
 - `phase` property: the current step, one of `PHASES`, or `""` at rest. It is
-  published as `state["phase"]`, beside `state["mode"]`; a phase is WHERE IN
+  published as `state["phase"]` (and the ordered steps as `state["phases"]`,
+  so the Web view draws a step strip for any phased model), beside `state["mode"]`; a phase is WHERE IN
   THE PROCEDURE the operator is, the mode is WHAT THE HARDWARE IS DOING, and
   neither overloads the other (`latched` still comes through `mode`).
 - `sch.section(..., phases=("live", "marked"))` draws a section only in those

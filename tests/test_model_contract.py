@@ -78,7 +78,7 @@ CLASSES["Phased"] = PhasedModel
 
 #: The state keys a view reads by name (grep of tk.py, qt.py, app.js,
 #: server.py, views/base.py at 612397c); `phase` since 2026-10-07.
-STATE_KEYS = ("name", "mode", "model_mode", "phase", "values", "is_estopped",
+STATE_KEYS = ("name", "mode", "model_mode", "phase", "phases", "values", "is_estopped",
               "is_faulted", "stop_confirmed", "latched_at", "fault",
               "is_active", "age", "devices")
 
@@ -509,6 +509,7 @@ def test_phases_named_in_the_schema_are_declared_and_the_phase_is_one_of_them(mo
     assert _phases_of(model) <= set(declared), _phases_of(model) - set(declared)
     assert model.phase == "" or model.phase in declared
     assert model.state["phase"] == model.phase
+    assert tuple(model.state["phases"]) == declared
     model.estop()
     assert model.phase == "" or model.phase in declared, "the stop changed the phase to a word no view knows"
 
