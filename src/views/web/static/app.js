@@ -2584,7 +2584,7 @@ class PanelCard {
       } else if (kind === 'toggle' || kind === 'indicator' || kind === 'checkbox') {
         widget.setOn(Boolean(this.values[attr]));
       } else if (kind === 'plot' || kind === 'image' || kind === 'log_stream') {
-        if (wantsData && !widget.isPhaseOff && this.wantsData(widget)) this.loadData(widget);
+        if (wantsData && this.wantsData(widget)) this.loadData(widget);
       }
       // O4: a faulted probe's mode toggles are greyed by their own schema
       // (`disabled_when` carries "fault") and say the served reason.
@@ -2754,6 +2754,9 @@ class PanelCard {
    *  behind a shut disclosure not until it is opened (tiers 2 and 3 are on
    *  demand, so is their traffic); everything else, always. */
   wantsData(widget) {
+    // A picture the step does not draw is not fetched (the server would
+    // refuse it too: shown_elements).
+    if (widget.isPhaseOff) return false;
     if (widget.isOpen) return widget.isOpen();
     // An entry that is not on the shown page (K4) is not drawn either.
     if (!this.isShown()) return false;

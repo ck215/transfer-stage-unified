@@ -1530,7 +1530,7 @@ def test_web1_the_why_not_caption_ignores_a_hidden_row():
 
 
 def test_web1_a_hidden_widget_is_not_polled_for_data():
-    assert "!widget.isPhaseOff" in _method("refresh")
+    assert "isPhaseOff" in _method("wantsData")
 
 
 def test_web1_no_model_name_or_phase_word_is_known_to_the_client():
