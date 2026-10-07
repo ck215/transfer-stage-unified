@@ -464,6 +464,7 @@ def test_a_new_store_is_created_where_the_operator_says_and_remembered(no_store,
     assert tm_module.TransferMap.choices.read("map_store") == str(path)
     # Recording works now.
     assert model.run("new_tip").is_ok
+    assert model.run("set_new_tip_model", None, ("TAP300",)).is_ok
     assert model.run("add_tip", {"new_tip_id": "tip-A"}).is_ok
     # A new session remembers it: no question.
     again = TransferMap()
@@ -1123,10 +1124,11 @@ def test_the_tip_line_counts_the_trials_on_the_picked_tip(station):
     _record(model, red)
     _record(model, red)
     model.tip_id = "  tip-A "
-    assert values()["tip_pick"] == "tip-A · 2 trials"  # stripped
+    # A tip first met at Arm has no model on record (never a silent one).
+    assert values()["tip_pick"] == "tip-A · no model · 2 trials"  # stripped
     model.tip_id = "tip-B"
     _record(model, red)
-    assert values()["tip_pick"] == "tip-B · 1 trial"
+    assert values()["tip_pick"] == "tip-B · no model · 1 trial"
     assert model._store.count_for_tip("tip-A") == 2
     assert model._store.count_for_tip("tip-A", up_to=1) == 1
     keys = _keys(next(s for s in model.schema["sections"]
@@ -2226,8 +2228,9 @@ def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUM
                "trials(id), t_s REAL NOT NULL, red REAL, z REAL, x REAL, y REAL)")
     db.execute("CREATE INDEX profile_trial ON profile(trial_id)")
     if version >= 3:
+        # Before 2026-10-07 the tips table had no model column.
         db.execute("CREATE TABLE tips (" + ", ".join(
-            f"{n} {k}" for n, k in tm_module.TIP_COLUMNS) + ")")
+            f"{n} {k}" for n, k in tm_module.TIP_COLUMNS if n != "model") + ")")
         db.execute("INSERT INTO tips (tip_id, created_at, first_trial_id, "
                    "last_trial_id, last_used_at) VALUES ('T7', "
                    "'2026-09-27T15:00:00', 1, 1, '2026-09-27T15:00:00')")
@@ -2376,7 +2379,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
                          "first_trial_id": 1, "last_trial_id": 1,
                          "last_used_at": "2026-09-27T15:00:00",
                          "broke_trial_id": None, "retired_at": None,
-                         "note": None}]
+                         "note": None, "model": "TAP300"}]
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
         # TR-5 (2026-10-07): the profile gains its colour channels too.
@@ -2663,9 +2666,11 @@ def test_the_tips_log_has_one_line_per_tip(station):
     third = _record(model, red)
     assert _confirmed(model, "retire_tip") == "T8"
     model.run("set_tip_note", {"tip_note": "chipped"})
+    assert model.run("set_tip_model", None, ("T8", "TAP300")).is_ok
     assert model.tips_log == [
-        f"tip-A  2 trial(s), trials {first}-{second}  broke on trial {second}",
-        f"T8  1 trial(s), trial {third}  retired  chipped"]
+        f"tip-A  no model  2 trial(s), trials {first}-{second}  broke on "
+        f"trial {second}",
+        f"T8  TAP300  1 trial(s), trial {third}  retired  chipped"]
     assert model.run("tips_log").is_ok            # a declared source
 
 
@@ -2682,7 +2687,8 @@ def test_export_writes_a_tips_file_with_one_row_per_tip(station):
     assert rows[0]["trial_count"] == "2"
     assert rows[0]["trial_ids"] == f"{first} {second}"
     assert rows[0]["first_trial_id"] == str(first)
-    assert list(rows[0])[:8] == [n for n, _k in tm_module.TIP_COLUMNS]
+    assert list(rows[0])[:len(tm_module.TIP_COLUMNS)] == [
+        n for n, _k in tm_module.TIP_COLUMNS]
     element = _element(model, "export_tips_csv")
     assert element["type"] == "file_save" and element["text"] == "Export tips"
 
@@ -2727,6 +2733,8 @@ def test_the_tip_section_sits_under_configure():
         ("button", "set_tip_note", ("tip_note",)),
         ("button", "retire_tip", ()),
         ("button", "unretire_tip", ()),
+        # Owner 2026-10-07: corrects the picked tip's model label.
+        ("dropdown", "set_tip_model", ()),
         # 2026-10-07: the sheet's Tip broke is the marked and finish steps';
         # this one marks the last trial after the fact.
         ("toggle", "mark_broke", ())]
@@ -2746,9 +2754,11 @@ def test_nothing_polls_before_the_region_is_picked(idle_station):
     controller.add("Transfer Map", model, {})
     try:
         assert controller.run("Transfer Map", "new_tip").is_ok
+        assert controller.run("Transfer Map", "set_new_tip_model", None,
+                              ("TAP300",)).is_ok
         assert controller.run("Transfer Map", "add_tip",
                               {"new_tip_id": "T7"}).is_ok
-        assert model.run("pick_tip", None, ("T7 · 0 trials",)).is_ok
+        assert model.run("pick_tip", None, ("T7 · TAP300 · 0 trials",)).is_ok
         model.typed_tilt = "5"
         assert not red.is_running and red._subscribers == ()
         assert model.state["values"]["next_step"] == "Press Arm trial"
@@ -2782,6 +2792,7 @@ def _map_with_tip(tmp_path, tip="T7"):
     from model.transfer_map import TransferMap
     tm = TransferMap(db_path=tmp_path / "map.sqlite")
     assert tm.run("new_tip").is_ok and tm.phase == "new_tip"
+    assert tm.run("set_new_tip_model", None, ("TAP300",)).is_ok
     assert tm.run("add_tip", {"new_tip_id": tip}).is_ok
     assert tm.phase == "setup"
     return tm
@@ -2808,7 +2819,11 @@ def test_the_setup_row_has_one_tip_control_and_no_tip_entry():
     assert prompt["phases"] == ["new_tip"]
     assert [(e["type"], e.get("command") or e.get("model_attr"), e["text"])
             for e in prompt["elements"]] == [
-        ("entry", "new_tip_id", "Tip ID"), ("button", "add_tip", "Add tip"),
+        ("entry", "new_tip_id", "Tip ID"),
+        ("dropdown", "set_new_tip_model", "Model"),
+        ("entry", "new_model_name", "New model"),
+        ("button", "add_tip_model", "Add model"),
+        ("button", "add_tip", "Add tip"),
         ("button", "cancel_new_tip", "Cancel")]
     assert TransferMap.PHASES[:2] == ("setup", "new_tip")
 
@@ -2816,34 +2831,38 @@ def test_the_setup_row_has_one_tip_control_and_no_tip_entry():
 def test_the_tip_dropdown_lists_every_tip_with_its_count_retired_last(tmp_path):
     tm = TransferMap(db_path=tmp_path / "map.sqlite")
     store = tm._store
-    for tip in ("T1", "T2", "T3", "T4"):
-        store.create_tip(tip, "2026-10-07T09:00:00")
+    for tip, model in (("T1", "TAP300"), ("T2", "AC160"), ("T3", "TAP300"),
+                       ("T4", None)):
+        store.create_tip(tip, "2026-10-07T09:00:00", model)
     for tip in ("T1", "T1", "T3", "T4"):
         trial = store.insert({"tip_id": tip, "status": "recorded"})
         store.use_tip(tip, trial, "2026-10-07T09:10:00")
     store.set_tip("T3", {"retired_at": "2026-10-07T10:00:00"})
     options = tm.options("tip_options")
-    assert options == ["T1 · 2 trials", "T2 · 0 trials", "T4 · 1 trial",
-                       "T3 · 1 trial · retired"]
+    # Owner 2026-10-07: "<tip_id> · <model> · <n> trials".
+    assert options == ["T1 · TAP300 · 2 trials", "T2 · AC160 · 0 trials",
+                       "T4 · no model · 1 trial",
+                       "T3 · TAP300 · 1 trial · retired"]
 
 
 def test_picking_a_tip_makes_it_the_trials_tip(station, private_db):
     model, red, *_ = station
     model.tip_id = ""
     assert model.run("new_tip").is_ok
+    assert model.run("set_new_tip_model", None, ("TAP300",)).is_ok
     assert model.run("add_tip", {"new_tip_id": "T5"}).is_ok
     model.tip_id = ""
     assert model.state["values"]["tip_pick"] == ""
     assert "Pick a tip" in model.state["values"]["next_step"]
-    assert model.run("pick_tip", None, ("T5 · 0 trials",)).is_ok
+    assert model.run("pick_tip", None, ("T5 · TAP300 · 0 trials",)).is_ok
     assert model.tip_id == "T5"
-    assert model.state["values"]["tip_pick"] == "T5 · 0 trials"
+    assert model.state["values"]["tip_pick"] == "T5 · TAP300 · 0 trials"
     trial = _arm(model)
     assert _rows(private_db, "SELECT tip_id FROM trials WHERE id=?",
                  trial) == [{"tip_id": "T5"}]
     _finish(model)
-    assert model.state["values"]["tip_pick"] == "T5 · 1 trial"
-    refused = model.run("pick_tip", None, ("T99 · 0 trials",))
+    assert model.state["values"]["tip_pick"] == "T5 · TAP300 · 1 trial"
+    refused = model.run("pick_tip", None, ("T99 · TAP300 · 0 trials",))
     assert refused.is_refused and "New tip…" in refused.reason
     assert model.tip_id == "T5"
 
@@ -2853,9 +2872,10 @@ def test_add_tip_makes_the_record_picks_it_and_returns_to_setup(tmp_path):
     record = tm._store.tip("T12")
     assert record["created_at"] and record["first_trial_id"] is None
     assert record["count"] == 0 and record["trials"] == []
-    assert tm.tip_id == "T12" and tm.tip_pick == "T12 · 0 trials"
+    assert tm.tip_id == "T12" and tm.tip_pick == "T12 · TAP300 · 0 trials"
+    assert record["model"] == "TAP300"
     assert tm.tip_status == "new" and tm.new_tip_id == ""
-    assert tm.tip_options == ["T12 · 0 trials"]
+    assert tm.tip_options == ["T12 · TAP300 · 0 trials"]
 
 
 def test_add_tip_refuses_an_empty_or_an_existing_id_and_stays(tmp_path):
@@ -3285,11 +3305,13 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
         assert all(after[0][c] is None for c in V5_COLUMNS)
         assert len(_rows(private_db, "SELECT * FROM profile")) == 5
-        assert _rows(private_db, "SELECT * FROM tips") == tips_before
+        tips = _rows(private_db, "SELECT * FROM tips")
+        assert [{k: t[k] for k in tips_before[0]} for t in tips] == tips_before
+        assert [t["model"] for t in tips] == ["TAP300"]       # owner ruling
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
         assert ("now has " + ", ".join(V5_COLUMNS + V6_COLUMNS + CHANNELS)
-                + " (version 6)"
+                + ", tips.model (version 6)"
                 in upgraded[0].message), \
             upgraded[0].message
         assert model.video_status == "No video for this trial."
@@ -3413,7 +3435,8 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
         assert "map_db_uuid" in tm_module.TrialStore(private_db).meta()
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert ("now has " + ", ".join(V6_COLUMNS + CHANNELS) + " (version 6)"
+        assert ("now has " + ", ".join(V6_COLUMNS + CHANNELS)
+                + ", tips.model (version 6)"
                 in upgraded[0].message), upgraded[0].message
         trial = _record(model, red)
         row = _row(private_db, trial)
@@ -4258,3 +4281,140 @@ def test_the_profile_export_carries_the_channels(scripted):
     rows = list(csv.DictReader(path.open()))
     assert list(rows[0]) == list(tm_module.PROFILE_COLUMNS)
     assert rows[0]["r_mean"] == "180.0" and rows[0]["blue"] == "0.5"
+
+
+# -- TR-1b (owner, 2026-10-07): the tip catalogue records the tip MODEL --------
+# `tips.model` and the `tip_models` list, by presence; every tip catalogued
+# before is a TAP300, labelled once by the migration; the New tip prompt
+# requires a model; the dropdown line names it.
+
+#: A read-only copy of the bench's store from 2026-10-06 (v8, 43 trials,
+#: 6 tips). The test copies it to tmp_path first and skips where it is not.
+BENCH_FILE = Path("/private/tmp/claude-501/-Users-ianalbinogonzalez/"
+                  "8e2d3a20-3ec6-4a8f-b35c-8b8a939cd2f3/scratchpad/benchdata/"
+                  "transfer_map_2026-10-06.sqlite")
+
+
+@pytest.mark.skipif(not BENCH_FILE.is_file(), reason="the bench file is not here")
+def test_the_bench_files_six_tips_are_labelled_tap300_and_nothing_else_moves(
+        tmp_path, monkeypatch):
+    import shutil
+    path = tmp_path / "bench" / "transfer_map_2026-10-06.sqlite"
+    path.parent.mkdir()
+    shutil.copyfile(BENCH_FILE, path)
+    monkeypatch.setenv("STATION_MAP_DB", str(path))
+    tips_before = _rows(path, "SELECT * FROM tips ORDER BY rowid")
+    trials_before = _rows(path, "SELECT * FROM trials ORDER BY id")
+    profile_before = _rows_raw(path, "SELECT trial_id, t_s, red, z, x, y "
+                                     "FROM profile ORDER BY rowid")
+    trials_sql = _schema_sql(path, "trials")
+    assert len(tips_before) == 6 and "model" not in tips_before[0]
+    events.forget("Tip Models")
+    since = events.latest_id
+    model = TransferMap()
+    model.open()
+    model.close()
+    tips = _rows(path, "SELECT * FROM tips ORDER BY rowid")
+    assert [t["model"] for t in tips] == ["TAP300"] * 6
+    assert [{k: t[k] for k in tips_before[0]} for t in tips] == tips_before
+    assert _rows(path, "SELECT * FROM trials ORDER BY id") == trials_before
+    assert _rows_raw(path, "SELECT trial_id, t_s, red, z, x, y FROM profile "
+                           "ORDER BY rowid") == profile_before
+    assert _schema_sql(path, "trials") == trials_sql
+    assert _version(path) == 8
+    assert _rows(path, "SELECT name FROM tip_models") == [{"name": "TAP300"}]
+    [labelled] = _titled("Tip Models", since)
+    assert labelled.message == "Tip models: 6 tips labelled TAP300"
+    assert labelled.severity == "info"
+    # Once: opening it again labels nothing and says nothing.
+    since = events.latest_id
+    again = TransferMap()
+    again.open()
+    again.close()
+    assert not _titled("Tip Models", since)
+    assert TransferMap().tip_options[0] == "9/27/26 Tip1 · TAP300 · 14 trials"
+
+
+def test_a_version_six_file_gains_the_model_column_labelled_once(private_db, red):
+    _version_one_file(private_db, drop=(), version=6)
+    events.forget("Tip Models")
+    since = events.latest_id
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    try:
+        assert "model" in [r[1] for r in sqlite3.connect(private_db).execute(
+            "PRAGMA table_info(tips)")]
+        assert model._store.tip("T7")["model"] == "TAP300"
+        [labelled] = _titled("Tip Models", since)
+        assert labelled.message == "Tip models: 1 tips labelled TAP300"
+        # A tip met after the migration gets no silent default.
+        model.tip_id = "T9"
+        _give_flake(model)
+        _record(model, red)
+        assert model._store.tip("T9")["model"] is None
+        model.close()
+        reopened = TransferMap()
+        reopened.open()
+        assert reopened._store.tip("T9")["model"] is None
+        assert reopened.tip_options[-1] == "T9 · no model · 1 trial"
+        reopened.close()
+    finally:
+        model.close()
+
+
+def test_a_fresh_store_lists_tap300_and_labels_nothing(private_db):
+    events.forget("Tip Models")
+    since = events.latest_id
+    model = TransferMap()
+    model.open()
+    model.close()
+    assert model.tip_model_options == ["TAP300"]
+    assert not _titled("Tip Models", since)
+    with sqlite3.connect(private_db) as db:
+        kinds = {r[1]: r[2] for r in db.execute("PRAGMA table_info(tips)")}
+    assert kinds["model"] == "TEXT"
+
+
+def test_the_prompt_refuses_a_missing_model_and_adds_a_new_one(tmp_path):
+    tm = TransferMap(db_path=tmp_path / "map.sqlite")
+    tm.open()
+    assert tm.run("new_tip").is_ok
+    missing = tm.run("add_tip", {"new_tip_id": "T1"})
+    assert missing.is_refused and "Pick the tip's model" in missing.reason
+    assert tm.phase == "new_tip" and tm._store.tips() == []
+    assert tm.run("add_tip_model", {"new_model_name": "  "}).is_refused
+    assert tm.run("set_new_tip_model", None, ("AC160",)).is_refused
+    assert tm.run("add_tip_model", {"new_model_name": " AC160 "}).value == "AC160"
+    assert tm.options("tip_model_options") == ["TAP300", "AC160"]
+    assert tm.state["values"]["new_tip_model"] == "AC160"      # picked
+    assert tm.run("add_tip_model", {"new_model_name": "tap300"}).value == "TAP300"
+    assert tm.options("tip_model_options") == ["TAP300", "AC160"]
+    assert tm.run("set_new_tip_model", None, ("ac160",)).value == "AC160"
+    assert tm.run("add_tip", {"new_tip_id": "T1"}).is_ok
+    assert tm._store.tip("T1")["model"] == "AC160"
+    assert tm.tip_options == ["T1 · AC160 · 0 trials"]
+    tm.close()
+
+
+def test_set_tip_model_corrects_a_label_and_the_rows_carry_it(station):
+    model, red, *_ = station
+    first = _record(model, red)                        # tip-A: no model yet
+    assert model._map_rows()[0]["model"] is None
+    assert model.run("set_tip_model", None, ("tip-A", "TAP300")).is_ok
+    assert model._store.tip("tip-A")["model"] == "TAP300"
+    assert model.state["values"]["tip_model"] == "TAP300"
+    assert [(r["id"], r["model"]) for r in model._map_rows()] == [(first, "TAP300")]
+    assert model.tips_log[0].startswith("tip-A  TAP300  1 trial(s)")
+    # The Tip section's dropdown sends the model only: the picked tip.
+    assert model.run("add_tip_model", {"new_model_name": "AC160"}).is_refused  # setup step
+    model._store.add_tip_model("AC160")
+    assert model.run("set_tip_model", None, ("ac160",)).value == "AC160"
+    assert model.tip_pick == "tip-A · AC160 · 1 trial"
+    unknown = model.run("set_tip_model", None, ("tip-A", "NOPE"))
+    assert unknown.is_refused and "not a tip model" in unknown.reason
+    nobody = model.run("set_tip_model", None, ("T99", "TAP300"))
+    assert nobody.is_refused and "no record" in nobody.reason
+    element = _element(model, "set_tip_model")
+    section = next(s for s in model.schema["sections"] if element in s["elements"])
+    assert (section["title"], section["tier"]) == ("Tip", 2)

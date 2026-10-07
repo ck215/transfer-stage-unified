@@ -32,9 +32,13 @@ only its own controls, and the Panel refuses the rest.
 on a tip (or an import naming one), with the trial it broke on and whether
 it is retired; which trials used it is derived from `trials.tip_id`. The
 setup step has ONE tip control (approved proposal, 2026-10-07): the Tip
-dropdown, every tip labelled "<tip_id> · <n> trials", retired ones last;
-the tip picked there is the trial's tip. "New tip…" opens the `new_tip`
-step, a prompt of its own (Tip ID, Add tip, Cancel).
+dropdown, every tip labelled "<tip_id> · <model> · <n> trials", retired
+ones last; the tip picked there is the trial's tip. "New tip…" opens the
+`new_tip` step, a prompt of its own (Tip ID, Model, Add tip, Cancel). The
+catalogue records each tip's MODEL (owner, 2026-10-07): `tips.model` and
+the `tip_models` list, both by presence; the tips catalogued before it
+are all TAP300 and are labelled so once, at the migration that adds the
+column; a tip made later gets the model the operator picks, or none.
 
 **The cut is traced to its flake** (approved proposal, 2026-10-07): the
 setup step picks the Sample, Chip and Flake from the Sample Map's store
@@ -198,8 +202,15 @@ TIP_COLUMNS = (
     ("first_trial_id", "INTEGER"), ("last_trial_id", "INTEGER"),
     ("last_used_at", "TEXT"), ("broke_trial_id", "INTEGER"),
     ("retired_at", "TEXT"), ("note", "TEXT"),
+    # The tip's model (owner, 2026-10-07), one of `tip_models`; added by
+    # presence. NULL: not catalogued (never a silent default).
+    ("model", "TEXT"),
 )
 _TIP_NAMES = frozenset(name for name, _kind in TIP_COLUMNS)
+#: The one tip model the lab has used so far (owner ruling 2026-10-07):
+#: the `tip_models` list starts with it, and every tip catalogued before
+#: models were recorded is labelled with it, once, by the migration.
+DEFAULT_TIP_MODEL = "TAP300"
 #: `PRAGMA user_version`. 1: the first store. 2: `before_full_path` and
 #: `after_full_path` (the whole-screen pictures). 3: `mark_path` and
 #: `mark_full_path` (the pictures at the Mark) and the `tips` table. 4:
@@ -230,6 +241,8 @@ _CREATE = (
     "CREATE TABLE IF NOT EXISTS tips ("
     + ", ".join(name + " " + kind for name, kind in TIP_COLUMNS) + ")",
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
+    # The tip models to pick from (owner, 2026-10-07), by presence.
+    "CREATE TABLE IF NOT EXISTS tip_models (name TEXT PRIMARY KEY)",
 )
 
 #: A version-2 (or older) file's tips, from its trials: first and last
@@ -341,6 +354,7 @@ class TrialStore:
         self.path = Path(path)
         self._lock = threading.Lock()
         self._file_version = SCHEMA_VERSION
+        self._labelled = 0
 
     @property
     def exists(self):
@@ -358,6 +372,7 @@ class TrialStore:
             fresh = not self.exists
             self.path.parent.mkdir(parents=True, exist_ok=True)
             db = self._connect()
+            self._labelled = 0
             try:
                 with db:
                     for statement in _CREATE:
@@ -366,6 +381,7 @@ class TrialStore:
                     result = fn(db)
             finally:
                 db.close()
+            labelled = self._labelled
         if fresh:
             events.info("Map Database Created", "A new Transfer Map database "
                         "was created at " + str(self.path) + ".",
@@ -375,6 +391,9 @@ class TrialStore:
                         f"{', '.join(added) or 'every column'} (version "
                         f"{max(self._file_version, SCHEMA_VERSION)}). Its "
                         "trials are kept.", source="Transfer Map")
+        if labelled:
+            events.info("Tip Models", f"Tip models: {labelled} tips labelled "
+                        f"{DEFAULT_TIP_MODEL}", source="Transfer Map")
         return result
 
     def _migrate(self, db, fresh):
@@ -399,12 +418,26 @@ class TrialStore:
             if name not in have:
                 db.execute(f"ALTER TABLE profile ADD COLUMN {name} REAL")
                 added.append(name)
+        have = {row[1] for row in db.execute("PRAGMA table_info(tips)")}
+        modelled = "model" in have
+        for name, kind in TIP_COLUMNS:
+            if name not in have:
+                db.execute(f"ALTER TABLE tips ADD COLUMN {name} {kind}")
+                added.append("tips." + name)
+        db.execute("INSERT INTO tip_models (name) SELECT ? WHERE NOT EXISTS "
+                   "(SELECT 1 FROM tip_models)", (DEFAULT_TIP_MODEL,))
+        if not modelled:
+            # Once, as the column arrives: every tip catalogued so far is a
+            # TAP300 (owner ruling 2026-10-07).
+            self._label_tips(db)
         if version >= SCHEMA_VERSION:
             return None if fresh or not added else added
         if version < 3 and not fresh:
             # The tips table is new in 3 (`_CREATE` made it empty): one
-            # record per tip the file's trials already name.
+            # record per tip the file's trials already name, catalogued
+            # before models were, so TAP300 like the rest.
             db.execute(_BACKFILL_TIPS)
+            self._label_tips(db)
             added.append("tips")
         if version < 6:
             # The store's identity (for the lab server's trial links): new
@@ -414,6 +447,13 @@ class TrialStore:
                             ("created_at", _now())])
         db.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
         return None if fresh else added
+
+    def _label_tips(self, db):
+        """Every tip with no model becomes `DEFAULT_TIP_MODEL`; counted for
+        the one "Tip Models" event. Only ever run by the migration."""
+        self._labelled += db.execute(
+            "UPDATE tips SET model = ? WHERE model IS NULL OR TRIM(model) = ''",
+            (DEFAULT_TIP_MODEL,)).rowcount
 
     def ensure(self):
         """Create the file and its schema if missing, and upgrade an older
@@ -493,12 +533,31 @@ class TrialStore:
             return created
         return self.write(_do)
 
-    def create_tip(self, tip_id, when):
+    def create_tip(self, tip_id, when, model=None):
         """A tip record with no trial yet (New tip on the sheet, or a note
-        on a tip before its first trial). -> created (False: it existed)."""
+        on a tip before its first trial), of `model` (None: not catalogued).
+        -> created (False: it existed)."""
         return self.write(lambda db: db.execute(
-            "INSERT OR IGNORE INTO tips (tip_id, created_at) VALUES (?, ?)",
-            (tip_id, when)).rowcount == 1)
+            "INSERT OR IGNORE INTO tips (tip_id, created_at, model) VALUES "
+            "(?, ?, ?)", (tip_id, when, model)).rowcount == 1)
+
+    def tip_models(self):
+        """The tip models to pick from, in the order they were added; a
+        file with no list yet (or none) answers the seed, as the first
+        write makes it."""
+        return [r["name"] for r in self.read(
+            "SELECT name FROM tip_models ORDER BY rowid")] or [DEFAULT_TIP_MODEL]
+
+    def add_tip_model(self, name):
+        """Add a model (case-insensitive: one already listed is returned in
+        its stored spelling). -> the stored name."""
+        def _do(db):
+            for (known,) in db.execute("SELECT name FROM tip_models"):
+                if known.lower() == name.lower():
+                    return known
+            db.execute("INSERT INTO tip_models (name) VALUES (?)", (name,))
+            return name
+        return self.write(_do)
 
     def set_tip(self, tip_id, fields):
         names = _checked(fields, _TIP_NAMES, "tips")
@@ -756,8 +815,10 @@ class TransferMap(Model):
         # The trial's tip: set by the Tip dropdown (`pick_tip`) or Add tip,
         # never typed on the setup row (approved proposal, 2026-10-07).
         Param("tip_id", "text", default="", label="Tip"),
-        # The New tip prompt's one entry (the `new_tip` step).
+        # The New tip prompt's entries (the `new_tip` step): the ID, and a
+        # model name to add to the list.
         Param("new_tip_id", "text", default="", label="Tip ID"),
+        Param("new_model_name", "text", default="", label="New model"),
         Param("tip_note", "text", default="", label="Tip note"),
         # Text, so blank means "no tilt" rather than a default of 0 degrees.
         Param("typed_tilt", "text", default="",
@@ -851,6 +912,9 @@ class TransferMap(Model):
         self._pending = None
         #: The New tip prompt is open (the `new_tip` step).
         self._adding_tip = False
+        #: The model picked in the prompt (kept for the next prompt; ""
+        #: until one is picked: Add tip requires it).
+        self._new_tip_model = ""
         #: The trial being started (V8): subscribed to before a run starts,
         #: so the run's first row is its own; numbered and made `_trial` once
         #: its row is written, dropped if the start fails.
@@ -2160,12 +2224,18 @@ class TransferMap(Model):
             return f"in use since trial {record['trials'][0]}"
         return "new"
 
-    @staticmethod
-    def tip_label(record):
-        """A tip as the Tip dropdown shows it: "T7 · 3 trials", "T8 · 1
-        trial", "T3 · 5 trials · retired" (`record` from `TrialStore.tips`)."""
+    #: What a tip's line says while it has no model on record.
+    NO_MODEL = "no model"
+
+    @classmethod
+    def tip_label(cls, record):
+        """A tip as the Tip dropdown shows it: "T7 · TAP300 · 3 trials",
+        "T8 · TAP300 · 1 trial", "T3 · TAP300 · 5 trials · retired",
+        "T9 · no model · 0 trials" (`record` from `TrialStore.tips`)."""
         n = int(record["count"])
-        label = f"{record['tip_id']} · {n} trial{'' if n == 1 else 's'}"
+        model = (record.get("model") or "").strip() or cls.NO_MODEL
+        label = (f"{record['tip_id']} · {model} · "
+                 f"{n} trial{'' if n == 1 else 's'}")
         return label + " · retired" if record["retired_at"] else label
 
     @property
@@ -2210,10 +2280,10 @@ class TransferMap(Model):
         return None
 
     def add_tip(self):
-        """Add tip: the typed ID becomes a tip record (created now, no trial
-        yet), it is picked for the trial, and the step returns to setup. An
-        empty ID, or one already on record, is refused and the prompt
-        stays."""
+        """Add tip: the typed ID becomes a tip record of the picked model
+        (created now, no trial yet), it is picked for the trial, and the
+        step returns to setup. An empty ID, one already on record, or no
+        model is refused and the prompt stays."""
         self._need_store()
         tip = (self.new_tip_id or "").strip()
         if not tip:
@@ -2221,12 +2291,87 @@ class TransferMap(Model):
         if self._store.tip(tip) is not None:
             raise Refused(f"{tip} already exists. Choose it from the list or "
                           "type a different ID.")
-        self._store.create_tip(tip, _now())
+        model = self._known_model(self._new_tip_model)
+        if model is None:
+            raise Refused("Pick the tip's model (or add a new one under New "
+                          "model), then press Add tip.")
+        self._store.create_tip(tip, _now(), model)
         self.tip_id, self.new_tip_id = tip, ""
         self._adding_tip = False
         self._changed()
-        events.info("Tip Created", f"Tip {tip} created.", source=self.NAME)
+        events.info("Tip Created", f"Tip {tip} ({model}) created.",
+                    source=self.NAME)
         return tip
+
+    # -- the tip's model (owner, 2026-10-07) -------------------------------------
+    @property
+    def tip_model_options(self):
+        """The tip models on record (`tip_models`), in the order added."""
+        return self._store.tip_models()
+
+    def _known_model(self, name):
+        """`name` as the list spells it (trimmed, case-insensitive), or None."""
+        wanted = str(name or "").strip().lower()
+        return next((m for m in self.tip_model_options
+                     if wanted and m.lower() == wanted), None)
+
+    @property
+    def new_tip_model(self):
+        """The New tip prompt's Model dropdown."""
+        return self._new_tip_model
+
+    def set_new_tip_model(self, name):
+        found = self._known_model(name)
+        if found is None:
+            raise Refused(f"{name!r} is not a tip model: pick one, or add it "
+                          "under New model.")
+        self._new_tip_model = found
+        self._touch()
+        return found
+
+    def add_tip_model(self):
+        """Add model: the typed name joins the model list and is picked."""
+        self._need_store()
+        name = (self.new_model_name or "").strip()
+        if not name:
+            raise Refused("Type the new model's name first.")
+        name = self._store.add_tip_model(name)
+        self._new_tip_model, self.new_model_name = name, ""
+        self._changed()
+        events.info("Tip Model Added", f"Tip model {name} added.",
+                    source=self.NAME)
+        return name
+
+    @property
+    def tip_model(self):
+        """The picked tip's model (the Tip section's dropdown); "" without
+        one."""
+        record = self._tip_record((self.tip_id or "").strip())
+        return (record.get("model") or "") if record is not None else ""
+
+    def set_tip_model(self, tip_or_model, model=None):
+        """Correct a tip's model label: `set_tip_model(tip_id, model)`, or,
+        as the Tip section's dropdown sends it, `set_tip_model(model)` for
+        the picked tip. The model must be on the list."""
+        self._need_store()
+        if model is None:
+            tip, model = (self.tip_id or "").strip(), tip_or_model
+        else:
+            tip = str(tip_or_model or "").strip()
+        if not tip:
+            raise Refused("Pick the tip first (Tip, on the trial's setup).")
+        if self._tip_record(tip) is None:
+            raise Refused(f"Tip {tip} has no record yet: it is created when a "
+                          "trial is armed on it.")
+        found = self._known_model(model)
+        if found is None:
+            raise Refused(f"{model!r} is not a tip model: add it under New "
+                          "model first.")
+        self._store.set_tip(tip, {"model": found})
+        self._changed()
+        events.info("Tip Model Set", f"Tip {tip}: model {found}.",
+                    source=self.NAME)
+        return found
 
     def cancel_new_tip(self):
         """Cancel: back to setup; nothing is written."""
@@ -2307,7 +2452,8 @@ class TransferMap(Model):
             if tip["retired_at"]:
                 end += "  retired"
             note = f"  {tip['note']}" if tip["note"] else ""
-            lines.append(f"{tip['tip_id']}  {tip['count']} trial(s), "
+            model = (tip.get("model") or "").strip() or self.NO_MODEL
+            lines.append(f"{tip['tip_id']}  {model}  {tip['count']} trial(s), "
                          f"{span}{end}{note}")
         return lines
 
@@ -2795,6 +2941,7 @@ class TransferMap(Model):
 
     def _map_rows(self):
         rows = []
+        models = {t["tip_id"]: t.get("model") for t in self._store.tips()}
         for row in self._store.trials():
             if row["status"] in ("armed", "aborted"):
                 continue
@@ -2803,6 +2950,8 @@ class TransferMap(Model):
             # bench store's column, absent from this one's v6 (None then).
             rows.append({"id": row["id"], "tilt": row["tilt_deg"],
                          "force_class": row.get("force_class"),
+                         # The tip's model (owner, 2026-10-07).
+                         "model": models.get(row.get("tip_id")),
                          # The cut's flake (approved proposal 2026-10-07).
                          "sample_id": row.get("sample_id"),
                          "chip_id": row.get("chip_id"),
@@ -3105,9 +3254,16 @@ class TransferMap(Model):
             ),
             # new_tip: the New tip prompt. Add tip refuses an empty or a
             # known ID and stays; Add tip or Cancel returns to setup.
+            # The model is required (owner, 2026-10-07); a model not on the
+            # list is added the way the Sample Map adds a material.
             sch.section(
                 "New tip",
                 sch.entry("Tip ID", "new_tip_id", P["new_tip_id"]),
+                sch.dropdown("Model", "new_tip_model", "set_new_tip_model",
+                             "tip_model_options"),
+                sch.entry("New model", "new_model_name", P["new_model_name"]),
+                sch.button("Add model", "add_tip_model",
+                           inputs=("new_model_name",)),
                 sch.button("Add tip", "add_tip", inputs=("new_tip_id",),
                            role="go"),
                 sch.button("Cancel", "cancel_new_tip"),
@@ -3191,6 +3347,9 @@ class TransferMap(Model):
                            inputs=("tip_note",)),
                 sch.button("Retire tip", "retire_tip"),
                 sch.button("Return tip to use", "unretire_tip"),
+                # Corrects the picked tip's model label (owner, 2026-10-07).
+                sch.dropdown("Tip model", "tip_model", "set_tip_model",
+                             "tip_model_options"),
                 # After the fact: the armed trial's, else the last trial's
                 # (the sheet's own Tip broke is drawn in marked and finish).
                 sch.toggle("Tip broke", "is_broke", "mark_broke", "Broke",
