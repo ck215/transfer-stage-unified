@@ -4,7 +4,14 @@ Every test uses a temporary database (owner ruling 2026-09-27: tests never
 touch the project database). Red Percent is the real model over an injected
 capture factory (`tests/test_red_monitor.py`'s fake screen), so the samples
 arrive through the real subscribe hook on the real run thread; the tilt and
-speed sources are duck-typed stand-ins, plus the real SIM Rotator.
+speed sources are duck-typed stand-ins, plus the real SIM Rotator. The
+stage still is taken by the real `ScreenRecorder` over an injected frame
+source (`fake_display`): no test grabs the real screen.
+
+The trial is a procedure (owner ruling 2026-10-07): setup -> Arm ->
+region (the still is taken; the region is picked on it) -> live -> Mark
+force -> marked -> End recording -> finish -> Finish -> setup. `_arm`,
+`_finish` and `_record` walk it through the Panel, as a view does.
 """
 import csv
 import os
@@ -25,7 +32,7 @@ from model.rotator import Rotator
 from model.transfer_map import TransferMap
 from events import events
 from result import NeedsConfirm, Refused
-from test_red_monitor import DesktopCapture, desktop_screen, fake_screen
+from test_red_monitor import desktop_screen, fake_screen
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +61,40 @@ def jpeg_recorder(request, monkeypatch):
 def real_encoder():
     """Opt out of `jpeg_recorder`: this test records a real H.264 MP4."""
     return pytest.importorskip("imageio_ffmpeg")
+
+
+#: The display the fake source shows: (width, height) of the stage still.
+STAGE_SIZE = (96, 64)
+
+
+def display_frame():
+    """One BGRA frame of the fake display: dark, a red block at its centre."""
+    import numpy
+    width, height = STAGE_SIZE
+    frame = numpy.zeros((height, width, 4), dtype=numpy.uint8)
+    frame[:, :, 3] = 255
+    frame[16:48, 32:64, 2] = 220                  # BGRA: red
+    return frame
+
+
+def display_source():
+    """A `ScreenRecorder` frame source: a new frame per call, and its time."""
+    return display_frame(), time.monotonic()
+
+
+@pytest.fixture(autouse=True)
+def fake_display(monkeypatch):
+    """The map's default recorder (the stage still's device) over the fake
+    display: the real `ScreenRecorder`, never the real screen."""
+    from devices.screen_recorder import ScreenRecorder
+    made = []
+
+    def factory(out_dir, fps, monitor):
+        made.append((Path(out_dir), fps, monitor))
+        return ScreenRecorder(out_dir, fps, monitor, frame_source=display_source)
+
+    monkeypatch.setattr(tm_module, "_make_recorder", factory)
+    return made
 
 
 class FakeRotator:
@@ -94,7 +135,8 @@ def red(tmp_path):
 
 @pytest.fixture
 def station(red):
-    """A Transfer Map beside a running Red Percent, a rotator and a probe."""
+    """A Transfer Map beside Red Percent (a region, no run: the trial
+    starts its own), a rotator and a probe."""
     rotator, probe = FakeRotator(), FakeProbe()
     model = TransferMap()
     model.open()
@@ -102,7 +144,6 @@ def station(red):
                         ("Stepper Probe", probe)):
         model.on_model_added(name, other)
     red.source_name = "Stepper Probe"
-    red.start_run(confirmed=True)
     model.tip_id = "tip-A"
     yield model, red, rotator, probe
     model.close()
@@ -129,12 +170,34 @@ def _confirmed(model, command, inputs=None):
     return result.value
 
 
-def _arm(model, tip=None):
-    return _confirmed(model, "arm_trial",
-                      {"tip_id": tip if tip is not None else model.tip_id})
+#: The capture region every trial picks on its stage still.
+REGION = (0, 0, 10, 10)
+
+
+def _arm_only(model, tip=None):
+    """Arm, as a view does: answer its question. -> the `region` step."""
+    _confirmed(model, "arm_trial",
+               {"tip_id": tip if tip is not None else model.tip_id})
+    assert model.phase == "region", model.phase
+
+
+def _arm(model, tip=None, region=REGION):
+    """Arm and pick the region: the trial is `live`. -> its id."""
+    _arm_only(model, tip)
+    result = model.run("set_region", None, region)
+    assert result.is_ok, result
+    assert model.phase == "live", model.phase
+    return result.value
 
 
 def _finish(model, note=""):
+    """End the recording (from `marked` as the sheet does; from `live`
+    through the model, for a trial with no Mark), then keep it."""
+    if model.phase == "marked":
+        assert model.run("end_recording").is_ok
+    elif model.phase == "live":
+        model.end_recording()
+    assert model.phase == "finish", model.phase
     return _confirmed(model, "finish_trial", {"note": note})
 
 
@@ -246,6 +309,8 @@ def test_the_session_section_leads_tier_one():
     model = TransferMap()
     first = model.schema["sections"][0]
     assert first["title"] == "Session" and first.get("tier", 1) == 1
+    # 2026-10-07: the start screen's only (a step shows its own controls).
+    assert first["phases"] == ["setup"]
     keys = [e.get("model_attr") or e.get("command") for e in first["elements"]]
     assert keys == ["db_path", "trial_count", "new_database"]
     button = first["elements"][2]
@@ -320,7 +385,10 @@ def test_arm_refuses_without_red_percent():
         model.arm_trial()
 
 
-def test_arm_refuses_without_a_capture_region(tmp_path, private_db):
+def test_arm_needs_no_capture_region_and_starts_nothing(tmp_path, private_db):
+    """2026-10-07 (owner ruling: the region is picked after Arm, on the
+    stage still): Arm without a region is the `region` step, not a
+    refusal; nothing runs and nothing is written until the region lands."""
     bare = RedMonitor(screen=fake_screen())
     bare.output_root = tmp_path / "runs"
     bare.open()
@@ -328,10 +396,11 @@ def test_arm_refuses_without_a_capture_region(tmp_path, private_db):
         model = TransferMap()
         model.on_model_added("Red Percent", bare)
         model.tip_id = "tip-A"
-        with pytest.raises(Refused, match="capture region"):
-            model.arm_trial(True)
+        assert model.arm_trial(True) is None
+        assert model.phase == "region" and model.mode_name == "armed"
         assert not bare.is_running and not model.is_armed
         assert model.trial_count == 0
+        model.abort_trial()
     finally:
         bare.close()
 
@@ -440,7 +509,6 @@ def test_mark_force_is_refused_unless_armed(station):
 def test_finish_with_no_samples_still_records(red, private_db):
     model = TransferMap()
     model.on_model_added("Red Percent", red)
-    red.start_run(confirmed=True)
     model.tip_id = "t"
     red.unsubscribe  # the hook exists
     trial = _arm(model)
@@ -666,11 +734,12 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
             key = element.get("command") or element.get("data_command") \
                 or element.get("source_command") or element.get("model_attr")
             tiers[key] = section.get("tier", 1)
+    # 2026-10-07: + the region step's still and the End recording step.
     for key in ("arm_trial", "mark_force", "finish_trial", "abort_trial",
                 "figure", "tip_id", "tilt_now", "speed_now", "red_now",
                 "trial_count", "trial_status", "db_path", "new_database",
                 "first_frame_image", "mark_frame_image", "video_status",
-                "tip_status"):
+                "tip_status", "stage_still", "end_recording"):
         assert tiers[key] == 1, key
     for key in ("set_figure_type", "set_force_definition", "attach_afm",
                 "export_csv", "import_csv", "before_full_image",
@@ -720,7 +789,8 @@ def test_trials_on_this_tip_counts_the_typed_tip(station):
 
 def test_trials_on_this_tip_sits_under_the_tip_id_entry():
     model = TransferMap()
-    trial = next(s for s in model.schema["sections"] if s["title"] == "Trial")
+    # 2026-10-07: the tip's entries are the setup step's "Start" section.
+    trial = next(s for s in model.schema["sections"] if s["title"] == "Start")
     keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
     at = keys.index("tip_id")
     assert keys[at + 3] == "tip_trial_count"     # after Known tips and New tip
@@ -762,20 +832,34 @@ def _element(model, key):
 
 def test_the_capture_region_is_red_percents_set_from_the_sheet(red):
     """Bench 2026-09-27: "the red percent and transfer map are decoupled?
-    They should be unified". The region is set on the trial sheet."""
+    They should be unified". The region is set on the trial sheet; since
+    2026-10-07 in the `region` step, after Arm, on the stage still."""
     model = TransferMap()
-    assert model.region is None and model.state["values"]["region"] == ""
-    assert model.state["has_region"] is False
-    refused = model.run("set_region", None, (1, 2, 30, 40))
-    assert refused.is_refused and "Open Red Percent" in refused.reason
-    model.on_model_added("Red Percent", red)
-    assert model.region == red.region and model.state["has_region"] is True
-    result = model.run("set_region", None, (1, 2, 30, 40))
-    assert result.is_ok, result
-    assert red.region == {"top": 2, "left": 1, "width": 30, "height": 40}
-    assert model.region == red.region
-    assert model.state["values"]["region"] == sch.format_region(red.region)
-    assert model.run("set_region", None, (0, 0, 0, 5)).is_refused   # red's own check
+    model.open()
+    try:
+        assert model.region is None and model.state["values"]["region"] == ""
+        assert model.state["has_region"] is False
+        with pytest.raises(Refused, match="Open Red Percent"):
+            model.set_region(1, 2, 30, 40)
+        model.on_model_added("Red Percent", red)
+        model.tip_id = "tip-A"
+        assert model.region == red.region and model.state["has_region"] is True
+        early = model.run("set_region", None, (1, 2, 30, 40))
+        assert early.is_refused and "setup step" in early.reason
+        with pytest.raises(Refused, match="Press Arm trial first"):
+            model.set_region(1, 2, 30, 40)
+        _arm_only(model)
+        bad = model.run("set_region", None, (0, 0, 0, 5))   # red's own check
+        assert bad.is_refused and model.phase == "region"
+        result = model.run("set_region", None, (1, 2, 30, 40))
+        assert result.is_ok, result
+        assert red.region == {"top": 2, "left": 1, "width": 30, "height": 40}
+        assert model.region == red.region
+        assert model.state["values"]["region"] == sch.format_region(red.region)
+        assert model.phase == "live" and result.value == model._trial.id
+        model.abort_trial()
+    finally:
+        model.close()
 
 
 def test_the_region_is_fixed_while_a_trial_is_armed(station):
@@ -783,38 +867,43 @@ def test_the_region_is_fixed_while_a_trial_is_armed(station):
     _arm(model)
     before = dict(red.region)
     result = model.run("set_region", None, (5, 5, 20, 20))
-    assert result.is_refused and "fixed" in result.reason
+    assert result.is_refused and "live step" in result.reason
+    with pytest.raises(Refused, match="fixed"):
+        model.set_region(5, 5, 20, 20)
     assert red.region == before
 
 
-def test_the_region_picker_reads_red_percents_screen(red, monkeypatch):
-    model = TransferMap()
-    assert model.screen_image is None
-    assert model.run("screen_image").is_ok            # a declared data source
-    model.on_model_added("Red Percent", red)
-    bounds = {"left": 0, "top": 0, "width": 8, "height": 6}
-    monkeypatch.setattr(red.screen, "screenshot_png", lambda **kw: (b"PNG!", bounds))
-    assert model.screen_image == {"image": b"PNG!", **bounds}
+def test_the_region_picker_draws_on_the_stage_still(station):
+    """Owner ruling 2026-10-07: the region is picked ON the still Arm
+    took (the picker's picture is `stage_still`, no live screenshot)."""
+    model, red, *_ = station
     element = _element(model, "set_region")
     assert element["type"] == "region_select"
-    assert element["text"] == "Set capture region"
+    assert element["text"] == "Capture region"
     assert element["model_attr"] == "region"
-    assert element["data_command"] == "screen_image"
+    assert element["data_command"] == "stage_still"
+    region_section = next(s for s in model.schema["sections"]
+                          if element in s["elements"])
+    assert region_section["phases"] == ["region"]
+    assert model.stage_still == b""                    # nothing before Arm
+    _arm_only(model)
+    still = model.stage_still
+    assert still[:8] == PNG and _size(still) == STAGE_SIZE
+    assert model._pending.still.read_bytes() == still
+    assert model.run("stage_still").value == still    # the picker's data
+    trial = model.run("set_region", None, REGION).value
+    kept = model.pictures_root / str(trial) / "before_full.png"
+    assert kept.read_bytes() == still == model.stage_still
+    _finish(model)
+    assert model.stage_still == b""
 
 
 def test_the_next_step_walks_the_operator_through_a_trial(red):
     model = TransferMap()
+    model.open()
     step = lambda: model.state["values"]["next_step"]  # noqa: E731
     assert _element(model, "next_step")["role"] == "info"
     assert step() == "Open Red Percent"
-    bare = RedMonitor(screen=fake_screen())
-    model.on_model_added("Red Percent", bare)
-    # M3: with neither set, the line says the polling is the sheet's to start.
-    assert step() == "Set the capture region and a tip ID"
-    model.tip_id = "tip-A"
-    assert step() == "Set the capture region"
-    model.tip_id = ""
-    model.on_model_removed("Red Percent", bare)
     model.on_model_added("Red Percent", red)
     model.tip_id = " "
     assert step() == "Type a tip ID"
@@ -822,17 +911,250 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     assert step() == "Type the tilt for this trial"
     model.typed_tilt = "6.5"
     assert step() == "Press Arm trial"
-    if not red.is_running:
-        red.start_run(confirmed=True)       # before T2, Arm needs a run
-    _arm(model)
+    red.start_run(confirmed=True)                 # a run of the operator's own
+    assert step() == "Stop Red Percent's run, then press Arm trial"
+    red.end_run()
+    assert step() == "Press Arm trial"
+    _arm_only(model)
+    assert step() == "Drag the capture region on the picture of the stage"
+    assert model.run("set_region", None, REGION).is_ok
     assert step() == "Lower the tip; press Mark force when the force is right"
-    model.mark_force()
-    assert step() == "Press Finish trial"
-    _finish(model)
+    assert model.run("mark_force").is_ok
+    assert step() == "Press End recording when the cut is done"
+    assert model.run("end_recording").is_ok
+    assert step() == "Review the trial, then press Finish trial to keep it"
+    _confirmed(model, "finish_trial", {"note": ""})
     assert step() == "Press Arm trial"
     model.estop()
     assert step() == ""                      # latched: the stop says what to do
     model.close()
+
+
+# -- the procedure (owner ruling 2026-10-07) ---------------------------------
+# setup -> Arm -> region (the stage still; nothing records) -> the region
+# lands -> live -> Mark force -> marked -> End recording -> finish (review)
+# -> Finish -> setup. Abort from region on; the stop overrides everything.
+
+def _to_step(model, step):
+    """Drive the procedure to `step` through the Panel, as a view does."""
+    if step == "setup":
+        return
+    _arm_only(model)
+    if step == "region":
+        return
+    assert model.run("set_region", None, REGION).is_ok
+    if step == "live":
+        return
+    assert _marked(model).is_ok
+    if step == "marked":
+        return
+    assert model.run("end_recording").is_ok
+
+
+def _staged(model):
+    staging = model.pictures_root / tm_module.STAGING
+    return list(staging.iterdir()) if staging.exists() else []
+
+
+def test_the_procedure_runs_through_its_steps_on_real_commands(station,
+                                                               private_db):
+    model, red, *_ = station
+    assert TransferMap.PHASES == ("setup", "region", "live", "marked", "finish")
+    seen = []
+
+    def step():
+        state = model.state
+        assert state["phase"] == model.phase
+        assert state["mode"] == state["model_mode"] == model.mode_name
+        seen.append((model.phase, model.mode_name))
+
+    step()
+    assert model.run("arm_trial", {"tip_id": "tip-A"}, (True,)).is_ok
+    step()
+    assert model.trial_count == 0 and not red.is_running
+    trial = model.run("set_region", None, REGION).value
+    step()
+    assert _wait_for(lambda: len(model._trial.samples) >= 5)
+    assert model.run("mark_force").is_ok
+    step()
+    first_mark = model._trial.operator_t
+    assert model.run("mark_force").is_ok              # again: the Mark moves
+    step()
+    assert model._trial.operator_t > first_mark
+    assert model.run("end_recording").is_ok
+    step()
+    assert model.run("finish_trial", {"note": "walked"}, (True,)).is_ok
+    step()
+    assert seen == [("setup", "ready"), ("region", "armed"), ("live", "armed"),
+                    ("marked", "armed"), ("marked", "armed"),
+                    ("finish", "armed"), ("setup", "ready")]
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+    assert row["status"] == "recorded" and row["note"] == "walked"
+    assert row["mark_operator_t"] == pytest.approx(model._store.trial(trial)
+                                                   ["mark_operator_t"])
+    assert _rows(private_db, "SELECT COUNT(*) AS n FROM profile WHERE "
+                 "trial_id=?", trial)[0]["n"] >= 5
+
+
+@pytest.mark.parametrize("step", TransferMap.PHASES)
+def test_the_phase_and_the_next_step_agree_in_every_step(station, step):
+    model, red, *_ = station
+    _to_step(model, step)
+    assert model.phase == model.state["phase"] == step
+    words = model.state["values"]["next_step"]
+    if step == "setup":
+        assert words == "Press Arm trial" and model.mode_name == "ready"
+    else:
+        assert words == TransferMap.STEP_WORDS[step]
+        assert model.mode_name == "armed"
+    others = {w for s, w in TransferMap.STEP_WORDS.items() if s != step}
+    assert words not in others
+    model.estop()
+    assert model.phase == "setup" and model.next_step == ""   # latched
+
+
+#: Per step: commands whose controls the step does not show.
+HIDDEN = {
+    "setup": ("mark_force", "end_recording", "finish_trial", "set_region",
+              "stage_still"),
+    "region": ("arm_trial", "mark_force", "end_recording", "finish_trial",
+               "new_database", "new_tip"),
+    "live": ("arm_trial", "set_region", "end_recording", "finish_trial",
+             "new_tip"),
+    "marked": ("arm_trial", "set_region", "finish_trial", "new_tip"),
+    "finish": ("arm_trial", "set_region", "mark_force", "end_recording",
+               "new_tip"),
+}
+
+
+@pytest.mark.parametrize("step", TransferMap.PHASES)
+def test_a_hidden_command_is_refused_in_the_wrong_step(station, step):
+    """What the step does not show cannot be called through the Panel
+    (the Web API included): refused, and the step does not move."""
+    model, red, *_ = station
+    _to_step(model, step)
+    for command in HIDDEN[step]:
+        result = model.run(command, {"tip_id": "tip-A"} if command == "new_tip"
+                           else None, REGION if command == "set_region" else ())
+        assert result.is_refused, (step, command)
+        assert f"{step} step" in result.reason, (step, command, result.reason)
+        assert model.phase == step
+    if step != "setup":
+        model.abort_trial()
+
+
+@pytest.mark.parametrize("step", TransferMap.PHASES)
+def test_abort_from_every_step(station, private_db, step):
+    model, red, *_ = station
+    _to_step(model, step)
+    trial = model._trial.id if model._trial is not None else None
+    result = model.run("abort_trial", {"width_um": "not a number"})
+    if step == "setup":
+        assert result.is_refused and "no trial is armed" in result.reason
+        return
+    assert result.is_ok, result
+    assert model.phase == "setup" and model.mode_name == "ready"
+    assert not red.is_running and red._subscribers == ()
+    model.disable()
+    if step == "region":
+        assert result.value is None and model.trial_count == 0
+        assert _staged(model) == []                # the still is deleted
+    else:
+        row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+        assert row["status"] == "aborted"
+
+
+@pytest.mark.parametrize("step", TransferMap.PHASES)
+def test_the_stop_from_every_step(station, private_db, step):
+    model, red, *_ = station
+    _to_step(model, step)
+    trial = model._trial.id if model._trial is not None else None
+    started = time.monotonic()
+    assert model.estop() is True
+    assert time.monotonic() - started < 0.5
+    assert model.phase == "setup" and model.gate_mode == "latched"
+    assert not red.is_running
+    model.disable()
+    if trial is None:
+        assert model.trial_count == 0
+        assert _wait_for(lambda: _staged(model) == [])
+    else:
+        row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+        assert row["status"] == "aborted"
+    assert model.run("toggle_estop", None, (True,)).is_ok   # clear: setup again
+    assert model.phase == "setup" and model.mode_name == "ready"
+
+
+def test_the_region_step_writes_no_trial_row(station, private_db):
+    model, red, *_ = station
+    _arm_only(model)
+    assert model.trial_count == 0
+    assert _rows(private_db, "SELECT * FROM trials") == []
+    numbered = [p for p in model.pictures_root.iterdir()
+                if p.name != tm_module.STAGING]
+    assert numbered == []                          # only the staged still
+    assert len(_staged(model)) == 1
+    assert not red.is_running and red._subscribers == ()
+    assert not model.is_armed and model.is_active is False
+    assert model.video_status == "No video yet."
+
+
+def test_the_still_is_taken_through_the_recorder_on_its_display(
+        station, fake_display):
+    """The still comes through the recorder factory, for the map's display;
+    the region is picked in the still's pixels and lands on the desktop."""
+    model, red, *_ = station
+    model.monitor = 0                       # the fake desktop: 1700 x 40
+    _arm_only(model)
+    folder, fps, monitor = fake_display[-1]
+    assert folder == model.pictures_root / tm_module.STAGING
+    assert (fps, monitor) == (tm_module.VIDEO_FPS, 0)
+    assert model._pending.bounds == {"left": 0, "top": 0, "width": 1700,
+                                     "height": 40}
+    assert model._pending.size == STAGE_SIZE
+    assert model.run("set_region", None, (48, 32, 48, 32)).is_ok
+    assert red.region == {"left": 850, "top": 20, "width": 850, "height": 20}
+    model.abort_trial()
+    model.monitor = {"left": 100, "top": 50, "width": 48, "height": 32}
+    _arm_only(model)                        # a display given as its bounds
+    assert model.run("set_region", None, (10, 20, 40, 30)).is_ok
+    assert red.region == {"left": 105, "top": 60, "width": 20, "height": 15}
+    model.abort_trial()
+
+
+def test_without_the_displays_bounds_the_stills_pixels_are_the_desktops(
+        station):
+    model, red, *_ = station
+    model.monitor = 7                       # no such display on this screen
+    _arm_only(model)
+    assert model._pending.bounds is None
+    assert model.run("set_region", None, (3, 4, 20, 10)).is_ok
+    assert red.region == {"left": 3, "top": 4, "width": 20, "height": 10}
+    model.abort_trial()
+
+
+def test_end_recording_stops_everything_and_keeps_the_trial_open(station,
+                                                                  private_db):
+    model, red, *_ = station
+    trial = _arm(model)
+    assert _marked(model).is_ok
+    rec = model._trial.recording
+    assert _wait_for(lambda: rec.frames >= 2)
+    assert model.run("end_recording").is_ok
+    kept = len(model._trial.samples)
+    time.sleep(0.2)
+    assert len(model._trial.samples) == kept       # no rows after the end
+    assert not red.is_running and red._subscribers == ()
+    assert rec.closed.is_set() and model.phase == "finish"
+    assert model.is_armed and _rows(private_db, "SELECT status FROM trials "
+                                    "WHERE id=?", trial)[0]["status"] == "armed"
+    with pytest.raises(Refused, match="already ended"):
+        model.end_recording()
+    with pytest.raises(Refused, match="nothing left to mark"):
+        model.mark_force()
+    _confirmed(model, "finish_trial", {"note": ""})
+    assert _rows(private_db, "SELECT COUNT(*) AS n FROM profile WHERE "
+                 "trial_id=?", trial)[0]["n"] == kept
 
 
 # -- T2: Arm owns the run --------------------------------------------------------
@@ -883,17 +1205,34 @@ def test_finish_ends_the_run_the_map_started(idle_station, private_db):
                  trial)[0]["status"] == "recorded"
 
 
-def test_a_run_the_operator_started_is_left_running(station):
-    """The station fixture starts the run on the Red Percent page."""
+def test_arm_refuses_while_red_percent_runs_a_run_of_its_own(station):
+    """2026-10-07: the trial's run starts on the region picked after Arm,
+    so a run the operator started on Red Percent (on another region, which
+    Red Percent cannot change mid-run) is never joined: Arm says so and
+    leaves that run running."""
     model, red, *_ = station
-    run = red.run_id
-    _record(model, red)
-    assert red.is_running and red.run_id == run
-    _arm(model)
-    assert model.run("abort_trial").is_ok and red.is_running
-    _arm(model)
-    assert model.estop() is True
-    assert red.is_running and red.run_id == run
+    red.start_run(confirmed=True)
+    run = red.run_token
+    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    assert result.is_refused and "run of its own" in result.reason
+    assert model.phase == "setup" and red.run_token is run
+    red.end_run()
+    _record(model, red)                      # once it is stopped, Arm works
+
+
+def test_a_run_the_operator_starts_in_the_region_step_is_left_running(station,
+                                                                    private_db):
+    model, red, *_ = station
+    _arm_only(model)
+    red.start_run(confirmed=True)
+    run = red.run_token
+    result = model.run("set_region", None, REGION)
+    assert result.is_refused and "run of its own" in result.reason
+    assert model.phase == "region" and red.run_token is run
+    assert model.trial_count == 0
+    red.end_run()
+    assert model.run("set_region", None, REGION).is_ok      # then it starts
+    assert model.phase == "live"
 
 
 def test_a_later_run_the_operator_started_is_not_the_maps_to_end(idle_station):
@@ -936,11 +1275,15 @@ def test_arm_starts_red_percents_run_when_none_is_running(idle_station):
 
 
 def test_arm_that_cannot_start_the_run_writes_nothing(idle_station, private_db):
+    """The run starts when the region lands (2026-10-07): a Red Percent
+    that refuses it leaves the trial in the region step, with no row."""
     model, red = idle_station
     red.estop()
-    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    _arm_only(model)
+    result = model.run("set_region", None, REGION)
     assert result.is_refused and "Red Percent" in result.reason
     assert not model.is_armed and model.trial_count == 0
+    assert model.phase == "region"
 
 
 # -- T3: the picture prompts -------------------------------------------------------
@@ -953,16 +1296,21 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     model, red = idle_station
     result = model.run("arm_trial", {"tip_id": "T7", "typed_tilt": ""})
     assert result.needs_confirm, result
+    # 2026-10-07: Continue takes the stage still; the region comes next.
     assert result.reason == ("Frame the sample now. Continue takes the "
-                             "whole-screen picture, starts the video and arms "
-                             "trial 1 on tip T7, with NO tilt recorded, 300 "
-                             "steps/s (Stepper Probe).")
+                             "picture of the stage for trial 1 on tip T7, with "
+                             "NO tilt recorded, 300 steps/s (Stepper Probe); "
+                             "you then pick the capture region on it, and the "
+                             "recording starts.")
     assert result.command == "arm_trial"
     assert result.inputs == {"tip_id": "T7", "typed_tilt": ""}
     assert not model.is_armed and model.trial_count == 0
+    assert model.phase == "setup" and model.stage_still == b""
     assert not red.is_running                 # nothing started either
     again = model.run(result.command, result.inputs, (*result.args, True))
-    assert again.is_ok and again.value == 1 and model.is_armed
+    assert again.is_ok and model.phase == "region"
+    assert not model.is_armed and model.trial_count == 0   # still no row
+    assert model.run("set_region", None, REGION).value == 1 and model.is_armed
 
 
 def test_the_arm_prompt_names_the_number_the_trial_will_get(station):
@@ -972,8 +1320,8 @@ def test_the_arm_prompt_names_the_number_the_trial_will_get(station):
     model.trial_pick = second
     model.delete_trial(True)
     result = model.run("arm_trial", {"tip_id": "tip-A"})
-    assert "arms trial 3 on tip tip-A" in result.reason
-    assert _confirmed(model, "arm_trial", {"tip_id": "tip-A"}) == 3
+    assert "for trial 3 on tip tip-A" in result.reason
+    assert _arm(model, "tip-A") == 3
 
 
 def test_arm_refuses_before_it_asks(station):
@@ -985,9 +1333,11 @@ def test_arm_refuses_before_it_asks(station):
 def test_finish_asks_before_the_after_picture(station, private_db):
     model, red, *_ = station
     trial = _arm(model)
+    assert model.run("mark_force").is_ok
+    assert model.run("end_recording").is_ok          # the finish step
     result = model.run("finish_trial", {"note": "clean cut"})
     assert result.needs_confirm, result
-    assert result.reason == f"Continue ends trial {trial} and closes its video."
+    assert result.reason == f"Continue keeps trial {trial}."
     assert result.command == "finish_trial"
     assert result.inputs == {"note": "clean cut"}
     assert model.is_armed
@@ -1006,24 +1356,20 @@ def test_abort_does_not_ask(station):
 
 def test_arm_without_a_before_picture_is_refused_and_writes_nothing(
         idle_station, monkeypatch):
+    """The capture gate is the region step's since 2026-10-07: the region
+    lands, its picture cannot be taken, the trial is not started."""
     model, red = idle_station
     monkeypatch.setattr(red, "grab_frame", lambda: None)
     since = events.latest_id
-    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    _arm_only(model)
+    result = model.run("set_region", None, REGION)
     assert result.is_refused
     assert result.reason == ("No picture of the capture region: the capture "
                              "region is not set or the screen is not open.")
     assert not model.is_armed and model.trial_count == 0
+    assert model.phase == "region"
     assert not red.is_running                 # the run it started is ended
     assert not _titled("No Picture", since)   # a refusal, not a tray warning
-
-
-def test_arm_without_a_picture_leaves_the_operators_run_running(station,
-                                                                monkeypatch):
-    model, red, *_ = station
-    monkeypatch.setattr(red, "grab_frame", lambda: None)
-    assert model.run("arm_trial", {"tip_id": "tip-A"}, (True,)).is_refused
-    assert red.is_running
 
 
 def test_finish_needs_no_picture_of_its_own(
@@ -1034,6 +1380,7 @@ def test_finish_needs_no_picture_of_its_own(
     trial = _arm(model)
     monkeypatch.setattr(red, "grab_frame", lambda: None)
     monkeypatch.setattr(red, "grab_screen", lambda: None)
+    model.end_recording()
     since = events.latest_id
     result = model.run("finish_trial", {"note": ""}, (True,))
     assert result.is_ok, result
@@ -1072,7 +1419,10 @@ def test_the_pictures_show_on_the_sheet(station):
     model.new_database()
     assert model.first_frame_image == b"" and model.mark_frame_image == b""
     for command in ("first_frame_image", "mark_frame_image"):
-        assert model.run(command).is_ok       # declared data sources
+        # Declared data sources of the recording and review steps: the
+        # start screen does not show them, so it refuses them (2026-10-07).
+        early = model.run(command)
+        assert early.is_refused and "setup step" in early.reason
 
 
 def test_the_picture_elements_say_when_they_are_taken():
@@ -1080,36 +1430,61 @@ def test_the_picture_elements_say_when_they_are_taken():
     first, mark = _element(model, "first_frame_image"), _element(model, "mark_frame_image")
     assert (first["type"], first["text"]) == ("image", "First frame")
     assert (mark["type"], mark["text"]) == ("image", "Mark frame")
-    assert "arm" in first["empty"] and "Mark force" in mark["empty"]
+    # 2026-10-07: the recording starts when the region lands, not at Arm.
+    assert "recording starts" in first["empty"] and "Mark force" in mark["empty"]
     status = _element(model, "video_status")
     assert (status["type"], status["text"]) == ("readonly", "Video")
 
 
 # -- T6: the order of the sheet ------------------------------------------------
 
+def _keys(section):
+    return [e.get("command") if e["type"] in ("button", "region_select")
+            else e.get("model_attr") or e.get("command") or e.get("data_command")
+            for e in section["elements"]]
+
+
 def test_the_sheet_reads_in_the_order_a_trial_is_run():
+    """2026-10-07 (owner ruling: each step shows only its controls): the one
+    Trial section is split into the procedure's groups, in its order; what
+    every step needs (Next step, the readouts, Status, Abort) is unphased."""
     model = TransferMap()
     sections = model.schema["sections"]
-    tier_one = [s["title"] for s in sections if s.get("tier", 1) == 1
-                and s["title"] != "Safety"]
-    assert tier_one == ["Session", "Trial"]
-    trial = next(s for s in sections if s["title"] == "Trial")
-    keys = [e.get("command") if e["type"] in ("button", "region_select")
-            else e.get("model_attr") or e.get("command") or e.get("data_command")
-            for e in trial["elements"]]
-    assert keys == ["next_step", "set_region", "tilt_now", "speed_now",
-                    "red_now", "tip_id", "tip_pick", "new_tip",
-                    "tip_trial_count", "tip_status", "typed_tilt", "typed_speed",
-                    "arm_trial", "mark_force", "note", "finish_trial",
-                    "abort_trial", "is_broke", "trial_status",
-                    "first_frame_image", "mark_frame_image", "video_status",
-                    "live_series", "figure"]
+    tier_one = [(s["title"], s.get("phases")) for s in sections
+                if s.get("tier", 1) == 1 and s["title"] != "Safety"]
+    assert tier_one == [("Session", ["setup"]), ("Trial", None),
+                        ("Start", ["setup"]), ("Capture region", ["region"]),
+                        ("Recording", ["live", "marked"]),
+                        ("Review", ["finish"]), ("This trial", None),
+                        ("Map", ["setup"])]
+    by_title = {s["title"]: s for s in sections}
+    assert _keys(by_title["Trial"]) == ["next_step", "tilt_now", "speed_now"]
+    assert _keys(by_title["Start"]) == [
+        "tip_id", "tip_pick", "new_tip", "tip_trial_count", "tip_status",
+        "typed_tilt", "typed_speed", "arm_trial"]
+    assert _keys(by_title["Capture region"]) == ["set_region"]
+    assert _keys(by_title["Recording"]) == [
+        "red_now", "mark_force", "end_recording", "video_status",
+        "first_frame_image", "mark_frame_image", "live_series"]
+    assert _keys(by_title["Review"]) == [
+        "stage_still", "first_frame_image", "mark_frame_image", "video_status",
+        "note", "finish_trial"]
+    assert _keys(by_title["This trial"]) == ["trial_status", "is_broke",
+                                             "abort_trial"]
+    assert _keys(by_title["Map"]) == ["figure"]
+    phased = {(e.get("command") or e.get("data_command") or e.get("model_attr")):
+              e.get("phases") for s in sections for e in s["elements"]
+              if e.get("phases")}
+    assert phased == {"end_recording": ["marked"],
+                      "mark_frame_image": ["marked"],
+                      "mark_broke": ["marked", "finish"]}
     later = [(s["title"], s.get("tier")) for s in sections
              if s.get("tier", 1) != 1]
     assert later == [("Context", 2), ("Tip", 2), ("Figure", 2),
                      ("AFM measurement", 2), ("Optical measurement", 2),
                      ("Data", 2),
                      ("Diagnostics", 3), ("Safety", 3)]
+    assert not any(s.get("phases") for s in sections if s.get("tier", 1) != 1)
     diagnostics = next(s for s in sections if s["title"] == "Diagnostics")
     assert [e.get("model_attr") or e.get("source_command") or e.get("command")
             for e in diagnostics["elements"]] == [
@@ -1127,12 +1502,10 @@ def _size(png):
     return Image.open(io.BytesIO(png)).size
 
 
-DESKTOP_SIZE = (DesktopCapture.DESKTOP["width"], DesktopCapture.DESKTOP["height"])
-
-
 def test_arm_and_finish_keep_whole_screen_pictures(station, private_db):
     """V4: the whole screen at Arm is the one still left (context); Finish
-    takes none."""
+    takes none. Since 2026-10-07 it is the stage still the region was
+    picked on, taken through the recorder's device."""
     model, red, *_ = station
     trial = _arm(model)
     folder = model.pictures_root / str(trial)
@@ -1147,16 +1520,21 @@ def test_arm_and_finish_keep_whole_screen_pictures(station, private_db):
     assert not {"before.png", "after.png", "after_full.png", "mark.png",
                 "mark_full.png"} & set(names)
     png = (folder / "before_full.png").read_bytes()
-    assert png[:8] == PNG and _size(png) == DESKTOP_SIZE
+    assert png[:8] == PNG and _size(png) == STAGE_SIZE
+    assert not (model.pictures_root / tm_module.STAGING).exists() or \
+        not list((model.pictures_root / tm_module.STAGING).iterdir())
 
 
 def test_a_missing_full_picture_warns_and_the_trial_is_recorded(
-        station, private_db, monkeypatch):
+        station, private_db):
+    """A stage still that cannot be kept (here: gone from the staging
+    folder) is the old "No Full Picture" warning; the trial records."""
     model, red, *_ = station
-    monkeypatch.setattr(red, "grab_screen", lambda: None)
     events.forget("No Full Picture")    # a new dedupe episode
     since = events.latest_id
-    trial = _arm(model)
+    _arm_only(model)
+    model._pending.still.unlink()
+    trial = model.run("set_region", None, REGION).value
     assert model.is_armed
     warned = _titled("No Full Picture", since)
     assert len(warned) == 1 and warned[0].severity == "warning"
@@ -1172,61 +1550,104 @@ def test_a_missing_full_picture_warns_and_the_trial_is_recorded(
     assert "before_full.png" not in {p.name for p in folder.iterdir()}
 
 
-def test_a_full_grab_that_raises_is_a_missing_picture(station, monkeypatch):
+class _Recorder:
+    """A recorder factory's product for the still: `capture_still` runs
+    `then` (a stop, a failure) around writing the fake display's PNG."""
+
+    def __init__(self, then=None, fail=None):
+        self.then, self.fail = then, fail
+
+    def capture_still(self, path):
+        if self.fail is not None:
+            raise self.fail
+        from devices.screen_recorder import ScreenRecorder
+        ScreenRecorder(Path(path).parent, 15, 1,
+                       frame_source=display_source).capture_still(path)
+        if self.then is not None:
+            self.then()
+        return path
+
+
+def test_a_still_that_cannot_be_taken_refuses_arm(station, private_db):
+    """The region is picked on the still: without one there is nothing to
+    pick on, so Arm is refused and nothing is left behind."""
     model, red, *_ = station
-
-    def broken():
-        raise RuntimeError("display went away")
-
-    monkeypatch.setattr(red, "grab_screen", broken)
-    events.forget("No Full Picture")    # a new dedupe episode
-    since = events.latest_id
-    _arm(model)
-    assert model.is_armed and len(_titled("No Full Picture", since)) == 1
+    model._recorder_factory = lambda *a: _Recorder(
+        fail=RuntimeError("the screen could not be grabbed for a still"))
+    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    assert result.is_refused and "No picture of the stage" in result.reason
+    assert "could not be grabbed" in result.reason
+    assert model.phase == "setup" and model.trial_count == 0
+    staging = model.pictures_root / tm_module.STAGING
+    assert not staging.exists() or not list(staging.iterdir())
 
 
 def test_a_red_percent_without_grab_screen_still_arms(tmp_path, private_db):
     """Duck typing: the map finds Red Percent by `subscribe` and
-    `grab_frame`; `grab_screen` is optional."""
+    `grab_frame`; its screen, `grab_screen` and the frame hook are
+    optional (the stage still is the recorder's)."""
     class Plain:
-        region = {"top": 0, "left": 0, "width": 10, "height": 10}
-        is_running = True
+        region = None
+        is_running = False
         run_token = None
         def subscribe(self, fn): pass
         def unsubscribe(self, fn): pass
         def grab_frame(self): return PNG + b"region"
+        def set_region(self, x, y, w, h):
+            self.region = {"left": x, "top": y, "width": w, "height": h}
+        def start_run(self, confirmed=False):
+            self.is_running, self.run_token = True, object()
+        def end_run(self):
+            self.is_running, self.run_token = False, None
 
     model = TransferMap()
     model.open()
-    model.on_model_added("Red Percent", Plain())
+    plain = Plain()
+    model.on_model_added("Red Percent", plain)
     model.tip_id = "t"
     events.forget("No Full Picture")    # a new dedupe episode
     since = events.latest_id
     trial = _arm(model)
-    assert model.is_armed and len(_titled("No Full Picture", since)) == 1
+    assert model.is_armed and not _titled("No Full Picture", since)
+    assert plain.region == {"left": 0, "top": 0, "width": 10, "height": 10}
     model.run("abort_trial")
     model.close()
+    assert not plain.is_running
     assert _rows(private_db, "SELECT before_full_path FROM trials WHERE id=?",
-                 trial)[0]["before_full_path"] is None
+                 trial)[0]["before_full_path"]
 
 
-def test_a_stop_during_the_arm_pictures_arms_nothing(idle_station, private_db,
-                                                     monkeypatch):
-    """The whole-screen grab widens the time between Arm's guard and the
-    trial being armed; a stop inside it must win."""
+def test_a_stop_during_the_arm_pictures_arms_nothing(idle_station, private_db):
+    """The still widens the time between Arm's guard and the step; a stop
+    inside it must win, and leave no still behind."""
     model, red = idle_station
-    real = red.grab_screen
+    model._recorder_factory = lambda *a: _Recorder(then=model.estop)
+    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    assert result.is_refused and "stopped" in result.reason
+    assert model.phase == "setup" and model.trial_count == 0
+    assert not red.is_running
+    staging = model.pictures_root / tm_module.STAGING
+    assert not list(staging.iterdir())
+
+
+def test_a_stop_while_the_region_lands_starts_nothing(idle_station, private_db,
+                                                       monkeypatch):
+    """The stop inside the region step's start (here: its capture gate)
+    wins: no row, no run, nothing armed."""
+    model, red = idle_station
+    _arm_only(model)
+    real = red.grab_frame
 
     def grab_then_stop():
         png = real()
         model.estop()
         return png
 
-    monkeypatch.setattr(red, "grab_screen", grab_then_stop)
-    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    monkeypatch.setattr(red, "grab_frame", grab_then_stop)
+    result = model.run("set_region", None, REGION)
     assert result.is_refused and "stopped" in result.reason
-    assert not model.is_armed and model.trial_count == 0
-    assert not red.is_running                    # the run it started is ended
+    assert model.phase == "setup" and model.trial_count == 0
+    assert not model.is_armed and not red.is_running
 
 
 def test_the_full_pictures_sit_under_configure(station):
@@ -1250,7 +1671,7 @@ def test_the_full_pictures_show_the_armed_trial_else_the_last(station):
     assert model.before_full_image == (folder / "before_full.png").read_bytes()
     _finish(model)
     assert model.before_full_image == (folder / "before_full.png").read_bytes()
-    assert _size(model.before_full_image) == DESKTOP_SIZE
+    assert _size(model.before_full_image) == STAGE_SIZE
     second = _arm(model)
     assert model.before_full_image == (model.pictures_root / str(second)
                                        / "before_full.png").read_bytes()
@@ -1475,7 +1896,8 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
                 in upgraded[0].message), upgraded[0].message
         model.tip_id = "T7"
         assert model.tip_status == "in use since trial 1"
-        assert model.run("mark_frame_image").is_ok and model.mark_frame_image == b""
+        # (the property: the sheet shows it from the recording step on)
+        assert model.mark_frame_image == b""
     finally:
         model.close()
 
@@ -1560,7 +1982,12 @@ def test_the_mark_pictures_show_the_armed_trial_else_the_last(station):
     assert _wait_for(lambda: (folder / "mark_frame.png").is_file())
     _finish(model)
     assert model.mark_frame_image == (folder / "mark_frame.png").read_bytes()
-    assert model.run("mark_frame_image").is_ok     # a declared data source
+    # A declared data source, shown from the marked step to the review.
+    second = _arm(model)
+    assert _marked(model).is_ok
+    assert model.run("mark_frame_image").is_ok
+    model.abort_trial()
+    assert second == first + 1
 
 
 def test_the_mark_picture_says_when_it_is_taken():
@@ -1641,7 +2068,8 @@ def test_tip_status_reads_under_trials_on_this_tip(station):
     second = _record(model, red)
     model.mark_broke(True)
     assert values()["tip_status"] == f"broke on trial {second}"
-    trial = next(s for s in model.schema["sections"] if s["title"] == "Trial")
+    # 2026-10-07: the tip's lines are the setup step's "Start" section.
+    trial = next(s for s in model.schema["sections"] if s["title"] == "Start")
     keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
     assert keys[keys.index("tip_trial_count") + 1] == "tip_status"
     assert _element(model, "tip_status")["text"] == "Tip"
@@ -1654,13 +2082,16 @@ def test_arming_on_a_broken_tip_asks_once(station):
     model.mark_broke(True)
     result = model.run("arm_trial", {"tip_id": "T7"})
     assert result.needs_confirm
+    # (2026-10-07: Continue takes the stage still; the region comes next)
     assert result.reason == (
         f"Tip T7 broke on trial {broke}. Arm on it anyway?\n\nFrame the sample "
-        "now. Continue takes the whole-screen picture, starts the video and "
-        f"arms trial {broke + 1} on tip T7 at 22.5 deg (Rotator), 300 steps/s "
-        "(Stepper Probe).")
+        "now. Continue takes the picture of the stage for trial "
+        f"{broke + 1} on tip T7 at 22.5 deg (Rotator), 300 steps/s (Stepper "
+        "Probe); you then pick the capture region on it, and the recording "
+        "starts.")
     again = model.run(result.command, result.inputs, (*result.args, True))
-    assert again.is_ok and model.is_armed         # one Continue, not two
+    assert again.is_ok and model.phase == "region"   # one Continue, not two
+    model.abort_trial()
 
 
 def test_arming_on_a_retired_tip_asks_once(station):
@@ -1673,7 +2104,8 @@ def test_arming_on_a_retired_tip_asks_once(station):
     assert result.reason.startswith("Tip T7 is retired. Arm on it anyway?\n\n"
                                     "Frame the sample now.")
     again = model.run(result.command, result.inputs, (*result.args, True))
-    assert again.is_ok and model.is_armed
+    assert again.is_ok and model.phase == "region"
+    model.abort_trial()
 
 
 def test_retire_asks_and_unretire_returns_the_tip(station):
@@ -1787,25 +2219,17 @@ def test_the_tip_section_sits_under_configure():
         ("entry", "tip_note", ()),
         ("button", "set_tip_note", ("tip_id", "tip_note")),
         ("button", "retire_tip", ("tip_id",)),
-        ("button", "unretire_tip", ("tip_id",))]
+        ("button", "unretire_tip", ("tip_id",)),
+        # 2026-10-07: the sheet's Tip broke is the marked and finish steps';
+        # this one marks the last trial after the fact.
+        ("toggle", "mark_broke", ())]
 
 
-# -- M3: polling starts itself ----------------------------------------------------
-# "Once capture region and tip details are set, the red percent polling
-# baseline is reset and polling begins." The stop path first: every way a
-# trial or the map stops ends the run the map started, and only that one.
-
-@pytest.fixture
-def sheet(red):
-    """A Transfer Map beside a Red Percent with a region, no run, no tip."""
-    model = TransferMap()
-    model.open()
-    model.on_model_added("Red Percent", red)
-    model.on_model_added("Stepper Probe", FakeProbe())
-    assert not red.is_running and not model.tip_id
-    yield model, red
-    model.close()
-
+# -- M3 retired (2026-10-07): nothing polls before the trial ------------------
+# M3 started Red Percent's run once a region and a tip were set. The region
+# is now picked after Arm, on the stage still, and the trial's run starts
+# when it lands, from a fresh baseline; a run before that would measure a
+# stale region and spend the loop (CAP-5) for nothing on the sheet.
 
 def _commit_tip(model, tip):
     result = model.set_value("tip_id", tip)          # what a view's entry sends
@@ -1813,179 +2237,38 @@ def _commit_tip(model, tip):
     return result
 
 
-def test_the_maps_stop_ends_the_polling_it_started(sheet):
-    model, red = sheet
-    _commit_tip(model, "T7")
-    assert red.is_running
-    started = time.monotonic()
-    assert model.estop() is True
-    assert time.monotonic() - started < 0.5
-    assert not red.is_running and model._auto_run is None
+def test_nothing_polls_before_the_region_is_picked(idle_station):
+    """A tip committed, picked or created, with Red Percent holding a
+    region from before: no run starts until the trial's region lands."""
+    model, red = idle_station
+    controller = Controller()
+    controller.add("Transfer Map", model, {})
+    try:
+        assert controller.set_value("Transfer Map", "tip_id", "T7").is_ok
+        assert model.run("new_tip", {"tip_id": "T7"}).is_ok
+        assert model.run("pick_tip", None, ("T7",)).is_ok
+        model.typed_tilt = "5"
+        assert not red.is_running and red._subscribers == ()
+        assert model.state["values"]["next_step"] == "Press Arm trial"
+        _arm_only(model)
+        assert not red.is_running                      # nor in the region step
+    finally:
+        controller._models.pop("Transfer Map")         # the fixture closes it
 
 
-def test_the_maps_stop_leaves_a_run_the_operator_started(sheet):
-    model, red = sheet
-    red.start_run(confirmed=True)
-    _commit_tip(model, "T7")
-    assert model._auto_run is None
-    assert model.estop() is True and red.is_running
-
-
-def test_arm_takes_over_the_polling_and_finish_ends_it(sheet, private_db):
-    model, red = sheet
-    _commit_tip(model, "T7")
-    token = red.run_token
-    trial = _arm(model)
-    assert red.run_token is token                  # the same run, not a second
-    assert model._trial.run is token and model._auto_run is None
-    assert _wait_for(lambda: len(model._trial.samples) >= 5)
-    _finish(model)
-    assert not red.is_running
-
-
-@pytest.mark.parametrize("end", ["abort", "estop"])
-def test_abort_and_the_stop_end_the_polling_a_trial_took_over(sheet, end):
-    model, red = sheet
-    _commit_tip(model, "T7")
-    _arm(model)
-    if end == "abort":
-        assert model.run("abort_trial").is_ok
-    else:
-        assert model.estop() is True
-    assert not red.is_running
-
-
-def test_committing_a_tip_id_starts_polling_from_a_fresh_baseline(sheet):
-    model, red = sheet
+def test_the_trials_run_starts_from_a_fresh_baseline_when_the_region_lands(
+        idle_station):
+    model, red = idle_station
     red.baseline_red = 99.0                        # a stale baseline
-    step = lambda: model.state["values"]["next_step"]  # noqa: E731
-    assert step() == "Type a tip ID"
-    events.forget("Polling Started")    # a new dedupe episode
-    since = events.latest_id
-    model.typed_tilt = "7"
-    _commit_tip(model, "T7")
-    assert red.is_running and model._auto_run is red.run_token
-    assert step() == "Press Arm trial"
-    started = _titled("Polling Started", since)
-    assert len(started) == 1 and "tip T7" in started[0].message
+    _arm(model)
+    assert red.is_running and model._trial.run is red.run_token
     assert _wait_for(lambda: red._run.frames >= 3)
     assert red._run.baseline_red is not None and red._run.baseline_red != 99.0
     assert red.baseline_red == red._run.baseline_red
     reds = set()
     assert _wait_for(lambda: reds.add(model.state["values"]["red_now"])
                      or len(reds) >= 2)            # the sheet's Red moves
-
-
-def test_setting_the_region_with_a_tip_starts_polling(tmp_path):
-    red = RedMonitor(screen=desktop_screen())
-    red.output_root = tmp_path / "runs"
-    red.open()
-    model = TransferMap()
-    model.open()
-    model.on_model_added("Red Percent", red)
-    try:
-        _commit_tip(model, "T7")
-        assert not red.is_running                  # no region yet
-        assert model.state["values"]["next_step"] == "Set the capture region"
-        assert model.run("set_region", None, (0, 0, 10, 10)).is_ok
-        assert red.is_running and model._auto_run is red.run_token
-    finally:
-        model.close()
-        red.close()
-
-
-def test_a_region_without_a_tip_does_not_start_polling(tmp_path):
-    red = RedMonitor(screen=desktop_screen())
-    red.output_root = tmp_path / "runs"
-    red.open()
-    model = TransferMap()
-    model.open()
-    model.on_model_added("Red Percent", red)
-    try:
-        assert model.state["values"]["next_step"] == (
-            "Set the capture region and a tip ID")
-        assert model.run("set_region", None, (0, 0, 10, 10)).is_ok
-        assert not red.is_running
-        assert model.state["values"]["next_step"] == "Type a tip ID"
-    finally:
-        model.close()
-        red.close()
-
-
-def test_clearing_the_tip_or_the_region_does_not_stop_polling(sheet):
-    model, red = sheet
-    _commit_tip(model, "T7")
-    _commit_tip(model, "")
-    assert red.is_running
-    red.region = None                              # as if cleared on Red Percent
-    model._commit()
-    assert red.is_running
-
-
-def test_a_run_the_operator_ended_stays_ended_until_the_tip_changes(sheet):
-    model, red = sheet
-    _commit_tip(model, "T7")
-    red.end_run()                                  # the operator's stop
-    assert model.set_value("note", "anything").is_ok
-    _commit_tip(model, "T7")                       # the same tip again
-    assert not red.is_running
-    _commit_tip(model, "T8")                       # a new tip: a new start
-    assert red.is_running
-
-
-def test_no_polling_while_the_map_is_stopped(sheet):
-    model, red = sheet
-    model.estop()
-    _commit_tip(model, "T7")
-    assert not red.is_running
-
-
-def test_no_polling_while_a_trial_is_armed(idle_station):
-    model, red = idle_station
-    _arm(model)
-    red.end_run()                                  # the operator's stop
-    _commit_tip(model, "T9")
-    assert not red.is_running and model.is_armed
-
-
-def test_a_refused_start_warns_once_and_next_step_says_what_to_fix(sheet,
-                                                                   monkeypatch):
-    model, red = sheet
-    real = red.start_run
-
-    def refuse(confirmed=False):
-        raise Refused("Screen capture is unavailable in this environment.")
-
-    monkeypatch.setattr(red, "start_run", refuse)
-    events.forget("Polling Not Started")
-    since = events.latest_id
-    for tip in ("T7", "T7", "T8"):
-        model.typed_tilt = "5"
-        _commit_tip(model, tip)                    # a commit never fails
-    warned = _titled("Polling Not Started", since)
-    assert len(warned) == 1 and warned[0].severity == "warning"
-    assert "Screen capture is unavailable" in warned[0].message
-    assert model.state["values"]["next_step"] == (
-        "Polling did not start: Screen capture is unavailable in this "
-        "environment. Fix that, then press Arm trial")
-    monkeypatch.setattr(red, "start_run", real)
-    _arm(model)                                    # Arm's own start: the fallback
-    assert red.is_running and model._trial.run is red.run_token
-    assert model.state["values"]["next_step"].startswith("Lower the tip")
-
-
-def test_a_commit_through_the_controller_starts_polling(red):
-    """The Web and Tk entry commit is `Controller.set_value` -> `_commit`."""
-    controller = Controller()
-    model = TransferMap()
-    controller.add("Transfer Map", model, {})
-    model.on_model_added("Red Percent", red)
-    try:
-        result = controller.set_value("Transfer Map", "tip_id", "T7")
-        assert result.is_ok, result
-        assert red.is_running and model._auto_run is red.run_token
-    finally:
-        model.close()
+    model.abort_trial()
 
 
 # -- Known tips and New tip (bench 2026-09-28) -------------------------------
@@ -2036,7 +2319,8 @@ def test_a_note_creates_the_tip_record_when_there_is_none(tmp_path):
 def test_the_tilt_entry_sits_in_tier_one_before_arm(tmp_path):
     from model.transfer_map import TransferMap
     tm = TransferMap(db_path=tmp_path / "map.sqlite")
-    trial = [s for s in tm.schema["sections"] if s["title"] == "Trial"][0]
+    # 2026-10-07: the setup step's "Start" section holds the tilt entry.
+    trial = [s for s in tm.schema["sections"] if s["title"] == "Start"][0]
     keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
     assert keys.index("typed_tilt") < keys.index("arm_trial")
     assert keys.index("typed_tilt") > keys.index("tip_id")
@@ -2192,7 +2476,9 @@ def test_a_slow_recorder_never_slows_red_percents_loop(station, monkeypatch):
         time.sleep(seconds)
         return (red._run.frames - frames) / (time.monotonic() - start)
 
+    red.start_run(confirmed=True)            # Red Percent alone, no trial
     alone = rate()
+    red.end_run()
     real = tm_module.TrialRecorder.write
     monkeypatch.setattr(tm_module.TrialRecorder, "write",
                         lambda self, f, l: (time.sleep(0.2), real(self, f, l))[1])
@@ -2360,12 +2646,18 @@ def test_the_video_encoder_is_in_diagnostics():
 def test_a_red_percent_without_the_frame_hook_arms_without_a_video(
         tmp_path, private_db):
     class Plain:
-        region = {"top": 0, "left": 0, "width": 10, "height": 10}
-        is_running = True
+        region = None
+        is_running = False
         run_token = None
         def subscribe(self, fn): pass
         def unsubscribe(self, fn): pass
         def grab_frame(self): return PNG + b"region"
+        def set_region(self, x, y, w, h):
+            self.region = {"left": x, "top": y, "width": w, "height": h}
+        def start_run(self, confirmed=False):
+            self.is_running, self.run_token = True, object()
+        def end_run(self):
+            self.is_running, self.run_token = False, None
 
     model = TransferMap()
     model.open()
@@ -2473,54 +2765,23 @@ def test_an_arm_subscribes_before_it_starts_the_run(idle_station, monkeypatch):
 def test_an_arm_whose_start_is_refused_lets_go(idle_station, monkeypatch):
     model, red = idle_station
     seen = _spy_start(monkeypatch, model, red, fail=Refused("no screen"))
-    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    _arm_only(model)
+    assert seen == []                     # Arm alone starts nothing (2026-10-07)
+    result = model.run("set_region", None, REGION)
     assert result.is_refused and seen == [(True, True)]
     assert red._subscribers == () and red._frame_subscribers == ()
     assert model._arming is None and not model.is_armed
+    assert model.phase == "region"
 
 
 def test_an_arm_that_fails_after_starting_the_run_lets_go(idle_station,
                                                           monkeypatch):
     model, red = idle_station
     monkeypatch.setattr(red, "grab_frame", lambda: None)
-    assert model.run("arm_trial", {"tip_id": "tip-A"}, (True,)).is_refused
+    _arm_only(model)
+    assert model.run("set_region", None, REGION).is_refused
     assert not red.is_running
     assert red._subscribers == () and red._frame_subscribers == ()
-
-
-def test_the_self_started_polling_subscribes_before_its_run_starts(
-        sheet, monkeypatch):
-    model, red = sheet
-    seen = _spy_start(monkeypatch, model, red)
-    _commit_tip(model, "T7")
-    assert red.is_running and seen == [(True, True)]
-    assert model._trial is None           # nothing is kept before Arm
-    model.estop()                         # ends the polling the map started
-    assert not red.is_running
-    assert red._subscribers == () and red._frame_subscribers == ()
-
-
-def test_a_refused_polling_start_lets_go(sheet, monkeypatch):
-    model, red = sheet
-    seen = _spy_start(monkeypatch, model, red, fail=Refused("no screen"))
-    _commit_tip(model, "T7")
-    assert seen == [(True, True)] and not red.is_running
-    assert red._subscribers == () and red._frame_subscribers == ()
-
-
-def test_arm_taking_over_the_polling_keeps_the_rows_from_arm_on(sheet,
-                                                                 private_db):
-    """The polling the map started is the trial's once armed: its rows before
-    Arm are not the trial's (time zero is Arm), every row after is."""
-    model, red = sheet
-    _commit_tip(model, "T7")
-    assert _wait_for(lambda: red.rows_written >= 5)
-    trial = _arm(model)
-    assert _wait_for(lambda: len(model._trial.samples) >= 5)
-    _finish(model)
-    times = [p["t_s"] for p in _rows(private_db, "SELECT t_s FROM profile "
-                                     "WHERE trial_id=? ORDER BY rowid", trial)]
-    assert times and times[0] >= 0
 
 
 # -- store version 6 (owner, 2026-10-04): trials name their flake; the cut

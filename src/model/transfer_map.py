@@ -12,12 +12,20 @@ shows), the whole screen at Arm (the microscope feed as displayed, for
 context), and the tilt and speed at the time. AFM widths and thicknesses
 are attached later, with their uncertainties.
 
-**Tips are records** (`tips` table): created on demand by the first Arm on
-a tip (or an import naming one), with the trial it broke on and whether it
-is retired; which trials used it is derived from `trials.tip_id`.
-**Polling starts itself**: once the capture region is set and a tip ID is
-committed, the map starts Red Percent's run (a fresh baseline from its
-first frame) and ends it as it ends a run Arm started.
+**The trial is a procedure** (owner ruling 2026-10-07; MODEL_CONTRACT
+"Phases"): `setup` (tip, tilt, speed) -> Arm -> `region` (armed and
+waiting: a full-display still of the stage is taken first, it is the
+trial's first picture, and the capture region is picked ON it; nothing
+records yet) -> `live` (the region landed: the trial's row, Red Percent's
+run, the video) -> `marked` (after Mark force) -> `finish` (End recording:
+review the pictures and the profile; Finish keeps the trial, then back to
+`setup`). Abort works from `region` on; in `region` it stores nothing. The
+step is `phase`, published beside the mode; the schema shows each step
+only its own controls, and the Panel refuses the rest.
+
+**Tips are records** (`tips` table): created on demand by the first trial
+on a tip (or an import naming one), with the trial it broke on and whether
+it is retired; which trials used it is derived from `trials.tip_id`.
 
 **Force** has no sensor. It is approximated from the red-percent trace of
 the lowering (`model.transfer_map_analysis`): several definitions, computed
@@ -60,6 +68,7 @@ import uuid
 from pathlib import Path
 
 import schema as sch
+from devices.screen_recorder import ScreenRecorder
 from devices.video import TrialRecorder, to_rgb
 from events import events
 from model import plot_data
@@ -180,6 +189,19 @@ VIDEO_FPS = 15
 #: frame arriving when it is full is dropped and counted, never waited for.
 VIDEO_QUEUE = 2 * VIDEO_FPS
 VIDEO_INDEX_COLUMNS = ("frame", "t_s", "red", "z", "marked")
+#: The display the stage still is taken of (an index into the capture
+#: library's monitors: 1 is the primary; `TransferMap(monitor=...)`).
+STAGE_MONITOR = 1
+#: Where a stage still waits, under the pictures folder, until its trial
+#: has a number (or is disarmed, which deletes it).
+STAGING = ".stage"
+
+
+def _make_recorder(out_dir, fps, monitor):
+    """The full-display recorder (`devices.screen_recorder`) the stage still
+    is taken through. `TransferMap(recorder_factory=...)` replaces it, so a
+    test never touches the screen."""
+    return ScreenRecorder(out_dir, fps, monitor)
 
 
 def _checked(names, allowed=_TRIAL_NAMES, table="trials"):
@@ -461,6 +483,19 @@ class TrialStore:
         return names
 
 
+class _Pending:
+    """Armed and waiting for the capture region (the `region` step): the
+    stage still is taken, nothing else exists yet (no row, no run, no
+    video). `size` is the still's pixels, `bounds` the display's place on
+    the desktop (None when the screen could not say)."""
+
+    def __init__(self, tip, still, size, bounds):
+        self.tip = tip
+        self.still = still
+        self.size = size
+        self.bounds = bounds
+
+
 class _Trial:
     """The armed trial, in memory. `samples` is appended on Red Percent's
     run thread (a list append, nothing else); everything else is written
@@ -487,6 +522,8 @@ class _Trial:
         #: The trial's video (`_Recording`), or None when the Red Percent
         #: found has no frame hook.
         self.recording = None
+        #: End recording ran (the `finish` step): no more rows, no video.
+        self.ended = False
 
 
 class _Recording:
@@ -539,6 +576,11 @@ class TransferMap(Model):
         "armed": "a trial is armed. Finish or abort it first.",
     }
 
+    #: The trial's procedure, in order (owner ruling 2026-10-07): `phase`
+    #: says which step the operator is at; the schema draws each step's
+    #: controls only in it.
+    PHASES = ("setup", "region", "live", "marked", "finish")
+
     PARAMS = {p.name: p for p in (
         Param("tip_id", "text", default="", label="Tip ID"),
         Param("tip_note", "text", default="", label="Tip note"),
@@ -585,9 +627,15 @@ class TransferMap(Model):
         Param("trial_count", "int", default=0, label="Trials"),
     )}
 
-    def __init__(self, port=None, gamepad=None, sim=False, db_path=None):
+    def __init__(self, port=None, gamepad=None, sim=False, db_path=None, *,
+                 recorder_factory=None, monitor=STAGE_MONITOR):
         super().__init__()
         self.sim = sim
+        #: `(out_dir, fps, monitor) -> ScreenRecorder`; None means
+        #: `_make_recorder`. The stage still is taken through it.
+        self._recorder_factory = recorder_factory
+        #: The display the stage still is taken of.
+        self.monitor = monitor
         self.db_path = Path(db_path) if db_path else self.default_db_path()
         #: Pictures, exports and uploads all live beside the database, so a
         #: Web download is checked against the same folder (CON-5).
@@ -595,9 +643,12 @@ class TransferMap(Model):
         self._store = TrialStore(self.db_path)
         self._lock = threading.Lock()
         self._trial = None
-        #: The trial being armed (V8): subscribed to before a run starts, so
-        #: the run's first row is its own; numbered and made `_trial` once
-        #: its row is written, dropped if the Arm fails.
+        #: Armed and waiting for the capture region (`_Pending`, the
+        #: `region` step), or None.
+        self._pending = None
+        #: The trial being started (V8): subscribed to before a run starts,
+        #: so the run's first row is its own; numbered and made `_trial` once
+        #: its row is written, dropped if the start fails.
         self._arming = None
         self._persisting = []          # abort writers the stop started
         self._red = None
@@ -616,13 +667,6 @@ class TransferMap(Model):
         self._revision = 0
         self._figure_cache = None
         self._indices = {}             # trial id -> force indices
-        #: The Red Percent run the map started by itself (M3), until a trial
-        #: takes it over; the (tip, region) it started for, so a commit that
-        #: changes neither never starts a run the operator ended; the last
-        #: refusal, said once and shown on Next step.
-        self._auto_run = None
-        self._poll_key = None
-        self._poll_refused = None
         #: Videos being written or closed, for the picture thread (a list
         #: replaced whole under the lock, read as a snapshot).
         self._recordings = []
@@ -675,6 +719,7 @@ class TransferMap(Model):
 
     @property
     def is_armed(self):
+        """A trial with a row is open (`live`, `marked` or `finish`)."""
         return self._trial is not None
 
     @property
@@ -683,13 +728,32 @@ class TransferMap(Model):
 
     @property
     def mode_name(self):
-        return "armed" if self.is_armed else "ready"
+        """What the station is doing: "armed" from Arm (the `region` step
+        included) to Finish or Abort, else "ready". Where in the procedure
+        the operator is, is `phase`."""
+        return ("armed" if self.is_armed or self._pending is not None
+                else "ready")
+
+    @property
+    def phase(self):
+        """The procedure step, from the model's own state (never from the
+        mode): `setup` nothing armed; `region` armed, waiting for the capture
+        region; `live` recording, no Mark yet; `marked` recording, marked;
+        `finish` the recording ended, the trial to review and keep."""
+        trial = self._trial
+        if trial is not None:
+            if trial.ended:
+                return "finish"
+            return "live" if trial.operator_t is None else "marked"
+        return "region" if self._pending is not None else "setup"
 
     def _halt_hardware(self):
         """Disarm now; write the aborted trial on a worker. No I/O here and
         no lock wait without a timeout: the stop is never held by the disk."""
+        pending, self._pending = self._pending, None
+        if pending is not None:
+            self._discard_still(pending, wait=False)   # nothing was recorded
         trial = self._claim(timeout=0.05)
-        self._end_auto_run()           # polling the map started, no trial yet
         if trial is not None:
             self._release_red()
             self._stop_recording(trial)    # an Event set: no join, no I/O
@@ -725,7 +789,6 @@ class TransferMap(Model):
         if name == self._red_name:
             self._release_red()
             self._red, self._red_name = None, None
-            self._auto_run = self._poll_key = self._poll_refused = None
         self._tilts.pop(name, None)
         self._probes.pop(name, None)
 
@@ -743,84 +806,6 @@ class TransferMap(Model):
                 red.end_run()
         except Exception as exc:
             events.debug("End Run Failed", repr(exc), source=self.NAME)
-
-    def _end_auto_run(self):
-        """End the run the map started by itself (M3) if it is still the
-        active one; a run the operator started, or a later one, is left
-        alone. Latches and returns, like `_end_own_run`: safe on the stop."""
-        token, self._auto_run = self._auto_run, None
-        red = self._red
-        if token is None or red is None:
-            return
-        if self._trial is None and self._arming is None:
-            self._release_red()        # V8: the polling's subscription goes too
-        try:
-            if getattr(red, "run_token", None) is token:
-                red.end_run()
-        except Exception as exc:
-            events.debug("End Run Failed", repr(exc), source=self.NAME)
-
-    # -- M3: polling starts itself ----------------------------------------------
-    def _commit(self):
-        """An entry was committed (`Panel.set_value`), after its value was
-        applied: the Tip ID may have made the sheet ready to poll."""
-        self._start_polling()
-
-    def _start_polling(self):
-        """Once the capture region is set and a tip ID typed, start Red
-        Percent's run so the sheet's Red moves and its baseline is fresh
-        (the run takes its baseline from its own first frame). Only when
-        Red Percent is open and not running, no trial is armed, the map is
-        not stopped, and the (tip, region) differs from the last one it
-        started for: a run the operator ended stays ended until they change
-        the tip or the region, or press Arm. Never a stop, never raises: a
-        refusal is one warning and the Next step line. True if it started."""
-        red = self._red
-        tip = (self.tip_id or "").strip()
-        region = self.region
-        if red is None or not region or not tip or self.is_armed \
-                or self.is_estopped or getattr(red, "is_running", False) \
-                or not callable(getattr(red, "start_run", None)):
-            return False
-        key = (tip, tuple(sorted(region.items())) if isinstance(region, dict)
-               else region)
-        if key == self._poll_key:
-            return False
-        try:
-            # V8: subscribed before the run starts, so no row of it is
-            # missed. No trial is armed yet, so `_on_sample` keeps nothing
-            # until Arm takes the run over; a refusal lets go again.
-            self._subscribe_red(red)
-            red.start_run(confirmed=True)
-        except (Refused, NeedsConfirm) as refusal:
-            self._release_red()
-            self._polling_refused(getattr(refusal, "reason", None)
-                                  or getattr(refusal, "prompt", ""))
-            return False
-        except Exception as exc:
-            self._release_red()
-            events.debug("Polling Failed", repr(exc), source=self.NAME,
-                         exception=exc)
-            self._polling_refused("Red Percent could not start its run; the "
-                                  "details are in the log file.")
-            return False
-        self._auto_run = getattr(red, "run_token", None)
-        self._poll_key = key
-        self._poll_refused = None
-        events.info("Polling Started", f"Red Percent is polling the capture "
-                    f"region for tip {tip}, from a fresh baseline. Frame the "
-                    "sample, then press Arm trial.", source=self.NAME)
-        self._touch()
-        return True
-
-    def _polling_refused(self, reason):
-        reason = str(reason or "Red Percent refused to start.").strip()
-        if reason != self._poll_refused:
-            events.warn("Polling Not Started", f"Red Percent did not start "
-                        f"polling: {reason} Arm trial tries again.",
-                        source=self.NAME)
-        self._poll_refused = reason
-        self._touch()
 
     def _release_red(self):
         red = self._red
@@ -914,51 +899,85 @@ class TransferMap(Model):
         return bool(self.region)
 
     def set_region(self, x, y, width, height):
-        red = self._red
-        if red is None:
-            raise Refused("Open Red Percent first: the capture region is the "
-                          "part of the screen it measures.")
-        if self.is_armed:
-            raise Refused("The capture region is fixed while a trial is armed. "
-                          "Finish or abort the trial to change it.")
-        region = red.set_region(x, y, width, height)
-        self._touch()
-        self._start_polling()
-        return region
+        """The `region` step: the capture region, picked ON the stage still,
+        in the still's own pixels (0, 0 its top-left corner), mapped here
+        onto the display it was taken of. Landing it starts the trial
+        (`_start_trial`); a refusal leaves the step where it was."""
+        pending = self._pending
+        if pending is None:
+            if self._red is None:
+                raise Refused("Open Red Percent first: the capture region is "
+                              "the part of the screen it measures.")
+            if self.is_armed:
+                raise Refused("The capture region is fixed while a trial is "
+                              "armed. Finish or abort the trial to change it.")
+            raise Refused("Press Arm trial first: the capture region is picked "
+                          "on the picture of the stage it takes.")
+        return self._start_trial(pending, self._on_display(pending, x, y,
+                                                           width, height))
+
+    @staticmethod
+    def _on_display(pending, x, y, width, height):
+        """A rectangle on the still -> the same rectangle on the desktop
+        (`left, top, width, height`): scaled by the display's size over the
+        still's (a Retina grab is twice its points) and moved to the
+        display's corner. Without the display's bounds the still's pixels
+        are the desktop's."""
+        try:
+            x, y, width, height = (float(v) for v in (x, y, width, height))
+        except (TypeError, ValueError):
+            raise Refused(f"Not a region: {(x, y, width, height)!r}")
+        bounds, (wide, high) = pending.bounds, pending.size
+        if not bounds or not wide or not high:
+            return round(x), round(y), round(width), round(height)
+        sx, sy = bounds["width"] / wide, bounds["height"] / high
+        return (bounds["left"] + round(x * sx), bounds["top"] + round(y * sy),
+                round(width * sx), round(height * sy))
 
     @property
-    def screen_image(self):
-        """Red Percent's desktop picture for the region picker, or None."""
-        red = self._red
-        return getattr(red, "screen_image", None) if red is not None else None
+    def stage_still(self):
+        """PNG bytes of the stage still (owner ruling 2026-10-07): the full
+        display at Arm, the trial's first picture and the one its capture
+        region is picked on. The armed trial's, in every step from `region`
+        to `finish`; b"" before Arm and between trials."""
+        pending, trial = self._pending, self._trial
+        if pending is not None:
+            path = pending.still
+        elif trial is not None:
+            path = self.pictures_root / str(trial.id) / "before_full.png"
+        else:
+            return b""
+        try:
+            return path.read_bytes() if path.is_file() else b""
+        except OSError:
+            return b""
+
+    #: What `next_step` says in each step after `setup`.
+    STEP_WORDS = {
+        "region": "Drag the capture region on the picture of the stage",
+        "live": "Lower the tip; press Mark force when the force is right",
+        "marked": "Press End recording when the cut is done",
+        "finish": "Review the trial, then press Finish trial to keep it",
+    }
 
     @property
     def next_step(self):
-        """The one thing to do next on the trial sheet; "" while latched
-        (the stop says what to do then)."""
+        """The one thing to do next, derived from `phase` so the two cannot
+        disagree; "" while latched (the stop says what to do then)."""
         if self.gate_mode == "latched":
             return ""
+        phase = self.phase
+        if phase != "setup":
+            return self.STEP_WORDS[phase]
         red = self._red
         if red is None:
             return "Open Red Percent"
-        tip = (self.tip_id or "").strip()
-        running = bool(getattr(red, "is_running", False))
-        if not self.has_region:
-            if not tip and not running:
-                return "Set the capture region and a tip ID"
-            return "Set the capture region"
-        trial = self._trial
-        if trial is not None:
-            if trial.operator_t is None:
-                return "Lower the tip; press Mark force when the force is right"
-            return "Press Finish trial"
-        if not tip:
+        if not (self.tip_id or "").strip():
             return "Type a tip ID"
         if self._read_tilt()[0] is None:
             return "Type the tilt for this trial"
-        if self._poll_refused and not running:
-            reason = self._poll_refused.rstrip(".")
-            return f"Polling did not start: {reason}. Fix that, then press Arm trial"
+        if getattr(red, "is_running", False):
+            return "Stop Red Percent's run, then press Arm trial"
         return "Press Arm trial"
 
     @property
@@ -972,7 +991,7 @@ class TransferMap(Model):
         """One row of Red Percent's log. Appends and returns; never raises
         into the run loop (Red Percent catches it anyway)."""
         trial = self._trial or self._arming
-        if trial is None or trial.closed:
+        if trial is None or trial.closed or trial.ended:
             return
         if len(trial.samples) >= MAX_SAMPLES:
             trial.dropped += 1
@@ -987,12 +1006,13 @@ class TransferMap(Model):
 
     # -- the guided trial --------------------------------------------------
     def arm_trial(self, confirmed=False):
-        """Arm a trial. Starts Red Percent's run when none is running (T2: a
-        trial is a red-only run by definition, so the start's doubts are
-        accepted here) and remembers that it did, so Finish, Abort and the
-        stop end that run and no other."""
+        """Arm: the `setup` -> `region` step. Asks first (the operator frames
+        the stage), then takes the stage still, the trial's first picture,
+        and waits for the capture region to be picked on it. Nothing else is
+        started or written: no row, no run, no video (`_start_trial` does
+        those when the region lands)."""
         self._guard("Arm")
-        if self.is_armed:
+        if self.is_armed or self._pending is not None:
             raise Refused("A trial is already armed. Finish or abort it first.")
         red = self._red
         if red is None:
@@ -1004,14 +1024,17 @@ class TransferMap(Model):
         if not tip:
             raise Refused("Type a tip ID before arming, so the trial can be "
                           "traced to its tip.")
-        if not getattr(red, "region", None):
-            raise Refused("Set the capture region first: the trial's pictures "
-                          "and its red percent are read from it.")
+        if getattr(red, "is_running", False):
+            # The trial's run starts on the region picked after Arm; a run
+            # already going measures some other region, and Red Percent
+            # cannot change a region mid-run.
+            raise Refused("Red Percent is running a run of its own. Stop it on "
+                          "Red Percent first: the trial starts its own run once "
+                          "the capture region is picked.")
         if not confirmed:
-            # T3: the before picture is taken on the operator's word, with
-            # the sample framed; nothing is started or written until then.
-            # A broken or retired tip is asked in the same prompt (M2): one
-            # question, one Continue.
+            # T3: the picture is taken on the operator's word, with the
+            # stage framed. A broken or retired tip is asked in the same
+            # prompt (M2): one question, one Continue.
             tilt_now, tilt_from = self._read_tilt()
             tilt_words = (f" at {tilt_now:g} deg" + (f" ({tilt_from})" if tilt_from != "typed" else "")
                           if tilt_now is not None else ", with NO tilt recorded")
@@ -1019,42 +1042,116 @@ class TransferMap(Model):
             speed_words = (f", {speed_now:g} steps/s"
                            + ("" if speed_from == "typed" else f" ({speed_from})")
                            if speed_now is not None else ", NO speed")
-            prompt = (f"Frame the sample now. Continue takes the whole-screen "
-                      f"picture, starts the video and arms trial "
-                      f"{self._store.next_id()} on tip {tip}"
-                      f"{tilt_words}{speed_words}.")
+            prompt = (f"Frame the sample now. Continue takes the picture of the "
+                      f"stage for trial {self._store.next_id()} on tip {tip}"
+                      f"{tilt_words}{speed_words}; you then pick the capture "
+                      "region on it, and the recording starts.")
             doubt = self._tip_doubt(tip)
             raise NeedsConfirm(doubt + "\n\n" + prompt if doubt else prompt,
                                "arm_trial",
                                inputs={"tip_id": self.tip_id or "",
                                        "typed_tilt": self.typed_tilt or ""})
-        # V8: the trial exists (unnumbered) and the map is subscribed, rows
-        # and frames, BEFORE a run is started, so the run's first row (its
-        # baseline frame) and first frame are the trial's. Its time zero is
-        # the operator's Continue.
+        still, size = self._take_still()
+        pending = _Pending(tip, still, size, self._display_bounds())
+        with self._lock:
+            if self.is_estopped:           # a stop inside the grab wins
+                stopped = True
+            else:
+                stopped = False
+                self._pending = pending
+        if stopped:
+            self._discard_still(pending)
+            self._guard("Arm")
+        self._touch()
+        events.info("Stage Taken", f"Pick the capture region on the picture "
+                    f"of the stage to start the trial on tip {tip}.",
+                    source=self.NAME)
+        return None
+
+    def _take_still(self):
+        """The stage still: one full-resolution PNG of the display, through
+        the recorder's own device (`capture_still`), into the staging folder
+        until the trial has a number. -> (path, (width, height)). A still
+        that cannot be taken is a refusal: the region is picked on it."""
+        folder = self.pictures_root / STAGING
+        path = folder / f"stage_{uuid.uuid4().hex}.png"
+        try:
+            factory = self._recorder_factory or _make_recorder
+            factory(folder, VIDEO_FPS, self.monitor).capture_still(path)
+            from PIL import Image
+            with Image.open(path) as image:
+                size = image.size
+        except Exception as exc:
+            events.debug("Still Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            self._unlink(path)
+            raise Refused(f"No picture of the stage ({exc}). Check that the "
+                          "display can be captured, then press Arm trial again.")
+        return path, size
+
+    def _display_bounds(self):
+        """The still's display on the desktop (`left, top, width, height`),
+        as Red Percent's screen reports it, or None when it cannot say."""
+        if isinstance(self.monitor, dict):
+            found = self.monitor
+        else:
+            try:
+                found = self._red.screen.monitors[int(self.monitor)]
+            except Exception:
+                return None
+        try:
+            return {k: int(found[k]) for k in ("left", "top", "width", "height")}
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _discard_still(self, pending, wait=True):
+        """A disarmed trial keeps nothing: its staged still is deleted, on a
+        worker when the stop is the caller (no I/O on the stop's thread)."""
+        if wait:
+            self._unlink(pending.still)
+        else:
+            threading.Thread(target=self._unlink, args=(pending.still,),
+                             daemon=True, name="transfer-map-discard").start()
+
+    @staticmethod
+    def _unlink(path):
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError as exc:
+            events.debug("Still Not Deleted", repr(exc), source="Transfer Map")
+
+    def _start_trial(self, pending, region):
+        """The `region` -> `live` step, the old Arm body: Red Percent's region
+        and run, the trial's row, the stage still kept as its first picture,
+        the video. The trial and the map's subscription exist BEFORE the run
+        starts (V8), so the run's first row and frame are the trial's; time
+        zero is now. Anything that fails, or a stop or an Abort meanwhile,
+        leaves no row and no run, and the step stays `region`."""
+        red = self._red
+        if red is None:
+            raise Refused("Open Red Percent first: a trial records its red percent.")
+        self._guard("Arm")
+        if getattr(red, "is_running", False):
+            raise Refused("Red Percent is running a run of its own. Stop it on "
+                          "Red Percent, then pick the capture region again.")
+        red.set_region(*region)                  # Red Percent's own checks
+        tip = pending.tip
         arming = _Trial(None, None, None, tip)
         if callable(getattr(red, "subscribe_frames", None)):
             arming.recording = _Recording(arming, None, None)
         self._arming = arming
-        run, started = None, False
+        started = False
         trial_id = None
-        created = False
         try:
             self._subscribe_red(red)
-            if not getattr(red, "is_running", False):
-                red.start_run(confirmed=True)           # a Refused stops here
-                run, started = red.run_token, True
-            elif self._auto_run is not None and \
-                    getattr(red, "run_token", None) is self._auto_run:
-                run = self._auto_run      # the map's own polling: the trial's now
-            # The capture gate: no picture of the region, no Arm (the video
-            # and the red percent are both read from it). Nothing is kept.
+            red.start_run(confirmed=True)        # a Refused stops here
+            started = True
+            run = red.run_token
+            # The capture gate: no picture of the region, no trial (the
+            # video and the red percent are both read from it).
             if not self._take_picture():
                 raise Refused("No picture of the capture region: the capture "
                               "region is not set or the screen is not open.")
-            full = self._take_full_picture()
-            # The whole-screen grab takes a moment; a stop inside it wins.
-            self._guard("Arm")
             tilt, tilt_source = self._read_tilt()
             speed, speed_source = self._read_speed()
             trial_id = self._store.insert({
@@ -1064,24 +1161,26 @@ class TransferMap(Model):
                 "speed_source": speed_source, "note": "",
                 "operator_id": self.operator_id,
                 "operator_auth": self.operator_auth})
-            if full:
-                self._store.update(trial_id, {"before_full_path": self._write_picture(
-                    trial_id, "before_full", full)})
             created = self._store.use_tip(tip, trial_id, _now())
+            with self._lock:
+                if self.is_estopped:
+                    self._guard("Arm")
+                if self._pending is not pending:
+                    raise Refused("The trial was aborted before its recording "
+                                  "started; nothing was kept.")
+                arming.id, arming.tilt, arming.speed = trial_id, tilt, speed
+                arming.run = run
+                self._trial, self._pending, self._arming = arming, None, None
         except BaseException:
             self._arming = None
             self._release_red()
             if started:
-                red.end_run()                            # ours: undo it
+                red.end_run()                    # ours: undo it
             if trial_id is not None:
                 self._forget_row(trial_id)
             raise
         trial = arming
-        trial.id, trial.tilt, trial.speed = trial_id, tilt, speed
-        trial.run = run
-        if run is not None and not started:
-            self._auto_run = None                        # the trial ends it
-        self._poll_refused = None
+        self._keep_still(trial, pending)
         rec = trial.recording
         if rec is not None:
             rec.trial_id = trial_id
@@ -1089,22 +1188,31 @@ class TransferMap(Model):
             rec.store = self._store
             with self._recordings_lock:
                 self._recordings = self._recordings + [rec]
-        with self._lock:
-            self._trial = trial
-            self._arming = None
-        if rec is not None:
             self._spawn("transfer-map-pictures", self._picture_loop)
             self._wake.set()
         self._changed()
         if created:
             events.info("Tip Created", f"Tip {tip} created.", source=self.NAME)
-        if not full:
-            self._warn_no_full(trial_id, "Arm", "context")
         events.info("Trial Armed", f"Trial {trial_id} armed, "
                     f"{self._place_on_tip(trial)}. Lower the tip, press Mark "
-                    "force at the force you want, then Finish.",
+                    "force at the force you want, then End recording.",
                     source=self.NAME)
         return trial_id
+
+    def _keep_still(self, trial, pending):
+        """The stage still becomes the trial's `before_full.png` (the column
+        of the whole screen at Arm). One that cannot be moved is a warning:
+        the trial records anyway."""
+        folder = self.pictures_root / str(trial.id)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / "before_full.png"
+            os.replace(pending.still, target)
+            self._store.update(trial.id, {"before_full_path": str(target)})
+        except Exception as exc:
+            events.debug("Still Not Kept", repr(exc), source=self.NAME,
+                         exception=exc)
+            self._warn_no_full(trial.id, "Arm", "context")
 
     def _subscribe_red(self, red):
         """Rows for the profile and, when Red Percent has the hook, frames
@@ -1115,9 +1223,14 @@ class TransferMap(Model):
             subscribe_frames(self._on_frame)
 
     def mark_force(self):
+        """The `live` -> `marked` step: the Mark's time, Z and speed, stamped
+        at once. Again in `marked`, the Mark moves to now."""
         trial = self._trial
         if trial is None:
             raise Refused("No trial is armed.")
+        if trial.ended:
+            raise Refused(f"Trial {trial.id}'s recording has ended: there is "
+                          "nothing left to mark.")
         trial.operator_t = time.monotonic() - trial.armed
         if trial.first_mark_t is None:
             trial.first_mark_t = trial.operator_t
@@ -1313,19 +1426,49 @@ class TransferMap(Model):
                          f"closed within {self.THREAD_JOIN_TIMEOUT} s",
                          source=self.NAME)
 
+    def end_recording(self):
+        """The `marked` -> `finish` step: everything that records the trial
+        stops (the rows, the run it started, the video), so the operator
+        reviews what was recorded before keeping it with Finish (or Abort).
+        The trial is still open: its row is written by Finish or Abort."""
+        trial = self._trial
+        if trial is None:
+            raise Refused("No trial is armed.")
+        if trial.ended:
+            raise Refused(f"Trial {trial.id}'s recording has already ended.")
+        self._end_recording(trial)
+        events.info("Recording Ended", f"Trial {trial.id}: "
+                    f"{len(trial.samples)} samples. Review it, then Finish "
+                    "trial keeps it.", source=self.NAME)
+        self._touch()
+        return trial.id
+
+    def _end_recording(self, trial):
+        """Stop what records `trial`, once: no row is kept after this, the
+        run it started ends, its video closes (bounded). On the command
+        thread (End recording, Finish, Abort), never the stop's."""
+        if trial.ended:
+            return
+        trial.ended = True
+        self._release_red()
+        self._end_own_run(trial)
+        self._finish_recording(trial)
+
     def finish_trial(self, confirmed=False):
+        """Keep the trial ("recorded"), then back to `setup`. Shown in the
+        `finish` step; from an earlier one it ends the recording first."""
         armed = self._trial
         if armed is None:
             raise Refused("No trial is armed.")
         if not confirmed:
-            raise NeedsConfirm(f"Continue ends trial {armed.id} and closes its "
-                               "video.", "finish_trial",
+            words = (f"Continue keeps trial {armed.id}." if armed.ended else
+                     f"Continue ends trial {armed.id} and closes its video.")
+            raise NeedsConfirm(words, "finish_trial",
                                inputs={"note": self.note or ""})
         trial = self._claim()
         if trial is None:
             raise Refused("No trial is armed.")          # the stop took it
-        self._release_red()
-        self._end_own_run(trial)
+        self._end_recording(trial)
         samples = list(trial.samples)
         profile = {"t": [s[0] for s in samples], "red": [s[1] for s in samples]}
         found = analysis.detect(profile, trial.operator_t) or {}
@@ -1340,7 +1483,6 @@ class TransferMap(Model):
             "mark_auto_min_t": found.get("min_t"),
             "red_min": found.get("red_min"), "red_max": found.get("red_max"),
             "red_baseline": found.get("baseline"), "broke": int(trial.broke)}
-        self._finish_recording(trial)
         self._store.update(trial.id, fields, samples)
         self._store.use_tip(trial.tip, trial.id, _now())
         self._indices.pop(trial.id, None)
@@ -1360,6 +1502,18 @@ class TransferMap(Model):
         return trial.id
 
     def abort_trial(self):
+        """From `region` on. In `region` a disarm: nothing was recorded and
+        nothing is stored (the stage still is deleted). Later the trial is
+        kept as "aborted", with its profile and video."""
+        with self._lock:
+            pending, self._pending = self._pending, None
+        if pending is not None:
+            self._discard_still(pending)
+            events.info("Trial Disarmed", "Nothing was recorded: the trial was "
+                        "aborted before its capture region was picked.",
+                        source=self.NAME)
+            self._touch()
+            return None
         trial = self._claim()
         if trial is None:
             raise Refused("No trial is armed.")
@@ -1419,25 +1573,11 @@ class TransferMap(Model):
             events.debug("Frame Failed", repr(exc), source=self.NAME)
             return None
 
-    def _take_full_picture(self):
-        """The whole screen at full size (the microscope feed as displayed),
-        as PNG bytes, or None. The record, not the measurement: a missing
-        one is a warning, never a refusal. `grab_screen` is optional on the
-        Red Percent the map found."""
-        grab = getattr(self._red, "grab_screen", None)
-        try:
-            return (grab() if callable(grab) else None) or None
-        except Exception as exc:
-            events.debug("Full Frame Failed", repr(exc), source=self.NAME)
-            return None
-
     def _warn_no_full(self, trial_id, moment, which):
-        """ "Trial 4 has no whole-screen picture at Arm; its video of the
-        capture region is kept." """
+        """ "Trial 4 has no whole-screen picture at Arm; its video is kept." """
         events.warn("No Full Picture", f"Trial {trial_id} has no whole-screen "
-                    f"picture at {moment}; its video of the capture region is "
-                    "kept. Check that Red Percent can capture the screen.",
-                    source=self.NAME)
+                    f"picture at {moment}; its video is kept. Check that the "
+                    "pictures folder can be written.", source=self.NAME)
 
     def _write_picture(self, trial_id, which, png):
         folder = self.pictures_root / str(trial_id)
@@ -1497,6 +1637,10 @@ class TransferMap(Model):
             rec = trial.recording
             if rec is None:
                 return "no video: Red Percent has no frame hook"
+            if rec.closed.is_set():
+                where = Path(rec.path).name if rec.path else "no file"
+                where = "no encoder: JPEG frames" if where == "frames" else where
+                return f"{where}, {rec.frames} frames, {rec.dropped} dropped"
             if rec.failed:
                 return f"stopped after {rec.frames} frames: {rec.failed}"
             words = f"recording, {rec.frames} frames"
@@ -1613,7 +1757,6 @@ class TransferMap(Model):
                           "in Tip ID and press New tip.")
         self.tip_id = label
         self._changed()
-        self._start_polling()
         return label
 
     def new_tip(self):
@@ -1629,7 +1772,6 @@ class TransferMap(Model):
         self._store.create_tip(tip, _now())
         self._changed()
         events.info("Tip Created", f"Tip {tip} created.", source=self.NAME)
-        self._start_polling()
         return tip
 
     def _typed_tip(self):
@@ -1647,7 +1789,8 @@ class TransferMap(Model):
         tip, record = self._typed_tip()
         if record["retired_at"]:
             raise Refused(f"Tip {tip} is already retired.")
-        if self._trial is not None and self._trial.tip == tip:
+        armed = self._trial or self._pending
+        if armed is not None and armed.tip == tip:
             raise Refused(f"A trial is armed on tip {tip}. Finish or abort it "
                           "first.")
         if not confirmed:
@@ -1850,7 +1993,7 @@ class TransferMap(Model):
         file stays on disk untouched; pictures and exports stay in the same
         folder (`output_root`), the pictures under the new file's own name
         so trial 1 of the new database never overwrites trial 1 of the old."""
-        if self.is_armed:
+        if self.is_armed or self._pending is not None:
             raise Refused("A trial is armed. Finish or abort it before starting "
                           "a new database.")
         for writer in list(self._persisting):      # an abort still being written
@@ -2239,6 +2382,8 @@ class TransferMap(Model):
         P = self.PARAMS
         configure = "Configure Transfer Map"
         return sch.schema(
+            # The start screen's (owner ruling 2026-10-07: what a step does
+            # not use gets out of the way).
             sch.section(
                 "Session",
                 sch.readonly("Database", "db_path"),
@@ -2247,16 +2392,18 @@ class TransferMap(Model):
                            confirm="Start a new database beside this one? The "
                                    "current one stays on disk.",
                            disabled_when=("armed",)),
+                phases=("setup",),
             ),
+            # Every step: what to do next and the stage's readouts.
             sch.section(
                 "Trial",
                 sch.readonly("Next step", "next_step", role="info"),
-                sch.region_select("Set capture region", "set_region",
-                                  model_attr="region", role="info",
-                                  data_command="screen_image"),
                 sch.readonly("Tilt", "tilt_now", rail=True, param=P["tilt_now"]),
                 sch.readonly("Speed", "speed_now", rail=True, param=P["speed_now"]),
-                sch.readonly("Red", "red_now", param=P["red_now"], format=".2f"),
+            ),
+            # setup: the preliminary information, then Arm.
+            sch.section(
+                "Start",
                 sch.entry("Tip ID", "tip_id", P["tip_id"]),
                 sch.dropdown("Known tips", "tip_pick", "pick_tip", "tip_options"),
                 sch.button("New tip", "new_tip", inputs=("tip_id",)),
@@ -2272,27 +2419,72 @@ class TransferMap(Model):
                 sch.button("Arm trial", "arm_trial",
                            inputs=("tip_id", "typed_tilt", "typed_speed"),
                            role="go", disabled_when=("armed", "latched")),
+                phases=("setup",),
+            ),
+            # region: picked ON the stage still Arm took.
+            sch.section(
+                "Capture region",
+                sch.region_select("Capture region", "set_region",
+                                  model_attr="region", role="info",
+                                  data_command="stage_still"),
+                phases=("region",),
+            ),
+            # live and marked: the recording.
+            sch.section(
+                "Recording",
+                sch.readonly("Red", "red_now", param=P["red_now"], format=".2f"),
                 sch.button("Mark force", "mark_force", enabled_when=("armed",)),
-                sch.entry("Note", "note", P["note"]),
-                sch.button("Finish trial", "finish_trial", inputs=("note",),
-                           role="go", enabled_when=("armed",)),
-                sch.button("Abort trial", "abort_trial", enabled_when=("armed",),
-                           stop=True),
-                sch.toggle("Tip broke", "is_broke", "mark_broke", "Broke",
-                           "Not broken", on_args=(True,), off_args=(False,)),
-                sch.readonly("Status", "trial_status", role="info"),
+                sch.phased(sch.button("End recording", "end_recording",
+                                      role="go", enabled_when=("armed",)),
+                           "marked"),
+                sch.readonly("Video", "video_status"),
                 # V4: the pictures are the video's own frames, labelled.
                 sch.image("First frame", "first_frame_image",
-                          empty="The video's first frame, labelled, once you "
-                                "arm."),
-                sch.image("Mark frame", "mark_frame_image",
-                          empty="The video's frame at Mark force, labelled MARK."),
-                sch.readonly("Video", "video_status"),
+                          empty="The video's first frame, labelled, once the "
+                                "recording starts."),
+                sch.phased(sch.image("Mark frame", "mark_frame_image",
+                                     empty="The video's frame at Mark force, "
+                                           "labelled MARK."),
+                           "marked"),
                 sch.plot("Red % since Arm", "live_series", x_label="time (s)",
                          y_label="red (%)",
                          empty="Arm a trial and its red percent plots here."),
+                phases=("live", "marked"),
+            ),
+            # finish: review what was recorded, then keep it.
+            sch.section(
+                "Review",
+                sch.image("Stage", "stage_still",
+                          empty="The picture of the stage taken at Arm."),
+                sch.image("First frame", "first_frame_image",
+                          empty="The video's first frame, labelled."),
+                sch.image("Mark frame", "mark_frame_image",
+                          empty="The video's frame at Mark force, labelled "
+                                "MARK."),
+                sch.readonly("Video", "video_status"),
+                sch.entry("Note", "note", P["note"]),
+                sch.button("Finish trial", "finish_trial", inputs=("note",),
+                           role="go", enabled_when=("armed",)),
+                phases=("finish",),
+            ),
+            # Every step: the trial's state, and the abort (a stop control:
+            # never hidden by a step; greyed while nothing is armed).
+            sch.section(
+                "This trial",
+                sch.readonly("Status", "trial_status", role="info"),
+                sch.phased(sch.toggle("Tip broke", "is_broke", "mark_broke",
+                                      "Broke", "Not broken", on_args=(True,),
+                                      off_args=(False,)),
+                           "marked", "finish"),
+                sch.button("Abort trial", "abort_trial", enabled_when=("armed",),
+                           stop=True),
+            ),
+            # The map of the trials so far, on the start screen.
+            sch.section(
+                "Map",
                 sch.image("Transfer map", "figure",
                           empty="No trials yet. Record one, or import trials."),
+                phases=("setup",),
             ),
             sch.section(
                 "Context",
@@ -2308,6 +2500,10 @@ class TransferMap(Model):
                 sch.button("Retire tip", "retire_tip", inputs=("tip_id",)),
                 sch.button("Return tip to use", "unretire_tip",
                            inputs=("tip_id",)),
+                # After the fact: the armed trial's, else the last trial's
+                # (the sheet's own Tip broke is drawn in marked and finish).
+                sch.toggle("Tip broke", "is_broke", "mark_broke", "Broke",
+                           "Not broken", on_args=(True,), off_args=(False,)),
                 tier=2, disclosure=configure,
             ),
             sch.section(
