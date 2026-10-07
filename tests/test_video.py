@@ -225,3 +225,30 @@ def test_close_is_idempotent_and_write_after_close_refuses(tmp_path, no_encoder)
     assert recorder.close() == first
     with pytest.raises(RuntimeError):
         recorder.write(_frame(10, 10), ["late"])
+
+
+def test_the_region_recorder_asks_for_a_fragmented_mp4(monkeypatch, tmp_path):
+    """CAP-6 (2026-10-07): a trial killed mid-recording must leave a file
+    ffprobe can read; only a fragmented MP4 does without its final moov."""
+    import devices.video as video
+    seen = {}
+
+    class _Writer:
+        def send(self, _frame):
+            return None
+
+        def close(self):
+            return None
+
+    class _Encoder:
+        @staticmethod
+        def write_frames(path, size, **kwargs):
+            seen.update(kwargs)
+            return _Writer()
+
+    monkeypatch.setattr(video, "_encoder", lambda: _Encoder())
+    recorder = video.TrialRecorder()
+    recorder.open(tmp_path / "trial.mp4", 15, (64, 32))
+    params = seen["output_params"]
+    assert "-movflags" in params
+    assert "+frag_keyframe+empty_moov" in params[params.index("-movflags") + 1]

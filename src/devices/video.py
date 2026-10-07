@@ -199,7 +199,11 @@ class TrialRecorder:
                     pix_fmt_in="rgb24", pix_fmt_out="yuv420p", quality=None,
                     macro_block_size=1, ffmpeg_log_level="error",
                     ffmpeg_timeout=self.CLOSE_TIMEOUT,
-                    output_params=["-crf", str(self.CRF), "-preset", self.PRESET])
+                    output_params=["-crf", str(self.CRF), "-preset", self.PRESET,
+                                   # CAP-6 (2026-10-07): a fragmented MP4 stays
+                                   # decodable when the process is killed
+                                   # mid-trial; a plain one loses its moov atom.
+                                   "-movflags", "+frag_keyframe+empty_moov"])
                 writer.send(None)              # starts ffmpeg; raises here
                 self._writer, self.kind, self.path = writer, "mp4", path
                 return self

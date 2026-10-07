@@ -205,6 +205,15 @@ class Screen(Device):
         with self._lock:
             return len(self._instances)
 
+    @property
+    def monitors(self):
+        """The capture library's monitor list as plain dicts (index 0 is the
+        whole virtual desktop, 1 the primary, 2... the others), read through
+        the calling thread's handle. Public so a recorder never borrows
+        `_handle` (2026-10-07)."""
+        with self._handle() as instance:
+            return [dict(m) for m in instance.monitors]
+
     def _handle(self):
         """The calling thread's kept instance, else a new one for this call
         that is closed on leaving the `with`."""

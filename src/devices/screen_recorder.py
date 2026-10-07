@@ -103,13 +103,11 @@ def _monitor_bounds(screen, monitor):
     others) or a `{"left", "top", "width", "height"}` dict taken as given.
     Raises ValueError for an index that does not exist.
 
-    `Screen` has no public monitor list, so this borrows the calling
-    thread's capture instance the way `Screen.screenshot_png` does (its kept
-    handle on the capture thread, a one-shot instance elsewhere)."""
+    Read through `Screen.monitors` (the calling thread's kept handle on the
+    capture thread, a one-shot instance elsewhere)."""
     if isinstance(monitor, dict):
         return {key: int(monitor[key]) for key in ("left", "top", "width", "height")}
-    with screen._handle() as instance:
-        monitors = [dict(m) for m in instance.monitors]
+    monitors = screen.monitors
     index = int(monitor)
     if not 0 <= index < len(monitors):
         raise ValueError(f"there is no monitor {index}: this display has "
