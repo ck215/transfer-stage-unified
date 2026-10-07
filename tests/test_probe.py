@@ -287,13 +287,142 @@ def test_an_unconfirmed_disable_is_a_fault_not_a_disabled_claim(probe):
 
 
 @pytest.mark.mode
-def test_rearming_out_of_fault_resends_the_hardware_enable(probe):
+def test_rearming_out_of_fault_needs_a_confirmed_disable_first(probe):
+    """L8 (SF-1): FAULT means the disable was never confirmed. No mode may
+    be entered out of it; only a confirmed `'d'` leaves it, and the next
+    arming then resends the hardware enable."""
     probe.enable()
     probe._enter_fault("unknown")
     probe.port.writes.clear()
+    with pytest.raises(Refused):
+        probe.enable()
+    assert probe.port.writes == [], "an enable reached a FAULTed board"
+    assert probe.is_faulted is True
+    probe.set_mode("disabled")          # the 'd' lands: the fault clears
+    assert probe.is_faulted is False and probe.mode is ProbeMode.DISABLED
+    probe.port.writes.clear()
     probe.enable()
     assert probe.port.writes[0] == b"e"
-    assert probe.is_faulted is False
+
+
+def _fault_by_failed_disable(probe):
+    probe.enable()
+    probe.port.fail_on = lambda payload: payload == b"d"
+    probe.set_mode("disabled")
+    probe.port.fail_on = None
+    assert probe.mode is ProbeMode.FAULT and probe.is_faulted
+    probe.port.writes.clear()
+
+
+@pytest.mark.mode
+def test_step_is_refused_on_a_faulted_probe_and_sends_nothing(probe):
+    """L8 (SF-1, blocker): Step on a FAULTed probe sent `'e'` and a move
+    frame, the stage moved, and the fault vanished although the disable
+    was never confirmed."""
+    _fault_by_failed_disable(probe)
+    assert probe.run("step").is_refused
+    with pytest.raises(Refused):
+        probe.step()
+    assert probe.port.writes == [], probe.port.writes
+    assert probe.mode is ProbeMode.FAULT and probe.is_faulted
+
+
+@pytest.mark.mode
+@pytest.mark.parametrize("target", ["idle", "autonomous", "manual"])
+def test_no_mode_is_entered_out_of_fault(probe, target):
+    _fault_by_failed_disable(probe)
+    with pytest.raises(Refused):
+        probe.set_mode(target)
+    assert probe.port.writes == []
+    assert probe.mode is ProbeMode.FAULT
+
+
+def _stop_inside_the_entry_window(probe, stop):
+    """Run `set_mode("manual")` with the window between its enable and its
+    mode write widened by 20 ms (the auditor's reproduction of SF-5), and
+    `stop()` from another thread inside that window."""
+    entered, real = threading.Event(), probe.gamepad.drain_edges
+
+    def _slow_drain():
+        entered.set()
+        time.sleep(0.02)
+        return real()
+
+    probe.gamepad.drain_edges = _slow_drain
+    outcome = []
+
+    def _enter():
+        try:
+            outcome.append(probe.set_mode("manual"))
+        except Refused as refused:
+            outcome.append(refused)
+
+    worker = threading.Thread(target=_enter)
+    worker.start()
+    assert entered.wait(2.0)
+    stop()
+    worker.join(2.0)
+    return outcome
+
+
+@pytest.mark.estop
+def test_a_stop_during_a_mode_entry_leaves_the_probe_disabled_not_manual(probe):
+    """L9 (SF-5): a stop landing between `'e'` and the mode write was
+    overwritten by it, leaving the probe latched in MANUAL; Clear then
+    resumed the jog stream with no mode press."""
+    outcome = _stop_inside_the_entry_window(probe, probe.estop)
+    assert probe.is_estopped
+    assert probe.mode is ProbeMode.DISABLED, (probe.mode, outcome)
+    assert isinstance(outcome[0], Refused), outcome
+    # The back-out ends on the wire with a stop: zero frame, then 'd'.
+    assert probe.port.writes[-2:] in ([ZERO, b"d"], [b"d", b"k\n"]), \
+        probe.port.writes[-4:]
+    probe.clear_estop(True)
+    assert probe.mode is ProbeMode.DISABLED
+    assert probe.is_manual is False, "Clear would resume the jog stream"
+
+
+@pytest.mark.estop
+def test_an_unlatched_halt_during_a_mode_entry_is_not_overwritten(probe):
+    """The same window with a plain halt (no latch): the entry backs out."""
+    outcome = _stop_inside_the_entry_window(probe, probe.halt)
+    assert probe.mode is ProbeMode.DISABLED, (probe.mode, outcome)
+
+
+@pytest.mark.schema
+def test_step_is_greyed_on_a_faulted_probe(probe):
+    import schema as sch
+    step = _by_command(probe, "step")
+    assert "fault" in step["disabled_when"]
+    assert not sch.is_enabled(step, "fault")
+
+
+@pytest.mark.mode
+def test_a_hundred_mode_round_trips_leak_nothing(probe):
+    """L13 (legacy row 20): loop the manual/autonomous transition 100
+    times with a bound pad and the loops running. The last mode wins, the
+    wire ends at rest (the zero frame of the final entry, then at most the
+    pump's one neutral packet for leaving manual, I-4.2), and exactly one
+    interlock and one pump thread are alive."""
+    import struct
+    probe._start_threads()
+    try:
+        for _ in range(100):
+            probe.set_mode("manual")
+            probe.set_mode("autonomous")
+        time.sleep(0.1)          # the pump's exit tick, if any
+        assert probe.mode is ProbeMode.AUTO
+        tail = probe.port.writes[-2:]
+        neutral = lambda p: (len(p) == 42 and p[0] == 0xAA and all(
+            v == 0 for v in struct.unpack("<ffffffffff", p[2:])[:3]))
+        assert tail[-1] == ZERO or (neutral(tail[-1]) and tail[-2] == ZERO), tail
+        alive = [t.name for t in threading.enumerate()
+                 if t.name.endswith(f"-{probe.NAME}") and t.is_alive()]
+        assert alive.count(f"interlock-{probe.NAME}") == 1, alive
+        assert alive.count(f"gamepad-{probe.NAME}") == 1, alive
+        assert alive.count(f"sample-{probe.NAME}") == 1, alive
+    finally:
+        probe._stop_threads()
 
 
 @pytest.mark.mode
@@ -387,6 +516,133 @@ def test_a_stop_whose_disable_does_not_land_is_a_fault(probe):
     probe.port.fail_on = lambda payload: payload == b"d"
     assert probe.halt() is False
     assert probe.is_faulted is True
+
+
+class LockWitness:
+    """Every event published while the block runs, with whether the
+    publishing thread held the probe's `_mode_lock` at that moment."""
+
+    def __init__(self, probe):
+        self.probe, self.seen = probe, []
+
+    def _record(self, event):
+        self.seen.append((event.title, self.probe._mode_lock._is_owned()))
+
+    def __enter__(self):
+        events.clear()     # a repeat inside the dedupe window re-notifies nobody
+        events.subscribe(self._record)
+        return self
+
+    def __exit__(self, *exc):
+        events.unsubscribe(self._record)
+
+
+@pytest.mark.estop
+def test_a_fault_is_published_after_the_mode_lock_is_released(probe):
+    """L10 (SF-4): `_enter_fault` published while holding `_mode_lock`. On
+    Tk a subscriber can block that thread on the UI thread, and a mode
+    toggle pressed then waits on `_mode_lock`: a deadlock that takes the
+    stop with it. Nothing is published while the lock is held."""
+    probe.enable()
+    probe.port.fail_on = lambda payload: payload == b"d"
+    with LockWitness(probe) as witness:
+        probe.set_mode("disabled")
+    assert probe.mode is ProbeMode.FAULT
+    assert ("Fault", False) in witness.seen, witness.seen
+    assert not [t for t, held in witness.seen if held], witness.seen
+
+
+@pytest.mark.estop
+def test_a_failed_enable_is_published_after_the_mode_lock_is_released(probe):
+    probe.port.fail_on = lambda payload: payload == b"e"
+    with LockWitness(probe) as witness:
+        with pytest.raises(Refused):
+            probe.set_mode("autonomous")
+    assert ("Enable Failed", False) in witness.seen, witness.seen
+    assert not [t for t, held in witness.seen if held], witness.seen
+
+
+@pytest.mark.estop
+def test_the_no_coil_kill_notice_is_published_with_no_lock_held():
+    probe, port, _ = make_probe(DCProbe)
+    try:
+        probe.enable()
+        with LockWitness(probe) as witness:
+            probe.estop()
+            time.sleep(0.2)
+        assert ("Power Down Not Supported", False) in witness.seen, witness.seen
+        assert not [t for t, held in witness.seen if held], witness.seen
+    finally:
+        probe._stop_threads()
+
+
+def _slow_halt(probe, delay, result=True):
+    real = probe._halt_hardware
+
+    def _halt():
+        time.sleep(delay)
+        real()
+        return result
+
+    probe._halt_hardware = _halt
+
+
+@pytest.mark.estop
+def test_a_stop_that_lands_after_the_budget_is_reported_and_revised(probe, monkeypatch):
+    """L11 (SF-6): a stop whose bytes land after ESTOP_BUDGET stayed "not
+    confirmed" forever. It is still unconfirmed at the budget (the owner's
+    number is not widened), but its landing is logged with its real
+    latency, the state is revised, and the operator is told."""
+    lines = _debug_lines(monkeypatch)
+    _slow_halt(probe, 0.2)
+    with Collected() as seen:
+        assert probe.estop() is False
+        assert probe.stop_confirmed is False
+        deadline = time.monotonic() + 2.0
+        while probe.stop_confirmed is not True and time.monotonic() < deadline:
+            time.sleep(0.01)
+    assert probe.stop_confirmed is True
+    late = [e for e in seen.of("info") if e.title == "Stop Landed Late"]
+    assert len(late) == 1, [e.text for e in seen.seen]
+    assert "ms after the press" in late[0].message
+    assert [m for t, m in lines if t == "Estop Late"], lines
+
+
+@pytest.mark.estop
+def test_a_stop_that_fails_late_is_not_revised(probe):
+    _slow_halt(probe, 0.2, result=False)
+    with Collected() as seen:
+        assert probe.estop() is False
+        time.sleep(0.4)
+    assert probe.stop_confirmed is False
+    assert not [e for e in seen.seen if e.title == "Stop Landed Late"]
+
+
+@pytest.mark.estop
+def test_the_unconfirmed_stop_names_the_real_budget(probe):
+    _slow_halt(probe, 0.2)
+    with Collected() as seen:
+        probe.toggle_estop()
+    error = [e for e in seen.of("error") if e.title == "Stop Not Confirmed"][0]
+    budget = f"{probe.ESTOP_BUDGET * 1000:.0f} ms"
+    assert budget in error.message, error.message
+    assert "1 s" not in error.message
+
+
+@pytest.mark.estop
+def test_a_confirmed_stop_clears_the_fault(probe):
+    """L5: `_halt_hardware` set DISABLED when `'d'` landed but kept the
+    fault, so after Stop + Clear both mode toggles stayed refused."""
+    probe.enable()
+    probe.port.fail_on = lambda payload: payload == b"d"
+    probe.set_mode("disabled")
+    assert probe.is_faulted
+    probe.port.fail_on = None
+    probe.toggle_estop()
+    probe.clear_estop(True)
+    assert probe.is_faulted is False, probe.fault
+    assert probe.gate_mode == "disabled"
+    assert probe.run("set_mode", args=["autonomous"]).is_ok
 
 
 @pytest.mark.estop
@@ -533,6 +789,131 @@ def test_the_drain_keeps_the_latest_complete_pos_line(probe):
                         "DEV: s", "POS:7,8,9"]
     assert probe._read_position() == (7, 8, 9)
     assert probe._read_position() is None
+
+
+@pytest.mark.transport
+def test_malformed_and_non_pos_lines_are_counted_as_dropped(probe):
+    """L3: a line that is not a whole POS line is a dropped packet. The
+    handshake's own `DEV:` answer is not one."""
+    probe.port.lines = ["POS:1,2,3", "junk", "POS:4,5", "POS:bad,,",
+                        "DEV: s", "POS:7,8,9"]
+    assert probe._read_position() == (7, 8, 9)
+    assert probe.dropped == 3
+
+
+@pytest.mark.transport
+def test_dropped_packets_warn_when_the_count_rises_and_not_more_often(probe):
+    with Collected() as seen:
+        probe.port.lines = ["junk"]
+        probe._read_position()
+        probe.port.lines = ["more junk"]
+        probe._read_position()
+    warned = [e for e in seen.of("warning") if e.title == "Packets Dropped"]
+    assert len(warned) == 1, [e.text for e in seen.seen]
+    assert "Stepper Probe" in warned[0].message
+    probe._dropped_warned_at -= probe.DROPPED_WARN_INTERVAL
+    with Collected() as seen:
+        probe.port.lines = ["junk again"]
+        probe._read_position()
+    assert [e.title for e in seen.of("warning")] == ["Packets Dropped"]
+
+
+@pytest.mark.transport
+def test_the_heartbeat_is_not_touched_by_a_read_that_raised(probe):
+    """L3: `_sample_loop` touched the heartbeat BEFORE the read, so `age`
+    never grew while every read failed. It is touched only after a read
+    pass that did not raise."""
+
+    def _broken(timeout=None):
+        raise OSError("the read failed")
+
+    probe.port.read_line = _broken
+    probe._start_threads()
+    try:
+        time.sleep(0.4)
+        age = probe.state["age"]
+    finally:
+        probe._stop_threads()
+    assert age >= 0.3, f"age {age} s: the loop claimed to be alive"
+
+
+@pytest.mark.transport
+def test_a_snap_to_zero_while_enabled_warns_of_a_board_reset(probe):
+    """L6: the stepper firmware's setup() zeroes its counts, so a board
+    that reset mid-session reports exactly (0,0,0). Warn (ATTENTION); the
+    mode is NOT changed (a false positive would be an unasked-for stop)."""
+    import events as events_module
+    probe.enable()
+    probe._note_position((5000, -20, 7))
+    with Collected() as seen:
+        probe._note_position((0, 0, 0))
+    warned = [e for e in seen.seen if e.title == events_module.BOARD_RESET_SUSPECTED]
+    assert len(warned) == 1 and warned[0].needs_ack is True
+    assert warned[0].message == (
+        "Stepper Probe's position snapped to zero while enabled; the board "
+        "may have reset and its drivers are off. Leave the mode and enter it "
+        "again.")
+    assert probe.mode is ProbeMode.IDLE, "the heuristic must never stop the probe"
+
+
+@pytest.mark.transport
+@pytest.mark.parametrize("case", ["disabled", "small", "slow", "not_zero"])
+def test_what_is_not_a_board_reset(probe, case):
+    if case != "disabled":
+        probe.enable()
+    start = (probe.RESET_JUMP_COUNTS // 2 if case == "small" else 5000, 0, 0)
+    probe._note_position(start)
+    if case == "slow":
+        probe._position_time -= probe.RESET_WINDOW + 0.1
+    with Collected() as seen:
+        probe._note_position((0, 0, 1) if case == "not_zero" else (0, 0, 0))
+    assert not [e for e in seen.seen if e.title == "Board Reset Suspected"]
+
+
+def _debug_lines(monkeypatch):
+    lines = []
+    real = events.debug
+
+    def _record(title, message, **kw):
+        lines.append((title, message))
+        return real(title, message, **kw)
+
+    monkeypatch.setattr(events, "debug", _record)
+    return lines
+
+
+@pytest.mark.mode
+def test_every_mode_line_carries_the_position(probe, monkeypatch):
+    """L7: the position at every `Mode:` transition line."""
+    lines = _debug_lines(monkeypatch)
+    probe._note_position((12, -3, 4))
+    probe.enable()
+    probe.set_mode("autonomous")
+    probe.set_mode("disabled")
+    probe.enable()
+    probe.halt()
+    modes = [m for t, m in lines if t == "Mode"]
+    assert len(modes) >= 4, modes
+    assert all("at (12, -3, 4)" in m for m in modes), modes
+
+
+@pytest.mark.loops
+def test_the_sampler_logs_a_health_line_on_its_interval(probe, monkeypatch):
+    """L7: one `Health` debug line per HEALTH_INTERVAL per probe, with
+    everything the next bench occurrence needs."""
+    monkeypatch.setattr(type(probe), "HEALTH_INTERVAL", 0.05)
+    lines = _debug_lines(monkeypatch)
+    probe._start_threads()
+    try:
+        time.sleep(0.3)
+    finally:
+        probe._stop_threads()
+    health = [m for t, m in lines if t == "Health"]
+    assert health, "no Health line"
+    for field in ("mode=", "link=", "position=", "position_age=",
+                  "idle_remaining=", "gate_open=", "pad_bound=",
+                  "sampler_alive=True", "pump_alive=", "latched=", "fault="):
+        assert field in health[-1], (field, health[-1])
 
 
 @pytest.mark.transport

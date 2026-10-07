@@ -482,3 +482,108 @@ def test_elsewhere_a_pending_update_is_swapped_in_before_the_exec(
     assert (frozen_install / "VERSION").read_text().startswith("v1.3.0")
     assert exec_calls == [("execv", app.sys.executable, [app.sys.executable, "--tk"])]
     assert not (frozen_install.parent / "station-update.cmd").exists()
+
+
+# -- A2: the startup checks wait for the view to listen ----------------------
+
+class ListeningView(FakeView):
+    """A desktop view: `open()` subscribes to the event log (as
+    `Dashboard.open` does), then runs its loop."""
+
+    order = []
+
+    def open(self):
+        ListeningView.order.append(("subscribing", self.setup._startup_listening))
+        events.subscribe(self._on_event)
+        ListeningView.order.append(("subscribed", self.setup._startup_listening))
+        events.unsubscribe(self._on_event)
+
+    def _on_event(self, event):
+        pass
+
+
+@pytest.fixture
+def listening_views(monkeypatch):
+    module = types.ModuleType("views.listening")
+    module.ListeningView = ListeningView
+    ListeningView.order = []
+    monkeypatch.setitem(sys.modules, "views.listening", module)
+    monkeypatch.setattr(app, "VIEWS", {
+        "tk": ("views.listening", "ListeningView"),
+        "qt": ("views.listening", "ListeningView"),
+        "web": ("views.listening", "ListeningView"),
+    })
+
+
+@pytest.mark.parametrize("view", ["tk", "qt"])
+def test_a_desktop_views_subscription_starts_the_startup_offer(listening_views, view):
+    """OP-4: the offer reaches a view only once it has subscribed; the app
+    tells Setup at that moment, never before."""
+    app.launch(view)
+    assert ListeningView.order == [("subscribing", False), ("subscribed", True)]
+    assert "subscribe" not in vars(events), "the one-shot hook is gone"
+
+
+def test_the_web_offers_at_the_pages_first_read(listening_views, monkeypatch):
+    calls = []
+    monkeypatch.setattr(app.Setup, "startup_checks",
+                        lambda self, on_next_read=False: calls.append(on_next_read))
+    app.launch("web")
+    assert calls == [True]
+    assert "subscribe" not in vars(events)
+
+
+def test_a_view_that_never_subscribes_leaves_the_event_log_as_it_was(fake_views):
+    app.launch("tk")
+    assert "subscribe" not in vars(events)
+
+
+# -- A4: Switch to stable ends the station through the app -------------------
+
+def test_launch_hands_setup_the_way_to_end_the_station(fake_views):
+    app.launch("tk")
+    assert FakeView.built[0].setup._exit_app is app.exit_process
+
+
+def test_exit_process_closes_the_log_then_exits(monkeypatch):
+    order = []
+    monkeypatch.setattr(events, "close_file", lambda: order.append("closed"))
+    monkeypatch.setattr(app.os, "_exit", lambda code: order.append(("_exit", code)))
+    app.exit_process()
+    assert order == ["closed", ("_exit", 0)]
+
+
+# -- A5: an update staged for the restart is swapped in at the next start -----
+
+def test_a_pending_update_is_swapped_in_before_anything_opens(
+        frozen_install, exec_calls, fake_views):
+    """The operator quit instead of pressing Restart: the next start swaps
+    the staged version in and runs it, before any view, model or log opens."""
+    assert app.main(["--tk"]) == 0
+    assert FakeView.built == [], "nothing opened on the old version"
+    assert (frozen_install / "VERSION").read_text().startswith("v1.3.0")
+    assert not (frozen_install / "UPDATE_PENDING").exists()
+    assert exec_calls == [("execv", app.sys.executable, [app.sys.executable, "--tk"])]
+
+
+def test_on_windows_the_startup_swap_goes_to_the_script(
+        frozen_install, exec_calls, fake_views, monkeypatch):
+    monkeypatch.setattr(app.sys, "platform", "win32")
+    assert app.main(["--tk"]) == 0
+    assert FakeView.built == []
+    assert [c[0] for c in exec_calls] == ["Popen", "_exit"]
+    assert (frozen_install.parent / "station-update.cmd").exists()
+
+
+def test_without_a_pending_update_the_start_is_as_before(
+        frozen_install, exec_calls, fake_views):
+    (frozen_install / "UPDATE_PENDING").unlink()
+    assert app.main(["--tk"]) == 0
+    assert exec_calls == [] and len(FakeView.built) == 1
+
+
+def test_a_checkout_never_looks_for_a_pending_update(exec_calls, fake_views, monkeypatch):
+    monkeypatch.setattr(app.updater, "pending_update",
+                        lambda install: pytest.fail("looked in a checkout"))
+    assert app.main(["--tk"]) == 0
+    assert len(FakeView.built) == 1

@@ -270,6 +270,25 @@ def test_debug_writes_to_the_file_with_severity_source_and_thread(tmp_path):
     assert threading.current_thread().name in text
 
 
+def test_every_file_line_starts_with_the_date_and_the_time(tmp_path):
+    """L7: a log file read days later must say which day. Pinned exactly:
+    `YYYY-MM-DD HH:MM:SS.mmm SEVERITY`."""
+    import re
+    log = _log()
+    path = log.open_file(str(tmp_path))
+    try:
+        log.debug("Mode", "idle -> auto", source="Probe")
+        log.warn("Slow", "poll late")
+    finally:
+        log.close_file()
+    lines = open(path).read().splitlines()
+    assert len(lines) == 3, lines
+    for line in lines:
+        assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} "
+                        r"(DEBUG|INFO|WARNING) ", line), line
+    assert lines[1].startswith(time.strftime("%Y-%m-%d ")), lines[1]
+
+
 def test_every_severity_is_also_written_to_the_file(tmp_path):
     log = _log()
     path = log.open_file(str(tmp_path))
@@ -512,10 +531,12 @@ def test_the_attention_set_is_exactly_the_titles_the_lead_named():
     # update prompts ask too; each carries its action.
     # Owner 2026-09-28 (the launcher's flash, unattended): the startup
     # firmware check asks once, and Flash now is its action.
+    # Owner 2026-09-30 (L4, "track dropped packets like events and display
+    # warnings"): a lost serial link asks too.
     assert events_module.ATTENTION == frozenset({
         "Idle Timeout", "Temperature Disconnected", "Rotator Unreachable",
         "Heater Off Not Sent", "Update Ready", "Restart Needed",
-        "Firmware Out of Date"})
+        "Firmware Out of Date", "Connection Lost", "Board Reset Suspected"})
     assert isinstance(events_module.ATTENTION, frozenset)
     # The countdown, the silent browser and the map's soft notices stay
     # tray lines.
