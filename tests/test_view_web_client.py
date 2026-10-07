@@ -1540,3 +1540,30 @@ def test_web1_no_model_name_or_phase_word_is_known_to_the_client():
     for word in ("'setup'", "'region'", "'marked'", "'finish'"):
         assert word not in _method("applyPhase"), word
 
+
+
+# --------------------------------------------------------------------------
+# WEB-4: the client knows no particular plot
+# --------------------------------------------------------------------------
+def test_web4_the_client_assumes_no_models_plot_or_data_command():
+    """The Transfer Map no longer draws "Red % since Arm"; the client must
+    not have been written around it. Generic `plot` rendering stays (every
+    other model uses it), but no title and no model's data command is named
+    in app.js."""
+    assert not re.search(r"since\s+arm", APP_JS, re.I)
+    assert "Red %" not in APP_JS
+    models = Path(__file__).resolve().parents[1] / "src" / "model"
+    named = set()
+    for source in models.glob("*.py"):
+        named.update(re.findall(r"data_command\s*=\s*[\"'](\w+)[\"']", source.read_text()))
+        named.update(re.findall(r"source_command\s*=\s*[\"'](\w+)[\"']", source.read_text()))
+    assert named, "no model declares a data command? the scan is broken"
+    leaked = sorted(n for n in named if re.search(r"['\"]%s['\"]" % re.escape(n), CODE))
+    assert not leaked, f"app.js names a model's data command: {leaked}"
+
+
+def test_web4_a_schema_without_a_plot_is_a_schema_like_any_other():
+    """Nothing in the card build requires a plot element to exist."""
+    build = _method("build")
+    assert "'plot'" not in build and '"plot"' not in build
+    assert "plot" in _renderer_map(), "generic plot rendering must stay for other models"
