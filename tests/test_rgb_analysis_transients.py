@@ -1,4 +1,4 @@
-"""CAP-1: Red Percent never measures, logs, forwards or records a black,
+"""CAP-1: RGB analysis never measures, logs, forwards or records a black,
 stale or partial grab, and it samples near the source's own rate.
 
 The bench (trial 32, 707 index rows): AmLite repaints its camera image at
@@ -22,7 +22,7 @@ import pytest
 
 from devices.screen import Screen
 from events import events
-from model.red_monitor import RedMonitor
+from model.rgb_analysis import RgbAnalysis
 
 
 # ---------------------------------------------------------------------
@@ -143,7 +143,7 @@ class FlickerCapture:
 
 
 def _model(tmp_path, capture):
-    model = RedMonitor(screen=Screen(factory=lambda: capture))
+    model = RgbAnalysis(screen=Screen(factory=lambda: capture))
     model.output_root = tmp_path / "runs"
     model.run_name = "CAP1"
     model.open()
@@ -203,7 +203,7 @@ def bench(tmp_path):
 
     def spy(name):
         def call(title, message, **kwargs):
-            if kwargs.get("source") == RedMonitor.NAME:
+            if kwargs.get("source") == RgbAnalysis.NAME:
                 seen["events"].append((name, title, message))
             return real[name](title, message, **kwargs)
         return call
@@ -299,9 +299,9 @@ def test_the_sidecar_records_the_gate_and_what_it_threw_away(bench):
     assert meta["frames_captured"] == run.frames
     assert meta["grabs"] == run.grabs > meta["frames_captured"]
     gate = meta["settle_gate"]
-    assert gate["settle_s"] == RedMonitor.SETTLE_S
+    assert gate["settle_s"] == RgbAnalysis.SETTLE_S
     assert gate["min_sample_interval_s"] == pytest.approx(
-        RedMonitor.MIN_SAMPLE_INTERVAL_S, abs=1e-6)
+        RgbAnalysis.MIN_SAMPLE_INTERVAL_S, abs=1e-6)
 
 
 def test_the_counters_are_diagnostics_elements(tmp_path):
@@ -364,10 +364,10 @@ def test_the_loop_samples_near_the_source_rate_never_at_khz(tmp_path):
     finally:
         model.end_run()
         model.close()
-    ceiling = 1.0 / RedMonitor.MIN_SAMPLE_INTERVAL_S
+    ceiling = 1.0 / RgbAnalysis.MIN_SAMPLE_INTERVAL_S
     assert accepted <= ceiling * 1.1, accepted
-    assert reads <= ceiling * RedMonitor.SETTLE_READS, reads
-    assert accepted <= RedMonitor.SOURCE_OVERSAMPLE * 20 * 1.3, accepted
+    assert reads <= ceiling * RgbAnalysis.SETTLE_READS, reads
+    assert accepted <= RgbAnalysis.SOURCE_OVERSAMPLE * 20 * 1.3, accepted
     assert accepted >= 5, "the cap starved the loop"
     assert 10 <= source <= 40, source
 
@@ -383,7 +383,7 @@ def test_a_stalled_viewer_is_sampled_slowly_not_spun(tmp_path):
     finally:
         model.end_run()
         model.close()
-    slowest = 1.0 / RedMonitor.MAX_SAMPLE_INTERVAL_S
+    slowest = 1.0 / RgbAnalysis.MAX_SAMPLE_INTERVAL_S
     assert accepted <= slowest * 1.2, accepted
     assert reads <= 2 * accepted + 4, (reads, accepted)
     assert accepted >= 5, accepted
@@ -402,7 +402,7 @@ def test_a_viewer_that_never_settles_yields_nothing_and_never_spins(tmp_path):
         run = model._run
         assert accepted == 0 and run.frames == 0 and run.rows == 0
         assert frames == [] and run.rejected_unsettled > 0
-        assert reads <= 1.0 / RedMonitor.SETTLE_S + 10, reads
+        assert reads <= 1.0 / RgbAnalysis.SETTLE_S + 10, reads
         assert model.is_running, "an unsettled viewer is not a failure"
     finally:
         model.end_run()
@@ -478,11 +478,11 @@ def test_the_stop_lands_mid_settle_without_waiting(tmp_path):
 
 def test_the_settle_constants_are_named_and_sane():
     """No magic numbers inline: the gate and the cap are class constants."""
-    assert RedMonitor.SETTLE_S >= 0.005
-    assert 0 <= RedMonitor.SETTLE_TOLERANCE * 100 < RedMonitor.CHANGE_STEP
-    assert RedMonitor.SETTLE_READS >= 3
-    assert 0 < RedMonitor.MIN_SAMPLE_INTERVAL_S < RedMonitor.MAX_SAMPLE_INTERVAL_S
-    assert RedMonitor.SOURCE_OVERSAMPLE >= 1.0
+    assert RgbAnalysis.SETTLE_S >= 0.005
+    assert 0 <= RgbAnalysis.SETTLE_TOLERANCE * 100 < RgbAnalysis.CHANGE_STEP
+    assert RgbAnalysis.SETTLE_READS >= 3
+    assert 0 < RgbAnalysis.MIN_SAMPLE_INTERVAL_S < RgbAnalysis.MAX_SAMPLE_INTERVAL_S
+    assert RgbAnalysis.SOURCE_OVERSAMPLE >= 1.0
 
 
 # ---------------------------------------------------------------------
@@ -520,7 +520,7 @@ def test_no_glitch_grab_reaches_the_five_new_numbers(tmp_path):
                          and run.frames >= 8), (capture.grabs, run.frames)
         model.end_run()
         run.thread.join(2.0)
-        keys = RedMonitor.CHANNEL_KEYS
+        keys = RgbAnalysis.CHANNEL_KEYS
         got = [tuple(row[k] for k in keys) for _, row in rows]
         assert len(got) == len(LIVE), got
         for numbers, frame in zip(got, LIVE):
@@ -529,7 +529,7 @@ def test_no_glitch_grab_reaches_the_five_new_numbers(tmp_path):
         assert not glitches & set(got), "a glitch grab's numbers were published"
         assert [red for red, _ in rows] == [six_of(frame)[0] for frame in LIVE]
         latest = model.state["run"]["latest"]
-        assert [latest[k] for k in RedMonitor.RGB_KEYS] == \
+        assert [latest[k] for k in RgbAnalysis.RGB_KEYS] == \
             pytest.approx(six_of(LIVE[4]))
     finally:
         model.close()
@@ -547,7 +547,7 @@ def test_a_viewer_that_never_settles_publishes_none_of_the_six(tmp_path):
         model.end_run()
         run.thread.join(2.0)
         assert rows == [] and run.frames == 0
-        assert model.state["run"]["latest"] == dict.fromkeys(RedMonitor.RGB_KEYS)
+        assert model.state["run"]["latest"] == dict.fromkeys(RgbAnalysis.RGB_KEYS)
         assert model.current_green is None and model.mean_red is None
     finally:
         model.close()

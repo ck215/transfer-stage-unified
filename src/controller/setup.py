@@ -52,7 +52,7 @@ from model import profile as profiles_module
 from model.base import Model
 from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
-from model.red_monitor import RedMonitor
+from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
@@ -220,7 +220,7 @@ def _key_for(name):
 # The built-ins, in today's display order. The Sample Map (flake-coords,
 # 2026-10-04) follows the Transfer Map: its own page, no port.
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  RedMonitor, TransferMap, SampleMap):
+                  RgbAnalysis, TransferMap, SampleMap):
     register(_built_in)
 del _built_in
 
@@ -752,7 +752,7 @@ class Setup(PortProbe, Panel):
             is_sim = choice == SIM
             # The models drawn on this row's page (Model.HOST) launch with
             # it, before it, with no resources and its SIM choice: one row,
-            # "Transfer Map", brings Red Percent (owner ruling 2026-09-28).
+            # "Transfer Map", brings RGB Analysis (owner ruling 2026-09-28).
             for hosted_name, hosted_class in MODEL_TYPES.items():
                 if getattr(hosted_class, "HOST", None) == row["name"]:
                     configs.append({"model": hosted_name, "port": None,

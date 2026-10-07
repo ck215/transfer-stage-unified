@@ -1,5 +1,7 @@
-"""Red Percent: the red fraction of a screen region, logged as a force proxy
-beside the probe's position.
+"""RGB analysis (was "Red Percent", renamed RG-3 2026-10-07): the colour of a
+screen region, logged as a force proxy beside the probe's position. The red
+fraction it always measured, and since RG-1 the green and blue fractions and
+the channel means beside it.
 
 What the instrument is for (owner, 2026-09-21): the dataset is the product.
 A row pairs "how red is the region right now" with "where was the probe when
@@ -24,7 +26,7 @@ row a subscriber gets, the run's CSV, `state["run"]["latest"]`, and the
 readouts behind Details. The red share is `_measure_red`'s to the bit, so no
 bench number moves; which column drives the force extrema is an analysis
 setting (`transfer_map_analysis`, `factor=`), not this model's.
-`RedMonitor` the Model. Owns a `Screen`, follows a Probe for position, and
+`RgbAnalysis` the Model. Owns a `Screen`, follows a Probe for position, and
              owns exactly one run at a time.
 
 The load-bearing repairs carried over from `legacy/src/model/redpercent_system.py`:
@@ -139,7 +141,7 @@ class RunLog:
             rgb=None):
         """Append one sample. `positions`/`velocities` are read, never kept —
         the caller reuses its own dictionaries frame after frame. `rgb` is
-        the sample's six numbers in `RedMonitor.RGB_KEYS` order (RG-1); the
+        the sample's six numbers in `RgbAnalysis.RGB_KEYS` order (RG-1); the
         five after the red share fill the channel columns, and without it
         they are empty cells."""
         with self._lock:
@@ -177,7 +179,7 @@ class RunLog:
 class MonitorRun:
     """One run: what was configured, what it owns, and what it achieved.
 
-    Created by `RedMonitor.start_run`, never reused and never mutated by a
+    Created by `RgbAnalysis.start_run`, never reused and never mutated by a
     view. `axes` and `region` are copied rather than aliased, so nothing the
     operator does afterwards can reach a run in flight (REDPERCENT-1).
 
@@ -252,7 +254,7 @@ class MonitorRun:
     @property
     def is_active(self):
         """True from creation until ended or failed. The one thing
-        `RedMonitor.is_running` is derived from, so the flag and the thread
+        `RgbAnalysis.is_running` is derived from, so the flag and the thread
         cannot disagree (REDPERCENT-4)."""
         return not self.stop_event.is_set() and self.failure is None
 
@@ -301,10 +303,20 @@ class MonitorRun:
             self.duration_s = time.monotonic() - self.started_monotonic
 
 
-class RedMonitor(Model):
-    """Was `RedPercentSystem`. Owns a `Screen`. Follows a Probe for position."""
+class RgbAnalysis(Model):
+    """Was `RedMonitor` ("Red Percent" to the operator, until RG-3), and
+    before that `RedPercentSystem`. Owns a `Screen`. Follows a Probe for
+    position."""
 
-    NAME = "Red Percent"
+    #: The registry key and the name every operator sees (RG-3, 2026-10-07:
+    #: "Red Percent" became "RGB Analysis"). Setup's MODEL_TYPES, the
+    #: Controller, the telemetry slug (`rgb_analysis`), the stop's tooltip
+    #: and every event's source follow from it. The stored databases are
+    #: untouched: the profile column is still `red`.
+    NAME = "RGB Analysis"
+    #: The words on the tier-2 disclosure (sentence case, as the views draw
+    #: every disclosure).
+    DISCLOSURE = "RGB analysis details"
     IDENTITY = None
     HOST = "Transfer Map"    # drawn on the Transfer Map page (one dashboard)
     NEEDS_PORT = False
@@ -859,7 +871,7 @@ class RedMonitor(Model):
         if not self.region:
             raise Refused("Set a capture region before starting a run.")
         if numpy is None:
-            raise Refused("Red detection is unavailable: numpy failed to import.")
+            raise Refused("RGB analysis is unavailable: numpy failed to import.")
         if not self.screen.is_available:
             raise Refused(self.screen.error
                           or "Screen capture is unavailable in this environment.")
@@ -907,7 +919,7 @@ class RedMonitor(Model):
         self._rgb_state = None
 
         run.thread = threading.Thread(target=self._run_loop, args=(run,),
-                                      daemon=True, name=f"red-monitor-{run.run_id}")
+                                      daemon=True, name=f"rgb-analysis-{run.run_id}")
         run.thread.start()
         events.info("Run Started", f"{run.run_id}: {run.sample_mode} sampling of "
                     f"{sch.format_region(run.region)}", source=self.NAME)
@@ -1098,9 +1110,9 @@ class RedMonitor(Model):
                              source=self.NAME, every=1.0)
         except Exception as exc:
             run.failure = exc
-            events.debug("Red Percent Run Failed", f"{run.run_id}: {exc!r}",
+            events.debug("RGB Analysis Run Failed", f"{run.run_id}: {exc!r}",
                          source=self.NAME, exception=exc)
-            events.error("Red Percent Run Failed",
+            events.error("RGB Analysis Run Failed",
                          f"Run {run.run_id} stopped unexpectedly. The rows "
                          "recorded so far are kept; save them, then start a "
                          "new run.", source=self.NAME, exception=exc)
@@ -1812,7 +1824,7 @@ class RedMonitor(Model):
     @property
     def schema(self):
         P = self.PARAMS
-        # Tiers (owner ruling 2026-09-25): Red Percent as most operators see
+        # Tiers (owner ruling 2026-09-25): RGB analysis as most operators see
         # it is two numbers and two buttons. Every statistic, the live plot,
         # the annotations, the region, save/load and the analysis figure are
         # on demand, behind Details - never implied.
@@ -1843,7 +1855,7 @@ class RedMonitor(Model):
                 sch.entry("Run / Cut ID:", "run_name", P["run_name"],
                           disabled_when=("running",)),
                 sch.readonly("Run ID:", "run_id", param=P["run_id"]),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 # REDPERCENT-23, D-6: declared once so all three views render
@@ -1852,7 +1864,7 @@ class RedMonitor(Model):
                 *[sch.entry(f"{field.label}:", field.name, P[field.name],
                             disabled_when=("running",))
                   for field in self.ANNOTATION_FIELDS],
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Probe Metadata",
@@ -1866,7 +1878,7 @@ class RedMonitor(Model):
                 # shape is not expressible.
                 sch.dropdown("Position Source:", "source_name", "set_source",
                              "source_options", disabled_when=("running",)),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Synced Axes",
@@ -1880,13 +1892,13 @@ class RedMonitor(Model):
                            "Off", on_args=("Z",), off_args=("Z",),
                            disabled_when=("running",)),
                 sch.readonly("Synced:", "sync_axes", param=P["sync_axes"]),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Red Detection",
                 sch.entry("Red at least:", "red_min", P["red_min"],
                           disabled_when=("running",)),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 # RG-1: the latest sample's other five numbers. The red share
@@ -1902,7 +1914,7 @@ class RedMonitor(Model):
                              format=".1f"),
                 sch.readonly("Mean Blue:", "mean_blue", param=P["mean_blue"],
                              format=".1f"),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Sampling",
@@ -1914,7 +1926,7 @@ class RedMonitor(Model):
                 # Transfer Map's page, and redrawing the whole run each
                 # refresh slowed the view (CAP-5). `series` stays, and the
                 # Analysis figure plots a saved run.
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Control",
@@ -1923,7 +1935,7 @@ class RedMonitor(Model):
                                   data_command="screen_image"),
                 sch.button("Reset Baseline", "reset_baseline"),
                 sch.file_save("Save", "save", extensions=("csv",), role="info"),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Analysis",
@@ -1933,7 +1945,7 @@ class RedMonitor(Model):
                              "plot_dim_options"),
                 sch.image("Analysis Plot", "figure",
                           empty="No analysis yet. Load a run to plot it."),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Diagnostics",

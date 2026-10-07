@@ -1,4 +1,7 @@
-"""`model.red_monitor` — RunLog, MonitorRun and the RedMonitor model.
+"""`model.rgb_analysis` — RunLog, MonitorRun and the RgbAnalysis model
+("RGB Analysis"; `model.red_monitor` / `RedMonitor` / "Red Percent" until RG-3,
+2026-10-07). It also holds RG-2's factor tests: the columns this model
+publishes are what `transfer_map_analysis` reads as a factor.
 
 Ported from `tests/core/test_monitoring_run.py`,
 `tests/core/test_redpercent_run_artifacts.py`,
@@ -22,7 +25,7 @@ import pytest
 
 from devices.screen import Screen
 from model import plot_data
-from model.red_monitor import MonitorRun, RedMonitor, RunLog
+from model.rgb_analysis import MonitorRun, RgbAnalysis, RunLog
 from result import Refused, NeedsConfirm
 
 
@@ -79,7 +82,7 @@ def fake_screen(frames=None, delay=0.001, varying=True):
 
 
 class FakeProbe:
-    """A position source, duck-typed exactly as `RedMonitor` asks for one."""
+    """A position source, duck-typed exactly as `RgbAnalysis` asks for one."""
 
     def __init__(self, position=(0.0, 0.0, 0.0), position_time=None):
         self.position = position
@@ -98,7 +101,7 @@ class FakeProbe:
 
 @pytest.fixture
 def monitor(tmp_path):
-    model = RedMonitor(screen=fake_screen())
+    model = RgbAnalysis(screen=fake_screen())
     model.output_root = tmp_path / "runs"
     model.run_name = "C001"
     model.open()
@@ -283,11 +286,11 @@ def test_frame_intervals_are_summarised():
 def test_the_output_root_does_not_follow_the_process_cwd(tmp_path, monkeypatch):
     monkeypatch.delenv("TRANSFER_STAGE_DATA_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
-    before = RedMonitor(screen=fake_screen()).output_root
+    before = RgbAnalysis(screen=fake_screen()).output_root
     elsewhere = tmp_path / "somewhere-else"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    after = RedMonitor(screen=fake_screen()).output_root
+    after = RgbAnalysis(screen=fake_screen()).output_root
 
     assert before.is_absolute()
     assert before == after, "output_root moved when the CWD moved"
@@ -295,7 +298,7 @@ def test_the_output_root_does_not_follow_the_process_cwd(tmp_path, monkeypatch):
 
 def test_the_data_root_environment_variable_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path))
-    assert RedMonitor(screen=fake_screen()).output_root == tmp_path.resolve()
+    assert RgbAnalysis(screen=fake_screen()).output_root == tmp_path.resolve()
 
 
 def test_an_unset_run_name_still_produces_an_identity(monitor):
@@ -375,11 +378,11 @@ def test_publish_red_reads_the_baseline_exactly_once(monitor):
             pass
 
     del monitor.baseline_red
-    RedMonitor.baseline_red = CountingBaseline()
+    RgbAnalysis.baseline_red = CountingBaseline()
     try:
         monitor._publish_red(8.0)
     finally:
-        del RedMonitor.baseline_red
+        del RgbAnalysis.baseline_red
 
     assert reads["count"] == 1, (
         f"baseline_red was read {reads['count']} times computing one sample")
@@ -473,7 +476,7 @@ def test_start_refuses_while_the_stop_latch_is_set(monitor):
 def test_start_refuses_when_screen_capture_is_unavailable(tmp_path, monkeypatch):
     import sys
     monkeypatch.setitem(sys.modules, "mss", None)
-    model = RedMonitor()
+    model = RgbAnalysis()
     model.output_root = tmp_path
     model.open()
     model.set_region(0, 0, 10, 10)
@@ -566,7 +569,7 @@ def test_a_failure_in_the_loop_ends_the_run_and_reports_once(monitor, capsys):
     assert not monitor.is_running
     assert run.failure is not None
     assert isinstance(run.failure, ZeroDivisionError)
-    assert "Red Percent Run Failed" in capsys.readouterr().err
+    assert "RGB Analysis Run Failed" in capsys.readouterr().err
 
 
 def test_a_grab_failure_does_not_end_the_run(monitor):
@@ -883,7 +886,7 @@ def test_operator_annotations_reach_the_sidecar_and_stay_apart_from_actuals(logg
 
 
 def test_the_annotation_set_is_a_table_not_hardcoded_attributes():
-    names = [field.name for field in RedMonitor.ANNOTATION_FIELDS]
+    names = [field.name for field in RgbAnalysis.ANNOTATION_FIELDS]
     assert {"specimen_id", "consumable_id", "note"} <= set(names)
     assert len(set(names)) == len(names)
 
@@ -905,7 +908,7 @@ def test_save_takes_no_path_from_any_caller():
     a file dialog, which on the Web client meant the browser handing the
     server a path on the server's own filesystem."""
     import inspect
-    parameters = list(inspect.signature(RedMonitor.save).parameters)
+    parameters = list(inspect.signature(RgbAnalysis.save).parameters)
     assert parameters == ["self"]
 
 
@@ -1024,8 +1027,8 @@ def test_the_series_of_a_model_with_no_run_is_empty(monitor):
     assert monitor.series == {"x": [], "y": []}
 
 
-def test_red_percent_declares_no_live_plot(monitor):
-    """TM-2 (2026-10-07): the live plots left the live view (Red Percent is
+def test_rgb_analysis_declares_no_live_plot(monitor):
+    """TM-2 (2026-10-07): the live plots left the live view (RGB analysis is
     drawn on the Transfer Map's page; redrawing a whole run each refresh
     slowed it, CAP-5). `series` stays a property; nothing polls it."""
     import schema as sch
@@ -1190,12 +1193,14 @@ def test_the_figure_is_rendered_once_until_something_changes(logged, monkeypatch
 
 
 def test_the_tier_two_disclosure_names_the_device(monitor):
-    """Tier K (2026-09-26): Red Percent's second tier is statistics and
+    """Tier K (2026-09-26): RGB analysis's second tier is statistics and
     annotations, not configuration, so its disclosure reads "<name> details";
     every tier-2 section says the same words (the views draw the first)."""
     tier_two = [s for s in monitor.schema["sections"] if s.get("tier") == 2]
     assert tier_two
-    assert {s["disclosure"] for s in tier_two} == {f"{monitor.NAME} details"}
+    # RG-3: "RGB analysis details", sentence case, not "<NAME> details".
+    assert {s["disclosure"] for s in tier_two} == {"RGB analysis details"}
+    assert monitor.DISCLOSURE == "RGB analysis details"
 
 
 def test_the_next_step_line_says_what_unblocks_start_run(monitor):
@@ -1250,7 +1255,7 @@ def test_a_subscriber_receives_every_logged_row(monitor):
     assert [s[1] for s in seen] == log.red_values
     assert [s[0] for s in seen] == log.times
     # The row dict: the synced axis, and the five RG-1 numbers.
-    assert all(set(s[2]) == {"Z", *RedMonitor.CHANNEL_KEYS} for s in seen)
+    assert all(set(s[2]) == {"Z", *RgbAnalysis.CHANNEL_KEYS} for s in seen)
 
 
 def test_a_subscriber_gets_its_own_copy_of_the_positions(monitor):
@@ -1313,7 +1318,7 @@ def test_grab_frame_returns_the_capture_region_as_png(monitor):
 
 def test_grab_frame_is_none_without_a_region_or_a_frame(monitor):
     assert monitor.grab_frame() is None
-    closed = RedMonitor(screen=fake_screen())
+    closed = RgbAnalysis(screen=fake_screen())
     closed.region = {"top": 0, "left": 0, "width": 10, "height": 10}
     assert closed.grab_frame() is None                   # screen never opened
 
@@ -1373,7 +1378,7 @@ def desktop_screen(frames=None, delay=0.001, varying=True):
 def test_grab_screen_is_the_whole_desktop_at_full_size(tmp_path):
     from PIL import Image
     import io
-    model = RedMonitor(screen=desktop_screen())
+    model = RgbAnalysis(screen=desktop_screen())
     model.output_root = tmp_path / "runs"
     model.open()
     try:
@@ -1391,7 +1396,7 @@ def test_grab_screen_is_the_whole_desktop_at_full_size(tmp_path):
 
 
 def test_grab_screen_is_none_when_the_screen_is_closed_or_fails(monitor):
-    closed = RedMonitor(screen=desktop_screen())
+    closed = RgbAnalysis(screen=desktop_screen())
     assert closed.grab_screen() is None                 # never opened
     assert monitor.grab_screen() is None                # a capture with no desktop
 
@@ -1402,7 +1407,7 @@ def test_the_run_loop_keeps_one_handle_and_other_grabs_keep_none(tmp_path):
     """A Web request is a new thread each time; a frame or screen grab from
     one must leave no capture handle open (on X11, a display connection).
     The run loop keeps exactly one for its life and drops it on leaving."""
-    model = RedMonitor(screen=desktop_screen())
+    model = RgbAnalysis(screen=desktop_screen())
     model.output_root = tmp_path / "runs"
     model.open()
     try:
@@ -1486,7 +1491,7 @@ def test_a_slow_frame_consumer_never_slows_the_loop(tmp_path):
     a bounded queue drained by a consumer taking 100 ms a frame (the
     Transfer Map's pattern) stays within reach of the rate with none."""
     import queue as queue_module
-    model = RedMonitor(screen=fake_screen(delay=0.004))
+    model = RgbAnalysis(screen=fake_screen(delay=0.004))
     model.output_root = tmp_path / "runs"
     model.open()
     try:
@@ -1543,7 +1548,7 @@ CHANNEL_SIX = (20.0, 30.0, 10.0, 88.0, 116.0, 44.0)
 
 def test_the_six_numbers_of_a_frame_with_known_channels(monitor):
     assert monitor._measure_rgb(channel_frame()) == pytest.approx(CHANNEL_SIX)
-    assert RedMonitor.RGB_KEYS == ("red", "green", "blue",
+    assert RgbAnalysis.RGB_KEYS == ("red", "green", "blue",
                                    "r_mean", "g_mean", "b_mean")
 
 
@@ -1559,7 +1564,7 @@ def test_the_green_and_blue_masks_have_the_red_masks_structure(monitor):
     image[5, :] = [0, 100, 200]      # blue, outside: g < 100 is False
     red, green, blue = monitor._measure_rgb(image)[:3]
     assert (red, green, blue) == (0.0, pytest.approx(10.0), pytest.approx(10.0))
-    assert (RedMonitor.GREEN_MIN, RedMonitor.BLUE_MIN, RedMonitor.RED_MAX) == \
+    assert (RgbAnalysis.GREEN_MIN, RgbAnalysis.BLUE_MIN, RgbAnalysis.RED_MAX) == \
         (150, 150, 100)
 
 
@@ -1607,12 +1612,12 @@ def test_the_five_new_keys_reach_every_subscriber_with_the_row(monitor):
     red, row = seen[0]
     assert set(row) == {"Z", "green", "blue", "r_mean", "g_mean", "b_mean"}
     assert red == pytest.approx(20.0)
-    assert [row[k] for k in RedMonitor.CHANNEL_KEYS] == \
+    assert [row[k] for k in RgbAnalysis.CHANNEL_KEYS] == \
         pytest.approx(CHANNEL_SIX[1:])
 
 
 def test_the_run_log_and_its_csv_carry_the_five_columns(monitor):
-    from model.red_monitor import CHANNEL_COLUMNS
+    from model.rgb_analysis import CHANNEL_COLUMNS
     _channel_run(monitor, sync_axes="X")
     assert _wait_for(lambda: monitor.rows_written >= 1)
     monitor.end_run()
@@ -1629,13 +1634,13 @@ def test_the_run_log_and_its_csv_carry_the_five_columns(monitor):
 
 
 def test_state_run_carries_the_latest_six(monitor):
-    assert monitor.state["run"]["latest"] == dict.fromkeys(RedMonitor.RGB_KEYS)
+    assert monitor.state["run"]["latest"] == dict.fromkeys(RgbAnalysis.RGB_KEYS)
     _channel_run(monitor)
     assert _wait_for(lambda: monitor.frames_captured >= 1)
     monitor.end_run()
     latest = monitor.state["run"]["latest"]
-    assert list(latest) == list(RedMonitor.RGB_KEYS)
-    assert [latest[k] for k in RedMonitor.RGB_KEYS] == pytest.approx(CHANNEL_SIX)
+    assert list(latest) == list(RgbAnalysis.RGB_KEYS)
+    assert [latest[k] for k in RgbAnalysis.RGB_KEYS] == pytest.approx(CHANNEL_SIX)
 
 
 def test_the_five_readouts_are_under_details_and_red_stays_in_tier_one(monitor):
@@ -1876,3 +1881,67 @@ def test_reanalyse_red_is_unchanged_and_write_needs_the_red_factor(tmp_path):
         tool.main([db, "--out", str(tmp_path / "out"), "--factor", "green",
                    "--write"])
     assert not (tmp_path / "map.sqlite.pre-reanalysis.bak").exists()
+
+
+# ---------------------------------------------------------------------
+# RG-3 (2026-10-07): Red Percent is RGB analysis wherever the registry or
+# an operator sees it. The stores are untouched (the profile column is red).
+# ---------------------------------------------------------------------
+
+def test_the_registry_builds_rgb_analysis_under_its_new_name_on_the_map(
+        tmp_path, monkeypatch):
+    """Setup's registry keys the class by its NAME; ticking the Transfer
+    Map's row launches it, hosted (`HOST` resolves in the Controller's
+    state), under "RGB Analysis" and never "Red Percent"."""
+    import model.rgb_analysis as module
+    from controller import setup as station_setup
+    from controller.controller import Controller
+    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "station.json"))
+    monkeypatch.setattr(module, "Screen", lambda: fake_screen())   # no display
+    assert station_setup.MODEL_TYPES["RGB Analysis"] is RgbAnalysis
+    assert "Red Percent" not in station_setup.MODEL_TYPES
+    controller = Controller()
+    setup = station_setup.Setup(controller)
+    try:
+        assert not any(row["name"] == "RGB Analysis" for row in setup._rows.values()), \
+            "a hosted model has no Setup row"
+        key = next(k for k, row in setup._rows.items()
+                   if row["name"] == "Transfer Map")
+        getattr(setup, f"set_{key}_enabled")(True)
+        assert "RGB Analysis" in [c["model"] for c in setup.configs]
+        setup.launch()
+        models = controller.state()["models"]
+        assert "Red Percent" not in models
+        assert models["RGB Analysis"]["host"] == "Transfer Map"
+        assert models["RGB Analysis"]["name"] == "RGB Analysis"
+        assert isinstance(controller.models["RGB Analysis"], RgbAnalysis)
+    finally:
+        controller.reset()
+
+
+def test_the_operator_sees_rgb_analysis_in_the_stop_and_the_events(
+        monitor, monkeypatch):
+    import schema as sch
+    from events import events
+    stop = next(e for e in sch.elements(monitor.schema)
+                if e.get("command") == "toggle_estop")
+    assert stop["tooltip"] == "Stop the RGB Analysis"
+    seen = []
+    real = events.info
+
+    def spy(title, message, **kwargs):
+        seen.append((title, kwargs.get("source")))
+        return real(title, message, **kwargs)
+
+    monkeypatch.setattr(events, "info", spy)
+    _started(monitor)
+    monitor.end_run()
+    sources = {source for title, source in seen
+               if title in ("Run Started", "Run Ended")}
+    assert sources == {"RGB Analysis"}
+    assert "Red Percent" not in repr(monitor.schema)
+
+
+def test_the_telemetry_stream_slug_is_rgb_analysis():
+    from model import trial_telemetry
+    assert trial_telemetry._slug(RgbAnalysis.NAME) == "rgb_analysis"
