@@ -1850,6 +1850,35 @@ function tableHead(sections, columns) {
   return head;
 }
 
+/** A region as the model publishes it - the dict, or `format_region`'s
+ *  words ("460x143 at (1208, 404)") - as [left, top, width, height] whole
+ *  numbers, or null when it is not set. */
+function regionOf(value) {
+  if (!value) return null;
+  let box = null;
+  if (typeof value === 'object') {
+    box = [value.left, value.top, value.width, value.height];
+  } else {
+    const found = /^\s*(\d+)x(\d+) at \((-?\d+), (-?\d+)\)\s*$/.exec(String(value));
+    if (found) box = [Number(found[3]), Number(found[4]), Number(found[1]), Number(found[2])];
+  }
+  if (!box || !box.every((n) => Number.isInteger(n)) || box[2] < 1 || box[3] < 1) return null;
+  return box;
+}
+
+/** schema.format_region's wording for a [left, top, width, height] box. */
+function formatRegion(box) {
+  return box[2] + 'x' + box[3] + ' at (' + box[0] + ', ' + box[1] + ')';
+}
+
+/** The one rule for "is this drawn in this procedure step" (schema.is_shown):
+ *  an item without `phases` is always drawn; a model with no procedure
+ *  publishes phase "" and declares no `phases`, so it hides nothing. */
+function isShown(item, phase) {
+  const wanted = item && item.phases;
+  return !wanted || !wanted.length || wanted.indexOf(phase) !== -1;
+}
+
 /** Consecutive commands sit on one line, as one action group, instead of
  *  stacking one per row at four different widths ("Start", "Stop", "Reset
  *  baseline", "Save" were four rows). Order is the schema's; only the
@@ -1878,6 +1907,13 @@ class PanelCard {
     this.schema = schema;
     this.options = options || {};
     this.widgets = [];
+    //: What the current step hides (owner ruling 2026-10-07): `{node,
+    //: phases}` for each section block and each element that declares
+    //: `phases`, and the wrappers that hold only such cells. Read from the
+    //: schema once, in build(); refresh() only toggles a class.
+    this.phaseSections = [];
+    this.phaseGroups = [];
+    this.phase = null;
     this.values = {};
     this.lastData = 0;
     this.isOffline = false;
@@ -2062,6 +2098,7 @@ class PanelCard {
         block.appendChild(rowTitle);
       }
       const cells = [];
+      const mine = [];
       const axes = [];
       const goes = [];
       for (const element of (section.elements || [])) {
@@ -2073,7 +2110,9 @@ class PanelCard {
         const widget = render(this, element);
         widget.element = element;
         widget.tier = tier;
+        widget.phases = element.phases || null;
         this.widgets.push(widget);
+        mine.push(widget);
         if (widget.note) goes.push(widget);
         // L17: a command that exists only while a scan runs ("Cancel scan")
         // is not drawn outside one, rather than sitting greyed on its own.
@@ -2129,7 +2168,14 @@ class PanelCard {
           cells.splice(cells.length - 1, 0, make('span', 'cell filler'));
         }
       }
-      for (const cell of groupCommands(cells, isRow && !spans)) block.appendChild(cell);
+      for (const cell of groupCommands(cells, isRow && !spans)) {
+        block.appendChild(cell);
+        // A wrapper of cells (an action group, the X Y Z line) goes when
+        // every cell in it is hidden by the step.
+        if (cell.classList && (cell.classList.contains('actions') || cell.classList.contains('axis-group'))) {
+          this.phaseGroups.push({ node: cell, cells: Array.from(cell.querySelectorAll('.command, .reading-axis')) });
+        }
+      }
       // L3: the notes of this section's `go` commands sit under the row
       // (after their action group); refresh shows at most one.
       for (const widget of goes) {
@@ -2137,6 +2183,12 @@ class PanelCard {
         at.parentNode.insertBefore(widget.note, at.nextSibling);
       }
       if (goes.length) this.goRows.push({ goes, block });
+      // The block (header and all) goes with its section, or when every
+      // element in it is hidden by the step.
+      this.phaseSections.push({
+        node: block, phases: section.phases || null, tier,
+        widgets: mine,
+      });
       this.containerFor(tier).appendChild(block);
     }
     this.rowOwner = '';
@@ -2556,6 +2608,7 @@ class PanelCard {
     const now = Date.now();
     const wantsData = now - this.lastData >= DATA_POLL_MS;
     if (wantsData) this.lastData = now;
+    this.applyPhase((state && state.phase) || '');
     const link = this.linkWords;
     const isDown = Boolean(link && link.down);
     for (const widget of this.widgets) {
@@ -2627,6 +2680,53 @@ class PanelCard {
     if (this.faultLine.hidden !== !reason) this.faultLine.hidden = !reason;
   }
 
+  /** Draw the current procedure step (owner ruling 2026-10-07): a section
+   *  or a row whose `phases` leave out `phase` gets `is-phase-off` (one
+   *  generic display:none rule), a section with every row off goes with its
+   *  header, and focus leaves a control that vanished. The schema is the one
+   *  built at the start; nothing is fetched again. Written only when the
+   *  step changes. */
+  applyPhase(phase) {
+    if (phase === this.phase) return;
+    const first = this.phase === null;
+    this.phase = phase;
+    const before = typeof document !== 'undefined' ? document.activeElement : null;
+    for (const widget of this.widgets) {
+      widget.isPhaseOff = !isShown(widget, phase);
+      if (widget.node) widget.node.classList.toggle('is-phase-off', widget.isPhaseOff);
+      if (widget.note) widget.note.classList.toggle('is-phase-off', widget.isPhaseOff);
+    }
+    for (const group of this.phaseGroups) {
+      const off = group.cells.length > 0 && group.cells.every((c) => c.classList.contains('is-phase-off'));
+      group.node.classList.toggle('is-phase-off', off);
+    }
+    for (const entry of this.phaseSections) {
+      const off = !isShown(entry, phase)
+        || (entry.widgets.length > 0 && entry.widgets.every((w) => w.isPhaseOff));
+      entry.off = off;
+      entry.node.classList.toggle('is-phase-off', off);
+    }
+    // A disclosure with nothing left behind it goes with it (the well too:
+    // its own foot, a Close, is Setup's and Setup has no procedure).
+    const allOff = (min) => {
+      const behind = this.phaseSections.filter((e) => e.tier >= min);
+      return behind.length > 0 && behind.every((e) => e.off);
+    };
+    const gone2 = allOff(2);
+    const gone3 = allOff(3);
+    for (const node of [this.disclose2, this.well]) {
+      if (node) node.classList.toggle('is-phase-off', gone2);
+    }
+    for (const node of [this.disclose3, this.deep]) {
+      if (node) node.classList.toggle('is-phase-off', gone3);
+    }
+    if (!first && before && before.closest && this.node.contains(before)
+        && before.closest('.is-phase-off')) {
+      if (this.dashboard && this.dashboard.restoreFocus) this.dashboard.restoreFocus(null, this.node);
+      else this.node.focus({ preventScroll: true });
+    }
+  }
+
   /** L3: under a row whose `go` command is disabled, one muted caption says
    *  why - unless another `go` in the row can go (Setup's Launch and
    *  Relaunch take turns), or the model already says what unblocks it in
@@ -2634,10 +2734,19 @@ class PanelCard {
    *  headline and the entry's head say that once). One caption per row. */
   sayWhyNotGo(mode) {
     const latched = mode === 'latched';
-    for (const { goes, block } of this.goRows || []) {
+    for (const { goes: all, block } of this.goRows || []) {
+      // A command the step hides is not a command the operator could press:
+      // it neither says why not nor lets another stay silent.
+      const goes = all.filter((w) => !w.isPhaseOff);
+      for (const widget of all) {
+        if (widget.isPhaseOff) {
+          putText(widget.note, '');
+          if (!widget.note.hidden) widget.note.hidden = true;
+        }
+      }
       const canGo = goes.some((w) => !w.reason);
       const said = Array.from(block.querySelectorAll('.row.stat')).some((r) => !r.hidden
-        && r.dataset.attr === 'next_step');
+        && !r.classList.contains('is-phase-off') && r.dataset.attr === 'next_step');
       let shown = false;
       for (const widget of goes) {
         // The latch is said once - the headline, the entry's "Stopped" -
@@ -2702,6 +2811,9 @@ class PanelCard {
    *  behind a shut disclosure not until it is opened (tiers 2 and 3 are on
    *  demand, so is their traffic); everything else, always. */
   wantsData(widget) {
+    // A picture the step does not draw is not fetched (the server would
+    // refuse it too: shown_elements).
+    if (widget.isPhaseOff) return false;
     if (widget.isOpen) return widget.isOpen();
     // An entry that is not on the shown page (K4) is not drawn either.
     if (!this.isShown()) return false;
@@ -4477,35 +4589,88 @@ class Dashboard {
     this.dom.pickerClose.focus({ preventScroll: true });
     const context = canvas.getContext('2d');
     context.clearRect(0, 0, canvas.width, canvas.height);
+    // WEB-2: an element that declares `data_command` is drawn on THAT image
+    // (the model's own still, at full resolution), and the drag comes back
+    // in its pixels. Without one, the station's screen grab as before.
+    const still = Boolean(element.data_command);
     let frame;
     try {
-      frame = await apiGet('/api/screen?name=' + encodeURIComponent(card.name));
+      frame = still ? await this.loadStill(card, element.data_command)
+        : await apiGet('/api/screen?name=' + encodeURIComponent(card.name));
     } catch (err) {
       this.closeRegionPicker();
-      card.showRefused('No screen image came back (' + failureReason(err)
-        + '). Check that the station is running, then pick again.', element);
+      card.showRefused('No ' + (still ? 'picture' : 'screen image') + ' came back ('
+        + failureReason(err) + '). Check that the station is running, then pick again.', element);
       return;
     }
     if (!frame || !frame.image) {
       this.closeRegionPicker();
-      card.showRefused((frame && frame.reason) || 'The station offers no screen image.', element);
+      card.showRefused((frame && frame.reason)
+        || (still ? 'The model has no picture to pick on yet.' : 'The station offers no screen image.'), element);
+      return;
+    }
+    // The picker may have been closed (or reopened for another element)
+    // while the picture was on its way.
+    if (this.dom.picker.hidden || this.pickerFor.element !== element) {
+      if (frame.revoke) frame.revoke();
       return;
     }
     const picture = new Image();
     picture.onload = () => {
-      canvas.width = picture.width;
-      canvas.height = picture.height;
+      if (frame.revoke) frame.revoke();
+      canvas.width = picture.naturalWidth || picture.width;
+      canvas.height = picture.naturalHeight || picture.height;
+      // A still is the picture itself: its pixels are the region's pixels,
+      // unless the model says it scaled it from a larger area (the headers
+      // loadStill read: a bounded grab of a monitor that does not start at
+      // 0,0).
+      if (still) {
+        frame.width = frame.width || canvas.width;
+        frame.height = frame.height || canvas.height;
+        frame.left = frame.left || 0;
+        frame.top = frame.top || 0;
+      }
       context.drawImage(picture, 0, 0);
-      this.bindRegionDrag(card, element, frame, picture);
-      this.setPickerLoading(false);
+      const current = regionOf(card.values && card.values[element.model_attr]);
+      this.bindRegionDrag(card, element, frame, picture, current);
+      this.setPickerLoading(false, still, current);
     };
-    picture.onerror = () => this.setPickerLoading(false);
+    picture.onerror = () => {
+      if (frame.revoke) frame.revoke();
+      this.setPickerLoading(false, still);
+    };
     picture.src = frame.image;
   }
 
-  setPickerLoading(isLoading) {
-    putText(this.dom.pickerHelp, isLoading ? 'Loading the station\'s screen…'
-      : 'Drag a rectangle over the part of the screen to watch, or type it below in screen pixels.');
+  /** WEB-2: the model's still, as the bytes `/api/data` serves for its
+   *  `data_command`, at the resolution it was taken: `{image: object URL,
+   *  revoke}`, or `{reason}` when the model answered with a refusal. */
+  async loadStill(card, command) {
+    const response = await api('/api/data?name=' + encodeURIComponent(card.name)
+      + '&command=' + encodeURIComponent(command), { method: 'GET' });
+    const type = response.headers.get('Content-Type') || '';
+    if (type.indexOf('image/') === 0) {
+      const url = URL.createObjectURL(await response.blob());
+      // A model that scaled the picture from a larger area says so in
+      // headers (server._send_data); a plain PNG is its own geometry.
+      const header = (key) => {
+        const raw = response.headers.get('X-Image-' + key);
+        return raw !== null && /^-?\d+$/.test(raw) ? Number(raw) : 0;
+      };
+      return { image: url, revoke: () => URL.revokeObjectURL(url),
+               left: header('Left'), top: header('Top'),
+               width: header('Width'), height: header('Height') };
+    }
+    const body = await response.json();
+    return { reason: (body && body.reason) || '' };
+  }
+
+  setPickerLoading(isLoading, still, current) {
+    const what = still ? 'the picture' : 'the screen';
+    const now = current ? ' Now: ' + formatRegion(current) + ', outlined.' : '';
+    putText(this.dom.pickerHelp, isLoading ? (still ? 'Loading the picture…' : 'Loading the station\'s screen…')
+      : 'Drag a rectangle over the part of ' + what + ' to watch, or type it below in '
+        + (still ? 'the picture\'s own pixels.' : 'screen pixels.') + now);
     if (isLoading) putAttr(this.dom.pickerDialog, 'aria-busy', 'true');
     else this.dom.pickerDialog.removeAttribute('aria-busy');
   }
@@ -4530,7 +4695,7 @@ class Dashboard {
 
   /** Drag on the image, scaled back to screen coordinates: the picture may
    *  be a bounded (downscaled) grab of a monitor that does not start at 0,0. */
-  bindRegionDrag(card, element, frame, picture) {
+  bindRegionDrag(card, element, frame, picture, current) {
     const canvas = this.dom.pickerCanvas;
     const context = canvas.getContext('2d');
     const scaleX = (frame.width || picture.width) / picture.width;
@@ -4546,15 +4711,32 @@ class Dashboard {
         Math.max(0, Math.min(canvas.height, (event.clientY - box.top) * (canvas.height / box.height))),
       ];
     };
-    const paint = (box) => {
-      context.drawImage(picture, 0, 0);
+    // A picture of 3584 px shown 900 px wide would draw a 2 px line as a
+    // hair: the line is two SCREEN pixels, whatever the scale.
+    const lineWidth = () => 2 * canvas.width / (canvas.getBoundingClientRect().width || canvas.width);
+    const trace = () => getComputedStyle(document.documentElement).getPropertyValue('--trace');
+    const outline = (box, dashed) => {
       // Trace, not signal: the box marks what will be measured, and red is
       // the stop's alone (F24, UXPM-12).
-      context.strokeStyle = getComputedStyle(document.documentElement)
-        .getPropertyValue('--trace');
-      context.lineWidth = 2;
+      context.strokeStyle = trace();
+      context.lineWidth = lineWidth();
+      context.setLineDash(dashed ? [4 * lineWidth(), 3 * lineWidth()] : []);
       context.strokeRect(box[0], box[1], box[2], box[3]);
+      context.setLineDash([]);
     };
+    //: The region the model holds now, in this picture's pixels.
+    const held = current ? [(current[0] - left) / scaleX, (current[1] - top) / scaleY,
+                            current[2] / scaleX, current[3] / scaleY] : null;
+    const backdrop = () => {
+      context.drawImage(picture, 0, 0);
+      if (held) outline(held, true);
+    };
+    const paint = (box) => {
+      backdrop();
+      outline(box, false);
+    };
+    backdrop();
+    if (current) this.dom.pickerFields.forEach((field, i) => { field.value = String(current[i]); });
     const boxFrom = (a, b) => [
       Math.min(a[0], b[0]), Math.min(a[1], b[1]),
       Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]),
@@ -4570,7 +4752,7 @@ class Dashboard {
     canvas.onpointercancel = canvas.onlostpointercapture = () => {
       if (!start) return;
       start = null;
-      context.drawImage(picture, 0, 0);
+      backdrop();
     };
     canvas.onpointerup = (event) => {
       if (!start) return;
@@ -4584,6 +4766,7 @@ class Dashboard {
         Math.round(box[3] * scaleY),
       ];
       this.dom.pickerFields.forEach((field, i) => { field.value = String(region[i]); });
+      // The next opening outlines the value this run sets, on the picture.
       this.closeRegionPicker();
       card.run(element, region);
     };

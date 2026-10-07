@@ -662,7 +662,9 @@ def test_the_stylesheet_sizes_nothing_in_absolute_points_or_pixels():
 
 
 def test_the_region_picker_scales_the_drag_to_screen_coordinates():
-    drag = _body(r"bindRegionDrag\(card, element, frame, picture\) \{(.*?)\n  \}")
+    # Updated (WEB-2): the drag also takes the region the model holds, to
+    # outline it; the signature gained `current`.
+    drag = _body(r"bindRegionDrag\(card, element, frame, picture, current\) \{(.*?)\n  \}")
     assert "scaleX" in drag and "scaleY" in drag
     assert "frame.left" in drag and "frame.top" in drag, (
         "a monitor that does not start at 0,0 would give the model a region "
@@ -1481,3 +1483,118 @@ def test_r7_the_page_logs_every_answer():
     assert "this.logAcknowledged(" in body
     assert "'/api/ack'" in APP_JS
     assert '"/api/ack"' in SERVER.read_text()
+
+
+# --------------------------------------------------------------------------
+# WEB-1: the procedure step (owner ruling 2026-10-07), checked statically
+# --------------------------------------------------------------------------
+def _method(name):
+    """The source of one PanelCard method, from its signature to the next
+    method's doc comment."""
+    start = re.search(r"\n  (?:async )?%s\(" % re.escape(name), CODE)
+    assert start, f"app.js has no {name}()"
+    end = re.search(r"\n  (?:async )?\w+\([^)]*\) \{\n", CODE[start.end():])
+    return CODE[start.start(): start.end() + (end.start() if end else len(CODE))]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("item, phase, shown", [
+    ({}, "", True), ({}, "live", True),
+    ({"phases": ["live", "marked"]}, "live", True),
+    ({"phases": ["live", "marked"]}, "setup", False),
+    ({"phases": ["live"]}, "", False),
+])
+def test_web1_is_shown_is_the_schemas_rule(item, phase, shown):
+    """The renderer's rule is `schema.is_shown`, row for row."""
+    assert sch.is_shown(item, phase) is shown
+    assert _node_value(f"isShown({json.dumps(item)}, {json.dumps(phase)})") is shown
+
+
+def test_web1_build_keeps_the_phases_of_every_section_and_element():
+    build = _method("build")
+    assert "phases: section.phases" in build, "build() drops a section's phases"
+    assert "widget.phases = element.phases" in build, "build() drops an element's phases"
+
+
+def test_web1_refresh_draws_the_step_and_a_class_does_the_hiding():
+    refresh = _method("refresh")
+    assert "applyPhase(" in refresh and "state.phase" in refresh
+    apply_phase = _method("applyPhase")
+    assert "is-phase-off" in apply_phase
+    assert "isShown(" in apply_phase
+    assert "restoreFocus" in apply_phase, "focus is not moved off a vanished control"
+    # No fetch: the schema is read once, in addCard.
+    assert "apiGet" not in apply_phase and "/api/schema" not in apply_phase
+    assert re.search(r"\.is-phase-off\s*\{\s*display:\s*none\s*!important", STYLES), (
+        "no generic rule hides what a step does not draw (there is no global [hidden])")
+
+
+def test_web1_the_why_not_caption_ignores_a_hidden_row():
+    say = _method("sayWhyNotGo")
+    assert "isPhaseOff" in say
+    assert "is-phase-off" in say, "a hidden Next step row still silences the caption"
+
+
+def test_web1_a_hidden_widget_is_not_polled_for_data():
+    assert "isPhaseOff" in _method("wantsData")
+
+
+def test_web1_no_model_name_or_phase_word_is_known_to_the_client():
+    """The client reads `phases` from the schema; it knows no step by name."""
+    for word in ("'setup'", "'region'", "'marked'", "'finish'"):
+        assert word not in _method("applyPhase"), word
+
+
+
+# --------------------------------------------------------------------------
+# WEB-4: the client knows no particular plot
+# --------------------------------------------------------------------------
+def test_web4_the_client_assumes_no_models_plot_or_data_command():
+    """The Transfer Map no longer draws "Red % since Arm"; the client must
+    not have been written around it. Generic `plot` rendering stays (every
+    other model uses it), but no title and no model's data command is named
+    in app.js."""
+    assert not re.search(r"since\s+arm", APP_JS, re.I)
+    assert "Red %" not in APP_JS
+    models = Path(__file__).resolve().parents[1] / "src" / "model"
+    named = set()
+    for source in models.glob("*.py"):
+        named.update(re.findall(r"data_command\s*=\s*[\"'](\w+)[\"']", source.read_text()))
+        named.update(re.findall(r"source_command\s*=\s*[\"'](\w+)[\"']", source.read_text()))
+    assert named, "no model declares a data command? the scan is broken"
+    leaked = sorted(n for n in named if re.search(r"['\"]%s['\"]" % re.escape(n), CODE))
+    assert not leaked, f"app.js names a model's data command: {leaked}"
+
+
+def test_web4_a_schema_without_a_plot_is_a_schema_like_any_other():
+    """Nothing in the card build requires a plot element to exist."""
+    build = _method("build")
+    assert "'plot'" not in build and '"plot"' not in build
+    assert "plot" in _renderer_map(), "generic plot rendering must stay for other models"
+
+
+# --------------------------------------------------------------------------
+# WEB-3: an explicit boundary between devices on the Overview
+# --------------------------------------------------------------------------
+def _css_rule(selector):
+    match = re.search(r"\n%s\s*\{([^}]*)\}" % re.escape(selector), STYLES)
+    assert match, f"styles.css has no {selector} rule"
+    return match.group(1)
+
+
+def test_web3_the_overview_device_boundary_uses_theme_tokens_only():
+    body = _css_rule(".sheet.is-overview > .card")
+    assert re.search(r"border-left:\s*var\(--line\)\s+solid\s+var\(--edge\)", body)
+    assert re.search(r"border-right:\s*var\(--line\)\s+solid\s+var\(--edge\)", body)
+    assert re.search(r"border-bottom:\s*var\(--line\)\s+solid\s+var\(--edge\)", body)
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", body), "a colour literal"
+    # The 3 px weight is the fault's: this rule never writes the top edge,
+    # so `.card.is-lost/.is-unconfirmed/.is-faulted` keep it to themselves.
+    assert "border-top" not in body
+    assert "3px" not in body and "var(--signal)" not in body
+
+
+def test_web3_the_phone_reflow_keeps_the_boundary():
+    phone = re.search(r"@media \(max-width: 47\.5rem\) \{\n(.*?)\n\}\n", STYLES, re.S).group(1)
+    assert ".sheet.is-overview > .card" in phone
+    assert "border" not in phone.split(".sheet.is-overview > .card")[1].split("\n")[0]
