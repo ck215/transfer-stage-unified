@@ -237,3 +237,102 @@ def test_pick_width_prefers_afm_then_optical():
     # A store row from before version 6 has no optical columns at all.
     assert tma.pick_width({"width_um": 3.0, "width_sigma_um": None}) == \
         (3.0, None, "afm")
+
+
+# -- robust extrema on glitch rows (AN-1) ---------------------------------------
+# Bench trial 32 (2026-10-06): 62 % of its rows are a black grab (red 0.0) or a
+# stale constant (1.3576) interleaved with the live trace around 0.45-0.5.
+
+import csv
+import pathlib
+
+#: The operator Mark of bench trial 32 (video frame 301).
+MARK32 = 19.955
+FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "profile_trial32.csv"
+
+
+def trial32():
+    t, red, z = [], [], []
+    with open(FIXTURE, newline="") as handle:
+        for row in csv.DictReader(handle):
+            t.append(float(row["t_s"]))
+            red.append(float(row["red"]))
+            z.append(float(row["z"]) if row["z"] else None)
+    return {"t": t, "red": red, "z": z}
+
+
+def test_trial32_extrema_come_from_the_live_trace_not_the_glitches():
+    found = tma.detect(trial32(), operator_t=MARK32)
+    assert 0.45 <= found["red_max"] <= 0.5, found["red_max"]
+    assert found["red_min"] > 0.0
+    assert found["red_min"] < found["red_max"]
+    assert 0.0 < found["baseline"] < 0.6
+
+
+def test_trial32_masked_share_is_reported_and_large():
+    found = tma.detect(trial32())
+    mask = found["settled_mask"]
+    assert len(mask) == len(trial32()["t"])
+    assert found["masked_share"] == pytest.approx(1.0 - float(numpy.mean(mask)))
+    assert 0.55 <= found["masked_share"] <= 0.8
+
+
+def test_trial32_force_definitions_are_finite_numbers():
+    out = tma.force_indices(trial32(), {"operator_t": MARK32})
+    assert out["shadow_vs_peak"] is not None and 0.0 < out["shadow_vs_peak"] < 1.0
+    assert out["fall_slope"] is not None
+
+
+def test_a_black_grab_is_invalid():
+    profile = lowering()
+    profile["red"][100] = 0.0
+    mask = tma.settled_mask(profile["t"], profile["red"])
+    assert not mask[100] and mask.sum() == len(mask) - 1
+
+
+def test_a_stale_constant_between_different_neighbours_is_invalid():
+    profile = lowering(noise=0.3)
+    for i in range(20, 80, 3):                  # 20 exact repeats, each isolated
+        profile["red"][i] = 20.0
+    mask = tma.settled_mask(profile["t"], profile["red"])
+    assert not any(mask[i] for i in range(20, 80, 3))
+    assert mask[21] and mask[22]
+
+
+def test_a_constant_that_repeats_fewer_than_the_limit_is_kept():
+    profile = lowering(noise=0.3)
+    for i in range(20, 20 + 3 * (tma.STALE_MIN_REPEATS - 1), 3):
+        profile["red"][i] = 20.0
+    assert tma.settled_mask(profile["t"], profile["red"]).all()
+
+
+def test_a_genuinely_flat_hover_is_not_stale():
+    """Equal neighbours: a run of identical readings is a still scene."""
+    profile = lowering()                         # noise-free: 150 identical samples
+    assert tma.settled_mask(profile["t"], profile["red"]).all()
+
+
+def test_a_brief_outlier_is_invalid_but_a_step_is_not():
+    profile = lowering(noise=0.3)
+    profile["red"][50] = 99.0
+    mask = tma.settled_mask(profile["t"], profile["red"])
+    assert not mask[50] and mask.sum() >= len(mask) - 2
+    broken = lowering(n=500, break_at=4.0, after_break=25.0)
+    assert tma.settled_mask(broken["t"], broken["red"]).all()
+
+
+def test_the_mask_of_a_clean_profile_is_all_true_and_detect_is_unchanged():
+    profile = lowering(noise=0.3)
+    assert tma.settled_mask(profile["t"], profile["red"]).all()
+    found = tma.detect(profile)
+    assert found["masked_share"] == 0.0 and found["settled_mask"].all()
+
+
+def test_settled_mask_of_nothing_is_empty():
+    assert tma.settled_mask([], []).size == 0
+
+
+def test_detect_on_a_profile_with_no_settled_sample_has_no_extrema():
+    found = tma.detect({"t": [0.0, 0.1, 0.2], "red": [0.0, 0.0, 0.0]})
+    assert found["max_t"] is None and found["red_max"] is None
+    assert found["masked_share"] == 1.0
