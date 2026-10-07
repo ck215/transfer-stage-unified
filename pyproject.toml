@@ -22,7 +22,7 @@ name = "transfer-stage-station"
 # (`packaging/release.py pyproject <tag>`) and stamps the bundle's VERSION;
 # the file in git keeps this placeholder.
 version = "0.1.0"
-description = "Transfer stage control: stepper and DC probes, chuck, temperature controller, rotator and Red Percent monitor, with Tk, Qt and Web views."
+description = "Transfer stage control: stepper and DC probes, chuck, temperature controller, rotator and Red Percent monitor, served as a Web dashboard (the Tk and Qt views are retired, frozen at 413f504)."
 readme = "README.md"
 requires-python = ">=3.13"
 # Pinned to the versions the station was verified with (main/.venv,
@@ -42,7 +42,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Only `--qt` / `station-qt` imports PySide6; the Tk and Web views never do.
+# Not installed by default: the Qt view was retired 2026-10-07 and is frozen
+# at 413f504. Only for re-running its frozen tests (`pip install -e .[qt,dev]`).
 qt = ["PySide6==6.11.2"]
 dev = [
     "pytest==9.1.1",
@@ -51,8 +52,6 @@ dev = [
 ]
 
 [project.scripts]
-station-tk = "app:main_tk"
-station-qt = "app:main_qt"
 station-web = "app:main_web"
 
 [tool.setuptools]

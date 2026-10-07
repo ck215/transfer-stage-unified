@@ -8,6 +8,8 @@ web server instead of the view the operator asked for.
 Nothing here opens a window: the view table is replaced with a recording
 stand-in, and the real table is only checked for importability.
 """
+import os
+import pathlib
 import sys
 import types
 
@@ -17,6 +19,8 @@ import app
 from controller.controller import Controller
 from events import events
 from views import theme
+
+REPO_SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
 
 
 class FakeView:
@@ -59,9 +63,10 @@ def fake_views(monkeypatch):
     module.FakeView = FakeView
     monkeypatch.setitem(sys.modules, "views.fake", module)
     monkeypatch.setattr(app, "VIEWS", {
-        "tk": ("views.fake", "FakeView"),
-        "qt": ("views.fake", "FakeView"),
         "web": ("views.fake", "FakeView"),
+        # A non-web entry, to keep the desktop branches (kwargs, restart)
+        # covered now that Tk and Qt are retired and unregistered.
+        "desk": ("views.fake", "FakeView"),
     })
     return module
 
@@ -70,42 +75,53 @@ def fake_views(monkeypatch):
 
 def test_an_explicit_request_always_wins():
     assert app.pick_view("web", "darwin") == "web"
-    assert app.pick_view("qt", "darwin") == "qt"
 
 
-def test_every_platform_defaults_to_qt():
-    """Owner ruling 2026-09-28: the unqualified launch is Qt everywhere (it
-    was Tk from D-9 amended 2026-09-25). Still one answer on every OS: no UI
-    behaviour is platform-specific."""
+def test_every_platform_defaults_to_web():
+    """Owner ruling 2026-10-07: Web is the only frontend and the default (it
+    was Qt from 2026-09-28). One answer on every OS: no UI behaviour is
+    platform-specific."""
     for platform in ("darwin", "linux", "win32"):
         for pyside in (True, False, None):
-            assert app.pick_view(None, platform, pyside_available=pyside) == "qt"
-    assert app.DEFAULT_VIEW == "qt"
+            assert app.pick_view(None, platform, pyside_available=pyside) == "web"
+    assert app.DEFAULT_VIEW == "web"
 
 
-def test_the_packaged_entry_points_fix_the_view_and_forward_the_flags(
+def test_the_packaged_entry_point_fixes_the_view_and_forwards_the_flags(
         fake_views, monkeypatch):
     """PACKAGING_PLAN P2: `station-web` can start nothing but the Web view."""
     picked = []
     monkeypatch.setattr(app, "launch",
                         lambda name, **kwargs: picked.append((name, kwargs)))
-    assert app.main_tk([]) == 0
-    assert app.main_qt(["--font-size", "14"]) == 0
     assert app.main_web(["--port", "8090", "--no-browser"]) == 0
-    assert [p[0] for p in picked] == ["tk", "qt", "web"]
+    assert app.main_web(["--font-size", "14"]) == 0
+    assert [p[0] for p in picked] == ["web", "web"]
+    assert picked[0][1]["port"] == 8090 and picked[0][1]["open_browser"] is False
     assert picked[1][1]["font_size"] == 14
-    assert picked[2][1]["port"] == 8090 and picked[2][1]["open_browser"] is False
     with pytest.raises(SystemExit):          # a second view flag is refused
         app.main_web(["--qt"])
+    assert not hasattr(app, "main_tk") and not hasattr(app, "main_qt")
 
 
-def test_the_old_view_names_still_resolve():
-    assert app.pick_view("legacy") == "tk"
-    assert app.pick_view("pyside") == "qt"
+@pytest.mark.parametrize("flag", [["--tk"], ["--tkinter"], ["--qt"], ["--pyside"],
+                                  ["--view", "tk"], ["--view", "qt"],
+                                  ["--view", "legacy"], ["--view", "pyside6"]])
+def test_a_retired_view_prints_one_message_and_exits_2(
+        fake_views, monkeypatch, capsys, flag):
+    """Owner ruling 2026-10-07: Tk and Qt are retired; no platform branch."""
+    monkeypatch.setattr(app, "launch", lambda *a, **k: pytest.fail("launched"))
+    for platform in ("darwin", "linux", "win32"):
+        monkeypatch.setattr(app.sys, "platform", platform)
+        with pytest.raises(SystemExit) as exit_code:
+            app.main(flag)
+        assert exit_code.value.code == 2
+        err = capsys.readouterr().err
+        assert err.strip() == "The Tk/Qt view was retired on 2026-10-07; use --web."
 
 
-def test_the_view_table_has_exactly_three_entries():
-    assert set(app.VIEWS) == {"tk", "qt", "web"}
+def test_the_view_table_has_exactly_one_entry():
+    assert set(app.VIEWS) == {"web"}
+    assert app.ALIASES == {}
 
 
 def test_every_view_in_the_table_is_importable_and_named_correctly():
@@ -114,11 +130,19 @@ def test_every_view_in_the_table_is_importable_and_named_correctly():
         assert hasattr(importlib.import_module(module_name), attribute)
 
 
+def test_the_retired_views_stay_importable_but_unregistered():
+    """Frozen at 413f504, kept for reference (not registered, never launched)."""
+    assert (REPO_SRC / "views" / "tk.py").is_file()
+    assert (REPO_SRC / "views" / "qt.py").is_file()
+    assert "retired 2026-10-07" in (REPO_SRC / "views" / "tk.py").read_text().splitlines()[0].lower()
+    assert "retired 2026-10-07" in (REPO_SRC / "views" / "qt.py").read_text().splitlines()[0].lower()
+
+
 # -- launch ----------------------------------------------------------------
 
 def test_launch_builds_one_controller_hooks_the_exit_and_opens_the_view(
         fake_views, isolated_launch):
-    view = app.launch("tk")
+    view = app.launch("web")
     assert isinstance(view, FakeView) and view.is_open
     assert isinstance(view.controller, Controller)
     assert view.setup.controller is view.controller
@@ -131,7 +155,7 @@ def test_launch_re_arms_the_signal_handlers_after_the_view_is_built(
     """The toolkit may replace the process's handlers when its first window is
     created (Tk 9 on Aqua, SIGTERM). The re-arm must come AFTER the view is
     built and BEFORE anything can move (the scan)."""
-    app.launch("tk")
+    app.launch("web")
     kinds = [kind for kind, *_ in isolated_launch]
     assert kinds.index("signals") > kinds.index("exit")
     assert kinds.index("signals") < kinds.index("scan")
@@ -146,7 +170,7 @@ def test_launch_starts_the_hardware_scan_before_the_view_opens(
     order = []
     monkeypatch.setattr(app.Setup, "start", lambda self: order.append("scan"))
     monkeypatch.setattr(FakeView, "open", lambda self: order.append("open"))
-    app.launch("tk")
+    app.launch("web")
     assert order == ["scan", "open"]
 
 
@@ -155,7 +179,7 @@ def test_launch_opens_the_log_file_and_says_where_it_is(
     seen = []
     events.subscribe(seen.append)
     try:
-        app.launch("tk")
+        app.launch("web")
     finally:
         events.unsubscribe(seen.append)
     paths = [e.message for e in seen if e.title == "Log File"]
@@ -165,12 +189,12 @@ def test_launch_opens_the_log_file_and_says_where_it_is(
 def test_port_and_no_browser_reach_the_web_view_only(fake_views):
     web = app.launch("web", port=9001, open_browser=False)
     assert web.kwargs == {"port": 9001, "open_browser": False}
-    desktop = app.launch("tk", port=9001, open_browser=False)
+    desktop = app.launch("desk", port=9001, open_browser=False)
     assert desktop.kwargs == {}
 
 
 def test_launch_applies_the_font_size(fake_views):
-    app.launch("tk", font_size=17)
+    app.launch("web", font_size=17)
     assert theme.FONT_SIZE == 17
 
 
@@ -180,10 +204,10 @@ def test_launch_refuses_a_view_that_is_not_in_the_table(fake_views):
 
 
 def test_the_other_views_are_never_imported(monkeypatch, fake_views):
-    """Lazily, from a 3-entry table: starting Tk must not import PySide6."""
+    """Lazily, from the table: only the chosen entry's module is imported."""
     monkeypatch.setattr(app, "VIEWS", dict(
-        app.VIEWS, qt=("views.never", "Nope")))
-    app.launch("tk")
+        app.VIEWS, desk=("views.never", "Nope")))
+    app.launch("web")
     assert "views.never" not in sys.modules
 
 
@@ -206,13 +230,14 @@ def test_main_launches_the_requested_view(fake_views, monkeypatch):
                                "font_size": None})]
 
 
-def test_main_defaults_the_view_from_the_platform(fake_views, monkeypatch):
+def test_main_defaults_to_the_web_view_on_every_platform(fake_views, monkeypatch):
     picked = []
     monkeypatch.setattr(app, "launch",
                         lambda name, **kwargs: picked.append(name))
-    monkeypatch.setattr(app.sys, "platform", "linux")
-    app.main([])
-    assert picked == ["qt"]
+    for platform in ("darwin", "linux", "win32"):
+        monkeypatch.setattr(app.sys, "platform", platform)
+        app.main([])
+    assert picked == ["web"] * 3
 
 
 def test_sample_db_sets_the_sample_maps_store(fake_views, monkeypatch, tmp_path):
@@ -230,9 +255,9 @@ def test_the_view_flags_are_mutually_exclusive(fake_views):
         app.main(["--web", "--qt"])
 
 
-def test_port_and_no_browser_are_refused_for_a_desktop_view(fake_views):
+def test_port_and_no_browser_are_refused_for_a_non_web_view(fake_views):
     with pytest.raises(SystemExit) as exit_code:
-        app.main(["--tk", "--port", "9100"])
+        app.main(["--view", "desk", "--port", "9100"])
     assert exit_code.value.code == 2
 
 
@@ -240,52 +265,9 @@ def test_font_size_travels_to_launch(fake_views, monkeypatch):
     picked = []
     monkeypatch.setattr(app, "launch",
                         lambda name, **kwargs: picked.append(kwargs["font_size"]))
-    app.main(["--tk", "--font-size", "14"])
+    app.main(["--web", "--font-size", "14"])
     assert picked == [14]
 
-
-# -- the signal handlers survive the toolkit (packaging smoke, 2026-09-25) ----
-
-import os as _os
-SRC = _os.path.dirname(_os.path.abspath(app.__file__))
-
-_TK_SIGTERM_CHILD = """
-import sys
-sys.path.insert(0, sys.argv[1])
-import app
-from controller.setup import Setup
-Setup.start = lambda self: None          # never scan real ports from a test
-app.launch("tk")
-"""
-
-
-@pytest.mark.window
-@pytest.mark.skipif(sys.platform != "darwin" and not _os.environ.get("DISPLAY"),
-                    reason="needs a display for a real Tk window")
-def test_a_sigterm_under_tk_still_runs_the_close_path(tmp_path):
-    """Tk 9 on Aqua installs its own C-level SIGTERM handler when the first
-    window is created, replacing the Controller's. A SIGTERM then ended the
-    process with exit 1, past `close()` and past atexit: every model live,
-    every port open (found by the packaging smoke test). `launch()` now puts
-    the Controller's handlers back after the view is built, so the process
-    dies BY the signal (-15) after `close()` ran."""
-    import signal
-    import subprocess
-    import time
-    env = dict(_os.environ, TRANSFER_STAGE_DATA_ROOT=str(tmp_path))
-    child = subprocess.Popen(
-        [sys.executable, "-c", _TK_SIGTERM_CHILD, str(SRC),
-         "-ApplePersistenceIgnoreState", "YES"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    try:
-        time.sleep(6.0)                       # the window and its mainloop are up
-        child.send_signal(signal.SIGTERM)
-        out, _ = child.communicate(timeout=20)
-    finally:
-        if child.poll() is None:
-            child.kill()
-    assert child.returncode == -signal.SIGTERM, \
-        f"exit {child.returncode}: the toolkit's handler won\\n{out[-2000:]}"
 
 
 # -- rb-restart R3: restart_process ------------------------------------------
@@ -311,12 +293,12 @@ def test_restart_process_re_executes_the_same_interpreter_and_argv_from_the_root
     script.write_text("")
     monkeypatch.chdir(tmp_path)          # the real chdir, before it is recorded
     exec_calls = request.getfixturevalue("exec_calls")
-    monkeypatch.setattr(app.sys, "argv", ["app.py", "--qt", "--font-size", "14"])
+    monkeypatch.setattr(app.sys, "argv", ["app.py", "--web", "--font-size", "14"])
     app.restart_process()
     assert exec_calls == [
         ("chdir", app.CHECKOUT_ROOT),
         # The script is made absolute before the working directory moves.
-        ("execv", sys.executable, [sys.executable, str(script), "--qt",
+        ("execv", sys.executable, [sys.executable, str(script), "--web",
                                    "--font-size", "14"])]
 
 
@@ -341,11 +323,11 @@ def test_on_windows_the_restart_starts_a_new_process_and_ends_this_one(
     """The one platform branch, and it is here: `execv` on Windows leaves
     the console to the parent shell."""
     monkeypatch.setattr(app.sys, "platform", "win32")
-    monkeypatch.setattr(app.sys, "argv", ["C:/station/src/app.py", "--tk"])
+    monkeypatch.setattr(app.sys, "argv", ["C:/station/src/app.py", "--web"])
     app.restart_process()
     assert exec_calls == [
         ("chdir", app.CHECKOUT_ROOT),
-        ("Popen", [sys.executable, "C:/station/src/app.py", "--tk"], app.CHECKOUT_ROOT),
+        ("Popen", [sys.executable, "C:/station/src/app.py", "--web"], app.CHECKOUT_ROOT),
         ("_exit", 0)]
 
 
@@ -353,7 +335,7 @@ def test_the_log_is_closed_before_the_exec(exec_calls, monkeypatch):
     order = []
     monkeypatch.setattr(events, "close_file", lambda: order.append("closed"))
     monkeypatch.setattr(app.os, "execv", lambda path, argv: order.append("exec"))
-    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--tk"])
+    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--web"])
     app.restart_process()
     assert order == ["closed", "exec"]
 
@@ -365,7 +347,7 @@ def test_a_failed_exec_reopens_the_log_and_raises(exec_calls, monkeypatch):
     def broken(path, argv):
         raise OSError("exec format error")
     monkeypatch.setattr(app.os, "execv", broken)
-    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--tk"])
+    monkeypatch.setattr(app.sys, "argv", ["/abs/src/app.py", "--web"])
     with pytest.raises(OSError):
         app.restart_process()
     assert opened
@@ -413,7 +395,7 @@ def test_launch_hands_setup_a_restart_that_keeps_the_web_port(
     assert args == ["--web"]
     assert extra == ("--no-browser", "--port", "8100")
     assert delay == app.RESTART_DELAY > 0
-    desktop = app.launch("tk")
+    desktop = app.launch("desk")
     desktop.setup._restart()
     assert asked[-1] == (None, (), app.RESTART_DELAY)
 
@@ -443,10 +425,10 @@ def frozen_install(tmp_path, monkeypatch, exec_calls):
         folder.mkdir()
         (folder / "VERSION").write_text(f"{tag}\nsha\n2026-09-28T00:00:00Z\n")
     (install / "UPDATE_PENDING").write_text(str(install.resolve()) + "\n")
-    launcher = install / "station-tk.exe"
+    launcher = install / "station-web.exe"
     monkeypatch.setattr(app.sys, "frozen", True, raising=False)
     monkeypatch.setattr(app.sys, "executable", str(launcher))
-    monkeypatch.setattr(app.sys, "argv", [str(launcher), "--tk"])
+    monkeypatch.setattr(app.sys, "argv", [str(launcher), "--web"])
     return install
 
 
@@ -457,7 +439,7 @@ def test_windows_with_an_update_pending_hands_the_swap_to_a_script_and_exits(
     script = frozen_install.parent / "station-update.cmd"
     assert script.exists()
     text = script.read_text(encoding="utf-8")
-    assert f'PID eq {_os.getpid()}' in text
+    assert f'PID eq {os.getpid()}' in text
     assert f'ren "{frozen_install.resolve()}.next" "station"' in text
     kinds = [c[0] for c in exec_calls]
     assert kinds == ["Popen", "_exit"]
@@ -472,7 +454,7 @@ def test_windows_without_a_pending_update_restarts_as_before(
     (frozen_install / "UPDATE_PENDING").unlink()
     monkeypatch.setattr(app.sys, "platform", "win32")
     app.restart_process()
-    assert exec_calls == [("Popen", [app.sys.executable, "--tk"], None), ("_exit", 0)]
+    assert exec_calls == [("Popen", [app.sys.executable, "--web"], None), ("_exit", 0)]
     assert not (frozen_install.parent / "station-update.cmd").exists()
 
 
@@ -480,5 +462,5 @@ def test_elsewhere_a_pending_update_is_swapped_in_before_the_exec(
         frozen_install, exec_calls):
     app.restart_process()                       # sys.platform is "darwin" here
     assert (frozen_install / "VERSION").read_text().startswith("v1.3.0")
-    assert exec_calls == [("execv", app.sys.executable, [app.sys.executable, "--tk"])]
+    assert exec_calls == [("execv", app.sys.executable, [app.sys.executable, "--web"])]
     assert not (frozen_install.parent / "station-update.cmd").exists()

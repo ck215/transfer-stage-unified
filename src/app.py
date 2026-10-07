@@ -3,7 +3,7 @@ to the view.
 
 Replaces `app.py` (948 lines, three ~390-line launchers each nesting its own
 setup wizard), `app_bootstrap.py`, `lifecycle.py` and `model/devices.py`.
-What is left is a table of three views and one `launch()`, because everything
+What is left is a table of views (the Web alone since 2026-10-07) and one `launch()`, because everything
 the three launchers used to duplicate now lives in exactly one place:
 
     the wizard        -> `Setup`, a Panel every view renders from its schema
@@ -33,17 +33,20 @@ from events import events
 from controller.setup import Setup
 from views import theme
 
-#: view name -> (module, attribute). Imported lazily: starting the Tk view
-#: must not import PySide6, and none of the three may import the other two.
+#: view name -> (module, attribute), imported lazily. The Web view is the
+#: station's only frontend (owner ruling 2026-10-07): the Tk and Qt views are
+#: frozen at 413f504 in `views/tk.py` / `views/qt.py` and are not registered.
 VIEWS = {
-    "tk": ("views.tk", "TkDashboard"),
-    "qt": ("views.qt", "QtDashboard"),
     "web": ("views.web.server", "WebView"),
 }
 
-#: The old spellings, still accepted. `--view legacy` and `--pyside` are what
-#: `run.sh`, the lab notes and three years of muscle memory say.
-ALIASES = {"legacy": "tk", "tkinter": "tk", "pyside": "qt", "pyside6": "qt"}
+#: No aliases remain. The old spellings of the retired views are in RETIRED.
+ALIASES = {}
+
+#: Every spelling of a retired view: choosing one prints RETIRED_MESSAGE and
+#: exits 2 (one message, on every platform).
+RETIRED = ("tk", "tkinter", "legacy", "qt", "pyside", "pyside6")
+RETIRED_MESSAGE = "The Tk/Qt view was retired on 2026-10-07; use --web."
 
 DEFAULT_PORT = 8080
 
@@ -56,12 +59,9 @@ CHECKOUT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESTART_DELAY = 0.5
 
 
-#: Owner decision D-9, amended 2026-09-25: an unqualified launch opens the
-#: Tkinter view on EVERY platform ("simple and lightweight and local"). It
-#: used to be Tk on macOS and Qt-or-Web elsewhere, which made the operator's
-#: first screen depend on the OS (audit P8) against the no-platform-specific-UI
-#: ruling. `--web` / `--qt` / `--tk` still choose explicitly.
-DEFAULT_VIEW = "qt"      # owner ruling 2026-09-28: Qt is the default view (was Tk, D-9 amended 2026-09-25)
+#: An unqualified launch opens the Web view on every platform (owner ruling
+#: 2026-10-07: Web is the only frontend; before it Qt was the default).
+DEFAULT_VIEW = "web"
 
 
 def pick_view(requested, platform=None, pyside_available=None):
@@ -69,6 +69,7 @@ def pick_view(requested, platform=None, pyside_available=None):
     was <app>.select_view ('select' is reserved for operator selections)
 
     `requested` is the parsed --view value, or None for "no flag given".
+    A retired view's name is refused by `main` before it gets here.
     `platform` and `pyside_available` are accepted for the callers and tests
     that pass them; neither changes the answer any more.
     """
@@ -264,27 +265,21 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Views:
-  tk        Tkinter interface
-  qt        Native Qt desktop GUI (PySide6): the default on every platform (owner ruling 2026-09-28)
-  web       Browser-based dashboard, served on localhost
+  web       Browser-based dashboard, served on localhost (the only view; the
+            default). The Tk and Qt views were retired on 2026-10-07.
 
 Examples:
-  python3 src/app.py --web --port 8080 --no-browser
-  python3 src/app.py --qt --font-size 14
+  python3 src/app.py --port 8080 --no-browser
+  python3 src/app.py --web --font-size 14
 """)
     views = parser.add_mutually_exclusive_group()
-    views.add_argument("--view", choices=sorted(set(VIEWS) | set(ALIASES)),
-                       help="which view to launch")
-    views.add_argument("--tk", action="store_const", dest="view", const="tk",
-                       help="launch the Tkinter view")
-    views.add_argument("--tkinter", action="store_const", dest="view",
-                       const="tk", help=argparse.SUPPRESS)
-    views.add_argument("--qt", action="store_const", dest="view", const="qt",
-                       help="launch the PySide6 view")
-    views.add_argument("--pyside", action="store_const", dest="view",
-                       const="qt", help=argparse.SUPPRESS)
+    views.add_argument("--view", choices=sorted(set(VIEWS) | set(RETIRED)),
+                       help="which view to launch (only web remains)")
+    for flag in ("--tk", "--tkinter", "--qt", "--pyside"):     # retired
+        views.add_argument(flag, action="store_const", dest="view",
+                           const=flag.lstrip("-"), help=argparse.SUPPRESS)
     views.add_argument("--web", action="store_const", dest="view", const="web",
-                       help="launch the web dashboard")
+                       help="launch the web dashboard (the default)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"web dashboard port (default: {DEFAULT_PORT})")
     parser.add_argument("--no-motion", action="store_true",
@@ -306,6 +301,9 @@ Examples:
     # hardware-capable web server instead of the view the operator asked for
     # (MANAGER-14).
     args = parser.parse_args(argv)
+    if args.view in RETIRED:
+        print(RETIRED_MESSAGE, file=sys.stderr)
+        sys.exit(2)
     if args.no_motion:
         os.environ["STATION_NO_MOTION"] = "1"
     if args.map_db:
@@ -325,20 +323,11 @@ Examples:
     return 0
 
 
-# -- packaged entry points (PACKAGING_PLAN P2) ------------------------------
-# One function per view for `[project.scripts]` and the PyInstaller EXEs, so
-# a bundle's `station-web` cannot start anything but the Web view. Each one
-# forwards the remaining command-line flags (--port, --no-browser,
-# --font-size, --no-motion) and refuses a second view flag the way `main`
-# does.
-
-def main_tk(argv=None):
-    return main(["--tk", *(sys.argv[1:] if argv is None else argv)])
-
-
-def main_qt(argv=None):
-    return main(["--qt", *(sys.argv[1:] if argv is None else argv)])
-
+# -- packaged entry point (PACKAGING_PLAN P2) -------------------------------
+# One function for `[project.scripts]` and the PyInstaller EXE, so a bundle's
+# `station-web` cannot start anything but the Web view. It forwards the
+# remaining command-line flags (--port, --no-browser, --font-size,
+# --no-motion) and refuses a second view flag the way `main` does.
 
 def main_web(argv=None):
     return main(["--web", *(sys.argv[1:] if argv is None else argv)])

@@ -47,11 +47,11 @@ def _requirement_names(specs):
 
 # -- P2: pyproject ------------------------------------------------------------
 
-VIEW_SCRIPTS = {"station-tk": "main_tk", "station-qt": "main_qt",
-                "station-web": "main_web"}
+#: The Web view is the only frontend (owner ruling 2026-10-07): one script.
+VIEW_SCRIPTS = {"station-web": "main_web"}
 
 
-def test_pyproject_declares_one_script_per_view(pyproject):
+def test_pyproject_declares_the_one_web_script(pyproject):
     scripts = pyproject["project"]["scripts"]
     assert scripts == {name: f"app:{func}" for name, func in VIEW_SCRIPTS.items()}
 
@@ -67,7 +67,8 @@ def test_pyproject_runtime_dependencies_exclude_legacy_and_dev_tools(pyproject):
     runtime = _requirement_names(pyproject["project"]["dependencies"])
     assert "gcodeparser" not in runtime
     assert not {"pytest", "pytest-qt", "pyinstaller"} & runtime
-    # Qt is an extra: only `station-qt` needs it.
+    # Qt is an optional extra, never installed by default: the Qt view is
+    # retired (frozen at 413f504); the extra only re-runs its frozen tests.
     assert "pyside6" not in runtime
     assert "pyside6" in _requirement_names(
         pyproject["project"]["optional-dependencies"]["qt"])
@@ -481,7 +482,8 @@ def test_requirements_pin_the_video_encoder_as_pyproject_does(pyproject):
         lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
     pinned = [l for l in lines if l.lower().startswith("imageio-ffmpeg")]
     assert pinned == [IMAGEIO_FFMPEG]
-    assert "-e .[qt]" in lines
+    assert "-e ." in lines
+    assert not any("pyside" in l.lower() for l in lines)
 
 
 def test_imageio_ffmpeg_is_imported_lazily_and_only_by_the_video_device():

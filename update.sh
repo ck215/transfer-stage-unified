@@ -77,9 +77,9 @@ if changed pyproject.toml requirements.txt; then
         # shellcheck disable=SC1091
         source .venv/bin/activate
     elif [ -z "${VIRTUAL_ENV:-}" ]; then
-        fail "No .venv here and none active. Activate the project's venv and run: pip install -e '.[qt]'"
+        fail "No .venv here and none active. Activate the project's venv and run: pip install -e '.'"
     fi
-    python3 -m pip install --quiet -e '.[qt]' || fail "pip install failed. Run it by hand: pip install -e '.[qt]'"
+    python3 -m pip install --quiet -e '.' || fail "pip install failed. Run it by hand: pip install -e '.'"
     say "dependencies reinstalled."
 fi
 
