@@ -90,10 +90,25 @@ _MOTION_GATE = ("autonomous", "manual")
 #: speed stays in effect.
 _MANUAL_SPEED_GATE = ("autonomous",)
 
-#: Ceiling for both speeds, steps/s, on every probe (owner ruling 2026-09-26).
-#: Arbitrary for now: per-device limits, adapted to each board's steppers,
-#: come out of the architecture audit (BUGFIX_PLAN Q1).
+#: The stepper board's ceiling for both speeds, steps/s (owner ruling
+#: 2026-09-26). Each probe class declares its own `MAX_SPEED` (owner,
+#: 2026-10-07: the chuck positioner's bench value is 600); the operator reads
+#: a percent of it, and the steps/s underneath is what travels on the wire.
 MAX_SPEED = 3200
+
+
+def _speed_params(default, ceiling):
+    """The two stored speeds (steps/s) for a class with this ceiling."""
+    return (
+        Param("full_speed", "int", default=default, minimum=1,
+              maximum=ceiling, label="Autonomous Speed", unit="steps/s"),
+        Param("man_full_speed", "int", default=default, minimum=1,
+              maximum=ceiling, label="Manual Speed", unit="steps/s"),
+    )
+
+
+#: step/s attribute <-> the percent dial the operator sees.
+_PCT_OF = {"full_speed": "full_speed_pct", "man_full_speed": "man_full_speed_pct"}
 
 #: 42-byte jog packet: start marker, packet type, then ten floats.
 PACKET_FORMAT = "<BBffffffffff"
@@ -105,6 +120,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
 
     NAME = "Probe"
     IDENTITY = None
+    #: Ceiling of both speeds, steps/s; 100 % on the dials. Per class.
+    MAX_SPEED = MAX_SPEED
     NEEDS_PORT = True
     NEEDS_GAMEPAD = True
 
@@ -119,10 +136,13 @@ class Probe(GamepadInput, IdleInterlock, Model):
         Param("x_dist", "int", default=0, label="Target X Dist"),
         Param("y_dist", "int", default=0, label="Target Y Dist"),
         Param("z_dist", "int", default=0, label="Target Z Dist"),
-        Param("full_speed", "int", default=400, minimum=1,
-              maximum=MAX_SPEED, label="Autonomous Speed", unit="steps/s"),
-        Param("man_full_speed", "int", default=400, minimum=1,
-              maximum=MAX_SPEED, label="Manual Speed", unit="steps/s"),
+        *_speed_params(400, MAX_SPEED),
+        # The operator's dials: a view of the stored steps/s above, never a
+        # second value (owner, 2026-10-07). Not seeded; see `_defaults`.
+        Param("full_speed_pct", "int", default=13, minimum=0, maximum=100,
+              label="Autonomous Speed", unit="%"),
+        Param("man_full_speed_pct", "int", default=13, minimum=0, maximum=100,
+              label="Manual Speed", unit="%"),
         Param("slow_speed", "int", default=0, label="Brake Speed (Slow)"),
         Param("brake_distance", "int", default=0,
               label="Brake Distance (steps)"),
@@ -1181,9 +1201,12 @@ class Probe(GamepadInput, IdleInterlock, Model):
         schema's own gate, so a control's rendered state and its actual
         enforcement cannot drift apart (DC-6)."""
         if name not in self._gates:
+            # The steps/s speeds have no control of their own any more: the
+            # percent dial carries the gate for both representations.
+            wanted = (_PCT_OF.get(name), name)
             self._gates[name] = next(
-                (e for e in sch.elements(self.schema)
-                 if e.get("model_attr") == name), None)
+                (e for want in wanted if want for e in sch.elements(self.schema)
+                 if e.get("model_attr") == want), None)
         return self._gates[name]
 
     @staticmethod
@@ -1249,11 +1272,16 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # A slider beside the entry, never instead of it: the entry
                 # keeps the precision. The slider's travel is a display range;
                 # the Param still validates what is typed.
-                sch.entry(P["full_speed"].label + ":", "full_speed", P["full_speed"],
-                          disabled_when=_MOTION_GATE, slider=self.SPEED_SLIDER),
-                sch.entry(P["man_full_speed"].label + ":", "man_full_speed",
-                          P["man_full_speed"], disabled_when=_MANUAL_SPEED_GATE,
+                sch.entry(P["full_speed_pct"].label + ":", "full_speed_pct",
+                          P["full_speed_pct"], disabled_when=_MOTION_GATE,
                           slider=self.SPEED_SLIDER),
+                sch.readonly("steps/s", "full_speed", secondary=True,
+                             unit="steps/s"),
+                sch.entry(P["man_full_speed_pct"].label + ":", "man_full_speed_pct",
+                          P["man_full_speed_pct"], disabled_when=_MANUAL_SPEED_GATE,
+                          slider=self.SPEED_SLIDER),
+                sch.readonly("steps/s", "man_full_speed", secondary=True,
+                             unit="steps/s"),
             ),
             sch.section(
                 "System Control",
@@ -1286,7 +1314,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # (DC-6, review finding 5). `is_moving` is what refuses.
                 # L8 (SF-1): greyed in fault as well; `_set_mode` refuses it.
                 sch.button("Step", "step",
-                           inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
+                           inputs=("x_dist", "y_dist", "z_dist", "full_speed_pct"),
                            role="go", disabled_when=("manual", "latched",
                                                      "fault")),
                 # Declared so `run("extend_idle")` passes the allow-list; it
@@ -1319,10 +1347,46 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: DCProbe adds two. The two speeds are tier 1 (with a slider); the rest
     #: are the tier-2 Configuration.
     ENTRY_PARAMS = ("x_step", "y_step", "z_step", "x_dist", "y_dist", "z_dist",
-                    "full_speed", "man_full_speed")
-    SPEED_PARAMS = ("full_speed", "man_full_speed")
-    #: The slider's travel in steps/s: the full range the Param accepts.
-    SPEED_SLIDER = (1, MAX_SPEED)
+                    "full_speed_pct", "man_full_speed_pct")
+    SPEED_PARAMS = ("full_speed_pct", "man_full_speed_pct")
+    #: The slider's travel: the whole dial, percent.
+    SPEED_SLIDER = (0, 100)
+
+    # -- the two representations of a speed --------------------------------
+    @classmethod
+    def pct_to_steps(cls, pct):
+        """Steps/s for a percent of this class's ceiling; never below 1."""
+        return max(1, int(float(pct) / 100.0 * cls.MAX_SPEED + 0.5))
+
+    @classmethod
+    def steps_to_pct(cls, steps):
+        """The nearest whole percent of the ceiling (halves round up)."""
+        return int(float(steps) / cls.MAX_SPEED * 100.0 + 0.5)
+
+    def _defaults(self):
+        seeded = super()._defaults()
+        for pct in _PCT_OF.values():
+            seeded.pop(pct, None)   # derived from the stored steps/s
+        return seeded
+
+    def _apply_inputs(self, inputs):
+        """The stored steps/s stay writable by name (profiles, tests, older
+        callers) though only the percent dials are drawn: a steps/s input is
+        validated by its own Param and goes through the dial's gate."""
+        if inputs and any(n in _PCT_OF for n in inputs):
+            inputs = dict(inputs)
+            for name in [n for n in inputs if n in _PCT_OF]:
+                ok, value = self.PARAMS[name].parse(inputs.pop(name))
+                if not ok:
+                    raise Refused(value)
+                if not self._is_enabled(self._gate_for(name)):
+                    if self._same_value(getattr(self, name, None), value):
+                        continue
+                    raise Refused(f"{self.PARAMS[name].label} cannot be changed "
+                                  f"in {self.mode_name} mode. Leave "
+                                  f"{self.mode_name} mode to edit it.")
+                setattr(self, name, value)
+        super()._apply_inputs(inputs)
 
     @property
     def CONFIG_PARAMS(self):
@@ -1350,9 +1414,31 @@ class Probe(GamepadInput, IdleInterlock, Model):
         raise Refused(reason)
 
 
+def _pct_property(steps_name):
+    """The percent dial over a stored steps/s speed: one value, two views.
+
+    Writing the percent the stored speed already displays changes nothing, so
+    a Step that re-sends "13" leaves 400 steps/s at 400 instead of 416."""
+
+    def getter(self):
+        return self.steps_to_pct(self.PARAMS[steps_name].coerce(
+            self._param_store.get(steps_name)))
+
+    def setter(self, value):
+        pct = int(float(value))
+        if pct == getter(self):
+            return
+        setattr(self, steps_name, self.pct_to_steps(pct))
+
+    return property(getter, setter)
+
+
 for _name in Probe.PARAMS:
-    setattr(Probe, _name, Probe._gated_param(_name))
-del _name
+    if _name not in _PCT_OF.values():
+        setattr(Probe, _name, Probe._gated_param(_name))
+for _steps, _pct in _PCT_OF.items():
+    setattr(Probe, _pct, _pct_property(_steps))
+del _name, _steps, _pct
 
 
 class StepperProbe(Probe):
@@ -1389,10 +1475,7 @@ class DCProbe(Probe):
         Param("x_step", "int", default=1, minimum=1, label="X Step Size"),
         Param("y_step", "int", default=1, minimum=1, label="Y Step Size"),
         Param("z_step", "int", default=1, minimum=1, label="Z Step Size"),
-        Param("full_speed", "int", default=120, minimum=1,
-              maximum=MAX_SPEED, label="Autonomous Speed", unit="steps/s"),
-        Param("man_full_speed", "int", default=120, minimum=1,
-              maximum=MAX_SPEED, label="Manual Speed", unit="steps/s"),
+        *_speed_params(120, MAX_SPEED),
     )}}
 
     ENTRY_PARAMS = Probe.ENTRY_PARAMS + ("slow_speed", "brake_distance")
@@ -1409,8 +1492,11 @@ class ChuckPositioner(Probe):
 
     NAME = "Chuck Positioner"
     IDENTITY = "c"
+    #: The chuck's bench ceiling (owner, 2026-10-07).
+    MAX_SPEED = 600
 
     PARAMS = {**Probe.PARAMS, **{p.name: p for p in (
+        *_speed_params(400, 600),
         Param("x_step", "int", default=2, minimum=1, label="X Step Size"),
         Param("y_step", "int", default=2, minimum=1, label="Y Step Size"),
         Param("z_step", "int", default=2, minimum=1, label="Z Step Size"),

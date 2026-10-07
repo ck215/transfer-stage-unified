@@ -1204,7 +1204,7 @@ def test_motion_entries_are_gated_while_a_run_is_engaged(probe):
     # so its entry is locked in autonomous only; every other entry keeps both
     # motion modes (tests/test_manual_speed_live.py).
     for element in entries:
-        expected = (["autonomous"] if element["model_attr"] == "man_full_speed"
+        expected = (["autonomous"] if element["model_attr"] == "man_full_speed_pct"
                     else ["autonomous", "manual"])
         assert element["disabled_when"] == expected
         assert element["writable"] is True
@@ -1374,6 +1374,12 @@ def test_every_motion_parameter_holds_its_declared_default_from_construction(cls
     then looked like an edit and was refused."""
     probe, _, _ = make_probe(cls)
     for name, param in cls.PARAMS.items():
+        if name.endswith("_pct"):
+            # The dial is the stored steps/s read as a percent of the ceiling,
+            # never a second stored value (test_the_defaults_read_13_...).
+            steps = cls.PARAMS[name[:-4]].default
+            assert getattr(probe, name) == cls.steps_to_pct(steps), name
+            continue
         assert getattr(probe, name) == param.default, name
 
 
@@ -1635,14 +1641,117 @@ def test_a_probe_opens_its_port_at_the_firmwares_500000_baud(cls, monkeypatch):
     assert built == [("/dev/ttyACM0", 500000), ("SIM", 500000)]
 
 
-@pytest.mark.parametrize("cls", [StepperProbe, DCProbe, ChuckPositioner])
+CEILINGS = [(StepperProbe, 3200), (DCProbe, 3200), (ChuckPositioner, 600)]
+
+
+@pytest.mark.parametrize("cls,ceiling", CEILINGS)
 @pytest.mark.parametrize("name", ["full_speed", "man_full_speed"])
-def test_every_probe_speed_tops_out_at_3200(cls, name):
-    """Owner ruling 2026-09-26: one arbitrary ceiling, 3200 steps/s, for
-    every device until per-device limits come out of the architecture
-    audit. The slider travels the same range the Param accepts."""
+def test_every_probe_speed_tops_out_at_its_own_ceiling(cls, ceiling, name):
+    """Owner 2026-10-07: the stepper family keeps 3200 steps/s (the DC probe
+    too: no separate bench value was given), the chuck positioner's is 600.
+    The stored steps/s Param validates against the class's ceiling; the dial
+    travels the whole 0-100 %."""
     param = cls.PARAMS[name]
-    assert param.maximum == 3200
-    assert param.parse(3200) == (True, 3200)
-    assert param.parse(3201)[0] is False
-    assert cls.SPEED_SLIDER == (1, 3200)
+    assert cls.MAX_SPEED == ceiling
+    assert param.maximum == ceiling
+    assert param.parse(ceiling) == (True, ceiling)
+    assert param.parse(ceiling + 1)[0] is False
+    assert cls.SPEED_SLIDER == (0, 100)
+
+
+@pytest.mark.parametrize("cls,ceiling", CEILINGS)
+def test_percent_to_steps_on_each_ceiling(cls, ceiling):
+    p, port, _ = make_probe(cls)
+    for pct, steps in ((100, ceiling), (50, ceiling // 2), (1, round(ceiling / 100))):
+        p.full_speed_pct = pct
+        p.man_full_speed_pct = pct
+        assert p.full_speed == p.man_full_speed == steps
+        assert p.full_speed_pct == p.man_full_speed_pct == pct
+    # Zero percent is the slowest the firmware may be told, never 0.
+    p.full_speed_pct = 0
+    assert p.full_speed == 1
+    assert p.full_speed_pct == 0
+    assert cls.pct_to_steps(0) == 1
+
+
+def test_the_defaults_read_13_on_the_stepper_and_67_on_the_chuck():
+    stepper, _, _ = make_probe(StepperProbe)
+    chuck, _, _ = make_probe(ChuckPositioner)
+    dc, _, _ = make_probe(DCProbe)
+    assert stepper.full_speed == chuck.full_speed == 400   # the stored default
+    assert (stepper.full_speed_pct, stepper.man_full_speed_pct) == (13, 13)
+    assert (chuck.full_speed_pct, chuck.man_full_speed_pct) == (67, 67)
+    assert dc.full_speed == 120 and dc.full_speed_pct == 4
+
+
+def test_the_two_representations_are_one_value_both_ways():
+    p, _, _ = make_probe(StepperProbe)
+    p.full_speed = 1600
+    assert p.full_speed_pct == 50
+    p.full_speed_pct = 25
+    assert p.full_speed == 800
+    p.man_full_speed = 1000            # 31.25 % -> nearest percent
+    assert p.man_full_speed_pct == 31
+    assert p.man_full_speed == 1000    # reading the dial never rewrites steps/s
+    # Re-sending the percent the dial already shows (a Step does) is no edit.
+    p.full_speed = 400
+    p.full_speed_pct = 13
+    assert p.full_speed == 400
+
+
+def test_a_percent_out_of_range_is_refused_by_the_dial():
+    p, _, _ = make_probe(StepperProbe)
+    assert p.run("_commit", inputs={"full_speed_pct": "101"}).is_refused
+    assert p.run("_commit", inputs={"full_speed_pct": "-1"}).is_refused
+    assert p.run("_commit", inputs={"full_speed_pct": "40"}).is_ok
+    assert p.full_speed == 1280
+
+
+def test_steps_per_second_still_apply_by_name_to_the_stored_value():
+    """Profiles and older callers write steps/s; it applies, is bounded by the
+    class ceiling, and the dial follows."""
+    chuck, _, _ = make_probe(ChuckPositioner)
+    assert chuck.apply_defaults({"full_speed": 300, "man_full_speed": 150}) == {}
+    assert (chuck.full_speed, chuck.man_full_speed) == (300, 150)
+    assert (chuck.full_speed_pct, chuck.man_full_speed_pct) == (50, 25)
+    refused = chuck.apply_defaults({"full_speed": 3200})
+    assert "full_speed" in refused and chuck.full_speed == 300
+    assert chuck.run("_commit", inputs={"full_speed": "450"}).is_ok
+    assert chuck.full_speed_pct == 75
+    chuck.set_mode("autonomous")
+    assert chuck.run("_commit", inputs={"full_speed": "100"}).is_refused
+    assert chuck.run("_commit", inputs={"full_speed_pct": "10"}).is_refused
+
+
+def test_the_wire_carries_the_steps_per_second_the_dial_set():
+    p, port, _ = make_probe(StepperProbe)
+    p.full_speed_pct = 50
+    p.x_dist = 3
+    p.step()
+    sent = [w.payload for w in port.calls if b"1600.0" in w.payload]
+    assert sent, [w.payload for w in port.calls]
+
+
+@pytest.mark.schema
+@pytest.mark.parametrize("cls", [StepperProbe, DCProbe, ChuckPositioner])
+def test_the_speeds_section_is_two_percent_dials_each_with_a_steps_readout(cls):
+    import schema as sch
+    p, _, _ = make_probe(cls)
+    speeds = next(s for s in p.schema["sections"] if s["title"] == "Speeds")
+    kinds = [(e["type"], e["model_attr"], e.get("secondary", False))
+             for e in speeds["elements"]]
+    assert kinds == [("entry", "full_speed_pct", False),
+                     ("readonly", "full_speed", True),
+                     ("entry", "man_full_speed_pct", False),
+                     ("readonly", "man_full_speed", True)]
+    dial = speeds["elements"][0]
+    assert dial["text"] == "Autonomous Speed:" and speeds["elements"][2]["text"] == "Manual Speed:"
+    assert dial["unit"] == "%" and (dial["min"], dial["max"]) == (0, 100)
+    assert dial["slider"] == [0, 100]
+    assert speeds["elements"][1]["unit"] == "steps/s"
+    assert speeds["elements"][1]["text"] == "steps/s"
+    state = p.state["values"]
+    assert state["full_speed_pct"] == str(p.full_speed_pct)
+    assert state["full_speed"] == str(p.full_speed)
+    # Not a rail reading, not a second Position-style key number.
+    assert not any(e.get("rail") for e in speeds["elements"])
