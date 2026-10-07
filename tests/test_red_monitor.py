@@ -40,8 +40,15 @@ def red_frame(red_rows=2, height=10, width=10):
 class FakeCapture:
     """Frames are served in order and the last one repeats. With `varying`
     (the default), each repeat carries a different number of red rows, so
-    the red percent changes on EVERY grab and change-triggered sampling
-    logs a row per frame."""
+    the red percent changes on EVERY picture and change-triggered sampling
+    logs a row per frame.
+
+    Each picture is held for HOLD reads, as a screen holds what it shows
+    (CAP-1, 2026-10-07): the run loop takes a sample only when two reads
+    agree, and a picture that changed on every read would be exactly the
+    repaint transient it now refuses."""
+
+    HOLD = 2
 
     def __init__(self, frames, delay, varying=True):
         self._frames, self._delay, self._varying = frames, delay, varying
@@ -51,9 +58,10 @@ class FakeCapture:
         self.grabs += 1
         if self._delay:
             time.sleep(self._delay)
-        index = min(self.grabs - 1, len(self._frames) - 1)
+        shown = (self.grabs - 1) // self.HOLD + 1      # the picture on screen
+        index = min(shown - 1, len(self._frames) - 1)
         frame = self._frames[index]
-        repeats = self.grabs - len(self._frames)
+        repeats = shown - len(self._frames)
         if self._varying and repeats > 0:
             frame = frame.copy()
             rows = 1 + repeats % max(1, frame.shape[0] - 1)
