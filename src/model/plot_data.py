@@ -411,23 +411,30 @@ def _number(row, index):
 # Same split as the analysis plot: `transfer_request` decides what to draw
 # from plain rows, without matplotlib, and `render_transfer_figure` draws it.
 # A trial row is `{"id", "tilt", "speed", "force": {definition: value|None},
-# "width", "width_sigma", "width_source"}`; the model builds the rows from
-# its store and computes the force indices from each trial's raw profile.
+# "force_class", "width", "width_sigma", "width_source"}`; the model builds
+# the rows from its store and computes the force indices from each trial's
+# raw profile. `tilt` is collected and kept in the row but NOT drawn (owner
+# ruling 2026-10-07: no tilt axis); `force_class` ("Low", "Medium", "High" or
+# absent) is the bench's `trials.force_class`, read with `.get`.
 # `width` is the chosen one (`transfer_map_analysis.pick_width`: AFM when
 # present, else optical) and `width_source` says which: "afm", "optical" or
 # None (a row without the key and with a width is AFM, as before version 6).
 
 #: The figure types, in dropdown order.
 TRANSFER_FIGURES = ("map3d", "slice", "compare", "profile")
-#: The force bands a slice can be drawn at: terciles of the chosen index
-#: over the trials that have it, so the band is scale-free for every
-#: definition.
-FORCE_BANDS = ("All forces", "Low third", "Middle third", "High third")
-#: Grid resolution of the slice's surfaces.
-SLICE_GRID = 25
-#: The slice's Gaussian process, in coordinates scaled to [0, 1] per axis.
+#: The force classes the bench records (`trials.force_class`), lowest
+#: first: the map's y axis, bottom to top. A trial with none (or one not in
+#: this list) is "Unclassed", a band drawn below them only when needed.
+FORCE_CLASSES = ("Low", "Medium", "High")
+UNCLASSED = "Unclassed"
+#: What the curve figure can be drawn for: every band, or one of them.
+FORCE_BANDS = ("All forces",) + FORCE_CLASSES + (UNCLASSED,)
+#: Grid resolution of the curves over speed.
+SLICE_GRID = 40
+#: The curve's Gaussian process, in speed scaled to [0, 1].
 SLICE_LENGTH = 0.35
-TILT_LABEL, SPEED_LABEL = "tilt (deg)", "speed (steps/s)"
+SPEED_LABEL = "speed (steps/s)"
+FORCE_CLASS_LABEL = "force class"
 WIDTH_LABEL = "channel width (um)"
 #: Which widths the slice and the comparison fit (store v6, owner
 #: 2026-10-04: AFM only by default; optical on request, trusted less).
@@ -436,8 +443,8 @@ WIDTH_SOURCES = ("AFM only", "AFM, else optical")
 #: default noise (0.05 x the widths' spread) in the slice's GP (Q19).
 OPTICAL_SIGMA_FACTOR = 3
 #: Two lines: one would be clipped at the station's figure size.
-MAP3D_TITLE = ("Transfer map\n(filled: AFM width; ringed: optical width; "
-               "hollow: no width yet)")
+MAP3D_TITLE = ("Transfer map: speed by force class\n(filled: AFM width; "
+               "ringed: optical width; hollow: no width yet)")
 
 
 def _source(row):
@@ -489,22 +496,20 @@ def transfer_request(kind, trials, definition, *, band="All forces",
     if not trials:
         return _message("No trials yet. Arm a trial, lower the tip, then "
                         "Finish; or import trials.")
-    placed = [row for row in trials
-              if row.get("tilt") is not None and row.get("speed") is not None
-              and (row.get("force") or {}).get(definition) is not None]
+    placed = [row for row in trials if row.get("speed") is not None]
     if not placed:
-        return _message(f"No trial has a tilt, a speed and a {definition} "
-                        "value yet.")
+        return _message("No trial has a speed yet.")
     if kind == "map3d":
+        bands = _bands(placed)
+        position = {name: i for i, name in enumerate(bands)}
         return {"kind": "map3d",
-                "x": [row["tilt"] for row in placed],
-                "y": [row["speed"] for row in placed],
-                "z": [row["force"][definition] for row in placed],
+                "x": [row["speed"] for row in placed],
+                "y": [position[force_class(row)] for row in placed],
+                "bands": bands,
                 "c": [row.get("width") for row in placed],
                 "measured": [_source(row) == "afm" for row in placed],
                 "optical": [_source(row) == "optical" for row in placed],
-                "x_label": TILT_LABEL, "y_label": SPEED_LABEL,
-                "z_label": f"force index ({definition})",
+                "x_label": SPEED_LABEL, "y_label": FORCE_CLASS_LABEL,
                 "c_label": WIDTH_LABEL,
                 "title": MAP3D_TITLE}
     if kind == "slice":
@@ -512,19 +517,23 @@ def transfer_request(kind, trials, definition, *, band="All forces",
     return _message(f"Unknown figure type: {kind!r}.")
 
 
-def _in_band(rows, definition, band):
-    """The rows whose index falls in `band` (terciles over `rows`)."""
-    if band in (None, "", FORCE_BANDS[0]):
-        return list(rows)
-    import numpy
-    values = numpy.array([row["force"][definition] for row in rows], dtype=float)
-    low, high = numpy.quantile(values, [1 / 3, 2 / 3])
-    keep = {FORCE_BANDS[1]: values <= low,
-            FORCE_BANDS[2]: (values > low) & (values <= high),
-            FORCE_BANDS[3]: values > high}.get(band)
-    if keep is None:
-        return list(rows)
-    return [row for row, flag in zip(rows, keep) if flag]
+def force_class(row):
+    """A row's force class: "Low", "Medium" or "High" (any case), else
+    "Unclassed". Rows without the key (the Transfer Map before it ports
+    `trials.force_class`) are Unclassed."""
+    text = str(row.get("force_class") or "").strip().lower()
+    for name in FORCE_CLASSES:
+        if text == name.lower():
+            return name
+    return UNCLASSED
+
+
+def _bands(rows):
+    """The map's bands, bottom to top: Unclassed (only when some trial has
+    no class), then Low, Medium, High (always: the axis does not move
+    between a half-classed map and a full one)."""
+    unclassed = any(force_class(row) == UNCLASSED for row in rows)
+    return ([UNCLASSED] if unclassed else []) + list(FORCE_CLASSES)
 
 
 def _span(values):
@@ -535,55 +544,61 @@ def _span(values):
     return low - margin, high + margin
 
 
-def map3d_limits(request):
-    """Axis limits for the 3D map: every trial padded by `_span`, so one
-    trial (or several at one tilt) does not leave matplotlib autoscaling
-    to a hair's width around the value, whose tick labels then read as a
-    wrong tilt (bench 2026-09-28). None for an axis with no values."""
-    limits = {}
-    for key in ("x", "y", "z"):
-        values = [v for v in request.get(key, ()) if v is not None]
-        limits[key] = _span(values) if values else None
-    return limits
+def map_limits(request):
+    """Axis limits for the map: speed padded by `_span`, so one trial (or
+    several at one speed) does not leave matplotlib autoscaling to a hair's
+    width whose tick labels then read as a wrong speed; the force-class axis
+    holds one unit per band. None for an axis with no values."""
+    speeds = [v for v in request.get("x", ()) if v is not None]
+    bands = request.get("bands") or ()
+    return {"x": _span(speeds) if speeds else None,
+            "y": (-0.5, len(bands) - 0.5) if bands else None}
 
 
 def _slice_request(placed, definition, band, width_source=WIDTH_SOURCES[0]):
-    """Width over tilt x speed at a force band: the Gaussian process mean,
-    its sigma (drawn as the confidence contours), and the measured trials
-    (AFM only, or AFM else optical: `width_source`)."""
+    """Width over speed, one curve per force class: each band's Gaussian
+    process mean and sigma over its measured trials (AFM only, or AFM else
+    optical: `width_source`), and those trials as points. A band with one
+    measured trial is its point alone; `band` (one of `FORCE_BANDS`) draws
+    just that band."""
     import numpy
     from model import transfer_map_analysis as tma
-    measured = with_width(_in_band(placed, definition, band), width_source)
-    if len(measured) < 2:
-        return _message(f"Measure the width of at least two trials in "
-                        f"{band.lower()} to draw a slice.")
-    (x0, x1) = _span([row["tilt"] for row in placed])
-    (y0, y1) = _span([row["speed"] for row in placed])
-    grid_x = numpy.linspace(x0, x1, SLICE_GRID)
-    grid_y = numpy.linspace(y0, y1, SLICE_GRID)
-    unit = lambda v, a, b: (numpy.asarray(v, dtype=float) - a) / (b - a)  # noqa: E731
-    points = numpy.column_stack([unit([r["tilt"] for r in measured], x0, x1),
-                                 unit([r["speed"] for r in measured], y0, y1)])
-    widths = numpy.array([r["width"] for r in measured], dtype=float)
-    spread = float(widths.std()) or 1.0
-    noise = numpy.array(width_noise(measured, spread))
-    gx, gy = numpy.meshgrid(unit(grid_x, x0, x1), unit(grid_y, y0, y1))
-    query = numpy.column_stack([gx.ravel(), gy.ravel()])
-    mean, variance = tma.gp_predict(points, widths, query, length=SLICE_LENGTH,
-                                    noise=noise)
-    shape = (SLICE_GRID, SLICE_GRID)
-    return {"kind": "slice",
-            "grid_x": grid_x.tolist(), "grid_y": grid_y.tolist(),
-            "mean": mean.reshape(shape).tolist(),
-            "sigma": numpy.sqrt(variance).reshape(shape).tolist(),
-            "points_x": [r["tilt"] for r in measured],
-            "points_y": [r["speed"] for r in measured],
-            "points_c": [r["width"] for r in measured],
-            "points_optical": [_source(r) == "optical" for r in measured],
-            "x_label": TILT_LABEL, "y_label": SPEED_LABEL,
-            "c_label": WIDTH_LABEL,
-            "title": f"Width, {definition}: {band.lower()} "
-                     f"({_sources_note(measured)}; contours: sigma)"}
+    if band not in (None, "") and band not in FORCE_BANDS:
+        raise ValueError(f"not a force band: {band!r}")
+    measured = with_width(placed, width_source)
+    names = [n for n in (list(FORCE_CLASSES) + [UNCLASSED])
+             if band in (None, "", FORCE_BANDS[0], n)]
+    by_band = {n: [r for r in measured if force_class(r) == n] for n in names}
+    by_band = {n: rows for n, rows in by_band.items() if rows}
+    if not any(len(rows) >= 2 for rows in by_band.values()):
+        where = ("" if band in (None, "", FORCE_BANDS[0])
+                 else f" in the {band} force class")
+        return _message(f"Measure the width of at least two trials of one "
+                        f"force class{where} to draw a curve over speed.")
+    (x0, x1) = _span([row["speed"] for row in placed])
+    grid = numpy.linspace(x0, x1, SLICE_GRID)
+    unit = lambda v: (numpy.asarray(v, dtype=float) - x0) / (x1 - x0)  # noqa: E731
+    lines = []
+    for name, rows in by_band.items():
+        line = {"band": name, "points_x": [r["speed"] for r in rows],
+                "points_c": [r["width"] for r in rows],
+                "points_optical": [_source(r) == "optical" for r in rows],
+                "mean": None, "sigma": None}
+        if len(rows) >= 2:
+            widths = numpy.array([r["width"] for r in rows], dtype=float)
+            spread = float(widths.std()) or 1.0
+            noise = numpy.array(width_noise(rows, spread))
+            mean, variance = tma.gp_predict(
+                unit([r["speed"] for r in rows]).reshape(-1, 1), widths,
+                unit(grid).reshape(-1, 1), length=SLICE_LENGTH, noise=noise)
+            line["mean"] = mean.tolist()
+            line["sigma"] = numpy.sqrt(variance).tolist()
+        lines.append(line)
+    used = [r for rows in by_band.values() for r in rows]
+    return {"kind": "slice", "x": grid.tolist(), "lines": lines,
+            "x_label": SPEED_LABEL, "y_label": WIDTH_LABEL,
+            "title": f"Width over speed by force class "
+                     f"({_sources_note(used)}; band: one sigma)"}
 
 
 def _compare_request(trials, definitions, width_source=WIDTH_SOURCES[0]):
@@ -656,7 +671,9 @@ def _draw_transfer(request, size=None, dpi=None):
         pass
     kind = request["kind"]
     if kind == "map3d":
-        axes = figure.add_subplot(111, projection="3d")
+        # The map is flat since 2026-10-07 (no tilt axis); the kind keeps its
+        # name because the Transfer Map's figure table points at it.
+        axes = figure.add_subplot(111)
         optical_flags = request.get("optical") or [False] * len(request["measured"])
         done = [i for i, m in enumerate(request["measured"]) if m]
         ringed = [i for i, o in enumerate(optical_flags) if o]
@@ -670,54 +687,67 @@ def _draw_transfer(request, size=None, dpi=None):
         drawn = None
         if done:
             drawn = axes.scatter(pick("x", done), pick("y", done),
-                                 pick("z", done), c=pick("c", done),
-                                 cmap=_colormap(), marker="o", s=30, **scale)
+                                 c=pick("c", done), cmap=_colormap(),
+                                 marker="o", s=40, **scale)
         if ringed:
             # Optical width (store v6): the same colour scale, ringed so it
             # never reads as an AFM measurement.
             shown = axes.scatter(pick("x", ringed), pick("y", ringed),
-                                 pick("z", ringed), c=pick("c", ringed),
-                                 cmap=_colormap(), marker="o", s=45,
-                                 edgecolors=palette.TEXT, linewidths=1.6,
-                                 **scale)
+                                 c=pick("c", ringed), cmap=_colormap(),
+                                 marker="o", s=60, edgecolors=palette.TEXT,
+                                 linewidths=1.6, **scale)
             drawn = drawn or shown
         if drawn is not None:
-            _colorbar(figure, drawn, axes, request["c_label"], pad=0.14)
+            _colorbar(figure, drawn, axes, request["c_label"])
         if pending:
             axes.scatter(pick("x", pending), pick("y", pending),
-                         pick("z", pending), facecolors="none",
-                         edgecolors=palette.MUTED, marker="o", s=30)
-        axes.set_zlabel(request["z_label"])
-        for key, setter in (("x", axes.set_xlim), ("y", axes.set_ylim),
-                            ("z", axes.set_zlim)):
-            limit = map3d_limits(request)[key]
-            if limit is not None:
-                setter(*limit)
+                         facecolors="none", edgecolors=palette.MUTED,
+                         marker="o", s=40)
+        limits = map_limits(request)
+        if limits["x"] is not None:
+            axes.set_xlim(*limits["x"])
+        if limits["y"] is not None:
+            axes.set_ylim(*limits["y"])
+        axes.set_yticks(range(len(request["bands"])))
+        axes.set_yticklabels(request["bands"])
         from matplotlib.ticker import MaxNLocator
-        for axis in (axes.xaxis, axes.yaxis, axes.zaxis):
-            axis.set_major_locator(MaxNLocator(5))
+        axes.xaxis.set_major_locator(MaxNLocator(6))
         panels = [axes]
     elif kind == "slice":
         axes = figure.add_subplot(111)
-        drawn = axes.pcolormesh(request["grid_x"], request["grid_y"],
-                                request["mean"], cmap=_colormap(),
-                                shading="auto")
-        _colorbar(figure, drawn, axes, request["c_label"])
-        lines = axes.contour(request["grid_x"], request["grid_y"],
-                             request["sigma"], colors=palette.TEXT,
-                             linewidths=0.6, levels=4)
-        axes.clabel(lines, fontsize=TICK_SIZE - 2, fmt="%.2g")
-        flags = request.get("points_optical") or [False] * len(request["points_c"])
-        values = request["points_c"]
-        scale = {"vmin": min(values), "vmax": max(values)} if values else {}
-        for optical, size, ring in ((False, 30, 0.6), (True, 45, 1.6)):
-            idx = [i for i, f in enumerate(flags) if f == optical]
-            if idx:
-                axes.scatter([request["points_x"][i] for i in idx],
-                             [request["points_y"][i] for i in idx],
-                             c=[values[i] for i in idx], cmap=_colormap(),
-                             edgecolors=palette.TEXT, linewidths=ring, s=size,
-                             **scale)
+        shades = [0.0, 0.55, 1.0]      # the sheet map's ends and middle
+        styles = {name: ("-", "--", ":")[i] for i, name in enumerate(FORCE_CLASSES)}
+        styles[UNCLASSED] = "-."
+        cmap = _colormap()
+        for line in request["lines"]:
+            name = line["band"]
+            index = FORCE_CLASSES.index(name) if name in FORCE_CLASSES else None
+            colour = cmap(shades[index]) if index is not None else palette.MUTED
+            if line["mean"] is not None:
+                mean = line["mean"]
+                sigma = line["sigma"]
+                axes.fill_between(request["x"],
+                                  [m - s for m, s in zip(mean, sigma)],
+                                  [m + s for m, s in zip(mean, sigma)],
+                                  color=colour, alpha=0.15, linewidth=0)
+                axes.plot(request["x"], mean, color=colour, linewidth=1.8,
+                          linestyle=styles[name], label=name)
+            flags = line["points_optical"]
+            for optical in (False, True):
+                idx = [i for i, f in enumerate(flags) if f == optical]
+                if idx:
+                    axes.scatter([line["points_x"][i] for i in idx],
+                                 [line["points_c"][i] for i in idx],
+                                 color=colour, s=60 if optical else 30,
+                                 edgecolors=palette.TEXT,
+                                 linewidths=1.6 if optical else 0.6,
+                                 label=None if line["mean"] is not None or optical
+                                 else name)
+        legend = axes.legend(fontsize=TICK_SIZE - 2, frameon=False,
+                             title=FORCE_CLASS_LABEL)
+        legend.get_title().set_color(palette.TEXT)
+        for text in legend.get_texts():
+            text.set_color(palette.TEXT)
         panels = [axes]
     elif kind == "compare":
         count = max(1, len(request["panels"]))
