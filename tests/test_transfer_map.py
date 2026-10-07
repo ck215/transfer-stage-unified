@@ -177,6 +177,55 @@ def fake_display(monkeypatch):
     return made
 
 
+#: The Sample Map's samples, chips and flakes the fake store holds:
+#: sample -> chip -> flakes.
+SAMPLE_TREE = {"4oct26": {"2": ["F3", "F4"], "3": ["F1"]},
+               "7/27/26": {"2": ["13"]}}
+#: The flake every trial of this file is cut on unless it says otherwise.
+FLAKE = ("4oct26", "2", "F3")
+
+
+class FakeSamples:
+    """The Sample Map's store as the Transfer Map reads it (the API of
+    `model.sample_store.SampleStore`, read-only): `samples()`, `chips()`,
+    `flakes()`, each a list of row dicts."""
+
+    def __init__(self, tree=None):
+        self.tree = SAMPLE_TREE if tree is None else tree
+
+    def samples(self):
+        return [{"sample_id": s, "material": "hBN"} for s in self.tree]
+
+    def chips(self, sample_id):
+        return [{"chip_id": c} for c in self.tree.get(sample_id, {})]
+
+    def flakes(self, sample_id, chip_id):
+        return [{"flake_id": f}
+                for f in self.tree.get(sample_id, {}).get(chip_id, [])]
+
+
+class FakeSampleMap:
+    """The Sample Map as the Transfer Map finds it: a public `db_path`."""
+    NAME = "Sample Map"
+
+    def __init__(self, path):
+        self.db_path = path
+
+
+def _give_flake(model, flake=FLAKE, tree=None):
+    """A Sample Map with the fake store beside `model`, and `flake` (sample,
+    chip, flake) picked through the dropdowns' commands. -> the fake."""
+    fake = FakeSamples(tree)
+    model._sample_store_factory = lambda path: fake
+    model.on_model_added("Sample Map", FakeSampleMap(Path("/no/samples.sqlite")))
+    if flake:
+        for command, label in zip(("pick_sample", "pick_chip", "pick_flake"),
+                                  flake):
+            result = model.run(command, None, (label,))
+            assert result.is_ok, result
+    return fake
+
+
 class FakeRotator:
     """A tilt source, duck-typed as the Transfer Map reads one."""
     def __init__(self, angle=22.5):
@@ -225,6 +274,7 @@ def station(red):
         model.on_model_added(name, other)
     red.source_name = "Stepper Probe"
     model.tip_id = "tip-A"
+    _give_flake(model)
     yield model, red, rotator, probe
     model.close()
 
@@ -667,6 +717,7 @@ def test_arm_needs_no_capture_region_and_starts_nothing(tmp_path, private_db):
         model = TransferMap()
         model.on_model_added("Red Percent", bare)
         model.tip_id = "tip-A"
+        _give_flake(model)
         assert model.arm_trial(True) is None
         assert model.phase == "region" and model.mode_name == "armed"
         assert not bare.is_running and not model.is_armed
@@ -783,6 +834,7 @@ def test_finish_with_no_samples_still_records(red, private_db):
     model = TransferMap()
     model.on_model_added("Red Percent", red)
     model.tip_id = "t"
+    _give_flake(model)
     red.unsubscribe  # the hook exists
     trial = _arm(model)
     model._trial.samples.clear()
@@ -1134,6 +1186,7 @@ def test_the_capture_region_is_red_percents_set_from_the_sheet(red):
             model.set_region(1, 2, 30, 40)
         model.on_model_added("Red Percent", red)
         model.tip_id = "tip-A"
+        _give_flake(model)
         assert model.region == red.region and model.state["has_region"] is True
         early = model.run("set_region", None, (1, 2, 30, 40))
         assert early.is_refused and "setup step" in early.reason
@@ -1199,6 +1252,12 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     model.tip_id = " "
     assert step() == "Pick a tip, or press New tip…"
     model.tip_id = "tip-A"
+    assert step() == "Add a sample on the Sample Map first"   # none open
+    _give_flake(model, flake=None, tree={})
+    assert step() == "Add a sample on the Sample Map first"   # an empty store
+    _give_flake(model, flake=None)
+    assert step() == "Pick the sample, chip and flake"
+    _give_flake(model)
     assert step() == "Press Arm trial"            # TM-3: no tilt demanded
     model.typed_tilt = "6.5"
     assert step() == "Press Arm trial"
@@ -1580,6 +1639,7 @@ def idle_station(red):
     model.on_model_added("Red Percent", red)
     model.on_model_added("Stepper Probe", FakeProbe())
     model.tip_id = "tip-A"
+    _give_flake(model)
     assert not red.is_running
     yield model, red
     model.close()
@@ -1712,8 +1772,9 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     # TM-3: without a tilt the prompt says nothing of one (never demanded).
     assert result.reason == ("Frame the sample now. Continue takes the "
                              "picture of the stage for trial 1 on tip T7, "
-                             "300 steps/s (Stepper Probe); you then pick the "
-                             "capture region on it, and the recording starts.")
+                             "300 steps/s (Stepper Probe), cut 1 on 4oct26 · "
+                             "2 · F3; you then pick the capture region on "
+                             "it, and the recording starts.")
     assert result.command == "arm_trial"
     assert result.inputs == {"typed_tilt": "", "typed_speed": ""}
     assert not model.is_armed and model.trial_count == 0
@@ -1877,6 +1938,7 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     assert _keys(by_title["Trial"]) == ["next_step", "tilt_now", "speed_now"]
     assert _keys(by_title["Start"]) == [
         "tip_pick", "new_tip", "tip_status",
+        "sample_pick", "chip_pick", "flake_pick", "cut_next",
         "typed_tilt", "typed_speed", "arm_trial"]
     assert _keys(by_title["Capture region"]) == ["set_region"]
     # TM-2: no live plot in the recording steps; the trace is the review's.
@@ -2022,6 +2084,7 @@ def test_a_red_percent_without_grab_screen_still_arms(tmp_path, private_db):
     plain = Plain()
     model.on_model_added("Red Percent", plain)
     model.tip_id = "t"
+    _give_flake(model)
     events.forget("No Full Picture")    # a new dedupe episode
     since = events.latest_id
     trial = _arm(model)
@@ -2228,6 +2291,7 @@ def test_a_migrated_database_records_a_trial_with_its_full_pictures(
     model.open()
     model.on_model_added("Red Percent", red)
     model.tip_id = "T7"
+    _give_flake(model)
     _wire(model)
     try:
         trial = _arm(model)
@@ -2327,6 +2391,7 @@ def test_a_migrated_version_two_database_records_a_marked_trial(red, private_db)
     model.open()
     model.on_model_added("Red Percent", red)
     model.tip_id = "T7"
+    _give_flake(model)
     _wire(model)
     events.forget("Tip Created")        # a new dedupe episode
     since = events.latest_id
@@ -2519,8 +2584,8 @@ def test_arming_on_a_broken_tip_asks_once(station):
         f"Tip T7 broke on trial {broke}. Arm on it anyway?\n\nFrame the sample "
         "now. Continue takes the picture of the stage for trial "
         f"{broke + 1} on tip T7 at 22.5 deg (Rotator), 300 steps/s (Stepper "
-        "Probe); you then pick the capture region on it, and the recording "
-        "starts.")
+        f"Probe), cut {broke + 1} on 4oct26 · 2 · F3; you then pick the "
+        "capture region on it, and the recording starts.")
     again = model.run(result.command, result.inputs, (*result.args, True))
     assert again.is_ok and model.phase == "region"   # one Continue, not two
     model.abort_trial()
@@ -2979,7 +3044,7 @@ def test_the_telemetry_records_the_maps_peers(wired):
     model, red, log, made = wired
     _arm(model)
     peers = made["telemetry"].controller.models
-    assert set(peers) == {"Red Percent", "Rotator", "Stepper Probe"}
+    assert set(peers) == {"Red Percent", "Rotator", "Stepper Probe", "Sample Map"}
     assert peers["Red Percent"] is red and model not in peers.values()
     model.on_model_removed("Rotator")
     assert "Rotator" not in made["telemetry"].controller.models
@@ -3178,6 +3243,7 @@ def test_a_red_percent_without_the_frame_hook_still_gets_the_displays_video(
     model.open()
     model.on_model_added("Red Percent", Plain())
     model.tip_id = "t"
+    _give_flake(model)
     _wire(model)
     trial = _arm(model)
     assert model.video_status == "recording, 12 frames, 1 dropped"
@@ -3203,6 +3269,7 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
     model.open()
     model.on_model_added("Red Percent", red)
     model.tip_id = "T7"
+    _give_flake(model)
     _wire(model)
     try:
         assert _version(private_db) == 6
@@ -3328,6 +3395,7 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
     model.open()
     model.on_model_added("Red Percent", red)
     model.tip_id = "T7"
+    _give_flake(model)
     try:
         assert _version(private_db) == 6
         after = _rows(private_db, "SELECT * FROM trials")
@@ -3498,3 +3566,287 @@ def test_the_v6_controls_are_tier_two():
             "trench_depth_sigma_nm"} <= set(button["inputs"])
     labels = [e.get("text") for e in afm["elements"]]
     assert "Channel width (AFM)" in labels
+
+
+# -- TR-2 (approved proposal 2026-10-07): the sample, chip and flake, the cut --
+# Three dropdowns read from the Sample Map's store (read-only), cascading;
+# Arm refuses without all three; the trial row names them and the cut's
+# number on that flake. Columns by presence, whatever the file's version.
+
+#: The bench's v8 trials table, exactly as `transfer_map_2026-10-06.sqlite`
+#: declares it (`cut_id` is TEXT there).
+BENCH_V8_TRIALS = (
+    "CREATE TABLE trials (id INTEGER PRIMARY KEY AUTOINCREMENT, started_at "
+    "TEXT, tip_id TEXT, tilt_deg REAL, speed_steps_s REAL, z_contact REAL, "
+    "mark_operator_t REAL, mark_auto_max_t REAL, mark_auto_min_t REAL, broke "
+    "INTEGER NOT NULL DEFAULT 0, red_min REAL, red_max REAL, red_baseline "
+    "REAL, width_um REAL, width_sigma_um REAL, thickness_nm REAL, "
+    "thickness_sigma_nm REAL, note TEXT, before_path TEXT, after_path TEXT, "
+    "before_full_path TEXT, after_full_path TEXT, mark_path TEXT, "
+    "mark_full_path TEXT, status TEXT NOT NULL, origin TEXT NOT NULL DEFAULT "
+    "'recorded', tilt_source TEXT, speed_source TEXT, force_given TEXT, "
+    "speed_measured_steps_s REAL, video_path TEXT, video_index_path TEXT, "
+    "video_frames INTEGER, video_dropped INTEGER, chip_id TEXT, flake_id "
+    "TEXT, cut_id TEXT, sample_id TEXT, invalid INTEGER NOT NULL DEFAULT 0, "
+    "flake_uid TEXT, operator_id TEXT, operator_auth TEXT, camera_profile_id "
+    "TEXT, channel_height_nm REAL, channel_height_sigma_nm REAL, "
+    "trench_depth_nm REAL, trench_depth_sigma_nm REAL, width_optical_um REAL, "
+    "width_optical_sigma_um REAL, width_optical_method TEXT, contact_lowered "
+    "REAL, force_position REAL, force_class TEXT, shade_baseline REAL, "
+    "shade_peak REAL, shade_mark REAL)")
+
+
+def _bench_v8_file(path):
+    """A store as the bench's v8 code writes it: its trials table, its
+    profile and tips tables, one trial on 7/27/26 · 2 · 13, cut "1",
+    `user_version = 8`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path)
+    db.execute(BENCH_V8_TRIALS)
+    db.execute("CREATE TABLE profile (trial_id INTEGER NOT NULL REFERENCES "
+               "trials(id), t_s REAL NOT NULL, red REAL, z REAL, x REAL, y REAL)")
+    db.execute("CREATE INDEX profile_trial ON profile(trial_id)")
+    db.execute("CREATE TABLE tips (" + ", ".join(
+        f"{n} {k}" for n, k in tm_module.TIP_COLUMNS) + ")")
+    db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    db.execute("INSERT INTO trials (tip_id, sample_id, chip_id, flake_id, "
+               "cut_id, status, force_class) VALUES ('9/27/26 Tip1', "
+               "'7/27/26', '2', '13', '1', 'recorded', 'Low')")
+    db.execute("PRAGMA user_version = 8")
+    db.commit()
+    db.close()
+
+
+def _schema_sql(path, table):
+    with sqlite3.connect(path) as db:
+        return db.execute("SELECT sql FROM sqlite_master WHERE name = ?",
+                          (table,)).fetchone()[0]
+
+
+def test_the_pickers_read_the_sample_maps_store_and_cascade(tmp_path):
+    fake = FakeSamples()
+    opened = []
+
+    def factory(path):
+        opened.append(path)
+        return fake
+
+    model = TransferMap(db_path=tmp_path / "map.sqlite",
+                        sample_store_factory=factory)
+    assert model.options("sample_options") == []          # no Sample Map yet
+    model.on_model_added("Sample Map", FakeSampleMap(tmp_path / "s.sqlite"))
+    assert model.options("sample_options") == ["4oct26", "7/27/26"]
+    assert opened[-1] == tmp_path / "s.sqlite"            # its public db_path
+    assert model.options("chip_options") == []            # nothing picked
+    assert model.run("pick_sample", None, ("4oct26",)).is_ok
+    assert model.options("chip_options") == ["2", "3"]
+    assert model.options("flake_options") == []
+    assert model.run("pick_chip", None, ("2",)).is_ok
+    assert model.options("flake_options") == ["F3", "F4"]
+    assert model.run("pick_flake", None, ("f4",)).is_ok   # the store's spelling
+    values = model.state["values"]
+    assert (values["sample_pick"], values["chip_pick"], values["flake_pick"],
+            values["cut_next"]) == ("4oct26", "2", "F4", "1")
+    # Cascading: a new chip clears the flake, a new sample both.
+    assert model.run("pick_chip", None, ("3",)).is_ok
+    assert (model.chip_pick, model.flake_pick) == ("3", "")
+    assert model.state["values"]["cut_next"] == ""
+    assert model.run("pick_flake", None, ("F1",)).is_ok
+    assert model.run("pick_sample", None, ("4oct26",)).is_ok   # the same one
+    assert (model.chip_pick, model.flake_pick) == ("3", "F1")
+    assert model.run("pick_sample", None, ("7/27/26",)).is_ok
+    assert (model.sample_pick, model.chip_pick, model.flake_pick) == (
+        "7/27/26", "", "")
+    for command, label in (("pick_sample", "nope"), ("pick_chip", "9")):
+        result = model.run(command, None, (label,))
+        assert result.is_refused, command
+    assert model.run("pick_flake", None, ("13",)).is_refused   # no chip yet
+    model.on_model_removed("Sample Map")
+    assert model.options("sample_options") == []
+
+
+def test_without_a_sample_map_or_its_store_the_pickers_offer_nothing(
+        tmp_path, red):
+    """No Sample Map, or one whose store is not there (the real read-only
+    opener raises): empty lists, and Next step says what to do."""
+    model = TransferMap(db_path=tmp_path / "map.sqlite")
+    model.on_model_added("Red Percent", red)
+    model.tip_id = "tip-A"
+    assert model.sample_options == [] and model.chip_options == []
+    assert model.state["values"]["next_step"] == "Add a sample on the Sample Map first"
+    model.on_model_added("Sample Map", FakeSampleMap(tmp_path / "none.sqlite"))
+    assert model.sample_options == []
+    assert model.state["values"]["next_step"] == "Add a sample on the Sample Map first"
+    refused = model.run("pick_sample", None, ("4oct26",))
+    assert refused.is_refused
+    assert refused.reason == "Add a sample on the Sample Map first."
+    assert not (tmp_path / "none.sqlite").exists()        # nothing created
+
+
+def test_the_default_opener_reads_the_real_sample_store(tmp_path):
+    from model.sample_store import SampleStore
+    path = tmp_path / "samples" / "sample_map.sqlite"
+    store = SampleStore(path)
+    store.add_sample("4oct26", "hBN")
+    store.add_chip("4oct26", "2")
+    store.add_flake("4oct26", "2", "F3")
+    before = path.stat().st_mtime_ns
+    model = TransferMap(db_path=tmp_path / "map.sqlite")
+    model.on_model_added("Sample Map", FakeSampleMap(path))
+    assert model.sample_options == ["4oct26"]
+    assert model.run("pick_sample", None, ("4OCT26",)).is_ok
+    assert model.run("pick_chip", None, ("2",)).is_ok
+    assert model.flake_options == ["F3"]
+    assert model.run("pick_flake", None, ("F3",)).is_ok
+    assert model.cut_next == 1
+    assert path.stat().st_mtime_ns == before              # read-only
+
+
+def test_arm_refuses_without_a_sample_chip_and_flake(station):
+    model, red, *_ = station
+    for keep in (0, 1, 2):
+        model._sample, model._chip, model._flake = (FLAKE[:keep]
+                                                    + (None,) * (3 - keep))
+        result = model.run("arm_trial", None, (True,))
+        assert result.is_refused, keep
+        assert result.reason == ("Pick the sample, chip and flake before "
+                                 "arming, so the cut can be traced to its "
+                                 "flake.")
+        assert model.phase == "setup"
+    model.on_model_removed("Sample Map")
+    result = model.run("arm_trial", None, (True,))
+    assert result.is_refused and result.reason.startswith(
+        "Add a sample on the Sample Map first")
+    _give_flake(model)
+    assert model.run("arm_trial", None, (True,)).is_ok
+    model.abort_trial()
+
+
+def test_the_trial_row_names_its_flake_and_its_cut(station, private_db):
+    """Cut = 1 + the trials already on that flake (every status); the picks
+    stay for the next trial; the status names the trial by its flake."""
+    model, red, *_ = station
+    assert model.state["values"]["cut_next"] == "1"
+    first = _arm(model)
+    assert model.state["values"]["trial_status"] == f"Trial {first} on 4oct26 · 2 · F3"
+    _finish(model)
+    assert (model.sample_pick, model.chip_pick, model.flake_pick) == FLAKE
+    assert model.state["values"]["cut_next"] == "2"
+    second = _arm(model)                      # the next trial, the same flake
+    model.abort_trial()                       # an aborted cut counts too
+    assert model.cut_next == 3
+    assert model.run("pick_flake", None, ("F4",)).is_ok
+    _arm_only(model)
+    assert model.state["values"]["trial_status"] == (
+        f"Trial {second + 1} on 4oct26 · 2 · F4")       # the region step
+    assert model.run("set_region", None, REGION).is_ok
+    third = model._trial.id
+    model.end_recording()
+    _confirmed(model, "finish_trial", {"note": ""})
+    rows = _rows(private_db, "SELECT id, sample_id, chip_id, flake_id, cut_id, "
+                 "typeof(cut_id) AS kind FROM trials ORDER BY id")
+    assert rows == [
+        {"id": first, "sample_id": "4oct26", "chip_id": "2", "flake_id": "F3",
+         "cut_id": "1", "kind": "text"},
+        {"id": second, "sample_id": "4oct26", "chip_id": "2", "flake_id": "F3",
+         "cut_id": "2", "kind": "text"},
+        {"id": third, "sample_id": "4oct26", "chip_id": "2", "flake_id": "F4",
+         "cut_id": "1", "kind": "text"}]
+    assert model.trial_status == f"Last: trial {third} on 4oct26 · 2 · F4, recorded."
+    mapped = {r["id"]: (r["sample_id"], r["chip_id"], r["flake_id"])
+              for r in model._map_rows()}
+    assert mapped == {first: FLAKE, third: ("4oct26", "2", "F4")}
+
+
+def test_the_cut_counts_the_flakes_trials_trimmed_and_case_insensitively(tmp_path):
+    store = tm_module.TrialStore(tmp_path / "map.sqlite")
+    for sample, chip, flake in (("4oct26", "2", "F3"), (" 4OCT26 ", "2 ", "f3"),
+                                ("4oct26", "2", "F4"), ("4oct26", "3", "F3"),
+                                (None, None, None)):
+        store.insert({"sample_id": sample, "chip_id": chip, "flake_id": flake,
+                      "status": "recorded"})
+    assert store.count_for_flake("4oct26", "2", "F3") == 2
+    assert store.count_for_flake("4oct26", "2", "F3", before=2) == 1
+    assert store.count_for_flake("4oct26", "9", "F3") == 0
+    assert tm_module.TrialStore(tmp_path / "none.sqlite").count_for_flake(
+        "a", "b", "c") == 0
+
+
+def test_set_trial_sample_backfills_an_old_trial(station, tmp_path, private_db):
+    model, red, *_ = station
+    source = tmp_path / "old.csv"
+    source.write_text("speed_steps_s\n100\n200\n300\n")
+    assert model.import_csv(str(source))["imported"] == 3
+    # The arguments win (the API's back-fill); the cut follows the trial's
+    # place among the flake's trials numbered below it.
+    assert model.run("set_trial_sample", None, ("1", "7/27/26", "2", "13")).is_ok
+    assert model.run("set_trial_sample", None, (2, "7/27/26", "2", "13")).is_ok
+    # From the sheet: the Trial entry under Data, the flake picked on setup.
+    assert model.run("set_trial_sample", {"afm_trial_id": "3"}).is_ok
+    rows = _rows(private_db, "SELECT id, sample_id, chip_id, flake_id, cut_id "
+                 "FROM trials ORDER BY id")
+    assert rows == [
+        {"id": 1, "sample_id": "7/27/26", "chip_id": "2", "flake_id": "13",
+         "cut_id": "1"},
+        {"id": 2, "sample_id": "7/27/26", "chip_id": "2", "flake_id": "13",
+         "cut_id": "2"},
+        {"id": 3, "sample_id": "4oct26", "chip_id": "2", "flake_id": "F3",
+         "cut_id": "1"}]
+    assert model.run("set_trial_sample", {"afm_trial_id": "0"}).is_refused
+    assert model.run("set_trial_sample", {"afm_trial_id": "99"}).is_refused
+    model._sample = model._chip = model._flake = None
+    nothing = model.run("set_trial_sample", {"afm_trial_id": "3"})
+    assert nothing.is_refused and "Pick the sample" in nothing.reason
+    _give_flake(model)
+    armed = _arm(model)
+    still = model.run("set_trial_sample", {"afm_trial_id": str(armed)})
+    assert still.is_refused and "still armed" in still.reason
+    model.abort_trial()
+    element = _element(model, "set_trial_sample")
+    section = next(s for s in model.schema["sections"]
+                   if element in s["elements"])
+    assert (section["title"], section["tier"]) == ("Data", 2)
+    assert element["inputs"] == ["afm_trial_id"]
+
+
+def test_a_version_six_file_gains_the_flake_columns_and_keeps_its_version(
+        private_db):
+    _version_one_file(private_db, drop=("chip_id", "flake_id", "cut_id"),
+                      version=6)
+    events.forget("Database Upgraded")
+    since = events.latest_id
+    model = TransferMap()
+    model.open()
+    model.close()
+    columns = _columns(private_db)
+    assert {"chip_id", "flake_id", "cut_id"} <= set(columns)
+    assert _version(private_db) == 6
+    assert "cut_id TEXT" in _schema_sql(private_db, "trials")
+    upgraded = _titled("Database Upgraded", since)
+    assert len(upgraded) == 1 and "chip_id, flake_id, cut_id" in upgraded[0].message
+    assert len(_rows(private_db, "SELECT * FROM trials")) == 1
+
+
+def test_a_bench_v8_file_gains_nothing_it_has_and_keeps_version_eight(
+        private_db, red):
+    _bench_v8_file(private_db)
+    trials_sql = _schema_sql(private_db, "trials")
+    before = _rows(private_db, "SELECT * FROM trials")
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    model.tip_id = "T7"
+    _give_flake(model, flake=("7/27/26", "2", "13"))
+    try:
+        assert _schema_sql(private_db, "trials") == trials_sql   # untouched
+        assert _version(private_db) == 8
+        assert _rows(private_db, "SELECT * FROM trials") == before
+        assert model.cut_next == 2                     # the bench's cut 1 counts
+        trial = _record(model, red)
+        row = _row(private_db, trial)
+        assert (row["sample_id"], row["chip_id"], row["flake_id"],
+                row["cut_id"]) == ("7/27/26", "2", "13", "2")
+        assert row["invalid"] == 0 and row["force_class"] is None
+        assert _version(private_db) == 8
+    finally:
+        model.close()

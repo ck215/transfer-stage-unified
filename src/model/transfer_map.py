@@ -36,6 +36,13 @@ dropdown, every tip labelled "<tip_id> · <n> trials", retired ones last;
 the tip picked there is the trial's tip. "New tip…" opens the `new_tip`
 step, a prompt of its own (Tip ID, Add tip, Cancel).
 
+**The cut is traced to its flake** (approved proposal, 2026-10-07): the
+setup step picks the Sample, Chip and Flake from the Sample Map's store
+(read-only, `model.sample_store.SampleStore.open_readonly`, found through
+the Sample Map's public `db_path`), Arm refuses without all three, and the
+trial row names them with the cut's number on that flake (`cut_id`, 1 +
+the trials already on it). The picks stay for the next trial.
+
 **Force** has no sensor. It is approximated from the red-percent trace of
 the lowering (`model.transfer_map_analysis`): several definitions, computed
 from the stored raw profile whenever a figure or an export asks, never
@@ -88,6 +95,7 @@ from events import events
 from model import plot_data
 from model import transfer_map_analysis as analysis
 from model.base import Model
+from model.sample_store import SampleStore
 from model.trial_telemetry import TrialTelemetry
 from param import Param
 from result import NeedsConfirm, Refused
@@ -162,6 +170,11 @@ TRIAL_COLUMNS = (
     # the AFM width: only it makes a trial `measured`.
     ("width_optical_um", "REAL"), ("width_optical_sigma_um", "REAL"),
     ("width_optical_method", "TEXT"),
+    # The chip and flake the cut was made on, and the cut's number on that
+    # flake (approved proposal 2026-10-07). The bench's v8 store already has
+    # all three with these exact types (its CREATE TABLE: cut_id is TEXT);
+    # a file without them gains them by presence, whatever its version.
+    ("chip_id", "TEXT"), ("flake_id", "TEXT"), ("cut_id", "TEXT"),
 )
 _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
 PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y")
@@ -187,7 +200,10 @@ _TIP_NAMES = frozenset(name for name, _kind in TIP_COLUMNS)
 #: and the `meta` table with the store's identity (`map_db_uuid`, written
 #: once). An older file gains the columns by `ALTER TABLE ... ADD COLUMN`,
 #: a tip record for every tip its trials name and its identity, the first
-#: time it is opened or written, and keeps every trial it holds.
+#: time it is opened or written, and keeps every trial it holds. Columns are
+#: added BY PRESENCE at every version (2026-10-07): a file at this version
+#: or newer (the lab's v7/v8) gains the columns it lacks and keeps its
+#: version; nothing it has is touched.
 SCHEMA_VERSION = 6
 #: How an optical width was measured (Q19, owner 2026-10-04: pixels on the
 #: capture-region picture at the Sample Map's um_per_px, the default).
@@ -274,6 +290,7 @@ class TrialStore:
     def __init__(self, path):
         self.path = Path(path)
         self._lock = threading.Lock()
+        self._file_version = SCHEMA_VERSION
 
     @property
     def exists(self):
@@ -306,20 +323,20 @@ class TrialStore:
         elif added is not None:
             events.info("Database Upgraded", f"{self.path} now has "
                         f"{', '.join(added) or 'every column'} (version "
-                        f"{SCHEMA_VERSION}). Its trials are kept.",
-                        source="Transfer Map")
+                        f"{max(self._file_version, SCHEMA_VERSION)}). Its "
+                        "trials are kept.", source="Transfer Map")
         return result
 
-    @staticmethod
-    def _migrate(db, fresh):
-        """Bring the file to `SCHEMA_VERSION`. A file already there (or
-        newer) is left alone. Older: every trials column it lacks is added
-        (a column that exists is skipped, so an upgrade cut short finishes),
-        then the version is set. Returns the columns added, or None when
-        nothing was done or the file is new."""
-        version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version >= SCHEMA_VERSION:
-            return None
+    def _migrate(self, db, fresh):
+        """Bring the file to `SCHEMA_VERSION`. Every trials column it lacks
+        is added first, at ANY version (by presence, 2026-10-07: a column
+        that exists is skipped, so an upgrade cut short finishes and the
+        lab's v7/v8 files gain only what they lack). A file at this version
+        or newer keeps its version; an older one gets the rest of the
+        upgrade, then the version is set. Returns the columns added, or None
+        when nothing was done or the file is new."""
+        version = self._file_version = \
+            db.execute("PRAGMA user_version").fetchone()[0]
         have = {row[1] for row in db.execute("PRAGMA table_info(trials)")}
         added = []
         for name, kind in TRIAL_COLUMNS:
@@ -327,6 +344,8 @@ class TrialStore:
                 # Names and kinds are this module's own, never input.
                 db.execute(f"ALTER TABLE trials ADD COLUMN {name} {kind}")
                 added.append(name)
+        if version >= SCHEMA_VERSION:
+            return None if fresh or not added else added
         if version < 3 and not fresh:
             # The tips table is new in 3 (`_CREATE` made it empty): one
             # record per tip the file's trials already name.
@@ -510,6 +529,22 @@ class TrialStore:
                              "AND id <= ?", (tip, int(up_to)))
         return rows[0]["n"] if rows else 0
 
+    def count_for_flake(self, sample_id, chip_id, flake_id, before=None):
+        """Stored trials on this flake (every status), the IDs compared
+        trimmed and case-insensitively as the Sample Map compares them; with
+        `before`, only those numbered below it. 0 for a file without the
+        columns (a read never migrates)."""
+        sql = ("SELECT COUNT(*) AS n FROM trials WHERE "
+               "lower(trim(sample_id)) = lower(trim(?)) AND "
+               "lower(trim(chip_id)) = lower(trim(?)) AND "
+               "lower(trim(flake_id)) = lower(trim(?))")
+        args = [str(sample_id), str(chip_id), str(flake_id)]
+        if before is not None:
+            sql += " AND id < ?"
+            args.append(int(before))
+        rows = self.read(sql, args)
+        return rows[0]["n"] if rows else 0
+
     def next_id(self):
         """The number the next recorded trial will get (AUTOINCREMENT never
         reuses one, so this is the sequence, not the row count)."""
@@ -544,6 +579,7 @@ class _NoStore(TrialStore):
     def __init__(self):
         self.path = None
         self._lock = threading.Lock()
+        self._file_version = SCHEMA_VERSION
 
     @property
     def exists(self):
@@ -560,11 +596,13 @@ class _Pending:
     the desktop in the capture library's coordinates (None when the screen
     could not say)."""
 
-    def __init__(self, tip, still, size, bounds):
+    def __init__(self, tip, still, size, bounds, where=(None, None, None)):
         self.tip = tip
         self.still = still
         self.size = size
         self.bounds = bounds
+        #: (sample_id, chip_id, flake_id) picked at Arm.
+        self.where = tuple(where)
 
 
 class _Trial:
@@ -616,6 +654,8 @@ class _Trial:
         self.bounds = None
         #: The review figure's PNG (`trial_figure`), drawn once.
         self.review = None
+        #: (sample_id, chip_id, flake_id) the cut is on (`_Pending.where`).
+        self.where = (None, None, None)
 
 
 class TransferMap(Model):
@@ -703,9 +743,20 @@ class TransferMap(Model):
 
     def __init__(self, port=None, gamepad=None, sim=False, db_path=None, *,
                  recorder_factory=None, telemetry_factory=None,
-                 monitor=STAGE_MONITOR):
+                 monitor=STAGE_MONITOR, sample_store_factory=None):
         super().__init__()
         self.sim = sim
+        #: `(path) -> store` with `samples()`, `chips(sample_id)`,
+        #: `flakes(sample_id, chip_id)`; None means `_open_samples` (the
+        #: Sample Map's store, read-only). A test injects a fake.
+        self._sample_store_factory = sample_store_factory
+        #: The Sample Map's store file (its public `db_path`), from
+        #: `on_model_added`; None while no Sample Map is open.
+        self._sample_db = None
+        #: The setup step's picks: the sample, chip and flake the next cut
+        #: is on. Kept from trial to trial (the next starts on the last
+        #: flake); changing the sample clears the chip and the flake.
+        self._sample = self._chip = self._flake = None
         #: `(out_dir, fps, monitor) -> ScreenRecorder`; None means
         #: `_make_recorder`. The stage still, the trial's video of the whole
         #: display and the still at the Mark are taken through it.
@@ -1001,7 +1052,18 @@ class TransferMap(Model):
         self._persisting = [w for w in self._persisting if w.is_alive()]
 
     # -- the live sources --------------------------------------------------
+    #: The model whose store holds the samples, chips and flakes.
+    SAMPLE_MAP = "Sample Map"
+
     def on_model_added(self, name, model):
+        # The Sample Map's store, read-only, for the setup pickers: its
+        # public `db_path`, never a private attribute (the mirror of how the
+        # Sample Map finds this map's store).
+        if name == self.SAMPLE_MAP and model is not self:
+            path = getattr(model, "db_path", None)
+            if path:
+                self._sample_db = Path(path)
+                self._touch()
         if callable(getattr(model, "subscribe", None)) and \
                 callable(getattr(model, "grab_frame", None)):
             self._red, self._red_name = model, name
@@ -1013,6 +1075,9 @@ class TransferMap(Model):
         self._peers[name] = model          # what the telemetry records
 
     def on_model_removed(self, name, model=None):
+        if name == self.SAMPLE_MAP:
+            self._sample_db = None
+            self._touch()
         if name == self._red_name:
             self._release_red()
             self._red, self._red_name = None, None
@@ -1190,6 +1255,9 @@ class TransferMap(Model):
             return "Open Red Percent"
         if not (self.tip_id or "").strip():
             return "Pick a tip, or press New tip…"
+        if not all(self._where()):
+            return (self.PICK_FLAKE if self.sample_options
+                    else self.SAMPLE_FIRST)
         if getattr(red, "is_running", False):
             return "Stop Red Percent's run, then press Arm trial"
         return "Press Arm trial"
@@ -1241,6 +1309,14 @@ class TransferMap(Model):
         if not tip:
             raise Refused("Pick a tip before arming (or press New tip…), so "
                           "the trial can be traced to its tip.")
+        where = self._where()
+        if not all(where):
+            # Owner default (approved proposal 2026-10-07): required at Arm.
+            if not self.sample_options:
+                raise Refused(self.SAMPLE_FIRST + ", then pick it here "
+                              "(Sample, Chip, Flake).")
+            raise Refused("Pick the sample, chip and flake before arming, so "
+                          "the cut can be traced to its flake.")
         if getattr(red, "is_running", False):
             # The trial's run starts on the region picked after Arm; a run
             # already going measures some other region, and Red Percent
@@ -1262,15 +1338,16 @@ class TransferMap(Model):
                            if speed_now is not None else ", NO speed")
             prompt = (f"Frame the sample now. Continue takes the picture of the "
                       f"stage for trial {self._store.next_id()} on tip {tip}"
-                      f"{tilt_words}{speed_words}; you then pick the capture "
-                      "region on it, and the recording starts.")
+                      f"{tilt_words}{speed_words}, cut {self.cut_next} on "
+                      f"{' · '.join(where)}; you then pick the capture region "
+                      "on it, and the recording starts.")
             doubt = self._tip_doubt(tip)
             raise NeedsConfirm(doubt + "\n\n" + prompt if doubt else prompt,
                                "arm_trial",
                                inputs={"typed_tilt": self.typed_tilt or "",
                                        "typed_speed": self.typed_speed or ""})
         still, size = self._take_still()
-        pending = _Pending(tip, still, size, self._display_bounds())
+        pending = _Pending(tip, still, size, self._display_bounds(), where)
         with self._lock:
             if self.is_estopped:           # a stop inside the grab wins
                 stopped = True
@@ -1370,13 +1447,19 @@ class TransferMap(Model):
                               "region is not set or the screen is not open.")
             tilt, tilt_source = self._read_tilt()
             speed, speed_source = self._read_speed()
+            sample, chip, flake = pending.where
+            cut = (self._store.count_for_flake(sample, chip, flake) + 1
+                   if all(pending.where) else None)
             trial_id = self._store.insert({
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "tip_id": tip,
                 "tilt_deg": tilt, "speed_steps_s": speed, "status": "armed",
                 "origin": "recorded", "tilt_source": tilt_source,
                 "speed_source": speed_source, "note": "",
                 "operator_id": self.operator_id,
-                "operator_auth": self.operator_auth})
+                "operator_auth": self.operator_auth,
+                "sample_id": sample, "chip_id": chip, "flake_id": flake,
+                # TEXT, as the bench's v8 column is.
+                "cut_id": None if cut is None else str(cut)})
             created = self._store.use_tip(tip, trial_id, _now())
             with self._lock:
                 if self.is_estopped:
@@ -1386,6 +1469,7 @@ class TransferMap(Model):
                                   "started; nothing was kept.")
                 arming.id, arming.tilt, arming.speed = trial_id, tilt, speed
                 arming.run, arming.bounds = run, pending.bounds
+                arming.where = pending.where
                 self._trial, self._pending, self._arming = arming, None, None
         except BaseException:
             self._arming = None
@@ -2215,6 +2299,167 @@ class TransferMap(Model):
         last = self._store.last()
         return last["id"] if last else None
 
+    # -- the sample, chip and flake (approved proposal 2026-10-07) -------------
+    #: The setup step's Next step and Arm's refusal while the Sample Map
+    #: offers no sample (no Sample Map open, no store, or an empty one).
+    SAMPLE_FIRST = "Add a sample on the Sample Map first"
+    PICK_FLAKE = "Pick the sample, chip and flake"
+
+    def _where(self):
+        return (self._sample, self._chip, self._flake)
+
+    def _samples_store(self):
+        """The Sample Map's store, read-only, or None (no Sample Map open,
+        or no store at its path). Opened per read: the file may appear,
+        move or go while the station runs."""
+        path = self._sample_db
+        if path is None:
+            return None
+        try:
+            return (self._sample_store_factory or _open_samples)(path)
+        except Exception as exc:
+            events.debug("Sample Store Not Opened", repr(exc),
+                         source=self.NAME, every=5.0)
+            return None
+
+    def _sample_rows(self, what, *ids):
+        """`store.<what>(*ids)` as a list, [] when there is no store or it
+        cannot be read (the pickers then offer nothing; Next step says
+        why)."""
+        store = self._samples_store()
+        if store is None:
+            return []
+        try:
+            return list(getattr(store, what)(*ids))
+        except Exception as exc:
+            events.debug("Sample Store Not Read", repr(exc),
+                         source=self.NAME, every=5.0)
+            return []
+
+    @property
+    def sample_options(self):
+        return [str(r["sample_id"]) for r in self._sample_rows("samples")]
+
+    @property
+    def chip_options(self):
+        if not self._sample:
+            return []
+        return [str(r["chip_id"]) for r in self._sample_rows("chips", self._sample)]
+
+    @property
+    def flake_options(self):
+        if not (self._sample and self._chip):
+            return []
+        return [str(r["flake_id"])
+                for r in self._sample_rows("flakes", self._sample, self._chip)]
+
+    @property
+    def sample_pick(self):
+        return self._sample or ""
+
+    @property
+    def chip_pick(self):
+        return self._chip or ""
+
+    @property
+    def flake_pick(self):
+        return self._flake or ""
+
+    @staticmethod
+    def _match(label, options):
+        """The option `label` names: itself, else the one equal to it
+        trimmed and case-insensitively (the Sample Map's rule); None."""
+        if label in options:
+            return label
+        wanted = str(label or "").strip().lower()
+        return next((o for o in options if o.strip().lower() == wanted), None)
+
+    def pick_sample(self, label):
+        """The Sample dropdown. A different sample clears the chip and the
+        flake (they belong to the sample)."""
+        options = self.sample_options
+        if not options:
+            raise Refused(self.SAMPLE_FIRST + ".")
+        found = self._match(label, options)
+        if found is None:
+            raise Refused(f"{label!r} is not a sample on the Sample Map.")
+        if found != self._sample:
+            self._sample, self._chip, self._flake = found, None, None
+        self._touch()
+        return found
+
+    def pick_chip(self, label):
+        """The Chip dropdown (the sample's chips). A different chip clears
+        the flake."""
+        if not self._sample:
+            raise Refused("Pick the sample first.")
+        found = self._match(label, self.chip_options)
+        if found is None:
+            raise Refused(f"{label!r} is not a chip of sample {self._sample}. "
+                          "Add it on the Sample Map first.")
+        if found != self._chip:
+            self._chip, self._flake = found, None
+        self._touch()
+        return found
+
+    def pick_flake(self, label):
+        """The Flake dropdown (the chip's flakes)."""
+        if not (self._sample and self._chip):
+            raise Refused("Pick the sample and the chip first.")
+        found = self._match(label, self.flake_options)
+        if found is None:
+            raise Refused(f"{label!r} is not a flake of chip {self._chip}. "
+                          "Add it on the Sample Map first.")
+        self._flake = found
+        self._touch()
+        return found
+
+    @property
+    def cut_next(self):
+        """The number the next cut on the picked flake gets: 1 + the trials
+        already on it (every status). None (blank) until all three are
+        picked."""
+        if not all(self._where()):
+            return None
+        return self._store.count_for_flake(*self._where()) + 1
+
+    def set_trial_sample(self, trial_id=None, sample_id=None, chip_id=None,
+                         flake_id=None):
+        """Back-fill a recorded trial's sample, chip and flake (its cut
+        number follows: 1 + the trials on that flake numbered below it).
+        The arguments win; without them, the Trial entry under Data and the
+        setup step's picks."""
+        self._need_store()
+        number = int(trial_id if trial_id is not None
+                     else (self.afm_trial_id or 0))
+        if number <= 0:
+            raise Refused("Type the trial number under Data, Trial.")
+        given = (sample_id, chip_id, flake_id)
+        where = tuple(str(v or "").strip() for v in (
+            given if any(v is not None for v in given) else self._where()))
+        if not all(where):
+            raise Refused("Pick the sample, chip and flake on the trial's "
+                          "setup, then press Set sample for trial.")
+        row = self._store.trial(number)
+        if row is None:
+            raise Refused(f"No trial {number} in the database.")
+        if row["status"] == "armed":
+            raise Refused(f"Trial {number} is still armed. Finish it first.")
+        cut = self._store.count_for_flake(*where, before=number) + 1
+        self._store.update(number, {"sample_id": where[0], "chip_id": where[1],
+                                    "flake_id": where[2], "cut_id": str(cut)})
+        self._changed()
+        events.info("Trial Sample Set", f"Trial {number}: on "
+                    f"{' · '.join(where)}, cut {cut}.", source=self.NAME)
+        return number
+
+    @staticmethod
+    def _trial_name(number, where, word="Trial"):
+        """ "Trial 4 on 4oct26 · 2 · F3" (or "Trial 4" with no flake)."""
+        if all(where):
+            return f"{word} {number} on {' · '.join(str(w) for w in where)}"
+        return f"{word} {number}"
+
     # -- the session database ----------------------------------------------
     def new_database(self):
         """A new database beside this one, for a new session. The current
@@ -2350,7 +2595,8 @@ class TransferMap(Model):
                     "width_optical_um", "width_optical_sigma_um")},
                 **{name: (row.get(name) or "").strip() or None for name in (
                     "width_optical_method", "sample_id", "flake_uid",
-                    "operator_id", "operator_auth", "camera_profile_id")},
+                    "operator_id", "operator_auth", "camera_profile_id",
+                    "chip_id", "flake_id", "cut_id")},
                 "broke": 1 if broke else 0,
                 "note": row.get("note") or "",
                 "status": "measured" if width is not None else "recorded",
@@ -2401,6 +2647,10 @@ class TransferMap(Model):
             # bench store's column, absent from this one's v6 (None then).
             rows.append({"id": row["id"], "tilt": row["tilt_deg"],
                          "force_class": row.get("force_class"),
+                         # The cut's flake (approved proposal 2026-10-07).
+                         "sample_id": row.get("sample_id"),
+                         "chip_id": row.get("chip_id"),
+                         "flake_id": row.get("flake_id"),
                          "speed": row["speed_steps_s"],
                          "force": self._force_of(row),
                          "width": width, "width_sigma": sigma,
@@ -2524,15 +2774,22 @@ class TransferMap(Model):
 
     @property
     def trial_status(self):
-        trial = self._trial
+        """The trial by its name: "Trial 4 on 4oct26 · 2 · F3" (its number
+        is the next one in the region step), the Mark when there is one;
+        between trials the last one's. The sample count is Diagnostics'."""
+        trial, pending = self._trial, self._pending
         if trial is not None:
             marked = (f", force marked at {trial.operator_t:.1f} s"
                       if trial.operator_t is not None else "")
-            return f"Trial {trial.id} armed: {len(trial.samples)} samples{marked}."
+            return self._trial_name(trial.id, trial.where) + marked
+        if pending is not None:
+            return self._trial_name(self._store.next_id(), pending.where)
         last = self._store.last()
         if last is None:
             return "No trials yet."
-        return f"Last: trial {last['id']}, {last['status']}."
+        where = tuple(last.get(k) for k in ("sample_id", "chip_id", "flake_id"))
+        return (f"Last: {self._trial_name(last['id'], where, 'trial')}, "
+                f"{last['status']}.")
 
     @property
     def trial_figure(self):
@@ -2670,6 +2927,14 @@ class TransferMap(Model):
                 sch.dropdown("Tip", "tip_pick", "pick_tip", "tip_options"),
                 sch.button("New tip…", "new_tip"),
                 sch.readonly("Tip status", "tip_status"),
+                # The cut's flake, from the Sample Map's store (cascading:
+                # a new sample clears the chip and the flake).
+                sch.dropdown("Sample", "sample_pick", "pick_sample",
+                             "sample_options"),
+                sch.dropdown("Chip", "chip_pick", "pick_chip", "chip_options"),
+                sch.dropdown("Flake", "flake_pick", "pick_flake",
+                             "flake_options"),
+                sch.readonly("Cut", "cut_next"),
                 # Bench 2026-09-28: the tilt varies between trials of one
                 # tip and was buried two tiers down; it is asked here, per
                 # trial. Collected, never demanded (TM-3, 2026-10-07).
@@ -2836,6 +3101,11 @@ class TransferMap(Model):
                 sch.file_save("Export tips", "export_tips_csv",
                               extensions=("csv",)),
                 sch.file_open("Import trials", "import_csv", extensions=("csv",)),
+                # Back-fill a trial recorded before its flake was asked: the
+                # trial number here, the flake picked on the setup step.
+                sch.entry("Trial", "afm_trial_id", P["afm_trial_id"]),
+                sch.button("Set sample for trial", "set_trial_sample",
+                           inputs=("afm_trial_id",)),
                 tier=2, disclosure=configure,
             ),
             sch.section(
@@ -2851,6 +3121,12 @@ class TransferMap(Model):
             ),
             self._safety_section(),
         )
+
+
+def _open_samples(path):
+    """The Sample Map's store at `path`, read-only (never created, migrated
+    or written); raises when there is no file there."""
+    return SampleStore.open_readonly(path)
 
 
 def _width_text(row):
