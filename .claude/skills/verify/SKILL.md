@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Run the right test gates for the station at the right time — the fast suite while working, all four gates plus a launch before anything merges. Use after any change under src/ or tests/, before merging an agent's worktree, and when deciding whether the Qt pass is warranted.
+description: Run the right test gates for the station at the right time — the fast suite while working, the golden and legacy gates plus a launch before anything merges. Use after any change under src/ or tests/, before merging an agent's worktree, and when deciding whether the optional Qt pass is warranted.
 ---
 
 # Verifying
