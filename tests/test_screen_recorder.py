@@ -13,6 +13,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -24,6 +25,11 @@ from PIL import Image
 from devices import screen_recorder
 from devices.screen import Screen
 from devices.screen_recorder import RecorderResult, ScreenRecorder, _ByteQueue
+
+
+#: A shell script stands in for ffmpeg, and SIGKILL is POSIX.
+posix_only = pytest.mark.skipif(sys.platform == "win32",
+                                reason="POSIX: a shell-script encoder, SIGKILL")
 
 
 @pytest.fixture
@@ -201,6 +207,7 @@ def test_a_frame_of_another_size_is_dropped_and_counted_never_resized(tmp_path, 
     assert len(frames) == result.frames == len(_index(result.index_path))
 
 
+@posix_only
 def test_a_sigkilled_encoder_leaves_a_playable_file(tmp_path, encoder):
     """Fragmented MP4: a killed writer (a timeout, a crash, power) still
     leaves every completed fragment playable. A plain MP4 writes its index
@@ -231,6 +238,7 @@ def test_a_sigkilled_encoder_leaves_a_playable_file(tmp_path, encoder):
 
 # -- never block, always stop ------------------------------------------------------------
 
+@posix_only
 def test_a_wedged_encoder_never_blocks_the_capture_and_stop_is_bounded(tmp_path, monkeypatch):
     """An ffmpeg that reads nothing: the writer blocks on the pipe, the capture
     keeps its rate (frames past the byte budget are dropped and counted), and
@@ -259,6 +267,7 @@ def test_a_wedged_encoder_never_blocks_the_capture_and_stop_is_bounded(tmp_path,
     assert not _recorder_threads()
 
 
+@posix_only
 def test_an_encoder_that_dies_is_counted_never_raised(tmp_path, monkeypatch):
     monkeypatch.setattr(screen_recorder, "_ffmpeg_exe",
                         lambda: _script(tmp_path, "ffmpeg", "exit 1"))
