@@ -2211,8 +2211,9 @@ def test_a_checkout_has_no_switch_to_stable(panel):
 def test_a_bundle_with_stable_beside_it_offers_the_switch(fake_types, stable):
     panel = switching(stable, StableFirmware(), [])
     titles = [s["title"] for s in panel.schema["sections"]]
-    assert titles[:4] == ["Update", "Firmware", "Stable", "Devices"]
-    [button] = [e for e in panel.schema["sections"][2]["elements"]
+    # The Profile section leads the schema (user-system Phase 1).
+    assert titles[:5] == ["Profile", "Update", "Firmware", "Stable", "Devices"]
+    [button] = [e for e in panel.schema["sections"][3]["elements"]
                 if e["type"] == "button"]
     assert button["command"] == "switch_to_stable"
     assert button["confirm"] == STABLE_CONFIRM

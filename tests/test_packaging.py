@@ -690,8 +690,9 @@ def test_the_teensy_loader_is_pinned_by_commit_and_checksum(tools):
     assert tools.TEENSY_LOADER_COMMIT in tools.TEENSY_LOADER_URL
     assert tools.TEENSY_LOADER_SHA256 == \
         "8e10e19d51244699b003a0a8614bc7bb9cf5d21938748c05efd8fd79e54efa7d"
-    # flash_firmware.py uploads the Teensy with teensy_loader_cli
-    with open(os.path.join(ROOT, "firmware", "flash_firmware.py"), encoding="utf-8") as f:
+    # A1: the flashing lives in src/controller/flashing.py now (the script
+    # is a thin front over it); it uploads the Teensy with teensy_loader_cli
+    with open(os.path.join(ROOT, "src", "controller", "flashing.py"), encoding="utf-8") as f:
         assert '"teensy_loader_cli"' in f.read()
 
 

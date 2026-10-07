@@ -1244,8 +1244,10 @@ class Setup(PortProbe, Panel):
         return built
 
     # -- profiles (user-system Phase 1) -------------------------------------------
-    PARAMS = {"profile_new_name": Param("profile_new_name", "text", default="",
-                                        label="New profile")}
+    #: Merged with the Trial store row's fields above (A3): a second plain
+    #: `PARAMS =` here would replace them.
+    PARAMS = {**PARAMS, "profile_new_name": Param(
+        "profile_new_name", "text", default="", label="New profile")}
 
     @property
     def profile_user(self):
