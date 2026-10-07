@@ -336,3 +336,18 @@ def test_detect_on_a_profile_with_no_settled_sample_has_no_extrema():
     found = tma.detect({"t": [0.0, 0.1, 0.2], "red": [0.0, 0.0, 0.0]})
     assert found["max_t"] is None and found["red_max"] is None
     assert found["masked_share"] == 1.0
+
+
+# -- dev/reanalyse_trials.py argv ---------------------------------------------------
+
+def test_reanalyse_tool_parses_its_arguments():
+    import importlib.util
+    path = pathlib.Path(__file__).resolve().parent.parent / "dev" / "reanalyse_trials.py"
+    spec = importlib.util.spec_from_file_location("reanalyse_trials", path)
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    args = tool.parse_args(["x.sqlite"])
+    assert args.db == "x.sqlite" and args.out is None
+    assert not args.write and not args.repair_video
+    args = tool.parse_args(["x.sqlite", "--out", "o", "--write", "--repair-video"])
+    assert args.out == "o" and args.write and args.repair_video
