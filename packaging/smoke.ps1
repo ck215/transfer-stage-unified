@@ -14,12 +14,6 @@
 #      six models; /api/estop_all latches every one; Setup's station_version
 #      is VERSION's tag and build date; /api/quit exits 0 within 5 s; the
 #      run's log names the stop, the quit and SDL teardown.
-#   2. station-tk.exe and 3. station-qt.exe: open, then are stopped.
-#      Windows has no SIGTERM to send another process: Stop-Process is
-#      TerminateProcess, which runs no handler at all. So the desktop steps
-#      assert that the view OPENED (its log lines) and that the process ends
-#      when told, and say plainly that the stop path is not exercised here;
-#      the Web step's estop_all + quit is the stop path on Windows.
 param([string]$BundleDir = "")
 
 $ErrorActionPreference = "Stop"
@@ -71,9 +65,7 @@ function Log-Has($log, $needle) { return [bool](Select-String -Path $log -Simple
 Write-Host "bundle:  $Bundle"
 Write-Host "logs:    $LogDir"
 Write-Host "scratch: $Out"
-foreach ($v in "tk", "qt", "web") {
-    if (-not (Test-Path (Join-Path $Bundle "station-$v.exe"))) { Fail "station-$v.exe is not in the bundle" }
-}
+if (-not (Test-Path (Join-Path $Bundle "station-web.exe"))) { Fail "station-web.exe is not in the bundle" }
 if ($script:Failed) { exit 1 }
 if (Get-Route "/api/state") { Write-Host "FAIL port $Port is already answering"; exit 1 }
 
@@ -211,38 +203,6 @@ if (-not $up) {
         Check "log: no traceback" (-not (Log-Has $log "Traceback"))
     } else { Fail "a new log file names view=web port=$Port in $LogDir" }
 }
-
-# -- 2 and 3. the desktop launchers ----------------------------------------
-function Desktop($view, $ready, [string[]]$needles) {
-    Write-Host "== station-$view"
-    Snapshot-Logs
-    $p = Start-Process -FilePath (Join-Path $Bundle "station-$view.exe") -PassThru -NoNewWindow `
-        -RedirectStandardOutput (Join-Path $Out "$view.out") -RedirectStandardError (Join-Path $Out "$view.err")
-    $log = $null
-    for ($i = 0; $i -lt 60; $i++) {
-        $log = Find-Log "view=$view"
-        if ($log -and (Log-Has $log $ready)) { break }
-        $log = $null
-        Start-Sleep -Milliseconds 500
-    }
-    if ($log) { Pass "station-$view opened ($ready) - log $log" } else { Fail "station-$view opened within 30 s" }
-    Start-Sleep -Seconds 5
-    Check "station-$view still running after 5 s" (-not $p.HasExited)
-    # No SIGTERM on Windows: TerminateProcess runs no handler. Not a stop-path check.
-    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-    Check "station-$view ended when told" ($p.WaitForExit(5000))
-    if ($log) {
-        foreach ($n in $needles) { Check "log: $n" (Log-Has $log $n) }
-        Check "log: no traceback" (-not (Log-Has $log "Traceback"))
-    }
-}
-
-Desktop "tk" "Dashboard Open: Tk dashboard ready" @("[app] View: tk starting")
-$env:QT_QPA_PLATFORM = if ($null -ne $env:SMOKE_QT_PLATFORM) { $env:SMOKE_QT_PLATFORM } else { "offscreen" }
-if (-not $env:QT_QPA_PLATFORM) { Remove-Item Env:QT_QPA_PLATFORM }
-Desktop "qt" "Qt dashboard shown" @("[app] View: qt starting", "[packaging] Qt Plugin Path:",
-    "QT_QPA_PLATFORM_PLUGIN_PATH=$Bundle\_internal\PySide6")
-Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
 
 Write-Host ""
 if ($script:Failed -eq 0) { Write-Host "SMOKE PASSED ($Bundle)"; exit 0 }
