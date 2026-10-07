@@ -2,10 +2,10 @@
 
 From the abstraction audit `handoff/audit-model-contract-2026-09-26.md`, which
 built a non-probe device (`PiezoStage`) and drove it through all three views
-without editing them. Landed by the lead with the CON-3/4/9 fixes applied.
+(then Tk, Qt and Web; only the Web remains since 2026-10-07) without editing them. Landed by the lead with the CON-3/4/9 fixes applied.
 
 A device becomes a first-class member of the station when it is a `Model`
-subclass that declares its controls in a schema. The three views, the
+subclass that declares its controls in a schema. The views (the Web; the retired Tk and Qt did too), the
 Controller, the stop and the watchdog then handle it without being edited.
 `tests/test_model_contract.py` checks every rule below against every
 registered class. Worked examples: the audit's `PiezoStage`
@@ -129,7 +129,7 @@ with no hardware that owns a local store, reads other models by duck type
 
 ## What you get for free
 
-- All three views render every element with its tier, disclosure, slider,
+- The Web view renders every element with its tier, disclosure, slider,
   unit and axis grouping.
 - Refusal lines appear where they happened, and greyed controls carry their
   reason (`views.base.gate_reason`).

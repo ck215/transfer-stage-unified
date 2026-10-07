@@ -2,6 +2,8 @@
 
 > **Paths below are pre-move (banner added 2026-09-23).** This contract was written for the agents that built the rebuild, when it was the `station/` package beside the old `src/`. Since the relayout: `station/` → `src/` (`station/model.py` → `src/model/base.py`, `station/models/*` → `src/model/*`, `station/controller.py` → `src/controller/controller.py`, `station/setup.py` → `src/controller/setup.py`), old `src/` → `legacy/src/`, `tests/station/` → `tests/`. Module names in the import rules (`station.controller`, ...) follow the same move; `tests/test_architecture.py` is the authority on them. The design itself is unchanged.
 
+> **Views (note added 2026-10-07).** Wherever this contract says "the views" or names Tk and Qt, read it as the Web view alone: Tk and Qt were retired by owner ruling on 2026-10-07 (frozen at `413f504`, unregistered). The hierarchy and the import rules are unchanged.
+
 We are rebuilding the backend of a lab-instrument control app as a new package,
 `station/`, beside the old `src/`. The old code stays in place as your reference
 and is deleted at cutover. **Firmware is not touched and every byte on the wire
