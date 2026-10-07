@@ -28,6 +28,8 @@ import datetime
 import hashlib
 import json
 import os
+import re
+import shutil
 import sqlite3
 import threading
 import uuid
@@ -39,8 +41,12 @@ SCHEMA = "flake-coords/1"
 #: turns the chip (owner 2026-10-04): each registration records the
 #: Rotator's angle phi0 and the closure of a corner re-marked after a turn,
 #: and the station keeps its rotation-centre calibrations (station-only,
-#: Q4: never exported). Additive, like every migration here.
-SCHEMA_VERSION = 2
+#: Q4: never exported). Additive, like every migration here. 3: the Sample
+#: Map becomes microscope-image storage (owner 2026-10-07): the
+#: `sample_images` table, keyed to the same free-text `sample_id` the
+#: Transfer Map stamps on its trials. A new table only, so a v2 file keeps
+#: every row it has.
+SCHEMA_VERSION = 3
 
 SHAPES = ("rectangle", "quad", "irregular")
 SAMPLE_STATUSES = ("active", "stored", "consumed", "discarded")
@@ -64,6 +70,10 @@ FRAME_SOURCES = ("manual:micrometer", "legacy")
 #: The Rotator's sense against the stage axes, and how its centre was found.
 ROTATOR_SENSES = (1, -1)
 ROTATOR_METHODS = ("chord", "circle")
+
+#: Where a picture of a sample came from, and the objectives the lab owns.
+IMAGE_INSTRUMENTS = ("transfer_stage", "microscope")
+IMAGE_MAGNIFICATIONS = (10, 20, 50, 100)
 
 #: Columns stored as JSON text and handed out as lists.
 _JSON = {"extent_points_um", "image_region_px", "defects", "trial_ids",
@@ -140,9 +150,20 @@ FLAKE_COLUMNS = (
     ("tip_ids", "TEXT"), ("tags", "TEXT"), ("legacy_ref", "TEXT"),
     ("created_at", "TEXT"), ("updated_at", "TEXT"), ("deleted_at", "TEXT"),
 )
+#: `path` is RELATIVE to the store's directory, so the store folder moves as
+#: one piece (ST-10); `sha256` is of the file as copied in.
+IMAGE_COLUMNS = (
+    ("id", "INTEGER PRIMARY KEY AUTOINCREMENT"), ("sample_id", "TEXT NOT NULL"),
+    ("instrument", "TEXT NOT NULL CHECK (instrument IN ('transfer_stage', "
+                   "'microscope'))"),
+    ("magnification", "INTEGER NOT NULL CHECK (magnification IN (10, 20, 50, 100))"),
+    ("path", "TEXT NOT NULL"), ("sha256", "TEXT NOT NULL"),
+    ("captured_at", "TEXT NOT NULL"), ("note", "TEXT"),
+)
 _TABLES = {"samples": SAMPLE_COLUMNS, "registrations": REGISTRATION_COLUMNS,
            "corners": CORNER_COLUMNS, "flakes": FLAKE_COLUMNS,
-           "rotator_calibrations": ROTATOR_CALIBRATION_COLUMNS}
+           "rotator_calibrations": ROTATOR_CALIBRATION_COLUMNS,
+           "sample_images": IMAGE_COLUMNS}
 _NAMES = {table: frozenset(n for n, _k in cols) for table, cols in _TABLES.items()}
 
 _CREATE = tuple(
@@ -153,6 +174,7 @@ _CREATE = tuple(
 ) + (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
     "CREATE INDEX IF NOT EXISTS flakes_sample ON flakes(sample_id)",
+    "CREATE INDEX IF NOT EXISTS sample_images_sample ON sample_images(sample_id)",
 )
 
 
@@ -227,6 +249,29 @@ def _sha256(path):
             return hashlib.sha256(handle.read()).hexdigest()
     except OSError:
         return None
+
+
+def _slug(sample_id):
+    """A folder name for a free-text sample label. A label that had to be
+    changed gets a short hash, so "a b" and "a_b" never share a folder."""
+    text = str(sample_id)
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("._") or "sample"
+    if slug != text:
+        slug += "-" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
+    return slug
+
+
+def _magnification(value):
+    """10, "20" or "20x" -> 10/20/50/100, or a Refused naming the choices."""
+    text = str(value).strip().lower().rstrip("x").strip()
+    try:
+        number = int(text)
+    except ValueError:
+        number = None
+    if number not in IMAGE_MAGNIFICATIONS:
+        raise StoreRefused(f"{value!r} is not a magnification: use one of "
+                           + ", ".join(f"{m}x" for m in IMAGE_MAGNIFICATIONS) + ".")
+    return number
 
 
 def _newer(theirs, ours):
@@ -530,6 +575,102 @@ class SampleStore:
             sql += " AND deleted_at IS NULL"
         return self.read(sql + " ORDER BY sample_id, label", tuple(args))
 
+    # -- sample images (v3) -------------------------------------------------------
+    @property
+    def directory(self):
+        return self.path.parent
+
+    def add_image(self, sample_id, source_path, instrument, magnification, note=""):
+        """Copy the ORIGINAL file, unmodified, to `images/<sample>/<time>_
+        <instrument>_<mag>x<ext>` beside the store and record it. A name that
+        is taken gets a numeric suffix; nothing is overwritten. Returns the row."""
+        sample_id = str(sample_id or "").strip()
+        if not sample_id:
+            raise StoreRefused("Type the sample ID the picture belongs to.")
+        _one_of(instrument, IMAGE_INSTRUMENTS, "picture source")
+        if instrument is None:
+            raise StoreRefused("Say which instrument took the picture: "
+                               + ", ".join(IMAGE_INSTRUMENTS) + ".")
+        mag = _magnification(magnification)
+        source = Path(str(source_path))
+        if not source.is_file():
+            raise StoreRefused(f"Could not find the picture {source.name or source}.")
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        folder = Path("images") / _slug(sample_id)
+        (self.directory / folder).mkdir(parents=True, exist_ok=True)
+        base = f"{stamp}_{instrument}_{mag}x"
+        digest = hashlib.sha256()
+        relative = None
+        for n in range(1, 1000):
+            name = base + ("" if n == 1 else f"_{n}") + source.suffix.lower()
+            try:
+                with open(source, "rb") as src, open(self.directory / folder / name, "xb") as dst:
+                    for chunk in iter(lambda: src.read(1 << 20), b""):
+                        digest.update(chunk)
+                        dst.write(chunk)
+            except FileExistsError:
+                digest = hashlib.sha256()
+                continue
+            except OSError as exc:
+                raise StoreRefused(f"Could not copy {source.name}: {exc.strerror or exc}.")
+            relative = (folder / name).as_posix()
+            break
+        if relative is None:
+            raise StoreRefused("Too many pictures with the same name this second.")
+        values = {"sample_id": sample_id, "instrument": instrument,
+                  "magnification": mag, "path": relative,
+                  "sha256": digest.hexdigest(), "captured_at": now(),
+                  "note": str(note or "").strip() or None}
+
+        def _do(db):
+            return _insert(db, "sample_images", values).lastrowid
+        try:
+            new_id = self.write(_do)
+        except Exception:
+            (self.directory / relative).unlink(missing_ok=True)
+            raise
+        return self.image(new_id)
+
+    def image(self, image_id):
+        rows = self.read("SELECT * FROM sample_images WHERE id = ?", (image_id,))
+        return rows[0] if rows else None
+
+    def images(self, sample_id=None):
+        """One sample's pictures, oldest first; no argument: every picture."""
+        if sample_id is None:
+            return self.read("SELECT * FROM sample_images ORDER BY id")
+        return self.read("SELECT * FROM sample_images WHERE sample_id = ? "
+                         "ORDER BY id", (str(sample_id).strip(),))
+
+    def image_file(self, row):
+        """The picture's file: its relative path resolved against the store's
+        directory (an absolute path in an old row is returned as it is)."""
+        return self.directory / row["path"]
+
+    def delete_image(self, image_id):
+        """Remove the row and the file (only a file inside this store's
+        `images/` folder is ever unlinked)."""
+        row = self.image(image_id)
+        if row is None:
+            raise StoreRefused(f"There is no picture number {image_id}.")
+        self.write(lambda db: db.execute("DELETE FROM sample_images WHERE id = ?",
+                                         (image_id,)))
+        target = self.image_file(row).resolve()
+        if (self.directory / "images").resolve() in target.parents:
+            target.unlink(missing_ok=True)
+        return row
+
+    def absolute_image_paths(self):
+        """How many stored picture paths are absolute (flake and corner rows
+        from before the relative-path rule). Left as they are; counted only."""
+        count = 0
+        for table, column in (("flakes", "image_path"), ("corners", "image_path"),
+                              ("sample_images", "path")):
+            for row in self.read("SELECT " + column + " AS p FROM " + table
+                                 + " WHERE " + column + " IS NOT NULL"):
+                count += os.path.isabs(row["p"])
+        return count
+
     # -- flake-coords/1 (section 12) -------------------------------------------------
     def export_document(self, station_name, software_version):
         """The whole record set as one JSON-able document. Derived numbers are
@@ -554,6 +695,12 @@ class SampleStore:
                                    "sha256": _sha256(corner["image_path"]),
                                    "corner": {"registration_uid": reg["registration_uid"],
                                               "label": corner["label"]}})
+        for row in self.images():
+            # Additive (v3): the sample's pictures, by relative path and hash.
+            images.append({"sample_id": row["sample_id"], "path": row["path"],
+                           "sha256": row["sha256"], "instrument": row["instrument"],
+                           "magnification": row["magnification"],
+                           "captured_at": row["captured_at"], "note": row["note"]})
         return {"schema": SCHEMA, "exported_at": now(),
                 "station": {"name": station_name, "software_version": software_version,
                             "store_uuid": self.meta().get("store_uuid")},
