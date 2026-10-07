@@ -422,7 +422,7 @@ def test_window_focus_gates_every_manual_input_device(model):
 STOP_THREADS_OVERRIDES = {
     # A run is a one-shot per-command worker with its own stop (`run.end()`):
     # ending it is something the base join cannot do.
-    "RedMonitor": "ends the in-flight run before the base join",
+    "RgbAnalysis": "ends the in-flight run before the base join",
 }
 
 
@@ -485,10 +485,10 @@ def test_host_is_none_or_another_registered_model(model):
     assert host is None or (host in MODEL_TYPES and host != type(model).NAME)
 
 
-def test_red_percent_is_drawn_on_the_transfer_map():
-    from model.red_monitor import RedMonitor
+def test_rgb_analysis_is_drawn_on_the_transfer_map():
+    from model.rgb_analysis import RgbAnalysis
     from model.transfer_map import TransferMap
-    assert RedMonitor.HOST == TransferMap.NAME
+    assert RgbAnalysis.HOST == TransferMap.NAME
 
 
 # -- the procedure: phases hide, they never gate a stop (2026-10-07) ----------
