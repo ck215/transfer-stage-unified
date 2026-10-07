@@ -52,7 +52,10 @@ def _values(rows, stream):
 
 class RedCapture:
     """Red Percent's capture instance: a 10x10 RGB frame whose red rows
-    change every grab, so every grab is a row. Paced, not a spin."""
+    change every HOLD grabs. Each picture is held for two reads, as a screen
+    holds what it shows: the run loop takes a sample only when two reads at
+    least 5 ms apart agree (CAP-1, 2026-10-07). Paced, not a spin."""
+    HOLD = 4
 
     def __init__(self):
         self.grabs = 0
@@ -61,7 +64,7 @@ class RedCapture:
         self.grabs += 1
         time.sleep(0.005)
         frame = numpy.zeros((10, 10, 3), dtype=numpy.uint8)
-        frame[:1 + self.grabs % 9, :] = [200, 0, 0]
+        frame[:1 + (self.grabs // self.HOLD) % 9, :] = [200, 0, 0]
         return frame
 
     def close(self):
@@ -173,9 +176,15 @@ def test_every_stream_lands_on_the_one_clock(station):
     assert _wait_for(lambda: 1.5 in _values(telemetry.rows(), "rotator.angle"))
     probe._note_position((10, 20, 30))        # one POS line, as the sample loop does
     tilt.angle = 3.0
-    assert _wait_for(lambda: {"red_percent.row_red", "stepper_probe.x"}
-                     <= _streams(telemetry.rows())
-                     and 3.0 in _values(telemetry.rows(), "rotator.angle"))
+    assert _wait_for(lambda: "stepper_probe.x" in _streams(telemetry.rows())), \
+        f"no probe stream: {sorted(_streams(telemetry.rows()))}"
+    assert _wait_for(lambda: 3.0 in _values(telemetry.rows(), "rotator.angle")), \
+        f"no rotator change: {_values(telemetry.rows(), 'rotator.angle')}"
+    # Red Percent rows arrive at the source rate now (CAP-1), not per grab:
+    # wait for the second one before stopping, so the "row per row" check
+    # below has two to count.
+    assert _wait_for(lambda: len(_values(telemetry.rows(), "red_percent.row_red")) >= 2), \
+        f"fewer than two red rows: {sorted(_streams(telemetry.rows()))}"
     text = f"telemetry {uuid.uuid4().hex}"
     t_before = offset_clock()
     events.info("Telemetry Test", text, source="test")
