@@ -918,7 +918,7 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
                 "figure", "tip_id", "tilt_now", "speed_now", "red_now",
                 "trial_count", "trial_status", "db_path", "new_database",
                 "first_frame_image", "mark_frame_image", "video_status",
-                "tip_status", "stage_still", "end_recording"):
+                "tip_status", "stage_still", "end_recording", "trial_figure"):
         assert tiers[key] == 1, key
     for key in ("set_figure_type", "set_force_definition", "attach_afm",
                 "export_csv", "import_csv", "before_full_image",
@@ -928,8 +928,9 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
     for key in ("trials_log", "tips_log", "delete_trial", "last_trial_numbers",
                 "video_encoder"):
         assert tiers[key] == 3, key
+    # TM-2: + the live plot ("Red % since Arm").
     for gone in ("before_image", "mark_image", "after_image", "mark_full_image",
-                 "after_full_image"):
+                 "after_full_image", "live_series"):
         assert gone not in tiers, gone
     disclosures = {s.get("disclosure") for s in model.schema["sections"]
                    if s.get("tier") == 2}
@@ -1107,6 +1108,47 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     model.estop()
     assert step() == ""                      # latched: the stop says what to do
     model.close()
+
+
+# -- TM-2: no live plot; the trace is drawn once, for the review ---------------
+
+def test_the_sheet_declares_no_plot_and_finish_still_writes_the_profile(
+        station, private_db):
+    """The live plots left the live view (CAP-5): neither the map nor Red
+    Percent (drawn on its page) declares one. The profile is the
+    measurement, not the plot's: Finish and Abort still write it."""
+    model, red, *_ = station
+    for panel in (model, red):
+        plots = [e for e in sch.elements(panel.schema) if e["type"] == "plot"]
+        assert plots == [], (panel.NAME, plots)
+    assert model.run("live_series").is_refused     # no longer a data source
+    trial = _record(model, red)
+    samples = _rows(private_db, "SELECT COUNT(*) AS n FROM profile WHERE "
+                    "trial_id=?", trial)[0]["n"]
+    assert samples >= 25
+    aborted = _arm(model)
+    assert _wait_for(lambda: len(model._trial.samples) >= 5)
+    assert model.run("abort_trial").is_ok
+    model.disable()
+    assert _rows(private_db, "SELECT COUNT(*) AS n FROM profile WHERE "
+                 "trial_id=?", aborted)[0]["n"] >= 5
+
+
+def test_the_review_shows_the_trial_just_recorded(station):
+    """The finish step's figure: this trial's profile, from memory, before
+    Finish writes it; nothing in any other step."""
+    model, red, *_ = station
+    assert model.trial_figure == b""
+    _arm(model)
+    assert _marked(model, samples=10).is_ok
+    assert model.trial_figure == b""                 # recording: no plot
+    assert model.run("trial_figure").is_refused      # not the marked step's
+    assert model.run("end_recording").is_ok
+    shown = model.run("trial_figure")
+    assert shown.is_ok and shown.value[:8] == PNG
+    assert model.trial_figure is shown.value         # drawn once
+    _confirmed(model, "finish_trial", {"note": ""})
+    assert model.trial_figure == b""
 
 
 # -- the procedure (owner ruling 2026-10-07) ---------------------------------
@@ -1646,12 +1688,13 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
         "tip_id", "tip_pick", "new_tip", "tip_trial_count", "tip_status",
         "typed_tilt", "typed_speed", "arm_trial"]
     assert _keys(by_title["Capture region"]) == ["set_region"]
+    # TM-2: no live plot in the recording steps; the trace is the review's.
     assert _keys(by_title["Recording"]) == [
         "red_now", "mark_force", "end_recording", "video_status",
-        "first_frame_image", "mark_frame_image", "live_series"]
+        "first_frame_image", "mark_frame_image"]
     assert _keys(by_title["Review"]) == [
         "stage_still", "first_frame_image", "mark_frame_image", "video_status",
-        "note", "finish_trial"]
+        "trial_figure", "note", "finish_trial"]
     assert _keys(by_title["This trial"]) == ["trial_status", "is_broke",
                                              "abort_trial"]
     assert _keys(by_title["Map"]) == ["figure"]

@@ -566,6 +566,8 @@ class _Trial:
         self.recording = None
         #: End recording ran (the `finish` step): no more rows, no video.
         self.ended = False
+        #: The review figure's PNG (`trial_figure`), drawn once.
+        self.review = None
 
 
 class _Recording:
@@ -2517,12 +2519,29 @@ class TransferMap(Model):
         return f"Last: trial {last['id']}, {last['status']}."
 
     @property
-    def live_series(self):
+    def trial_figure(self):
+        """The trial just recorded, for its review (the `finish` step): its
+        red-percent profile with the detector's peak and dip and the Mark,
+        drawn once from memory, before Finish writes it. b"" in any other
+        step (TM-2: there is no live plot)."""
         trial = self._trial
-        if trial is None:
-            return {"x": [], "y": []}
-        samples = list(trial.samples)
-        return {"x": [s[0] for s in samples], "y": [s[1] for s in samples]}
+        if trial is None or not trial.ended:
+            return b""
+        if trial.review is None:
+            samples = list(trial.samples)
+            profile = {"t": [s[0] for s in samples],
+                       "red": [s[1] for s in samples]}
+            found = analysis.detect(profile, trial.operator_t) or {}
+            trial.review = plot_data.render_transfer_figure(
+                "profile", [], self._definition, profile=profile,
+                marks={"trial_id": trial.id, "operator_t": trial.operator_t,
+                       "max_t": found.get("max_t"),
+                       "min_t": found.get("min_t"),
+                       "baseline": found.get("baseline"),
+                       "red_max": found.get("red_max"),
+                       "red_min": found.get("red_min")},
+                size=self.FIGURE_SIZE, dpi=self.FIGURE_DPI)
+        return trial.review
 
     @property
     def trials_log(self):
@@ -2673,9 +2692,9 @@ class TransferMap(Model):
                                      empty="The video's frame at Mark force, "
                                            "labelled MARK."),
                            "marked"),
-                sch.plot("Red % since Arm", "live_series", x_label="time (s)",
-                         y_label="red (%)",
-                         empty="Arm a trial and its red percent plots here."),
+                # TM-2 (2026-10-07): no live plot. Redrawing the whole trace
+                # every refresh slowed the bench's view (CAP-5); the trace
+                # is drawn once, for the review, in the finish step.
                 phases=("live", "marked"),
             ),
             # finish: review what was recorded, then keep it.
@@ -2689,6 +2708,9 @@ class TransferMap(Model):
                           empty="The video's frame at Mark force, labelled "
                                 "MARK."),
                 sch.readonly("Video", "video_status"),
+                sch.image("This trial", "trial_figure",
+                          empty="The trial's red percent, once its recording "
+                                "has ended."),
                 sch.entry("Note", "note", P["note"]),
                 sch.button("Finish trial", "finish_trial", inputs=("note",),
                            role="go", enabled_when=("armed",)),

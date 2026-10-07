@@ -1022,6 +1022,15 @@ def test_the_series_of_a_model_with_no_run_is_empty(monitor):
     assert monitor.series == {"x": [], "y": []}
 
 
+def test_red_percent_declares_no_live_plot(monitor):
+    """TM-2 (2026-10-07): the live plots left the live view (Red Percent is
+    drawn on the Transfer Map's page; redrawing a whole run each refresh
+    slowed it, CAP-5). `series` stays a property; nothing polls it."""
+    import schema as sch
+    assert not [e for e in sch.elements(monitor.schema) if e["type"] == "plot"]
+    assert monitor.run("series").is_refused
+
+
 # ---------------------------------------------------------------------
 # the schema every view renders
 # ---------------------------------------------------------------------
@@ -1065,7 +1074,8 @@ def test_start_is_gated_off_and_stop_gated_on_while_running(monitor):
 def test_the_schema_carries_a_region_select_a_file_save_and_a_file_open(monitor):
     import schema as sch
     types = {element["type"] for element in sch.elements(monitor.schema)}
-    assert {"region_select", "file_save", "file_open", "image", "plot",
+    # TM-2 (2026-10-07): "plot" left with the live plot.
+    assert {"region_select", "file_save", "file_open", "image",
             "dropdown", "toggle"} <= types
 
 

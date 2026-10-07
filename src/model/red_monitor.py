@@ -1724,9 +1724,10 @@ class RedMonitor(Model):
                 sch.readonly("Frames:", "frames_captured",
                              param=P["frames_captured"]),
                 sch.readonly("Rows:", "rows_written", param=P["rows_written"]),
-                sch.plot("Red % over time", "series", x_label="time (s)",
-                         y_label="red (%)",
-                         empty="No samples yet. Start a run and red % plots here as it records."),
+                # 2026-10-07 (TM-2): no live plot; it is drawn on the
+                # Transfer Map's page, and redrawing the whole run each
+                # refresh slowed the view (CAP-5). `series` stays, and the
+                # Analysis figure plots a saved run.
                 tier=2, disclosure=f"{self.NAME} details",
             ),
             sch.section(
