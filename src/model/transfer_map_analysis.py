@@ -7,6 +7,14 @@ Finish: `{"t": [s since arming], "red": [%], "z": [steps] (optional)}`. The
 raw slice is the truth; every number below is computed from it when asked,
 never stored in its place (owner ruling 2026-09-27).
 
+**The factor** (RG-2, 2026-10-07) is which column drives the extrema: `red`
+by default, so every stored number stays where it is, or any other column
+RGB analysis records (`FACTOR_COLUMNS`), or a ratio of two spelled
+`"red/green"`. `detect`, `baseline_of` and `force_indices` take it as
+`factor=`; the profile then carries that column beside `red` (a profile
+recorded before RGB analysis carries red only, and asking it for another
+column is a ValueError naming the column).
+
 The owner's picture of a lowering: hovering gives a baseline; as the tip
 approaches, the reflection brightens to a maximum; then a shadow overcasts
 it; pushed further, the tip flexes until it breaks. There is no force
@@ -148,9 +156,92 @@ def settled_mask(t, red):
     return ok
 
 
-def _settled(profile):
+# -- the factor (RG-2, 2026-10-07) ------------------------------------------
+#: The profile columns a factor may name: the red share (the default and the
+#: column every stored profile has), the green and blue shares (%), and the
+#: region's mean red, green and blue (0-255), as RGB analysis records them.
+FACTOR_COLUMNS = ("red", "green", "blue", "r_mean", "g_mean", "b_mean")
+DEFAULT_FACTOR = "red"
+
+
+def parse_factor(factor):
+    """`"green"` -> `("green", None)`; `"red/green"` -> `("red", "green")`,
+    a ratio. Case and spaces are ignored. ValueError for anything that is
+    not one `FACTOR_COLUMNS` name or a ratio of two."""
+    if not isinstance(factor, str):
+        raise ValueError(f"a factor is a column name or a ratio such as "
+                         f"'red/green', not {factor!r}")
+    parts = [part.strip().lower() for part in factor.split("/")]
+    if len(parts) > 2 or not all(parts):
+        raise ValueError(f"{factor!r} is not a factor: name one of "
+                         f"{', '.join(FACTOR_COLUMNS)}, or a ratio of two "
+                         "such as 'red/green'")
+    for part in parts:
+        if part not in FACTOR_COLUMNS:
+            raise ValueError(f"{part!r} (in the factor {factor!r}) is not a "
+                             f"profile column; the columns are "
+                             f"{', '.join(FACTOR_COLUMNS)}")
+    return parts[0], (parts[1] if len(parts) == 2 else None)
+
+
+def _factor_column(profile, name):
+    """One column of the profile as floats, a None cell as NaN. ValueError
+    naming the column when the profile has none, or only empty cells where
+    it has samples (a row recorded before the column existed)."""
+    cells = profile.get(name)
+    if cells is None or (len(profile.get("t") or ())
+                         and all(v is None for v in cells)):
+        raise ValueError(f"the profile has no {name!r} column (a profile "
+                         "recorded before RGB analysis carries red only)")
+    return numpy.asarray([numpy.nan if v is None else v for v in cells],
+                         dtype=float)
+
+
+def factor_values(profile, factor=DEFAULT_FACTOR):
+    """The factor's series over the profile (`ndarray[float]`): one column,
+    or one column over another, where a None cell or a zero denominator is
+    NaN (and so never a settled sample)."""
+    numerator, denominator = parse_factor(factor)
+    top = _factor_column(profile, numerator)
+    if denominator is None:
+        return top
+    bottom = _factor_column(profile, denominator)
+    n = min(top.size, bottom.size)
+    with numpy.errstate(divide="ignore", invalid="ignore"):
+        ratio = top[:n] / bottom[:n]
+    ratio[~numpy.isfinite(ratio)] = numpy.nan
+    return ratio
+
+
+def _settled_factor(profile, factor):
+    """`_settled` for a factor other than red: the factor's values over
+    the rows `settled_mask` keeps on the RED column, less any NaN of the
+    factor's own. A glitch is a property of the grab, not of a column, and
+    rule (a) does not carry over (a green share of 0.0 is a reading: the
+    bench scene has no green-dominant pixel), so every factor is read over
+    the same settled rows. A profile with no red column is masked by the
+    factor's NaNs only."""
+    values = factor_values(profile, factor)
+    t = numpy.asarray(list(profile.get("t") or ()), dtype=float)
+    red = numpy.asarray([numpy.nan if v is None else v
+                         for v in (profile.get("red") or ())], dtype=float)
+    n = min(t.size, values.size, red.size if red.size else values.size)
+    t, values = t[:n], values[:n]
+    mask = (settled_mask(t, red[:n]) if red.size
+            else numpy.ones(n, dtype=bool))
+    mask &= numpy.isfinite(values)
+    z = profile.get("z")
+    z = (numpy.asarray([numpy.nan if v is None else v for v in z],
+                       dtype=float)[:n] if z and len(z) >= n else None)
+    return mask, t[mask], values[mask], (None if z is None else z[mask])
+
+
+def _settled(profile, factor=DEFAULT_FACTOR):
     """`(mask, t, red, z)`: the mask over the whole profile and the settled
-    samples of each column (`z` None without a Z column)."""
+    samples of each column (`z` None without a Z column). With a `factor`
+    other than red, `red` is that factor's settled series (RG-2)."""
+    if factor != DEFAULT_FACTOR and parse_factor(factor) != (DEFAULT_FACTOR, None):
+        return _settled_factor(profile, factor)
     t = numpy.asarray(list(profile.get("t") or ()), dtype=float)
     red = numpy.asarray(list(profile.get("red") or ()), dtype=float)
     n = min(t.size, red.size)
@@ -169,17 +260,23 @@ def _baseline(t, red):
     return float(statistics.median(first or list(red[:1])))
 
 
-def baseline_of(profile):
-    """Median raw red over the first `BASELINE_SECONDS` of the settled
-    samples of the profile."""
-    _mask, t, red, _z = _settled(profile)
+def baseline_of(profile, factor=DEFAULT_FACTOR):
+    """Median raw red (the `factor`'s value, RG-2) over the first
+    `BASELINE_SECONDS` of the settled samples of the profile."""
+    _mask, t, red, _z = _settled(profile, factor)
     return _baseline(t, red)
 
 
 # -- the detector ------------------------------------------------------------
 
-def detect(profile, operator_t=None):
+def detect(profile, operator_t=None, factor=DEFAULT_FACTOR):
     """The approach peak and the shadow's dip, found automatically.
+
+    `factor` (RG-2) names the column that drives them: "red" (the default),
+    another of `FACTOR_COLUMNS`, or a ratio "a/b". The keys below keep their
+    names whatever the factor: `red_max`, `red_min` and `baseline` are then
+    the factor's values. ValueError for a factor the profile has no column
+    for.
 
     On the 5-sample median of the SETTLED red trace (`settled_mask`): the
     maximum is the global maximum BEFORE the operator's Mark (before the end,
@@ -195,7 +292,7 @@ def detect(profile, operator_t=None):
          "settled_mask", "masked_share"}       # ndarray[bool] over the rows,
                                                # and the share that is False
     """
-    mask, t, red, _z = _settled(profile)
+    mask, t, red, _z = _settled(profile, factor)
     if mask.size == 0:
         return None
     found = {"max_t": None, "min_t": None, "max_i": None, "min_i": None,
@@ -227,12 +324,13 @@ class _Context:
     """What a definition reads: the smoothed trace, the two extrema (the
     detector's, or the marks given), the baseline and the operator's Mark."""
 
-    def __init__(self, profile, marks):
-        _mask, self.t, red, self.z = _settled(profile)    # settled samples only
+    def __init__(self, profile, marks, factor=DEFAULT_FACTOR):
+        # settled samples only; `red` is the factor's series (RG-2)
+        _mask, self.t, red, self.z = _settled(profile, factor)
         self.red = median5(red)
         marks = dict(marks or {})
         self.operator_t = marks.get("operator_t")
-        found = detect(profile, self.operator_t) or {}
+        found = detect(profile, self.operator_t, factor) or {}
         self.baseline = (marks["baseline"] if marks.get("baseline") is not None
                          else found.get("baseline"))
         self.max_t = (marks["auto_max_t"] if marks.get("auto_max_t") is not None
@@ -324,12 +422,15 @@ FORCE_DEFINITIONS = {
 }
 
 
-def force_indices(profile, marks=None, definitions=None):
+def force_indices(profile, marks=None, definitions=None,
+                  factor=DEFAULT_FACTOR):
     """`{name: value or None}` for every definition, from one profile and
     its marks (`operator_t`, and optionally `auto_max_t`, `auto_min_t`,
     `baseline` to override the detector). A definition that cannot be
-    computed, or raises, is None: a missing number, never an invented one."""
-    context = _Context(profile, marks)
+    computed, or raises, is None: a missing number, never an invented one.
+    Every definition reads the `factor`'s column (RG-2; red by default); a
+    factor the profile has no column for is a ValueError, never a None."""
+    context = _Context(profile, marks, factor)
     out = {}
     for name, function in (definitions or FORCE_DEFINITIONS).items():
         try:

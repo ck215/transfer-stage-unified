@@ -177,6 +177,10 @@ function heartbeatWorker() {
 // ==========================================================================
 // schema.is_enabled, mirrored. One rule, three views.
 // ==========================================================================
+//: How long a changed pick (or step) waits before its dropdowns re-read
+//: their options: several changes in one poll make one fetch.
+const OPTIONS_DEBOUNCE_MS = 120;
+
 function isEnabled(element, mode, values) {
   // G3: an element with `enabled_by` is live only while that value (a Launch
   // checkbox's) is true. A caller without values skips this rule, as the
@@ -1334,11 +1338,14 @@ function renderDropdown(panel, element) {
   panel.loadOptions(element, select);
   return {
     node,
+    reload: () => panel.loadOptions(element, select),
     setText: (text) => {
       const wanted = (text === null || text === undefined) ? '' : String(text);
       if (select.value !== wanted) {
+        // A value that is not among the options shows the placeholder, not
+        // the previous pick (W2-3).
         const known = Array.prototype.some.call(select.options, (o) => o.value === wanted);
-        if (known || wanted === '') select.value = wanted;
+        select.value = known ? wanted : '';
       }
       // The whole name of what is chosen, one hover away (F15).
       title.own(select.value);
@@ -1884,6 +1891,32 @@ function isShown(item, phase) {
  *  baseline", "Save" were four rows). Order is the schema's; only the
  *  grouping is the view's. A data row keeps its cells, because they are
  *  its table columns. */
+/** A phase name as the strip says it ("new_tip" -> "New tip"). */
+function stepWord(name) {
+  const words = String(name === null || name === undefined ? '' : name).replace(/_/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : words;
+}
+
+/** A prompt step (a sub-procedure that asks for a few entries, "new_tip",
+ *  "new_sample") is not a numbered step of the procedure proper. */
+function isPromptStep(name) {
+  return String(name).indexOf('new_') === 0;
+}
+
+/** Which segment of the strip is lit: the phase's own segment; a phase the
+ *  model did not list lights the first one; at rest (no phase) none. */
+function litStep(phases, phase) {
+  if (!phases || !phases.length || !phase) return -1;
+  const at = phases.indexOf(phase);
+  return at === -1 ? 0 : at;
+}
+
+/** analysis_health is quiet only when it says settled; anything else (an
+ *  unsettled grab, a stalled analysis, no region) is a warning. */
+function healthIsQuiet(word) {
+  return String(word === null || word === undefined ? '' : word).trim().toLowerCase() === 'settled';
+}
+
 function groupCommands(cells, isTableRow) {
   if (isTableRow) return cells;
   const out = [];
@@ -1914,6 +1947,16 @@ class PanelCard {
     this.phaseSections = [];
     this.phaseGroups = [];
     this.phase = null;
+    //: The prompt dialog (W2-2): the sections of a `new_` step, lifted out
+    //: of the body into a scrim over the card, and where each goes back.
+    this.dialog = null;
+    this.dialogHome = [];
+    this.dialogReturn = null;
+    //: The cascading dropdowns (W2-3): per section, the dropdown widgets
+    //: and the values of their attrs last seen; one debounced fetch each.
+    this.dropdownGroups = [];
+    this.optionsTimer = null;
+    this.optionsDue = new Set();
     this.values = {};
     this.lastData = 0;
     this.isOffline = false;
@@ -2001,6 +2044,9 @@ class PanelCard {
       this.closeButton = close;
     }
     this.node.appendChild(head);
+    // The procedure strip (W2-1): drawn only for a model whose state names
+    // its `phases`; built from state in refresh(), never from a fetch.
+    this.buildProcedure();
     // A lost device is a standing condition, not a refusal: it has its own
     // line under the header, and it stays until the device is back (F3).
     this.alert = make('p', 'card-alert');
@@ -2187,8 +2233,10 @@ class PanelCard {
       // element in it is hidden by the step.
       this.phaseSections.push({
         node: block, phases: section.phases || null, tier,
-        widgets: mine,
+        widgets: mine, title: section.title || '',
       });
+      const drops = mine.filter((w) => w.element.type === 'dropdown' && w.reload);
+      if (drops.length) this.dropdownGroups.push({ widgets: drops, seen: null });
       this.containerFor(tier).appendChild(block);
     }
     this.rowOwner = '';
@@ -2534,6 +2582,9 @@ class PanelCard {
   }
 
   async loadOptions(element, select) {
+    // Answers can cross: only the latest request for this box may write.
+    const turn = (select.optionsTurn || 0) + 1;
+    select.optionsTurn = turn;
     let answer;
     try {
       answer = await apiPost('/api/options', {
@@ -2542,8 +2593,11 @@ class PanelCard {
     } catch (err) {
       return;
     }
+    if (select.optionsTurn !== turn) return;
     const options = answer.options || [];
-    const previous = select.value;
+    // What the model holds wins over what the box showed a moment ago.
+    const held = element.model_attr ? this.values[element.model_attr] : undefined;
+    const previous = (held === undefined || held === null) ? select.value : String(held);
     clear(select);
     const placeholder = make('option', null, 'Select…');
     placeholder.value = '';
@@ -2609,6 +2663,8 @@ class PanelCard {
     const wantsData = now - this.lastData >= DATA_POLL_MS;
     if (wantsData) this.lastData = now;
     this.applyPhase((state && state.phase) || '');
+    this.applyProcedure(state);
+    this.watchOptions();
     const link = this.linkWords;
     const isDown = Boolean(link && link.down);
     for (const widget of this.widgets) {
@@ -2690,6 +2746,11 @@ class PanelCard {
     if (phase === this.phase) return;
     const first = this.phase === null;
     this.phase = phase;
+    // A step that ends takes its prompt dialog with it; the sections go
+    // back where they were before anything below reads their state.
+    this.closeDialog();
+    // The options of every dropdown may depend on the step (W2-3).
+    if (!first) this.queueOptions(this.widgets.filter((w) => w.reload));
     const before = typeof document !== 'undefined' ? document.activeElement : null;
     for (const widget of this.widgets) {
       widget.isPhaseOff = !isShown(widget, phase);
@@ -2725,12 +2786,189 @@ class PanelCard {
       if (this.dashboard && this.dashboard.restoreFocus) this.dashboard.restoreFocus(null, this.node);
       else this.node.focus({ preventScroll: true });
     }
+    if (isPromptStep(phase)) this.openDialog(phase);
+  }
+
+  // -- the procedure strip (W2-1) -------------------------------------------
+  buildProcedure() {
+    const strip = make('div', 'procedure');
+    strip.hidden = true;
+    strip.setAttribute('role', 'group');
+    strip.setAttribute('aria-label', 'Procedure');
+    this.stepList = make('ol', 'proc-steps');
+    strip.appendChild(this.stepList);
+    this.stepText = make('p', 'proc-text');
+    this.stepText.hidden = true;
+    strip.appendChild(this.stepText);
+    this.healthPill = make('span', 'proc-health');
+    this.healthPill.hidden = true;
+    strip.appendChild(this.healthPill);
+    this.procedure = strip;
+    this.node.appendChild(strip);
+    //: What the strip last drew, so refresh() writes only a change.
+    this.procSeen = { phases: null, phase: null, text: null, health: null };
+    this.stepNodes = [];
+  }
+
+  /** The strip, from state: `phases` (the ordered steps), `phase` (the lit
+   *  one), `step_text` (the next-step sentence) and `analysis_health` (one
+   *  word). Each part is written only when it changes. */
+  applyProcedure(state) {
+    const phases = (state && Array.isArray(state.phases)) ? state.phases.map(String) : [];
+    const phase = (state && state.phase) || '';
+    const text = (state && state.step_text) ? String(state.step_text) : '';
+    const health = (state && state.analysis_health) ? String(state.analysis_health) : '';
+    const seen = this.procSeen;
+    const key = phases.join('\u0001');
+    if (seen.phases !== key) {
+      seen.phases = key;
+      seen.phase = null;
+      clear(this.stepList);
+      this.stepNodes = phases.map((name) => {
+        const item = make('li', 'proc-step' + (isPromptStep(name) ? ' is-prompt' : ''), stepWord(name));
+        item.dataset.step = name;
+        this.stepList.appendChild(item);
+        return item;
+      });
+      if (this.procedure.hidden !== !phases.length) this.procedure.hidden = !phases.length;
+      this.node.classList.toggle('has-procedure', phases.length > 0);
+    }
+    if (seen.phase !== phase) {
+      seen.phase = phase;
+      const lit = litStep(phases, phase);
+      this.stepNodes.forEach((item, at) => {
+        item.classList.toggle('is-current', at === lit);
+        if (at === lit) item.setAttribute('aria-current', 'step');
+        else item.removeAttribute('aria-current');
+      });
+    }
+    if (seen.text !== text) {
+      seen.text = text;
+      putText(this.stepText, text);
+      putAttr(this.stepText, 'title', text);
+      if (this.stepText.hidden !== !text) this.stepText.hidden = !text;
+    }
+    if (seen.health !== health) {
+      seen.health = health;
+      putText(this.healthPill, health ? sentence(health) : '');
+      this.healthPill.classList.toggle('is-warn', Boolean(health) && !healthIsQuiet(health));
+      if (this.healthPill.hidden !== !health) this.healthPill.hidden = !health;
+    }
+  }
+
+  // -- the prompt dialog (W2-2) ----------------------------------------------
+  /** A `new_` step is asked as a dialog over this card: a scrim over the
+   *  card (never the stop, never the rail), the step's visible sections
+   *  centred in it, focus on the first entry. Escape is its Cancel, Return
+   *  in an entry is its Add. The sections are moved, not copied, so every
+   *  widget keeps working; closeDialog() puts them back. */
+  openDialog(phase) {
+    const mine = this.phaseSections.filter((e) => e.phases && e.phases.indexOf(phase) !== -1
+      && !e.off);
+    if (!mine.length) return;
+    const scrim = make('div', 'card-dialog');
+    const box = make('div', 'dialog-box');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    if (mine[0].title) box.setAttribute('aria-label', sentenceCase(mine[0].title));
+    scrim.appendChild(box);
+    this.dialogHome = [];
+    for (const entry of mine) {
+      const marker = document.createComment('dialog-home');
+      entry.node.parentNode.insertBefore(marker, entry.node);
+      this.dialogHome.push({ node: entry.node, marker });
+      box.appendChild(entry.node);
+    }
+    for (const child of Array.from(this.node.children)) child.inert = true;
+    this.node.appendChild(scrim);
+    this.node.classList.add('has-dialog');
+    this.dialog = scrim;
+    this.dialogReturn = document.activeElement;
+    scrim.addEventListener('keydown', (event) => this.dialogKey(event, box), true);
+    const first = box.querySelector('input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled])')
+      || box.querySelector('button:not([disabled])');
+    if (first) first.focus({ preventScroll: true });
+    else box.tabIndex = -1, box.focus({ preventScroll: true });
+  }
+
+  closeDialog() {
+    if (!this.dialog) return;
+    for (const home of this.dialogHome) {
+      if (home.marker.parentNode) home.marker.parentNode.replaceChild(home.node, home.marker);
+    }
+    this.dialogHome = [];
+    this.dialog.remove();
+    this.dialog = null;
+    for (const child of Array.from(this.node.children)) child.inert = false;
+    this.node.classList.remove('has-dialog');
+    const back = this.dialogReturn;
+    this.dialogReturn = null;
+    if (back && back.isConnected && this.node.contains(back) && back.getClientRects().length) {
+      back.focus({ preventScroll: true });
+    }
+  }
+
+  /** The button of the dialog whose words are `word`, if drawn and live. */
+  dialogButton(box, word) {
+    return Array.from(box.querySelectorAll('button')).find((b) => b.textContent.trim().toLowerCase() === word
+      && !b.disabled && b.getClientRects().length) || null;
+  }
+
+  dialogKey(event, box) {
+    if (event.key === 'Escape') {
+      const cancel = this.dialogButton(box, 'cancel');
+      event.stopPropagation();
+      if (cancel) { event.preventDefault(); cancel.click(); }
+    } else if (event.key === 'Enter' && event.target && event.target.tagName === 'INPUT'
+               && event.target.type !== 'checkbox') {
+      // Capture phase: the entry's own Return (commit one field) does not
+      // also run; Add gathers every entry itself.
+      event.preventDefault();
+      event.stopPropagation();
+      const add = this.dialogButton(box, 'add');
+      if (add) add.click();
+    } else if (event.key === 'Tab') {
+      const live = Array.from(box.querySelectorAll('input, select, textarea, button'))
+        .filter((n) => !n.disabled && n.getClientRects().length);
+      if (!live.length) return;
+      const edge = event.shiftKey ? live[0] : live[live.length - 1];
+      if (event.target === edge) {
+        event.preventDefault();
+        (event.shiftKey ? live[live.length - 1] : live[0]).focus();
+      }
+    }
+  }
+
+  // -- cascading dropdowns (W2-3) ---------------------------------------------
+  /** A dropdown's options are re-read when the value of ANY dropdown in its
+   *  section changes (Chip after Sample, Flake after Chip) and when the
+   *  step changes - once per change, debounced, never on a timer. */
+  watchOptions() {
+    for (const group of this.dropdownGroups) {
+      const sig = JSON.stringify(group.widgets.map((w) => {
+        const v = this.values[w.element.model_attr];
+        return v === undefined ? null : v;
+      }));
+      if (group.seen !== null && group.seen !== sig) this.queueOptions(group.widgets);
+      group.seen = sig;
+    }
+  }
+
+  queueOptions(widgets) {
+    for (const widget of widgets) this.optionsDue.add(widget);
+    if (this.optionsTimer !== null) return;
+    this.optionsTimer = setTimeout(() => {
+      this.optionsTimer = null;
+      const due = Array.from(this.optionsDue);
+      this.optionsDue.clear();
+      for (const widget of due) widget.reload();
+    }, OPTIONS_DEBOUNCE_MS);
   }
 
   /** L3: under a row whose `go` command is disabled, one muted caption says
    *  why - unless another `go` in the row can go (Setup's Launch and
    *  Relaunch take turns), or the model already says what unblocks it in
-   *  the row (Red Percent's "Next step"), or the reason is the latch (the
+   *  the row (a model's "Next step"), or the reason is the latch (the
    *  headline and the entry's head say that once). One caption per row. */
   sayWhyNotGo(mode) {
     const latched = mode === 'latched';

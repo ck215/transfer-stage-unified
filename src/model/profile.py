@@ -92,12 +92,21 @@ def merge(layers):
     return effective, provenance
 
 
+RENAMED_MODELS = {"Red Percent": "RGB Analysis"}
+
+
 def validate_model_params(scope, body, params_of):
     """Keep what `scope` may set and its Param accepts; return `(clean,
     problems)`, each problem one sentence naming the value."""
     clean, problems = {}, []
     for model_name, values in (body or {}).items():
         params = params_of(model_name) or {}
+        if not params and model_name in RENAMED_MODELS:
+            # Red Percent became RGB Analysis on 2026-10-07; a profile saved
+            # under the old key keeps working and is written back under the
+            # new one when the station knows only the new name.
+            model_name = RENAMED_MODELS[model_name]
+            params = params_of(model_name) or {}
         if not isinstance(values, dict):
             problems.append(f"{model_name}: expected a table of parameters.")
             continue

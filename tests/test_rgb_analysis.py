@@ -1,4 +1,7 @@
-"""`model.red_monitor` — RunLog, MonitorRun and the RedMonitor model.
+"""`model.rgb_analysis` — RunLog, MonitorRun and the RgbAnalysis model
+("RGB Analysis"; `model.red_monitor` / `RedMonitor` / "Red Percent" until RG-3,
+2026-10-07). It also holds RG-2's factor tests: the columns this model
+publishes are what `transfer_map_analysis` reads as a factor.
 
 Ported from `tests/core/test_monitoring_run.py`,
 `tests/core/test_redpercent_run_artifacts.py`,
@@ -22,7 +25,7 @@ import pytest
 
 from devices.screen import Screen
 from model import plot_data
-from model.red_monitor import MonitorRun, RedMonitor, RunLog
+from model.rgb_analysis import MonitorRun, RgbAnalysis, RunLog
 from result import Refused, NeedsConfirm
 
 
@@ -79,7 +82,7 @@ def fake_screen(frames=None, delay=0.001, varying=True):
 
 
 class FakeProbe:
-    """A position source, duck-typed exactly as `RedMonitor` asks for one."""
+    """A position source, duck-typed exactly as `RgbAnalysis` asks for one."""
 
     def __init__(self, position=(0.0, 0.0, 0.0), position_time=None):
         self.position = position
@@ -98,7 +101,7 @@ class FakeProbe:
 
 @pytest.fixture
 def monitor(tmp_path):
-    model = RedMonitor(screen=fake_screen())
+    model = RgbAnalysis(screen=fake_screen())
     model.output_root = tmp_path / "runs"
     model.run_name = "C001"
     model.open()
@@ -148,8 +151,10 @@ def test_run_log_writes_an_unmeasured_value_as_an_empty_cell_never_zero(tmp_path
 
     rows = list(csv.reader(path.read_text().splitlines()))
     assert rows[0][0] == plot_data.TIME_COLUMN
-    assert rows[1] == ["0.0", "10.0", "1.0", "", "0.01"]
-    assert rows[2] == ["0.1", "20.0", "", "", ""]
+    # RG-1: five channel cells close every row; a sample added without its
+    # six numbers leaves them empty, never zero.
+    assert rows[1] == ["0.0", "10.0", "1.0", "", "0.01", "", "", "", "", ""]
+    assert rows[2] == ["0.1", "20.0", "", "", "", "", "", "", "", ""]
     assert "0.0" not in rows[2][2:], "an unmeasured cell became a zero"
 
 
@@ -281,11 +286,11 @@ def test_frame_intervals_are_summarised():
 def test_the_output_root_does_not_follow_the_process_cwd(tmp_path, monkeypatch):
     monkeypatch.delenv("TRANSFER_STAGE_DATA_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
-    before = RedMonitor(screen=fake_screen()).output_root
+    before = RgbAnalysis(screen=fake_screen()).output_root
     elsewhere = tmp_path / "somewhere-else"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    after = RedMonitor(screen=fake_screen()).output_root
+    after = RgbAnalysis(screen=fake_screen()).output_root
 
     assert before.is_absolute()
     assert before == after, "output_root moved when the CWD moved"
@@ -293,7 +298,7 @@ def test_the_output_root_does_not_follow_the_process_cwd(tmp_path, monkeypatch):
 
 def test_the_data_root_environment_variable_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path))
-    assert RedMonitor(screen=fake_screen()).output_root == tmp_path.resolve()
+    assert RgbAnalysis(screen=fake_screen()).output_root == tmp_path.resolve()
 
 
 def test_an_unset_run_name_still_produces_an_identity(monitor):
@@ -373,11 +378,11 @@ def test_publish_red_reads_the_baseline_exactly_once(monitor):
             pass
 
     del monitor.baseline_red
-    RedMonitor.baseline_red = CountingBaseline()
+    RgbAnalysis.baseline_red = CountingBaseline()
     try:
         monitor._publish_red(8.0)
     finally:
-        del RedMonitor.baseline_red
+        del RgbAnalysis.baseline_red
 
     assert reads["count"] == 1, (
         f"baseline_red was read {reads['count']} times computing one sample")
@@ -471,7 +476,7 @@ def test_start_refuses_while_the_stop_latch_is_set(monitor):
 def test_start_refuses_when_screen_capture_is_unavailable(tmp_path, monkeypatch):
     import sys
     monkeypatch.setitem(sys.modules, "mss", None)
-    model = RedMonitor()
+    model = RgbAnalysis()
     model.output_root = tmp_path
     model.open()
     model.set_region(0, 0, 10, 10)
@@ -556,7 +561,7 @@ def test_a_failure_in_the_loop_ends_the_run_and_reports_once(monitor, capsys):
     """REDPERCENT-4: the loop used to have no handler at all, so a failure
     left `monitoring` True with a dead thread forever."""
     monitor.set_region(0, 0, 10, 10)
-    monitor._measure_red = lambda frame, threshold=None: 1 / 0
+    monitor._measure_rgb = lambda frame, threshold=None: 1 / 0
     monitor.start_run(confirmed=True)
     run = monitor._run
 
@@ -564,7 +569,7 @@ def test_a_failure_in_the_loop_ends_the_run_and_reports_once(monitor, capsys):
     assert not monitor.is_running
     assert run.failure is not None
     assert isinstance(run.failure, ZeroDivisionError)
-    assert "Red Percent Run Failed" in capsys.readouterr().err
+    assert "RGB Analysis Run Failed" in capsys.readouterr().err
 
 
 def test_a_grab_failure_does_not_end_the_run(monitor):
@@ -682,7 +687,7 @@ def test_one_position_age_column_serves_every_axis(monitor):
 
     assert positions == {"X": 1.0, "Y": 2.0}
     assert age is not None and age >= 0.0
-    assert len(RunLog(["X", "Y"]).headers) == 2 + 2 * 2 + 1
+    assert len(RunLog(["X", "Y"]).headers) == 2 + 2 * 2 + 1 + 5   # + RG-1
 
 
 def test_a_run_records_positions_from_the_selected_source(monitor):
@@ -881,7 +886,7 @@ def test_operator_annotations_reach_the_sidecar_and_stay_apart_from_actuals(logg
 
 
 def test_the_annotation_set_is_a_table_not_hardcoded_attributes():
-    names = [field.name for field in RedMonitor.ANNOTATION_FIELDS]
+    names = [field.name for field in RgbAnalysis.ANNOTATION_FIELDS]
     assert {"specimen_id", "consumable_id", "note"} <= set(names)
     assert len(set(names)) == len(names)
 
@@ -903,7 +908,7 @@ def test_save_takes_no_path_from_any_caller():
     a file dialog, which on the Web client meant the browser handing the
     server a path on the server's own filesystem."""
     import inspect
-    parameters = list(inspect.signature(RedMonitor.save).parameters)
+    parameters = list(inspect.signature(RgbAnalysis.save).parameters)
     assert parameters == ["self"]
 
 
@@ -1022,8 +1027,8 @@ def test_the_series_of_a_model_with_no_run_is_empty(monitor):
     assert monitor.series == {"x": [], "y": []}
 
 
-def test_red_percent_declares_no_live_plot(monitor):
-    """TM-2 (2026-10-07): the live plots left the live view (Red Percent is
+def test_rgb_analysis_declares_no_live_plot(monitor):
+    """TM-2 (2026-10-07): the live plots left the live view (RGB analysis is
     drawn on the Transfer Map's page; redrawing a whole run each refresh
     slowed it, CAP-5). `series` stays a property; nothing polls it."""
     import schema as sch
@@ -1188,12 +1193,14 @@ def test_the_figure_is_rendered_once_until_something_changes(logged, monkeypatch
 
 
 def test_the_tier_two_disclosure_names_the_device(monitor):
-    """Tier K (2026-09-26): Red Percent's second tier is statistics and
+    """Tier K (2026-09-26): RGB analysis's second tier is statistics and
     annotations, not configuration, so its disclosure reads "<name> details";
     every tier-2 section says the same words (the views draw the first)."""
     tier_two = [s for s in monitor.schema["sections"] if s.get("tier") == 2]
     assert tier_two
-    assert {s["disclosure"] for s in tier_two} == {f"{monitor.NAME} details"}
+    # RG-3: "RGB analysis details", sentence case, not "<NAME> details".
+    assert {s["disclosure"] for s in tier_two} == {"RGB analysis details"}
+    assert monitor.DISCLOSURE == "RGB analysis details"
 
 
 def test_the_next_step_line_says_what_unblocks_start_run(monitor):
@@ -1247,7 +1254,8 @@ def test_a_subscriber_receives_every_logged_row(monitor):
     assert len(seen) == len(log) == monitor.rows_written
     assert [s[1] for s in seen] == log.red_values
     assert [s[0] for s in seen] == log.times
-    assert all(set(s[2]) == {"Z"} for s in seen)
+    # The row dict: the synced axis, and the five RG-1 numbers.
+    assert all(set(s[2]) == {"Z", *RgbAnalysis.CHANNEL_KEYS} for s in seen)
 
 
 def test_a_subscriber_gets_its_own_copy_of_the_positions(monitor):
@@ -1310,7 +1318,7 @@ def test_grab_frame_returns_the_capture_region_as_png(monitor):
 
 def test_grab_frame_is_none_without_a_region_or_a_frame(monitor):
     assert monitor.grab_frame() is None
-    closed = RedMonitor(screen=fake_screen())
+    closed = RgbAnalysis(screen=fake_screen())
     closed.region = {"top": 0, "left": 0, "width": 10, "height": 10}
     assert closed.grab_frame() is None                   # screen never opened
 
@@ -1370,7 +1378,7 @@ def desktop_screen(frames=None, delay=0.001, varying=True):
 def test_grab_screen_is_the_whole_desktop_at_full_size(tmp_path):
     from PIL import Image
     import io
-    model = RedMonitor(screen=desktop_screen())
+    model = RgbAnalysis(screen=desktop_screen())
     model.output_root = tmp_path / "runs"
     model.open()
     try:
@@ -1388,7 +1396,7 @@ def test_grab_screen_is_the_whole_desktop_at_full_size(tmp_path):
 
 
 def test_grab_screen_is_none_when_the_screen_is_closed_or_fails(monitor):
-    closed = RedMonitor(screen=desktop_screen())
+    closed = RgbAnalysis(screen=desktop_screen())
     assert closed.grab_screen() is None                 # never opened
     assert monitor.grab_screen() is None                # a capture with no desktop
 
@@ -1399,7 +1407,7 @@ def test_the_run_loop_keeps_one_handle_and_other_grabs_keep_none(tmp_path):
     """A Web request is a new thread each time; a frame or screen grab from
     one must leave no capture handle open (on X11, a display connection).
     The run loop keeps exactly one for its life and drops it on leaving."""
-    model = RedMonitor(screen=desktop_screen())
+    model = RgbAnalysis(screen=desktop_screen())
     model.output_root = tmp_path / "runs"
     model.open()
     try:
@@ -1483,7 +1491,7 @@ def test_a_slow_frame_consumer_never_slows_the_loop(tmp_path):
     a bounded queue drained by a consumer taking 100 ms a frame (the
     Transfer Map's pattern) stays within reach of the rate with none."""
     import queue as queue_module
-    model = RedMonitor(screen=fake_screen(delay=0.004))
+    model = RgbAnalysis(screen=fake_screen(delay=0.004))
     model.output_root = tmp_path / "runs"
     model.open()
     try:
@@ -1516,3 +1524,424 @@ def test_a_slow_frame_consumer_never_slows_the_loop(tmp_path):
         assert dropped, "the consumer fell behind, so frames were dropped"
     finally:
         model.close()
+
+
+# ---------------------------------------------------------------------
+# RG-1 (2026-10-07): six numbers per settled sample
+# ---------------------------------------------------------------------
+
+def channel_frame():
+    """A 10x10 RGB frame with known channels: 20 red pixels, 30 green, 10
+    blue and 40 of the bench's yellow-green field, which no mask passes.
+    Shares: red 20 %, green 30 %, blue 10 %. Means: red (20*200 + 40*120)/100
+    = 88, green (30*200 + 40*140)/100 = 116, blue (10*200 + 40*60)/100 = 44."""
+    frame = numpy.empty((10, 10, 3), dtype=numpy.uint8)
+    frame[0:2] = [200, 0, 0]
+    frame[2:5] = [0, 200, 0]
+    frame[5:6] = [0, 0, 200]
+    frame[6:10] = [120, 140, 60]
+    return frame
+
+
+CHANNEL_SIX = (20.0, 30.0, 10.0, 88.0, 116.0, 44.0)
+
+
+def test_the_six_numbers_of_a_frame_with_known_channels(monitor):
+    assert monitor._measure_rgb(channel_frame()) == pytest.approx(CHANNEL_SIX)
+    assert RgbAnalysis.RGB_KEYS == ("red", "green", "blue",
+                                   "r_mean", "g_mean", "b_mean")
+
+
+def test_the_green_and_blue_masks_have_the_red_masks_structure(monitor):
+    """A channel above its threshold and the other two below their caps;
+    the boundaries are strict, as the red mask's are."""
+    image = numpy.zeros((10, 10, 3), dtype=numpy.uint8)
+    image[0, :] = [99, 151, 99]      # green, just inside
+    image[1, :] = [0, 150, 0]        # green, just outside: g > 150 is False
+    image[2, :] = [100, 200, 0]      # green, outside: r < 100 is False
+    image[3, :] = [99, 99, 151]      # blue, just inside
+    image[4, :] = [0, 0, 150]        # blue, just outside
+    image[5, :] = [0, 100, 200]      # blue, outside: g < 100 is False
+    red, green, blue = monitor._measure_rgb(image)[:3]
+    assert (red, green, blue) == (0.0, pytest.approx(10.0), pytest.approx(10.0))
+    assert (RgbAnalysis.GREEN_MIN, RgbAnalysis.BLUE_MIN, RgbAnalysis.RED_MAX) == \
+        (150, 150, 100)
+
+
+def test_the_six_numbers_read_a_bgra_screenshot_in_its_own_order(monitor):
+    class Shot:
+        width, height = 4, 2
+        # BGRA: one red, two green, one blue pixel, four black
+        bgra = bytes([0, 0, 200, 255] + [0, 200, 0, 255] * 2
+                     + [200, 0, 0, 255] + [0, 0, 0, 255] * 4)
+
+    assert monitor._measure_rgb(Shot()) == pytest.approx(
+        (12.5, 25.0, 12.5, 25.0, 50.0, 25.0))
+
+
+def test_the_red_share_is_the_red_detectors_to_the_bit(monitor):
+    """The red share beside the five new numbers is `_measure_red`'s, so no
+    bench number moves: the same comparisons over the same pixels."""
+    rng = numpy.random.default_rng(7)
+    for red_min in (0, 120, 150, 254):
+        monitor.red_min = red_min
+        for _ in range(5):
+            frame = rng.integers(0, 256, size=(23, 37, 3), dtype=numpy.uint8)
+            assert monitor._measure_rgb(frame)[0] == monitor._measure_red(frame)
+
+
+def test_no_frame_is_six_zeros_not_an_exception(monitor):
+    assert monitor._measure_rgb(None) == (0.0,) * 6
+
+
+def _channel_run(monitor, **kwargs):
+    monitor.screen = fake_screen(frames=[channel_frame()], varying=False)
+    monitor.screen.open()
+    return _started(monitor, **kwargs)
+
+
+def test_the_five_new_keys_reach_every_subscriber_with_the_row(monitor):
+    """The row dict a subscriber gets carries the positions and the five
+    new numbers, the subscriber's own copy, read with `.get`."""
+    seen = []
+    monitor.subscribe(lambda t, red, row: seen.append((red, row)))
+    _channel_run(monitor, sync_axes="Z")
+    assert _wait_for(lambda: len(seen) >= 1)
+    monitor.end_run()
+    monitor._run.thread.join(2)
+    red, row = seen[0]
+    assert set(row) == {"Z", "green", "blue", "r_mean", "g_mean", "b_mean"}
+    assert red == pytest.approx(20.0)
+    assert [row[k] for k in RgbAnalysis.CHANNEL_KEYS] == \
+        pytest.approx(CHANNEL_SIX[1:])
+
+
+def test_the_run_log_and_its_csv_carry_the_five_columns(monitor):
+    from model.rgb_analysis import CHANNEL_COLUMNS
+    _channel_run(monitor, sync_axes="X")
+    assert _wait_for(lambda: monitor.rows_written >= 1)
+    monitor.end_run()
+    monitor._run.thread.join(2)
+    path = monitor.save()
+    with open(path, newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows
+    for column, value in zip(CHANNEL_COLUMNS, CHANNEL_SIX[1:]):
+        assert float(rows[0][column]) == pytest.approx(value), column
+    assert float(rows[0][plot_data.RED_COLUMN]) == pytest.approx(20.0)
+    # the parser reads by header name, so a run with the new columns loads
+    assert plot_data.load_run(path)["red_percents"][0] == pytest.approx(20.0)
+
+
+def test_state_run_carries_the_latest_six(monitor):
+    assert monitor.state["run"]["latest"] == dict.fromkeys(RgbAnalysis.RGB_KEYS)
+    _channel_run(monitor)
+    assert _wait_for(lambda: monitor.frames_captured >= 1)
+    monitor.end_run()
+    latest = monitor.state["run"]["latest"]
+    assert list(latest) == list(RgbAnalysis.RGB_KEYS)
+    assert [latest[k] for k in RgbAnalysis.RGB_KEYS] == pytest.approx(CHANNEL_SIX)
+
+
+def test_the_five_readouts_are_under_details_and_red_stays_in_tier_one(monitor):
+    _channel_run(monitor)
+    assert _wait_for(lambda: monitor.frames_captured >= 1)
+    monitor.end_run()
+    attrs = ("current_green", "current_blue", "mean_red", "mean_green",
+             "mean_blue")
+    sections = monitor.schema["sections"]
+    where = {e.get("model_attr"): s for s in sections for e in s["elements"]}
+    assert where["current_red"]["tier"] == 1
+    tier_two = {s["disclosure"] for s in sections if s.get("tier") == 2}
+    for attr in attrs:
+        assert where[attr]["tier"] == 2, attr
+        assert where[attr]["disclosure"] in tier_two
+    values = monitor.state["values"]
+    assert [float(values[a]) for a in attrs] == pytest.approx(CHANNEL_SIX[1:])
+    for attr in attrs:
+        assert monitor.set_value(attr, "5").is_refused       # read-only
+
+
+def test_the_sidecar_records_the_channel_masks(logged):
+    logged.save()
+    meta = json.loads((logged.run_dir / "C001_station_meta.json").read_text())
+    assert meta["channel_thresholds"] == {
+        "green": {"g_min": 150, "r_max": 100, "b_max": 100},
+        "blue": {"b_min": 150, "r_max": 100, "g_max": 100}}
+
+
+# ---------------------------------------------------------------------
+# RG-2 (2026-10-07): the factor is an analysis setting. The numbers this
+# model publishes are profile columns; `transfer_map_analysis` reads any of
+# them (or a ratio of two) as the column that drives the extrema.
+# ---------------------------------------------------------------------
+
+def _lowering(t, base, peak, dip):
+    """A hover at `base`, a rise to `peak` at 2 s, a fall to `dip` at 3 s,
+    flat after: the owner's picture of a lowering, one column of it."""
+    out = []
+    for s in t:
+        if s < 1.5:
+            out.append(base)
+        elif s < 2.0:
+            out.append(base + (peak - base) * (s - 1.5) / 0.5)
+        elif s < 3.0:
+            out.append(peak + (dip - peak) * (s - 2.0))
+        else:
+            out.append(dip)
+    return out
+
+
+def factor_profile():
+    """Red and green with different shapes: red peaks at 2.0 s and dips at
+    3.0 s; green is red shifted 0.5 s later and scaled, so its extrema are
+    elsewhere and its values are not red's."""
+    t = [i / 100.0 for i in range(500)]
+    red = _lowering(t, 20.0, 35.0, 8.0)
+    green = _lowering([s - 0.5 for s in t], 5.0, 9.0, 2.0)
+    return {"t": t, "red": red, "green": green,
+            "blue": [1.0] * len(t), "r_mean": [s + 100.0 for s in red],
+            "g_mean": [0.0] * len(t), "b_mean": [50.0] * len(t)}
+
+
+def test_the_factor_parser_names_a_column_or_a_ratio():
+    from model import transfer_map_analysis as tma
+    assert tma.DEFAULT_FACTOR == "red"
+    assert tma.FACTOR_COLUMNS == ("red", "green", "blue", "r_mean", "g_mean",
+                                  "b_mean")
+    assert tma.parse_factor("red") == ("red", None)
+    assert tma.parse_factor("b_mean") == ("b_mean", None)
+    assert tma.parse_factor("red/green") == ("red", "green")
+    assert tma.parse_factor(" Red / G_Mean ") == ("red", "g_mean")
+    for bad in ("purple", "red/", "/green", "red/green/blue", "", "red//green",
+                None, 3):
+        with pytest.raises(ValueError):
+            tma.parse_factor(bad)
+    with pytest.raises(ValueError, match="purple"):
+        tma.parse_factor("red/purple")
+
+
+def test_a_ratio_factor_divides_and_a_zero_denominator_is_not_a_number():
+    from model import transfer_map_analysis as tma
+    profile = {"t": [0.0, 0.1, 0.2], "red": [4.0, 6.0, 8.0],
+               "green": [2.0, 0.0, None]}
+    values = tma.factor_values(profile, "red/green")
+    assert values[0] == pytest.approx(2.0)
+    assert numpy.isnan(values[1]) and numpy.isnan(values[2])
+    assert list(tma.factor_values(profile, "red")) == [4.0, 6.0, 8.0]
+
+
+def test_a_profile_lacking_the_factors_column_is_refused_by_name():
+    from model import transfer_map_analysis as tma
+    old = {"t": [0.0, 0.1], "red": [1.0, 2.0]}            # a red-only profile
+    with pytest.raises(ValueError, match="green"):
+        tma.detect(old, factor="green")
+    with pytest.raises(ValueError, match="b_mean"):
+        tma.force_indices(old, {}, factor="red/b_mean")
+    with pytest.raises(ValueError, match="blue"):
+        tma.detect({**old, "blue": [None, None]}, factor="blue")
+
+
+def test_red_is_the_default_factor_and_nothing_moves():
+    from model import transfer_map_analysis as tma
+    profile = factor_profile()
+    red_only = {"t": profile["t"], "red": profile["red"]}
+    default, named = tma.detect(profile, 3.5), tma.detect(profile, 3.5, factor="red")
+    alone = tma.detect(red_only, 3.5)
+    for key in ("max_t", "min_t", "max_i", "min_i", "red_max", "red_min",
+                "baseline", "masked_share"):
+        assert default[key] == named[key] == alone[key], key
+    assert tma.force_indices(profile, {"operator_t": 3.5}) == \
+        tma.force_indices(red_only, {"operator_t": 3.5}) == \
+        tma.force_indices(profile, {"operator_t": 3.5}, factor="red")
+
+
+def test_two_factors_find_their_own_extrema_on_one_profile():
+    from model import transfer_map_analysis as tma
+    profile = factor_profile()
+    red = tma.detect(profile, 4.0)
+    green = tma.detect(profile, 4.0, factor="green")
+    assert red["max_t"] == pytest.approx(2.0, abs=0.03)
+    assert red["min_t"] == pytest.approx(3.0, abs=0.03)
+    assert green["max_t"] == pytest.approx(2.5, abs=0.03)
+    assert green["min_t"] == pytest.approx(3.5, abs=0.03)
+    # (the 5-sample median takes a little off a sharp peak)
+    assert (green["red_max"], green["red_min"], green["baseline"]) == \
+        pytest.approx((9.0, 2.0, 5.0), abs=0.1)
+    # the green factor reads exactly as a profile whose red WAS the green
+    as_red = tma.detect({"t": profile["t"], "red": profile["green"]}, 4.0)
+    for key in ("max_t", "min_t", "red_max", "red_min", "baseline"):
+        assert green[key] == as_red[key], key
+    forces = tma.force_indices(profile, {"operator_t": 4.0}, factor="green")
+    assert forces == tma.force_indices(
+        {"t": profile["t"], "red": profile["green"]}, {"operator_t": 4.0})
+    assert forces["shadow_vs_peak"] == pytest.approx((9.0 - 2.0) / 9.0, abs=0.01)
+    assert forces != tma.force_indices(profile, {"operator_t": 4.0})
+    # a ratio is one more column: r_mean / b_mean = (red + 100) / 50
+    ratio = tma.detect(profile, 4.0, factor="r_mean/b_mean")
+    assert ratio["red_max"] == pytest.approx(135.0 / 50.0, abs=0.02)
+    assert ratio["max_t"] == red["max_t"]
+    assert tma.baseline_of(profile, factor="green") == pytest.approx(5.0)
+
+
+def test_the_rows_a_factor_is_read_over_are_the_red_masks():
+    """A glitch is a property of the grab, not of a column: a black grab
+    (red 0.0) is masked for every factor, while a green share of 0.0 (the
+    bench scene has none) is a reading, not a black grab."""
+    from model import transfer_map_analysis as tma
+    profile = factor_profile()
+    profile["red"][120] = 0.0                       # a black grab
+    green = tma.detect(profile, 4.0, factor="g_mean")   # g_mean is all 0.0
+    assert not green["settled_mask"][120]
+    assert green["settled_mask"].sum() == len(profile["t"]) - 1
+    assert green["red_max"] == 0.0 and green["max_t"] is None   # flat, not masked
+
+
+# -- dev/reanalyse_trials.py --factor -------------------------------------------
+
+def _reanalyse_tool():
+    import importlib.util
+    import pathlib
+    path = pathlib.Path(__file__).resolve().parent.parent / "dev" / "reanalyse_trials.py"
+    spec = importlib.util.spec_from_file_location("reanalyse_trials_rgb", path)
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    return tool
+
+
+def _trial_db(path, columns=()):
+    """A store with two trials over `factor_profile()`: the profile table
+    carries `red` plus `columns`; trial 2's channel cells are NULL (recorded
+    before the columns existed, as an old row of a migrated table is)."""
+    import sqlite3
+    profile = factor_profile()
+    conn = sqlite3.connect(path)
+    extra = "".join(f", {c} REAL" for c in columns)
+    conn.execute("CREATE TABLE trials (id INTEGER PRIMARY KEY, "
+                 "mark_operator_t REAL, red_min REAL, red_max REAL, "
+                 "red_baseline REAL)")
+    conn.execute(f"CREATE TABLE profile (trial_id INTEGER, t_s REAL, red REAL, "
+                 f"z REAL{extra})")
+    for trial in (1, 2):
+        conn.execute("INSERT INTO trials VALUES (?, 4.0, 1.0, 2.0, 3.0)", (trial,))
+        for i, t in enumerate(profile["t"]):
+            cells = [profile[c][i] if trial == 1 else None for c in columns]
+            conn.execute(f"INSERT INTO profile VALUES (?, ?, ?, ?"
+                         f"{', ?' * len(columns)})",
+                         (trial, t, profile["red"][i], None, *cells))
+    conn.commit()
+    conn.close()
+
+
+def test_reanalyse_takes_a_factor_and_refuses_an_unknown_one(capsys):
+    tool = _reanalyse_tool()
+    assert tool.parse_args(["x.sqlite"]).factor == "red"
+    assert tool.parse_args(["x.sqlite", "--factor", "red/green"]).factor == "red/green"
+    with pytest.raises(SystemExit):
+        tool.parse_args(["x.sqlite", "--factor", "purple"])
+    assert "purple" in capsys.readouterr().err
+
+
+def test_reanalyse_with_a_factor_reports_its_extrema_and_the_red_only_trials(tmp_path):
+    tool = _reanalyse_tool()
+    db = str(tmp_path / "map.sqlite")
+    _trial_db(db, columns=("green", "blue", "r_mean", "g_mean", "b_mean"))
+    assert tool.main([db, "--out", str(tmp_path / "out"), "--factor", "green"]) == 0
+    md = (tmp_path / "out").glob("reanalysis_*_green.md")
+    text = next(md).read_text()
+    assert "factor: green" in text
+    assert "red only" in text
+    rows = list(csv.DictReader(open(next((tmp_path / "out").glob("reanalysis_*_green.csv")))))
+    first, second = rows
+    assert first["factor"] == "green" and first["note"] == ""
+    assert float(first["new_red_max"]) == pytest.approx(9.0, abs=0.1)
+    assert float(first["new_red_min"]) == pytest.approx(2.0, abs=0.1)
+    assert second["new_red_max"] == "" and "red only" in second["note"]
+
+
+def test_reanalyse_says_so_when_no_profile_carries_the_column(tmp_path):
+    tool = _reanalyse_tool()
+    db = str(tmp_path / "old.sqlite")
+    _trial_db(db)                                       # red only, as the bench's
+    tool.main([db, "--out", str(tmp_path / "out"), "--factor", "red/green"])
+    text = next((tmp_path / "out").glob("reanalysis_*_red-green.md")).read_text()
+    assert "factor: red/green" in text and "no green column" in text
+    rows = list(csv.DictReader(open(next((tmp_path / "out").glob("reanalysis_*_red-green.csv")))))
+    assert len(rows) == 2 and all(r["new_red_max"] == "" for r in rows)
+
+
+def test_reanalyse_red_is_unchanged_and_write_needs_the_red_factor(tmp_path):
+    tool = _reanalyse_tool()
+    db = str(tmp_path / "map.sqlite")
+    _trial_db(db, columns=("green",))
+    tool.main([db, "--out", str(tmp_path / "out")])
+    rows = list(csv.DictReader(open(next((tmp_path / "out").glob("reanalysis_????-??-??.csv")))))
+    assert float(rows[0]["new_red_max"]) == pytest.approx(35.0, abs=0.5)
+    with pytest.raises(SystemExit, match="red"):
+        tool.main([db, "--out", str(tmp_path / "out"), "--factor", "green",
+                   "--write"])
+    assert not (tmp_path / "map.sqlite.pre-reanalysis.bak").exists()
+
+
+# ---------------------------------------------------------------------
+# RG-3 (2026-10-07): Red Percent is RGB analysis wherever the registry or
+# an operator sees it. The stores are untouched (the profile column is red).
+# ---------------------------------------------------------------------
+
+def test_the_registry_builds_rgb_analysis_under_its_new_name_on_the_map(
+        tmp_path, monkeypatch):
+    """Setup's registry keys the class by its NAME; ticking the Transfer
+    Map's row launches it, hosted (`HOST` resolves in the Controller's
+    state), under "RGB Analysis" and never "Red Percent"."""
+    import model.rgb_analysis as module
+    from controller import setup as station_setup
+    from controller.controller import Controller
+    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "station.json"))
+    monkeypatch.setattr(module, "Screen", lambda: fake_screen())   # no display
+    assert station_setup.MODEL_TYPES["RGB Analysis"] is RgbAnalysis
+    assert "Red Percent" not in station_setup.MODEL_TYPES
+    controller = Controller()
+    setup = station_setup.Setup(controller)
+    try:
+        assert not any(row["name"] == "RGB Analysis" for row in setup._rows.values()), \
+            "a hosted model has no Setup row"
+        key = next(k for k, row in setup._rows.items()
+                   if row["name"] == "Transfer Map")
+        getattr(setup, f"set_{key}_enabled")(True)
+        assert "RGB Analysis" in [c["model"] for c in setup.configs]
+        setup.launch()
+        models = controller.state()["models"]
+        assert "Red Percent" not in models
+        assert models["RGB Analysis"]["host"] == "Transfer Map"
+        assert models["RGB Analysis"]["name"] == "RGB Analysis"
+        assert isinstance(controller.models["RGB Analysis"], RgbAnalysis)
+    finally:
+        controller.reset()
+
+
+def test_the_operator_sees_rgb_analysis_in_the_stop_and_the_events(
+        monitor, monkeypatch):
+    import schema as sch
+    from events import events
+    stop = next(e for e in sch.elements(monitor.schema)
+                if e.get("command") == "toggle_estop")
+    assert stop["tooltip"] == "Stop the RGB Analysis"
+    seen = []
+    real = events.info
+
+    def spy(title, message, **kwargs):
+        seen.append((title, kwargs.get("source")))
+        return real(title, message, **kwargs)
+
+    monkeypatch.setattr(events, "info", spy)
+    _started(monitor)
+    monitor.end_run()
+    sources = {source for title, source in seen
+               if title in ("Run Started", "Run Ended")}
+    assert sources == {"RGB Analysis"}
+    assert "Red Percent" not in repr(monitor.schema)
+
+
+def test_the_telemetry_stream_slug_is_rgb_analysis():
+    from model import trial_telemetry
+    assert trial_telemetry._slug(RgbAnalysis.NAME) == "rgb_analysis"

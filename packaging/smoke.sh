@@ -34,7 +34,7 @@ BASE="http://127.0.0.1:$PORT"
 LOGDIR="${TRANSFER_STAGE_DATA_ROOT:-$HOME/transfer-stage-runs}/logs"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/station-smoke.XXXXXX")"
 # The Setup rows, in display order. The Transfer Map and the Sample Map are
-# stores with no port (their choice is "On"), so they are only ticked; red_percent (screen
+# stores with no port (their choice is "On"), so they are only ticked; rgb_analysis (screen
 # capture) has no row of its own since 2026-09-28: it is drawn on the
 # Transfer Map's page and launches with that row.
 PORT_ROWS="stepper_probe dc_probe chuck_positioner temperature_controller rotator"
@@ -242,7 +242,7 @@ else
         check "log: Web dashboard served" log_has "$log" "Web Dashboard: serving at"
         check "log: serial ports enumerated" log_has "$log" "[Setup] Ports:"
         check "log: six models launched" log_has "$log" \
-            "Launched: Stepper Probe, DC Probe, Chuck Positioner, Temperature Controller, Rotator, Red Percent"
+            "Launched: Stepper Probe, DC Probe, Chuck Positioner, Temperature Controller, Rotator, RGB Analysis"
         check "log: FULL STOP latched" log_has "$log" "FULL STOP"
         check "log: Quit from the Web console" log_has "$log" "Quit from the Web console"
         check "log: gamepad hub closed (SDL down)" log_has "$log" "[gamepad-hub] SDL down"

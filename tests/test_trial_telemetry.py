@@ -20,7 +20,7 @@ from devices.screen import Screen
 from events import events
 from model.heater import Heater
 from model.probe import StepperProbe
-from model.red_monitor import RedMonitor
+from model.rgb_analysis import RgbAnalysis
 from model.trial_telemetry import TrialTelemetry
 from test_core_fakes import FakeClock, FakeModel
 
@@ -154,11 +154,11 @@ def station(tmp_path):
     controller = Controller()
     probe = StepperProbe(port=None, gamepad=None, sim=True)
     heater = Heater(port=None, sim=True)
-    red = RedMonitor(screen=Screen(factory=RedCapture))
+    red = RgbAnalysis(screen=Screen(factory=RedCapture))
     red.output_root = tmp_path / "runs"
     tilt = Tilt()
     for name, model in (("Stepper Probe", probe), ("Temperature Controller", heater),
-                        ("Red Percent", red), ("Rotator", tilt)):
+                        (RgbAnalysis.NAME, red), ("Rotator", tilt)):
         controller.add(name, model)
     red.set_region(0, 0, 10, 10)
     red.start_run(confirmed=True)
@@ -183,7 +183,7 @@ def test_every_stream_lands_on_the_one_clock(station):
     # Red Percent rows arrive at the source rate now (CAP-1), not per grab:
     # wait for the second one before stopping, so the "row per row" check
     # below has two to count.
-    assert _wait_for(lambda: len(_values(telemetry.rows(), "red_percent.row_red")) >= 2), \
+    assert _wait_for(lambda: len(_values(telemetry.rows(), "rgb_analysis.row_red")) >= 2), \
         f"fewer than two red rows: {sorted(_streams(telemetry.rows()))}"
     text = f"telemetry {uuid.uuid4().hex}"
     t_before = offset_clock()
@@ -202,7 +202,7 @@ def test_every_stream_lands_on_the_one_clock(station):
         "temperature_controller.temperature", "temperature_controller.setpoint",
         "temperature_controller.heating_to", "temperature_controller.heating",
         "rotator.angle", "rotator.motion",
-        "red_percent.red", "red_percent.row_red",
+        "rgb_analysis.red", "rgb_analysis.row_red",
         "events.info",
     }
     assert expected <= streams, expected - streams
@@ -215,7 +215,7 @@ def test_every_stream_lands_on_the_one_clock(station):
     assert _values(rows, "rotator.angle") == [1.5, 3.0]
     line = [(t, v) for t, s, v in rows if s == "events.info" and text in v]
     assert len(line) == 1 and t_before <= line[0][0] <= t_after
-    assert len(_values(rows, "red_percent.row_red")) >= 2, "a row per Red Percent row"
+    assert len(_values(rows, "rgb_analysis.row_red")) >= 2, "a row per Red Percent row"
 
 
 def test_event_log_lines_are_captured_with_their_timestamp():
@@ -259,7 +259,7 @@ def test_a_hook_handed_garbage_never_raises_into_the_caller():
     telemetry.start("T3")
     try:
         telemetry._on_event(object())              # no severity, no text
-        telemetry._red_row_hook("red_percent", telemetry._generation)()
+        telemetry._red_row_hook("rgb_analysis", telemetry._generation)()
         assert telemetry.failures == 2
     finally:
         telemetry.stop()
@@ -367,7 +367,7 @@ def test_red_percent_rows_stop_arriving_after_stop(station):
     controller, probe, heater, red, tilt = station
     telemetry = TrialTelemetry(controller, clock=offset_clock, poll_hz=50)
     telemetry.start("T9")
-    assert _wait_for(lambda: "red_percent.row_red" in _streams(telemetry.rows()))
+    assert _wait_for(lambda: "rgb_analysis.row_red" in _streams(telemetry.rows()))
     rows = telemetry.stop()
     assert red.is_running
     assert red._subscribers == (), "the row hook is unsubscribed"

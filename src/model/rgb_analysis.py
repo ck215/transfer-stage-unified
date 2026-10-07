@@ -1,5 +1,7 @@
-"""Red Percent: the red fraction of a screen region, logged as a force proxy
-beside the probe's position.
+"""RGB analysis (was "Red Percent", renamed RG-3 2026-10-07): the colour of a
+screen region, logged as a force proxy beside the probe's position. The red
+fraction it always measured, and since RG-1 the green and blue fractions and
+the channel means beside it.
 
 What the instrument is for (owner, 2026-09-21): the dataset is the product.
 A row pairs "how red is the region right now" with "where was the probe when
@@ -14,7 +16,17 @@ Three shapes carry that:
              allocation per frame beyond the numbers themselves.
 `MonitorRun` one run: its frozen configuration, its own log, its own stop
              event, and what actually happened (frames, rows, rates).
-`RedMonitor` the Model. Owns a `Screen`, follows a Probe for position, and
+
+RG-1 (2026-10-07): every settled sample is six numbers, not one. Beside the
+red share, `_measure_rgb` takes the green and blue shares (the red mask's
+rule turned on the other two channels) and the region's mean red, green and
+blue (0-255), in one deinterleave of the frame and a handful of numpy
+reductions. The five ride with the red share everywhere a sample goes: the
+row a subscriber gets, the run's CSV, `state["run"]["latest"]`, and the
+readouts behind Details. The red share is `_measure_red`'s to the bit, so no
+bench number moves; which column drives the force extrema is an analysis
+setting (`transfer_map_analysis`, `factor=`), not this model's.
+`RgbAnalysis` the Model. Owns a `Screen`, follows a Probe for position, and
              owns exactly one run at a time.
 
 The load-bearing repairs carried over from `legacy/src/model/redpercent_system.py`:
@@ -74,6 +86,13 @@ try:                                  # guarded: a bench box without numpy
 except Exception:                     # pragma: no cover - environment specific
     numpy = None
 
+#: RG-1: the five columns a run's CSV carries after `position_age_s`: the
+#: green and blue shares (%, beside `red_percent`) and the region's mean red,
+#: green and blue (0-255). `plot_data` reads a run by header name, so a run
+#: with them loads exactly as one without.
+CHANNEL_COLUMNS = ("green_percent", "blue_percent", "r_mean", "g_mean",
+                   "b_mean")
+
 
 class RunLog:
     """The samples of one run, and the CSV they are written as.
@@ -99,6 +118,8 @@ class RunLog:
         self.positions = {axis: [] for axis in self.axes}
         self.velocities = {axis: [] for axis in self.axes}
         self.position_ages = []
+        #: RG-1: one list per `CHANNEL_COLUMNS` entry, in that order.
+        self.channels = tuple([] for _ in CHANNEL_COLUMNS)
         self._lock = threading.Lock()
 
     def __len__(self):
@@ -113,11 +134,16 @@ class RunLog:
             header.append(f"{axis.lower()}_position_{plot_data.POSITION_UNIT}")
             header.append(f"{axis.lower()}_velocity_{plot_data.VELOCITY_UNIT}")
         header.append(plot_data.AGE_COLUMN)
+        header.extend(CHANNEL_COLUMNS)
         return header
 
-    def add(self, t_s, red, positions=None, velocities=None, position_age=None):
+    def add(self, t_s, red, positions=None, velocities=None, position_age=None,
+            rgb=None):
         """Append one sample. `positions`/`velocities` are read, never kept —
-        the caller reuses its own dictionaries frame after frame."""
+        the caller reuses its own dictionaries frame after frame. `rgb` is
+        the sample's six numbers in `RgbAnalysis.RGB_KEYS` order (RG-1); the
+        five after the red share fill the channel columns, and without it
+        they are empty cells."""
         with self._lock:
             self.times.append(t_s)
             self.red_values.append(red)
@@ -127,6 +153,9 @@ class RunLog:
                     positions.get(axis) if positions else None)
                 self.velocities[axis].append(
                     velocities.get(axis) if velocities else None)
+            for column, value in zip(self.channels,
+                                     rgb[1:] if rgb else (None,) * 5):
+                column.append(value)
 
     def save(self, path):
         """Write the CSV: a header row, then samples. Nothing before the
@@ -142,6 +171,7 @@ class RunLog:
                         row.append(self.positions[axis][index])
                         row.append(self.velocities[axis][index])
                     row.append(self.position_ages[index])
+                    row.extend(column[index] for column in self.channels)
                     writer.writerow(row)
         return Path(path)
 
@@ -149,7 +179,7 @@ class RunLog:
 class MonitorRun:
     """One run: what was configured, what it owns, and what it achieved.
 
-    Created by `RedMonitor.start_run`, never reused and never mutated by a
+    Created by `RgbAnalysis.start_run`, never reused and never mutated by a
     view. `axes` and `region` are copied rather than aliased, so nothing the
     operator does afterwards can reach a run in flight (REDPERCENT-1).
 
@@ -224,7 +254,7 @@ class MonitorRun:
     @property
     def is_active(self):
         """True from creation until ended or failed. The one thing
-        `RedMonitor.is_running` is derived from, so the flag and the thread
+        `RgbAnalysis.is_running` is derived from, so the flag and the thread
         cannot disagree (REDPERCENT-4)."""
         return not self.stop_event.is_set() and self.failure is None
 
@@ -273,10 +303,20 @@ class MonitorRun:
             self.duration_s = time.monotonic() - self.started_monotonic
 
 
-class RedMonitor(Model):
-    """Was `RedPercentSystem`. Owns a `Screen`. Follows a Probe for position."""
+class RgbAnalysis(Model):
+    """Was `RedMonitor` ("Red Percent" to the operator, until RG-3), and
+    before that `RedPercentSystem`. Owns a `Screen`. Follows a Probe for
+    position."""
 
-    NAME = "Red Percent"
+    #: The registry key and the name every operator sees (RG-3, 2026-10-07:
+    #: "Red Percent" became "RGB Analysis"). Setup's MODEL_TYPES, the
+    #: Controller, the telemetry slug (`rgb_analysis`), the stop's tooltip
+    #: and every event's source follow from it. The stored databases are
+    #: untouched: the profile column is still `red`.
+    NAME = "RGB Analysis"
+    #: The words on the tier-2 disclosure (sentence case, as the views draw
+    #: every disclosure).
+    DISCLOSURE = "RGB analysis details"
     IDENTITY = None
     HOST = "Transfer Map"    # drawn on the Transfer Map page (one dashboard)
     NEEDS_PORT = False
@@ -297,6 +337,25 @@ class RedMonitor(Model):
     #: only); today's values, so the measurement is unchanged.
     GREEN_MAX = 100
     BLUE_MAX = 100
+    # -- RG-1: the green and blue shares (2026-10-07) ---------------------
+    #: The green and blue masks are the red mask's rule turned on the other
+    #: two channels: the channel ABOVE its threshold and the other two BELOW
+    #: their caps, both strict. Fixed, as the red mask's caps are (the
+    #: operator tunes red only): each threshold is `red_min`'s default and
+    #: each cap the red mask's own, so a pure green or blue pixel counts the
+    #: way a pure red one does. Recorded in the sidecar (`channel_thresholds`).
+    GREEN_MIN = 150
+    BLUE_MIN = 150
+    #: The red cap of the green and blue masks (GREEN_MAX and BLUE_MAX above
+    #: are the other two caps).
+    RED_MAX = 100
+    #: A sample's six numbers, in this order everywhere they travel: the red,
+    #: green and blue shares (% of the region's pixels each mask passes) and
+    #: the region's mean red, green and blue (0-255).
+    RGB_KEYS = ("red", "green", "blue", "r_mean", "g_mean", "b_mean")
+    #: The five a row adds beside the red share it already carried: the keys
+    #: of a subscriber's row dict, read with `.get`.
+    CHANNEL_KEYS = RGB_KEYS[1:]
     #: One sampling mode: a row when the red percentage changes (owner ruling
     #: 2026-09-22). Since 2026-10-07 the loop samples settled frames at about
     #: the source's rate (CAP-1, below), not as fast as it can grab.
@@ -379,6 +438,17 @@ class RedMonitor(Model):
                   label="Current Red"),
             Param("red_change", "float", default=0.0, decimals=2, unit="%",
                   label="Red Change"),
+            # RG-1: the other five numbers of the latest sample (Details).
+            Param("current_green", "float", default=0.0, decimals=2, unit="%",
+                  label="Current Green"),
+            Param("current_blue", "float", default=0.0, decimals=2, unit="%",
+                  label="Current Blue"),
+            Param("mean_red", "float", default=0.0, decimals=1,
+                  label="Mean Red"),
+            Param("mean_green", "float", default=0.0, decimals=1,
+                  label="Mean Green"),
+            Param("mean_blue", "float", default=0.0, decimals=1,
+                  label="Mean Blue"),
             Param("frame_rate", "float", default=0.0, decimals=1, unit="Hz",
                   label="Frame Rate"),
             Param("position_age", "float", default=0.0, decimals=3, unit="s",
@@ -407,11 +477,16 @@ class RedMonitor(Model):
         #: assignment, so every poller sees the old pair or the new one and
         #: never a torn mix. `current_red`/`red_change` are views onto it.
         self._red_state = (0.0, 0.0)
+        #: RG-1: the latest accepted sample's six numbers (RGB_KEYS order),
+        #: one tuple swapped in one assignment like the pair above; None
+        #: until a run accepts its first sample.
+        self._rgb_state = None
 
         self._run = None
-        #: MAP-2: callables fed `(t_s, red, positions)` for every row the run
-        #: log appends. A tuple, replaced whole, so the run thread reads it
-        #: without a lock and never sees a list change under it.
+        #: MAP-2: callables fed `(t_s, red, row)` for every row the run log
+        #: appends, `row` the positions by axis and the five RG-1 numbers. A
+        #: tuple, replaced whole, so the run thread reads it without a lock
+        #: and never sees a list change under it.
         self._subscribers = ()
         #: V3 (2026-09-28): callables fed `(t_s, frame, red)` for every frame
         #: the loop accepts and measures (the Transfer Map's video; never a
@@ -510,6 +585,39 @@ class RedMonitor(Model):
     @property
     def red_change(self):
         return self._red_state[1]
+
+    # -- RG-1: the other five numbers of the latest sample -----------------
+    @property
+    def latest(self):
+        """The latest accepted sample as `{key: value}` in RGB_KEYS order;
+        every value None before a run accepts one."""
+        rgb = self._rgb_state
+        return dict(zip(self.RGB_KEYS, rgb if rgb is not None
+                        else (None,) * len(self.RGB_KEYS)))
+
+    def _latest(self, index):
+        rgb = self._rgb_state
+        return None if rgb is None else rgb[index]
+
+    @property
+    def current_green(self):
+        return self._latest(1)
+
+    @property
+    def current_blue(self):
+        return self._latest(2)
+
+    @property
+    def mean_red(self):
+        return self._latest(3)
+
+    @property
+    def mean_green(self):
+        return self._latest(4)
+
+    @property
+    def mean_blue(self):
+        return self._latest(5)
 
     @property
     def is_running(self):
@@ -726,6 +834,16 @@ class RedMonitor(Model):
                 "b_max": self.BLUE_MAX}
 
     @property
+    def channel_thresholds(self):
+        """The green and blue masks' fixed thresholds (RG-1), for the
+        sidecar: two runs are comparable channel for channel only under the
+        same ones."""
+        return {"green": {"g_min": self.GREEN_MIN, "r_max": self.RED_MAX,
+                          "b_max": self.BLUE_MAX},
+                "blue": {"b_min": self.BLUE_MIN, "r_max": self.RED_MAX,
+                         "g_max": self.GREEN_MAX}}
+
+    @property
     def annotations(self):
         return {field.name: getattr(self, field.name, field.default)
                 for field in self.ANNOTATION_FIELDS}
@@ -753,7 +871,7 @@ class RedMonitor(Model):
         if not self.region:
             raise Refused("Set a capture region before starting a run.")
         if numpy is None:
-            raise Refused("Red detection is unavailable: numpy failed to import.")
+            raise Refused("RGB analysis is unavailable: numpy failed to import.")
         if not self.screen.is_available:
             raise Refused(self.screen.error
                           or "Screen capture is unavailable in this environment.")
@@ -798,9 +916,10 @@ class RedMonitor(Model):
         self._run = run
         self._saved_rows = 0
         self._red_state = (0.0, 0.0)
+        self._rgb_state = None
 
         run.thread = threading.Thread(target=self._run_loop, args=(run,),
-                                      daemon=True, name=f"red-monitor-{run.run_id}")
+                                      daemon=True, name=f"rgb-analysis-{run.run_id}")
         run.thread.start()
         events.info("Run Started", f"{run.run_id}: {run.sample_mode} sampling of "
                     f"{sch.format_region(run.region)}", source=self.NAME)
@@ -950,8 +1069,11 @@ class RedMonitor(Model):
                                    else now - previous_frame)
                     previous_frame = now
 
-                    if red is None:
-                        red = self._measure_red(frame, threshold)
+                    # RG-1: the six numbers, the red share among them (the
+                    # same value `_judge` took for a dark picture).
+                    rgb = self._measure_rgb(frame, threshold)
+                    red = rgb[0]
+                    self._rgb_state = rgb
                     run.accepted_red = red
                     if run.baseline_red is None:
                         run.baseline_red = red
@@ -970,13 +1092,13 @@ class RedMonitor(Model):
                         age = self._read_position(run, axes, positions,
                                                   velocities)
                         run.log.add(now - run.started_monotonic, red, positions,
-                                    velocities, age)
+                                    velocities, age, rgb)
                         run.rows += 1
                         subscribers = self._subscribers
                         if subscribers:
                             self._notify(subscribers,
                                          now - run.started_monotonic, red,
-                                         positions)
+                                         positions, rgb)
 
                 events.debug("Rate", f"{run.frames} frames, {run.rows} rows, "
                              f"{run.frame_rate:.1f} Hz (source "
@@ -988,9 +1110,9 @@ class RedMonitor(Model):
                              source=self.NAME, every=1.0)
         except Exception as exc:
             run.failure = exc
-            events.debug("Red Percent Run Failed", f"{run.run_id}: {exc!r}",
+            events.debug("RGB Analysis Run Failed", f"{run.run_id}: {exc!r}",
                          source=self.NAME, exception=exc)
-            events.error("Red Percent Run Failed",
+            events.error("RGB Analysis Run Failed",
                          f"Run {run.run_id} stopped unexpectedly. The rows "
                          "recorded so far are kept; save them, then start a "
                          "new run.", source=self.NAME, exception=exc)
@@ -1129,10 +1251,13 @@ class RedMonitor(Model):
 
     # -- MAP-2: what another model may read (additive; nothing above changes)
     def subscribe(self, fn):
-        """Call `fn(t_s, red, positions)` for every row the run log appends
-        from now on, on the run thread. `positions` is the subscriber's own
-        copy. `fn` must return at once; one that raises is logged and skipped,
-        never allowed to end the run."""
+        """Call `fn(t_s, red, row)` for every row the run log appends from
+        now on, on the run thread. `row` is the subscriber's own dict: the
+        synced axes' positions by axis ("X", "Y", "Z") and the sample's
+        other five numbers by `CHANNEL_KEYS` ("green", "blue", "r_mean",
+        "g_mean", "b_mean"; RG-1); read it with `.get`. `fn` must return at
+        once; one that raises is logged and skipped, never allowed to end
+        the run."""
         if fn not in self._subscribers:
             self._subscribers = self._subscribers + (fn,)
 
@@ -1172,10 +1297,13 @@ class RedMonitor(Model):
         run = self._run
         return run if run is not None and run.is_active else None
 
-    def _notify(self, subscribers, t_s, red, positions):
+    def _notify(self, subscribers, t_s, red, positions, rgb=None):
         for fn in subscribers:
             try:
-                fn(t_s, red, dict(positions))
+                row = dict(positions)
+                if rgb is not None:
+                    row.update(zip(self.CHANNEL_KEYS, rgb[1:]))
+                fn(t_s, red, row)
             except Exception as exc:
                 events.debug("Subscriber Failed", repr(exc), source=self.NAME,
                              exception=exc, every=1.0)
@@ -1245,6 +1373,56 @@ class RedMonitor(Model):
                                       & (green < threshold["g_max"])
                                       & (blue < threshold["b_max"]))
         return (matched / red.size) * 100.0
+
+    def _measure_rgb(self, frame, threshold=None):
+        """The six numbers of `frame` (RG-1), a tuple in RGB_KEYS order:
+        the red, green and blue shares (% of the pixels) and the mean red,
+        green and blue (0-255).
+
+        One deinterleave of the region into three contiguous planes, then
+        vectorised comparisons and reductions over them; no per-pixel
+        Python. The red share is `_measure_red`'s to the bit: the same three
+        comparisons, counted over the same pixels, divided the same way. The
+        green and blue masks read the class's fixed thresholds
+        (`channel_thresholds`); a comparison two masks share is made once.
+        Six zeros for no frame, as `_measure_red` answers 0.0.
+        """
+        if frame is None or numpy is None:
+            return (0.0,) * len(self.RGB_KEYS)
+        threshold = threshold or self.red_threshold
+        blue, green, red = self._channels(frame)
+        if red is None or red.size == 0:
+            return (0.0,) * len(self.RGB_KEYS)
+        # Contiguous copies: every reduction below then reads memory in
+        # order rather than one byte in four of a BGRA buffer.
+        blue = numpy.ascontiguousarray(blue)
+        green = numpy.ascontiguousarray(green)
+        red = numpy.ascontiguousarray(red)
+        size = red.size
+        green_low = green < threshold["g_max"]
+        blue_low = blue < threshold["b_max"]
+        red_low = red < self.RED_MAX
+        if threshold["g_max"] != self.GREEN_MAX:
+            green_capped = green < self.GREEN_MAX
+        else:
+            green_capped = green_low
+        if threshold["b_max"] != self.BLUE_MAX:
+            blue_capped = blue < self.BLUE_MAX
+        else:
+            blue_capped = blue_low
+        red_share = (numpy.count_nonzero((red > threshold["r_min"])
+                                         & green_low & blue_low)
+                     / size) * 100.0
+        green_share = (numpy.count_nonzero((green > self.GREEN_MIN)
+                                           & red_low & blue_capped)
+                       / size) * 100.0
+        blue_share = (numpy.count_nonzero((blue > self.BLUE_MIN)
+                                          & red_low & green_capped)
+                      / size) * 100.0
+        return (red_share, green_share, blue_share,
+                float(red.sum(dtype=numpy.uint64)) / size,
+                float(green.sum(dtype=numpy.uint64)) / size,
+                float(blue.sum(dtype=numpy.uint64)) / size)
 
     @staticmethod
     def _channels(frame):
@@ -1363,6 +1541,7 @@ class RedMonitor(Model):
                 "region": dict(run.region) if run.region else None,
                 "baseline_red": run.baseline_red,
                 "red_threshold": dict(run.red_threshold),
+                "channel_thresholds": self.channel_thresholds,
                 "sample_mode": run.sample_mode,
                 "sample_interval_s": run.sample_interval_s,
                 "position_rate_hz": self.POSITION_RATE_HZ,
@@ -1393,6 +1572,7 @@ class RedMonitor(Model):
             "region": dict(self.region) if self.region else None,
             "baseline_red": self.baseline_red,
             "red_threshold": self.red_threshold,
+            "channel_thresholds": self.channel_thresholds,
             "sample_mode": self.SAMPLE_MODE,
             "position_rate_hz": self.POSITION_RATE_HZ,
             "frames_captured": 0,
@@ -1629,6 +1809,8 @@ class RedMonitor(Model):
             "rejected_stale": self.rejected_stale,
             "rejected_unsettled": self.rejected_unsettled,
             "source_rate_hz": self.source_rate_hz,
+            # RG-1: the latest accepted sample's six numbers (None before one).
+            "latest": self.latest,
             "has_unsaved_data": self.has_unsaved_data,
             "output_root": str(self.output_root),
             "run_dir": str(self.run_dir),
@@ -1642,7 +1824,7 @@ class RedMonitor(Model):
     @property
     def schema(self):
         P = self.PARAMS
-        # Tiers (owner ruling 2026-09-25): Red Percent as most operators see
+        # Tiers (owner ruling 2026-09-25): RGB analysis as most operators see
         # it is two numbers and two buttons. Every statistic, the live plot,
         # the annotations, the region, save/load and the analysis figure are
         # on demand, behind Details - never implied.
@@ -1673,7 +1855,7 @@ class RedMonitor(Model):
                 sch.entry("Run / Cut ID:", "run_name", P["run_name"],
                           disabled_when=("running",)),
                 sch.readonly("Run ID:", "run_id", param=P["run_id"]),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 # REDPERCENT-23, D-6: declared once so all three views render
@@ -1682,7 +1864,7 @@ class RedMonitor(Model):
                 *[sch.entry(f"{field.label}:", field.name, P[field.name],
                             disabled_when=("running",))
                   for field in self.ANNOTATION_FIELDS],
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Probe Metadata",
@@ -1696,7 +1878,7 @@ class RedMonitor(Model):
                 # shape is not expressible.
                 sch.dropdown("Position Source:", "source_name", "set_source",
                              "source_options", disabled_when=("running",)),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Synced Axes",
@@ -1710,13 +1892,29 @@ class RedMonitor(Model):
                            "Off", on_args=("Z",), off_args=("Z",),
                            disabled_when=("running",)),
                 sch.readonly("Synced:", "sync_axes", param=P["sync_axes"]),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Red Detection",
                 sch.entry("Red at least:", "red_min", P["red_min"],
                           disabled_when=("running",)),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
+            ),
+            sch.section(
+                # RG-1: the latest sample's other five numbers. The red share
+                # stays the tier-1 reading; these are on demand.
+                "Channels",
+                sch.readonly("Current Green:", "current_green",
+                             param=P["current_green"], format=".2f", unit="%"),
+                sch.readonly("Current Blue:", "current_blue",
+                             param=P["current_blue"], format=".2f", unit="%"),
+                sch.readonly("Mean Red:", "mean_red", param=P["mean_red"],
+                             format=".1f"),
+                sch.readonly("Mean Green:", "mean_green", param=P["mean_green"],
+                             format=".1f"),
+                sch.readonly("Mean Blue:", "mean_blue", param=P["mean_blue"],
+                             format=".1f"),
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Sampling",
@@ -1728,7 +1926,7 @@ class RedMonitor(Model):
                 # Transfer Map's page, and redrawing the whole run each
                 # refresh slowed the view (CAP-5). `series` stays, and the
                 # Analysis figure plots a saved run.
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Control",
@@ -1737,7 +1935,7 @@ class RedMonitor(Model):
                                   data_command="screen_image"),
                 sch.button("Reset Baseline", "reset_baseline"),
                 sch.file_save("Save", "save", extensions=("csv",), role="info"),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Analysis",
@@ -1747,7 +1945,7 @@ class RedMonitor(Model):
                              "plot_dim_options"),
                 sch.image("Analysis Plot", "figure",
                           empty="No analysis yet. Load a run to plot it."),
-                tier=2, disclosure=f"{self.NAME} details",
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Diagnostics",

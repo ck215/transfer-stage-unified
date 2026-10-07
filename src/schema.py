@@ -54,7 +54,7 @@ TIERS = (1, 2, 3)
 
 
 def section(title, *elements, layout="column", tier=1, disclosure=None,
-            phases=None):
+            phases=None, hosted_tier=None):
     """`layout="row"` asks the renderer to place the elements side by side
     on one line (a table row: label, dropdown, dropdown, status).
 
@@ -82,6 +82,14 @@ def section(title, *elements, layout="column", tier=1, disclosure=None,
     if phases is not None:
         _phase_list(phases, f"section {title!r}")
         built["phases"] = list(phases)
+    if hosted_tier is not None:
+        # The tier this section takes when its model is drawn on its HOST's
+        # page (owner ruling 2026-10-07: the analysis's live group leaves
+        # the trial page's tier 1; the procedure strip replaces it). On the
+        # model's own page `tier` still applies.
+        if hosted_tier not in TIERS:
+            raise ValueError(f"section {title!r}: hosted_tier must be one of {TIERS}")
+        built["hosted_tier"] = hosted_tier
     return built
 
 
@@ -110,17 +118,21 @@ def schema(*sections):
 
 
 def readonly(text, model_attr, *, param=None, format=None, role="neutral",
-             rail=False, unit=None):
+             rail=False, unit=None, secondary=False):
     """A value the operator reads and cannot write. `rail=True` marks one of
     the few numbers the operator watches constantly: the opened model's
     focal readings. `unit` is drawn small beside the number (a `param`
-    carries its own unit; this is for readouts without one)."""
+    carries its own unit; this is for readouts without one). `secondary=True`
+    draws the readout small, under the control declared just before it (the
+    steps/s under a percent speed dial, owner ruling 2026-10-07)."""
     element = {
         "type": "readonly", "text": text, "model_attr": model_attr,
         "writable": False, "role": role,
     }
     if rail:
         element["rail"] = True
+    if secondary:
+        element["secondary"] = True
     if param is not None:
         element.update(param.to_schema())
     if format is not None:
