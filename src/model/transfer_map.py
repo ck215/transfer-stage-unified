@@ -973,6 +973,8 @@ class TransferMap(Model):
                                       daemon=True, name="transfer-map-abort")
             self._persisting.append(writer)
             writer.start()
+        if pending is not None or trial is not None:
+            self._touch()                  # the step went back to setup
         return True
 
     def disable(self):
