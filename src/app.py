@@ -302,7 +302,7 @@ Examples:
     # (MANAGER-14).
     args = parser.parse_args(argv)
     if args.view in RETIRED:
-        print(RETIRED_MESSAGE, file=sys.stderr)
+        sys.stderr.write(RETIRED_MESSAGE + "\n")      # not print(): see test_architecture
         sys.exit(2)
     if args.no_motion:
         os.environ["STATION_NO_MOTION"] = "1"

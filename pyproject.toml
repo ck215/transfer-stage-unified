@@ -44,10 +44,12 @@ dependencies = [
 [project.optional-dependencies]
 # Not installed by default: the Qt view was retired 2026-10-07 and is frozen
 # at 413f504. Only for re-running its frozen tests (`pip install -e .[qt,dev]`).
-qt = ["PySide6==6.11.2"]
+qt = [
+    "PySide6==6.11.2",
+    "pytest-qt==4.5.0",
+]
 dev = [
     "pytest==9.1.1",
-    "pytest-qt==4.5.0",
     "pyinstaller==6.22.3",
 ]
 
