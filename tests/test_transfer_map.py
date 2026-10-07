@@ -4219,13 +4219,13 @@ def test_the_profile_stores_the_channels_a_row_carries(scripted, private_db):
     assert [r["red"] for r in rows] == [12.5, 13.0, 13.5]
 
 
-def test_a_row_without_the_channels_never_fails_and_stores_null(station,
-                                                                private_db):
-    """Red Percent before its RGB analysis: (t_s, red, positions) only."""
+def test_the_real_rgb_analysis_rows_fill_the_channels(station, private_db):
+    """RGB Analysis (2026-10-07) hands every row its five other numbers in
+    the row dict beside the axes: all of them reach the profile."""
     model, red, *_ = station
     trial = _record(model, red)
     rows = _profile_rows(private_db, trial)
-    assert rows and all(r[k] is None for r in rows for k in CHANNELS)
+    assert rows and all(r[k] is not None for r in rows for k in CHANNELS)
     assert all(r["red"] is not None for r in rows)
 
 
