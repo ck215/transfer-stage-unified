@@ -168,3 +168,51 @@ def test_v1_a_model_without_a_link_is_untouched(view, station):
     view._refresh()
     assert view.notices == [] and view.link_down is False
     assert view.enabled["is_auto"] is True
+
+
+# -- V2: the link counters in Diagnostics -------------------------------------
+
+def test_v2_the_counters_are_one_compact_line():
+    state = {"link": _link(losses=2, reconnects=1, dropped=17, stalls=3,
+                           last_loss="12:41:07")}
+    assert view_base.link_counters(state) == "2 / 1 / 17 / 3; last loss 12:41:07"
+    assert view_base.link_counters({"link": _link()}) == "0 / 0 / 0 / 0; last loss never"
+    assert view_base.link_counters({}) == ""
+
+
+def test_v2_a_linked_models_diagnostics_carries_the_counters(view, station):
+    """The row is added to the model's own Diagnostics section (not a new
+    section, not the schema module): the view builds it with its readonly
+    and fills it from `state.link` on every refresh."""
+    assert ("readonly", view_base.LINK_CAPTION) in view.built
+    assert view.sections == ["Position", "System Control", "Diagnostics", "Safety"]
+    schema = view._schema()
+    diagnostics = next(s for s in schema["sections"] if s["title"] == "Diagnostics")
+    assert diagnostics["elements"][-1]["model_attr"] == view_base.LINK_ATTR
+    assert view.texts[view_base.LINK_ATTR] == "0 / 0 / 0 / 0; last loss never"
+
+    station.link = _link(status="verified", losses=1, reconnects=1, dropped=4,
+                         stalls=0, last_loss="12:41:07")
+    view._refresh()
+    assert view.texts[view_base.LINK_ATTR] == "1 / 1 / 4 / 0; last loss 12:41:07"
+    # The model's schema itself is untouched.
+    own = station.schema("Probe")
+    assert all(e.get("model_attr") != view_base.LINK_ATTR for e in sch.elements(own))
+
+
+def test_v2_no_link_no_row(station):
+    station.link = None
+    built = FakePanelView(station, "Probe")
+    built._build()
+    assert ("readonly", view_base.LINK_CAPTION) not in built.built
+
+
+def test_v2_without_a_diagnostics_title_the_first_tier_three_section_takes_it():
+    schema = sch.schema(sch.section("A", sch.readonly("X", "x")),
+                        sch.section("Safety", sch.indicator("Fault", "f"), tier=3))
+    element = view_base.link_row_element()
+    out = view_base.with_link_row(schema, {"link": _link()}, element)
+    assert out["sections"][1]["elements"][-1] is element
+    assert view_base.with_link_row(out, {"link": _link()}, element) is out
+    flat = sch.schema(sch.section("A", sch.readonly("X", "x")))
+    assert view_base.with_link_row(flat, {"link": _link()}, element) is flat
