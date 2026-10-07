@@ -827,3 +827,170 @@ def test_w2_a_lowercase_value_is_not_sentence_cased(version_station, tmp_path):
     assert out["log"] == "d66c462 fix the map", out
     assert out["status"] == "Simulated", out
     assert out["caption"].startswith("Station"), out
+
+
+# ==========================================================================
+# WEB-1: the page draws the procedure step (owner ruling 2026-10-07)
+# ==========================================================================
+class FakePhased(_Plain):
+    """A two-step model, the shape of tests/test_model_contract.PhasedModel
+    plus what the page needs: a row the step hides, a section whose every
+    row is phased (its header must go with them), a `go`-style button whose
+    note must stay silent while hidden."""
+    NAME = "Fake Phased"
+    PHASES = ("setup", "live")
+
+    def __init__(self):
+        super().__init__()
+        self._phase = "setup"
+        self.tip = "T-1"
+
+    @property
+    def phase(self):
+        return self._phase
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Start", sch.readonly("Tip", "tip", rail=True),
+                        sch.button("Begin", "begin"), phases=("setup",)),
+            sch.section("Trial",
+                        sch.readonly("Step", "phase_word"),
+                        sch.phased(sch.button("Mark", "press"), "live"),
+                        sch.phased(sch.readonly("Marked at", "tip"), "live")),
+            sch.section("Review", sch.phased(sch.button("Keep", "press"), "live"),
+                        sch.phased(sch.button("Drop", "press"), "setup")),
+            sch.section("Details", sch.readonly("Tip", "tip"), tier=2,
+                        disclosure="Configure Fake Phased", phases=("setup",)),
+        )
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["values"]["phase_word"] = self._phase
+        return snapshot
+
+    def begin(self):
+        self._phase = "live"
+        return "begun"
+
+
+@pytest.fixture
+def phased_station():
+    controller = Controller()
+    model = FakePhased()
+    controller.add("Fake Phased", model, {"kind": "Fake Phased"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, model
+    finally:
+        view.close()
+
+
+#: What the page draws right now, by visible text, and where focus is.
+_PHASE_READ = r"""
+  if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+    await page.click('#drawer-close');
+    await sleep(300);
+  }
+  await until(() => document.querySelectorAll('#cards .card-title').length >= 1);
+  await sleep(400);
+  const drawn = () => page.evaluate(() => {
+    const shown = (n) => Boolean(n && n.getClientRects().length);
+    const card = document.querySelector('#cards .card');
+    const a = document.activeElement;
+    return {
+      buttons: Array.from(card.querySelectorAll('.card-body button')).filter(shown)
+        .map((b) => b.textContent.trim()),
+      headers: Array.from(card.querySelectorAll('.section-title')).filter(shown)
+        .map((h) => h.textContent.trim()),
+      discs: Array.from(card.querySelectorAll('.disclosure')).filter(shown).length,
+      phase: window.station.cards.get('Fake Phased').phase,
+      focusIsDrawn: !a || a === document.body || shown(a),
+      focusOnCard: Boolean(a) && a === card,
+      focusTag: a ? a.tagName + ':' + (a.textContent || '').trim().slice(0, 20) : '',
+    };
+  });
+"""
+
+
+@needs_browser
+def test_web1_a_step_draws_its_controls_and_hides_the_rest(phased_station, tmp_path):
+    view, controller, model = phased_station
+    out = _browse(view, _PHASE_READ + r"""
+      const fetched = [];
+      page.on('request', (r) => { if (r.url().includes('/api/schema')) fetched.push(r.url()); });
+      await page.evaluate(() => window.station.showPage('Fake Phased'));
+      await sleep(400);
+      const setup = await drawn();
+      await page.evaluate(() => Array.from(document.querySelectorAll('#cards button'))
+        .find((b) => b.textContent.trim() === 'Begin').click());
+      await sleep(1800);
+      const live = await drawn();
+      return { setup, live, schemaFetches: fetched.length };
+    """, tmp_path)
+    setup, live = out["setup"], out["live"]
+    assert setup["phase"] == "setup", out
+    # Section "Trial" keeps its unphased row; "Review" keeps its header
+    # because one of its rows is drawn; "Mark" and "Keep" are not.
+    assert "Begin" in setup["buttons"] and "Drop" in setup["buttons"], setup
+    assert "Mark" not in setup["buttons"] and "Keep" not in setup["buttons"], setup
+    assert setup["discs"] == 1, "the setup-only tier-2 disclosure is drawn in setup"
+    assert live["phase"] == "live", out
+    assert "Mark" in live["buttons"] and "Keep" in live["buttons"], live
+    assert "Begin" not in live["buttons"] and "Drop" not in live["buttons"], live
+    # A section with every row hidden has no header: "Start" is phased
+    # whole; "Review" in setup showed Drop only.
+    assert "Start" not in live["headers"], live
+    assert live["discs"] == 0, "a tier-2 disclosure the step hides is still drawn"
+    # The schema is read once, never again for a step.
+    assert out["schemaFetches"] == 0, out
+
+
+@needs_browser
+def test_web1_focus_leaves_a_control_that_disappears(phased_station, tmp_path):
+    view, controller, model = phased_station
+    out = _browse(view, _PHASE_READ + r"""
+      await page.evaluate(() => Array.from(document.querySelectorAll('#cards button'))
+        .find((b) => b.textContent.trim() === 'Begin').focus());
+      const before = await page.evaluate(() => document.activeElement.textContent.trim());
+      await page.keyboard.press('Enter');
+      await sleep(1800);
+      return { before, after: await drawn() };
+    """, tmp_path)
+    assert out["before"] == "Begin", out
+    after = out["after"]
+    assert after["phase"] == "live", out
+    assert after["focusIsDrawn"], f"focus stayed on a hidden control: {after}"
+    assert after["focusOnCard"], f"focus did not go to the entry: {after}"
+
+
+@needs_browser
+def test_web1_the_overview_strip_shows_only_the_current_steps_rows(phased_station, tmp_path):
+    view, controller, model = phased_station
+    out = _browse(view, _PHASE_READ + r"""
+      const onOverview = await page.evaluate(() => window.station.opened === null
+        && document.getElementById('cards').classList.contains('is-overview'));
+      const setup = await drawn();
+      await api('/api/run', { name: 'Fake Phased', command: 'begin', inputs: {}, args: [] });
+      await sleep(1800);
+      return { onOverview, setup, live: await drawn() };
+    """, tmp_path)
+    assert out["onOverview"], out
+    assert out["setup"]["buttons"] == ["Begin", "Drop"], out
+    assert out["live"]["buttons"] == ["Mark", "Keep"], out
+
+
+@needs_browser
+def test_web1_a_hidden_go_command_says_nothing(phased_station, tmp_path):
+    """sayWhyNotGo skips a phase-hidden row: no 'why not' caption is drawn
+    for a command the step does not show."""
+    view, controller, model = phased_station
+    out = _browse(view, _PHASE_READ + r"""
+      await sleep(600);
+      return await page.evaluate(() => Array.from(document.querySelectorAll('#cards .note'))
+        .filter((n) => n.getClientRects().length && n.textContent.trim())
+        .map((n) => n.textContent.trim()));
+    """, tmp_path)
+    assert out == [], out

@@ -1838,6 +1838,14 @@ function tableHead(sections, columns) {
   return head;
 }
 
+/** The one rule for "is this drawn in this procedure step" (schema.is_shown):
+ *  an item without `phases` is always drawn; a model with no procedure
+ *  publishes phase "" and declares no `phases`, so it hides nothing. */
+function isShown(item, phase) {
+  const wanted = item && item.phases;
+  return !wanted || !wanted.length || wanted.indexOf(phase) !== -1;
+}
+
 /** Consecutive commands sit on one line, as one action group, instead of
  *  stacking one per row at four different widths ("Start", "Stop", "Reset
  *  baseline", "Save" were four rows). Order is the schema's; only the
@@ -1866,6 +1874,13 @@ class PanelCard {
     this.schema = schema;
     this.options = options || {};
     this.widgets = [];
+    //: What the current step hides (owner ruling 2026-10-07): `{node,
+    //: phases}` for each section block and each element that declares
+    //: `phases`, and the wrappers that hold only such cells. Read from the
+    //: schema once, in build(); refresh() only toggles a class.
+    this.phaseSections = [];
+    this.phaseGroups = [];
+    this.phase = null;
     this.values = {};
     this.lastData = 0;
     this.isOffline = false;
@@ -2047,6 +2062,7 @@ class PanelCard {
         block.appendChild(rowTitle);
       }
       const cells = [];
+      const mine = [];
       const axes = [];
       const goes = [];
       for (const element of (section.elements || [])) {
@@ -2058,7 +2074,9 @@ class PanelCard {
         const widget = render(this, element);
         widget.element = element;
         widget.tier = tier;
+        widget.phases = element.phases || null;
         this.widgets.push(widget);
+        mine.push(widget);
         if (widget.note) goes.push(widget);
         // L17: a command that exists only while a scan runs ("Cancel scan")
         // is not drawn outside one, rather than sitting greyed on its own.
@@ -2114,7 +2132,14 @@ class PanelCard {
           cells.splice(cells.length - 1, 0, make('span', 'cell filler'));
         }
       }
-      for (const cell of groupCommands(cells, isRow && !spans)) block.appendChild(cell);
+      for (const cell of groupCommands(cells, isRow && !spans)) {
+        block.appendChild(cell);
+        // A wrapper of cells (an action group, the X Y Z line) goes when
+        // every cell in it is hidden by the step.
+        if (cell.classList && (cell.classList.contains('actions') || cell.classList.contains('axis-group'))) {
+          this.phaseGroups.push({ node: cell, cells: Array.from(cell.querySelectorAll('.command, .reading-axis')) });
+        }
+      }
       // L3: the notes of this section's `go` commands sit under the row
       // (after their action group); refresh shows at most one.
       for (const widget of goes) {
@@ -2122,6 +2147,12 @@ class PanelCard {
         at.parentNode.insertBefore(widget.note, at.nextSibling);
       }
       if (goes.length) this.goRows.push({ goes, block });
+      // The block (header and all) goes with its section, or when every
+      // element in it is hidden by the step.
+      this.phaseSections.push({
+        node: block, phases: section.phases || null, tier,
+        widgets: mine,
+      });
       this.containerFor(tier).appendChild(block);
     }
     this.rowOwner = '';
@@ -2541,6 +2572,7 @@ class PanelCard {
     const now = Date.now();
     const wantsData = now - this.lastData >= DATA_POLL_MS;
     if (wantsData) this.lastData = now;
+    this.applyPhase((state && state.phase) || '');
     for (const widget of this.widgets) {
       const element = widget.element;
       const kind = element.type;
@@ -2552,7 +2584,7 @@ class PanelCard {
       } else if (kind === 'toggle' || kind === 'indicator' || kind === 'checkbox') {
         widget.setOn(Boolean(this.values[attr]));
       } else if (kind === 'plot' || kind === 'image' || kind === 'log_stream') {
-        if (wantsData && this.wantsData(widget)) this.loadData(widget);
+        if (wantsData && !widget.isPhaseOff && this.wantsData(widget)) this.loadData(widget);
       }
       // O4: a faulted probe's mode toggles are greyed by their own schema
       // (`disabled_when` carries "fault") and say the served reason.
@@ -2598,6 +2630,53 @@ class PanelCard {
     if (this.faultLine.hidden !== !reason) this.faultLine.hidden = !reason;
   }
 
+  /** Draw the current procedure step (owner ruling 2026-10-07): a section
+   *  or a row whose `phases` leave out `phase` gets `is-phase-off` (one
+   *  generic display:none rule), a section with every row off goes with its
+   *  header, and focus leaves a control that vanished. The schema is the one
+   *  built at the start; nothing is fetched again. Written only when the
+   *  step changes. */
+  applyPhase(phase) {
+    if (phase === this.phase) return;
+    const first = this.phase === null;
+    this.phase = phase;
+    const before = typeof document !== 'undefined' ? document.activeElement : null;
+    for (const widget of this.widgets) {
+      widget.isPhaseOff = !isShown(widget, phase);
+      if (widget.node) widget.node.classList.toggle('is-phase-off', widget.isPhaseOff);
+      if (widget.note) widget.note.classList.toggle('is-phase-off', widget.isPhaseOff);
+    }
+    for (const group of this.phaseGroups) {
+      const off = group.cells.length > 0 && group.cells.every((c) => c.classList.contains('is-phase-off'));
+      group.node.classList.toggle('is-phase-off', off);
+    }
+    for (const entry of this.phaseSections) {
+      const off = !isShown(entry, phase)
+        || (entry.widgets.length > 0 && entry.widgets.every((w) => w.isPhaseOff));
+      entry.off = off;
+      entry.node.classList.toggle('is-phase-off', off);
+    }
+    // A disclosure with nothing left behind it goes with it (the well too:
+    // its own foot, a Close, is Setup's and Setup has no procedure).
+    const allOff = (min) => {
+      const behind = this.phaseSections.filter((e) => e.tier >= min);
+      return behind.length > 0 && behind.every((e) => e.off);
+    };
+    const gone2 = allOff(2);
+    const gone3 = allOff(3);
+    for (const node of [this.disclose2, this.well]) {
+      if (node) node.classList.toggle('is-phase-off', gone2);
+    }
+    for (const node of [this.disclose3, this.deep]) {
+      if (node) node.classList.toggle('is-phase-off', gone3);
+    }
+    if (!first && before && before.closest && this.node.contains(before)
+        && before.closest('.is-phase-off')) {
+      if (this.dashboard && this.dashboard.restoreFocus) this.dashboard.restoreFocus(null, this.node);
+      else this.node.focus({ preventScroll: true });
+    }
+  }
+
   /** L3: under a row whose `go` command is disabled, one muted caption says
    *  why - unless another `go` in the row can go (Setup's Launch and
    *  Relaunch take turns), or the model already says what unblocks it in
@@ -2605,10 +2684,19 @@ class PanelCard {
    *  headline and the entry's head say that once). One caption per row. */
   sayWhyNotGo(mode) {
     const latched = mode === 'latched';
-    for (const { goes, block } of this.goRows || []) {
+    for (const { goes: all, block } of this.goRows || []) {
+      // A command the step hides is not a command the operator could press:
+      // it neither says why not nor lets another stay silent.
+      const goes = all.filter((w) => !w.isPhaseOff);
+      for (const widget of all) {
+        if (widget.isPhaseOff) {
+          putText(widget.note, '');
+          if (!widget.note.hidden) widget.note.hidden = true;
+        }
+      }
       const canGo = goes.some((w) => !w.reason);
       const said = Array.from(block.querySelectorAll('.row.stat')).some((r) => !r.hidden
-        && r.dataset.attr === 'next_step');
+        && !r.classList.contains('is-phase-off') && r.dataset.attr === 'next_step');
       let shown = false;
       for (const widget of goes) {
         // The latch is said once - the headline, the entry's "Stopped" -

@@ -1477,3 +1477,63 @@ def test_r7_the_page_logs_every_answer():
     assert "this.logAcknowledged(" in body
     assert "'/api/ack'" in APP_JS
     assert '"/api/ack"' in SERVER.read_text()
+
+
+# --------------------------------------------------------------------------
+# WEB-1: the procedure step (owner ruling 2026-10-07), checked statically
+# --------------------------------------------------------------------------
+def _method(name):
+    """The source of one PanelCard method, from its signature to the next
+    method's doc comment."""
+    start = re.search(r"\n  %s\(" % re.escape(name), CODE)
+    assert start, f"app.js has no {name}()"
+    end = re.search(r"\n  (?:async )?\w+\([^)]*\) \{\n", CODE[start.end():])
+    return CODE[start.start(): start.end() + (end.start() if end else len(CODE))]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("item, phase, shown", [
+    ({}, "", True), ({}, "live", True),
+    ({"phases": ["live", "marked"]}, "live", True),
+    ({"phases": ["live", "marked"]}, "setup", False),
+    ({"phases": ["live"]}, "", False),
+])
+def test_web1_is_shown_is_the_schemas_rule(item, phase, shown):
+    """The renderer's rule is `schema.is_shown`, row for row."""
+    assert sch.is_shown(item, phase) is shown
+    assert _node_value(f"isShown({json.dumps(item)}, {json.dumps(phase)})") is shown
+
+
+def test_web1_build_keeps_the_phases_of_every_section_and_element():
+    build = _method("build")
+    assert "phases: section.phases" in build, "build() drops a section's phases"
+    assert "widget.phases = element.phases" in build, "build() drops an element's phases"
+
+
+def test_web1_refresh_draws_the_step_and_a_class_does_the_hiding():
+    refresh = _method("refresh")
+    assert "applyPhase(" in refresh and "state.phase" in refresh
+    apply_phase = _method("applyPhase")
+    assert "is-phase-off" in apply_phase
+    assert "isShown(" in apply_phase
+    assert "restoreFocus" in apply_phase, "focus is not moved off a vanished control"
+    # No fetch: the schema is read once, in addCard.
+    assert "apiGet" not in apply_phase and "/api/schema" not in apply_phase
+    assert re.search(r"\.is-phase-off\s*\{\s*display:\s*none\s*!important", STYLES), (
+        "no generic rule hides what a step does not draw (there is no global [hidden])")
+
+
+def test_web1_the_why_not_caption_ignores_a_hidden_row():
+    say = _method("sayWhyNotGo")
+    assert "isPhaseOff" in say
+    assert "is-phase-off" in say, "a hidden Next step row still silences the caption"
+
+
+def test_web1_a_hidden_widget_is_not_polled_for_data():
+    assert "!widget.isPhaseOff" in _method("refresh")
+
+
+def test_web1_no_model_name_or_phase_word_is_known_to_the_client():
+    """The client reads `phases` from the schema; it knows no step by name."""
+    for word in ("'setup'", "'region'", "'marked'", "'finish'"):
+        assert word not in _method("applyPhase"), word

@@ -150,6 +150,13 @@ button, select, input[type="range"] {
   outline-offset: var(--space-2);
 }
 
+/* A section or a row the current procedure step does not draw
+   (PanelCard.applyPhase). There is no global [hidden] rule and sections
+   are flex or grid, so a bare `hidden` would not hide them; this one does,
+   whatever display a class gives. Hidden is not disabled: a disabled
+   control is greyed where it stands. */
+.is-phase-off { display: none !important; }
+
 /* Read by a screen reader, not drawn. */
 .sr-only {
   position: absolute;
