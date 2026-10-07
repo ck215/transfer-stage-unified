@@ -148,8 +148,10 @@ def test_run_log_writes_an_unmeasured_value_as_an_empty_cell_never_zero(tmp_path
 
     rows = list(csv.reader(path.read_text().splitlines()))
     assert rows[0][0] == plot_data.TIME_COLUMN
-    assert rows[1] == ["0.0", "10.0", "1.0", "", "0.01"]
-    assert rows[2] == ["0.1", "20.0", "", "", ""]
+    # RG-1: five channel cells close every row; a sample added without its
+    # six numbers leaves them empty, never zero.
+    assert rows[1] == ["0.0", "10.0", "1.0", "", "0.01", "", "", "", "", ""]
+    assert rows[2] == ["0.1", "20.0", "", "", "", "", "", "", "", ""]
     assert "0.0" not in rows[2][2:], "an unmeasured cell became a zero"
 
 
@@ -556,7 +558,7 @@ def test_a_failure_in_the_loop_ends_the_run_and_reports_once(monitor, capsys):
     """REDPERCENT-4: the loop used to have no handler at all, so a failure
     left `monitoring` True with a dead thread forever."""
     monitor.set_region(0, 0, 10, 10)
-    monitor._measure_red = lambda frame, threshold=None: 1 / 0
+    monitor._measure_rgb = lambda frame, threshold=None: 1 / 0
     monitor.start_run(confirmed=True)
     run = monitor._run
 
@@ -682,7 +684,7 @@ def test_one_position_age_column_serves_every_axis(monitor):
 
     assert positions == {"X": 1.0, "Y": 2.0}
     assert age is not None and age >= 0.0
-    assert len(RunLog(["X", "Y"]).headers) == 2 + 2 * 2 + 1
+    assert len(RunLog(["X", "Y"]).headers) == 2 + 2 * 2 + 1 + 5   # + RG-1
 
 
 def test_a_run_records_positions_from_the_selected_source(monitor):
@@ -1247,7 +1249,8 @@ def test_a_subscriber_receives_every_logged_row(monitor):
     assert len(seen) == len(log) == monitor.rows_written
     assert [s[1] for s in seen] == log.red_values
     assert [s[0] for s in seen] == log.times
-    assert all(set(s[2]) == {"Z"} for s in seen)
+    # The row dict: the synced axis, and the five RG-1 numbers.
+    assert all(set(s[2]) == {"Z", *RedMonitor.CHANNEL_KEYS} for s in seen)
 
 
 def test_a_subscriber_gets_its_own_copy_of_the_positions(monitor):
@@ -1516,3 +1519,147 @@ def test_a_slow_frame_consumer_never_slows_the_loop(tmp_path):
         assert dropped, "the consumer fell behind, so frames were dropped"
     finally:
         model.close()
+
+
+# ---------------------------------------------------------------------
+# RG-1 (2026-10-07): six numbers per settled sample
+# ---------------------------------------------------------------------
+
+def channel_frame():
+    """A 10x10 RGB frame with known channels: 20 red pixels, 30 green, 10
+    blue and 40 of the bench's yellow-green field, which no mask passes.
+    Shares: red 20 %, green 30 %, blue 10 %. Means: red (20*200 + 40*120)/100
+    = 88, green (30*200 + 40*140)/100 = 116, blue (10*200 + 40*60)/100 = 44."""
+    frame = numpy.empty((10, 10, 3), dtype=numpy.uint8)
+    frame[0:2] = [200, 0, 0]
+    frame[2:5] = [0, 200, 0]
+    frame[5:6] = [0, 0, 200]
+    frame[6:10] = [120, 140, 60]
+    return frame
+
+
+CHANNEL_SIX = (20.0, 30.0, 10.0, 88.0, 116.0, 44.0)
+
+
+def test_the_six_numbers_of_a_frame_with_known_channels(monitor):
+    assert monitor._measure_rgb(channel_frame()) == pytest.approx(CHANNEL_SIX)
+    assert RedMonitor.RGB_KEYS == ("red", "green", "blue",
+                                   "r_mean", "g_mean", "b_mean")
+
+
+def test_the_green_and_blue_masks_have_the_red_masks_structure(monitor):
+    """A channel above its threshold and the other two below their caps;
+    the boundaries are strict, as the red mask's are."""
+    image = numpy.zeros((10, 10, 3), dtype=numpy.uint8)
+    image[0, :] = [99, 151, 99]      # green, just inside
+    image[1, :] = [0, 150, 0]        # green, just outside: g > 150 is False
+    image[2, :] = [100, 200, 0]      # green, outside: r < 100 is False
+    image[3, :] = [99, 99, 151]      # blue, just inside
+    image[4, :] = [0, 0, 150]        # blue, just outside
+    image[5, :] = [0, 100, 200]      # blue, outside: g < 100 is False
+    red, green, blue = monitor._measure_rgb(image)[:3]
+    assert (red, green, blue) == (0.0, pytest.approx(10.0), pytest.approx(10.0))
+    assert (RedMonitor.GREEN_MIN, RedMonitor.BLUE_MIN, RedMonitor.RED_MAX) == \
+        (150, 150, 100)
+
+
+def test_the_six_numbers_read_a_bgra_screenshot_in_its_own_order(monitor):
+    class Shot:
+        width, height = 4, 2
+        # BGRA: one red, two green, one blue pixel, four black
+        bgra = bytes([0, 0, 200, 255] + [0, 200, 0, 255] * 2
+                     + [200, 0, 0, 255] + [0, 0, 0, 255] * 4)
+
+    assert monitor._measure_rgb(Shot()) == pytest.approx(
+        (12.5, 25.0, 12.5, 25.0, 50.0, 25.0))
+
+
+def test_the_red_share_is_the_red_detectors_to_the_bit(monitor):
+    """The red share beside the five new numbers is `_measure_red`'s, so no
+    bench number moves: the same comparisons over the same pixels."""
+    rng = numpy.random.default_rng(7)
+    for red_min in (0, 120, 150, 254):
+        monitor.red_min = red_min
+        for _ in range(5):
+            frame = rng.integers(0, 256, size=(23, 37, 3), dtype=numpy.uint8)
+            assert monitor._measure_rgb(frame)[0] == monitor._measure_red(frame)
+
+
+def test_no_frame_is_six_zeros_not_an_exception(monitor):
+    assert monitor._measure_rgb(None) == (0.0,) * 6
+
+
+def _channel_run(monitor, **kwargs):
+    monitor.screen = fake_screen(frames=[channel_frame()], varying=False)
+    monitor.screen.open()
+    return _started(monitor, **kwargs)
+
+
+def test_the_five_new_keys_reach_every_subscriber_with_the_row(monitor):
+    """The row dict a subscriber gets carries the positions and the five
+    new numbers, the subscriber's own copy, read with `.get`."""
+    seen = []
+    monitor.subscribe(lambda t, red, row: seen.append((red, row)))
+    _channel_run(monitor, sync_axes="Z")
+    assert _wait_for(lambda: len(seen) >= 1)
+    monitor.end_run()
+    monitor._run.thread.join(2)
+    red, row = seen[0]
+    assert set(row) == {"Z", "green", "blue", "r_mean", "g_mean", "b_mean"}
+    assert red == pytest.approx(20.0)
+    assert [row[k] for k in RedMonitor.CHANNEL_KEYS] == \
+        pytest.approx(CHANNEL_SIX[1:])
+
+
+def test_the_run_log_and_its_csv_carry_the_five_columns(monitor):
+    from model.red_monitor import CHANNEL_COLUMNS
+    _channel_run(monitor, sync_axes="X")
+    assert _wait_for(lambda: monitor.rows_written >= 1)
+    monitor.end_run()
+    monitor._run.thread.join(2)
+    path = monitor.save()
+    with open(path, newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows
+    for column, value in zip(CHANNEL_COLUMNS, CHANNEL_SIX[1:]):
+        assert float(rows[0][column]) == pytest.approx(value), column
+    assert float(rows[0][plot_data.RED_COLUMN]) == pytest.approx(20.0)
+    # the parser reads by header name, so a run with the new columns loads
+    assert plot_data.load_run(path)["red_percents"][0] == pytest.approx(20.0)
+
+
+def test_state_run_carries_the_latest_six(monitor):
+    assert monitor.state["run"]["latest"] == dict.fromkeys(RedMonitor.RGB_KEYS)
+    _channel_run(monitor)
+    assert _wait_for(lambda: monitor.frames_captured >= 1)
+    monitor.end_run()
+    latest = monitor.state["run"]["latest"]
+    assert list(latest) == list(RedMonitor.RGB_KEYS)
+    assert [latest[k] for k in RedMonitor.RGB_KEYS] == pytest.approx(CHANNEL_SIX)
+
+
+def test_the_five_readouts_are_under_details_and_red_stays_in_tier_one(monitor):
+    _channel_run(monitor)
+    assert _wait_for(lambda: monitor.frames_captured >= 1)
+    monitor.end_run()
+    attrs = ("current_green", "current_blue", "mean_red", "mean_green",
+             "mean_blue")
+    sections = monitor.schema["sections"]
+    where = {e.get("model_attr"): s for s in sections for e in s["elements"]}
+    assert where["current_red"]["tier"] == 1
+    tier_two = {s["disclosure"] for s in sections if s.get("tier") == 2}
+    for attr in attrs:
+        assert where[attr]["tier"] == 2, attr
+        assert where[attr]["disclosure"] in tier_two
+    values = monitor.state["values"]
+    assert [float(values[a]) for a in attrs] == pytest.approx(CHANNEL_SIX[1:])
+    for attr in attrs:
+        assert monitor.set_value(attr, "5").is_refused       # read-only
+
+
+def test_the_sidecar_records_the_channel_masks(logged):
+    logged.save()
+    meta = json.loads((logged.run_dir / "C001_station_meta.json").read_text())
+    assert meta["channel_thresholds"] == {
+        "green": {"g_min": 150, "r_max": 100, "b_max": 100},
+        "blue": {"b_min": 150, "r_max": 100, "g_max": 100}}

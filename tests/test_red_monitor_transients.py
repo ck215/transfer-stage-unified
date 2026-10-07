@@ -483,3 +483,71 @@ def test_the_settle_constants_are_named_and_sane():
     assert RedMonitor.SETTLE_READS >= 3
     assert 0 < RedMonitor.MIN_SAMPLE_INTERVAL_S < RedMonitor.MAX_SAMPLE_INTERVAL_S
     assert RedMonitor.SOURCE_OVERSAMPLE >= 1.0
+
+
+# ---------------------------------------------------------------------
+# RG-1 (2026-10-07): the five numbers beside the red share obey the gate
+# ---------------------------------------------------------------------
+
+def six_of(frame):
+    """The six numbers at the default thresholds, computed here rather than
+    by the code under test: the red, green and blue shares (each channel
+    above 150 with the other two below 100) and the channel means."""
+    r, g, b = (frame[:, :, i].astype(int) for i in range(3))
+    size = r.size
+
+    def share(mask):
+        return float(numpy.count_nonzero(mask) / size * 100.0)
+
+    return (share((r > 150) & (g < 100) & (b < 100)),
+            share((g > 150) & (r < 100) & (b < 100)),
+            share((b > 150) & (r < 100) & (g < 100)),
+            float(r.mean()), float(g.mean()), float(b.mean()))
+
+
+def test_no_glitch_grab_reaches_the_five_new_numbers(tmp_path):
+    """Over the bench script: every row a subscriber gets carries the five
+    numbers of a settled live picture, one row per live change in order,
+    and never those of a black, stale, dark or part-painted grab."""
+    capture = ScriptedCapture(frame for _, frame in BENCH_SCRIPT)
+    model = _model(tmp_path, capture)
+    rows = []
+    model.subscribe(lambda t, red, row: rows.append((red, dict(row))))
+    try:
+        model.start_run(confirmed=True)
+        run = model._run
+        assert _wait_for(lambda: capture.grabs >= len(BENCH_SCRIPT) + 4
+                         and run.frames >= 8), (capture.grabs, run.frames)
+        model.end_run()
+        run.thread.join(2.0)
+        keys = RedMonitor.CHANNEL_KEYS
+        got = [tuple(row[k] for k in keys) for _, row in rows]
+        assert len(got) == len(LIVE), got
+        for numbers, frame in zip(got, LIVE):
+            assert numbers == pytest.approx(six_of(frame)[1:])
+        glitches = {six_of(frame)[1:] for frame in BAD.values()}
+        assert not glitches & set(got), "a glitch grab's numbers were published"
+        assert [red for red, _ in rows] == [six_of(frame)[0] for frame in LIVE]
+        latest = model.state["run"]["latest"]
+        assert [latest[k] for k in RedMonitor.RGB_KEYS] == \
+            pytest.approx(six_of(LIVE[4]))
+    finally:
+        model.close()
+
+
+def test_a_viewer_that_never_settles_publishes_none_of_the_six(tmp_path):
+    capture = FlickerCapture()
+    model = _model(tmp_path, capture)
+    rows = []
+    model.subscribe(lambda t, red, row: rows.append(row))
+    try:
+        model.start_run(confirmed=True)
+        run = model._run
+        assert _wait_for(lambda: run.rejected_unsettled >= 5)
+        model.end_run()
+        run.thread.join(2.0)
+        assert rows == [] and run.frames == 0
+        assert model.state["run"]["latest"] == dict.fromkeys(RedMonitor.RGB_KEYS)
+        assert model.current_green is None and model.mean_red is None
+    finally:
+        model.close()
