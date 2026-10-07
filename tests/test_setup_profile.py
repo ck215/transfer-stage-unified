@@ -77,8 +77,13 @@ def test_built_models_carry_the_operator_and_how_it_was_established(setup, tmp_p
     assert (tmap.operator_id, tmap.operator_auth) == ("ialbinog", "offline-unverified")
     assert (smap.owner, smap.owner_auth) == ("ialbinog", "offline-unverified")
     smap.run("save_sample", {"sample_id": "S1"})
-    smap.run("set_source", None, ("Typed readings",))
-    assert smap.run("flag_flake", {"reading_x_mm": "1", "reading_y_mm": "2"}).is_ok
+    # The flake commands are dormant since 2026-10-07 (the Sample Map is an
+    # image store; flake-coordinate homing is retired for now), so they are
+    # off the allow-list: drive the method directly. The provenance under
+    # test is unchanged.
+    smap.set_source("Typed readings")
+    smap.reading_x_mm, smap.reading_y_mm = 1.0, 2.0
+    smap.flag_flake()
     flake = smap._store.flakes()[0]
     assert (flake["owner"], flake["owner_auth"]) == ("ialbinog", "offline-unverified")
 
