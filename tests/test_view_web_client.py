@@ -1567,3 +1567,30 @@ def test_web4_a_schema_without_a_plot_is_a_schema_like_any_other():
     build = _method("build")
     assert "'plot'" not in build and '"plot"' not in build
     assert "plot" in _renderer_map(), "generic plot rendering must stay for other models"
+
+
+# --------------------------------------------------------------------------
+# WEB-3: an explicit boundary between devices on the Overview
+# --------------------------------------------------------------------------
+def _css_rule(selector):
+    match = re.search(r"\n%s\s*\{([^}]*)\}" % re.escape(selector), STYLES)
+    assert match, f"styles.css has no {selector} rule"
+    return match.group(1)
+
+
+def test_web3_the_overview_device_boundary_uses_theme_tokens_only():
+    body = _css_rule(".sheet.is-overview > .card")
+    assert re.search(r"border-left:\s*var\(--line\)\s+solid\s+var\(--edge\)", body)
+    assert re.search(r"border-right:\s*var\(--line\)\s+solid\s+var\(--edge\)", body)
+    assert re.search(r"border-bottom:\s*var\(--line\)\s+solid\s+var\(--edge\)", body)
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", body), "a colour literal"
+    # The 3 px weight is the fault's: this rule never writes the top edge,
+    # so `.card.is-lost/.is-unconfirmed/.is-faulted` keep it to themselves.
+    assert "border-top" not in body
+    assert "3px" not in body and "var(--signal)" not in body
+
+
+def test_web3_the_phone_reflow_keeps_the_boundary():
+    phone = re.search(r"@media \(max-width: 47\.5rem\) \{\n(.*?)\n\}\n", STYLES, re.S).group(1)
+    assert ".sheet.is-overview > .card" in phone
+    assert "border" not in phone.split(".sheet.is-overview > .card")[1].split("\n")[0]

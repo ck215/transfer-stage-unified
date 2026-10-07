@@ -1146,3 +1146,41 @@ def test_web2_a_picture_with_geometry_is_served_as_a_png_with_headers(hosted_sta
     status, headers, body = _request(
         view, "/api/data?name=Fake%20Map&command=nothing")
     assert status == 403
+
+
+# ==========================================================================
+# WEB-3: the device boundary, as the browser computes it
+# ==========================================================================
+@needs_browser
+def test_web3_each_overview_device_is_bounded_and_the_guest_stays_inside_its_host(hosted_station, tmp_path):
+    view, controller, host, guest = hosted_station
+    out = _browse(view, _HOSTED + r"""
+      const probe = (width) => page.evaluate(() => {
+        const edge = (() => {
+          const p = document.createElement('span');
+          p.style.color = getComputedStyle(document.documentElement).getPropertyValue('--edge').trim();
+          document.body.appendChild(p);
+          return getComputedStyle(p).color;
+        })();
+        const cards = Array.from(document.querySelectorAll('#cards > .card'));
+        const css = (c) => getComputedStyle(c);
+        return {
+          count: cards.length,
+          sides: cards.map((c) => [css(c).borderLeftWidth, css(c).borderRightWidth,
+            css(c).borderBottomWidth, css(c).borderLeftColor === edge, css(c).borderTopWidth]),
+          guestInside: Array.from(document.querySelectorAll('#cards .card.is-hosted'))
+            .every((g) => g.parentElement.closest('.card') !== null && css(g).borderLeftWidth === '0px'),
+        };
+      });
+      const wide = await probe();
+      await page.setViewport({ width: 390, height: 844 });
+      await sleep(400);
+      return { wide, phone: await probe() };
+    """, tmp_path)
+    for shot in (out["wide"], out["phone"]):
+        assert shot["count"] == 1
+        left, right, bottom, is_edge, top = shot["sides"][0]
+        # --line is 1.5 px; Chrome snaps a border to whole device pixels.
+        assert left == right == bottom and left in ("1px", "1.5px") and is_edge, shot
+        assert top == "2px", f"the head rule changed weight: {shot}"
+        assert shot["guestInside"], shot
