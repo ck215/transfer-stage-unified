@@ -32,7 +32,7 @@ def parse_args(argv=None):
     p.add_argument("--write", action="store_true",
                    help="update red_min/red_max/red_baseline in the db (after a backup)")
     p.add_argument("--repair-video", action="store_true",
-                   help="write trial_repaired.mp4 beside each trial.mp4")
+                   help="write trial_repaired.mp4 beside each trial video (trial.mp4 or screen.mp4)")
     return p.parse_args(argv)
 
 
@@ -153,7 +153,14 @@ def main(argv=None):
     if args.repair_video:
         base = os.path.join(os.path.dirname(os.path.abspath(args.db)), "transfer_map")
         for r in rows:
-            src = os.path.join(base, str(r["id"]), "trial.mp4")
+            # Old trials recorded the region as trial.mp4; since 2026-10-07 the
+            # full display is screen.mp4. Prefer the stored video_path.
+            folder = os.path.join(base, str(r["id"]))
+            stored = r.get("video_path") if hasattr(r, "get") else None
+            candidates = ([stored] if stored else []) + [
+                os.path.join(folder, "trial.mp4"), os.path.join(folder, "screen.mp4")]
+            src = next((c for c in candidates if c and os.path.isfile(c)),
+                       os.path.join(folder, "trial.mp4"))
             if os.path.exists(src):
                 ok = repair_video(src, os.path.join(base, str(r["id"]), "trial_repaired.mp4"))
                 print(f"trial {r['id']}: video {'repaired' if ok else 'FAILED'}")
