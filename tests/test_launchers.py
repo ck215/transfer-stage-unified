@@ -1,8 +1,8 @@
 """The launchers (owner, 2026-09-28: "Consolidate the various run scripts,
 using OS detection, and retire any system that doesn't use the SWAP check").
 
-Two launchers: `run.sh` for every POSIX OS (`uname -s` picks the macOS
-PySide6 repair, a toolkit-forced branch) and `run.bat` for Windows. Both
+Two launchers: `run.sh` for every POSIX OS (no OS branch since the Qt view
+was retired, 2026-10-07) and `run.bat` for Windows. Both
 find the venv and run `src/app.py` with every argument, and print nothing
 when all is well: the firmware check is a Setup row now. The old names
 (`run_macos.sh`, `run_swap_macos.sh`, `run_swap.sh`) are gone (owner,
@@ -32,9 +32,6 @@ STUB_PYTHON = f"""#!{sys.executable}
 import json, os, sys
 with open(os.environ["STUB_LOG"], "a") as fh:
     fh.write(json.dumps(["python3", *sys.argv[1:]]) + "\\n")
-if sys.argv[1:2] == ["-c"] and os.environ.get("STUB_QT_BROKEN") == "1" \\
-        and "QtWidgets" in sys.argv[2]:
-    sys.exit(1)
 sys.exit(0)
 """
 
@@ -138,45 +135,33 @@ def test_help_reaches_the_app_and_prints_nothing_else(bench, uname):
     assert calls == [APP_HELP]
 
 
-def test_on_macos_the_qt_default_is_checked_then_launched_silently(bench):
-    done, calls = bench.run("run.sh", FAKE_UNAME="Darwin")
+@pytest.mark.parametrize("uname", ["Darwin", "Linux"])
+def test_the_default_launch_is_just_the_app_on_every_os(bench, uname):
+    """Web is the only view and the default (2026-10-07): no PySide6 check, no
+    reinstall, no dylib unhide step, on macOS or anywhere else."""
+    done, calls = bench.run("run.sh", FAKE_UNAME=uname)
     assert done.returncode == 0, done.stderr
-    assert (done.stdout, done.stderr) == ("", "")
-    assert calls[0][:2] == ["python3", "-c"] and "QtWidgets" in calls[0][2]
-    assert calls[-1] == ["python3", "src/app.py"]
-    assert not any("pip" in c for c in calls)
-
-
-@pytest.mark.parametrize("flags", [["--qt"], ["--pyside"], ["--view", "qt"], ["--view=pyside"]])
-def test_on_macos_an_explicit_qt_is_checked_too(bench, flags):
-    done, calls = bench.run("run.sh", *flags, FAKE_UNAME="Darwin")
-    assert (done.stdout, done.stderr) == ("", "")
-    assert any(c[:2] == ["python3", "-c"] for c in calls)
-    assert calls[-1] == ["python3", "src/app.py", *flags]
-
-
-@pytest.mark.parametrize("flags", [["--web"], ["--tk"], ["--view", "web"], ["--view=tk"]])
-def test_on_macos_another_view_skips_the_qt_repair(bench, flags):
-    done, calls = bench.run("run.sh", *flags, FAKE_UNAME="Darwin")
-    assert (done.stdout, done.stderr) == ("", "")
-    assert calls == [["python3", "src/app.py", *flags]]
-
-
-def test_on_linux_there_is_no_qt_repair_at_all(bench):
-    done, calls = bench.run("run.sh", FAKE_UNAME="Linux")
     assert (done.stdout, done.stderr) == ("", "")
     assert calls == [["python3", "src/app.py"]]
     assert not (bench.tmp / "chflags.log").exists()
 
 
-def test_a_broken_pyside_is_reinstalled_and_says_so_on_stderr_only(bench):
-    done, calls = bench.run("run.sh", "--qt", FAKE_UNAME="Darwin", STUB_QT_BROKEN="1")
-    assert done.returncode == 0, done.stderr
-    assert done.stdout == ""
-    assert "PySide6" in done.stderr and len(done.stderr.strip().splitlines()) == 1
-    pips = [c for c in calls if c[1:3] == ["-m", "pip"]]
-    assert any("install" in c and "--force-reinstall" in c for c in pips)
-    assert calls[-1] == ["python3", "src/app.py", "--qt"]
+@pytest.mark.parametrize("flags", [["--web"], ["--qt"], ["--tk"], ["--pyside"],
+                                   ["--view", "qt"], ["--view=tk"]])
+def test_every_flag_goes_to_the_app_untouched_with_no_qt_repair(bench, flags):
+    """The retired-view message is the app's to print, not the launcher's."""
+    done, calls = bench.run("run.sh", *flags, FAKE_UNAME="Darwin",
+                            STUB_QT_BROKEN="1")
+    assert (done.stdout, done.stderr) == ("", "")
+    assert calls == [["python3", "src/app.py", *flags]]
+    assert not (bench.tmp / "chflags.log").exists()
+
+
+def test_the_launchers_no_longer_mention_pyside_or_qt_repair():
+    for name in ("run.sh", "run.bat", "update.sh", "update.bat"):
+        text = (REPO / name).read_text().lower()
+        assert "pyside" not in text and "chflags" not in text, name
+        assert "[qt]" not in text, name
 
 
 def test_arguments_pass_through_intact(bench):

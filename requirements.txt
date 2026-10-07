@@ -1,8 +1,9 @@
 # Runtime dependencies live in pyproject.toml (pinned there). This installs
-# the station itself, editable, with the Qt view's extra:
+# the station itself, editable:
 #     python3 -m pip install -r requirements.txt
-# `python3 src/app.py --tk|--qt|--web` keeps working without installing.
--e .[qt]
+# `python3 src/app.py` (the Web view) keeps working without installing.
+# No PySide6: the Qt view is retired (2026-10-07); Tk is stdlib.
+-e .
 # Named here as well so a plain `pip install -r` shows it; the pin must
 # match pyproject.toml's (tests/test_packaging.py checks).
 imageio-ffmpeg==0.6.0

@@ -5,7 +5,7 @@
 #            /releases/latest never returns a draft, so no installed bundle
 #            sees the release until every build is on it.
 #   build    four runners; Python 3.13 from actions/setup-python (the
-#            python.org build, so Tk ships); pip install -e .[qt,dev] and
+#            python.org build, so Tk ships); pip install -e .[dev] and
 #            the stable app's extra (packaging/requirements-stable.txt);
 #            then the bundle layout (packaging/layout.py), in order:
 #              tools   packaging/tools.py: arduino-cli (pinned, SHA-256),
@@ -13,12 +13,13 @@
 #                      teensy_loader_cli compiled from pinned source
 #              stable  the STABLE_REF branch checked out into
 #                      build/stable-src, frozen by packaging/stable.spec
-#              station packaging/station.spec: the three launchers; copies
+#              station packaging/station.spec: station-web (the only launcher; Tk and Qt
+                      are retired); copies
 #                      firmware/, tools/ and stable/ beside them
 #                      (STATION_REQUIRE_FULL refuses a partial bundle) and
 #                      stamps VERSION and release.json (packaging/release.py)
-#            the smoke script, headless (Web and Tk; Qt offscreen; the
-#            layout, tools offline, the stable self-check); zip; upload to
+#            the smoke script, headless (station-web; the layout, tools offline,
+#            the stable self-check); zip; upload to
 #            the draft.
 #   publish  the SHA-256 of every asset appended to the notes (the bundle's
 #            updater checks them), then the draft is published as latest.
@@ -92,7 +93,6 @@ jobs:
       run:
         shell: bash
     env:
-      SMOKE_QT_PLATFORM: offscreen
       TRANSFER_STAGE_DATA_ROOT: ${{ github.workspace }}/smoke-runs
       STATION_NO_UPDATE_CHECK: "1"
       # A tag's run has no inputs: it freezes the `stable` branch.
@@ -112,11 +112,11 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.13"
-      - name: Linux libraries (Qt offscreen, SDL, a virtual display for Tk, libusb for the Teensy loader)
+      - name: Linux libraries (SDL, libusb for the Teensy loader)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xauth libegl1 libgl1 libxkbcommon0 \
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 \
             libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 libusb-dev
       - name: A C compiler for the Teensy loader (Windows)
         if: runner.os == 'Windows'
@@ -136,7 +136,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[qt,dev]"
+          python -m pip install -e ".[dev]"
           python -m pip install -r packaging/requirements-stable.txt
       - name: Tools (arduino-cli, cores, libraries, teensy_loader_cli; the only network step)
         run: |
@@ -154,7 +154,7 @@ jobs:
         run: packaging/smoke.sh dist/station
       - name: Smoke (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run -a packaging/smoke.sh dist/station
+        run: packaging/smoke.sh dist/station
       - name: Smoke (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

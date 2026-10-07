@@ -956,20 +956,19 @@ def test_an_event_published_from_a_worker_thread_still_arrives(
     assert len(shown) == 1
 
 
-def test_an_acknowledged_event_opens_a_modeless_window_and_no_modal(
+def test_an_acknowledged_event_joins_the_alert_band_and_opens_no_modal(
         dashboard, qapp, monkeypatch):
     """Updated (F1): it asserted exactly one `QMessageBox.exec` per event -
-    the blocking modal that stacked over the stop. Updated again (rb-restart
-    R6): the alert band is gone; the modeless window says it, nothing modal."""
+    the blocking modal that stacked over the stop. It is now one line in the
+    rail's alert band, and nothing modal."""
     raised = []
     monkeypatch.setattr(QMessageBox, "exec", lambda self: raised.append(self.text()))
     dashboard.open()
     events.error("Fault", "stop not confirmed", source="Test")
     qapp.processEvents()
     assert raised == []
-    assert not hasattr(dashboard, "alert_band")
-    assert dashboard._ack_box is not None
-    assert "stop not confirmed" in dashboard._ack_box.informativeText()
+    assert dashboard.alert_band.isHidden() is False
+    assert "stop not confirmed" in dashboard.alert_text.full_text()
 
 
 def test_no_modal_opens_while_the_dashboard_is_closing(dashboard, qapp,
@@ -1882,11 +1881,12 @@ def test_f1_after_many_failures_the_stop_is_clickable_and_nothing_is_modal(
     assert controller.estop_calls == 1
     # The errors queue, oldest first; none overwrote another.
     assert len(dashboard.alerts) == 20
-    # Updated (R6): one title, so one window counting them; no band.
-    assert "failure 19" in dashboard._ack_box.informativeText()
+    assert "failure 0" in dashboard.alert_text.full_text()
+    assert dashboard.alert_count.text() == "1 of 20"
+    dashboard.acknowledge()
+    assert "failure 1" in dashboard.alert_text.full_text()
     dashboard.acknowledge_all()
-    qapp.processEvents()
-    assert dashboard._ack_box is None and dashboard.alerts == []
+    assert dashboard.alert_band.isHidden() is True
 
 
 def test_f1_f17_a_question_leaves_the_stop_clickable_and_defaults_to_no(
@@ -3148,7 +3148,7 @@ def test_l2_the_stop_not_confirmed_line_leaves_with_the_latch(six, qapp):
     assert "Stop Not Confirmed" in [a.title for a in six.alerts]
     _stop_window(six, qapp)                      # the latch opens
     assert [a.title for a in six.alerts] == ["Command Failed"]
-    assert "confirm" not in six._ack_box.informativeText()
+    assert "confirm" not in six.alert_text.full_text()
 
 
 def test_l9_quit_asks_first_in_the_stations_words(dashboard, controller, monkeypatch):
@@ -3447,6 +3447,7 @@ def test_l4_every_target_is_24_px_and_every_command_36(six, qapp):
     panel.tier_button.click()
     panel.diag_button.click()
     six.tray_toggle.click()
+    six.alert_band.setVisible(True)
     _pump(qapp, 10)
     assert _small_targets(six) == []
     assert _small_targets(six.rail) == []
@@ -4251,154 +4252,3 @@ def test_signature_the_error_mark_is_the_warning_glyph(qapp):
     inks = [image.pixelColor(x, y) for x in range(image.width())
             for y in range(image.height()) if image.pixelColor(x, y).alpha() > 200]
     assert inks and all(_near(c, theme.SIGNAL, 60) for c in inks)
-
-
-# -- rb-ack (A3): the acknowledgement is a window like the latch question ----
-
-class _Attention:
-    """An Event-shaped notice that wants acknowledging."""
-
-    def __init__(self, title="Idle Timeout", message="Stepper Probe was idle "
-                 "for 300 s, so it was powered down.", severity="warning"):
-        self.severity, self.source, self.title = severity, "Stepper Probe", title
-        self.message, self.count, self.needs_ack = message, 1, True
-        self.id = id(self)
-        self.text = f"[{self.source}] {title}: {message}"
-
-
-def test_ack_an_acknowledged_event_opens_a_modeless_titled_window(dashboard, qapp):
-    dashboard.open()
-    dashboard._show_popup(_Attention())
-    box = dashboard._ack_box
-    assert box is not None and box.isVisible()
-    assert box.windowModality() == Qt.WindowModality.NonModal
-    assert QApplication.activeModalWidget() is None
-    # The heading is the box's text; macOS drops a QMessageBox's window
-    # title (Qt documents it), so the title is checked where a platform keeps it.
-    assert box.text() == "Idle timeout"
-    assert box.windowTitle() in ("", "Idle timeout")
-    assert box.informativeText() == ("Stepper Probe was idle for 300 s, so it "
-                                     "was powered down.")
-    buttons = box.buttons()
-    assert len(buttons) == 1 and buttons[0].text() == "Understood"
-    assert box.defaultButton() is buttons[0] and box.escapeButton() is buttons[0]
-
-
-def test_ack_a_second_title_queues_and_understood_shows_it(dashboard, qapp):
-    dashboard.open()
-    dashboard._show_popup(_Attention())
-    dashboard._show_popup(_Attention("Rotator Unreachable",
-                                     "The stage stopped answering."))
-    first = dashboard._ack_box
-    assert first.text() == "Idle timeout"
-    assert first.informativeText().endswith("1 more waiting")
-    first.button(QMessageBox.StandardButton.Ok).click()
-    qapp.processEvents()
-    second = dashboard._ack_box
-    assert second is not None and second is not first
-    assert second.text() == "Rotator unreachable"
-    assert second.informativeText() == "The stage stopped answering."
-    second.button(QMessageBox.StandardButton.Ok).click()
-    qapp.processEvents()
-    assert dashboard._ack_box is None and dashboard.alerts == []
-
-
-def test_ack_a_repeat_of_the_shown_title_counts_in_the_same_window(dashboard, qapp):
-    dashboard.open()
-    dashboard._show_popup(_Attention())
-    box = dashboard._ack_box
-    dashboard._show_popup(_Attention(message="Stepper Probe was idle for 301 s, "
-                                     "so it was powered down."))
-    assert dashboard._ack_box is box
-    assert box.informativeText() == ("Stepper Probe was idle for 301 s, so it "
-                                     "was powered down. (x2)")
-    box.button(QMessageBox.StandardButton.Ok).click()
-    qapp.processEvents()
-    assert dashboard._ack_box is None and dashboard.alerts == []
-
-
-def test_ack_the_stop_still_fires_and_does_not_answer_the_window(
-        dashboard, qapp, controller):
-    dashboard.open()
-    dashboard._show_popup(_Attention())
-    box = dashboard._ack_box
-    dashboard.stop_button.click()
-    assert controller.estop_calls == 1
-    dashboard.stop_shortcut.activated.emit()
-    assert dashboard._ack_box is box and box.isVisible(), (
-        "the stop does not acknowledge for the operator")
-
-
-def test_ack_acknowledge_all_closes_the_window(dashboard, qapp):
-    dashboard.open()
-    dashboard._show_popup(_Attention())
-    box = dashboard._ack_box
-    dashboard.acknowledge_all()
-    qapp.processEvents()
-    assert dashboard._ack_box is None and not box.isVisible()
-
-
-def test_ack_the_acknowledgement_is_logged_at_debug(dashboard, qapp, monkeypatch):
-    said = []
-    monkeypatch.setattr(qt.events, "debug",
-                        lambda title, message, **kw: said.append((title, message)))
-    dashboard.open()
-    dashboard._show_popup(_Attention())
-    dashboard._ack_box.button(QMessageBox.StandardButton.Ok).click()
-    qapp.processEvents()
-    assert ("Alert Acknowledged", "warning/Idle Timeout") in said, said
-
-
-# -- rb-restart R1/R6: an action on the acknowledgement -----------------------
-
-class _Prompt(_Attention):
-    def __init__(self, action, title="Restart Needed",
-                 message="Updated to def5678. Restart the station to run it."):
-        super().__init__(title, message)
-        self.action = action
-
-
-_RESTART = {"label": "Restart now", "name": "__setup__",
-            "command": "restart_station", "args": [True]}
-
-
-def test_restart_an_action_window_has_the_action_and_later(dashboard, qapp):
-    dashboard.open()
-    dashboard._show_popup(_Prompt(_RESTART))
-    box = dashboard._ack_box
-    words = sorted(b.text() for b in box.buttons())
-    assert words == ["Later", "Restart now"]
-    assert box.defaultButton() is box.action_button
-    assert box.escapeButton().text() == "Later"
-    assert box.windowModality() == Qt.WindowModality.NonModal
-    assert box.windowFlags() & Qt.WindowType.Tool
-    assert box.parent() is dashboard
-
-
-def test_restart_the_action_key_runs_it_on_the_setup_panel(dashboard, qapp,
-                                                            monkeypatch):
-    ran = []
-    monkeypatch.setattr(dashboard, "run_action", lambda action: ran.append(action))
-    dashboard.open()
-    dashboard._show_popup(_Prompt(_RESTART))
-    dashboard._ack_box.action_button.click()
-    for _ in range(5):
-        qapp.processEvents()
-    assert ran == [_RESTART] and dashboard._ack_box is None
-    assert dashboard._action_panel("__setup__") is dashboard.setup_view
-
-
-def test_restart_later_runs_nothing(dashboard, qapp, monkeypatch):
-    ran = []
-    monkeypatch.setattr(dashboard, "run_action", lambda action: ran.append(action))
-    dashboard.open()
-    dashboard._show_popup(_Prompt(_RESTART))
-    dashboard._ack_box.escapeButton().click()
-    for _ in range(5):
-        qapp.processEvents()
-    assert ran == [] and dashboard._ack_box is None and dashboard.alerts == []
-
-
-def test_restart_the_alert_band_is_gone(dashboard, qapp):
-    assert not hasattr(dashboard, "alert_band")
-    assert not hasattr(dashboard, "alert_text")
