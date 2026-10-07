@@ -41,6 +41,19 @@ class Panel:
         """This panel's own mode: what it is doing."""
         return ""
 
+    #: The steps of this panel's interactive procedure, in order (owner
+    #: ruling 2026-10-07): the names `section(phases=)` and `phased()` may
+    #: use. Empty for a panel with no procedure; its `phase` is then "" and
+    #: nothing is ever hidden. A phase is WHERE IN THE PROCEDURE the operator
+    #: is; the mode is WHAT THE HARDWARE IS DOING. They are published apart
+    #: (`state["phase"]`, `state["mode"]`) and never overload each other.
+    PHASES = ()
+
+    @property
+    def phase(self):
+        """The current procedure step, one of `PHASES`, or "" at rest."""
+        return ""
+
     #: Gate tokens that are not a mode of their own, with the sentence a
     #: refusal gives for them. A view sees only the token (`state["mode"]`).
     GATE_REASONS = {
@@ -80,7 +93,8 @@ class Panel:
             if attr:
                 values[attr] = self._text_for(element)
         return {"name": self.NAME, "mode": self.gate_mode,
-                "model_mode": self.mode_name, "values": values}
+                "model_mode": self.mode_name, "phase": self.phase,
+                "values": values}
 
     def _text_for(self, element):
         raw = getattr(self, element["model_attr"], None)
@@ -172,7 +186,8 @@ class Panel:
         included, so a view cannot call what the schema does not show."""
         if command == "_commit":
             return
-        matches = [e for e in sch.elements(self.schema)
+        snapshot = self.schema
+        matches = [e for e in sch.elements(snapshot)
                    if command in (e.get("command"), e.get("data_command"),
                                   e.get("source_command"))]
         if not matches:
@@ -181,6 +196,15 @@ class Panel:
         candidates = [e for e in matches
                       if wanted and wanted in (e.get("on_args"), e.get("off_args"))]
         candidates = candidates or matches
+        # A control hidden by the procedure step is not reachable either
+        # (one rule for the renderer and the Web API). A stop is never
+        # hidden; the belt under that is the hardware-down check.
+        if not self._takes_hardware_down(command, args):
+            shown = list(sch.shown_elements(snapshot, self.phase))
+            if not any(e in shown for e in candidates):
+                label = str(candidates[0].get("text", command)).rstrip(":")
+                raise Refused(f"{label} is not part of the "
+                              f"{self.phase or 'current'} step.")
         # Two toggles may share a command and its off_args (Autonomous and
         # Manual both leave through set_mode("idle")): the command is allowed
         # if ANY declaring element is enabled in this mode.

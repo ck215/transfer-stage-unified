@@ -448,3 +448,71 @@ def test_the_base_panel_has_no_schema_of_its_own():
 
 def test_the_base_panels_mode_is_the_empty_string():
     assert Panel().mode_name == ""
+
+
+# -- phases on the allow-list (2026-10-07) -------------------------------------
+
+class _Stepped(Panel):
+    NAME = "Stepped"
+    PHASES = ("setup", "live")
+
+    def __init__(self):
+        super().__init__()
+        self._phase = "setup"
+        self.ran = []
+
+    @property
+    def phase(self):
+        return self._phase
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Start", sch.button("Begin", "begin"), phases=("setup",)),
+            sch.section("Run",
+                        sch.phased(sch.button("Mark", "mark"), "live"),
+                        sch.phased(sch.plot("Trace", "series"), "live"),
+                        sch.button("Halt", "halt", stop=True)))
+
+    def begin(self):
+        self._phase = "live"
+        self.ran.append("begin")
+
+    def mark(self):
+        self.ran.append("mark")
+
+    def series(self):
+        return {"x": [], "y": []}
+
+    def halt(self):
+        self.ran.append("halt")
+
+
+def test_a_panel_without_a_procedure_publishes_an_empty_phase():
+    assert FakePanel.PHASES == ()
+    assert FakePanel().state["phase"] == ""
+
+
+def test_a_command_hidden_in_this_step_is_refused_and_names_the_step():
+    panel = _Stepped()
+    result = panel.run("mark")
+    assert result.is_refused and "Mark is not part of the setup step." == result.reason
+    assert panel.ran == []
+    assert panel.run("begin").is_ok and panel.state["phase"] == "live"
+    assert panel.run("mark").is_ok
+    assert panel.run("begin").is_refused
+
+
+def test_a_data_command_hidden_in_this_step_is_refused_too():
+    """`/api/data` follows the same allow-list as every other command."""
+    panel = _Stepped()
+    assert panel.run("series").is_refused
+    panel.run("begin")
+    assert panel.run("series").is_ok
+
+
+def test_a_stop_is_never_refused_by_the_step():
+    panel = _Stepped()
+    for step in ("setup", "live"):
+        panel._phase = step
+        assert panel.run("halt").is_ok, step

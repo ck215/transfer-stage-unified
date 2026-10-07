@@ -32,12 +32,53 @@ class MinimalModel(Model):
         return False
 
 
+class PhasedModel(Model):
+    """The least a procedure can be (owner ruling 2026-10-07): two steps,
+    one control per step, the inherited stop shown in both."""
+    NAME = "Phased"
+    PHASES = ("setup", "live")
+
+    def __init__(self):
+        super().__init__()
+        self._phase = "setup"
+        self.ran = []
+
+    @property
+    def phase(self):
+        return self._phase
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Start", sch.button("Begin", "begin"), phases=("setup",)),
+            sch.section("Trial",
+                        sch.phased(sch.button("Mark", "mark"), "live"),
+                        sch.phased(sch.button("Finish", "finish"), "live"),
+                        sch.readonly("Step:", "phase")),
+            self._safety_section())
+
+    def begin(self):
+        self._phase = "live"
+        self.ran.append("begin")
+
+    def mark(self):
+        self.ran.append("mark")
+
+    def finish(self):
+        self._phase = "setup"
+        self.ran.append("finish")
+
+    def _expects_heartbeat(self):
+        return False
+
+
 CLASSES = dict(MODEL_TYPES)
 CLASSES["Minimal"] = MinimalModel
+CLASSES["Phased"] = PhasedModel
 
 #: The state keys a view reads by name (grep of tk.py, qt.py, app.js,
-#: server.py, views/base.py at 612397c).
-STATE_KEYS = ("name", "mode", "model_mode", "values", "is_estopped",
+#: server.py, views/base.py at 612397c); `phase` since 2026-10-07.
+STATE_KEYS = ("name", "mode", "model_mode", "phase", "values", "is_estopped",
               "is_faulted", "stop_confirmed", "latched_at", "fault",
               "is_active", "age", "devices")
 
@@ -66,7 +107,7 @@ COMMAND_KEYS = ("command", "data_command", "source_command", "options_command")
 @pytest.fixture(params=sorted(CLASSES), ids=lambda n: n.replace(" ", "_"))
 def model(request):
     cls = CLASSES[request.param]
-    if cls is MinimalModel:
+    if cls in (MinimalModel, PhasedModel):
         built = cls()
     else:
         # Setup's exact call (setup.py:1024): the contract's constructor.
@@ -339,7 +380,7 @@ def test_window_focus_gates_every_manual_input_device(model):
     `set_gate` is never told."""
     from controller.controller import Controller
     cls = type(model)
-    fresh = cls() if cls is MinimalModel else cls(port="SIM", gamepad=None, sim=True)
+    fresh = cls() if cls in (MinimalModel, PhasedModel) else cls(port="SIM", gamepad=None, sim=True)
     station = Controller()
     station.add("under test", fresh)
     try:
@@ -373,7 +414,7 @@ def test_loops_are_stopped_by_the_base_join(model):
 
 def test_close_leaves_no_spawned_loop_running(model):
     cls = type(model)
-    fresh = cls() if cls is MinimalModel else cls(port="SIM", gamepad=None, sim=True)
+    fresh = cls() if cls in (MinimalModel, PhasedModel) else cls(port="SIM", gamepad=None, sim=True)
     fresh.open()
     spawned = list(fresh._spawned_threads())
     fresh.close()
@@ -425,3 +466,76 @@ def test_red_percent_is_drawn_on_the_transfer_map():
     from model.red_monitor import RedMonitor
     from model.transfer_map import TransferMap
     assert RedMonitor.HOST == TransferMap.NAME
+
+
+# -- the procedure: phases hide, they never gate a stop (2026-10-07) ----------
+
+def _phases_of(model):
+    """Every phase word the schema names, section or element."""
+    words = set()
+    for s in model.schema["sections"]:
+        words.update(s.get("phases") or ())
+        for e in s.get("elements", []):
+            words.update(e.get("phases") or ())
+    return words
+
+
+def test_phases_named_in_the_schema_are_declared_and_the_phase_is_one_of_them(model):
+    declared = type(model).PHASES
+    assert isinstance(declared, tuple) and all(isinstance(p, str) and p for p in declared)
+    assert _phases_of(model) <= set(declared), _phases_of(model) - set(declared)
+    assert model.phase == "" or model.phase in declared
+    assert model.state["phase"] == model.phase
+    model.estop()
+    assert model.phase == "" or model.phase in declared, "the stop changed the phase to a word no view knows"
+
+
+def test_the_safety_section_and_every_stop_control_are_never_hidden_by_phase(model):
+    safety = model.schema["sections"][-1]
+    assert "phases" not in safety
+    for e in safety["elements"]:
+        assert "phases" not in e
+    for e in _elements(model):
+        if e.get("stop") or e.get("command") in type(model).UNGATED_COMMANDS:
+            assert "phases" not in e, f"{e.get('text')!r} is a stop and is hidden in some step"
+
+
+def test_every_command_is_shown_in_at_least_one_step(model):
+    """A control hidden in every step is dead; a `phases` list that names a
+    step the model never enters is the same thing."""
+    steps = ("",) + tuple(type(model).PHASES)
+    snapshot = model.schema
+    shown_somewhere = [e for step in steps for e in sch.shown_elements(snapshot, step)]
+    for e in sch.elements(snapshot):
+        if e["type"] == "internal":
+            continue
+        assert e in shown_somewhere, f"{e.get('text')!r} is hidden in every step"
+
+
+def test_a_model_without_a_procedure_hides_nothing(model):
+    if type(model).PHASES:
+        return
+    assert model.phase == ""
+    assert list(sch.shown_elements(model.schema, "")) == _elements(model)
+
+
+def test_a_control_hidden_by_the_step_is_refused_not_only_undrawn():
+    """The allow-list follows the renderer: what is not on screen in this
+    step cannot be called through the Web API either."""
+    phased = PhasedModel()
+    assert phased.phase == "setup"
+    early = phased.run("mark")
+    assert early.status == Result.REFUSED and "setup step" in early.reason
+    assert phased.run("begin").is_ok and phased.phase == "live"
+    assert phased.run("mark").is_ok
+    late = phased.run("begin")
+    assert late.status == Result.REFUSED and "live step" in late.reason
+    assert phased.ran == ["begin", "mark"]
+
+
+def test_the_stop_runs_in_every_step():
+    phased = PhasedModel()
+    for step in ("setup", "live"):
+        phased._phase = step
+        assert phased.run("toggle_estop").is_ok, step
+        phased.clear_estop(confirmed=True)

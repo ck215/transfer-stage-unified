@@ -53,7 +53,8 @@ ROLES = frozenset({"neutral", "go", "danger", "warning", "info"})
 TIERS = (1, 2, 3)
 
 
-def section(title, *elements, layout="column", tier=1, disclosure=None):
+def section(title, *elements, layout="column", tier=1, disclosure=None,
+            phases=None):
     """`layout="row"` asks the renderer to place the elements side by side
     on one line (a table row: label, dropdown, dropdown, status).
 
@@ -63,6 +64,12 @@ def section(title, *elements, layout="column", tier=1, disclosure=None):
     3 sits behind a second disclosure ("Diagnostics") inside tier 2. Every
     renderer honours tiers the same way; the Panel ignores them (a tier is
     where a control is drawn, never whether it may run).
+
+    `phases` (owner ruling 2026-10-07, the interactive procedure): the
+    procedure steps during which the section is DRAWN at all. Absent means
+    always. A section hidden by phase takes its elements with it; the Panel
+    refuses their commands (`shown_elements`), so a hidden control is not a
+    reachable one. The same key on one element is set with `phased()`.
     """
     if tier not in TIERS:
         raise ValueError(f"section {title!r}: tier must be one of {TIERS}, not {tier!r}")
@@ -72,7 +79,30 @@ def section(title, *elements, layout="column", tier=1, disclosure=None):
              "elements": [e for e in elements if e is not None]}
     if disclosure:
         built["disclosure"] = disclosure
+    if phases is not None:
+        _phase_list(phases, f"section {title!r}")
+        built["phases"] = list(phases)
     return built
+
+
+def phased(element, *phases):
+    """Mark one built element as drawn only during `phases` (a procedure
+    step name each). `phased(button(...), "live", "marked")`. A `stop=True`
+    button is never phased: the stop is reachable in every step (the model
+    contract test enforces it)."""
+    if element.get("stop"):
+        raise ValueError(f"{element.get('text')!r}: a stop control is never hidden by phase")
+    _phase_list(phases, f"element {element.get('text')!r}")
+    element["phases"] = list(phases)
+    return element
+
+
+def _phase_list(phases, where):
+    if isinstance(phases, str) or not phases:
+        raise ValueError(f"{where}: phases must be a non-empty sequence of step names")
+    for p in phases:
+        if not isinstance(p, str) or not p:
+            raise ValueError(f"{where}: a phase is a non-empty string, not {p!r}")
 
 
 def schema(*sections):
@@ -325,6 +355,30 @@ def is_enabled(element, mode_name, values=None):
     if enabled and mode_name not in enabled:
         return False
     return True
+
+
+def is_shown(item, phase):
+    """Should this section or element be DRAWN during `phase`?
+
+    Distinct from `is_enabled`: a disabled control is greyed where it stands,
+    a hidden one is not there. An item without `phases` is always shown, so
+    a model that declares no procedure (`PHASES == ()`, `phase == ""`)
+    never hides anything. One implementation for the renderer and the
+    Panel's allow-list, so "not on screen" and "not runnable" cannot drift.
+    """
+    wanted = item.get("phases")
+    return not wanted or phase in wanted
+
+
+def shown_elements(schema_dict, phase):
+    """Every element drawn during `phase`, flattened, order preserved. A
+    section hidden by phase hides every element in it."""
+    for section_dict in schema_dict.get("sections", []):
+        if not is_shown(section_dict, phase):
+            continue
+        for element in section_dict.get("elements", []):
+            if is_shown(element, phase):
+                yield element
 
 
 def current_text(model, element):

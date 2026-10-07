@@ -284,3 +284,52 @@ def test_a_plot_declares_its_own_empty_state():
     view borrows Red Percent's sentence for the heater's plot."""
     assert sch.plot("Series", "series")["empty"] == "No data yet."
     assert sch.plot("S", "s", empty="Nothing yet.")["empty"] == "Nothing yet."
+
+
+# -- phases: drawn or not, per procedure step (2026-10-07) ---------------------
+
+def test_a_section_takes_phases_and_an_unphased_one_is_always_shown():
+    s = sch.section("Trial", sch.button("Go", "go"), phases=("live", "marked"))
+    assert s["phases"] == ["live", "marked"]
+    plain = sch.section("Any", sch.button("Go", "go"))
+    assert "phases" not in plain
+    for step in ("", "setup", "live"):
+        assert sch.is_shown(plain, step)
+    assert sch.is_shown(s, "live") and sch.is_shown(s, "marked")
+    assert not sch.is_shown(s, "setup") and not sch.is_shown(s, "")
+
+
+def test_phased_marks_one_element_and_returns_it():
+    e = sch.phased(sch.button("Mark", "mark"), "live")
+    assert e["phases"] == ["live"] and e["type"] == "button"
+    assert sch.is_shown(e, "live") and not sch.is_shown(e, "setup")
+
+
+def test_phases_must_be_a_non_empty_sequence_of_step_names():
+    with pytest.raises(ValueError):
+        sch.section("X", phases=())
+    with pytest.raises(ValueError):
+        sch.section("X", phases="live")        # a string is not a list of steps
+    with pytest.raises(ValueError):
+        sch.phased(sch.button("Go", "go"), "")
+    with pytest.raises(ValueError):
+        sch.phased(sch.button("Go", "go"), "live", None)
+
+
+def test_a_stop_control_cannot_be_phased():
+    with pytest.raises(ValueError):
+        sch.phased(sch.button("Stop", "halt", stop=True), "live")
+
+
+def test_shown_elements_follows_the_section_then_the_element():
+    hidden_section = sch.section("Start", sch.button("Begin", "begin"), phases=("setup",))
+    mixed = sch.section("Trial",
+                        sch.phased(sch.button("Mark", "mark"), "live"),
+                        sch.readonly("Step:", "phase"))
+    built = sch.schema(hidden_section, mixed)
+    assert [e["text"] for e in sch.shown_elements(built, "setup")] == ["Begin", "Step:"]
+    assert [e["text"] for e in sch.shown_elements(built, "live")] == ["Mark", "Step:"]
+    assert [e["text"] for e in sch.shown_elements(built, "")] == ["Step:"]
+    # Without a phase on anything, shown_elements is elements.
+    plain = sch.schema(sch.section("A", sch.button("Go", "go")))
+    assert list(sch.shown_elements(plain, "")) == list(sch.elements(plain))

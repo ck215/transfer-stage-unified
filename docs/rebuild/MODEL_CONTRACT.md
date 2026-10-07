@@ -143,6 +143,36 @@ with no hardware that owns a local store, reads other models by duck type
 - The Web watchdog.
 - Clean shutdown on exit and on signals.
 
+## Phases: the interactive procedure (2026-10-07)
+
+A model whose operator follows a procedure (the Transfer Map: start screen,
+armed, capture region, force mark, finalise or abort) declares its steps and
+hides what the current step does not need. Owner ruling 2026-10-07; the
+retired Tk and Qt views ignore the key and draw everything.
+
+- `PHASES = ("setup", "region", "live", "marked", "finish")` on the class: the
+  step names, in order. Empty (the default) means no procedure.
+- `phase` property: the current step, one of `PHASES`, or `""` at rest. It is
+  published as `state["phase"]`, beside `state["mode"]`; a phase is WHERE IN
+  THE PROCEDURE the operator is, the mode is WHAT THE HARDWARE IS DOING, and
+  neither overloads the other (`latched` still comes through `mode`).
+- `sch.section(..., phases=("live", "marked"))` draws a section only in those
+  steps; `sch.phased(sch.button(...), "live")` does the same for one element.
+  Absent means always drawn.
+- `sch.is_shown(item, phase)` and `sch.shown_elements(schema, phase)` are the
+  one rule, for the renderer and for the Panel: a control hidden in this step
+  is REFUSED by `run` ("Mark is not part of the setup step."), so the Web API
+  cannot call what the page does not show. A `stop=True` control and the
+  Safety section can never be phased (`phased()` raises; the contract test
+  checks), and a hardware-down command bypasses the step check.
+- Hidden is not disabled: `enabled_when`/`disabled_when` still grey a control
+  where it stands; `phases` removes it from the sheet.
+
+`tests/test_model_contract.py` asserts against every registered class and a
+two-step `PhasedModel`: every phase named is declared, `phase` is one of
+them before and after a stop, no stop is ever hidden, every command is shown
+in at least one step, and a model without a procedure hides nothing.
+
 ## Still open
 
 - **A SIM Rotator's stop never confirms** (CON-13): every simulated FULL
