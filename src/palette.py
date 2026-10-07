@@ -4,7 +4,7 @@ the palette lives below both.
 
 Six tokens, and nothing else (owner ruling 2026-09-22; values re-chosen
 2026-09-25 for the "Bench sheet, tiered" language and again 2026-09-27 for
-the "Signature" aesthetic ruling, `handoff/tactile3-Signature.md`,
+the "Signature" aesthetic ruling, `docs/archive/handoff/tactile3-Signature.md`,
 `docs/rebuild/DESIGN_BRIEF.md`). `SIGNAL` is the stop colour and is spent
 on nothing else; `TRACE` is what a CHANGING number and a plot line are
 drawn in - never a lamp, a tick, a bar or a status word. Anything that is

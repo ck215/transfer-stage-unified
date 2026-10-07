@@ -1,6 +1,6 @@
 /* The station's Web view: the Bench sheet, tiered (owner ruling 2026-09-25),
    drawn in the "Signature" look (owner ruling 2026-09-27;
-   handoff/tactile3-Signature.md, docs/rebuild/DESIGN_BRIEF.md "Signature").
+   docs/archive/handoff/tactile3-Signature.md, docs/rebuild/DESIGN_BRIEF.md "Signature").
 
    Every colour is a var() from /api/theme.css (src/views/theme.py): the six
    palette tokens and the faces, rims and lips theme.mix() derives from

@@ -176,7 +176,7 @@ def test_css_variables_follow_a_font_size_change():
 # -- Signature (2026-09-27): the derived tokens every view reads ---------------
 
 def test_every_derived_shade_is_a_mix_of_the_six_palette_values():
-    """The spec's measured values (`handoff/tactile3-Signature.md`), so a
+    """The spec's measured values (`docs/archive/handoff/tactile3-Signature.md`), so a
     view that draws them is drawing what the owner ratified."""
     assert theme.CAP == "#f5f7f6" and theme.RAIL == "#f1f2f2"
     assert theme.DEEP == "#cdd1d0" and theme.EDGE == "#767a7c"
