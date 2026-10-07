@@ -34,7 +34,8 @@ $Out = Join-Path ([IO.Path]::GetTempPath()) ("station-smoke-" + [guid]::NewGuid(
 New-Item -ItemType Directory -Force -Path $Out, $LogDir | Out-Null
 $PortRows = @("stepper_probe", "dc_probe", "chuck_positioner", "temperature_controller", "rotator")
 # red_percent has no row since 2026-09-28: it launches with the Transfer Map.
-$AllRows = $PortRows + @("transfer_map", "sample_map")
+# The Sample Map is off by default (owner 2026-10-06); add "sample_map" here when it is on.
+$AllRows = $PortRows + @("transfer_map")
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
 $Sketches = @("stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller")

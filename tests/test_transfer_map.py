@@ -386,7 +386,29 @@ def test_tilt_is_none_until_a_rotator_reads_or_the_operator_types_one(red):
     model.typed_tilt = "17"
     assert model._read_tilt() == (17.0, "typed")
     model.on_model_added("Rotator 2", FakeRotator(30.0))
+    assert model.tilt_now == 17.0          # typed, so the reading waits
+    model.typed_tilt = ""
     assert model.tilt_now == 30.0
+
+
+def test_a_typed_tilt_wins_over_the_rotator_reading(station):
+    """Bench 2026-09-28: the Rotator read 0.0 on two trials tilted by hand
+    to 6.5 and 7 deg, and the typed tilt was ignored, so the tilt could not
+    be set per trial. Typed wins; blank the entry and the rotator is the
+    source again; the Arm prompt names which."""
+    model, red, rotator, _ = station
+    rotator.position_deg = 0.0
+    model.typed_tilt = "6.5"
+    assert model._read_tilt() == (6.5, "typed")
+    assert model.tilt_now == 6.5
+    asked = model.run("arm_trial", {"tip_id": "tip-A", "typed_tilt": "7"})
+    assert asked.needs_confirm and " at 7 deg (typed)," in asked.reason
+    trial = _arm(model)
+    row = model._store.trial(trial)
+    assert row["tilt_deg"] == 7.0 and row["tilt_source"] == "typed"
+    _finish(model)
+    model.typed_tilt = ""
+    assert model._read_tilt() == (0.0, "Rotator")
 
 
 def test_arm_refuses_a_typed_tilt_that_is_not_a_number(station):
@@ -647,7 +669,7 @@ def test_the_figure_is_cached_until_something_changes(station):
 
 def test_dropdowns_refuse_what_they_do_not_offer():
     model = TransferMap()
-    for command in ("set_figure_type", "set_force_definition", "set_force_band"):
+    for command in ("set_figure_type", "set_force_definition"):
         assert model.run(command, None, ("nonsense",)).is_refused
 
 
@@ -821,6 +843,8 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     model.tip_id = "tip-A"
     assert step() == "Type the tilt for this trial"
     model.typed_tilt = "6.5"
+    assert step() == "Type the sample, chip, flake, cut IDs"
+    model.sample_id, model.chip_id, model.flake_id, model.cut_id = "S1", "C1", "F2", "3"
     assert step() == "Press Arm trial"
     if not red.is_running:
         red.start_run(confirmed=True)       # before T2, Arm needs a run
@@ -829,6 +853,8 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     model.mark_force()
     assert step() == "Press Finish trial"
     _finish(model)
+    assert step() == "Type the cut ID"       # cut and go: the next cut's own ID
+    model.cut_id = "4"
     assert step() == "Press Arm trial"
     model.estop()
     assert step() == ""                      # latched: the stop says what to do
@@ -953,12 +979,14 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     model, red = idle_station
     result = model.run("arm_trial", {"tip_id": "T7", "typed_tilt": ""})
     assert result.needs_confirm, result
-    assert result.reason == ("Frame the sample now. Continue takes the "
+    assert result.reason == ("Is the sample vacuum ON? Check it now.\n\n"
+                             "Frame the sample now. Continue takes the "
                              "whole-screen picture, starts the video and arms "
-                             "trial 1 on tip T7, with NO tilt recorded, 300 "
-                             "steps/s (Stepper Probe).")
+                             "trial 1 on tip T7 (NO sample, chip, flake or cut ID), with "
+                             "NO tilt recorded, 300 steps/s (Stepper Probe).")
     assert result.command == "arm_trial"
-    assert result.inputs == {"tip_id": "T7", "typed_tilt": ""}
+    assert result.inputs == {"tip_id": "T7", "sample_id": "", "chip_id": "",
+                             "flake_id": "", "cut_id": "", "typed_tilt": ""}
     assert not model.is_armed and model.trial_count == 0
     assert not red.is_running                 # nothing started either
     again = model.run(result.command, result.inputs, (*result.args, True))
@@ -1092,18 +1120,20 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     sections = model.schema["sections"]
     tier_one = [s["title"] for s in sections if s.get("tier", 1) == 1
                 and s["title"] != "Safety"]
-    assert tier_one == ["Session", "Trial"]
+    # The finalizer button sits last, at the foot of the tab (owner 2026-10-06).
+    assert tier_one == ["Session", "Trial", "Finalize data"]
     trial = next(s for s in sections if s["title"] == "Trial")
     keys = [e.get("command") if e["type"] in ("button", "region_select")
             else e.get("model_attr") or e.get("command") or e.get("data_command")
             for e in trial["elements"]]
     assert keys == ["next_step", "set_region", "tilt_now", "speed_now",
                     "red_now", "tip_id", "tip_pick", "new_tip",
-                    "tip_trial_count", "tip_status", "typed_tilt", "typed_speed",
+                    "tip_trial_count", "tip_status", "sample_id", "chip_id",
+                    "flake_id", "cut_id", "typed_tilt", "typed_speed",
                     "arm_trial", "mark_force", "note", "finish_trial",
                     "abort_trial", "is_broke", "trial_status",
                     "first_frame_image", "mark_frame_image", "video_status",
-                    "live_series", "figure"]
+                    "force_status", "live_series", "figure"]
     later = [(s["title"], s.get("tier")) for s in sections
              if s.get("tier", 1) != 1]
     assert later == [("Context", 2), ("Tip", 2), ("Figure", 2),
@@ -1113,8 +1143,8 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     diagnostics = next(s for s in sections if s["title"] == "Diagnostics")
     assert [e.get("model_attr") or e.get("source_command") or e.get("command")
             for e in diagnostics["elements"]] == [
-        "last_trial_numbers", "width_gradient", "video_encoder", "trials_log",
-        "tips_log", "delete_trial"]
+        "last_trial_numbers", "width_gradient", "video_encoder",
+        "force_position_text", "trials_log", "tips_log", "delete_trial"]
 
 
 # -- full pictures: the whole screen at Arm and at Finish (2026-09-28) ----------
@@ -1288,6 +1318,12 @@ V6_COLUMNS = ("sample_id", "flake_uid", "operator_id", "operator_auth",
               "trench_depth_nm", "trench_depth_sigma_nm",
               "width_optical_um", "width_optical_sigma_um",
               "width_optical_method")
+#: Version 7 (bench 2026-09-28 and 2026-10-04): the sample's chip, flake and
+#: cut IDs, and the invalid flag.
+V7_COLUMNS = ("chip_id", "flake_id", "cut_id", "invalid")
+#: Version 8 (owner 2026-10-06): the tip-shade force columns.
+V8_COLUMNS = ("contact_lowered", "force_position", "force_class", "shade_baseline",
+              "shade_peak", "shade_mark")
 
 
 def _version(path):
@@ -1300,7 +1336,7 @@ def _columns(path):
         return [r[1] for r in db.execute("PRAGMA table_info(trials)")]
 
 
-def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS,
+def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS,
                       version=1):
     """A database as an earlier round wrote it: the version-1 trials table
     (no whole-screen columns; with `version=2` and `drop=V3_COLUMNS +
@@ -1342,12 +1378,12 @@ def _tables(path):
 
 def test_a_fresh_database_is_version_three_with_the_picture_columns_and_tips(
         private_db):
-    assert tm_module.SCHEMA_VERSION == 6
+    assert tm_module.SCHEMA_VERSION == 8
     model = TransferMap()
     model.open()
     model.close()
-    assert _version(private_db) == 6
-    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 8
+    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
     assert "tips" in _tables(private_db)
 
 
@@ -1362,8 +1398,8 @@ def test_a_version_one_database_gains_the_columns_and_keeps_its_trial(
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 6
-        assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 8
+        assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]   # untouched
@@ -1406,7 +1442,7 @@ def test_the_first_write_migrates_too(private_db):
     store.insert({"tip_id": "T8", "status": "recorded",
                   "before_full_path": "/x.png", "mark_path": "/m.png",
                   "video_path": "/v.mp4"})
-    assert _version(private_db) == 6
+    assert _version(private_db) == 8
     assert [r["tip_id"] for r in store.trials()] == ["T7", "T8"]
 
 
@@ -1414,11 +1450,11 @@ def test_a_half_done_upgrade_finishes(private_db):
     """A version-1 file that already has some of the new columns (an upgrade
     cut short between the ALTERs) gets the rest and the current version."""
     _version_one_file(private_db, drop=("after_full_path",) + V3_COLUMNS
-                      + V5_COLUMNS + V6_COLUMNS[3:])
+                      + V5_COLUMNS + V6_COLUMNS[3:] + V7_COLUMNS + V8_COLUMNS)
     assert _version(private_db) == 1
     assert tm_module.TrialStore(private_db).ensure() is False
-    assert _version(private_db) == 6
-    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 8
+    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
 
 
 def test_a_version_three_database_is_left_alone(private_db):
@@ -1433,7 +1469,7 @@ def test_a_version_three_database_is_left_alone(private_db):
     with sqlite3.connect(private_db) as db:
         assert db.execute("SELECT sql FROM sqlite_master ORDER BY name"
                           ).fetchall() == schema
-    assert _version(private_db) == 6
+    assert _version(private_db) == 8
     assert not _titled("Database Upgraded", since)
 
 
@@ -1441,7 +1477,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
     """M1/M2: the owner's bench file is version 2 and holds trials. It gains
     the Mark columns and a tip record per tip its trials name; every trial
     and profile row is kept."""
-    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS,
+    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS,
                       version=2)
     before = _rows(private_db, "SELECT * FROM trials")
     assert _version(private_db) == 2 and "tips" not in _tables(private_db)
@@ -1452,8 +1488,8 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 6
-        assert set(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 8
+        assert set(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
@@ -1467,7 +1503,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
                          "note": None}]
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert (", ".join(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) + ", tips (version 6)"
+        assert (", ".join(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) + ", tips (version 8)"
                 in upgraded[0].message), upgraded[0].message
         model.tip_id = "T7"
         assert model.tip_status == "in use since trial 1"
@@ -1477,7 +1513,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
 
 
 def test_a_migrated_version_two_database_records_a_marked_trial(red, private_db):
-    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS, version=2)
+    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=2)
     model = TransferMap()
     model.open()
     model.on_model_added("Red Percent", red)
@@ -1497,7 +1533,7 @@ def test_a_migrated_version_two_database_records_a_marked_trial(red, private_db)
 
 
 def test_a_version_two_file_with_a_broken_tip_backfills_it(private_db):
-    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS, version=2)
+    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=2)
     with sqlite3.connect(private_db) as db:
         db.execute("INSERT INTO trials (tip_id, broke, status) VALUES "
                    "('T7', 1, 'recorded'), ('T7', 1, 'recorded'), "
@@ -1651,10 +1687,38 @@ def test_arming_on_a_broken_tip_asks_once(station):
     result = model.run("arm_trial", {"tip_id": "T7"})
     assert result.needs_confirm
     assert result.reason == (
+        "Is the sample vacuum ON? Check it now.\n\n"
         f"Tip T7 broke on trial {broke}. Arm on it anyway?\n\nFrame the sample "
         "now. Continue takes the whole-screen picture, starts the video and "
-        f"arms trial {broke + 1} on tip T7 at 22.5 deg (Rotator), 300 steps/s "
-        "(Stepper Probe).")
+        f"arms trial {broke + 1} on tip T7 (NO sample, chip, flake or cut ID) at "
+        "22.5 deg (Rotator), 300 steps/s (Stepper Probe).")
+    again = model.run(result.command, result.inputs, (*result.args, True))
+    assert again.is_ok and model.is_armed         # one Continue, not two
+
+
+VACUUM = "Is the sample vacuum ON? Check it now."
+
+
+def test_every_arm_asks_that_the_sample_vacuum_is_on(station):
+    """Bench 2026-10-04: two trials were cut with the sample vacuum off. The
+    station cannot sense it, so every Arm asks, first, in the one prompt it
+    already raises: still one question and one Continue, and nothing is
+    armed until the operator answers. A broken tip's question stays."""
+    model, red, *_ = station
+    model.tip_id = "T7"
+    for _ in range(2):                            # every Arm, not the first
+        result = model.run("arm_trial", {"tip_id": "T7"})
+        assert result.needs_confirm and result.command == "arm_trial"
+        assert result.reason.startswith(VACUUM + "\n\nFrame the sample now.")
+        assert result.reason.count(VACUUM) == 1
+        assert not model.is_armed
+        _record(model, red)
+    model.mark_broke(True)
+    result = model.run("arm_trial", {"tip_id": "T7"})
+    assert result.needs_confirm and not model.is_armed
+    reason = result.reason
+    assert reason.startswith(VACUUM + "\n\nTip T7 broke on trial ")
+    assert reason.index("Arm on it anyway?") < reason.index("Frame the sample now.")
     again = model.run(result.command, result.inputs, (*result.args, True))
     assert again.is_ok and model.is_armed         # one Continue, not two
 
@@ -1666,7 +1730,8 @@ def test_arming_on_a_retired_tip_asks_once(station):
     assert _confirmed(model, "retire_tip", {"tip_id": "T7"}) == "T7"
     result = model.run("arm_trial", {"tip_id": "T7"})
     assert result.needs_confirm
-    assert result.reason.startswith("Tip T7 is retired. Arm on it anyway?\n\n"
+    assert result.reason.startswith("Is the sample vacuum ON? Check it now.\n\n"
+                                    "Tip T7 is retired. Arm on it anyway?\n\n"
                                     "Frame the sample now.")
     again = model.run(result.command, result.inputs, (*result.args, True))
     assert again.is_ok and model.is_armed
@@ -1859,6 +1924,7 @@ def test_committing_a_tip_id_starts_polling_from_a_fresh_baseline(sheet):
     events.forget("Polling Started")    # a new dedupe episode
     since = events.latest_id
     model.typed_tilt = "7"
+    model.sample_id, model.chip_id, model.flake_id, model.cut_id = "S1", "C1", "F2", "3"
     _commit_tip(model, "T7")
     assert red.is_running and model._auto_run is red.run_token
     assert step() == "Press Arm trial"
@@ -2088,6 +2154,43 @@ def test_set_speed_for_trial_corrects_a_recorded_trial(station):
     assert row["speed_steps_s"] == 220.0 and row["speed_source"] == "typed later"
 
 
+# -- an invalid trial is kept but left off the map (bench 2026-10-04: "vacuum
+# was off, data is invalid"; "a flag ... that will allow me to drop invalid
+# trials") ------------------------------------------------------------------
+
+def test_mark_trial_invalid_drops_it_from_the_map_and_keeps_it_on_record(
+        station):
+    model, red, *_ = station
+    _arm(model, "tip-A")
+    _finish(model)
+    trial_id = model._store.last()["id"]
+    assert trial_id in [r["id"] for r in model._map_rows()]
+    assert model.run("set_trial_invalid", {"afm_trial_id": trial_id},
+                     args=(True,)).is_ok
+    assert model._store.trial(trial_id)["invalid"] == 1
+    assert trial_id not in [r["id"] for r in model._map_rows()]
+    assert model._store.trial(trial_id) is not None          # kept
+    assert "invalid" in [line for line in model.trials_log
+                         if line.lstrip().startswith(str(trial_id))][0]
+    assert model.run("set_trial_invalid", {"afm_trial_id": trial_id},
+                     args=(False,)).is_ok
+    assert model._store.trial(trial_id)["invalid"] == 0
+    assert trial_id in [r["id"] for r in model._map_rows()]
+    assert model.run("set_trial_invalid", {"afm_trial_id": 999},
+                     args=(True,)).is_refused
+
+
+def test_the_invalid_flag_is_a_column_and_reaches_the_export(station):
+    model, red, *_ = station
+    _arm(model, "tip-A")
+    _finish(model)
+    trial_id = model._store.last()["id"]
+    model.run("set_trial_invalid", {"afm_trial_id": trial_id}, args=(True,))
+    with open(model.export_csv(), newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["invalid"] for r in rows if r["id"] == str(trial_id)] == ["1"]
+
+
 # -- V3-V5: a labelled video per trial (owner, 2026-09-28) -------------------------
 # "Rather than like 7 pictures, a video where timestamps label the footage
 # for analysis afterward." Frames reach the map through Red Percent's frame
@@ -2133,7 +2236,7 @@ def test_frames_flow_from_red_percent_into_the_trials_video(station, private_db,
     assert row["video_path"] == str(folder / "trial.mp4")
     assert row["video_index_path"] == str(folder / "video_index.csv")
     index = _index(model, trial)
-    assert list(index[0]) == ["frame", "t_s", "red", "z", "marked"]
+    assert list(index[0]) == ["frame", "t_s", "red", "z", "marked", "shade"]
     assert [int(r["frame"]) for r in index] == list(range(1, len(index) + 1))
     assert row["video_frames"] == len(index) >= 8
     assert _mp4_frames(row["video_path"]) == len(index)
@@ -2220,8 +2323,11 @@ def test_mark_appears_in_the_index_and_the_label_from_the_mark_on(
     assert flags == sorted(flags), "MARK stays once pressed"
     for row, flag in zip(index, flags):
         assert flag == (float(row["t_s"]) >= mark_t - 1e-3), row
-    assert all("MARK" not in " ".join(l) for l, f in zip(labels, flags) if not f)
-    assert all(" ".join(l).endswith("MARK") for l, f in zip(labels, flags) if f)
+    # The band's first line is the measurement (MARK at its end from the
+    # Mark on); the second names the trial (chip, flake, cut, 2026-09-28).
+    assert all("MARK" not in l[0] for l, f in zip(labels, flags) if not f)
+    assert all(l[0].endswith("MARK") for l, f in zip(labels, flags) if f)
+    assert all(l[1].startswith(f"trial {trial}  tip ") for l in labels)
     assert labels[0][0].startswith("t=0.") and "red " in labels[0][0]
     assert " z 1000" in labels[0][0]
     folder = model.pictures_root / str(trial)
@@ -2378,7 +2484,7 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
     """The owner's bench file after the tips round is version 4 and holds
     trials: it gains the four video columns, keeps every trial, profile row
     and tip, and records a trial with its video."""
-    _version_one_file(private_db, drop=V5_COLUMNS + V6_COLUMNS, version=4)
+    _version_one_file(private_db, drop=V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=4)
     before = _rows(private_db, "SELECT * FROM trials")
     tips_before = _rows(private_db, "SELECT * FROM tips")
     assert _version(private_db) == 4
@@ -2390,8 +2496,8 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
     model.on_model_added("Red Percent", red)
     model.tip_id = "T7"
     try:
-        assert _version(private_db) == 6
-        assert set(V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 8
+        assert set(V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
@@ -2400,7 +2506,7 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
         assert _rows(private_db, "SELECT * FROM tips") == tips_before
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert ("now has " + ", ".join(V5_COLUMNS + V6_COLUMNS) + " (version 6)"
+        assert ("now has " + ", ".join(V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) + " (version 8)"
                 in upgraded[0].message), \
             upgraded[0].message
         assert model.video_status == "No video for this trial."
@@ -2516,6 +2622,134 @@ def test_arm_taking_over_the_polling_keeps_the_rows_from_arm_on(sheet,
     assert times and times[0] >= 0
 
 
+# -- chip, flake and cut IDs (bench 2026-09-28) -------------------------------------
+# "The runs no longer have labels. Each trial has a chip, flake, and cut ID
+# for better sorting later." Typed on the sheet under the tip; on the row
+# and in the trials export; in the video's band; the Red Percent run the
+# map records through is named after the trial.
+
+def _identify(model, sample="S1", chip="C1", flake="F2", cut="3"):
+    model.sample_id, model.chip_id, model.flake_id, model.cut_id = sample, chip, flake, cut
+
+
+def test_the_ids_are_tier_one_entries_that_travel_with_arm(tmp_path):
+    model = TransferMap(db_path=tmp_path / "t.sqlite")
+    tier1 = [e for e in sch.elements(model.schema) if e.get("tier", 1) == 1]
+    attrs = [e.get("model_attr") for e in tier1]
+    assert attrs.index("tip_id") < attrs.index("sample_id") < attrs.index("chip_id") \
+        < attrs.index("flake_id") < attrs.index("cut_id") < attrs.index("typed_tilt")
+    arm = next(e for e in tier1 if e.get("command") == "arm_trial")
+    assert set(arm["inputs"]) >= {"tip_id", "sample_id", "chip_id", "flake_id", "cut_id"}
+
+
+def test_next_step_asks_for_the_ids_after_the_tilt_and_never_refuses(idle_station):
+    model, red = idle_station
+    model.typed_tilt = ""
+    step = lambda: model.state["values"]["next_step"]   # noqa: E731
+    assert step() == "Type the tilt for this trial"
+    model.typed_tilt = "7"
+    assert step() == "Type the sample, chip, flake, cut IDs"
+    model.sample_id, model.chip_id = "7/27/26", "C1"
+    assert step() == "Type the flake, cut IDs"
+    model.flake_id = "F2"
+    assert step() == "Type the cut ID"
+    model.cut_id = "3"
+    assert step() == "Press Arm trial"
+    assert model.ids_status == "sample 7/27/26  chip C1  flake F2  cut 3"
+    model.cut_id = ""
+    assert _arm(model) == 1                        # asked for, not required
+    model.run("abort_trial")
+
+
+def test_a_trial_records_its_chip_flake_and_cut_and_the_prompt_names_them(
+        station, private_db):
+    model, red, *_ = station
+    _identify(model)
+    asked = model.run("arm_trial", {"tip_id": "tip-A", "sample_id": "S1",
+                                    "chip_id": "C1", "flake_id": "F2", "cut_id": "3"})
+    assert asked.needs_confirm
+    assert "arms trial 1 on tip tip-A (sample S1, chip C1, flake F2, cut 3) at " in asked.reason
+    assert asked.inputs["chip_id"] == "C1" and asked.inputs["cut_id"] == "3"
+    trial = _record(model, red)
+    row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
+    assert (row["sample_id"], row["chip_id"], row["flake_id"], row["cut_id"]) == ("S1", "C1", "F2", "3")
+    assert "sample S1  chip C1  flake F2  cut 3" in model.trials_log[-1]
+    trials_path, _profile, _tips = model._export()
+    with open(trials_path, newline="") as handle:
+        exported = list(csv.DictReader(handle))
+    assert (exported[-1]["sample_id"], exported[-1]["chip_id"], exported[-1]["flake_id"],
+            exported[-1]["cut_id"]) == ("S1", "C1", "F2", "3")
+
+
+def test_the_video_band_carries_the_trials_identity(station):
+    model, red, *_ = station
+    _identify(model)
+    _arm(model)
+    text, _z, marked = model._label(model._trial, 1.5, 42.0)
+    assert text[0].startswith("t=1.50 s  red 42.0 %") and not marked
+    assert text[1] == f"trial {model._trial.id}  tip tip-A  sample S1  chip C1  flake F2  cut 3"
+    model.run("abort_trial")
+
+
+def test_arm_names_the_polling_run_after_the_trial(sheet):
+    """The run the map started for polling is the trial's once armed: its
+    folder under ~/transfer-stage-runs/ says which trial, tip, chip, flake
+    and cut, not `run_<timestamp>`."""
+    model, red = sheet
+    _identify(model, sample="7/27/26", chip="C1", flake="F2", cut="3")
+    _commit_tip(model, "9/27/26 Tip1")
+    token = red.run_token
+    assert red.run_id == "C001"          # the Run / Cut ID typed on Red Percent's page
+    trial = _arm(model)
+    assert red.run_token is token                   # taken over, not restarted
+    assert red.run_id == f"trial{trial:03d}_tip-9-27-26-Tip1_sample-7-27-26_chip-C1_flake-F2_cut-3"
+    assert red.run_dir.name == red.run_id
+    assert token.annotations["consumable_id"] == "9/27/26 Tip1"
+    assert token.annotations["specimen_id"] == "sample 7/27/26 chip C1 flake F2"
+    assert token.annotations["note"] == f"trial {trial}  sample 7/27/26  chip C1  flake F2  cut 3"
+    _finish(model)
+    assert not red.is_running
+
+
+def test_arm_names_the_run_it_starts_itself_and_blank_ids_are_left_out(idle_station):
+    model, red = idle_station
+    model.chip_id = "C1"
+    trial = _arm(model)
+    assert red.is_running and red.run_id == f"trial{trial:03d}_tip-tip-A_chip-C1"
+    model.run("abort_trial")
+
+
+def test_the_operators_run_keeps_its_name(station):
+    """The station fixture's run was started on the Red Percent page, named
+    C001 there: it is theirs, and Arm leaves the name alone."""
+    model, red, *_ = station
+    _identify(model)
+    _arm(model)
+    assert red.run_id == "C001"
+    model.run("abort_trial")
+
+
+def test_run_label_is_folder_safe():
+    label = TransferMap.run_label(TransferMap, 12, "9/27/26 Tip1", "", "chip A/B",
+                                  "", "cut #4")
+    assert label == "trial012_tip-9-27-26-Tip1_chip-chip-A-B_cut-cut-4"
+    assert "/" not in label and " " not in label
+
+
+def test_import_keeps_the_ids(tmp_path, private_db):
+    path = tmp_path / "in.csv"
+    path.write_text("tip_id,sample_id,chip_id,flake_id,cut_id,tilt_deg,speed_steps_s\n"
+                    "T9,S9,C7,F1,2,10,300\n")
+    model = TransferMap()
+    model.open()
+    try:
+        assert model.run("import_csv", args=(str(path),)).is_ok
+        row = model._store.trials()[-1]
+        assert (row["sample_id"], row["chip_id"], row["flake_id"], row["cut_id"]) == ("S9", "C7", "F1", "2")
+    finally:
+        model.close()
+
+
 # -- store version 6 (owner, 2026-10-04): trials name their flake; the cut
 # descriptors (two AFM heights, an optical width); the store's identity ------
 
@@ -2523,8 +2757,8 @@ def test_a_fresh_database_is_version_six_with_an_identity(private_db):
     model = TransferMap()
     model.open()
     model.close()
-    assert _version(private_db) == 6
-    assert set(V6_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 8
+    assert set(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
     meta = dict(_rows_raw(private_db, "SELECT key, value FROM meta"))
     assert set(meta) == {"map_db_uuid", "created_at"}
     import uuid
@@ -2539,7 +2773,7 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
     """The owner's bench file is version 5 and holds trials: it gains the
     v6 columns (NULL = not measured, nothing backfilled) and a store id, and
     keeps every trial, profile row and tip."""
-    _version_one_file(private_db, drop=V6_COLUMNS, version=5)
+    _version_one_file(private_db, drop=V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=5)
     before = _rows(private_db, "SELECT * FROM trials")
     assert "meta" not in _tables(private_db)
     events.forget("Database Upgraded")
@@ -2549,16 +2783,18 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
     model.on_model_added("Red Percent", red)
     model.tip_id = "T7"
     try:
-        assert _version(private_db) == 6
+        assert _version(private_db) == 8
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
-        assert all(after[0][c] is None for c in V6_COLUMNS)
+        assert all(after[0][c] is None for c in V6_COLUMNS + V7_COLUMNS + V8_COLUMNS
+                   if c != "invalid")
+        assert after[0]["invalid"] == 0                  # valid unless flagged
         assert len(_rows(private_db, "SELECT * FROM profile")) == 5
         assert "map_db_uuid" in tm_module.TrialStore(private_db).meta()
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert ("now has " + ", ".join(V6_COLUMNS) + " (version 6)"
+        assert ("now has " + ", ".join(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) + " (version 8)"
                 in upgraded[0].message), upgraded[0].message
         trial = _record(model, red)
         row = _row(private_db, trial)
@@ -2692,7 +2928,7 @@ def test_the_width_source_dropdown_reaches_the_figure(station):
     _record(model, red)
     assert model.width_source == "AFM only"
     assert model.width_source_options == list(plot_data.WIDTH_SOURCES)
-    model.set_figure_type("Slice at a force band")
+    model.set_figure_type("Heatmap")
     first = model.figure
     assert model.run("set_width_source", None, ("AFM, else optical",)).is_ok
     assert model.figure is not first
@@ -2718,3 +2954,67 @@ def test_the_v6_controls_are_tier_two():
             "trench_depth_sigma_nm"} <= set(button["inputs"])
     labels = [e.get("text") for e in afm["elements"]]
     assert "Channel width (AFM)" in labels
+
+
+def test_a_version_five_database_gains_the_id_columns(private_db):
+    _version_one_file(private_db, drop=V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=5)
+    assert not set(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) & set(_columns(private_db))
+    model = TransferMap()
+    model.open()
+    try:
+        assert _version(private_db) == 8
+        assert set(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
+        after = _rows(private_db, "SELECT * FROM trials")
+        assert len(after) == 1 and all(after[0][c] is None for c in V6_COLUMNS + V7_COLUMNS + V8_COLUMNS if c != "invalid") and after[0]["invalid"] == 0
+        assert model.trials_log[-1].startswith("   1  measured T7  12.5 deg")
+    finally:
+        model.close()
+
+
+def test_a_version_seven_database_gains_the_invalid_flag_all_valid(private_db):
+    _version_one_file(private_db, drop=("invalid",) + V8_COLUMNS, version=7)
+    assert "invalid" not in _columns(private_db)
+    model = TransferMap()
+    model.open()
+    try:
+        assert _version(private_db) == 8
+        after = _rows(private_db, "SELECT * FROM trials")
+        assert len(after) == 1 and after[0]["invalid"] == 0
+        assert [r["id"] for r in model._map_rows()] == [1]
+    finally:
+        model.close()
+
+
+def test_finish_clears_the_cut_id_and_keeps_chip_and_flake(station):
+    """Cut and go: the next cut on the same flake is asked for its own ID."""
+    model, red, *_ = station
+    _identify(model)
+    _record(model, red)
+    assert (model.sample_id, model.chip_id, model.flake_id, model.cut_id) == ("S1", "C1", "F2", "")
+    assert model.state["values"]["next_step"] == "Type the cut ID"
+
+
+# -- a file numbered ahead of its columns (the owner's own earlier numbering) --
+
+@pytest.mark.parametrize("ahead", [7, 8, 9])
+def test_a_file_numbered_ahead_but_missing_columns_is_completed(private_db, ahead):
+    """The bench file was once numbered 8 with chip/flake/cut/sample/invalid
+    and none of the later version-6 columns; the version number must not
+    hide the missing columns. Its trials, profile and tips are kept."""
+    _version_one_file(private_db, drop=V6_COLUMNS, version=ahead)
+    before = _rows(private_db, "SELECT * FROM trials")
+    assert tm_module.TrialStore(private_db).ensure() is False
+    assert _version(private_db) == max(ahead, tm_module.SCHEMA_VERSION)
+    assert set(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
+    after = _rows(private_db, "SELECT * FROM trials")
+    assert {k: after[0][k] for k in before[0]} == before[0]
+    assert len(_rows(private_db, "SELECT * FROM profile")) == 5
+    assert "map_db_uuid" in tm_module.TrialStore(private_db).meta()
+
+
+def test_the_invalid_flag_survives_a_completing_migration(private_db):
+    _version_one_file(private_db, drop=V6_COLUMNS, version=8)
+    with sqlite3.connect(private_db) as db:
+        db.execute("UPDATE trials SET invalid = 1")
+    tm_module.TrialStore(private_db).ensure()
+    assert _rows(private_db, "SELECT invalid FROM trials")[0]["invalid"] == 1

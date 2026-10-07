@@ -50,7 +50,8 @@ QT_PLATFORM="${SMOKE_QT_PLATFORM-offscreen}"
 # capture) has no row of its own since 2026-09-28: it is drawn on the
 # Transfer Map's page and launches with that row.
 PORT_ROWS="stepper_probe dc_probe chuck_positioner temperature_controller rotator"
-ALL_ROWS="$PORT_ROWS transfer_map sample_map"
+# The Sample Map is off by default (owner 2026-10-06); add " sample_map" here when it is on.
+ALL_ROWS="$PORT_ROWS transfer_map"
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
 SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller"

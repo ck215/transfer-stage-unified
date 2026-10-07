@@ -122,6 +122,9 @@ class _Context:
         self.z = (numpy.asarray([numpy.nan if v is None else v for v in z],
                                 dtype=float) if z else None)
         marks = dict(marks or {})
+        #: The tip-shade position on the peak (`model/tip_shade.py`), taken
+        #: from the trial's own stored column, not from the red trace.
+        self.shade_position = marks.get("shade_position")
         self.operator_t = marks.get("operator_t")
         found = detect(profile, self.operator_t) or {}
         self.baseline = (marks["baseline"] if marks.get("baseline") is not None
@@ -203,9 +206,18 @@ def z_past_peak(c):
     return float(abs(b - a))
 
 
+def shade_position(c):
+    """Where the tip's shade stood on its peak at the Mark: 0 at the peak, 1
+    back down at its baseline (owner 2026-10-06; `model/tip_shade.py`). Read
+    from the stored column; None with no contact before the Mark."""
+    return c.shade_position
+
+
 #: name -> function(context). Open: the owner adds definitions by adding a
-#: line here; every figure and export follows.
+#: line here; every figure and export follows. `shade_position` is first
+#: because the map's default is the first (owner 2026-10-06).
 FORCE_DEFINITIONS = {
+    "shade_position": shade_position,
     "shadow_vs_baseline": shadow_vs_baseline,
     "shadow_vs_peak": shadow_vs_peak,
     "at_operator_mark": at_operator_mark,

@@ -337,17 +337,18 @@ def _trials():
     return rows
 
 
-def test_the_map3d_request_splits_measured_from_pending():
-    request = plot_data.transfer_request("map3d", _trials(), "shadow_vs_peak")
-    assert request["kind"] == "map3d"
-    assert request["x"] == [10.0, 20.0, 30.0, 25.0]
-    assert request["z"] == [0.2, 0.5, 0.8, 0.6]
+def test_the_map_request_is_speed_by_force_and_splits_measured_from_pending():
+    request = plot_data.transfer_request("map", _trials(), "shadow_vs_peak")
+    assert request["kind"] == "map"
+    assert request["x"] == [100.0, 200.0, 300.0, 150.0]       # speed
+    assert request["y"] == [0.2, 0.5, 0.8, 0.6]               # force
+    assert "z" not in request and "tilt" not in request["x_label"]
     assert request["measured"] == [True, True, True, False]
     assert request["c"][:3] == [5.0, 7.0, 9.0]
 
 
 def test_a_trial_without_the_chosen_index_is_left_off_the_map():
-    request = plot_data.transfer_request("map3d", _trials(), "at_operator_mark")
+    request = plot_data.transfer_request("map", _trials(), "at_operator_mark")
     assert request["kind"] == "message"
     assert "at_operator_mark" in request["reason"] or "force" in request["reason"]
 
@@ -358,19 +359,25 @@ def test_no_trials_explains_itself_for_every_figure():
         assert request["kind"] == "message", kind
 
 
-def test_the_slice_uses_measured_trials_in_the_force_band():
-    everything = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak")
-    assert everything["kind"] == "slice"
-    assert sorted(everything["points_c"]) == [5.0, 7.0, 9.0]
-    low = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak",
-                                     band="Low third")
-    assert low["kind"] in ("slice", "message")
-    if low["kind"] == "slice":
-        assert 9.0 not in low["points_c"] and 5.0 in low["points_c"]
+def test_the_heatmap_uses_the_measured_trials_over_speed_and_force():
+    request = plot_data.transfer_request("heatmap", _trials(), "shadow_vs_peak")
+    assert request["kind"] == "heatmap"
+    assert sorted(request["points_c"]) == [5.0, 7.0, 9.0]
+    assert sorted(request["points_x"]) == [100.0, 200.0, 300.0]
+    assert sorted(request["points_y"]) == [0.2, 0.5, 0.8]
+    assert "speed" in request["x_label"] and "force" in request["y_label"]
 
 
-def test_the_slice_carries_a_gp_mean_and_sigma_surface_with_enough_trials():
-    request = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak")
+def test_a_trial_without_a_tilt_is_still_on_the_map():
+    rows = _trials()
+    for row in rows:
+        row["tilt"] = None
+    assert plot_data.transfer_request("map", rows, "shadow_vs_peak")["kind"] == "map"
+    assert plot_data.transfer_request("heatmap", rows, "shadow_vs_peak")["kind"] == "heatmap"
+
+
+def test_the_heatmap_carries_a_gp_mean_and_sigma_surface_with_enough_trials():
+    request = plot_data.transfer_request("heatmap", _trials(), "shadow_vs_peak")
     mean, sigma = request["mean"], request["sigma"]
     assert len(mean) == len(sigma) == len(request["grid_y"])
     assert len(mean[0]) == len(request["grid_x"])
@@ -408,7 +415,7 @@ def test_every_transfer_figure_renders_to_a_png():
             kind, _trials(), "shadow_vs_peak", profile=profile, marks=marks,
             definitions=("shadow_vs_peak", "dip_area"), size=(4.0, 3.0), dpi=50)
         assert png[:8] == b"\x89PNG\r\n\x1a\n", kind
-    assert plot_data.render_transfer_figure("map3d", [], "x")[:8] == b"\x89PNG\r\n\x1a\n"
+    assert plot_data.render_transfer_figure("map", [], "x")[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_the_transfer_figures_never_draw_in_the_stop_red():
@@ -420,18 +427,17 @@ def test_the_transfer_figures_never_draw_in_the_stop_red():
     assert palette.SIGNAL.lower() not in source.lower()
 
 
-def test_the_map3d_axes_are_padded_so_one_tilt_does_not_read_as_a_wrong_one():
-    """Bench 2026-09-28: with every trial at one tilt, autoscaling drew a
-    hair-wide tilt axis whose ticks looked like a misread angle."""
-    one = [{"id": 1, "tilt": 5.0, "speed": 200.0,
+def test_the_map_axes_are_padded_so_one_speed_does_not_read_as_a_wrong_one():
+    """Bench 2026-09-28: with every trial at one value, autoscaling drew a
+    hair-wide axis whose ticks looked like a misread value."""
+    one = [{"id": 1, "tilt": 7.0, "speed": 200.0,
             "force": {"shadow_vs_peak": 0.4}, "width": None, "width_sigma": None}]
-    request = plot_data.transfer_request("map3d", one, "shadow_vs_peak")
-    limits = plot_data.map3d_limits(request)
-    assert limits["x"] == (4.5, 5.5)
-    assert limits["y"] == (199.5, 200.5)
-    assert limits["z"] is not None
-    assert plot_data.render_transfer_figure("map3d", one, "shadow_vs_peak")[:8] == b"\x89PNG\r\n\x1a\n"
-    assert plot_data.map3d_limits({"x": [], "y": [], "z": []}) == {"x": None, "y": None, "z": None}
+    request = plot_data.transfer_request("map", one, "shadow_vs_peak")
+    limits = plot_data.map_limits(request)
+    assert limits["x"] == (199.5, 200.5)
+    assert limits["y"] == (0.4 - 0.5, 0.4 + 0.5)
+    assert plot_data.render_transfer_figure("map", one, "shadow_vs_peak")[:8] == b"\x89PNG\r\n\x1a\n"
+    assert plot_data.map_limits({"x": [], "y": []}) == {"x": None, "y": None}
 
 
 # -- store v6: the width's source is always visible (owner, 2026-10-04) ------
@@ -450,8 +456,8 @@ def _mixed():
     return rows
 
 
-def test_map3d_fills_afm_rings_optical_and_says_so():
-    request = plot_data.transfer_request("map3d", _mixed(), "shadow_vs_peak")
+def test_the_map_fills_afm_rings_optical_and_says_so():
+    request = plot_data.transfer_request("map", _mixed(), "shadow_vs_peak")
     assert request["measured"] == [True, True, True, False, False]
     assert request["optical"] == [False, False, False, True, False]
     assert request["c"][3] == 8.0
@@ -459,15 +465,15 @@ def test_map3d_fills_afm_rings_optical_and_says_so():
                                 "optical width; hollow: no width yet)")
 
 
-def test_the_slice_uses_afm_only_by_default():
-    request = plot_data.transfer_request("slice", _mixed(), "shadow_vs_peak")
+def test_the_heatmap_uses_afm_only_by_default():
+    request = plot_data.transfer_request("heatmap", _mixed(), "shadow_vs_peak")
     assert sorted(request["points_c"]) == [5.0, 7.0, 9.0]
     assert request["points_optical"] == [False, False, False]
     assert "3 AFM" in request["title"] and "optical" not in request["title"]
 
 
-def test_the_slice_takes_optical_on_request_with_a_wider_noise():
-    request = plot_data.transfer_request("slice", _mixed(), "shadow_vs_peak",
+def test_the_heatmap_takes_optical_on_request_with_a_wider_noise():
+    request = plot_data.transfer_request("heatmap", _mixed(), "shadow_vs_peak",
                                          width_source="AFM, else optical")
     assert sorted(request["points_c"]) == [5.0, 7.0, 8.0, 9.0]
     assert request["points_optical"].count(True) == 1
@@ -495,12 +501,12 @@ def test_compare_follows_the_width_source_and_rings_optical():
 
 def test_an_unknown_width_source_is_refused():
     with pytest.raises(ValueError):
-        plot_data.transfer_request("slice", _mixed(), "shadow_vs_peak",
+        plot_data.transfer_request("heatmap", _mixed(), "shadow_vs_peak",
                                    width_source="optical only")
 
 
 def test_mixed_figures_render():
-    for kind in ("map3d", "slice", "compare"):
+    for kind in ("map", "heatmap", "compare"):
         png = plot_data.render_transfer_figure(
             kind, _mixed(), "shadow_vs_peak", definitions=("dip_area",),
             width_source="AFM, else optical", size=(4.0, 3.0), dpi=50)

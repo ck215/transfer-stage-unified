@@ -1,6 +1,6 @@
 # Rebuild status — cold-resume document
 
-Last updated 2026-09-26 (evening). Read this first; then `BRIEF.md` (the architecture
+Last updated 2026-09-28 (evening). Read this first; then `BRIEF.md` (the architecture
 contract and its addenda), `WEB_DESIGN_BRIEF.md`, and `BUGFIX_PLAN.md` (the
 ranked defect list with a delegation route per item).
 
@@ -116,6 +116,15 @@ component strip each) was published for the owner the same day; the choice
 lands as `palette.py` / `theme.py` tokens.
 
 ## Open items
+
+### Tip-shade force, held features, the finalizer (2026-10-06)
+
+- **The force is read from the tip's shade, not the red percent** (owner ruling). Median green of the right half of the recorded tip region; contact is the shade rising off its baseline, and the force is where the shade stands on its peak at the Mark (`model/tip_shade.py`, `docs/rebuild/RECORDING_A_TRIAL.md`). The sheet's **Force** field reads No contact, Contact, Low, Medium or High live; schema v8 stores `force_position`, `force_class`, `contact_lowered`, `shade_*`; the map's default definition is `shade_position`; the video index gains a `shade` column. Recording is unchanged (the whole tip region). The red-percent profile only logs when the rounded value changes by 0.1, so its force indices (`at_operator_mark` and the rest) are not to be trusted. `rebuild_force` recomputes the columns from footage; run on the bench database on 2026-10-06 for the four valid trials. The thresholds (contact line, 0.10, the thirds) are bench values, the owner's.
+- **The map has two axes, speed and force** (owner, 2026-10-06; tilt is fixed at 7° and recorded but no longer plotted). The figure dropdown is Map (speed × force, coloured by width; `plot_data` kind `map`, `map_limits`), Heatmap (the Gaussian process over speed × force; replaces the tilt × speed slice) , Compare, Profile. The Force band dropdown is gone; `width_gradient` reads um per step/s and um per unit force. Trials with no tilt are plotted. Bench database, 2026-10-06: trials 7 and 8 (400 steps/s, off the 100/200/300 plan) unflagged as supplemental points and their force rebuilt from footage (Medium, High); trials 6, 2 and 35 stay invalid (6 troublesome, 2 and 35 have no force).
+- **Sample Map and user profiles are off by default** (owner, 2026-10-06) until validated. The code stays whole in this tree and on branch `feature/sample-map-profiles`; `STATION_SAMPLE_MAP=1` and `STATION_PROFILES=1` turn them on (`controller/setup.py`). History was not rewritten: every commit is on `origin/mvc-refactor`, and some are another developer's.
+- **Data finalizer** (Qt only, temporary): the Transfer Map's "Finalize data..." button opens a window to walk the samples with video and stills and enter AFM and optical estimates (`model/finalize.py`, `views/qt_finalizer.py`).
+- **Bench database:** schema v8; trials 3, 4, 5 and 9 are the valid series (7 deg, 100/200/300 steps/s); every other trial is flagged invalid, notes untouched. Backups beside it in `data/` (`*_pre_reconcile`, `*_old` with its pictures, `*_pre_shade`).
+
 
 ### The Rotator turns the chip: the Sample Map follows it (2026-10-05)
 
@@ -480,6 +489,63 @@ skill's counts (2290 / 212) are stale: today's base is 3269 / 255.
   release" && git push origin v0.2.0` starts the builds; if the release
   step is refused, allow read and write workflow permissions under the
   repository's Actions settings.
+
+  **2026-09-28, evening: the owner's run-of-the-day fixes.** (1) The
+  desktop icons: "Transfer Stage Launcher" had gone from the Linux PC's
+  desktop and "Transfer Stage Classic" still ran `run_swap.sh`;
+  `dev/desktop_shortcuts.sh` rewrites both (Exec = `dev/launch_desktop.sh`
+  [`classic`], since a .desktop Exec line may hold no shell; a failed
+  launch shows run.sh's message in a zenity dialog and keeps it in
+  `~/transfer-stage-runs/launcher.log`), run on the bench PC, both files
+  pass `desktop-file-validate`; two tests in `test_launchers.py`. (2) Tip
+  ID could not be emptied or retyped in Qt ("Refused: tip is already on
+  record"): only a slider's release committed a Qt entry, so the refresh
+  wrote the model's old value back the moment focus left the box, and a
+  click on New tip could carry the old ID. Every Qt entry now commits on
+  `editingFinished` (Return or focus-out) when its text differs from the
+  last refresh (`_on_editing_finished`), O14's rule as Tk and the Web
+  already had it; three tests in `test_view_qt_widgets.py`. (3) The
+  tilt could not be set per trial: `_read_tilt` preferred a rotator's
+  reading, and the bench Rotator read 0.0 on trials tilted by hand to 6.5
+  and 7 deg (both rows say `tilt_source` Rotator, 0.0). A typed tilt wins
+  now; blank the entry and the rotator is the source again; the Arm prompt
+  names the source either way ("at 7 deg (typed)"). (4) The bench
+  database with the wrong tilts was set aside at the owner's word:
+  `data/transfer_map_20260927_bench.sqlite` and its pictures folder
+  `data/transfer_map_20260927_bench/` (the stored picture paths still
+  name the old folder; delete both when the export is no longer wanted);
+  the next launch creates a fresh `data/transfer_map.sqlite`. Tk and the
+  Web already committed an entry on Return / focus-out, so (2) is Qt-only.
+  **Same evening, the owner's next ask: "the runs no longer have labels;
+  each trial has a chip, flake and cut ID for better sorting later."**
+  Three tier-1 text entries under the tip (`chip_id`, `flake_id`,
+  `cut_id`; store schema 6, the same in-place upgrade; Arm's inputs; Next
+  step asks for a blank one after the tilt and never refuses; the prompt
+  names them or says "NO chip, flake or cut ID"); the trials export and
+  `trials_log` carry them; the video band gains a second line (`trial 12
+  tip T7  chip C1  flake F2  cut 3`; `LABEL_TEMPLATE` sizes the band for
+  it); and the Red Percent run a trial records through is **named after
+  the trial** at Arm (`TransferMap.run_label`:
+  `trial012_tip-T7_chip-C1_flake-F2_cut-3`, folder-safe) through the new
+  `RedMonitor.label_run(run_id, annotations)`, which renames the active
+  run only while nothing of it is on disk and fills specimen / consumable
+  / note; the operator's own run keeps its name. Import keeps the columns. Later the same evening a fourth, **Sample (date /
+  ID)** (`sample_id`, schema 7), above the chip; the bench values were set by
+  a one-off at the owner's word (the owner ran it). Tests: ten in `test_transfer_map.py`, one in
+  `test_red_monitor.py`. Views unchanged (entries render from the schema).
+  `TrialRecorder.label_layout` packs each label line on rows of its own,
+  so MARK stays at the end of the measurement line and the identity line
+  sits under it. **Owner's third note, "persistence of field typing is
+  also a problem on the sliders":** the same Qt defect (only the slider's
+  release committed; a value typed into its box snapped back once focus
+  left), covered by the same `_on_editing_finished` and pinned by
+  `test_e_a_value_typed_into_a_sliders_box_persists_when_focus_leaves`;
+  Tk (Return / FocusOut / ButtonRelease on the scale) and the Web
+  (`change`, released drag) already committed there. Qt pass on this
+  Linux PC: the offscreen suite twice sat forever on a test (different
+  ones: after an F near 83 %, then `test_l1_the_rail_marks_each_model_
+  latched_or_unconfirmed`), each of which passes alone; the widgets file
+  is run with `timeout` now and the hang is not reproduced on its own.
 
 - **2026-09-27, late: pushed at the owner's word for a data-collection
   session at the station.** Tree `54bb213` + this note; gates fast 2638,

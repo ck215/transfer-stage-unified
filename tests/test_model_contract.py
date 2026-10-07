@@ -33,6 +33,8 @@ class MinimalModel(Model):
 
 
 CLASSES = dict(MODEL_TYPES)
+from model.sample_map import SampleMap                # noqa: E402  (held feature, still held to the contract)
+CLASSES.setdefault("Sample Map", SampleMap)
 CLASSES["Minimal"] = MinimalModel
 
 #: The state keys a view reads by name (grep of tk.py, qt.py, app.js,

@@ -4379,6 +4379,13 @@ class QtPanelView(PanelView, QWidget):
             entry.setMinimumWidth(text_px(TEXT_CHARS))
         entry.setAccessibleName(sentence_case(caption))
         self._remember(element, entry)
+        # O14, Qt's half (bench 2026-09-28): Return, or leaving the box,
+        # commits what it says, as Tk (`_on_entry_commit`) and the Web
+        # (`change`) do. Before this only a slider's release committed, so
+        # a Tip ID cleared or retyped was written back by the next refresh
+        # the moment focus left the box ("I can't empty the field"), and a
+        # click on New tip could carry the old ID.
+        entry.editingFinished.connect(lambda: self._on_editing_finished(element))
         travel = element.get("slider")
         if travel and not container.is_row:
             container.add(caption, self._slider_pair(element, entry, travel), unit)
@@ -4402,7 +4409,6 @@ class QtPanelView(PanelView, QWidget):
         slider.setAccessibleName(f"{entry.accessibleName()} slider")
         slider.valueChanged.connect(lambda value: self._on_slider(element, value))
         slider.sliderReleased.connect(lambda: self._commit_slider(element))
-        entry.editingFinished.connect(lambda: self._entry_to_slider(element))
         self._sliders[id(element)] = slider
         self._companions[id(element)] = slider
         return _bare_row(slider, entry, spacing=theme.SPACE[4])
@@ -4433,6 +4439,21 @@ class QtPanelView(PanelView, QWidget):
             finally:
                 self._acting = None
         return result
+
+    def _on_editing_finished(self, element):
+        """Return, or focus leaving the box: the slider (if any) follows the
+        text, and the text is committed when it differs from what the last
+        refresh wrote. An unchanged box commits nothing, so a dialog taking
+        focus, or a Tab through the sheet, sends no edit. A gated box (the
+        latch, a mode) is not committed: the model would refuse it by name
+        and the refresh writes the held value back, as it does today."""
+        self._entry_to_slider(element)
+        entry = self._widget_for(element)
+        if entry is None or self._closed or not entry.isEnabled():
+            return None
+        if entry.text() == self._clean_text.get(id(element), ""):
+            return None
+        return self._commit_slider(element)
 
     def _entry_to_slider(self, element):
         slider = self._sliders.get(id(element))
@@ -5084,9 +5105,26 @@ class QtPanelView(PanelView, QWidget):
     def _run(self, element, args=()):
         self._acting = element
         try:
-            return PanelView._run(self, element, args)
+            result = PanelView._run(self, element, args)
         finally:
             self._acting = None
+        # The Transfer Map's "Finalize data..." answers with the word for the
+        # window this view owns (temporary, owner 2026-10-06: Qt only for now).
+        if result.is_ok and result.value == "open:finalizer":
+            self._open_finalizer()
+        return result
+
+    def _open_finalizer(self):
+        """One finalizer window at a time: a second press raises it."""
+        from views.qt_finalizer import FinalizerWindow
+        window = getattr(self, "_finalizer", None)
+        if window is None or not window.isVisible():
+            window = self._finalizer = FinalizerWindow(
+                self.controller, self.name, parent=self.window())
+            window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _refusal_for(self, element):
         """The refusal line of the section that holds this element's control,

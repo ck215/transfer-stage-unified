@@ -96,7 +96,7 @@ QT_UNUSED = [
         "Qt3DRender", "QtBluetooth", "QtCharts", "QtConcurrent",
         "QtDataVisualization", "QtDBus", "QtDesigner", "QtGraphs",
         "QtGraphsWidgets", "QtHelp", "QtHttpServer", "QtLocation",
-        "QtMultimedia", "QtMultimediaWidgets", "QtNetwork", "QtNetworkAuth",
+        "QtNetwork", "QtNetworkAuth",
         "QtNfc", "QtOpenGL", "QtOpenGLWidgets", "QtPdf", "QtPdfWidgets",
         "QtPositioning", "QtPrintSupport", "QtQml", "QtQuick", "QtQuick3D",
         "QtQuickControls2", "QtQuickTest", "QtQuickWidgets", "QtRemoteObjects",

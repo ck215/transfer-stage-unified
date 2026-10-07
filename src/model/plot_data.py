@@ -410,7 +410,7 @@ def _number(row, index):
 #
 # Same split as the analysis plot: `transfer_request` decides what to draw
 # from plain rows, without matplotlib, and `render_transfer_figure` draws it.
-# A trial row is `{"id", "tilt", "speed", "force": {definition: value|None},
+# A trial row is `{"id", "speed", "force": {definition: value|None},
 # "width", "width_sigma", "width_source"}`; the model builds the rows from
 # its store and computes the force indices from each trial's raw profile.
 # `width` is the chosen one (`transfer_map_analysis.pick_width`: AFM when
@@ -418,26 +418,25 @@ def _number(row, index):
 # None (a row without the key and with a width is AFM, as before version 6).
 
 #: The figure types, in dropdown order.
-TRANSFER_FIGURES = ("map3d", "slice", "compare", "profile")
-#: The force bands a slice can be drawn at: terciles of the chosen index
-#: over the trials that have it, so the band is scale-free for every
-#: definition.
-FORCE_BANDS = ("All forces", "Low third", "Middle third", "High third")
-#: Grid resolution of the slice's surfaces.
+#:
+#: The map has two axes, speed and force (owner, 2026-10-06: the tilt is no
+#: longer varied, so it is no axis; every trial is drawn whatever its tilt).
+TRANSFER_FIGURES = ("map", "heatmap", "compare", "profile")
+#: Grid resolution of the heatmap's surfaces.
 SLICE_GRID = 25
-#: The slice's Gaussian process, in coordinates scaled to [0, 1] per axis.
-SLICE_LENGTH = 0.35
-TILT_LABEL, SPEED_LABEL = "tilt (deg)", "speed (steps/s)"
+#: The heatmap's Gaussian process, in coordinates scaled to [0, 1] per axis.
+HEATMAP_LENGTH = 0.35
+SPEED_LABEL = "speed (steps/s)"
 WIDTH_LABEL = "channel width (um)"
-#: Which widths the slice and the comparison fit (store v6, owner
+#: Which widths the heatmap and the comparison fit (store v6, owner
 #: 2026-10-04: AFM only by default; optical on request, trusted less).
 WIDTH_SOURCES = ("AFM only", "AFM, else optical")
 #: An optical width with no sigma of its own gets this many times the AFM
-#: default noise (0.05 x the widths' spread) in the slice's GP (Q19).
+#: default noise (0.05 x the widths' spread) in the heatmap's GP (Q19).
 OPTICAL_SIGMA_FACTOR = 3
 #: Two lines: one would be clipped at the station's figure size.
-MAP3D_TITLE = ("Transfer map\n(filled: AFM width; ringed: optical width; "
-               "hollow: no width yet)")
+MAP_TITLE = ("Transfer map\n(filled: AFM width; ringed: optical width; "
+             "hollow: no width yet)")
 
 
 def _source(row):
@@ -473,12 +472,12 @@ def _sources_note(rows):
     return f"{afm} AFM" + (f", {optical} optical" if optical else "")
 
 
-def transfer_request(kind, trials, definition, *, band="All forces",
+def transfer_request(kind, trials, definition, *,
                      profile=None, marks=None, definitions=None,
                      width_source=WIDTH_SOURCES[0]):
     """What a Transfer Map figure of `kind` asks for, or why it cannot be
     drawn. Pure; `kind` is one of `TRANSFER_FIGURES`; `width_source` (one of
-    `WIDTH_SOURCES`) picks the widths the slice and the comparison use."""
+    `WIDTH_SOURCES`) picks the widths the heatmap and the comparison use."""
     trials = list(trials or ())
     if width_source not in WIDTH_SOURCES:
         raise ValueError(f"not a width source: {width_source!r}")
@@ -490,41 +489,25 @@ def transfer_request(kind, trials, definition, *, band="All forces",
         return _message("No trials yet. Arm a trial, lower the tip, then "
                         "Finish; or import trials.")
     placed = [row for row in trials
-              if row.get("tilt") is not None and row.get("speed") is not None
+              if row.get("speed") is not None
               and (row.get("force") or {}).get(definition) is not None]
     if not placed:
-        return _message(f"No trial has a tilt, a speed and a {definition} "
+        return _message(f"No trial has a speed and a {definition} "
                         "value yet.")
-    if kind == "map3d":
-        return {"kind": "map3d",
-                "x": [row["tilt"] for row in placed],
-                "y": [row["speed"] for row in placed],
-                "z": [row["force"][definition] for row in placed],
+    if kind == "map":
+        return {"kind": "map",
+                "x": [row["speed"] for row in placed],
+                "y": [row["force"][definition] for row in placed],
                 "c": [row.get("width") for row in placed],
                 "measured": [_source(row) == "afm" for row in placed],
                 "optical": [_source(row) == "optical" for row in placed],
-                "x_label": TILT_LABEL, "y_label": SPEED_LABEL,
-                "z_label": f"force index ({definition})",
+                "x_label": SPEED_LABEL,
+                "y_label": f"force index ({definition})",
                 "c_label": WIDTH_LABEL,
-                "title": MAP3D_TITLE}
-    if kind == "slice":
-        return _slice_request(placed, definition, band, width_source)
+                "title": MAP_TITLE}
+    if kind == "heatmap":
+        return _heatmap_request(placed, definition, width_source)
     return _message(f"Unknown figure type: {kind!r}.")
-
-
-def _in_band(rows, definition, band):
-    """The rows whose index falls in `band` (terciles over `rows`)."""
-    if band in (None, "", FORCE_BANDS[0]):
-        return list(rows)
-    import numpy
-    values = numpy.array([row["force"][definition] for row in rows], dtype=float)
-    low, high = numpy.quantile(values, [1 / 3, 2 / 3])
-    keep = {FORCE_BANDS[1]: values <= low,
-            FORCE_BANDS[2]: (values > low) & (values <= high),
-            FORCE_BANDS[3]: values > high}.get(band)
-    if keep is None:
-        return list(rows)
-    return [row for row, flag in zip(rows, keep) if flag]
 
 
 def _span(values):
@@ -535,54 +518,55 @@ def _span(values):
     return low - margin, high + margin
 
 
-def map3d_limits(request):
-    """Axis limits for the 3D map: every trial padded by `_span`, so one
-    trial (or several at one tilt) does not leave matplotlib autoscaling
+def map_limits(request):
+    """Axis limits for the map: every trial padded by `_span`, so one
+    trial (or several at one speed) does not leave matplotlib autoscaling
     to a hair's width around the value, whose tick labels then read as a
-    wrong tilt (bench 2026-09-28). None for an axis with no values."""
+    wrong value (bench 2026-09-28). None for an axis with no values."""
     limits = {}
-    for key in ("x", "y", "z"):
+    for key in ("x", "y"):
         values = [v for v in request.get(key, ()) if v is not None]
         limits[key] = _span(values) if values else None
     return limits
 
 
-def _slice_request(placed, definition, band, width_source=WIDTH_SOURCES[0]):
-    """Width over tilt x speed at a force band: the Gaussian process mean,
-    its sigma (drawn as the confidence contours), and the measured trials
-    (AFM only, or AFM else optical: `width_source`)."""
+def _heatmap_request(placed, definition, width_source=WIDTH_SOURCES[0]):
+    """Width over speed x force: the Gaussian process mean, its sigma
+    (drawn as the confidence contours), and the measured trials (AFM only,
+    or AFM else optical: `width_source`)."""
     import numpy
     from model import transfer_map_analysis as tma
-    measured = with_width(_in_band(placed, definition, band), width_source)
+    measured = with_width(placed, width_source)
     if len(measured) < 2:
-        return _message(f"Measure the width of at least two trials in "
-                        f"{band.lower()} to draw a slice.")
-    (x0, x1) = _span([row["tilt"] for row in placed])
-    (y0, y1) = _span([row["speed"] for row in placed])
+        return _message("Measure the width of at least two trials to draw "
+                        "the heatmap.")
+    (x0, x1) = _span([row["speed"] for row in placed])
+    (y0, y1) = _span([row["force"][definition] for row in placed])
     grid_x = numpy.linspace(x0, x1, SLICE_GRID)
     grid_y = numpy.linspace(y0, y1, SLICE_GRID)
     unit = lambda v, a, b: (numpy.asarray(v, dtype=float) - a) / (b - a)  # noqa: E731
-    points = numpy.column_stack([unit([r["tilt"] for r in measured], x0, x1),
-                                 unit([r["speed"] for r in measured], y0, y1)])
+    points = numpy.column_stack([
+        unit([r["speed"] for r in measured], x0, x1),
+        unit([r["force"][definition] for r in measured], y0, y1)])
     widths = numpy.array([r["width"] for r in measured], dtype=float)
     spread = float(widths.std()) or 1.0
     noise = numpy.array(width_noise(measured, spread))
     gx, gy = numpy.meshgrid(unit(grid_x, x0, x1), unit(grid_y, y0, y1))
     query = numpy.column_stack([gx.ravel(), gy.ravel()])
-    mean, variance = tma.gp_predict(points, widths, query, length=SLICE_LENGTH,
+    mean, variance = tma.gp_predict(points, widths, query, length=HEATMAP_LENGTH,
                                     noise=noise)
     shape = (SLICE_GRID, SLICE_GRID)
-    return {"kind": "slice",
+    return {"kind": "heatmap",
             "grid_x": grid_x.tolist(), "grid_y": grid_y.tolist(),
             "mean": mean.reshape(shape).tolist(),
             "sigma": numpy.sqrt(variance).reshape(shape).tolist(),
-            "points_x": [r["tilt"] for r in measured],
-            "points_y": [r["speed"] for r in measured],
+            "points_x": [r["speed"] for r in measured],
+            "points_y": [r["force"][definition] for r in measured],
             "points_c": [r["width"] for r in measured],
             "points_optical": [_source(r) == "optical" for r in measured],
-            "x_label": TILT_LABEL, "y_label": SPEED_LABEL,
+            "x_label": SPEED_LABEL, "y_label": f"force index ({definition})",
             "c_label": WIDTH_LABEL,
-            "title": f"Width, {definition}: {band.lower()} "
+            "title": f"Width, {definition} "
                      f"({_sources_note(measured)}; contours: sigma)"}
 
 
@@ -632,11 +616,11 @@ def _profile_request(profile, marks):
                      else "Trial profile"}
 
 
-def render_transfer_figure(kind, trials, definition, *, band="All forces",
+def render_transfer_figure(kind, trials, definition, *,
                            profile=None, marks=None, definitions=None,
                            size=None, dpi=None, width_source=WIDTH_SOURCES[0]):
     """PNG bytes of a Transfer Map figure, drawn once for all three views."""
-    request = transfer_request(kind, trials, definition, band=band,
+    request = transfer_request(kind, trials, definition,
                                profile=profile, marks=marks,
                                definitions=definitions,
                                width_source=width_source)
@@ -655,8 +639,8 @@ def _draw_transfer(request, size=None, dpi=None):
     except ImportError:
         pass
     kind = request["kind"]
-    if kind == "map3d":
-        axes = figure.add_subplot(111, projection="3d")
+    if kind == "map":
+        axes = figure.add_subplot(111)
         optical_flags = request.get("optical") or [False] * len(request["measured"])
         done = [i for i, m in enumerate(request["measured"]) if m]
         ringed = [i for i, o in enumerate(optical_flags) if o]
@@ -670,34 +654,28 @@ def _draw_transfer(request, size=None, dpi=None):
         drawn = None
         if done:
             drawn = axes.scatter(pick("x", done), pick("y", done),
-                                 pick("z", done), c=pick("c", done),
-                                 cmap=_colormap(), marker="o", s=30, **scale)
+                                 c=pick("c", done), cmap=_colormap(),
+                                 marker="o", s=60, **scale)
         if ringed:
             # Optical width (store v6): the same colour scale, ringed so it
             # never reads as an AFM measurement.
             shown = axes.scatter(pick("x", ringed), pick("y", ringed),
-                                 pick("z", ringed), c=pick("c", ringed),
-                                 cmap=_colormap(), marker="o", s=45,
-                                 edgecolors=palette.TEXT, linewidths=1.6,
-                                 **scale)
+                                 c=pick("c", ringed), cmap=_colormap(),
+                                 marker="o", s=80, edgecolors=palette.TEXT,
+                                 linewidths=1.6, **scale)
             drawn = drawn or shown
         if drawn is not None:
-            _colorbar(figure, drawn, axes, request["c_label"], pad=0.14)
+            _colorbar(figure, drawn, axes, request["c_label"])
         if pending:
             axes.scatter(pick("x", pending), pick("y", pending),
-                         pick("z", pending), facecolors="none",
-                         edgecolors=palette.MUTED, marker="o", s=30)
-        axes.set_zlabel(request["z_label"])
-        for key, setter in (("x", axes.set_xlim), ("y", axes.set_ylim),
-                            ("z", axes.set_zlim)):
-            limit = map3d_limits(request)[key]
+                         facecolors="none", edgecolors=palette.MUTED,
+                         marker="o", s=60)
+        for key, setter in (("x", axes.set_xlim), ("y", axes.set_ylim)):
+            limit = map_limits(request)[key]
             if limit is not None:
                 setter(*limit)
-        from matplotlib.ticker import MaxNLocator
-        for axis in (axes.xaxis, axes.yaxis, axes.zaxis):
-            axis.set_major_locator(MaxNLocator(5))
         panels = [axes]
-    elif kind == "slice":
+    elif kind == "heatmap":
         axes = figure.add_subplot(111)
         drawn = axes.pcolormesh(request["grid_x"], request["grid_y"],
                                 request["mean"], cmap=_colormap(),

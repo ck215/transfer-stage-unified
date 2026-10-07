@@ -109,11 +109,13 @@ def test_the_label_is_drawn_on_a_dark_band_at_the_top(tmp_path):
 
 def test_the_label_band_holds_the_label_on_a_narrow_region(tmp_path):
     """A narrow region wraps the label onto more lines of the band, fixed at
-    open, rather than cutting MARK off the end."""
+    open, rather than cutting MARK off the end. The band is sized for two
+    lines (the measurement and the trial's identity, 2026-09-28): on a wide
+    region that is two rows."""
     wide, narrow = TrialRecorder(), TrialRecorder()
     wide.open(tmp_path / "wide.mp4", 15, (900, 40))
     narrow.open(tmp_path / "narrow.mp4", 15, (120, 40))
-    assert narrow.label_rows > wide.label_rows == 1
+    assert narrow.label_rows > wide.label_rows == 2
     text = "t=12.34 s  red 63.2 %  z -1520  MARK"
     assert len(narrow.label_layout(text)) <= narrow.label_rows
     for recorder in (wide, narrow):

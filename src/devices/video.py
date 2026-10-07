@@ -25,8 +25,10 @@ Transfer Map's picture thread, which is the only caller of `write` and
 """
 from pathlib import Path
 
-#: The worst label the map writes, used to size the band at `open()`.
-LABEL_TEMPLATE = "t=99999.99 s  red 100.0 %  z -9999999  MARK"
+#: The worst label the map writes, used to size the band at `open()`: the
+#: measurement line and the identity line (trial, tip, chip, flake, cut).
+LABEL_TEMPLATE = ["t=99999.99 s  red 100.0 %  z -9999999  MARK",
+                  "trial 999  tip 9/27/26 Tip1  chip WWWWWWWW  flake WWWWWWWW  cut WWWW"]
 BAND_COLOUR = (16, 16, 16)
 TEXT_COLOUR = (240, 240, 240)
 #: Monospace faces, first found wins: Linux (the bench PC), macOS, Windows.
@@ -46,6 +48,33 @@ def _encoder():
     except Exception:
         return None
     return imageio_ffmpeg
+
+
+def read_frames(path):
+    """Yield the frames of a recorded trial, in order, as HxWx3 uint8 RGB
+    arrays (the label band included): an MP4 through imageio-ffmpeg, or a
+    folder of JPEGs. FileNotFoundError when there is no footage; RuntimeError
+    for an MP4 without the decoder."""
+    import numpy
+    path = Path(path)
+    if path.is_dir():
+        from PIL import Image
+        for name in sorted(path.glob("frame_*.jpg")):
+            with Image.open(name) as picture:
+                yield numpy.array(picture.convert("RGB"))
+        return
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+    ffmpeg = _encoder()
+    if ffmpeg is None:
+        raise RuntimeError("no video decoder: install imageio-ffmpeg")
+    frames = ffmpeg.read_frames(str(path), pix_fmt="rgb24")
+    width, height = next(frames)["size"]
+    try:
+        for chunk in frames:
+            yield numpy.frombuffer(chunk, numpy.uint8).reshape(height, width, 3)
+    finally:
+        frames.close()
 
 
 def to_rgb(frame):
@@ -140,21 +169,26 @@ class TrialRecorder:
         self.band_height = self.label_rows * self._line_height + 2 * self.PAD
 
     def label_layout(self, lines, width=None):
-        """The label as it is drawn: its fields (split on two spaces) packed
-        greedily into lines that fit the footage's width."""
+        """The label as it is drawn: each line's fields (split on two
+        spaces) packed greedily into rows that fit the footage's width. A
+        line starts a row of its own, so the measurement line ends in MARK
+        and the identity line (trial, tip, chip, flake, cut) sits under it,
+        never after it."""
         width = self.frame_size[0] if width is None else width
         if isinstance(lines, str):
             lines = [lines]
-        fields = [f.strip() for line in lines for f in str(line).split("  ")
-                  if f.strip()]
         room = max(1, int(width) - 2 * self.PAD)
         packed = []
-        for field in fields:
-            candidate = f"{packed[-1]}  {field}" if packed else field
-            if packed and self._font.getlength(candidate) <= room:
-                packed[-1] = candidate
-            else:
-                packed.append(field)
+        for line in lines:
+            fields = [f.strip() for f in str(line).split("  ") if f.strip()]
+            rows = []
+            for field in fields:
+                candidate = f"{rows[-1]}  {field}" if rows else field
+                if rows and self._font.getlength(candidate) <= room:
+                    rows[-1] = candidate
+                else:
+                    rows.append(field)
+            packed.extend(rows)
         return packed
 
     # -- the file ----------------------------------------------------------------
